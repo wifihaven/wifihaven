@@ -32,8 +32,8 @@ object Main extends ZIOAppDefault:
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](c => Database.makeTransactor(c.db))) >+>
       Repos.all >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
-      AuthService.layer >+>
-      Clock.live
+      Clock.live >+>
+      AuthService.layer
 
   private def allRoutes =
     for
@@ -50,6 +50,7 @@ object Main extends ZIOAppDefault:
       extRepo     <- ZIO.service[TimeExtensionRepo]
       logRepo     <- ZIO.service[QueryLogRepo]
       cfg         <- ZIO.service[AppConfig]
+      clock       <- ZIO.service[Clock]
     yield AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo) ++
       DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
@@ -62,6 +63,7 @@ object Main extends ZIOAppDefault:
         extRepo,
         profileRepo,
         upRepo,
+        clock,
       ) ++
       LogRoutes.routes(auth, logRepo, upRepo) ++
       BlocklistRoutes.routes(auth, blRepo) ++
