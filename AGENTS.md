@@ -73,6 +73,31 @@ All three share a single PostgreSQL database.
 - **Formatting**: `scalafmt` enforced in CI. Run `mill __.reformat` before committing.
 - **Imports**: managed by `scalafix OrganizeImports`. Run `mill __.fix` before committing.
 
+## Docker inside Claude Code agents (worktrees)
+
+The Claude Code bash sandbox blocks Unix domain socket connections. Docker CLI
+uses a Unix socket by default, so every `docker` or `docker compose` command
+hangs indefinitely unless Docker is configured to use TCP instead.
+
+**Required one-time setup** (Docker Desktop on macOS):
+
+1. Open Docker Desktop → Settings → General.
+2. Enable **"Expose daemon on tcp://localhost:2375 without TLS"**.
+3. Click Apply & restart.
+
+`.claude/settings.json` sets `DOCKER_HOST=tcp://localhost:2375` so all agent
+sessions (including worktrees) automatically use the TCP endpoint.
+
+**Verify it works** — from any agent bash command, this should return within 2 s:
+
+```bash
+curl -s http://localhost:2375/version | python3 -m json.tool
+```
+
+If Docker Desktop is not running, docker commands fail fast with
+`connection refused` (exit 7) instead of hanging — start Docker Desktop and
+try again.
+
 ## Running locally
 
 ```bash
