@@ -1,0 +1,24 @@
+config familydns 'familydns'
+	# Base URL of the familydns API server (HTTP, no trailing slash)
+	option api_url 'http://192.168.1.1:8080'
+
+	# Long-lived router bearer token obtained during enrollment
+	option router_token ''
+
+	# Router UUID returned during enrollment
+	option router_id ''
+
+	# LAN subnet prefix used to identify outbound (egress) flows
+	option lan_prefix '192.168.1.'
+
+	# How many connection_attempt events to accumulate before flushing
+	option event_batch_size '50'
+
+	# Force-flush the event batch after this many seconds even if not full
+	option event_flush_interval '10'
+
+	# How often (seconds) to poll for a new policy snapshot
+	option policy_poll_interval '60'
+
+	# How often (seconds) to POST usage counters
+	option usage_report_interval '300'
