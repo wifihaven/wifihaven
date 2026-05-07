@@ -254,3 +254,61 @@ case class BlockEvent(
     reason: String,
     ts: String,
 ) derives JsonCodec
+
+// ── Router enrollment & policy snapshot ───────────────────────────────────
+
+case class CreateRouterRequest(name: String) derives JsonCodec
+case class CreateRouterResponse(
+    routerId: UUID,
+    name: String,
+    enrollmentToken: String,
+) derives JsonCodec
+
+case class RouterSummary(
+    id: UUID,
+    name: String,
+    enrolled: Boolean,
+    lastSeenAt: Option[String],
+    lastEtag: Option[String],
+    createdAt: String,
+) derives JsonCodec
+
+case class RegisterRouterRequest(
+    enrollmentToken: String,
+    routerName: Option[String] = None,
+    openwrtVersion: Option[String] = None,
+    agentVersion: Option[String] = None,
+) derives JsonCodec
+
+case class RegisterRouterResponse(
+    routerId: UUID,
+    routerToken: String,
+) derives JsonCodec
+
+case class PolicyDevice(mac: String, profileId: Long, name: String) derives JsonCodec
+case class PolicySchedule(days: List[String], blockFrom: String, blockUntil: String)
+    derives JsonCodec
+case class PolicySiteLimit(domain: String, minutes: Int, label: String) derives JsonCodec
+case class PolicyTimeUsedToday(totalMinutes: Int, byDomain: Map[String, Int]) derives JsonCodec
+case class PolicyProfile(
+    id: Long,
+    name: String,
+    paused: Boolean,
+    blockedCategories: List[String],
+    extraBlocked: List[String],
+    extraAllowed: List[String],
+    schedules: List[PolicySchedule],
+    dailyMinutes: Option[Int],
+    siteLimits: List[PolicySiteLimit],
+    timeUsedToday: PolicyTimeUsedToday,
+    extensionsTodayMinutes: Int,
+) derives JsonCodec
+case class PolicyBlocklist(version: String, url: String) derives JsonCodec
+case class PolicySnapshot(
+    etag: String,
+    generatedAt: String,
+    defaultProfileId: Option[Long],
+    devices: List[PolicyDevice],
+    profiles: List[PolicyProfile],
+    blocklists: Map[String, PolicyBlocklist],
+) derives JsonCodec

@@ -185,3 +185,24 @@ export interface GrantExtensionRequest {
   extraMinutes: number
   note: string | null
 }
+
+// ── Routers ────────────────────────────────────────────────────────────────
+
+export interface RouterSummary {
+  id: string
+  name: string
+  enrolled: boolean
+  lastSeenAt: string | null
+  lastEtag: string | null
+  createdAt: string
+}
+
+export interface CreateRouterRequest {
+  name: string
+}
+
+export interface CreateRouterResponse {
+  routerId: string
+  name: string
+  enrollmentToken: string
+}
