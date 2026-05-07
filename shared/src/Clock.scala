@@ -2,13 +2,14 @@ package familydns.shared
 
 import zio.*
 
-import java.time.{LocalDate, LocalDateTime, LocalTime}
+import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneOffset}
 
 /** Injectable clock — never call java.time directly outside this service. */
 trait Clock:
   def now: UIO[LocalDateTime]
   def today: UIO[LocalDate]
   def currentTime: UIO[LocalTime]
+  def instant: UIO[Instant]
 
 object Clock:
 
@@ -17,6 +18,7 @@ object Clock:
   def now: URIO[Clock, LocalDateTime]     = ZIO.serviceWithZIO(_.now)
   def today: URIO[Clock, LocalDate]       = ZIO.serviceWithZIO(_.today)
   def currentTime: URIO[Clock, LocalTime] = ZIO.serviceWithZIO(_.currentTime)
+  def instant: URIO[Clock, Instant]       = ZIO.serviceWithZIO(_.instant)
 
   // ── Live implementation ──────────────────────────────────────────────────
 
@@ -26,14 +28,20 @@ object Clock:
     def now: UIO[LocalDateTime]     = ZIO.succeed(LocalDateTime.now())
     def today: UIO[LocalDate]       = ZIO.succeed(LocalDate.now())
     def currentTime: UIO[LocalTime] = ZIO.succeed(LocalTime.now())
+    def instant: UIO[Instant]       = ZIO.succeed(Instant.now())
 
   // ── Controllable test implementation ────────────────────────────────────
 
-  /** A clock backed by a Ref — advance time programmatically in tests. */
+  /**
+   * A clock backed by a Ref — advance time programmatically in tests. The simulated wall-clock is
+   * interpreted as UTC when converted to an [[Instant]], so JWT iat/exp values are deterministic
+   * regardless of host timezone.
+   */
   class TestClock(ref: Ref[LocalDateTime]) extends Clock:
     def now: UIO[LocalDateTime]     = ref.get
     def today: UIO[LocalDate]       = ref.get.map(_.toLocalDate)
     def currentTime: UIO[LocalTime] = ref.get.map(_.toLocalTime)
+    def instant: UIO[Instant]       = ref.get.map(_.toInstant(ZoneOffset.UTC))
 
     /** Advance the clock by the given duration. */
     def advance(duration: java.time.Duration): UIO[Unit] =

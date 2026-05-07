@@ -3,7 +3,7 @@ package familydns.api.routes
 import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.shared.*
-import zio.*
+import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
@@ -307,13 +307,15 @@ object TimeRoutes:
       extRepo: TimeExtensionRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      clock: Clock,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "time" / "status"                     ->
         handler { (req: Request) =>
           for
             claims <- requireAuth(req, auth)
-            dateStr = req.url.queryParam("date").getOrElse(LocalDate.now().toString)
+            today  <- clock.today
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
             all      <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
             visible  <- filterDevices(claims, all, userProfileRepo)
@@ -336,7 +338,8 @@ object TimeRoutes:
         handler { (mac: String, req: Request) =>
           for
             claims <- requireAuth(req, auth)
-            dateStr = req.url.queryParam("date").getOrElse(LocalDate.now().toString)
+            today  <- clock.today
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
             device <- deviceRepo
               .findByMac(normalizeMac(mac))
@@ -369,8 +372,8 @@ object TimeRoutes:
               .orElseFail(Response.internalServerError(""))
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _      <- requireProfileAccess(claims, device.profileId, userProfileRepo)
-            today = LocalDate.now()
-            id <- extRepo
+            today  <- clock.today
+            id     <- extRepo
               .grant(mac, today, ger.extraMinutes, claims.sub, ger.note)
               .orElseFail(Response.internalServerError(""))
           yield Response.json(s"""{"id":$id,"grantedMinutes":${ger.extraMinutes}}""")
@@ -385,8 +388,8 @@ object TimeRoutes:
               .orElseFail(Response.internalServerError(""))
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _      <- requireProfileAccess(claims, device.profileId, userProfileRepo)
-            date = LocalDate.now()
-            exts <- extRepo
+            date   <- clock.today
+            exts   <- extRepo
               .listForDevice(normalized, date)
               .orElseFail(Response.internalServerError(""))
           yield Response.json(exts.toJson)

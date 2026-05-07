@@ -6,10 +6,8 @@ import familydns.api.db.*
 import familydns.shared.*
 import pdi.jwt.*
 import pdi.jwt.algorithms.JwtHmacAlgorithm
-import zio.*
+import zio.{Clock as _, *}
 import zio.json.*
-
-import java.time.Instant
 
 // ── JWT Claims ─────────────────────────────────────────────────────────────
 
@@ -43,6 +41,7 @@ trait AuthService:
 class AuthServiceLive(
     userRepo: UserRepo,
     jwtConfig: JwtConfig,
+    clock: Clock,
 ) extends AuthService:
 
   private val algo: JwtHmacAlgorithm = JwtAlgorithm.HS256
@@ -58,7 +57,7 @@ class AuthServiceLive(
         BCrypt.verifyer().verify(password.toCharArray, user.passwordHash).verified,
       )
       _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
-      now   = Instant.now().getEpochSecond
+      now   <- clock.instant.map(_.getEpochSecond)
       claim = JwtClaim(
         content = s"""{"role":"${user.role}"}""",
         subject = Some(user.username),
@@ -70,9 +69,12 @@ class AuthServiceLive(
         .mapError(e => AuthError.Unexpected(e.getMessage))
     yield LoginResponse(token, user.role, user.username)
 
+  // We delegate expiration/not-before checks to our injected Clock (see below).
+  private val jwtOpts = JwtOptions(expiration = false, notBefore = false)
+
   def verify(token: String): IO[AuthError, JwtClaims] =
     ZIO
-      .fromTry(JwtZIOJson.decode(token, secret, Seq(algo)))
+      .fromTry(JwtZIOJson.decode(token, secret, Seq(algo), jwtOpts))
       .mapError(_ => AuthError.InvalidToken)
       .flatMap { claim =>
         ZIO
@@ -88,8 +90,10 @@ class AuthServiceLive(
           }
       }
       .flatMap { claims =>
-        val now = Instant.now().getEpochSecond
-        ZIO.fail(AuthError.TokenExpired).when(claims.exp < now).as(claims)
+        clock.instant.flatMap { i =>
+          val now = i.getEpochSecond
+          ZIO.fail(AuthError.TokenExpired).when(claims.exp < now).as(claims)
+        }
       }
 
   def requireAdmin(token: String): IO[AuthError, JwtClaims] =
@@ -124,5 +128,5 @@ class AuthServiceLive(
     ZIO.succeed(BCrypt.withDefaults().hashToString(12, password.toCharArray))
 
 object AuthService:
-  val layer: ZLayer[UserRepo & JwtConfig, Nothing, AuthService] =
-    ZLayer.fromFunction(AuthServiceLive(_, _))
+  val layer: ZLayer[UserRepo & JwtConfig & Clock, Nothing, AuthService] =
+    ZLayer.fromFunction(AuthServiceLive(_, _, _))

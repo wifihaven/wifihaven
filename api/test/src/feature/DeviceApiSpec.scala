@@ -20,7 +20,11 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val adminJwt = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
-  private def makeAuth = ZIO.serviceWith[UserRepo](ur => AuthServiceLive(ur, adminJwt))
+  private def makeAuth =
+    for
+      ur    <- ZIO.service[UserRepo]
+      clock <- ZIO.service[Clock]
+    yield AuthServiceLive(ur, adminJwt, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )

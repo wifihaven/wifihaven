@@ -20,7 +20,11 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
   private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
-  private def makeAuth = ZIO.serviceWith[UserRepo](ur => AuthServiceLive(ur, jwtCfg))
+  private def makeAuth =
+    for
+      ur    <- ZIO.service[UserRepo]
+      clock <- ZIO.service[Clock]
+    yield AuthServiceLive(ur, jwtCfg, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
