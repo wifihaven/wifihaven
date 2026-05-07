@@ -2,6 +2,14 @@ package familydns.shared
 
 import zio.json.*
 
+import java.util.UUID
+
+given JsonCodec[UUID] =
+  JsonCodec[String].transformOrFail(
+    s => scala.util.Try(UUID.fromString(s)).toEither.left.map(_.getMessage),
+    _.toString,
+  )
+
 enum UserRole derives JsonCodec:
   case Admin, Adult, Child
 
@@ -214,3 +222,35 @@ case class TimeUsageSnapshot(
 
 object TimeUsageSnapshot:
   val empty: TimeUsageSnapshot = TimeUsageSnapshot(Map.empty, Map.empty, Map.empty)
+
+case class Router(
+    id: UUID,
+    name: String,
+    enrollmentTokenHash: Option[String],
+    tokenHash: Option[String],
+    lastSeenAt: Option[String],
+    lastEtag: Option[String],
+    createdAt: String,
+) derives JsonCodec
+
+case class TrafficReport(
+    id: Long,
+    routerId: UUID,
+    mac: String,
+    ip: Option[String],
+    hostname: String,
+    date: String,
+    periodStart: String,
+    periodEnd: String,
+    activeSeconds: Int,
+    bytesIn: Long,
+    bytesOut: Long,
+) derives JsonCodec
+
+case class BlockEvent(
+    id: Long,
+    mac: Option[String],
+    hostname: String,
+    reason: String,
+    ts: String,
+) derives JsonCodec

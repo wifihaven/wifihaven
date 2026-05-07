@@ -9,6 +9,7 @@ import familydns.shared.Schedule
 import zio.*
 import zio.interop.catz.*
 import java.time.{Instant, LocalDate}
+import java.util.UUID
 
 given Meta[List[String]] = Meta[Array[String]].imap(_.toList)(_.toArray)
 
@@ -109,6 +110,45 @@ trait TimeExtensionRepo:
   def grant(mac: String, date: LocalDate, mins: Int, by: String, note: Option[String]): Task[Long]
   def listForDevice(mac: String, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAll(date: LocalDate): Task[Map[String, Int]]
+
+case class TrafficReportInsert(
+    routerId: UUID,
+    mac: String,
+    ip: Option[String],
+    hostname: String,
+    date: LocalDate,
+    periodStart: Instant,
+    periodEnd: Instant,
+    activeSeconds: Int,
+    bytesIn: Long,
+    bytesOut: Long,
+)
+
+case class BlockEventInsert(
+    mac: Option[String],
+    hostname: String,
+    reason: String,
+)
+
+trait RouterRepo:
+  def listAll: Task[List[Router]]
+  def findById(id: UUID): Task[Option[Router]]
+  def findByEnrollmentTokenHash(h: String): Task[Option[Router]]
+  def findByTokenHash(h: String): Task[Option[Router]]
+  def create(name: String, enrollmentTokenHash: String): Task[UUID]
+  def completeEnrollment(id: UUID, tokenHash: String): Task[Unit]
+  def touch(id: UUID, etag: Option[String]): Task[Unit]
+  def delete(id: UUID): Task[Unit]
+
+trait TrafficReportRepo:
+  def insertBatch(reports: List[TrafficReportInsert]): Task[Int]
+  def listForDevice(mac: String, date: LocalDate): Task[List[TrafficReport]]
+  def listForRouter(routerId: UUID, limit: Int): Task[List[TrafficReport]]
+
+trait BlockEventRepo:
+  def insertBatch(events: List[BlockEventInsert]): Task[Int]
+  def recent(limit: Int): Task[List[BlockEvent]]
+  def listForMac(mac: String, limit: Int): Task[List[BlockEvent]]
 
 trait QueryLogRepo:
   def insertBatch(logs: List[QueryLogInsert]): Task[Unit]
@@ -398,6 +438,101 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo:
       .transact(xa)
       .map(_.toMap)
 
+class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo:
+  private type R =
+    (UUID, String, Option[String], Option[String], Option[Instant], Option[String], Instant)
+  private def toR(r: R)                                 =
+    Router(
+      r._1,
+      r._2,
+      r._3,
+      r._4,
+      r._5.map(_.toString),
+      r._6,
+      r._7.toString,
+    )
+  def listAll                                           =
+    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers ORDER BY created_at"
+      .query[R]
+      .map(toR)
+      .to[List]
+      .transact(xa)
+  def findById(id: UUID)                                =
+    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers WHERE id=$id"
+      .query[R]
+      .map(toR)
+      .option
+      .transact(xa)
+  def findByEnrollmentTokenHash(h: String)              =
+    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers WHERE enrollment_token_hash=$h"
+      .query[R]
+      .map(toR)
+      .option
+      .transact(xa)
+  def findByTokenHash(h: String)                        =
+    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers WHERE token_hash=$h"
+      .query[R]
+      .map(toR)
+      .option
+      .transact(xa)
+  def create(name: String, enrollmentTokenHash: String) =
+    sql"INSERT INTO routers(name,enrollment_token_hash) VALUES($name,$enrollmentTokenHash) RETURNING id"
+      .query[UUID]
+      .unique
+      .transact(xa)
+  def completeEnrollment(id: UUID, tokenHash: String)   =
+    sql"UPDATE routers SET token_hash=$tokenHash, enrollment_token_hash=NULL, last_seen_at=NOW() WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def touch(id: UUID, etag: Option[String])             =
+    sql"UPDATE routers SET last_seen_at=NOW(), last_etag=COALESCE($etag,last_etag) WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  def delete(id: UUID)                                  =
+    sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
+
+class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo:
+  private type R =
+    (Long, UUID, String, Option[String], String, String, String, String, Int, Long, Long)
+  private def toT(r: R)                               =
+    TrafficReport(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8, r._9, r._10, r._11)
+  def insertBatch(reports: List[TrafficReportInsert]) =
+    Update[TrafficReportInsert](
+      "INSERT INTO traffic_reports(router_id,mac,ip,hostname,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,hostname) DO NOTHING",
+    ).updateMany(reports).transact(xa)
+  def listForDevice(mac: String, date: LocalDate)     =
+    sql"SELECT id,router_id,mac,ip,hostname,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE mac=$mac AND date=$date ORDER BY period_start"
+      .query[R]
+      .map(toT)
+      .to[List]
+      .transact(xa)
+  def listForRouter(routerId: UUID, limit: Int)       =
+    sql"SELECT id,router_id,mac,ip,hostname,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE router_id=$routerId ORDER BY period_start DESC LIMIT $limit"
+      .query[R]
+      .map(toT)
+      .to[List]
+      .transact(xa)
+
+class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo:
+  private type R = (Long, Option[String], String, String, String)
+  private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
+  def insertBatch(events: List[BlockEventInsert]) =
+    Update[BlockEventInsert](
+      "INSERT INTO block_events(mac,hostname,reason) VALUES(?,?,?)",
+    ).updateMany(events).transact(xa)
+  def recent(limit: Int)                          =
+    sql"SELECT id,mac,hostname,reason,ts::TEXT FROM block_events ORDER BY ts DESC LIMIT $limit"
+      .query[R]
+      .map(toB)
+      .to[List]
+      .transact(xa)
+  def listForMac(mac: String, limit: Int)         =
+    sql"SELECT id,mac,hostname,reason,ts::TEXT FROM block_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
+      .query[R]
+      .map(toB)
+      .to[List]
+      .transact(xa)
+
 class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo:
   def insertBatch(logs: List[QueryLogInsert]) = Update[QueryLogInsert](
     "INSERT INTO query_logs(mac,device_name,profile_id,profile_name,domain,qtype,blocked,reason,location) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -480,5 +615,8 @@ object Repos:
   val timeUsageRepo     = ZLayer.fromFunction(TimeUsageRepoLive(_))
   val timeExtRepo       = ZLayer.fromFunction(TimeExtensionRepoLive(_))
   val queryLogRepo      = ZLayer.fromFunction(QueryLogRepoLive(_))
+  val routerRepo        = ZLayer.fromFunction(RouterRepoLive(_))
+  val trafficReportRepo = ZLayer.fromFunction(TrafficReportRepoLive(_))
+  val blockEventRepo    = ZLayer.fromFunction(BlockEventRepoLive(_))
   val all               =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ queryLogRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ queryLogRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo
