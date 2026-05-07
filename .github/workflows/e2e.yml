@@ -49,9 +49,17 @@ jobs:
         if: always()
         run: docker compose -f docker/docker-compose.yml down -v
 
+  prod-stack-smoke:
+    name: deploy/docker-compose.prod.yml smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run prod-stack smoke
+        run: scripts/smoke-prod.sh
+
   promote-production:
     name: Fast-forward production branch
-    needs: [bootstrap-smoke, e2e]
+    needs: [bootstrap-smoke, e2e, prod-stack-smoke]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:

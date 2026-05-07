@@ -83,13 +83,40 @@ Sanity check:
 - **IntelliJ**: File → Open → select the repo root → choose **BSP** when
   prompted (not sbt). Subsequent reloads are via the BSP refresh button.
 
-## Deployment (Linux)
+## Deployment
 
-The deployment model: a Linux host runs `scripts/deploy.sh` either by hand
-or on a timer; it pulls the latest `main`, builds the assembly + frontend,
-and restarts a systemd unit. Every artifact (the unit file, the deploy
-script, the bootstrap script) lives in this repo, so updating any of them
-is a normal PR.
+### Recommended: api + postgres as a single Docker Compose stack
+
+The api and its postgres database deploy together as one Compose stack.
+The dns and traffic services are **not** part of this stack — they run on
+an OpenWRT router and reach the api over the network (see
+[`docs/architecture-openwrt.md`](docs/architecture-openwrt.md)).
+
+```bash
+cp deploy/.env.example deploy/.env
+$EDITOR deploy/.env                # set FAMILYDNS_DB_PASSWORD and FAMILYDNS_JWT_SECRET
+
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
+```
+
+Postgres is internal to the compose network — it is not published on a
+host port. The api binds to `:8080` (configurable via `FAMILYDNS_API_BIND`
+/ `FAMILYDNS_API_PORT`). Run `scripts/smoke-prod.sh` to validate the stack.
+
+Full operator notes (backups, reverse-proxy guidance, migration from the
+host-based deploy below) live in [`deploy/README.md`](deploy/README.md).
+
+### Legacy: systemd-on-host deploy
+
+The original deployment model: a Linux host runs `scripts/deploy.sh` either
+by hand or on a timer; it pulls the latest `main`, builds the assembly +
+frontend, and restarts a systemd unit. Every artifact (the unit file, the
+deploy script, the bootstrap script) lives in this repo, so updating any of
+them is a normal PR.
+
+This path is being phased out in favour of the Compose stack above and the
+OpenWRT agent for dns/traffic. The unit files under `deploy/` are kept for
+existing installs.
 
 ### One-shot host bootstrap (curl-pipe)
 
