@@ -2,16 +2,20 @@ import { useState } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 
-const navItems = [
+interface NavItem { to: string; label: string; icon: string; adminOnly?: boolean }
+
+const navItems: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: '◈' },
   { to: '/devices',   label: 'Devices',   icon: '⬡' },
   { to: '/profiles',  label: 'Profiles',  icon: '◉' },
   { to: '/time',      label: 'Screen Time', icon: '◷' },
   { to: '/logs',      label: 'Logs',      icon: '≡' },
+  { to: '/users',     label: 'Users',     icon: '◐', adminOnly: true },
 ]
 
 export function Layout() {
-  const { username, role, logout } = useAuth()
+  const { username, role, logout, isAdmin } = useAuth()
+  const visibleNav = navItems.filter(item => !item.adminOnly || isAdmin)
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -43,7 +47,7 @@ export function Layout() {
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-1">
-            {navItems.map(item => (
+            {visibleNav.map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -86,7 +90,7 @@ export function Layout() {
         {/* Mobile menu */}
         {menuOpen && (
           <div className="md:hidden border-t border-gray-800 bg-gray-900 px-4 py-2">
-            {navItems.map(item => (
+            {visibleNav.map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -114,8 +118,8 @@ export function Layout() {
 
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 bg-gray-900 border-t border-gray-800 z-50">
-        <div className="grid grid-cols-5">
-          {navItems.map(item => (
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${visibleNav.length}, minmax(0, 1fr))` }}>
+          {visibleNav.map(item => (
             <NavLink
               key={item.to}
               to={item.to}
