@@ -128,18 +128,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Lua + luarocks + lua-cjson
+      - name: Install Lua + busted + lua-cjson
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y lua5.4 luarocks lua-cjson
-
-      - name: Install busted
-        run: luarocks install busted
+          # lua5.1 matches OpenWrt 23.x (LuaJIT is 5.1-compatible).
+          # liblua5.1-dev is needed for luarocks to compile C modules.
+          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks
+          sudo luarocks install busted
+          sudo luarocks install lua-cjson
 
       - name: Run openwrt agent tests
         working-directory: openwrt
         run: |
-          LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua5.4 -e 'print(package.path)')" \
+          LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua -e 'print(package.path)')" \
             busted test/conntrack_spec.lua
 
   # ── Frontend: type-check, lint, build ────────────────────────────────────
