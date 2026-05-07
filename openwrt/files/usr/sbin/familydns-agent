@@ -1,0 +1,81 @@
+#!/usr/bin/lua
+-- familydns-agent — main daemon for the familydns OpenWrt package
+--
+-- Three concurrent responsibilities (run in co-operative timer loop):
+--   1. Policy timer  (60 s)  — GET /api/router/policy; rewrite dnsmasq + nft config
+--   2. Usage timer   (5 min) — scrape nft counters; POST /api/router/usage
+--   3. Event watcher (async) — watch conntrack NEW flows; POST /api/router/events
+--
+-- This file wires them together and reads UCI config.  The actual logic lives in
+-- the usr/lib/familydns/*.lua modules so they can be unit-tested independently.
+--
+-- Modules #72 will add: policy.lua, usage.lua, render.lua.
+-- This commit adds: conntrack.lua (event watcher) and the agent skeleton.
+
+local uci      = require("uci")
+local conntrack = require("familydns.conntrack")
+
+-- ── Read UCI config ─────────────────────────────────────────────────────────
+
+local cursor = uci.cursor()
+local cfg_section = "familydns"
+
+local function uci_get(opt, default)
+  return cursor:get(cfg_section, "@familydns[0]", opt) or default
+end
+
+local api_url      = uci_get("api_url",      "http://192.168.1.1:8080")
+local router_token = uci_get("router_token", "")
+local router_id    = uci_get("router_id",    "")
+local lan_prefix   = uci_get("lan_prefix",   "192.168.1.")
+local max_batch    = tonumber(uci_get("event_batch_size", "50"))
+local flush_int    = tonumber(uci_get("event_flush_interval", "10"))
+
+if router_token == "" then
+  io.stderr:write("[familydns] router_token not set — run enrollment first\n")
+  os.exit(1)
+end
+if router_id == "" then
+  io.stderr:write("[familydns] router_id not set — run enrollment first\n")
+  os.exit(1)
+end
+
+-- ── Shared state (populated by render.lua on each policy reload) ─────────────
+-- Other modules write into these tables; conntrack.lua reads them.
+
+local nft_sets     = {}   -- { hostname -> { ip -> true } }
+local blocked_ips  = {}   -- { ip -> true }
+local blocked_reason = {} -- { ip -> reason_string }
+
+-- ── HTTP helper (uses curl, available on all OpenWrt builds) ─────────────────
+
+local function http_post(url, body, headers)
+  local header_args = ""
+  for k, v in pairs(headers or {}) do
+    header_args = header_args .. string.format(" -H '%s: %s'", k, v)
+  end
+  local cmd = string.format(
+    "curl -s -o /dev/null -w '%%{http_code}' -X POST%s --data-binary @- '%s'",
+    header_args, url
+  )
+  local pipe = io.popen("echo " .. string.format("%q", body) .. " | " .. cmd, "r")
+  if not pipe then return nil, "" end
+  local code = pipe:read("*l")
+  pipe:close()
+  return tonumber(code), ""
+end
+
+-- ── Start event watcher ───────────────────────────────────────────────────────
+
+conntrack.watch({
+  router_id      = router_id,
+  api_url        = api_url,
+  router_token   = router_token,
+  nft_sets       = nft_sets,
+  blocked_ips    = blocked_ips,
+  blocked_reason = blocked_reason,
+  lan_prefix     = lan_prefix,
+  max_batch      = max_batch,
+  flush_interval = flush_int,
+  http_post      = http_post,
+})
