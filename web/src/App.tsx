@@ -11,6 +11,7 @@ import { LogsPage } from '@/pages/LogsPage'
 import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { RoutersPage } from '@/pages/RoutersPage'
+import { BlockedPage } from '@/pages/BlockedPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -25,7 +26,8 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login"   element={<LoginPage />} />
+      <Route path="/blocked" element={<BlockedPage />} />
       <Route path="/" element={
         <RequireAuth>
           <Layout />

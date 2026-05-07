@@ -22,6 +22,7 @@ object RouterRoutes:
       routerRepo: RouterRepo,
       policy: PolicyService,
       routerAuth: RouterAuth,
+      blockEventRepo: BlockEventRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "router" / "register"        ->
@@ -100,6 +101,29 @@ object RouterRoutes:
                 },
               )
           yield resp
+        },
+      Method.POST / "api" / "router" / "decision"        ->
+        handler { (req: Request) =>
+          for
+            router <- routerAuth.authenticate(req)
+            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+            dreq   <- ZIO
+              .fromEither(body.fromJson[RouterDecisionRequest])
+              .mapError(e => Response.badRequest(e))
+            result <- policy
+              .decide(dreq.mac, dreq.hostname)
+              .orElseFail(
+                Response.internalServerError(""),
+              )
+            _      <- ZIO
+              .when(result.decision == "block") {
+                blockEventRepo
+                  .insertBatch(
+                    List(BlockEventInsert(Some(dreq.mac), dreq.hostname, result.reason)),
+                  )
+                  .orElseFail(Response.internalServerError(""))
+              }
+          yield Response.json(result.toJson)
         },
     )
 

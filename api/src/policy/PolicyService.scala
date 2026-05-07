@@ -5,10 +5,12 @@ import familydns.shared.*
 import zio.{Clock as _, *}
 
 import java.security.MessageDigest
+import java.time.{DayOfWeek, LocalDate, LocalTime, OffsetDateTime, ZoneOffset}
 
 trait PolicyService:
   def snapshot: Task[PolicySnapshot]
   def renderRpz(category: String): Task[Option[(String, String)]]
+  def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
 
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
@@ -107,6 +109,132 @@ class PolicyServiceLive(
         val body   = sb.toString
         val etag   = s"\"${PolicyService.sha256Hex(body).take(16)}-$serial\""
         Some((etag, body))
+
+  def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+    for
+      snap  <- snapshot
+      now   <- clock.now
+      today <- clock.today
+      device  = snap.devices.find(_.mac.equalsIgnoreCase(mac))
+      profile = device.flatMap(d => snap.profiles.find(_.id == d.profileId))
+      result <- profile match
+        case None    => ZIO.succeed(RouterDecisionResponse("allow", "unknown_device", None))
+        case Some(p) =>
+          val h = hostname.toLowerCase.stripSuffix(".")
+          if p.paused then ZIO.succeed(RouterDecisionResponse("block", "paused", None))
+          else
+            scheduleBlock(p.schedules, now.toLocalTime, today).flatMap {
+              case Some(r) => ZIO.succeed(r)
+              case None    =>
+                if matchesAny(h, p.extraAllowed) then
+                  ZIO.succeed(RouterDecisionResponse("allow", "extra_allowed", None))
+                else if matchesAny(h, p.extraBlocked) then
+                  ZIO.succeed(RouterDecisionResponse("block", "extra_blocked", None))
+                else
+                  timeLimitBlock(p, h, today) match
+                    case Some(r) => ZIO.succeed(r)
+                    case None    =>
+                      categoryBlock(p.blockedCategories, h).map {
+                        case Some(cat) => RouterDecisionResponse("block", s"category:$cat", None)
+                        case None      => RouterDecisionResponse("allow", "allowed", None)
+                      }
+            }
+    yield result
+
+  private def scheduleBlock(
+      schedules: List[PolicySchedule],
+      nowTime: LocalTime,
+      today: LocalDate,
+  ): Task[Option[RouterDecisionResponse]] =
+    val todayName = dayName(today)
+    val prevName  = dayName(today.minusDays(1))
+    val active    = schedules.find { s =>
+      val from  = parseTime(s.blockFrom)
+      val until = parseTime(s.blockUntil)
+      if from.isAfter(until) then
+        // Overnight: active if today is in days AND (now >= from OR now < until)
+        (s.days.contains(todayName) && !nowTime.isBefore(from)) ||
+        (s.days.contains(prevName) && nowTime.isBefore(until))
+      else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
+    }
+    ZIO.succeed(active.map { s =>
+      val from        = parseTime(s.blockFrom)
+      val until       = parseTime(s.blockUntil)
+      val isOvernight = from.isAfter(until)
+      val expiresAt   =
+        if isOvernight && !nowTime.isBefore(from) then
+          // Started today, ends tomorrow
+          utcString(today.plusDays(1), until)
+        else
+          // Ends today (same-day schedule, or overnight tail)
+          utcString(today, until)
+      RouterDecisionResponse("block", "schedule", Some(expiresAt))
+    })
+
+  private def timeLimitBlock(
+      p: PolicyProfile,
+      hostname: String,
+      today: LocalDate,
+  ): Option[RouterDecisionResponse] =
+    val midnight     = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
+    val siteLimitHit = p.siteLimits.find { sl =>
+      matchesDomainPattern(hostname, sl.domain) &&
+      p.timeUsedToday.byDomain.getOrElse(sl.domain, 0) >= sl.minutes
+    }
+    siteLimitHit
+      .map(sl => RouterDecisionResponse("block", s"site_time_limit:${sl.label}", Some(midnight)))
+      .orElse {
+        p.dailyMinutes.flatMap { limit =>
+          val used = p.timeUsedToday.totalMinutes
+          val ext  = p.extensionsTodayMinutes
+          Option.when(used >= limit + ext)(
+            RouterDecisionResponse("block", "time_limit", Some(midnight)),
+          )
+        }
+      }
+
+  private def categoryBlock(
+      cats: List[String],
+      hostname: String,
+  ): Task[Option[String]] =
+    blocklistRepo.loadAll.map { allLists =>
+      cats.find { cat =>
+        val list = allLists.getOrElse(cat, Set.empty)
+        matchesDomainOrParent(hostname, list)
+      }
+    }
+
+  private def matchesAny(domain: String, patterns: List[String]): Boolean =
+    patterns.exists(p => matchesDomainPattern(domain, p))
+
+  private def matchesDomainPattern(domain: String, pattern: String): Boolean =
+    if pattern.startsWith("*.") then
+      val suffix = pattern.drop(1)
+      domain.endsWith(suffix) || domain == pattern.drop(2)
+    else domain == pattern || domain.endsWith(s".$pattern")
+
+  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean =
+    val parts = domain.split('.').toList
+    (0 until parts.length - 1).exists(i => list.contains(parts.drop(i).mkString(".")))
+
+  private def parseTime(s: String): LocalTime =
+    val Array(h, m) = s.split(':')
+    LocalTime.of(h.toInt, m.toInt)
+
+  private val dayNames: Map[DayOfWeek, String] = Map(
+    DayOfWeek.MONDAY    -> "mon",
+    DayOfWeek.TUESDAY   -> "tue",
+    DayOfWeek.WEDNESDAY -> "wed",
+    DayOfWeek.THURSDAY  -> "thu",
+    DayOfWeek.FRIDAY    -> "fri",
+    DayOfWeek.SATURDAY  -> "sat",
+    DayOfWeek.SUNDAY    -> "sun",
+  )
+
+  private def dayName(d: LocalDate): String = dayNames(d.getDayOfWeek)
+
+  private def utcString(date: LocalDate, time: LocalTime): String =
+    OffsetDateTime.of(date, time, ZoneOffset.UTC).toInstant.toString
 
 private case class SnapshotCore(
     defaultProfileId: Option[Long],
