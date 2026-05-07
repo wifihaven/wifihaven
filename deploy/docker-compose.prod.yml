@@ -1,0 +1,60 @@
+# Production single-stack deploy: api + postgres only.
+#
+# Postgres stays on the internal compose network — there is no published
+# host port. The api reaches it as `postgres:5432` (service-name DNS).
+#
+# Run:
+#   cp deploy/.env.example deploy/.env   # then edit secrets
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
+#
+# This stack is target-agnostic. It runs on any Linux host with Docker —
+# a cheap VPS, a home server, or a cloud VM. The dns/ and traffic/ services
+# live elsewhere (OpenWRT router) and reach this api over the network.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${FAMILYDNS_DB_USER:?FAMILYDNS_DB_USER required}
+      POSTGRES_PASSWORD: ${FAMILYDNS_DB_PASSWORD:?FAMILYDNS_DB_PASSWORD required}
+      POSTGRES_DB: ${FAMILYDNS_DB_NAME:?FAMILYDNS_DB_NAME required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: familydns-api:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FAMILYDNS_MODE: api
+      FAMILYDNS_DB_HOST: postgres
+      FAMILYDNS_DB_PORT: "5432"
+      FAMILYDNS_DB_NAME: ${FAMILYDNS_DB_NAME}
+      FAMILYDNS_DB_USER: ${FAMILYDNS_DB_USER}
+      FAMILYDNS_DB_PASSWORD: ${FAMILYDNS_DB_PASSWORD}
+      FAMILYDNS_HTTP_PORT: "8080"
+      FAMILYDNS_JWT_SECRET: ${FAMILYDNS_JWT_SECRET:?FAMILYDNS_JWT_SECRET required (>=32 chars)}
+      FAMILYDNS_JWT_HOURS: ${FAMILYDNS_JWT_HOURS:-24}
+      FAMILYDNS_DNS_LOCATION: ${FAMILYDNS_DNS_LOCATION:-home}
+    ports:
+      - "${FAMILYDNS_API_BIND:-0.0.0.0}:${FAMILYDNS_API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' http://localhost:8080/api/auth/login | grep -qE '^(400|401)$$'"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+volumes:
+  pgdata:
