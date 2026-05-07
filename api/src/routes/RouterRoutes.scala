@@ -12,9 +12,9 @@ import java.security.SecureRandom
 import java.util.{Base64, UUID}
 
 /**
- * Routes the OpenWRT agent calls. Auth: all routes here require the router's bearer token, except
- * `/register` which uses a one-time enrollment token. `RouterAuth` lives in
- * [[familydns.api.routes.RouterAuth]] (added by #69).
+ * Routes agent-facing router endpoints. All routes require the router bearer token except
+ * `/register`, which uses a one-time enrollment token. `RouterAuth` lives in
+ * [[familydns.api.routes.RouterAuth]].
  */
 object RouterRoutes:
 

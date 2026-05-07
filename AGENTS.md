@@ -17,12 +17,30 @@ familydns/
 └── web/           # React TypeScript dashboard (Vite, Tailwind)
 ```
 
-Three JVM processes run at runtime:
+Three JVM processes run at runtime (current host-based architecture):
 1. `api` — REST API on :8080, serves the React SPA, handles auth (JWT)
 2. `dns` — DNS server on :53, reads cache from Postgres, blocks by profile/schedule/time
 3. `traffic` — Packet capture via libpcap, tracks time-on-site per device per domain
 
 All three share a single PostgreSQL database.
+
+### Router-based enforcement (in progress — supersedes dns/ and traffic/)
+
+Enforcement is migrating to a gateway router (OpenWRT or OpnSense) that pulls
+policy from the API and reports usage back. The `dns/` and `traffic/` modules
+will be deleted once the router agent ships (#71). See
+[`docs/architecture.md`](docs/architecture.md) for the full design.
+
+Key API surface (under `/api/router/*` and `/api/blocklists/*`):
+- `POST /api/router/register` — one-time enrollment
+- `GET  /api/router/policy`   — ETag-polled enforcement snapshot
+- `GET  /api/blocklists/<cat>.rpz` — RPZ blocklist per category
+- `POST /api/router/usage`    — per-(mac, hostname) traffic records (pending #69)
+- `POST /api/router/events`   — DHCP lease + DNS query events (pending #69)
+
+Platform-specific agent modules (pending):
+- `openwrt/` — Lua agent for OpenWRT (dnsmasq + nftables), issue #72
+- `opnsense/` — Python agent for OpnSense (Unbound + pf), issue #94
 
 ## Key domain concepts
 
