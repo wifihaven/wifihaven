@@ -332,6 +332,13 @@ case class RegisterRouterResponse(
     routerToken: String,
 ) derives JsonCodec
 
+case class RouterDecisionRequest(mac: String, hostname: String) derives JsonCodec
+case class RouterDecisionResponse(
+    decision: String,
+    reason: String,
+    expiresAt: Option[String],
+) derives JsonCodec
+
 case class PolicyDevice(mac: String, profileId: Long, name: String) derives JsonCodec
 case class PolicySchedule(days: List[String], blockFrom: String, blockUntil: String)
     derives JsonCodec
