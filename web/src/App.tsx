@@ -9,10 +9,16 @@ import { ProfilesPage } from '@/pages/ProfilesPage'
 import { TimePage } from '@/pages/TimePage'
 import { LogsPage } from '@/pages/LogsPage'
 import { AccountPage } from '@/pages/AccountPage'
+import { UsersPage } from '@/pages/UsersPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
   return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
+}
+
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const { isAdmin } = useAuth()
+  return isAdmin ? <>{children}</> : <Navigate to="/dashboard" replace />
 }
 
 function AppRoutes() {
@@ -31,6 +37,7 @@ function AppRoutes() {
         <Route path="time"      element={<TimePage />} />
         <Route path="logs"      element={<LogsPage />} />
         <Route path="account"   element={<AccountPage />} />
+        <Route path="users"     element={<RequireAdmin><UsersPage /></RequireAdmin>} />
       </Route>
     </Routes>
   )
