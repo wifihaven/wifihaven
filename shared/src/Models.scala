@@ -254,3 +254,110 @@ case class BlockEvent(
     reason: String,
     ts: String,
 ) derives JsonCodec
+
+case class ConnectionEvent(
+    id: Long,
+    routerId: UUID,
+    mac: Option[String],
+    hostname: String,
+    destIp: Option[String],
+    allowed: Boolean,
+    reason: String,
+    ts: String,
+) derives JsonCodec
+
+case class UsageRecord(
+    mac: String,
+    ip: Option[String],
+    hostname: String,
+    activeSeconds: Long,
+    bytesIn: Long,
+    bytesOut: Long,
+) derives JsonCodec
+
+case class UsageReport(
+    routerId: UUID,
+    periodStart: String,
+    periodEnd: String,
+    records: List[UsageRecord],
+) derives JsonCodec
+
+/**
+ * Router event payload. `type` discriminates:
+ *   - "connection_attempt": (mac, hostname, destIp, allowed, reason, ts)
+ *   - "dhcp_lease": (mac, ip, hostname, ts)
+ *   - "first_seen_mac": (mac, ip, hostname, ts)
+ */
+case class RouterEvent(
+    `type`: String,
+    mac: Option[String] = None,
+    ip: Option[String] = None,
+    hostname: Option[String] = None,
+    destIp: Option[String] = None,
+    allowed: Option[Boolean] = None,
+    reason: Option[String] = None,
+    ts: String,
+) derives JsonCodec
+
+case class RouterEventsRequest(
+    routerId: UUID,
+    events: List[RouterEvent],
+) derives JsonCodec
+
+// ── Router enrollment & policy snapshot ───────────────────────────────────
+
+case class CreateRouterRequest(name: String) derives JsonCodec
+case class CreateRouterResponse(
+    routerId: UUID,
+    name: String,
+    enrollmentToken: String,
+) derives JsonCodec
+
+case class RouterSummary(
+    id: UUID,
+    name: String,
+    enrolled: Boolean,
+    lastSeenAt: Option[String],
+    lastEtag: Option[String],
+    createdAt: String,
+) derives JsonCodec
+
+case class RegisterRouterRequest(
+    enrollmentToken: String,
+    routerName: Option[String] = None,
+    openwrtVersion: Option[String] = None,
+    agentVersion: Option[String] = None,
+) derives JsonCodec
+
+case class RegisterRouterResponse(
+    routerId: UUID,
+    routerToken: String,
+) derives JsonCodec
+
+case class PolicyDevice(mac: String, profileId: Long, name: String) derives JsonCodec
+case class PolicySchedule(days: List[String], blockFrom: String, blockUntil: String)
+    derives JsonCodec
+case class PolicySiteLimit(domain: String, minutes: Int, label: String) derives JsonCodec
+case class PolicyTimeUsedToday(totalMinutes: Int, byDomain: Map[String, Int]) derives JsonCodec
+case class PolicyProfile(
+    id: Long,
+    name: String,
+    paused: Boolean,
+    blockedCategories: List[String],
+    extraBlocked: List[String],
+    extraAllowed: List[String],
+    schedules: List[PolicySchedule],
+    dailyMinutes: Option[Int],
+    siteLimits: List[PolicySiteLimit],
+    timeUsedToday: PolicyTimeUsedToday,
+    extensionsTodayMinutes: Int,
+) derives JsonCodec
+case class PolicyBlocklist(version: String, url: String) derives JsonCodec
+case class PolicySnapshot(
+    etag: String,
+    generatedAt: String,
+    defaultProfileId: Option[Long],
+    devices: List[PolicyDevice],
+    profiles: List[PolicyProfile],
+    blocklists: Map[String, PolicyBlocklist],
+) derives JsonCodec

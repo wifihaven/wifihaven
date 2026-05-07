@@ -87,6 +87,18 @@ trait DeviceRepo:
   def findByMac(mac: String): Task[Option[Device]]
   def upsert(mac: String, name: String, pid: Long, ip: String, loc: String): Task[Long]
   def updateLastSeen(mac: String, ip: String, location: String): Task[Unit]
+
+  /**
+   * Update last_seen_ip/at only if the device row exists. Used by router ingest where we don't want
+   * to clobber location and don't want to create rows here (events does that).
+   */
+  def touchLastSeen(mac: String, ip: Option[String], at: Instant): Task[Int]
+
+  /**
+   * Insert a row for a previously unknown device with NULL profile_id, or refresh
+   * last_seen_ip/at/name on an existing row. Used by /api/router/events.
+   */
+  def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant): Task[Long]
   def updateProfile(mac: String, pid: Long): Task[Unit]
   def delete(mac: String): Task[Unit]
 
@@ -102,6 +114,29 @@ trait TimeUsageRepo:
   def getUsage(mac: String, domain: String, date: LocalDate): Task[Int]
   def getTotalUsage(mac: String, date: LocalDate): Task[Int]
   def incrementUsage(mac: String, domain: String, date: LocalDate, mins: Int): Task[Unit]
+
+  /**
+   * Increment seconds + byte counters for (mac, domain, date). Repeats are *additive* — the caller
+   * is responsible for idempotency at the request level (traffic_reports unique key).
+   */
+  def incrementSecondsAndBytes(
+      mac: String,
+      domain: String,
+      date: LocalDate,
+      seconds: Long,
+      bytesIn: Long,
+      bytesOut: Long,
+  ): Task[Unit]
+
+  /** Read seconds_used for a (mac, domain, date) row. Returns 0 if no row. */
+  def getSecondsUsed(mac: String, domain: String, date: LocalDate): Task[Long]
+
+  /** Read (seconds_used, bytes_in, bytes_out) for a (mac, domain, date) row. */
+  def getSecondsAndBytes(
+      mac: String,
+      domain: String,
+      date: LocalDate,
+  ): Task[(Long, Long, Long)]
   def listForDevice(mac: String, date: LocalDate): Task[List[TimeUsage]]
   def snapshotAll(date: LocalDate): Task[Map[(String, String), Int]]
 
@@ -130,6 +165,16 @@ case class BlockEventInsert(
     reason: String,
 )
 
+case class ConnectionEventInsert(
+    routerId: UUID,
+    mac: Option[String],
+    hostname: String,
+    destIp: Option[String],
+    allowed: Boolean,
+    reason: String,
+    ts: Instant,
+)
+
 trait RouterRepo:
   def listAll: Task[List[Router]]
   def findById(id: UUID): Task[Option[Router]]
@@ -149,6 +194,12 @@ trait BlockEventRepo:
   def insertBatch(events: List[BlockEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[BlockEvent]]
   def listForMac(mac: String, limit: Int): Task[List[BlockEvent]]
+
+trait ConnectionEventRepo:
+  def insertBatch(events: List[ConnectionEventInsert]): Task[Int]
+  def recent(limit: Int): Task[List[ConnectionEvent]]
+  def listForMac(mac: String, limit: Int): Task[List[ConnectionEvent]]
+  def listForRouter(routerId: UUID, limit: Int): Task[List[ConnectionEvent]]
 
 trait QueryLogRepo:
   def insertBatch(logs: List[QueryLogInsert]): Task[Unit]
@@ -312,7 +363,7 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo:
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
-  def listAll                                                               =
+  def listAll                                                                   =
     sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.location FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
       .query[
         (
@@ -329,7 +380,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
       .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7, r._8))
       .to[List]
       .transact(xa)
-  def findByMac(mac: String)                                                =
+  def findByMac(mac: String)                                                    =
     sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.location FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
       .query[
         (
@@ -346,16 +397,29 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
       .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7, r._8))
       .option
       .transact(xa)
-  def upsert(mac: String, name: String, pid: Long, ip: String, loc: String) =
+  def upsert(mac: String, name: String, pid: Long, ip: String, loc: String)     =
     sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at,location) VALUES($mac,$name,$pid,$ip,NOW(),$loc) ON CONFLICT(mac) DO UPDATE SET last_seen_ip=EXCLUDED.last_seen_ip,last_seen_at=NOW(),location=EXCLUDED.location RETURNING id"
       .query[Long]
       .unique
       .transact(xa)
-  def updateLastSeen(mac: String, ip: String, location: String)             =
+  def updateLastSeen(mac: String, ip: String, location: String)                 =
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW(),location=$location WHERE mac=$mac".update.run
       .transact(xa)
       .unit
-  def updateProfile(mac: String, pid: Long)                                 =
+  def touchLastSeen(mac: String, ip: Option[String], at: Instant)               =
+    sql"UPDATE devices SET last_seen_ip=COALESCE($ip,last_seen_ip),last_seen_at=$at WHERE mac=$mac".update.run
+      .transact(xa)
+  def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant) =
+    sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
+          VALUES($mac,$name,NULL,$ip,$at)
+          ON CONFLICT(mac) DO UPDATE
+          SET last_seen_ip=COALESCE(EXCLUDED.last_seen_ip,devices.last_seen_ip),
+              last_seen_at=EXCLUDED.last_seen_at
+          RETURNING id"""
+      .query[Long]
+      .unique
+      .transact(xa)
+  def updateProfile(mac: String, pid: Long)                                     =
     sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
   def delete(mac: String) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
 
@@ -386,28 +450,57 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo:
     .map(_.groupBy(_._1).map((k, vs) => k -> vs.map(_._2).toSet))
 
 class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo:
-  def getUsage(mac: String, dom: String, d: LocalDate)                  =
+  def getUsage(mac: String, dom: String, d: LocalDate)                                     =
     sql"SELECT COALESCE(minutes_used,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
       .query[Int]
       .option
       .transact(xa)
       .map(_.getOrElse(0))
-  def getTotalUsage(mac: String, d: LocalDate)                          =
+  def getTotalUsage(mac: String, d: LocalDate)                                             =
     sql"SELECT COALESCE(SUM(minutes_used),0)::INT FROM time_usage WHERE device_mac=$mac AND date=$d"
       .query[Int]
       .unique
       .transact(xa)
-  def incrementUsage(mac: String, dom: String, d: LocalDate, mins: Int) =
+  def incrementUsage(mac: String, dom: String, d: LocalDate, mins: Int)                    =
     sql"INSERT INTO time_usage(device_mac,domain,date,minutes_used,last_seen_at) VALUES($mac,$dom,$d,$mins,NOW()) ON CONFLICT(device_mac,domain,date) DO UPDATE SET minutes_used=time_usage.minutes_used+EXCLUDED.minutes_used,last_seen_at=NOW()".update.run
       .transact(xa)
       .unit
-  def listForDevice(mac: String, d: LocalDate)                          =
+  def incrementSecondsAndBytes(
+      mac: String,
+      dom: String,
+      d: LocalDate,
+      seconds: Long,
+      bytesIn: Long,
+      bytesOut: Long,
+  ): Task[Unit] =
+    sql"""INSERT INTO time_usage(device_mac,domain,date,seconds_used,bytes_in,bytes_out,last_seen_at)
+          VALUES($mac,$dom,$d,$seconds,$bytesIn,$bytesOut,NOW())
+          ON CONFLICT(device_mac,domain,date) DO UPDATE
+          SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used,
+              bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in,
+              bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out,
+              last_seen_at=NOW()""".update.run
+      .transact(xa)
+      .unit
+  def getSecondsUsed(mac: String, dom: String, d: LocalDate): Task[Long]                   =
+    sql"SELECT COALESCE(seconds_used,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
+      .query[Long]
+      .option
+      .transact(xa)
+      .map(_.getOrElse(0L))
+  def getSecondsAndBytes(mac: String, dom: String, d: LocalDate): Task[(Long, Long, Long)] =
+    sql"SELECT COALESCE(seconds_used,0),COALESCE(bytes_in,0),COALESCE(bytes_out,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
+      .query[(Long, Long, Long)]
+      .option
+      .transact(xa)
+      .map(_.getOrElse((0L, 0L, 0L)))
+  def listForDevice(mac: String, d: LocalDate)                                             =
     sql"SELECT id,device_mac,domain,date::TEXT,minutes_used,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY minutes_used DESC"
       .query[(Long, String, String, String, Int, String)]
       .map(TimeUsage.apply)
       .to[List]
       .transact(xa)
-  def snapshotAll(d: LocalDate)                                         =
+  def snapshotAll(d: LocalDate)                                                            =
     sql"SELECT device_mac,domain,minutes_used FROM time_usage WHERE date=$d"
       .query[(String, String, Int)]
       .to[List]
@@ -533,6 +626,34 @@ class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo:
       .to[List]
       .transact(xa)
 
+class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo:
+  private type R =
+    (Long, UUID, Option[String], String, Option[String], Boolean, String, String)
+  private def toC(r: R)                                =
+    ConnectionEvent(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
+  def insertBatch(events: List[ConnectionEventInsert]) =
+    Update[ConnectionEventInsert](
+      "INSERT INTO connection_events(router_id,mac,hostname,dest_ip,allowed,reason,ts) VALUES(?,?,?,?,?,?,?)",
+    ).updateMany(events).transact(xa)
+  def recent(limit: Int)                               =
+    sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events ORDER BY ts DESC LIMIT $limit"
+      .query[R]
+      .map(toC)
+      .to[List]
+      .transact(xa)
+  def listForMac(mac: String, limit: Int)              =
+    sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
+      .query[R]
+      .map(toC)
+      .to[List]
+      .transact(xa)
+  def listForRouter(routerId: UUID, limit: Int)        =
+    sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit"
+      .query[R]
+      .map(toC)
+      .to[List]
+      .transact(xa)
+
 class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo:
   def insertBatch(logs: List[QueryLogInsert]) = Update[QueryLogInsert](
     "INSERT INTO query_logs(mac,device_name,profile_id,profile_name,domain,qtype,blocked,reason,location) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -618,5 +739,6 @@ object Repos:
   val routerRepo        = ZLayer.fromFunction(RouterRepoLive(_))
   val trafficReportRepo = ZLayer.fromFunction(TrafficReportRepoLive(_))
   val blockEventRepo    = ZLayer.fromFunction(BlockEventRepoLive(_))
+  val connEventRepo     = ZLayer.fromFunction(ConnectionEventRepoLive(_))
   val all               =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ queryLogRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ queryLogRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo

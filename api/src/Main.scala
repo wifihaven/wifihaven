@@ -49,8 +49,12 @@ object Main extends ZIOAppDefault:
       usageRepo   <- ZIO.service[TimeUsageRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       logRepo     <- ZIO.service[QueryLogRepo]
+      routerRepo  <- ZIO.service[RouterRepo]
+      trafficRepo <- ZIO.service[TrafficReportRepo]
+      connRepo    <- ZIO.service[ConnectionEventRepo]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
+      routerAuth = new RouterAuthLive(routerRepo)
     yield AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo) ++
       DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
@@ -67,4 +71,12 @@ object Main extends ZIOAppDefault:
       ) ++
       LogRoutes.routes(auth, logRepo, upRepo) ++
       BlocklistRoutes.routes(auth, blRepo) ++
+      RouterIngestRoutes.routes(
+        routerAuth,
+        routerRepo,
+        trafficRepo,
+        usageRepo,
+        deviceRepo,
+        connRepo,
+      ) ++
       StaticRoutes.routes(cfg.http.staticDir)
