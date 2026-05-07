@@ -6,9 +6,9 @@ per-site time limits, log queries, and grant temporary extensions — all on
 your own hardware, no third-party DNS provider.
 
 > **Architecture in flux.** Enforcement is moving from a host-based DNS +
-> pcap setup to an OpenWRT router that pulls policy from this API and
-> reports usage back. See [`docs/architecture-openwrt.md`](docs/architecture-openwrt.md)
-> for the target design and tracking issues #66 – #73. The diagram below
+> pcap setup to a gateway router (OpenWRT or OpnSense) that pulls policy from
+> this API and reports usage back. See [`docs/architecture.md`](docs/architecture.md)
+> for the design and tracking issues #68–#73, #94. The diagram below
 > describes what's currently committed; it will change as those issues land.
 
 ```
@@ -35,9 +35,9 @@ HTTP / web ────▶ |  familydns-api   | ─▶ |  Postgres |
 | `shared`  | Common models, clock                                     | library |
 | `web`     | React + Vite admin UI                                    | static bundle (`web/dist`) |
 
-The `api` server is what runs in production today; the `dns` and `traffic`
-modules are wired into the api process or invoked from it. Their tests
-exercise their behavior end-to-end against an embedded Postgres.
+The `api` server is what runs in production today. The `dns` and `traffic`
+modules will be deleted once the router agent is in place (#71); until then
+their tests exercise their behavior end-to-end against an embedded Postgres.
 
 ## Quick start (development, macOS or Linux)
 
@@ -88,9 +88,9 @@ Sanity check:
 ### Recommended: api + postgres as a single Docker Compose stack
 
 The api and its postgres database deploy together as one Compose stack.
-The dns and traffic services are **not** part of this stack — they run on
-an OpenWRT router and reach the api over the network (see
-[`docs/architecture-openwrt.md`](docs/architecture-openwrt.md)).
+The dns and traffic services are **not** part of this stack — they will be
+replaced by a router agent (OpenWRT or OpnSense) that reaches the api over
+the network (see [`docs/architecture.md`](docs/architecture.md)).
 
 ```bash
 cp deploy/.env.example deploy/.env

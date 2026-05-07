@@ -2,7 +2,7 @@
 
 The api + postgres pair ships as a single Docker Compose stack. The dns and
 traffic services do **not** live here — they run on an OpenWRT router and
-reach this api over the network (see [`docs/architecture-openwrt.md`](../docs/architecture-openwrt.md)).
+reach this api over the network (see [`docs/architecture.md`](../docs/architecture.md)).
 
 ## What's in this directory
 
@@ -11,8 +11,8 @@ reach this api over the network (see [`docs/architecture-openwrt.md`](../docs/ar
 | `docker-compose.prod.yml`         | Single-stack compose: postgres + api. |
 | `.env.example`                    | Template for secrets/config. Copy to `.env`. |
 | `familydns-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
-| `familydns-dns.service`           | Legacy host-based dns unit (replaced by OpenWRT agent). |
-| `familydns-traffic.service`       | Legacy host-based traffic unit (replaced by OpenWRT agent). |
+| `familydns-dns.service`           | Legacy host-based dns unit (replaced by router agent). |
+| `familydns-traffic.service`       | Legacy host-based traffic unit (replaced by router agent). |
 
 ## One-command deploy
 
