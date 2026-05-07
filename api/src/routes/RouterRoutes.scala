@@ -12,34 +12,9 @@ import java.security.SecureRandom
 import java.util.{Base64, UUID}
 
 /**
- * Authentication for the agent-facing `/api/router/` and `/api/blocklists/` endpoints. The agent
- * sends a per-router bearer token; the API stores only a SHA-256 hash. NOTE: kept here (not in a
- * separate file) because issue #69 adds its own `RouterAuth.scala`; centralizing in #71 once the
- * dust settles.
- */
-trait RouterAuth:
-  def authenticate(req: Request): IO[Response, Router]
-
-class RouterAuthLive(repo: RouterRepo) extends RouterAuth:
-  def authenticate(req: Request): IO[Response, Router] =
-    RouterAuth.bearer(req) match
-      case None    => ZIO.fail(Response.unauthorized("Missing router token"))
-      case Some(t) =>
-        repo
-          .findByTokenHash(PolicyService.hashToken(t))
-          .orElseFail(Response.internalServerError(""))
-          .flatMap(ZIO.fromOption(_).orElseFail(Response.unauthorized("Invalid router token")))
-
-object RouterAuth:
-  private[routes] def bearer(req: Request): Option[String] =
-    req.header(Header.Authorization).flatMap { h =>
-      val v = h.renderedValue
-      if v.startsWith("Bearer ") then Some(v.drop(7)) else None
-    }
-
-/**
  * Routes the OpenWRT agent calls. Auth: all routes here require the router's bearer token, except
- * `/register` which uses a one-time enrollment token.
+ * `/register` which uses a one-time enrollment token. `RouterAuth` lives in
+ * [[familydns.api.routes.RouterAuth]] (added by #69).
  */
 object RouterRoutes:
 

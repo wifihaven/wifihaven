@@ -253,6 +253,55 @@ case class BlockEvent(
     ts: String,
 ) derives JsonCodec
 
+case class ConnectionEvent(
+    id: Long,
+    routerId: UUID,
+    mac: Option[String],
+    hostname: String,
+    destIp: Option[String],
+    allowed: Boolean,
+    reason: String,
+    ts: String,
+) derives JsonCodec
+
+case class UsageRecord(
+    mac: String,
+    ip: Option[String],
+    hostname: String,
+    activeSeconds: Long,
+    bytesIn: Long,
+    bytesOut: Long,
+) derives JsonCodec
+
+case class UsageReport(
+    routerId: UUID,
+    periodStart: String,
+    periodEnd: String,
+    records: List[UsageRecord],
+) derives JsonCodec
+
+/**
+ * Router event payload. `type` discriminates:
+ *   - "connection_attempt": (mac, hostname, destIp, allowed, reason, ts)
+ *   - "dhcp_lease": (mac, ip, hostname, ts)
+ *   - "first_seen_mac": (mac, ip, hostname, ts)
+ */
+case class RouterEvent(
+    `type`: String,
+    mac: Option[String] = None,
+    ip: Option[String] = None,
+    hostname: Option[String] = None,
+    destIp: Option[String] = None,
+    allowed: Option[Boolean] = None,
+    reason: Option[String] = None,
+    ts: String,
+) derives JsonCodec
+
+case class RouterEventsRequest(
+    routerId: UUID,
+    events: List[RouterEvent],
+) derives JsonCodec
+
 // ── Router enrollment & policy snapshot ───────────────────────────────────
 
 case class CreateRouterRequest(name: String) derives JsonCodec
