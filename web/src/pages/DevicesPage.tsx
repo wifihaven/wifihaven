@@ -12,7 +12,7 @@ export function DevicesPage() {
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   const [loading,  setLoading]  = useState(true)
   const [editing,  setEditing]  = useState<Device | null>(null)
-  const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0, location: 'home' })
+  const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
 
   useEffect(() => {
     Promise.all([api.devices.list(), api.profiles.list()])
@@ -21,7 +21,7 @@ export function DevicesPage() {
   }, [])
 
   async function save() {
-    await api.devices.upsert({ ...form, location: form.location || null })
+    await api.devices.upsert(form)
     const d = await api.devices.list()
     setDevices(d)
     setEditing(null)
@@ -41,7 +41,7 @@ export function DevicesPage() {
         <h1 className="text-xl font-bold text-white">Devices</h1>
         {isAdmin && (
           <button
-            onClick={() => { setEditing({} as Device); setForm({ mac: '', name: '', profileId: profiles[0]?.profile.id ?? 0, location: 'home' }) }}
+            onClick={() => { setEditing({} as Device); setForm({ mac: '', name: '', profileId: profiles[0]?.profile.id ?? 0 }) }}
             className="bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
           >
             + Add Device
@@ -63,11 +63,10 @@ export function DevicesPage() {
                     {d.profileName ?? 'No profile'}
                   </span>
                 </div>
-                <div className="text-xs text-gray-600 hidden md:block">{d.location ?? 'home'}</div>
                 {isAdmin && (
                   <div className="flex gap-2 shrink-0">
                     <button
-                      onClick={() => { setEditing(d); setForm({ mac: d.mac, name: d.name, profileId: d.profileId, location: d.location ?? 'home' }) }}
+                      onClick={() => { setEditing(d); setForm({ mac: d.mac, name: d.name, profileId: d.profileId }) }}
                       className="text-xs text-gray-400 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
                     >Edit</button>
                     <button
@@ -92,14 +91,6 @@ export function DevicesPage() {
               <select value={form.profileId} onChange={e => setForm(f => ({...f, profileId: Number(e.target.value)}))}
                 className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white">
                 {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Location</label>
-              <select value={form.location} onChange={e => setForm(f => ({...f, location: e.target.value}))}
-                className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white">
-                <option value="home">Home</option>
-                <option value="vacation">Vacation</option>
               </select>
             </div>
             <div className="flex gap-3 pt-2">

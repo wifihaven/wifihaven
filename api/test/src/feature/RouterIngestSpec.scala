@@ -74,7 +74,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
     for
       pid <- profileRepo.create("Kids", List("adult"))
-      _   <- dRepo.upsert(knownMac, "kid-ipad", pid, "192.168.1.10", "home")
+      _   <- dRepo.upsert(knownMac, "kid-ipad", pid, "192.168.1.10")
     yield ()
 
   def spec = suite("Router ingest /api/router/*")(

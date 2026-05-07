@@ -276,7 +276,7 @@ object DeviceRoutes:
             _      <- requireProfileAccess(claims, udr.profileId, userProfileRepo)
             mac = normalizeMac(udr.mac)
             id <- deviceRepo
-              .upsert(mac, udr.name, udr.profileId, "", udr.location.getOrElse("home"))
+              .upsert(mac, udr.name, udr.profileId, "")
               .orElseFail(Response.internalServerError(""))
           yield Response.json(s"""{"id":$id}""")
         },

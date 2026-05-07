@@ -311,8 +311,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
-        _     <- deviceRepo.upsert("aa:bb:cc:00:00:01", "kid-tablet", kidsId, "", "home")
-        _     <- deviceRepo.upsert("aa:bb:cc:00:00:02", "dad-laptop", adultsId, "", "home")
+        _     <- deviceRepo.upsert("aa:bb:cc:00:00:01", "kid-tablet", kidsId, "")
+        _     <- deviceRepo.upsert("aa:bb:cc:00:00:02", "dad-laptop", adultsId, "")
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token)
         routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)

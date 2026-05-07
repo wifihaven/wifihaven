@@ -1,7 +1,8 @@
 import type {
-  CreateUserRequest, DashboardStats, Device, DeviceTimeStatus, LoginResponse,
-  MeResponse, ProfileDetail, QueryLog, SetUserProfilesRequest, TimeExtension,
-  UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest, User,
+  CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardStats, Device,
+  DeviceTimeStatus, LoginResponse, MeResponse, ProfileDetail, QueryLog, RouterSummary,
+  SetUserProfilesRequest, TimeExtension, UpsertDeviceRequest, UpsertProfileRequest,
+  GrantExtensionRequest, User,
 } from '@/types/api'
 
 const BASE = '/api'
@@ -124,5 +125,13 @@ export const api = {
   blocklists: {
     counts: () => req<{ category: string; count: number }[]>('GET', '/blocklists'),
     clearCategory: (cat: string) => req<void>('POST', `/blocklists/${cat}/clear`, {}),
+  },
+
+  // ── Routers (admin) ────────────────────────────────────────────────────
+  routers: {
+    list: () => req<RouterSummary[]>('GET', '/admin/routers'),
+    create: (data: CreateRouterRequest) =>
+      req<CreateRouterResponse>('POST', '/admin/routers', data),
+    delete: (id: string) => req<void>('DELETE', `/admin/routers/${id}`),
   },
 }

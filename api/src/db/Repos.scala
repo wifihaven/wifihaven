@@ -85,18 +85,18 @@ trait SiteTimeLimitRepo:
 trait DeviceRepo:
   def listAll: Task[List[Device]]
   def findByMac(mac: String): Task[Option[Device]]
-  def upsert(mac: String, name: String, pid: Long, ip: String, loc: String): Task[Long]
-  def updateLastSeen(mac: String, ip: String, location: String): Task[Unit]
+  def upsert(mac: String, name: String, pid: Long, ip: String): Task[Long]
+  def updateLastSeen(mac: String, ip: String): Task[Unit]
 
   /**
    * Update last_seen_ip/at only if the device row exists. Used by router ingest where we don't want
-   * to clobber location and don't want to create rows here (events does that).
+   * to create rows here (events does that).
    */
   def touchLastSeen(mac: String, ip: Option[String], at: Instant): Task[Int]
 
   /**
-   * Insert a row for a previously unknown device with NULL profile_id, or refresh
-   * last_seen_ip/at/name on an existing row. Used by /api/router/events.
+   * Insert a row for a previously unknown device with NULL profile_id, or refresh last_seen_ip/at
+   * on an existing row. Used by /api/router/events.
    */
   def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant): Task[Long]
   def updateProfile(mac: String, pid: Long): Task[Unit]
@@ -364,7 +364,7 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo:
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
   def listAll                                                                   =
-    sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.location FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
+    sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
       .query[
         (
             Long,
@@ -374,14 +374,13 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
             Option[String],
             Option[String],
             Option[String],
-            Option[String],
         ),
       ]
-      .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7, r._8))
+      .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7))
       .to[List]
       .transact(xa)
   def findByMac(mac: String)                                                    =
-    sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT,d.location FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
+    sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
       .query[
         (
             Long,
@@ -391,19 +390,18 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
             Option[String],
             Option[String],
             Option[String],
-            Option[String],
         ),
       ]
-      .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7, r._8))
+      .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7))
       .option
       .transact(xa)
-  def upsert(mac: String, name: String, pid: Long, ip: String, loc: String)     =
-    sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at,location) VALUES($mac,$name,$pid,$ip,NOW(),$loc) ON CONFLICT(mac) DO UPDATE SET last_seen_ip=EXCLUDED.last_seen_ip,last_seen_at=NOW(),location=EXCLUDED.location RETURNING id"
+  def upsert(mac: String, name: String, pid: Long, ip: String)                  =
+    sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,$ip,NOW()) ON CONFLICT(mac) DO UPDATE SET last_seen_ip=EXCLUDED.last_seen_ip,last_seen_at=NOW() RETURNING id"
       .query[Long]
       .unique
       .transact(xa)
-  def updateLastSeen(mac: String, ip: String, location: String)                 =
-    sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW(),location=$location WHERE mac=$mac".update.run
+  def updateLastSeen(mac: String, ip: String)                                   =
+    sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)
       .unit
   def touchLastSeen(mac: String, ip: Option[String], at: Instant)               =

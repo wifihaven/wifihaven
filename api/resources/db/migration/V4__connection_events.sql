@@ -1,4 +1,4 @@
--- V3__connection_events.sql
+-- V4__connection_events.sql
 -- One row per new outbound connection attempt observed by a router.
 -- Replaces the role of `query_logs` (a DNS-server log) now that enforcement
 -- moved to the gateway. The dashboard/log routes will switch to read this

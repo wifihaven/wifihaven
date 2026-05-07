@@ -47,7 +47,6 @@ export interface Device {
   profileName: string | null
   lastSeenIp: string | null
   lastSeenAt: string | null
-  location: string | null
 }
 
 export interface QueryLog {
@@ -177,11 +176,31 @@ export interface UpsertDeviceRequest {
   mac: string
   name: string
   profileId: number
-  location: string | null
 }
 
 export interface GrantExtensionRequest {
   deviceMac: string
   extraMinutes: number
   note: string | null
+}
+
+// ── Routers ────────────────────────────────────────────────────────────────
+
+export interface RouterSummary {
+  id: string
+  name: string
+  enrolled: boolean
+  lastSeenAt: string | null
+  lastEtag: string | null
+  createdAt: string
+}
+
+export interface CreateRouterRequest {
+  name: string
+}
+
+export interface CreateRouterResponse {
+  routerId: string
+  name: string
+  enrollmentToken: string
 }

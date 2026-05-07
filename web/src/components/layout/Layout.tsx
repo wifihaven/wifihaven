@@ -11,6 +11,7 @@ const navItems: NavItem[] = [
   { to: '/time',      label: 'Screen Time', icon: '◷' },
   { to: '/logs',      label: 'Logs',      icon: '≡' },
   { to: '/users',     label: 'Users',     icon: '◐', adminOnly: true },
+  { to: '/routers',   label: 'Routers',   icon: '⬢', adminOnly: true },
 ]
 
 export function Layout() {

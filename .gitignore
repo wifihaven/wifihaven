@@ -27,6 +27,9 @@ web/build/
 config/application.conf
 config/*.conf
 !config/application.conf.example
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
 
 # Logs
 *.log

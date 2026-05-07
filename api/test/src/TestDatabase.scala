@@ -117,6 +117,5 @@ object TestLayers:
       mac: String,
       name: String,
       profileId: Long,
-      location: String = "home",
   ): Task[Long] =
-    deviceRepo.upsert(mac, name, profileId, "192.168.1.100", location)
+    deviceRepo.upsert(mac, name, profileId, "192.168.1.100")
