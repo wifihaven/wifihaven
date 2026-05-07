@@ -75,28 +75,24 @@ All three share a single PostgreSQL database.
 
 ## Docker inside Claude Code agents (worktrees)
 
-The Claude Code bash sandbox blocks Unix domain socket connections. Docker CLI
-uses a Unix socket by default, so every `docker` or `docker compose` command
-hangs indefinitely unless Docker is configured to use TCP instead.
+Docker commands (`docker info`, `docker compose`, etc.) will **hang
+indefinitely** if Docker Desktop is not running or is in a degraded state.
+The Claude Code bash sandbox does not block Unix socket connections — Docker
+simply must be healthy.
 
-**Required one-time setup** (Docker Desktop on macOS):
-
-1. Open Docker Desktop → Settings → General.
-2. Enable **"Expose daemon on tcp://localhost:2375 without TLS"**.
-3. Click Apply & restart.
-
-`.claude/settings.json` sets `DOCKER_HOST=tcp://localhost:2375` so all agent
-sessions (including worktrees) automatically use the TCP endpoint.
-
-**Verify it works** — from any agent bash command, this should return within 2 s:
+**Before running any docker command**, verify the daemon responds:
 
 ```bash
-curl -s http://localhost:2375/version | python3 -m json.tool
+docker info 2>&1 | grep "Server Version"
 ```
 
-If Docker Desktop is not running, docker commands fail fast with
-`connection refused` (exit 7) instead of hanging — start Docker Desktop and
-try again.
+This should return within 2 seconds. If it hangs, restart Docker Desktop
+(quit from the menu bar, then reopen) and wait for the whale icon to become
+steady before retrying.
+
+Common symptom: Docker Desktop appears "running" (process exists, socket
+files exist) but the daemon inside the VM has crashed or frozen — this happens
+after long uptimes. Restarting Docker Desktop is the fix.
 
 ## Running locally
 
