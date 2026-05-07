@@ -112,12 +112,12 @@ class PolicyServiceLive(
 
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
     for
-      snap    <- snapshot
-      now     <- clock.now
-      today   <- clock.today
-      device   = snap.devices.find(_.mac.equalsIgnoreCase(mac))
-      profile  = device.flatMap(d => snap.profiles.find(_.id == d.profileId))
-      result  <- profile match
+      snap  <- snapshot
+      now   <- clock.now
+      today <- clock.today
+      device  = snap.devices.find(_.mac.equalsIgnoreCase(mac))
+      profile = device.flatMap(d => snap.profiles.find(_.id == d.profileId))
+      result <- profile match
         case None    => ZIO.succeed(RouterDecisionResponse("allow", "unknown_device", None))
         case Some(p) =>
           val h = hostname.toLowerCase.stripSuffix(".")
@@ -125,7 +125,7 @@ class PolicyServiceLive(
           else
             scheduleBlock(p.schedules, now.toLocalTime, today).flatMap {
               case Some(r) => ZIO.succeed(r)
-              case None =>
+              case None    =>
                 if matchesAny(h, p.extraAllowed) then
                   ZIO.succeed(RouterDecisionResponse("allow", "extra_allowed", None))
                 else if matchesAny(h, p.extraBlocked) then
@@ -133,7 +133,7 @@ class PolicyServiceLive(
                 else
                   timeLimitBlock(p, h, today) match
                     case Some(r) => ZIO.succeed(r)
-                    case None =>
+                    case None    =>
                       categoryBlock(p.blockedCategories, h).map {
                         case Some(cat) => RouterDecisionResponse("block", s"category:$cat", None)
                         case None      => RouterDecisionResponse("allow", "allowed", None)
@@ -158,10 +158,10 @@ class PolicyServiceLive(
       else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
     }
     ZIO.succeed(active.map { s =>
-      val from     = parseTime(s.blockFrom)
-      val until    = parseTime(s.blockUntil)
+      val from        = parseTime(s.blockFrom)
+      val until       = parseTime(s.blockUntil)
       val isOvernight = from.isAfter(until)
-      val expiresAt =
+      val expiresAt   =
         if isOvernight && !nowTime.isBefore(from) then
           // Started today, ends tomorrow
           utcString(today.plusDays(1), until)
@@ -176,22 +176,22 @@ class PolicyServiceLive(
       hostname: String,
       today: LocalDate,
   ): Option[RouterDecisionResponse] =
-    val midnight = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
+    val midnight     = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
     val siteLimitHit = p.siteLimits.find { sl =>
       matchesDomainPattern(hostname, sl.domain) &&
       p.timeUsedToday.byDomain.getOrElse(sl.domain, 0) >= sl.minutes
     }
-    siteLimitHit.map { sl =>
-      RouterDecisionResponse("block", s"site_time_limit:${sl.label}", Some(midnight))
-    }.orElse {
-      p.dailyMinutes.flatMap { limit =>
-        val used = p.timeUsedToday.totalMinutes
-        val ext  = p.extensionsTodayMinutes
-        Option.when(used >= limit + ext)(
-          RouterDecisionResponse("block", "time_limit", Some(midnight)),
-        )
+    siteLimitHit
+      .map(sl => RouterDecisionResponse("block", s"site_time_limit:${sl.label}", Some(midnight)))
+      .orElse {
+        p.dailyMinutes.flatMap { limit =>
+          val used = p.timeUsedToday.totalMinutes
+          val ext  = p.extensionsTodayMinutes
+          Option.when(used >= limit + ext)(
+            RouterDecisionResponse("block", "time_limit", Some(midnight)),
+          )
+        }
       }
-    }
 
   private def categoryBlock(
       cats: List[String],

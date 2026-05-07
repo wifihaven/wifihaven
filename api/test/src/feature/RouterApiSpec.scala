@@ -149,7 +149,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _     <- ur.incrementUsage("aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 12)
         _     <- ur.incrementUsage("aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 47)
         _     <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
-        ber     <- ZIO.service[BlockEventRepo]
+        ber   <- ZIO.service[BlockEventRepo]
         (_, et) <- seedRouter("gw")
         ps      <- makePolicyService
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)

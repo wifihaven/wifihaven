@@ -102,7 +102,7 @@ object RouterRoutes:
               )
           yield resp
         },
-      Method.POST / "api" / "router" / "decision"          ->
+      Method.POST / "api" / "router" / "decision"        ->
         handler { (req: Request) =>
           for
             router <- routerAuth.authenticate(req)
@@ -110,9 +110,11 @@ object RouterRoutes:
             dreq   <- ZIO
               .fromEither(body.fromJson[RouterDecisionRequest])
               .mapError(e => Response.badRequest(e))
-            result <- policy.decide(dreq.mac, dreq.hostname).orElseFail(
-              Response.internalServerError(""),
-            )
+            result <- policy
+              .decide(dreq.mac, dreq.hostname)
+              .orElseFail(
+                Response.internalServerError(""),
+              )
             _      <- ZIO
               .when(result.decision == "block") {
                 blockEventRepo
