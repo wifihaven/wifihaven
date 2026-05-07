@@ -2,6 +2,7 @@ package familydns.api
 
 import familydns.api.auth.*
 import familydns.api.db.*
+import familydns.api.policy.*
 import familydns.api.routes.*
 import familydns.shared.Clock
 import zio.*
@@ -33,7 +34,8 @@ object Main extends ZIOAppDefault:
       Repos.all >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
       Clock.live >+>
-      AuthService.layer
+      AuthService.layer >+>
+      PolicyService.layer
 
   private def allRoutes =
     for
@@ -49,6 +51,8 @@ object Main extends ZIOAppDefault:
       usageRepo   <- ZIO.service[TimeUsageRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       logRepo     <- ZIO.service[QueryLogRepo]
+      routerRepo  <- ZIO.service[RouterRepo]
+      policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
     yield AuthRoutes.routes(auth, userRepo, upRepo) ++
@@ -67,4 +71,6 @@ object Main extends ZIOAppDefault:
       ) ++
       LogRoutes.routes(auth, logRepo, upRepo) ++
       BlocklistRoutes.routes(auth, blRepo) ++
+      RouterRoutes.routes(routerRepo, policy, RouterAuthLive(routerRepo)) ++
+      AdminRouterRoutes.routes(auth, routerRepo) ++
       StaticRoutes.routes(cfg.http.staticDir)
