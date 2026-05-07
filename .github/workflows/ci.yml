@@ -121,6 +121,27 @@ jobs:
           done
           exit $fail
 
+  # ── OpenWrt agent: Lua unit tests ───────────────────────────────────────
+  lua-tests:
+    name: OpenWrt Lua Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua + luarocks + lua-cjson
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y lua5.4 luarocks lua-cjson
+
+      - name: Install busted
+        run: luarocks install busted
+
+      - name: Run openwrt agent tests
+        working-directory: openwrt
+        run: |
+          LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua5.4 -e 'print(package.path)')" \
+            busted test/conntrack_spec.lua
+
   # ── Frontend: type-check, lint, build ────────────────────────────────────
   frontend:
     name: Frontend Build & Lint
