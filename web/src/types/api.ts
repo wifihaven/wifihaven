@@ -47,7 +47,6 @@ export interface Device {
   profileName: string | null
   lastSeenIp: string | null
   lastSeenAt: string | null
-  location: string | null
 }
 
 export interface QueryLog {
@@ -177,7 +176,6 @@ export interface UpsertDeviceRequest {
   mac: string
   name: string
   profileId: number
-  location: string | null
 }
 
 export interface GrantExtensionRequest {
