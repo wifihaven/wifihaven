@@ -118,7 +118,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _      <- deviceRepo.updateLastSeen(mac, "192.168.1.99")
         device <- deviceRepo.findByMac(mac)
       yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.99"))) &&
-        assertTrue(device.exists(_.profileId == kidsId))
+        assertTrue(device.exists(_.profileId.contains(kidsId)))
     },
     test("upsert updates last_seen_ip without losing profile assignment") {
       for
@@ -135,7 +135,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _      <- deviceRepo.upsert(mac, "Phone", kidsId, "192.168.1.20")
         device <- deviceRepo.findByMac(mac)
       yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.20"))) &&
-        assertTrue(device.exists(_.profileId == kidsId))
+        assertTrue(device.exists(_.profileId.contains(kidsId)))
     },
   ) @@ TestAspect.sequential
 }

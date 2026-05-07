@@ -33,7 +33,15 @@ export function DevicesPage() {
     setDevices(d => d.filter(x => x.mac !== mac))
   }
 
+  function addUnknown(mac: string) {
+    setEditing({} as Device)
+    setForm({ mac, name: '', profileId: profiles[0]?.profile.id ?? 0 })
+  }
+
   if (loading) return <PageLoader />
+
+  const knownDevices   = devices.filter(d => d.profileId !== null)
+  const unknownDevices = devices.filter(d => d.profileId === null)
 
   return (
     <div className="space-y-6">
@@ -50,9 +58,9 @@ export function DevicesPage() {
       </div>
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
-        {devices.length === 0
+        {knownDevices.length === 0
           ? <p className="p-6 text-gray-500 text-sm">No devices yet.</p>
-          : devices.map(d => (
+          : knownDevices.map(d => (
               <div key={d.mac} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-white truncate">{d.name}</p>
@@ -66,7 +74,7 @@ export function DevicesPage() {
                 {isAdmin && (
                   <div className="flex gap-2 shrink-0">
                     <button
-                      onClick={() => { setEditing(d); setForm({ mac: d.mac, name: d.name, profileId: d.profileId }) }}
+                      onClick={() => { setEditing(d); setForm({ mac: d.mac, name: d.name, profileId: d.profileId ?? profiles[0]?.profile.id ?? 0 }) }}
                       className="text-xs text-gray-400 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
                     >Edit</button>
                     <button
@@ -79,6 +87,39 @@ export function DevicesPage() {
             ))
         }
       </div>
+
+      {unknownDevices.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+            Unknown Devices
+            <span className="ml-2 text-xs text-gray-600 normal-case font-normal">seen on the network, no profile assigned — traffic is allowed</span>
+          </h2>
+          <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
+            {unknownDevices.map(d => (
+              <div key={d.mac} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-gray-400 truncate">{d.name}</p>
+                  <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
+                  {d.lastSeenIp && (
+                    <p className="text-xs text-gray-600 font-mono">{d.lastSeenIp}</p>
+                  )}
+                </div>
+                <div className="hidden sm:block text-sm">
+                  <span className="bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 px-2 py-1 rounded-lg text-xs">
+                    No profile
+                  </span>
+                </div>
+                {isAdmin && (
+                  <button
+                    onClick={() => addUnknown(d.mac)}
+                    className="text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+                  >Add as device</button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {editing && (
         <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">

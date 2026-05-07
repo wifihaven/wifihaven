@@ -49,9 +49,7 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
         val pstls = stls.filter(_.profileId == p.id)
         p.id -> CachedProfile(p, sched, tl, pstls)
       }.toMap
-      deviceMap = devices.map { d =>
-        d.mac -> cached.getOrElse(d.profileId, cached.values.head)
-      }.toMap
+      deviceMap = devices.flatMap(d => d.profileId.flatMap(cached.get).map(d.mac -> _)).toMap
     yield DnsCache(deviceMap, blocklists, cached.values.find(_.profile.name == "Adults"))
 
   private def decide(

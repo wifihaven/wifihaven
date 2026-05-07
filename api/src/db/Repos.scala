@@ -376,7 +376,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
             Option[String],
         ),
       ]
-      .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7))
+      .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
       .to[List]
       .transact(xa)
   def findByMac(mac: String)                                                    =
@@ -392,7 +392,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
             Option[String],
         ),
       ]
-      .map(r => Device(r._1, r._2, r._3, r._4.getOrElse(0L), r._5, r._6, r._7))
+      .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
       .option
       .transact(xa)
   def upsert(mac: String, name: String, pid: Long, ip: String)                  =

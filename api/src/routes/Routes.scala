@@ -405,12 +405,15 @@ object TimeRoutes:
       usageRepo: TimeUsageRepo,
       extRepo: TimeExtensionRepo,
   ): Task[DeviceTimeStatus] =
+    val pid = device.profileId
     for
-      tl      <- tlRepo.findForProfile(device.profileId)
-      stls    <- stlRepo.listForProfile(device.profileId)
+      tl      <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
+      stls    <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
       usages  <- usageRepo.listForDevice(device.mac, date)
       extMins <- extRepo.getTotalExtension(device.mac, date)
-      profile <- profileRepo.findById(device.profileId).map(_.map(_.name).getOrElse("Unknown"))
+      profile <- pid.fold(ZIO.succeed("No profile"))(p =>
+        profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
+      )
       totalUsed = usages
         .filterNot(u => stls.exists(s => matchesPattern(u.domain, s.domainPattern)))
         .map(_.minutesUsed)
@@ -576,7 +579,7 @@ def filterDevices(
     upRepo
       .listProfilesForUsername(claims.sub)
       .orElseFail(Response.internalServerError(""))
-      .map(pids => all.filter(d => pids.contains(d.profileId)))
+      .map(pids => all.filter(d => d.profileId.exists(pids.contains)))
 
 def filterLogs(
     claims: JwtClaims,
@@ -605,6 +608,17 @@ def requireProfileAccess(
         if pids.contains(profileId) then ZIO.succeed(())
         else ZIO.fail(Response.forbidden("Not authorized for this profile"))
       }
+
+def requireProfileAccess(
+    claims: JwtClaims,
+    profileId: Option[Long],
+    upRepo: UserProfileRepo,
+): IO[Response, Unit] =
+  profileId match
+    case None      =>
+      if claims.role == "admin" then ZIO.succeed(())
+      else ZIO.fail(Response.forbidden("Device has no assigned profile"))
+    case Some(pid) => requireProfileAccess(claims, pid, upRepo)
 
 def normalizeMac(mac: String): String =
   mac.toLowerCase.replace("-", ":").trim

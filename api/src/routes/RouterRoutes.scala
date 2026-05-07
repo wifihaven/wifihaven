@@ -70,6 +70,18 @@ object RouterRoutes:
                   .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))
           yield resp
         },
+      Method.POST / "api" / "router" / "decision"        ->
+        handler { (req: Request) =>
+          for
+            router <- routerAuth.authenticate(req)
+            _      <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))
+            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+            dr     <- ZIO
+              .fromEither(body.fromJson[RouterDecisionRequest])
+              .mapError(e => Response.badRequest(e))
+            resp <- policy.decide(dr.mac, dr.hostname).orElseFail(Response.internalServerError(""))
+          yield Response.json(resp.toJson)
+        },
       Method.GET / "api" / "blocklists" / string("file") ->
         handler { (file: String, req: Request) =>
           for
