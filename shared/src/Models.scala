@@ -83,7 +83,6 @@ case class Device(
     profileName: Option[String],
     lastSeenIp: Option[String],
     lastSeenAt: Option[String],
-    location: Option[String],
 ) derives JsonCodec
 
 case class QueryLog(
@@ -150,7 +149,6 @@ case class UpsertDeviceRequest(
     mac: String,
     name: String,
     profileId: Long,
-    location: Option[String],
 ) derives JsonCodec
 
 case class GrantExtensionRequest(

@@ -92,7 +92,7 @@ class DnsServer(
               for
                 _ <- ZIO.foreachDiscard(mac) { m =>
                   deviceRepo
-                    .updateLastSeen(m, clientIp, config.location)
+                    .updateLastSeen(m, clientIp)
                     .catchAllCause(c => ZIO.logWarningCause("updateLastSeen failed", c))
                     .forkDaemon
                 }
