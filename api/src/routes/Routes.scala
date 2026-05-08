@@ -609,6 +609,17 @@ def requireProfileReadAccess(
         else ZIO.fail(Response.forbidden("Not authorized for this profile"))
       }
 
+def requireProfileReadAccess(
+    claims: JwtClaims,
+    profileId: Option[Long],
+    upRepo: UserProfileRepo,
+): IO[Response, Unit] =
+  profileId match
+    case None      =>
+      if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
+      else ZIO.fail(Response.forbidden("Device has no assigned profile"))
+    case Some(pid) => requireProfileReadAccess(claims, pid, upRepo)
+
 /** Allow write access if admin or adult linked to the profile. Child is always denied. */
 def requireProfileAccess(
     claims: JwtClaims,
