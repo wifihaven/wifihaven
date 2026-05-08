@@ -12,9 +12,9 @@ import java.security.SecureRandom
 import java.util.{Base64, UUID}
 
 /**
- * Routes the OpenWRT agent calls. Auth: all routes here require the router's bearer token, except
- * `/register` which uses a one-time enrollment token. `RouterAuth` lives in
- * [[familydns.api.routes.RouterAuth]] (added by #69).
+ * Routes agent-facing router endpoints. All routes require the router bearer token except
+ * `/register`, which uses a one-time enrollment token. `RouterAuth` lives in
+ * [[familydns.api.routes.RouterAuth]].
  */
 object RouterRoutes:
 
@@ -22,6 +22,7 @@ object RouterRoutes:
       routerRepo: RouterRepo,
       policy: PolicyService,
       routerAuth: RouterAuth,
+      blockEventRepo: BlockEventRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "router" / "register"        ->
@@ -70,18 +71,6 @@ object RouterRoutes:
                   .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))
           yield resp
         },
-      Method.POST / "api" / "router" / "decision"        ->
-        handler { (req: Request) =>
-          for
-            router <- routerAuth.authenticate(req)
-            _      <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            dr     <- ZIO
-              .fromEither(body.fromJson[RouterDecisionRequest])
-              .mapError(e => Response.badRequest(e))
-            resp <- policy.decide(dr.mac, dr.hostname).orElseFail(Response.internalServerError(""))
-          yield Response.json(resp.toJson)
-        },
       Method.GET / "api" / "blocklists" / string("file") ->
         handler { (file: String, req: Request) =>
           for
@@ -112,6 +101,29 @@ object RouterRoutes:
                 },
               )
           yield resp
+        },
+      Method.POST / "api" / "router" / "decision"        ->
+        handler { (req: Request) =>
+          for
+            router <- routerAuth.authenticate(req)
+            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+            dreq   <- ZIO
+              .fromEither(body.fromJson[RouterDecisionRequest])
+              .mapError(e => Response.badRequest(e))
+            result <- policy
+              .decide(dreq.mac, dreq.hostname)
+              .orElseFail(
+                Response.internalServerError(""),
+              )
+            _      <- ZIO
+              .when(result.decision == "block") {
+                blockEventRepo
+                  .insertBatch(
+                    List(BlockEventInsert(Some(dreq.mac), dreq.hostname, result.reason)),
+                  )
+                  .orElseFail(Response.internalServerError(""))
+              }
+          yield Response.json(result.toJson)
         },
     )
 

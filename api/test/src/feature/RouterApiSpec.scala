@@ -69,8 +69,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for
         _        <- cleanDb
         rr       <- ZIO.service[RouterRepo]
+        ber      <- ZIO.service[BlockEventRepo]
         (id, et) <- seedRouter("home-gw")
-        routes = RouterRoutes.routes(rr, null, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
         resp <- doRegister(routes, et)
         body <- resp.body.asString
         out  <- ZIO.fromEither(body.fromJson[RegisterRouterResponse])
@@ -85,8 +86,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for
         _       <- cleanDb
         rr      <- ZIO.service[RouterRepo]
+        ber     <- ZIO.service[BlockEventRepo]
         (_, et) <- seedRouter("gw1")
-        routes = RouterRoutes.routes(rr, null, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
         first  <- doRegister(routes, et)
         second <- doRegister(routes, et)
       yield assertTrue(first.status == Status.Ok) &&
@@ -98,9 +100,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       for
         _       <- cleanDb
         rr      <- ZIO.service[RouterRepo]
+        ber     <- ZIO.service[BlockEventRepo]
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw2")
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
         reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
@@ -146,9 +149,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _     <- ur.incrementUsage("aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 12)
         _     <- ur.incrementUsage("aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 47)
         _     <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
+        ber   <- ZIO.service[BlockEventRepo]
         (_, et) <- seedRouter("gw")
         ps      <- makePolicyService
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
         reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
@@ -178,10 +182,11 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         pr      <- ZIO.service[ProfileRepo]
         sr      <- ZIO.service[ScheduleRepo]
         rr      <- ZIO.service[RouterRepo]
+        ber     <- ZIO.service[BlockEventRepo]
         kid     <- TestLayers.seedKidsProfile(pr, sr)
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw")
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
         reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
@@ -218,8 +223,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         blr     <- ZIO.service[BlocklistRepo]
         ps      <- makePolicyService
         _       <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
+        ber     <- ZIO.service[BlockEventRepo]
         (_, et) <- seedRouter("gw")
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
         reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
@@ -259,9 +265,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           Some("10.0.0.99"),
           java.time.Instant.now(),
         )
+        ber     <- ZIO.service[BlockEventRepo]
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw-snap-unknown")
-        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr))
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
         reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
