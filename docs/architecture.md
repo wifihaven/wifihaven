@@ -476,7 +476,7 @@ DNS server as the source).
 | #71 | Delete `dns/` and `traffic/` modules | pending |
 | #72 | OpenWRT agent (Lua, opkg) | pending |
 | #73 | e2e fake-router in staging compose | pending |
-| #88 | Single-host deploy plan | pending |
+| #88 | OpenWRT deploy plan (`openwrt/README.md`, `openwrt/build-ipk.sh`, CI `.ipk` build) | pending |
 | #89 | Cloud deploy plan | pending |
 | #93 | (see issue) | pending |
 | #94 | OpnSense agent (Python, OPNsense plugin) | pending |
