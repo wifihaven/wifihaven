@@ -3,6 +3,7 @@ package familydns.api.feature
 import familydns.api.JwtConfig
 import familydns.api.auth.*
 import familydns.api.db.*
+import familydns.api.policy.PolicyServiceLive
 import familydns.api.routes.*
 import familydns.shared.*
 import familydns.shared.Clock.TestClock
@@ -167,7 +168,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
       },
     ),
     suite("POST /api/time/extend")(
-      test("admin can grant time extension which increases remaining") {
+      test("admin can grant profile extension which increases remaining for all devices") {
         for
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -183,7 +184,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
-          // Use up all 120 minutes
           _               <- usageRepo.incrementUsage(testMac, "minecraft.net", today, 120)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
@@ -198,14 +198,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             userProfileRepo,
             clock,
           )
-          // Grant 30 min extension
-          extBody = GrantExtensionRequest(testMac, 30, Some("Homework finished early")).toJson
+          extBody = GrantExtensionRequest(kidsId, 30, Some("Homework finished early")).toJson
           extReq  = Request
             .post(URL.decode("/api/time/extend").toOption.get, Body.fromString(extBody))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
           extResp <- routes.runZIO(extReq)
-          // Check status shows 30 remaining
           statusReq = Request
             .get(URL.decode(s"/api/time/status/$testMac").toOption.get)
             .addHeader(Header.Authorization.Bearer(token))
@@ -244,13 +242,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             userProfileRepo,
             clock,
           )
-          body   = GrantExtensionRequest(testMac, 15, Some("Good behavior")).toJson
+          body   = GrantExtensionRequest(kidsId, 15, Some("Good behavior")).toJson
           req    = Request
             .post(URL.decode("/api/time/extend").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
           _    <- routes.runZIO(req)
-          exts <- extRepo.listForDevice(testMac, TestClock.schoolDayAfternoon.toLocalDate)
+          exts <- extRepo.listForProfile(kidsId, TestClock.schoolDayAfternoon.toLocalDate)
         yield assertTrue(exts.length == 1) &&
           assertTrue(exts.head.grantedBy == "admin") &&
           assertTrue(exts.head.extraMinutes == 15) &&
@@ -286,14 +284,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             userProfileRepo,
             clock,
           )
-          body   = GrantExtensionRequest(testMac, 30, None).toJson
+          body   = GrantExtensionRequest(kidsId, 30, None).toJson
           req    = Request
             .post(URL.decode("/api/time/extend").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
         yield assertTrue(resp.status == Status.Forbidden)
       },
-      test("multiple extensions accumulate") {
+      test("multiple extensions accumulate at profile level") {
         for
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
@@ -326,7 +324,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
               Request
                 .post(
                   URL.decode("/api/time/extend").toOption.get,
-                  Body.fromString(GrantExtensionRequest(testMac, mins, None).toJson),
+                  Body.fromString(GrantExtensionRequest(kidsId, mins, None).toJson),
                 )
                 .addHeader(Header.Authorization.Bearer(token))
                 .addHeader(Header.ContentType(MediaType.application.json)),
@@ -335,11 +333,196 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _ <- grant(15)
           _ <- grant(30)
           today = TestClock.schoolDayAfternoon.toLocalDate
-          exts  <- extRepo.listForDevice(testMac, today)
-          total <- extRepo.getTotalExtension(testMac, today)
+          exts  <- extRepo.listForProfile(kidsId, today)
+          total <- extRepo.getProfileTotalExtension(kidsId, today)
         yield assertTrue(exts.length == 3) &&
           assertTrue(total == 60)
       },
     ),
+
+    // ── per-profile status rollup ───────────────────────────────────────────
+    suite("GET /api/time/status — per-profile rollup")(
+      test("returns one ProfileTimeStatus per profile, not per device") {
+        for
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          usageRepo   <- ZIO.service[TimeUsageRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:01", "iPad", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:02", "iPhone", kidsId)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            usageRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(list.count(_.profileId == kidsId) == 1) && // one entry, not two
+          assertTrue(kids.devices.length == 2) &&               // both devices in breakdown
+          assertTrue(kids.devices.map(_.deviceName).toSet == Set("iPad", "iPhone"))
+      },
+      test("two devices on same profile share a combined usage pool") {
+        for
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          usageRepo   <- ZIO.service[TimeUsageRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 60)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Device 1: 40 min, Device 2: 35 min → combined 75 min > 60 min limit
+          _               <- usageRepo.incrementUsage(mac1, "minecraft.net", today, 40)
+          _               <- usageRepo.incrementUsage(mac2, "youtube.com", today, 35)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            usageRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        yield assertTrue(kids.usedMins == 75) &&        // both devices summed
+          assertTrue(kids.dailyLimitMins.contains(60)) &&
+          assertTrue(kids.remainingMins.contains(0)) && // clamped to 0, not negative
+          assertTrue(kids.devices.find(_.deviceMac == mac1).get.usedMins == 40) &&
+          assertTrue(kids.devices.find(_.deviceMac == mac2).get.usedMins == 35)
+      },
+      test("per-app site usage aggregated across all profile devices") {
+        for
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          usageRepo   <- ZIO.service[TimeUsageRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          _           <- stlRepo.replaceForProfile(
+            kidsId,
+            List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")),
+          )
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Each device uses 20 min YouTube → combined 40 min > 30 min limit
+          _               <- usageRepo.incrementUsage(mac1, "youtube.com", today, 20)
+          _               <- usageRepo.incrementUsage(mac2, "youtube.com", today, 20)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            usageRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+          yt   = kids.siteUsage.find(_.label == "YouTube").get
+        yield assertTrue(yt.usedMins == 40) && // both devices summed
+          assertTrue(yt.limitMins == 30) &&
+          assertTrue(yt.remainingMins == 0) && // clamped to 0
+          assertTrue(kids.usedMins == 0)       // site usage NOT counted in total
+      },
+      test("policy snapshot has profile-level time_used_today aggregated across devices") {
+        for
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          usageRepo   <- ZIO.service[TimeUsageRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 60)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          _             <- usageRepo.incrementUsage(mac1, "minecraft.net", today, 30)
+          _             <- usageRepo.incrementUsage(mac2, "roblox.com", today, 25)
+          // Build policy snapshot directly via PolicyService
+          blocklistRepo <- ZIO.service[BlocklistRepo]
+          clock         <- ZIO.service[Clock]
+          policyService = PolicyServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            blocklistRepo,
+            usageRepo,
+            extRepo,
+            clock,
+          )
+          snapshot <- policyService.snapshot
+          kidsPolicy = snapshot.profiles.find(_.id == kidsId).get
+        yield assertTrue(kidsPolicy.dailyMinutes.contains(60)) &&
+          assertTrue(kidsPolicy.timeUsedToday.totalMinutes == 55) // 30 + 25 across both devices
+      },
+    ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential
 }

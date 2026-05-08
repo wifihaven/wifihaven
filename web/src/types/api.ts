@@ -104,9 +104,28 @@ export interface DeviceTimeStatus {
   siteUsage: SiteUsage[]
 }
 
+export interface DeviceUsageSummary {
+  deviceMac: string
+  deviceName: string
+  usedMins: number
+}
+
+export interface ProfileTimeStatus {
+  profileId: number
+  profileName: string
+  date: string
+  dailyLimitMins?: number | null
+  usedMins: number
+  extensionMins: number
+  remainingMins?: number | null
+  siteUsage: SiteUsage[]
+  devices: DeviceUsageSummary[]
+}
+
 export interface TimeExtension {
   id: number
-  deviceMac: string
+  profileId: number | null
+  deviceMac: string | null
   date: string
   extraMinutes: number
   grantedBy: string
@@ -179,7 +198,7 @@ export interface UpsertDeviceRequest {
 }
 
 export interface GrantExtensionRequest {
-  deviceMac: string
+  profileId: number
   extraMinutes: number
   note: string | null
 }

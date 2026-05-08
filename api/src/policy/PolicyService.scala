@@ -34,7 +34,7 @@ class PolicyServiceLive(
       tlims    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlims   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       usages   <- usageRepo.snapshotAll(today)
-      exts     <- extRepo.snapshotAll(today)
+      exts     <- extRepo.snapshotAllByProfile(today)
       cats     <- blocklistRepo.listCategories
       schedMap = scheds.toMap
       tlMap    = tlims.toMap
@@ -61,7 +61,7 @@ class PolicyServiceLive(
         val totalMins = usages.iterator.collect {
           case ((mac, dom), m) if devicesIn.exists(_.mac == mac) && !siteDoms.contains(dom) => m
         }.sum
-        val extMins   = devicesIn.map(d => exts.getOrElse(d.mac, 0)).sum
+        val extMins   = exts.getOrElse(p.id, 0)
         PolicyProfile(
           id = p.id,
           name = p.name,
