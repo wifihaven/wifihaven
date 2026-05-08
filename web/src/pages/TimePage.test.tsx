@@ -1,3 +1,4 @@
+// TODO(#118): replace findByText(name) load-wait and bare getByText with data-testid="time-card-{profileId}"
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
