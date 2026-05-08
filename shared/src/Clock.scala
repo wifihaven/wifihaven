@@ -5,13 +5,14 @@ import zio.*
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneOffset}
 
 /** Injectable clock — never call java.time directly outside this service. */
-trait Clock:
+trait Clock {
   def now: UIO[LocalDateTime]
   def today: UIO[LocalDate]
   def currentTime: UIO[LocalTime]
   def instant: UIO[Instant]
+}
 
-object Clock:
+object Clock {
 
   // ── Accessors (call these everywhere) ───────────────────────────────────
 
@@ -24,11 +25,12 @@ object Clock:
 
   val live: ULayer[Clock] = ZLayer.succeed(LiveClock())
 
-  private class LiveClock extends Clock:
+  private class LiveClock extends Clock {
     def now: UIO[LocalDateTime]     = ZIO.succeed(LocalDateTime.now())
     def today: UIO[LocalDate]       = ZIO.succeed(LocalDate.now())
     def currentTime: UIO[LocalTime] = ZIO.succeed(LocalTime.now())
     def instant: UIO[Instant]       = ZIO.succeed(Instant.now())
+  }
 
   // ── Controllable test implementation ────────────────────────────────────
 
@@ -37,7 +39,7 @@ object Clock:
    * interpreted as UTC when converted to an [[Instant]], so JWT iat/exp values are deterministic
    * regardless of host timezone.
    */
-  class TestClock(ref: Ref[LocalDateTime]) extends Clock:
+  class TestClock(ref: Ref[LocalDateTime]) extends Clock {
     def now: UIO[LocalDateTime]     = ref.get
     def today: UIO[LocalDate]       = ref.get.map(_.toLocalDate)
     def currentTime: UIO[LocalTime] = ref.get.map(_.toLocalTime)
@@ -58,8 +60,10 @@ object Clock:
     /** Set just the date, keeping the time. */
     def setDate(d: LocalDate): UIO[Unit] =
       ref.update(dt => d.atTime(dt.toLocalTime))
+  }
 
-  object TestClock:
+  object TestClock {
+
     /** Create a TestClock starting at the given datetime. */
     def at(dt: LocalDateTime): ULayer[Clock & TestClock] =
       ZLayer.fromZIO(Ref.make(dt).map(new TestClock(_))).flatMap { env =>
@@ -97,3 +101,5 @@ object Clock:
     /** Weekend afternoon: Saturday 15:00 */
     val weekendAfternoon: LocalDateTime =
       LocalDateTime.of(2025, 1, 11, 15, 0, 0)
+  }
+}

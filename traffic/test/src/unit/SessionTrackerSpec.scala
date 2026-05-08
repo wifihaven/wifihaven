@@ -29,41 +29,41 @@ object SessionTrackerSpec extends ZIOSpecDefault {
 
   def spec = suite("SessionTracker")(
     test("new session is created on first packet") {
-      for
+      for {
         tracker <- makeTracker
         _        = tracker.recordPacket("aa:bb:cc:dd:ee:ff", "142.250.80.46", 500)
         sessions = tracker.activeSessions
-      yield assertTrue(sessions.size == 1)
+      } yield assertTrue(sessions.size == 1)
     }.provide(Clock.live),
     test("same mac+domain accumulates in one session") {
-      for
+      for {
         tracker <- makeTracker
         mac      = "aa:bb:cc:dd:ee:ff"
         _        = tracker.recordPacket(mac, "142.250.80.46", 500) // google.com
         _        = tracker.recordPacket(mac, "142.250.80.46", 300)
         _        = tracker.recordPacket(mac, "142.250.80.46", 200)
         sessions = tracker.activeSessions
-      yield assertTrue(sessions.size == 1)
+      } yield assertTrue(sessions.size == 1)
     }.provide(Clock.live),
     test("different MACs create separate sessions for same domain") {
-      for
+      for {
         tracker <- makeTracker
         _        = tracker.recordPacket("aa:bb:cc:dd:ee:01", "142.250.80.46", 500)
         _        = tracker.recordPacket("aa:bb:cc:dd:ee:02", "142.250.80.46", 500)
         sessions = tracker.activeSessions
-      yield assertTrue(sessions.size == 2)
+      } yield assertTrue(sessions.size == 2)
     }.provide(Clock.live),
     test("different domains create separate sessions for same MAC") {
-      for
+      for {
         tracker <- makeTracker
         mac      = "aa:bb:cc:dd:ee:ff"
         _        = tracker.recordPacket(mac, "142.250.80.46", 500) // google.com
         _        = tracker.recordPacket(mac, "31.13.71.36", 500)   // facebook.com
         sessions = tracker.activeSessions
-      yield assertTrue(sessions.size == 2)
+      } yield assertTrue(sessions.size == 2)
     }.provide(Clock.live),
     test("expired sessions are swept and accumulated in pending") {
-      for
+      for {
         tracker <- makeTracker
         mac     = "aa:bb:cc:dd:ee:ff"
         // Record a packet, then manually expire the session by setting lastSeen to past
@@ -71,28 +71,28 @@ object SessionTrackerSpec extends ZIOSpecDefault {
         _       = tracker.forceExpireAll()
         _       = tracker.sweepExpired()
         pending = tracker.drainPending()
-      yield assertTrue(tracker.activeSessions.isEmpty) &&
+      } yield assertTrue(tracker.activeSessions.isEmpty) &&
         assertTrue(pending.nonEmpty)
     }.provide(Clock.live),
     test("drain clears pending after first call") {
-      for
+      for {
         tracker <- makeTracker
         _      = tracker.recordPacket("aa:bb:cc:dd:ee:ff", "142.250.80.46", 1000)
         _      = tracker.forceExpireAll()
         _      = tracker.sweepExpired()
         first  = tracker.drainPending()
         second = tracker.drainPending()
-      yield assertTrue(first.nonEmpty) &&
+      } yield assertTrue(first.nonEmpty) &&
         assertTrue(second.isEmpty)
     }.provide(Clock.live),
     test("pending increments are in minutes (min 1)") {
-      for
+      for {
         tracker <- makeTracker
         _       = tracker.recordPacket("aa:bb:cc:dd:ee:ff", "142.250.80.46", 1000)
         _       = tracker.forceExpireAll()
         _       = tracker.sweepExpired()
         pending = tracker.drainPending()
-      yield assertTrue(pending.forall(_._4 >= 1))
+      } yield assertTrue(pending.forall(_._4 >= 1))
     }.provide(Clock.live),
   )
 }

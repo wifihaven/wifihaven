@@ -21,13 +21,13 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   def spec = suite("OpenWRT repos")(
     suite("RouterRepo")(
       test("create returns a UUID and stores enrollment_token_hash, no token_hash") {
-        for
+        for {
           _        <- cleanDb
           repo     <- ZIO.service[RouterRepo]
           id       <- repo.create("home-router", "ENROLL_HASH_1")
           row      <- repo.findById(id)
           byEnroll <- repo.findByEnrollmentTokenHash("ENROLL_HASH_1")
-        yield assertTrue(row.exists(_.name == "home-router")) &&
+        } yield assertTrue(row.exists(_.name == "home-router")) &&
           assertTrue(row.exists(_.enrollmentTokenHash.contains("ENROLL_HASH_1"))) &&
           assertTrue(row.exists(_.tokenHash.isEmpty)) &&
           assertTrue(row.exists(_.lastSeenAt.isEmpty)) &&
@@ -36,7 +36,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       test(
         "completeEnrollment swaps enrollment_token_hash for token_hash and stamps last_seen_at",
       ) {
-        for
+        for {
           _        <- cleanDb
           repo     <- ZIO.service[RouterRepo]
           id       <- repo.create("r1", "ENROLL_HASH_2")
@@ -44,14 +44,14 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           row      <- repo.findById(id)
           byEnroll <- repo.findByEnrollmentTokenHash("ENROLL_HASH_2")
           byTok    <- repo.findByTokenHash("TOKEN_HASH_2")
-        yield assertTrue(row.exists(_.enrollmentTokenHash.isEmpty)) &&
+        } yield assertTrue(row.exists(_.enrollmentTokenHash.isEmpty)) &&
           assertTrue(row.exists(_.tokenHash.contains("TOKEN_HASH_2"))) &&
           assertTrue(row.exists(_.lastSeenAt.isDefined)) &&
           assertTrue(byEnroll.isEmpty) &&
           assertTrue(byTok.exists(_.id == id))
       },
       test("touch updates last_seen_at and last_etag without losing prior etag when None passed") {
-        for
+        for {
           _    <- cleanDb
           repo <- ZIO.service[RouterRepo]
           id   <- repo.create("r1", "EH")
@@ -60,12 +60,12 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           a    <- repo.findById(id)
           _    <- repo.touch(id, None) // last_etag must remain "etag-A"
           b    <- repo.findById(id)
-        yield assertTrue(a.flatMap(_.lastEtag).contains("etag-A")) &&
+        } yield assertTrue(a.flatMap(_.lastEtag).contains("etag-A")) &&
           assertTrue(b.flatMap(_.lastEtag).contains("etag-A")) &&
           assertTrue(b.flatMap(_.lastSeenAt).isDefined)
       },
       test("delete removes the row and cascades to traffic_reports") {
-        for
+        for {
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
@@ -91,21 +91,21 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           _   <- rRepo.delete(id)
           row <- rRepo.findById(id)
           rep <- tRepo.listForRouter(id, 10)
-        yield assertTrue(row.isEmpty) && assertTrue(rep.isEmpty)
+        } yield assertTrue(row.isEmpty) && assertTrue(rep.isEmpty)
       },
       test("listAll returns rows ordered by created_at") {
-        for
+        for {
           _    <- cleanDb
           repo <- ZIO.service[RouterRepo]
           a    <- repo.create("a", "h1")
           b    <- repo.create("b", "h2")
           all  <- repo.listAll
-        yield assertTrue(all.map(_.id) == List(a, b))
+        } yield assertTrue(all.map(_.id) == List(a, b))
       },
     ),
     suite("TrafficReportRepo")(
       test("insertBatch is idempotent on (router_id, period_start, mac, hostname)") {
-        for
+        for {
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
@@ -127,10 +127,10 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           n1   <- tRepo.insertBatch(List(rec))
           n2   <- tRepo.insertBatch(List(rec)) // retry
           rows <- tRepo.listForRouter(rid, 100)
-        yield assertTrue(n1 == 1) && assertTrue(n2 == 0) && assertTrue(rows.size == 1)
+        } yield assertTrue(n1 == 1) && assertTrue(n2 == 0) && assertTrue(rows.size == 1)
       },
       test("different hostnames in same period are stored as distinct rows") {
-        for
+        for {
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
@@ -166,11 +166,11 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
           n    <- tRepo.insertBatch(batch)
           rows <- tRepo.listForDevice(mac, LocalDate.of(2026, 5, 2))
-        yield assertTrue(n == 2) && assertTrue(rows.size == 2) &&
+        } yield assertTrue(n == 2) && assertTrue(rows.size == 2) &&
           assertTrue(rows.map(_.hostname).toSet == Set("youtube.com", "google.com"))
       },
       test("listForDevice filters by mac and date") {
-        for
+        for {
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
@@ -200,12 +200,12 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ),
           )
           rows <- tRepo.listForDevice(mac1, d1)
-        yield assertTrue(rows.size == 1) && assertTrue(rows.head.hostname == "a.com")
+        } yield assertTrue(rows.size == 1) && assertTrue(rows.head.hostname == "a.com")
       },
     ),
     suite("BlockEventRepo")(
       test("insertBatch returns count and records appear in recent() ordered by ts desc") {
-        for
+        for {
           _    <- cleanDb
           repo <- ZIO.service[BlockEventRepo]
           n    <- repo.insertBatch(
@@ -220,11 +220,11 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ),
           )
           rows <- repo.recent(10)
-        yield assertTrue(n == 3) && assertTrue(rows.size == 3) &&
+        } yield assertTrue(n == 3) && assertTrue(rows.size == 3) &&
           assertTrue(rows.exists(_.mac.isEmpty))
       },
       test("listForMac returns only events for that mac, newest first") {
-        for
+        for {
           _    <- cleanDb
           repo <- ZIO.service[BlockEventRepo]
           mac = "aa:bb:cc:00:00:01"
@@ -236,7 +236,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ),
           )
           rows <- repo.listForMac(mac, 10)
-        yield assertTrue(rows.size == 2) &&
+        } yield assertTrue(rows.size == 2) &&
           assertTrue(rows.forall(_.mac.contains(mac))) &&
           assertTrue(rows.map(_.hostname).toSet == Set("a.com", "c.com"))
       },
@@ -246,7 +246,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         import doobie.implicits.*
         import doobie.postgres.implicits.*
         import zio.interop.catz.*
-        for
+        for {
           _  <- cleanDb
           tu <- ZIO.service[TimeUsageRepo]
           xa <- ZIO.service[doobie.Transactor[Task]]
@@ -258,7 +258,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               .query[(Long, Long)]
               .unique
               .transact(xa)
-        yield assertTrue(row == ((0L, 0L)))
+        } yield assertTrue(row == ((0L, 0L)))
       },
     ),
   ) @@ TestAspect.sequential

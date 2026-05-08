@@ -3,7 +3,7 @@ package familydns.dns.unit
 import familydns.shared.*
 import zio.test.*
 
-object ProfileResolutionSpec extends ZIOSpecDefault:
+object ProfileResolutionSpec extends ZIOSpecDefault {
 
   private def mkProfile(name: String): CachedProfile = CachedProfile(
     profile = Profile(1L, name, Nil, Nil, Nil, false),
@@ -38,3 +38,4 @@ object ProfileResolutionSpec extends ZIOSpecDefault:
       assertTrue(resolve(Some("11:22:33:44:55:66"), cache).isEmpty)
     },
   )
+}

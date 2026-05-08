@@ -10,7 +10,7 @@ import java.time.LocalDate
 import java.util.concurrent.ConcurrentLinkedQueue
 import scala.jdk.CollectionConverters.*
 
-object DnsMain extends ZIOAppDefault:
+object DnsMain extends ZIOAppDefault {
 
   override val bootstrap =
     Runtime.removeDefaultLoggers >>> SLF4J.slf4j
@@ -39,7 +39,7 @@ object DnsMain extends ZIOAppDefault:
     Throwable,
     DnsCache,
   ] =
-    for
+    for {
       profileRepo <- ZIO.service[ProfileRepo]
       schedRepo   <- ZIO.service[ScheduleRepo]
       tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -59,17 +59,17 @@ object DnsMain extends ZIOAppDefault:
         p.id -> CachedProfile(p, sched, tl, pstls)
       }.toMap
       deviceMap = devices.flatMap(d => d.profileId.flatMap(cached.get).map(d.mac -> _)).toMap
-    yield DnsCache(deviceMap, blocklists, cached.values.find(_.profile.name == "Adults"))
+    } yield DnsCache(deviceMap, blocklists, cached.values.find(_.profile.name == "Adults"))
 
   private def loadUsage: ZIO[TimeUsageRepo & TimeExtensionRepo, Throwable, TimeUsageSnapshot] =
-    for
+    for {
       usageRepo <- ZIO.service[TimeUsageRepo]
       extRepo   <- ZIO.service[TimeExtensionRepo]
       today = LocalDate.now()
       ts    = today.toString
       rows <- usageRepo.snapshotAll(today)
       exts <- extRepo.snapshotAll(today)
-    yield TimeUsageSnapshot(
+    } yield TimeUsageSnapshot(
       domainUsage = rows.map { case ((mac, dom), m) => (mac, dom, ts) -> m },
       totalUsage = rows.groupBy(_._1._1).map((m, vs) => (m, ts) -> vs.values.sum),
       extensions = exts.map((m, v) => (m, ts) -> v),
@@ -79,19 +79,20 @@ object DnsMain extends ZIOAppDefault:
       queue: ConcurrentLinkedQueue[QueryLogEntry],
       batchSize: Int,
   ): ZIO[QueryLogRepo, Throwable, Unit] =
-    for
+    for {
       logRepo <- ZIO.service[QueryLogRepo]
       drained <- ZIO.attempt {
         val buf = scala.collection.mutable.ListBuffer.empty[QueryLogEntry]
         var i   = 0
         var e   = queue.poll()
-        while e != null && i < batchSize do
+        while e != null && i < batchSize do {
           buf += e
           i += 1
           e = queue.poll()
+        }
         buf.toList
       }
-      _       <- ZIO.when(drained.nonEmpty):
+      _       <- ZIO.when(drained.nonEmpty) {
         val inserts = drained.map(e =>
           QueryLogInsert(
             e.mac,
@@ -106,10 +107,11 @@ object DnsMain extends ZIOAppDefault:
           ),
         )
         logRepo.insertBatch(inserts)
-    yield ()
+      }
+    } yield ()
 
   private def program =
-    for
+    for {
       cfg <- ZIO.service[AppConfig]
       dnsCfg = toDnsConfig(cfg.dns)
       _ <- ZIO.logInfo(s"FamilyDNS DNS starting on :${dnsCfg.port} (location=${dnsCfg.location})")
@@ -138,4 +140,5 @@ object DnsMain extends ZIOAppDefault:
         .forkDaemon
       deviceRepo <- ZIO.service[DeviceRepo]
       _          <- new DnsServer(dnsCfg, cacheRef, usageRef, logQueue, deviceRepo).serve
-    yield ()
+    } yield ()
+}

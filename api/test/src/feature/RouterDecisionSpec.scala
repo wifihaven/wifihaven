@@ -25,7 +25,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   )
 
   private def makePsAt(dt: LocalDateTime) =
-    for
+    for {
       pr   <- ZIO.service[ProfileRepo]
       sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
@@ -36,7 +36,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       er   <- ZIO.service[TimeExtensionRepo]
       ref  <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
-    yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clk)): PolicyService
+    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clk)): PolicyService
 
   private def makePsDefault = makePsAt(TestClock.schoolDayAfternoon)
 
@@ -44,10 +44,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   private def seedAndEnrollRouter(
       rr: RouterRepo,
       routes: Routes[Any, Response],
-  ): Task[String] =
+  ): Task[String] = {
     val et   = "et_" + UUID.randomUUID().toString.replace("-", "")
     val hash = PolicyService.hashToken(et)
-    for
+    for {
       _    <- rr.create("gw", hash)
       reg  <- routes.runZIO(
         Request.post(
@@ -59,7 +59,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       resp <- ZIO
         .fromEither(body.fromJson[RegisterRouterResponse])
         .mapError(new RuntimeException(_))
-    yield resp.routerToken
+    } yield resp.routerToken
+  }
 
   private def callDecide(
       routes: Routes[Any, Response],
@@ -78,7 +79,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
 
   def spec = suite("POST /api/router/decision")(
     test("requires bearer token: missing → 401, wrong → 401") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         ber <- ZIO.service[BlockEventRepo]
@@ -99,11 +100,11 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
             )
             .addHeader(Header.Authorization.Bearer("rt_wrong")),
         )
-      yield assertTrue(noAuth.status == Status.Unauthorized) &&
+      } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(wrong.status == Status.Unauthorized)
     },
     test("unrecognized mac → allow, no_profile, no block_event") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         ber <- ZIO.service[BlockEventRepo]
@@ -114,13 +115,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         body   <- resp.body.asString
         dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
         events <- ber.recent(10)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "allow") &&
         assertTrue(dr.reason == "no_profile") &&
         assertTrue(events.isEmpty)
     },
     test("MAC in devices with NULL profile_id → allow, no_profile") {
-      for
+      for {
         _     <- cleanDb
         rr    <- ZIO.service[RouterRepo]
         dRepo <- ZIO.service[DeviceRepo]
@@ -133,12 +134,12 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         resp <- callDecide(routes, tok, mac, "example.com")
         body <- resp.body.asString
         dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "allow") &&
         assertTrue(dr.reason == "no_profile")
     },
     test("paused profile → block:paused, null expires_at, block_event recorded") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -155,7 +156,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         body   <- resp.body.asString
         dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
         events <- ber.recent(10)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "paused") &&
         assertTrue(dr.expiresAt.isEmpty) &&
@@ -172,7 +173,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     ) {
       // Bedtime = Monday 2025-01-06 21:30; schedule is 21:00–07:00 every day.
       // Overnight schedule started today → ends tomorrow at 07:00.
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -188,7 +189,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         body   <- resp.body.asString
         dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
         events <- ber.recent(10)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "schedule") &&
         assertTrue(dr.expiresAt.exists(s => s.startsWith("2025-01-07T07:00") && s.endsWith("Z"))) &&
@@ -197,7 +198,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     test("early morning during overnight schedule → block:schedule, expires_at = today 07:00") {
       // earlyMorning = Monday 2025-01-06 06:00. Overnight schedule started Sunday 21:00 →
       // ends Monday 07:00.
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -212,13 +213,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "example.com")
         body <- resp.body.asString
         dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
-      yield assertTrue(dr.decision == "block") &&
+      } yield assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "schedule") &&
         assertTrue(dr.expiresAt.exists(s => s.startsWith("2025-01-06T07:00") && s.endsWith("Z")))
     },
     test("daily time limit hit → block:time_limit, expires_at = midnight, block_event recorded") {
       // Kids profile: 120 min/day limit.  Usage = 121 min, no extension.
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -243,14 +244,14 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         body   <- resp.body.asString
         dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
         events <- ber.recent(10)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "time_limit") &&
         assertTrue(dr.expiresAt.exists(s => s.startsWith("2025-01-07T00:00") && s.endsWith("Z"))) &&
         assertTrue(events.exists(_.reason == "time_limit"))
     },
     test("extension grants extra minutes: usage at limit + extension → allow") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -271,10 +272,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "cnn.com")
         body <- resp.body.asString
         dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
-      yield assertTrue(dr.decision == "allow")
+      } yield assertTrue(dr.decision == "allow")
     },
     test("blocked by category blocklist → block:category:ads, block_event recorded") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -292,13 +293,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         body   <- resp.body.asString
         dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
         events <- ber.recent(10)
-      yield assertTrue(dr.decision == "block") &&
+      } yield assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "category:ads") &&
         assertTrue(dr.expiresAt.isEmpty) &&
         assertTrue(events.exists(_.reason == "category:ads"))
     },
     test("subdomain matched by blocklist parent → block:category") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -315,11 +316,11 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "sub.doubleclick.net")
         body <- resp.body.asString
         dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
-      yield assertTrue(dr.decision == "block") &&
+      } yield assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "category:ads")
     },
     test("allowed host: no blocklist match, no limit hit, no schedule → allow, no block_event") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -335,12 +336,12 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         body   <- resp.body.asString
         dr     <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
         events <- ber.recent(10)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "allow") &&
         assertTrue(events.isEmpty)
     },
     test("extra_blocked domain → block:extra_blocked") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -357,11 +358,11 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "badsite.com")
         body <- resp.body.asString
         dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
-      yield assertTrue(dr.decision == "block") &&
+      } yield assertTrue(dr.decision == "block") &&
         assertTrue(dr.reason == "extra_blocked")
     },
     test("block_event NOT recorded on allow decision") {
-      for
+      for {
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
         pr  <- ZIO.service[ProfileRepo]
@@ -375,7 +376,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         tok    <- seedAndEnrollRouter(rr, routes)
         _      <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "allowed.example.com")
         events <- ber.recent(10)
-      yield assertTrue(events.isEmpty)
+      } yield assertTrue(events.isEmpty)
     },
   ) @@ TestAspect.sequential
 }

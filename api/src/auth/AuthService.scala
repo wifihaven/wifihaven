@@ -21,34 +21,36 @@ case class JwtClaims(
 // ── Auth errors ────────────────────────────────────────────────────────────
 
 sealed trait AuthError
-object AuthError:
+object AuthError {
   case object InvalidCredentials     extends AuthError
   case object TokenExpired           extends AuthError
   case object InvalidToken           extends AuthError
   case object Forbidden              extends AuthError
   case class Unexpected(msg: String) extends AuthError
+}
 
 // ── Auth service ───────────────────────────────────────────────────────────
 
-trait AuthService:
+trait AuthService {
   def login(username: String, password: String): IO[AuthError, LoginResponse]
   def verify(token: String): IO[AuthError, JwtClaims]
   def requireAdmin(token: String): IO[AuthError, JwtClaims]
   def requireWriter(token: String): IO[AuthError, JwtClaims]
   def changePassword(username: String, current: String, next: String): IO[AuthError, Unit]
   def hashPassword(password: String): UIO[String]
+}
 
 class AuthServiceLive(
     userRepo: UserRepo,
     jwtConfig: JwtConfig,
     clock: Clock,
-) extends AuthService:
+) extends AuthService {
 
   private val algo: JwtHmacAlgorithm = JwtAlgorithm.HS256
   private val secret                 = jwtConfig.secret
 
   def login(username: String, password: String): IO[AuthError, LoginResponse] =
-    for
+    for {
       user  <- userRepo
         .findByUsername(username)
         .mapError(e => AuthError.Unexpected(e.getMessage))
@@ -67,7 +69,7 @@ class AuthServiceLive(
       token <- ZIO
         .attempt(JwtZIOJson.encode(claim, secret, algo))
         .mapError(e => AuthError.Unexpected(e.getMessage))
-    yield LoginResponse(token, user.role, user.username)
+    } yield LoginResponse(token, user.role, user.username)
 
   // We delegate expiration/not-before checks to our injected Clock (see below).
   private val jwtOpts = JwtOptions(expiration = false, notBefore = false)
@@ -109,7 +111,7 @@ class AuthServiceLive(
     }
 
   def changePassword(username: String, current: String, next: String): IO[AuthError, Unit] =
-    for
+    for {
       user  <- userRepo
         .findByUsername(username)
         .mapError(e => AuthError.Unexpected(e.getMessage))
@@ -122,11 +124,13 @@ class AuthServiceLive(
       _     <- userRepo
         .updatePassword(user.id, hash)
         .mapError(e => AuthError.Unexpected(e.getMessage))
-    yield ()
+    } yield ()
 
   def hashPassword(password: String): UIO[String] =
     ZIO.succeed(BCrypt.withDefaults().hashToString(12, password.toCharArray))
+}
 
-object AuthService:
+object AuthService {
   val layer: ZLayer[UserRepo & JwtConfig & Clock, Nothing, AuthService] =
     ZLayer.fromFunction(AuthServiceLive(_, _, _))
+}

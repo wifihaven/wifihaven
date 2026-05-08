@@ -36,7 +36,7 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
     Throwable,
     DnsCache,
   ] =
-    for
+    for {
       profiles   <- ZIO.service[ProfileRepo].flatMap(_.listAll)
       schedules  <- ZIO.service[ScheduleRepo].flatMap(_.listAll)
       timeLimits <- ZIO.service[TimeLimitRepo].flatMap(_.listAll)
@@ -50,7 +50,7 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
         p.id -> CachedProfile(p, sched, tl, pstls)
       }.toMap
       deviceMap = devices.flatMap(d => d.profileId.flatMap(cached.get).map(d.mac -> _)).toMap
-    yield DnsCache(deviceMap, blocklists, cached.values.find(_.profile.name == "Adults"))
+    } yield DnsCache(deviceMap, blocklists, cached.values.find(_.profile.name == "Adults"))
 
   private def decide(
       domain: String,
@@ -68,7 +68,7 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
   def spec = suite("DNS Blocking — full stack")(
     suite("category blocking loaded from DB")(
       test("blocks adult domain after loading blocklist from DB") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -88,13 +88,13 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
           d2 = decide("xvideos.com", cache)
           d3 = decide("facebook.com", cache)
           d4 = decide("google.com", cache)
-        yield assertTrue(d1 == BlockingEngine.Decision.Block("category:adult")) &&
+        } yield assertTrue(d1 == BlockingEngine.Decision.Block("category:adult")) &&
           assertTrue(d2 == BlockingEngine.Decision.Block("category:adult")) &&
           assertTrue(d3 == BlockingEngine.Decision.Block("category:social_media")) &&
           assertTrue(d4 == BlockingEngine.Decision.Allow)
       },
       test("adult device not blocked by kids blocklist") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -109,13 +109,13 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
           cache <- buildCache
           kidDecision = decide("facebook.com", cache, mac = testMac)
           dadDecision = decide("facebook.com", cache, mac = adultMac)
-        yield assertTrue(kidDecision == BlockingEngine.Decision.Block("category:social_media")) &&
+        } yield assertTrue(kidDecision == BlockingEngine.Decision.Block("category:social_media")) &&
           assertTrue(dadDecision == BlockingEngine.Decision.Allow)
       },
     ),
     suite("schedule blocking with controllable clock")(
       test("kids device is blocked at bedtime") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -125,10 +125,10 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
           cache       <- buildCache
           // 21:30 on a Monday — within bedtime window 21:00–07:00
           d = decide("google.com", cache, time = LocalTime.of(21, 30))
-        yield assertTrue(d == BlockingEngine.Decision.Block("schedule"))
+        } yield assertTrue(d == BlockingEngine.Decision.Block("schedule"))
       },
       test("kids device is allowed during school day") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -137,12 +137,12 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           cache       <- buildCache
           d = decide("google.com", cache, time = LocalTime.of(14, 0))
-        yield assertTrue(d == BlockingEngine.Decision.Allow)
+        } yield assertTrue(d == BlockingEngine.Decision.Allow)
       },
     ),
     suite("time limits loaded from DB")(
       test("blocks device that has hit daily limit") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -159,10 +159,10 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
             extensions = Map.empty,
           )
           d     = decide("minecraft.net", cache, usage = usage, date = today)
-        yield assertTrue(d == BlockingEngine.Decision.Block("time_limit"))
+        } yield assertTrue(d == BlockingEngine.Decision.Block("time_limit"))
       },
       test("allows device with extension after hitting base limit") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -179,12 +179,12 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
             extensions = Map((testMac, today.toString) -> 30),
           )
           d     = decide("minecraft.net", cache, usage = usage, date = today)
-        yield assertTrue(d == BlockingEngine.Decision.Allow)
+        } yield assertTrue(d == BlockingEngine.Decision.Allow)
       },
     ),
     suite("paused profile")(
       test("pausing a profile via DB causes all queries to block") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -194,12 +194,12 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
           _           <- profileRepo.setPaused(kidsId, paused = true)
           cache       <- buildCache
           d = decide("google.com", cache, time = LocalTime.of(14, 0))
-        yield assertTrue(d == BlockingEngine.Decision.Block("paused"))
+        } yield assertTrue(d == BlockingEngine.Decision.Block("paused"))
       },
     ),
     suite("unknown device")(
       test("unknown MAC falls through to default (adults) profile") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -224,7 +224,7 @@ object DnsBlockingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
               ),
             )
             .getOrElse(BlockingEngine.Decision.Allow)
-        yield assertTrue(d == BlockingEngine.Decision.Allow)
+        } yield assertTrue(d == BlockingEngine.Decision.Allow)
       },
     ),
   ) @@ TestAspect.sequential

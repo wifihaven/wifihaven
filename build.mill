@@ -29,6 +29,7 @@ trait CommonModule extends ScalaModule {
     "-Wvalue-discard",
     "-Xfatal-warnings",
     "-source:future",
+    "-no-indent",
   )
 }
 

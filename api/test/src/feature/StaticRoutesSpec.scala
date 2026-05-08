@@ -5,7 +5,7 @@ import zio.*
 import zio.http.*
 import zio.test.*
 
-object StaticRoutesSpec extends ZIOSpecDefault:
+object StaticRoutesSpec extends ZIOSpecDefault {
 
   private def withTempDir[A](f: java.io.File => Task[A]): Task[A] =
     ZIO.acquireReleaseWith(
@@ -15,9 +15,10 @@ object StaticRoutesSpec extends ZIOSpecDefault:
       },
     ) { dir =>
       ZIO.attempt {
-        def del(f: java.io.File): Unit =
+        def del(f: java.io.File): Unit = {
           if f.isDirectory then f.listFiles.foreach(del)
           val _ = f.delete()
+        }
         del(dir)
       }.orDie
     }(f)
@@ -35,55 +36,56 @@ object StaticRoutesSpec extends ZIOSpecDefault:
   def spec = suite("StaticRoutes")(
     test("serves index.html for /") {
       withTempDir { dir =>
-        for
+        for {
           _ <- write(dir, "index.html", "<html>hi</html>")
           rs = StaticRoutes.routes(dir.getAbsolutePath)
           resp <- get(rs, "/")
           body <- resp.body.asString
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(body == "<html>hi</html>")
       }
     },
     test("serves an existing asset") {
       withTempDir { dir =>
-        for
+        for {
           _ <- write(dir, "app.js", "console.log(1)")
           rs = StaticRoutes.routes(dir.getAbsolutePath)
           resp <- get(rs, "/app.js")
           body <- resp.body.asString
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(body == "console.log(1)")
       }
     },
     test("falls back to index.html for unknown non-API path (SPA)") {
       withTempDir { dir =>
-        for
+        for {
           _ <- write(dir, "index.html", "<html>spa</html>")
           rs = StaticRoutes.routes(dir.getAbsolutePath)
           resp <- get(rs, "/devices/some-deep-route")
           body <- resp.body.asString
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(body == "<html>spa</html>")
       }
     },
     test("returns 404 for unknown /api/ path") {
       withTempDir { dir =>
-        for
+        for {
           _ <- write(dir, "index.html", "<html>spa</html>")
           rs = StaticRoutes.routes(dir.getAbsolutePath)
           resp <- get(rs, "/api/unknown")
-        yield assertTrue(resp.status == Status.NotFound)
+        } yield assertTrue(resp.status == Status.NotFound)
       }
     },
     test("rejects path traversal attempts") {
       withTempDir { dir =>
-        for
+        for {
           _ <- write(dir, "index.html", "<html>spa</html>")
           rs = StaticRoutes.routes(dir.getAbsolutePath)
           resp <- get(rs, "/../../etc/passwd")
           body <- resp.body.asString
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(body == "<html>spa</html>")
       }
     },
   )
+}

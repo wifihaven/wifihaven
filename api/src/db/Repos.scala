@@ -41,15 +41,16 @@ case class LogFilter(
     offset: Int = 0,
 )
 
-trait UserRepo:
+trait UserRepo {
   def findByUsername(u: String): Task[Option[DbUser]]
   def findById(id: Long): Task[Option[DbUser]]
   def create(u: String, h: String, r: String): Task[Long]
   def updatePassword(id: Long, h: String): Task[Unit]
   def listAll: Task[List[DbUser]]
   def delete(id: Long): Task[Unit]
+}
 
-trait UserProfileRepo:
+trait UserProfileRepo {
   def listProfilesForUser(userId: Long): Task[List[Long]]
   def listProfilesForUsername(username: String): Task[List[Long]]
   def listAllMappings: Task[List[(Long, Long)]] // (userId, profileId)
@@ -57,32 +58,37 @@ trait UserProfileRepo:
   def addLink(userId: Long, profileId: Long): Task[Unit]
   def removeLink(userId: Long, profileId: Long): Task[Unit]
   def hasAccess(userId: Long, profileId: Long): Task[Boolean]
+}
 
-trait ProfileRepo:
+trait ProfileRepo {
   def listAll: Task[List[Profile]]
   def findById(id: Long): Task[Option[Profile]]
   def create(name: String, cats: List[String]): Task[Long]
   def update(p: Profile): Task[Unit]
   def delete(id: Long): Task[Unit]
   def setPaused(id: Long, paused: Boolean): Task[Unit]
+}
 
-trait ScheduleRepo:
+trait ScheduleRepo {
   def listAll: Task[List[Schedule]]
   def listForProfile(pid: Long): Task[List[Schedule]]
   def replaceForProfile(pid: Long, scheds: List[ScheduleRequest]): Task[Unit]
+}
 
-trait TimeLimitRepo:
+trait TimeLimitRepo {
   def findForProfile(pid: Long): Task[Option[TimeLimit]]
   def upsert(pid: Long, mins: Int): Task[Unit]
   def delete(pid: Long): Task[Unit]
   def listAll: Task[List[TimeLimit]]
+}
 
-trait SiteTimeLimitRepo:
+trait SiteTimeLimitRepo {
   def listForProfile(pid: Long): Task[List[SiteTimeLimit]]
   def listAll: Task[List[SiteTimeLimit]]
   def replaceForProfile(pid: Long, limits: List[SiteTimeLimitRequest]): Task[Unit]
+}
 
-trait DeviceRepo:
+trait DeviceRepo {
   def listAll: Task[List[Device]]
   def findByMac(mac: String): Task[Option[Device]]
   def upsert(mac: String, name: String, pid: Long, ip: String): Task[Long]
@@ -101,16 +107,18 @@ trait DeviceRepo:
   def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant): Task[Long]
   def updateProfile(mac: String, pid: Long): Task[Unit]
   def delete(mac: String): Task[Unit]
+}
 
-trait BlocklistRepo:
+trait BlocklistRepo {
   def insertBatch(domains: List[(String, String)]): Task[Int]
   def clearCategory(cat: String): Task[Unit]
   def listCategories: Task[List[String]]
   def countByCategory: Task[List[(String, Int)]]
   def loadCategory(cat: String): Task[Set[String]]
   def loadAll: Task[Map[String, Set[String]]]
+}
 
-trait TimeUsageRepo:
+trait TimeUsageRepo {
   def getUsage(mac: String, domain: String, date: LocalDate): Task[Int]
   def getTotalUsage(mac: String, date: LocalDate): Task[Int]
   def incrementUsage(mac: String, domain: String, date: LocalDate, mins: Int): Task[Unit]
@@ -140,8 +148,9 @@ trait TimeUsageRepo:
   def listForDevice(mac: String, date: LocalDate): Task[List[TimeUsage]]
   def listForDeviceMacs(macs: List[String], date: LocalDate): Task[List[TimeUsage]]
   def snapshotAll(date: LocalDate): Task[Map[(String, String), Int]]
+}
 
-trait TimeExtensionRepo:
+trait TimeExtensionRepo {
   def getTotalExtension(mac: String, date: LocalDate): Task[Int]
   def grant(mac: String, date: LocalDate, mins: Int, by: String, note: Option[String]): Task[Long]
   def listForDevice(mac: String, date: LocalDate): Task[List[TimeExtension]]
@@ -157,6 +166,7 @@ trait TimeExtensionRepo:
   def getProfileTotalExtension(profileId: Long, date: LocalDate): Task[Int]
   def listForProfile(profileId: Long, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAllByProfile(date: LocalDate): Task[Map[Long, Int]]
+}
 
 case class TrafficReportInsert(
     routerId: UUID,
@@ -187,7 +197,7 @@ case class ConnectionEventInsert(
     ts: Instant,
 )
 
-trait RouterRepo:
+trait RouterRepo {
   def listAll: Task[List[Router]]
   def findById(id: UUID): Task[Option[Router]]
   def findByEnrollmentTokenHash(h: String): Task[Option[Router]]
@@ -196,30 +206,35 @@ trait RouterRepo:
   def completeEnrollment(id: UUID, tokenHash: String): Task[Unit]
   def touch(id: UUID, etag: Option[String]): Task[Unit]
   def delete(id: UUID): Task[Unit]
+}
 
-trait TrafficReportRepo:
+trait TrafficReportRepo {
   def insertBatch(reports: List[TrafficReportInsert]): Task[Int]
   def listForDevice(mac: String, date: LocalDate): Task[List[TrafficReport]]
   def listForRouter(routerId: UUID, limit: Int): Task[List[TrafficReport]]
+}
 
-trait BlockEventRepo:
+trait BlockEventRepo {
   def insertBatch(events: List[BlockEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[BlockEvent]]
   def listForMac(mac: String, limit: Int): Task[List[BlockEvent]]
+}
 
-trait ConnectionEventRepo:
+trait ConnectionEventRepo {
   def insertBatch(events: List[ConnectionEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[ConnectionEvent]]
   def listForMac(mac: String, limit: Int): Task[List[ConnectionEvent]]
   def listForRouter(routerId: UUID, limit: Int): Task[List[ConnectionEvent]]
+}
 
-trait QueryLogRepo:
+trait QueryLogRepo {
   def insertBatch(logs: List[QueryLogInsert]): Task[Unit]
   def query(f: LogFilter): Task[List[QueryLog]]
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
+}
 
-class UserRepoLive(xa: Transactor[Task]) extends UserRepo:
+class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   def findByUsername(u: String)               =
     sql"SELECT id,username,password_hash,role,created_at FROM users WHERE username=$u"
       .query[(Long, String, String, String, Instant)]
@@ -245,8 +260,9 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo:
     .to[List]
     .transact(xa)
   def delete(id: Long) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
+}
 
-class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo:
+class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
   def listProfilesForUser(userId: Long)                  =
     sql"SELECT profile_id FROM user_profiles WHERE user_id=$userId ORDER BY profile_id"
       .query[Long]
@@ -262,12 +278,13 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo:
       .query[(Long, Long)]
       .to[List]
       .transact(xa)
-  def setProfilesForUser(userId: Long, pids: List[Long]) =
+  def setProfilesForUser(userId: Long, pids: List[Long]) = {
     val del = sql"DELETE FROM user_profiles WHERE user_id=$userId".update.run
     val ins = pids.distinct.map(pid =>
       sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($userId,$pid) ON CONFLICT DO NOTHING".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+  }
   def addLink(userId: Long, pid: Long)                   =
     sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($userId,$pid) ON CONFLICT DO NOTHING".update.run
       .transact(xa)
@@ -282,8 +299,9 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo:
       .option
       .transact(xa)
       .map(_.isDefined)
+}
 
-class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo:
+class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
   private type R = (Long, String, List[String], List[String], List[String], Boolean)
   private def toP(r: R)                        = Profile(r._1, r._2, r._3, r._4, r._5, r._6)
   def listAll                                  =
@@ -310,8 +328,9 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo:
   def delete(id: Long) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit
   def setPaused(id: Long, p: Boolean) =
     sql"UPDATE profiles SET paused=$p WHERE id=$id".update.run.transact(xa).unit
+}
 
-class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo:
+class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
   private type R = (Long, Long, String, List[String], String, String)
   private def toS(r: R)         = Schedule(r._1, r._2, r._3, r._4, r._5, r._6)
   def listAll                   =
@@ -326,14 +345,16 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo:
       .map(toS)
       .to[List]
       .transact(xa)
-  def replaceForProfile(pid: Long, ss: List[ScheduleRequest]) =
+  def replaceForProfile(pid: Long, ss: List[ScheduleRequest]) = {
     val del = sql"DELETE FROM schedules WHERE profile_id=$pid".update.run
     val ins = ss.map(s =>
       sql"INSERT INTO schedules(profile_id,name,days,block_from,block_until) VALUES($pid,${s.name},${s.days.toArray},${s.blockFrom},${s.blockUntil})".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+  }
+}
 
-class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo:
+class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
   def findForProfile(pid: Long)    =
     sql"SELECT id,profile_id,daily_minutes FROM time_limits WHERE profile_id=$pid"
       .query[(Long, Long, Int)]
@@ -351,8 +372,9 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo:
     .map(TimeLimit.apply)
     .to[List]
     .transact(xa)
+}
 
-class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo:
+class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
   private type R = (Long, Long, String, Int, String)
   private def toS(r: R)         = SiteTimeLimit(r._1, r._2, r._3, r._4, r._5)
   def listForProfile(pid: Long) =
@@ -367,14 +389,16 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo:
       .map(toS)
       .to[List]
       .transact(xa)
-  def replaceForProfile(pid: Long, ls: List[SiteTimeLimitRequest]) =
+  def replaceForProfile(pid: Long, ls: List[SiteTimeLimitRequest]) = {
     val del = sql"DELETE FROM site_time_limits WHERE profile_id=$pid".update.run
     val ins = ls.map(l =>
       sql"INSERT INTO site_time_limits(profile_id,domain_pattern,daily_minutes,label) VALUES($pid,${l.domainPattern},${l.dailyMinutes},${l.label})".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+  }
+}
 
-class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
+class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   def listAll                                                                   =
     sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
       .query[
@@ -432,8 +456,9 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo:
   def updateProfile(mac: String, pid: Long)                                     =
     sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
   def delete(mac: String) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
+}
 
-class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo:
+class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
   def insertBatch(ds: List[(String, String)]) = Update[(String, String)](
     "INSERT INTO blocklist_domains(domain,category) VALUES(?,?) ON CONFLICT DO NOTHING",
   ).updateMany(ds).transact(xa)
@@ -458,8 +483,9 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo:
     .to[List]
     .transact(xa)
     .map(_.groupBy(_._1).map((k, vs) => k -> vs.map(_._2).toSet))
+}
 
-class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo:
+class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
   def getUsage(mac: String, dom: String, d: LocalDate)                                     =
     sql"SELECT COALESCE(minutes_used,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
       .query[Int]
@@ -512,21 +538,23 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo:
       .transact(xa)
   def listForDeviceMacs(macs: List[String], d: LocalDate)                                  =
     if macs.isEmpty then ZIO.succeed(Nil)
-    else
+    else {
       val arr = macs.toArray
       sql"SELECT id,device_mac,domain,date::TEXT,minutes_used,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,minutes_used DESC"
         .query[(Long, String, String, String, Int, String)]
         .map(TimeUsage.apply)
         .to[List]
         .transact(xa)
+    }
   def snapshotAll(d: LocalDate)                                                            =
     sql"SELECT device_mac,domain,minutes_used FROM time_usage WHERE date=$d"
       .query[(String, String, Int)]
       .to[List]
       .transact(xa)
       .map(_.map((m, dom, mins) => (m, dom) -> mins).toMap)
+}
 
-class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo:
+class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
   def getTotalExtension(mac: String, d: LocalDate)                                          =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE device_mac=$mac AND date=$d"
       .query[Int]
@@ -571,8 +599,9 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo:
       .to[List]
       .transact(xa)
       .map(_.toMap)
+}
 
-class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo:
+class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
   private type R =
     (UUID, String, Option[String], Option[String], Option[Instant], Option[String], Instant)
   private def toR(r: R)                                 =
@@ -624,8 +653,9 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo:
       .unit
   def delete(id: UUID)                                  =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
+}
 
-class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo:
+class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   private type R =
     (Long, UUID, String, Option[String], String, String, String, String, Int, Long, Long)
   private def toT(r: R)                               =
@@ -646,8 +676,9 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo:
       .map(toT)
       .to[List]
       .transact(xa)
+}
 
-class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo:
+class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
   private type R = (Long, Option[String], String, String, String)
   private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
   def insertBatch(events: List[BlockEventInsert]) =
@@ -666,8 +697,9 @@ class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo:
       .map(toB)
       .to[List]
       .transact(xa)
+}
 
-class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo:
+class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo {
   private type R =
     (Long, UUID, Option[String], String, Option[String], Boolean, String, String)
   private def toC(r: R)                                =
@@ -694,12 +726,13 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo:
       .map(toC)
       .to[List]
       .transact(xa)
+}
 
-class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo:
+class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo {
   def insertBatch(logs: List[QueryLogInsert]) = Update[QueryLogInsert](
     "INSERT INTO query_logs(mac,device_name,profile_id,profile_name,domain,qtype,blocked,reason,location) VALUES(?,?,?,?,?,?,?,?,?)",
   ).updateMany(logs).transact(xa).unit
-  def query(f: LogFilter)                     =
+  def query(f: LogFilter)                     = {
     val base  =
       fr"SELECT id,mac,device_name,profile_id,profile_name,domain,qtype,blocked,reason,location,ts::TEXT FROM query_logs WHERE 1=1"
     val since = fr"AND ts > NOW() - make_interval(hours => ${f.hours})"
@@ -726,8 +759,9 @@ class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo:
       .map(QueryLog.apply)
       .to[List]
       .transact(xa)
+  }
   def stats                                   =
-    for
+    for {
       tt <- sql"SELECT COUNT(*)::INT FROM query_logs WHERE ts > NOW()-INTERVAL '24 hours'"
         .query[Int]
         .unique
@@ -757,15 +791,16 @@ class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo:
           .map(DeviceStats.apply)
           .to[List]
           .transact(xa)
-    yield DashboardStats(tt, bt, th, bh, top, dev)
+    } yield DashboardStats(tt, bt, th, bh, top, dev)
   def topBlocked(hours: Int, lim: Int)        =
     sql"SELECT domain,COUNT(*)::INT FROM query_logs WHERE blocked AND ts > NOW() - make_interval(hours => $hours) GROUP BY domain ORDER BY COUNT(*) DESC LIMIT $lim"
       .query[(String, Int)]
       .map(DomainCount.apply)
       .to[List]
       .transact(xa)
+}
 
-object Repos:
+object Repos {
   val userRepo          = ZLayer.fromFunction(UserRepoLive(_))
   val userProfileRepo   = ZLayer.fromFunction(UserProfileRepoLive(_))
   val profileRepo       = ZLayer.fromFunction(ProfileRepoLive(_))
@@ -783,3 +818,4 @@ object Repos:
   val connEventRepo     = ZLayer.fromFunction(ConnectionEventRepoLive(_))
   val all               =
     userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ queryLogRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
+}

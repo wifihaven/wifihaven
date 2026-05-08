@@ -21,10 +21,10 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
 
   private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
@@ -34,7 +34,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
 
   def spec = suite("Query Log API")(
     test("GET /api/logs returns inserted logs") {
-      for
+      for {
         _               <- cleanDb
         logRepo         <- ZIO.service[QueryLogRepo]
         auth            <- makeAuth
@@ -85,11 +85,11 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- routes.runZIO(req)
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(logs.length == 3)
     },
     test("GET /api/logs?blocked=true filters to blocked only") {
-      for
+      for {
         _               <- cleanDb
         logRepo         <- ZIO.service[QueryLogRepo]
         auth            <- makeAuth
@@ -129,12 +129,12 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- routes.runZIO(req)
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
-      yield assertTrue(logs.length == 1) &&
+      } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.domain == "badsite.com") &&
         assertTrue(logs.head.blocked)
     },
     test("GET /api/stats returns correct counts") {
-      for
+      for {
         _               <- cleanDb
         logRepo         <- ZIO.service[QueryLogRepo]
         auth            <- makeAuth
@@ -185,14 +185,14 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp  <- routes.runZIO(req)
         body  <- resp.body.asString
         stats <- ZIO.fromEither(body.fromJson[DashboardStats])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(stats.totalToday == 3) &&
         assertTrue(stats.blockedToday == 2) &&
         assertTrue(stats.topBlocked.exists(_.domain == "badsite.com")) &&
         assertTrue(stats.topBlocked.find(_.domain == "badsite.com").exists(_.count == 2))
     },
     test("GET /api/logs?mac=... filters to one device") {
-      for
+      for {
         _               <- cleanDb
         logRepo         <- ZIO.service[QueryLogRepo]
         auth            <- makeAuth
@@ -234,7 +234,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- routes.runZIO(req)
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
-      yield assertTrue(logs.length == 1) &&
+      } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.mac.contains("aa:bb:cc:dd:ee:01"))
     },
   ) @@ TestAspect.sequential

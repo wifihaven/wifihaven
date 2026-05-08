@@ -21,49 +21,49 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
 
   private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
   def spec = suite("Auth API")(
     test("admin can login with seeded credentials") {
-      for
+      for {
         _      <- cleanDb
         auth   <- makeAuth
         result <- auth.login("admin", "changeme")
-      yield assertTrue(result.token.nonEmpty) &&
+      } yield assertTrue(result.token.nonEmpty) &&
         assertTrue(result.role == "admin") &&
         assertTrue(result.username == "admin")
     },
     test("wrong password returns InvalidCredentials") {
-      for
+      for {
         _      <- cleanDb
         auth   <- makeAuth
         result <- auth.login("admin", "wrongpassword").exit
-      yield assertTrue(result.isFailure)
+      } yield assertTrue(result.isFailure)
     },
     test("unknown user returns InvalidCredentials") {
-      for
+      for {
         _      <- cleanDb
         auth   <- makeAuth
         result <- auth.login("nobody", "anything").exit
-      yield assertTrue(result.isFailure)
+      } yield assertTrue(result.isFailure)
     },
     test("issued token is verifiable") {
-      for
+      for {
         _      <- cleanDb
         auth   <- makeAuth
         resp   <- auth.login("admin", "changeme")
         claims <- auth.verify(resp.token)
-      yield assertTrue(claims.sub == "admin") &&
+      } yield assertTrue(claims.sub == "admin") &&
         assertTrue(claims.role == "admin")
     },
     test("admin can create child user who can then login") {
-      for
+      for {
         _        <- cleanDb
         userRepo <- ZIO.service[UserRepo]
         auth     <- makeAuth
@@ -71,11 +71,11 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         _        <- userRepo.create("child1", hash, "child")
         resp     <- auth.login("child1", "childpass")
         claims   <- auth.verify(resp.token)
-      yield assertTrue(resp.role == "child") &&
+      } yield assertTrue(resp.role == "child") &&
         assertTrue(claims.role == "child")
     },
     test("child token fails requireAdmin check") {
-      for
+      for {
         _        <- cleanDb
         userRepo <- ZIO.service[UserRepo]
         auth     <- makeAuth
@@ -83,20 +83,20 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         _        <- userRepo.create("viewer", hash, "child")
         resp     <- auth.login("viewer", "pass")
         result   <- auth.requireAdmin(resp.token).exit
-      yield assertTrue(result.isFailure)
+      } yield assertTrue(result.isFailure)
     },
     test("change password works and old password no longer valid") {
-      for
+      for {
         _    <- cleanDb
         auth <- makeAuth
         _    <- auth.changePassword("admin", "changeme", "newpassword123")
         bad  <- auth.login("admin", "changeme").exit
         good <- auth.login("admin", "newpassword123").exit
-      yield assertTrue(bad.isFailure) &&
+      } yield assertTrue(bad.isFailure) &&
         assertTrue(good.isSuccess)
     },
     test("POST /api/auth/login via HTTP handler") {
-      for
+      for {
         _               <- cleanDb
         userRepo        <- ZIO.service[UserRepo]
         auth            <- makeAuth
@@ -109,7 +109,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         resp     <- routes.runZIO(req)
         respBody <- resp.body.asString
         lr       <- ZIO.fromEither(respBody.fromJson[LoginResponse])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(lr.token.nonEmpty) &&
         assertTrue(lr.role == "admin")
     },

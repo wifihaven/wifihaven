@@ -21,17 +21,17 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
 
   private val adminJwt = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, adminJwt, clock)
+    } yield AuthServiceLive(ur, adminJwt, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
   def spec = suite("Device API")(
     test("create and list devices") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -57,7 +57,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         getResp <- routes.runZIO(getReq)
         body2   <- getResp.body.asString
         devices <- ZIO.fromEither(body2.fromJson[List[Device]])
-      yield assertTrue(putResp.status == Status.Ok) &&
+      } yield assertTrue(putResp.status == Status.Ok) &&
         assertTrue(devices.exists(_.mac == "aa:bb:cc:dd:ee:ff")) &&
         assertTrue(devices.exists(_.name == "iPad")) &&
         assertTrue(
@@ -66,7 +66,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(!body2.contains("\"location\""))
     },
     test("MAC address is normalised (upper → lower, dashes → colons)") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -83,10 +83,10 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           .addHeader(Header.ContentType(MediaType.application.json))
         _      <- routes.runZIO(req)
         device <- deviceRepo.findByMac("aa:bb:cc:dd:ee:ff")
-      yield assertTrue(device.isDefined)
+      } yield assertTrue(device.isDefined)
     },
     test("delete device") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -103,11 +103,11 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           .addHeader(Header.Authorization.Bearer(token))
         delResp <- routes.runZIO(delReq)
         after   <- deviceRepo.findByMac(mac)
-      yield assertTrue(delResp.status == Status.Ok) &&
+      } yield assertTrue(delResp.status == Status.Ok) &&
         assertTrue(after.isEmpty)
     },
     test("updateLastSeen updates ip without losing profile assignment") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -117,11 +117,11 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _      <- deviceRepo.upsert(mac, "Laptop", kidsId, "192.168.1.5")
         _      <- deviceRepo.updateLastSeen(mac, "192.168.1.99")
         device <- deviceRepo.findByMac(mac)
-      yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.99"))) &&
+      } yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.99"))) &&
         assertTrue(device.exists(_.profileId.contains(kidsId)))
     },
     test("upsert updates last_seen_ip without losing profile assignment") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -134,7 +134,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         // Upsert again with different IP (simulating DHCP lease change)
         _      <- deviceRepo.upsert(mac, "Phone", kidsId, "192.168.1.20")
         device <- deviceRepo.findByMac(mac)
-      yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.20"))) &&
+      } yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.20"))) &&
         assertTrue(device.exists(_.profileId.contains(kidsId)))
     },
   ) @@ TestAspect.sequential

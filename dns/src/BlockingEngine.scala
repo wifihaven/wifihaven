@@ -6,7 +6,7 @@ import familydns.shared.Schedule
 import java.time.{DayOfWeek, LocalDate, LocalTime}
 
 /** Pure blocking logic — no effects, fully testable. */
-object BlockingEngine:
+object BlockingEngine {
 
   private val dayNames: Map[DayOfWeek, String] = Map(
     DayOfWeek.MONDAY    -> "mon",
@@ -19,9 +19,10 @@ object BlockingEngine:
   )
 
   sealed trait Decision
-  object Decision:
+  object Decision {
     case object Allow                extends Decision
     case class Block(reason: String) extends Decision
+  }
 
   /**
    * Full decision including blocklist lookup.
@@ -41,23 +42,23 @@ object BlockingEngine:
       mac: String,
       now: LocalTime,
       today: LocalDate,
-  ): Decision =
+  ): Decision = {
     val d = domain.toLowerCase.stripSuffix(".")
 
     if profile.profile.paused then Decision.Block("paused")
     else if isScheduleActive(profile.schedules, now, today) then Decision.Block("schedule")
     else if matchesAny(d, profile.profile.extraAllowed) then Decision.Allow
     else if matchesAny(d, profile.profile.extraBlocked) then Decision.Block("extra_blocked")
-    else
+    else {
       // Total daily time limit — site-specific domains are exempt
       val timeLimitBlock: Option[Decision] = profile.timeLimit.flatMap { limitMins =>
         val isSiteDomain =
           profile.siteTimeLimits.exists(s => matchesDomainPattern(d, s.domainPattern))
-        if !isSiteDomain then
+        if !isSiteDomain then {
           val usedMins = usage.totalUsage.getOrElse((mac, today.toString), 0)
           val extMins  = usage.extensions.getOrElse((mac, today.toString), 0)
           Option.when(usedMins >= limitMins + extMins)(Decision.Block("time_limit"))
-        else None
+        } else None
       }
 
       // Per-site time limits
@@ -75,38 +76,46 @@ object BlockingEngine:
       }
 
       timeLimitBlock.orElse(siteBlock).orElse(categoryBlock).getOrElse(Decision.Allow)
+    }
+  }
 
-  def isScheduleActive(schedules: List[Schedule], now: LocalTime, today: LocalDate): Boolean =
+  def isScheduleActive(schedules: List[Schedule], now: LocalTime, today: LocalDate): Boolean = {
     val todayName = dayNames(today.getDayOfWeek)
     schedules.exists { s =>
       if !s.days.contains(todayName) then false
-      else
+      else {
         val from  = parseTime(s.blockFrom)
         val until = parseTime(s.blockUntil)
         if from.isAfter(until) then
           // Overnight: e.g. 21:00 → 07:00 (inclusive at from, exclusive at until)
           !now.isBefore(from) || now.isBefore(until)
         else !now.isBefore(from) && now.isBefore(until)
+      }
     }
+  }
 
-  def apexDomain(domain: String): String =
+  def apexDomain(domain: String): String = {
     val parts = domain.split('.')
     if parts.length >= 2 then parts.takeRight(2).mkString(".") else domain
+  }
 
   def matchesDomainPattern(domain: String, pattern: String): Boolean =
-    if pattern.startsWith("*.") then
+    if pattern.startsWith("*.") then {
       val suffix = pattern.drop(1)
       domain.endsWith(suffix) || domain == pattern.drop(2)
-    else domain == pattern || domain.endsWith(s".$pattern")
+    } else domain == pattern || domain.endsWith(s".$pattern")
 
   private def matchesAny(domain: String, patterns: List[String]): Boolean =
     patterns.exists(p => matchesDomainPattern(domain, p))
 
   /** Check domain and all parent labels against blocklist set */
-  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean =
+  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean = {
     val parts = domain.split('.').toList
     (0 until parts.length - 1).exists(i => list.contains(parts.drop(i).mkString(".")))
+  }
 
-  private def parseTime(s: String): LocalTime =
+  private def parseTime(s: String): LocalTime = {
     val Array(h, m) = s.split(':')
     LocalTime.of(h.toInt, m.toInt)
+  }
+}
