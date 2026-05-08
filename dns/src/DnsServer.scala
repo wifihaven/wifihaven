@@ -29,7 +29,7 @@ class DnsServer(
     usageRef: Ref[TimeUsageSnapshot],
     logQueue: ConcurrentLinkedQueue[QueryLogEntry],
     deviceRepo: familydns.api.db.DeviceRepo,
-):
+) {
 
   private val upstreams = List(
     (config.upstreamPrimary, config.upstreamPort),
@@ -43,7 +43,7 @@ class DnsServer(
       ZIO.logInfo(s"DNS server listening on :${config.port}") *>
         ZIO
           .loop(())(Function.const(true), identity) { _ =>
-            for
+            for {
               buf <- ZIO.succeed(new Array[Byte](512))
               pkt <- ZIO.succeed(new DatagramPacket(buf, buf.length))
               _   <- ZIO.attempt(sock.receive(pkt))
@@ -51,7 +51,7 @@ class DnsServer(
               addr = pkt.getAddress
               port = pkt.getPort
               _ <- handleQuery(sock, data, addr, port).forkDaemon
-            yield ()
+            } yield ()
           }
           .unit
     }
@@ -62,10 +62,10 @@ class DnsServer(
       addr: InetAddress,
       port: Int,
   ): Task[Unit] =
-    DnsPacket.parseQuery(data) match
+    DnsPacket.parseQuery(data) match {
       case None        => ZIO.unit
       case Some(query) =>
-        for
+        for {
           cache <- cacheRef.get
           usage <- usageRef.get
           clientIp = addr.getHostAddress
@@ -79,7 +79,7 @@ class DnsServer(
           _        <- ZIO.logDebug(
             s"profile for mac=${mac.getOrElse("?")} -> ${profile.map(_.profile.name).getOrElse("none (unrecognized)")}",
           )
-          response <- profile match
+          response <- profile match {
             case None     =>
               // Unknown device — forward with no filtering but log so we can identify & onboard it
               ZIO.logDebug(
@@ -89,7 +89,7 @@ class DnsServer(
                   .map(_.getOrElse(DnsPacket.buildNxdomain(data)))
                   .tap(_ => enqueueLog(mac, None, query, blocked = false, ""))
             case Some(cp) =>
-              for
+              for {
                 _ <- ZIO.foreachDiscard(mac) { m =>
                   deviceRepo
                     .updateLastSeen(m, clientIp)
@@ -110,7 +110,7 @@ class DnsServer(
                 _    <- ZIO.logDebug(
                   s"decision for ${query.domain} profile=${cp.profile.name} -> $decision",
                 )
-                resp <- decision match
+                resp <- decision match {
                   case BlockingEngine.Decision.Allow         =>
                     forwardUpstream(data)
                       .map(_.getOrElse(DnsPacket.buildNxdomain(data)))
@@ -122,11 +122,15 @@ class DnsServer(
                       else DnsPacket.buildNxdomain(data)
                     ZIO.succeed(r)
                       <* enqueueLog(mac, Some(cp), query, blocked = true, reason)
-              yield resp
-          _        <- ZIO.attempt:
+                }
+              } yield resp
+          }
+          _        <- ZIO.attempt {
             val out = new DatagramPacket(response, response.length, addr, port)
             sock.send(out)
-        yield ()
+          }
+        } yield ()
+    }
 
   private def enqueueLog(
       mac: Option[String],
@@ -138,7 +142,7 @@ class DnsServer(
     // Only log A/AAAA queries to keep noise down
     if !List(DnsPacket.TYPE_A, DnsPacket.TYPE_AAAA).contains(query.qtype) then ZIO.unit
     else
-      ZIO.succeed:
+      ZIO.succeed {
         val _ = logQueue.add(
           QueryLogEntry(
             mac = mac,
@@ -152,13 +156,14 @@ class DnsServer(
             location = Some(config.location),
           ),
         )
+      }
 
   private def forwardUpstream(data: Array[Byte]): Task[Option[Array[Byte]]] =
     ZIO
-      .attemptBlocking:
+      .attemptBlocking {
         upstreams.iterator
           .flatMap { (host, port) =>
-            try
+            try {
               val sock = new DatagramSocket()
               sock.setSoTimeout(3000)
               val addr = InetAddress.getByName(host)
@@ -168,20 +173,22 @@ class DnsServer(
               sock.receive(resp)
               sock.close()
               Some(buf.take(resp.getLength))
-            catch case _: Exception => None
+            } catch case _: Exception => None
           }
           .nextOption()
+      }
       .orElse(ZIO.succeed(None))
 
   /** ARP table lookup: IP → MAC. Returns canonical lowercase MAC or None. */
   private def arpLookup(ip: String): Option[String] =
-    try
+    try {
       val lines = scala.io.Source.fromFile("/proc/net/arp").getLines().drop(1)
       lines.collectFirst {
         case line if line.split("\\s+").headOption.contains(ip) =>
           line.split("\\s+")(3).toLowerCase
       }
-    catch case _: Exception => None
+    } catch case _: Exception => None
+}
 
 case class QueryLogEntry(
     mac: Option[String],

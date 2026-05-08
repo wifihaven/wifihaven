@@ -14,16 +14,18 @@ import java.time.{Instant, LocalDate, OffsetDateTime}
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-private object SeenParser:
+private object SeenParser {
   // Postgres `::TEXT` on TIMESTAMPTZ produces "2026-05-07 08:05:00-06". Normalize the
   // separator and pad a 2-digit numeric offset to ±HH:00 so OffsetDateTime can parse it.
   private val fmt                   = DateTimeFormatter.ISO_OFFSET_DATE_TIME
-  def toInstant(s: String): Instant =
+  def toInstant(s: String): Instant = {
     val withT  = s.replace(' ', 'T')
     val padded =
       if withT.matches(""".*[+-]\d{2}$""") then withT + ":00"
       else withT
     OffsetDateTime.parse(padded, fmt).toInstant
+  }
+}
 
 object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres] {
 
@@ -33,35 +35,37 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
-  private def seedRouter(rRepo: RouterRepo): Task[(UUID, String)] =
+  private def seedRouter(rRepo: RouterRepo): Task[(UUID, String)] = {
     val token = "ROUTER_TOKEN_PLAIN"
     val hash  = RouterAuth.sha256Hex(token)
-    for
+    for {
       id <- rRepo.create("test-router", "ENROLL_HASH")
       _  <- rRepo.completeEnrollment(id, hash)
-    yield (id, token)
+    } yield (id, token)
+  }
 
   private def buildRoutes =
-    for
+    for {
       rRepo <- ZIO.service[RouterRepo]
       tRepo <- ZIO.service[TrafficReportRepo]
       tu    <- ZIO.service[TimeUsageRepo]
       dRepo <- ZIO.service[DeviceRepo]
       cRepo <- ZIO.service[ConnectionEventRepo]
       auth = new RouterAuthLive(rRepo)
-    yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo)
+    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo)
 
   private def post(
       routes: Routes[Any, Response],
       path: String,
       body: String,
       token: Option[String],
-  ) =
+  ) = {
     val base = Request
       .post(URL.decode(path).toOption.get, Body.fromString(body))
       .addHeader(Header.ContentType(MediaType.application.json))
     val req  = token.fold(base)(t => base.addHeader(Header.Authorization.Bearer(t)))
     routes.runZIO(req)
+  }
 
   // Fixed test instants
   private val periodStart = Instant.parse("2026-05-07T14:00:00Z")
@@ -72,45 +76,45 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   private val unknownMac = "aa:bb:cc:99:99:99"
 
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
-    for
+    for {
       pid <- profileRepo.create("Kids", List("adult"))
       _   <- dRepo.upsert(knownMac, "kid-ipad", pid, "192.168.1.10")
-    yield ()
+    } yield ()
 
   def spec = suite("Router ingest /api/router/*")(
     // ── auth ─────────────────────────────────────────────────────────────────
     test("missing bearer returns 401") {
-      for
+      for {
         _      <- cleanDb
         routes <- buildRoutes
         body = UsageReport(UUID.randomUUID(), periodStart.toString, periodEnd.toString, Nil).toJson
         resp <- post(routes, "/api/router/usage", body, None)
-      yield assertTrue(resp.status == Status.Unauthorized)
+      } yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("invalid bearer returns 401") {
-      for
+      for {
         _      <- cleanDb
         routes <- buildRoutes
         body = UsageReport(UUID.randomUUID(), periodStart.toString, periodEnd.toString, Nil).toJson
         resp <- post(routes, "/api/router/usage", body, Some("not-a-real-token"))
-      yield assertTrue(resp.status == Status.Unauthorized)
+      } yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("valid bearer with empty records returns 200") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
         body = UsageReport(id, periodStart.toString, periodEnd.toString, Nil).toJson
         resp <- post(routes, "/api/router/usage", body, Some(tk))
-      yield assertTrue(resp.status == Status.Ok)
+      } yield assertTrue(resp.status == Status.Ok)
     },
 
     // ── usage ────────────────────────────────────────────────────────────────
     test(
       "usage: posting same period+mac+hostname twice does not double-count seconds_used or bytes",
     ) {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         pRepo    <- ZIO.service[ProfileRepo]
@@ -126,7 +130,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         r2   <- post(routes, "/api/router/usage", body, Some(tk))
         sb   <- tu.getSecondsAndBytes(knownMac, "youtube.com", testDate)
         rows <- tRepo.listForRouter(id, 100)
-      yield assertTrue(r1.status == Status.Ok) &&
+      } yield assertTrue(r1.status == Status.Ok) &&
         assertTrue(r2.status == Status.Ok) &&
         assertTrue(sb == ((240L, 1000L, 500L))) &&
         assertTrue(rows.size == 1)
@@ -134,7 +138,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     test(
       "usage: bytes accumulate across multiple records in one POST (different hostnames same mac)",
     ) {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         pRepo    <- ZIO.service[ProfileRepo]
@@ -151,12 +155,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         resp <- post(routes, "/api/router/usage", body, Some(tk))
         yt   <- tu.getSecondsAndBytes(knownMac, "youtube.com", testDate)
         gg   <- tu.getSecondsAndBytes(knownMac, "google.com", testDate)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(yt == ((60L, 100L, 50L))) &&
         assertTrue(gg == ((30L, 200L, 10L)))
     },
     test("usage: seconds add across distinct periods for same (mac, hostname)") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         pRepo    <- ZIO.service[ProfileRepo]
@@ -171,10 +175,10 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _  <- post(routes, "/api/router/usage", b1, Some(tk))
         _  <- post(routes, "/api/router/usage", b2, Some(tk))
         sb <- tu.getSecondsAndBytes(knownMac, "youtube.com", testDate)
-      yield assertTrue(sb == ((240L, 2L, 2L)))
+      } yield assertTrue(sb == ((240L, 2L, 2L)))
     },
     test("usage: known mac last_seen_at is set to period_end and last_seen_ip to record.ip") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         pRepo    <- ZIO.service[ProfileRepo]
@@ -186,11 +190,11 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         _ <- post(routes, "/api/router/usage", body, Some(tk))
         d <- dRepo.findByMac(knownMac)
-      yield assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42"))) &&
+      } yield assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42"))) &&
         assertTrue(d.flatMap(_.lastSeenAt).map(SeenParser.toInstant).contains(periodEnd))
     },
     test("usage: unknown mac in records does NOT create a device row (events does that)") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         dRepo    <- ZIO.service[DeviceRepo]
@@ -200,12 +204,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         resp <- post(routes, "/api/router/usage", body, Some(tk))
         d    <- dRepo.findByMac(unknownMac)
-      yield assertTrue(resp.status == Status.Ok) && assertTrue(d.isEmpty)
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(d.isEmpty)
     },
 
     // ── events ───────────────────────────────────────────────────────────────
     test("events: connection_attempt batch is recorded with allowed/reason") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         cRepo    <- ZIO.service[ConnectionEventRepo]
@@ -234,13 +238,13 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = RouterEventsRequest(id, evs).toJson
         resp <- post(routes, "/api/router/events", body, Some(tk))
         rows <- cRepo.listForRouter(id, 100)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.size == 2) &&
         assertTrue(rows.exists(r => r.hostname == "youtube.com" && !r.allowed)) &&
         assertTrue(rows.exists(r => r.hostname == "khanacademy.org" && r.allowed))
     },
     test("events: dhcp_lease for known mac updates devices.last_seen_*") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         pRepo    <- ZIO.service[ProfileRepo]
@@ -258,7 +262,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
         d <- dRepo.findByMac(knownMac)
-      yield assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.77"))) &&
+      } yield assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.77"))) &&
         assertTrue(
           d.flatMap(_.lastSeenAt)
             .map(SeenParser.toInstant)
@@ -266,7 +270,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
     },
     test("events: dhcp_lease for unknown mac upserts a device row with NULL profile_id") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         dRepo    <- ZIO.service[DeviceRepo]
@@ -282,12 +286,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
         d <- dRepo.findByMac(unknownMac)
-      yield assertTrue(d.exists(_.name == "mystery-laptop")) &&
+      } yield assertTrue(d.exists(_.name == "mystery-laptop")) &&
         assertTrue(d.exists(_.profileId.isEmpty)) &&
         assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.55")))
     },
     test("events: dhcp_lease for the same unknown mac twice is idempotent (no duplicate row)") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         dRepo    <- ZIO.service[DeviceRepo]
@@ -304,10 +308,10 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _   <- post(routes, "/api/router/events", body, Some(tk))
         _   <- post(routes, "/api/router/events", body, Some(tk))
         all <- dRepo.listAll
-      yield assertTrue(all.count(_.mac == unknownMac) == 1)
+      } yield assertTrue(all.count(_.mac == unknownMac) == 1)
     },
     test("events: first_seen_mac creates an unknown-device row when missing") {
-      for
+      for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
         dRepo    <- ZIO.service[DeviceRepo]
@@ -323,7 +327,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
         d <- dRepo.findByMac("aa:bb:cc:dd:ee:01")
-      yield assertTrue(d.isDefined) &&
+      } yield assertTrue(d.isDefined) &&
         assertTrue(d.exists(_.profileId.isEmpty)) &&
         assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.61")))
     },

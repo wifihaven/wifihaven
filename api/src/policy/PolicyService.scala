@@ -7,10 +7,11 @@ import zio.{Clock as _, *}
 import java.security.MessageDigest
 import java.time.{DayOfWeek, LocalDate, LocalTime, OffsetDateTime, ZoneOffset}
 
-trait PolicyService:
+trait PolicyService {
   def snapshot: Task[PolicySnapshot]
   def renderRpz(category: String): Task[Option[(String, String)]]
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
+}
 
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
@@ -22,10 +23,10 @@ class PolicyServiceLive(
     usageRepo: TimeUsageRepo,
     extRepo: TimeExtensionRepo,
     clock: Clock,
-) extends PolicyService:
+) extends PolicyService {
 
   def snapshot: Task[PolicySnapshot] =
-    for
+    for {
       today    <- clock.today
       now      <- clock.now
       profiles <- profileRepo.listAll
@@ -39,7 +40,7 @@ class PolicyServiceLive(
       schedMap = scheds.toMap
       tlMap    = tlims.toMap
       stlMap   = stlims.toMap
-    yield
+    } yield {
       val devsByProfile =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
       val pProfiles     = profiles.map { p =>
@@ -91,14 +92,15 @@ class PolicyServiceLive(
         profiles = pProfiles,
         blocklists = pBlocklists,
       )
+    }
 
   def renderRpz(category: String): Task[Option[(String, String)]] =
-    for
+    for {
       today   <- clock.today
       domains <- blocklistRepo.loadCategory(category)
-    yield
+    } yield
       if domains.isEmpty then None
-      else
+      else {
         val origin = s"$category.rpz."
         val serial = today.toString.replace("-", "")
         val sb     = new StringBuilder
@@ -110,15 +112,16 @@ class PolicyServiceLive(
         val body   = sb.toString
         val etag   = s"\"${PolicyService.sha256Hex(body).take(16)}-$serial\""
         Some((etag, body))
+      }
 
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
-    for
+    for {
       snap  <- snapshot
       now   <- clock.now
       today <- clock.today
       device  = snap.devices.find(_.mac.equalsIgnoreCase(mac))
       profile = device.flatMap(d => d.profileId.flatMap(pid => snap.profiles.find(_.id == pid)))
-      result <- profile match
+      result <- profile match {
         case None    => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
         case Some(p) =>
           val h = hostname.toLowerCase.stripSuffix(".")
@@ -132,21 +135,23 @@ class PolicyServiceLive(
                 else if matchesAny(h, p.extraBlocked) then
                   ZIO.succeed(RouterDecisionResponse("block", "extra_blocked", None))
                 else
-                  timeLimitBlock(p, h, today) match
+                  timeLimitBlock(p, h, today) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
                       categoryBlock(p.blockedCategories, h).map {
                         case Some(cat) => RouterDecisionResponse("block", s"category:$cat", None)
                         case None      => RouterDecisionResponse("allow", "allowed", None)
                       }
+                  }
             }
-    yield result
+      }
+    } yield result
 
   private def scheduleBlock(
       schedules: List[PolicySchedule],
       nowTime: LocalTime,
       today: LocalDate,
-  ): Task[Option[RouterDecisionResponse]] =
+  ): Task[Option[RouterDecisionResponse]] = {
     val todayName = dayName(today)
     val prevName  = dayName(today.minusDays(1))
     val active    = schedules.find { s =>
@@ -171,12 +176,13 @@ class PolicyServiceLive(
           utcString(today, until)
       RouterDecisionResponse("block", "schedule", Some(expiresAt))
     })
+  }
 
   private def timeLimitBlock(
       p: PolicyProfile,
       hostname: String,
       today: LocalDate,
-  ): Option[RouterDecisionResponse] =
+  ): Option[RouterDecisionResponse] = {
     val midnight     = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
     val siteLimitHit = p.siteLimits.find { sl =>
       matchesDomainPattern(hostname, sl.domain) &&
@@ -193,6 +199,7 @@ class PolicyServiceLive(
           )
         }
       }
+  }
 
   private def categoryBlock(
       cats: List[String],
@@ -209,18 +216,20 @@ class PolicyServiceLive(
     patterns.exists(p => matchesDomainPattern(domain, p))
 
   private def matchesDomainPattern(domain: String, pattern: String): Boolean =
-    if pattern.startsWith("*.") then
+    if pattern.startsWith("*.") then {
       val suffix = pattern.drop(1)
       domain.endsWith(suffix) || domain == pattern.drop(2)
-    else domain == pattern || domain.endsWith(s".$pattern")
+    } else domain == pattern || domain.endsWith(s".$pattern")
 
-  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean =
+  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean = {
     val parts = domain.split('.').toList
     (0 until parts.length - 1).exists(i => list.contains(parts.drop(i).mkString(".")))
+  }
 
-  private def parseTime(s: String): LocalTime =
+  private def parseTime(s: String): LocalTime = {
     val Array(h, m) = s.split(':')
     LocalTime.of(h.toInt, m.toInt)
+  }
 
   private val dayNames: Map[DayOfWeek, String] = Map(
     DayOfWeek.MONDAY    -> "mon",
@@ -236,6 +245,7 @@ class PolicyServiceLive(
 
   private def utcString(date: LocalDate, time: LocalTime): String =
     OffsetDateTime.of(date, time, ZoneOffset.UTC).toInstant.toString
+}
 
 private case class SnapshotCore(
     defaultProfileId: Option[Long],
@@ -244,7 +254,7 @@ private case class SnapshotCore(
     blocklists: Map[String, PolicyBlocklist],
 )
 
-object PolicyService:
+object PolicyService {
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo &
       TimeUsageRepo & TimeExtensionRepo & Clock,
@@ -252,15 +262,16 @@ object PolicyService:
     PolicyService,
   ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _))
 
-  def sha256Hex(s: String): String =
+  def sha256Hex(s: String): String = {
     val md = MessageDigest.getInstance("SHA-256")
     md.digest(s.getBytes("UTF-8")).map("%02x".format(_)).mkString
+  }
 
   /** Hex SHA-256 of a router/enrollment token, used as the storage key. */
   def hashToken(raw: String): String = sha256Hex(raw)
 
   /** Deterministic ETag over snapshot logical content. */
-  private[policy] def computeEtag(core: SnapshotCore): String =
+  private[policy] def computeEtag(core: SnapshotCore): String = {
     val parts = scala.collection.mutable.ArrayBuffer.empty[String]
     parts += s"d=${core.defaultProfileId.getOrElse("-")}"
     core.devices
@@ -282,3 +293,5 @@ object PolicyService:
     }
     core.blocklists.toList.sortBy(_._1).foreach((k, v) => parts += s"bl:$k=${v.version}")
     "\"sha256:" + sha256Hex(parts.mkString("\n")) + "\""
+  }
+}

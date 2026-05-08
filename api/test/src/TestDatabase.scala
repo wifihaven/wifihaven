@@ -14,7 +14,7 @@ import zio.interop.catz.*
  * initdb failures on ARM Mac (Postgres runs under Rosetta x86 emulation). Each test calls
  * cleanAndMigrate to reset state before running.
  */
-object TestDatabase:
+object TestDatabase {
 
   // JVM-wide singleton: started once, shared across all ZIOSpec bootstrap layers
   // in this JVM. We don't use `lazy val` here — Scala 3 lazy vals can let two
@@ -23,19 +23,22 @@ object TestDatabase:
   // second concurrent call. Explicit double-checked locking serializes init.
   private val pgLock                                 = new Object
   @volatile private var pgInstance: EmbeddedPostgres = null
-  private def sharedPg: EmbeddedPostgres             =
+  private def sharedPg: EmbeddedPostgres             = {
     val cached = pgInstance
     if cached != null then cached
     else
-      pgLock.synchronized:
-        if pgInstance == null then
+      pgLock.synchronized {
+        if pgInstance == null then {
           val pg = EmbeddedPostgres.start()
           runMigrations(pg)
           pgInstance = pg
+        }
         pgInstance
+      }
+  }
 
   /** Run the production Flyway migrations (`classpath:db/migration`) against the embedded PG. */
-  private[testinfra] def runMigrations(pg: EmbeddedPostgres): Unit =
+  private[testinfra] def runMigrations(pg: EmbeddedPostgres): Unit = {
     Flyway
       .configure()
       .dataSource(pg.getPostgresDatabase)
@@ -44,6 +47,7 @@ object TestDatabase:
       .load()
       .migrate()
     ()
+  }
 
   /** Provides the shared EmbeddedPostgres instance (no lifecycle: lives for JVM lifetime). */
   val embeddedPg: ZLayer[Any, Throwable, EmbeddedPostgres] =
@@ -51,28 +55,30 @@ object TestDatabase:
 
   /** Transactor wired to the embedded PG. */
   val transactor: ZLayer[EmbeddedPostgres, Throwable, Transactor[Task]] =
-    ZLayer.fromZIO:
-      for
+    ZLayer.fromZIO {
+      for {
         pg <- ZIO.service[EmbeddedPostgres]
         ds = pg.getPostgresDatabase
         xa = Transactor.fromDataSource[Task](ds, scala.concurrent.ExecutionContext.global)
-      yield xa
+      } yield xa
+    }
 
   /**
    * Drop and recreate the public schema, then re-run migrations. This is faster and more reliable
    * than Flyway's clean() + migrate() in Flyway 10.
    */
   val cleanAndMigrate: ZIO[EmbeddedPostgres, Throwable, Unit] =
-    for
+    for {
       pg <- ZIO.service[EmbeddedPostgres]
-      _  <- ZIO.attempt:
+      _  <- ZIO.attempt {
         val conn = pg.getPostgresDatabase.getConnection
-        try
+        try {
           conn.createStatement().execute("DROP SCHEMA public CASCADE")
           conn.createStatement().execute("CREATE SCHEMA public")
-        finally conn.close()
+        } finally conn.close()
+      }
       _  <- ZIO.attempt(runMigrations(pg))
-    yield ()
+    } yield ()
 
   /** All repo types bundled for convenience */
   type AllRepos =
@@ -80,13 +86,15 @@ object TestDatabase:
       DeviceRepo & BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & QueryLogRepo & RouterRepo &
       TrafficReportRepo & BlockEventRepo & ConnectionEventRepo
 
-  val layer: ZLayer[Any, Throwable, EmbeddedPostgres & Transactor[Task] & AllRepos] =
+  val layer: ZLayer[Any, Throwable, EmbeddedPostgres & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg
     val xa = pg >>> transactor
     pg ++ xa ++ (xa >>> Repos.all)
+  }
+}
 
 /** Helper for building test layers with a controllable clock. */
-object TestLayers:
+object TestLayers {
   import familydns.shared.Clock
 
   def withClock(dt: java.time.LocalDateTime): ULayer[Clock] =
@@ -94,7 +102,7 @@ object TestLayers:
 
   /** Seed helpers */
   def seedKidsProfile(profileRepo: ProfileRepo, scheduleRepo: ScheduleRepo): Task[Long] =
-    for
+    for {
       id <- profileRepo.create("Kids", List("adult", "gambling", "social_media"))
       _  <- scheduleRepo.replaceForProfile(
         id,
@@ -107,7 +115,7 @@ object TestLayers:
           ),
         ),
       )
-    yield id
+    } yield id
 
   def seedAdultsProfile(profileRepo: ProfileRepo): Task[Long] =
     profileRepo.create("Adults", List.empty)
@@ -119,3 +127,4 @@ object TestLayers:
       profileId: Long,
   ): Task[Long] =
     deviceRepo.upsert(mac, name, profileId, "192.168.1.100")
+}

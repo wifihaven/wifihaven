@@ -22,10 +22,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
 
   private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
@@ -35,7 +35,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
   def spec = suite("Time API")(
     suite("GET /api/time/status")(
       test("shows zero usage for a new device") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
@@ -68,14 +68,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp   <- routes.runZIO(req)
           body   <- resp.body.asString
           status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(status.dailyLimitMins.contains(120)) &&
           assertTrue(status.usedMins == 0) &&
           assertTrue(status.extensionMins == 0) &&
           assertTrue(status.remainingMins.contains(120))
       },
       test("reflects accumulated usage correctly") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -111,11 +111,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp   <- routes.runZIO(req)
           body   <- resp.body.asString
           status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
-        yield assertTrue(status.usedMins == 75) &&
+        } yield assertTrue(status.usedMins == 75) &&
           assertTrue(status.remainingMins.contains(45))
       },
       test("site-specific usage shown separately and not counted in total") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -158,7 +158,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp   <- routes.runZIO(req)
           body   <- resp.body.asString
           status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
-        yield assertTrue(status.usedMins == 60) && // YouTube NOT counted in total
+        } yield assertTrue(status.usedMins == 60) && // YouTube NOT counted in total
           assertTrue(status.remainingMins.contains(60)) &&
           assertTrue(
             status.siteUsage.exists(su =>
@@ -169,7 +169,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
     ),
     suite("POST /api/time/extend")(
       test("admin can grant profile extension which increases remaining for all devices") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -210,12 +210,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           statusResp <- routes.runZIO(statusReq)
           body       <- statusResp.body.asString
           status     <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
-        yield assertTrue(extResp.status == Status.Ok) &&
+        } yield assertTrue(extResp.status == Status.Ok) &&
           assertTrue(status.extensionMins == 30) &&
           assertTrue(status.remainingMins.contains(30))
       },
       test("extension is logged with granting admin username") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
@@ -249,13 +249,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             .addHeader(Header.ContentType(MediaType.application.json))
           _    <- routes.runZIO(req)
           exts <- extRepo.listForProfile(kidsId, TestClock.schoolDayAfternoon.toLocalDate)
-        yield assertTrue(exts.length == 1) &&
+        } yield assertTrue(exts.length == 1) &&
           assertTrue(exts.head.grantedBy == "admin") &&
           assertTrue(exts.head.extraMinutes == 15) &&
           assertTrue(exts.head.note.contains("Good behavior"))
       },
       test("child user cannot grant extensions") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
@@ -289,10 +289,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             .post(URL.decode("/api/time/extend").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
-        yield assertTrue(resp.status == Status.Forbidden)
+        } yield assertTrue(resp.status == Status.Forbidden)
       },
       test("multiple extensions accumulate at profile level") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
@@ -335,7 +335,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           today = TestClock.schoolDayAfternoon.toLocalDate
           exts  <- extRepo.listForProfile(kidsId, today)
           total <- extRepo.getProfileTotalExtension(kidsId, today)
-        yield assertTrue(exts.length == 3) &&
+        } yield assertTrue(exts.length == 3) &&
           assertTrue(total == 60)
       },
     ),
@@ -343,7 +343,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
     // ── per-profile status rollup ───────────────────────────────────────────
     suite("GET /api/time/status — per-profile rollup")(
       test("returns one ProfileTimeStatus per profile, not per device") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -378,13 +378,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(list.count(_.profileId == kidsId) == 1) && // one entry, not two
           assertTrue(kids.devices.length == 2) &&               // both devices in breakdown
           assertTrue(kids.devices.map(_.deviceName).toSet == Set("iPad", "iPhone"))
       },
       test("two devices on same profile share a combined usage pool") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -425,14 +425,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
-        yield assertTrue(kids.usedMins == 75) &&        // both devices summed
+        } yield assertTrue(kids.usedMins == 75) &&      // both devices summed
           assertTrue(kids.dailyLimitMins.contains(60)) &&
           assertTrue(kids.remainingMins.contains(0)) && // clamped to 0, not negative
           assertTrue(kids.devices.find(_.deviceMac == mac1).get.usedMins == 40) &&
           assertTrue(kids.devices.find(_.deviceMac == mac2).get.usedMins == 35)
       },
       test("per-app site usage aggregated across all profile devices") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -478,13 +478,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
           yt   = kids.siteUsage.find(_.label == "YouTube").get
-        yield assertTrue(yt.usedMins == 40) && // both devices summed
+        } yield assertTrue(yt.usedMins == 40) && // both devices summed
           assertTrue(yt.limitMins == 30) &&
-          assertTrue(yt.remainingMins == 0) && // clamped to 0
-          assertTrue(kids.usedMins == 0)       // site usage NOT counted in total
+          assertTrue(yt.remainingMins == 0) &&   // clamped to 0
+          assertTrue(kids.usedMins == 0)         // site usage NOT counted in total
       },
       test("policy snapshot has profile-level time_used_today aggregated across devices") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
@@ -520,7 +520,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           )
           snapshot <- policyService.snapshot
           kidsPolicy = snapshot.profiles.find(_.id == kidsId).get
-        yield assertTrue(kidsPolicy.dailyMinutes.contains(60)) &&
+        } yield assertTrue(kidsPolicy.dailyMinutes.contains(60)) &&
           assertTrue(kidsPolicy.timeUsedToday.totalMinutes == 55) // 30 + 25 across both devices
       },
     ) @@ TestAspect.sequential,

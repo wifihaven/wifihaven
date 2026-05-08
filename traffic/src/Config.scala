@@ -11,9 +11,9 @@ case class TrafficAppConfig(
     traffic: TrafficConfig,
 )
 
-object TrafficAppConfig:
+object TrafficAppConfig {
   val layer: ZLayer[Any, Config.Error, TrafficAppConfig] =
-    ZLayer.fromZIO:
+    ZLayer.fromZIO {
       val path = sys.props.getOrElse("config.file", "config/application.conf")
       read(
         deriveConfig[TrafficAppConfig]
@@ -22,3 +22,5 @@ object TrafficAppConfig:
             TypesafeConfigProvider.fromHoconFile(new java.io.File(path)),
           ),
       )
+    }
+}

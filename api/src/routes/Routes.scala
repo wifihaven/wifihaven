@@ -11,7 +11,7 @@ import java.time.LocalDate
 
 // ── Auth routes ────────────────────────────────────────────────────────────
 
-object AuthRoutes:
+object AuthRoutes {
   def routes(
       auth: AuthService,
       userRepo: UserRepo,
@@ -20,7 +20,7 @@ object AuthRoutes:
     Routes(
       Method.POST / "api" / "auth" / "login"                 ->
         handler { (req: Request) =>
-          for
+          for {
             body <- req.body.asString.mapError(e => Response.internalServerError(e.getMessage))
             lr   <- ZIO
               .fromEither(body.fromJson[LoginRequest])
@@ -31,11 +31,11 @@ object AuthRoutes:
                 case AuthError.InvalidCredentials => Response.unauthorized("Invalid credentials")
                 case e                            => Response.internalServerError(e.toString)
               }
-          yield Response.json(resp.toJson)
+          } yield Response.json(resp.toJson)
         },
       Method.POST / "api" / "auth" / "change-password"       ->
         handler { (req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             cpr    <- ZIO
@@ -48,20 +48,20 @@ object AuthRoutes:
                   Response.unauthorized("Current password incorrect")
                 case e                            => Response.internalServerError(e.toString)
               }
-          yield Response.ok
+          } yield Response.ok
         },
       Method.GET / "api" / "me"                              ->
         handler { (req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             pids   <- userProfileRepo
               .listProfilesForUsername(claims.sub)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(MeResponse(claims.sub, claims.role, pids).toJson)
+          } yield Response.json(MeResponse(claims.sub, claims.role, pids).toJson)
         },
       Method.POST / "api" / "users"                          ->
         handler { (req: Request) =>
-          for
+          for {
             _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(Response.badRequest(""))
             cur  <- ZIO
@@ -77,11 +77,11 @@ object AuthRoutes:
             _    <- userProfileRepo
               .setProfilesForUser(id, cur.profileIds)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(s"""{"id":$id}""")
+          } yield Response.json(s"""{"id":$id}""")
         },
       Method.GET / "api" / "users"                           ->
         handler { (req: Request) =>
-          for
+          for {
             _        <- requireAdmin(req, auth)
             users    <- userRepo.listAll.orElseFail(Response.internalServerError(""))
             mappings <- userProfileRepo.listAllMappings.orElseFail(Response.internalServerError(""))
@@ -89,11 +89,11 @@ object AuthRoutes:
             summaries = users.map(u =>
               UserSummary(u.id, u.username, u.role, byUser.getOrElse(u.id, Nil)),
             )
-          yield Response.json(summaries.toJson)
+          } yield Response.json(summaries.toJson)
         },
       Method.PUT / "api" / "users" / long("id") / "profiles" ->
         handler { (id: Long, req: Request) =>
-          for
+          for {
             _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(Response.badRequest(""))
             r    <- ZIO
@@ -102,7 +102,7 @@ object AuthRoutes:
             _    <- userProfileRepo
               .setProfilesForUser(id, r.profileIds)
               .orElseFail(Response.internalServerError(""))
-          yield Response.ok
+          } yield Response.ok
         },
       Method.DELETE / "api" / "users" / long("id")           ->
         handler { (id: Long, req: Request) =>
@@ -111,10 +111,11 @@ object AuthRoutes:
             ZIO.succeed(Response.ok)
         },
     )
+}
 
 // ── Profile routes ─────────────────────────────────────────────────────────
 
-object ProfileRoutes:
+object ProfileRoutes {
   def routes(
       auth: AuthService,
       profileRepo: ProfileRepo,
@@ -126,24 +127,24 @@ object ProfileRoutes:
     Routes(
       Method.GET / "api" / "profiles"                         ->
         handler { (req: Request) =>
-          for
+          for {
             claims      <- requireAuth(req, auth)
             allProfiles <- profileRepo.listAll.orElseFail(Response.internalServerError(""))
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             details     <- ZIO
               .foreach(visible) { p =>
-                for
+                for {
                   scheds <- scheduleRepo.listForProfile(p.id)
                   tl     <- timeLimitRepo.findForProfile(p.id)
                   stls   <- siteTimeLimitRepo.listForProfile(p.id)
-                yield ProfileDetail(p, scheds, tl, stls)
+                } yield ProfileDetail(p, scheds, tl, stls)
               }
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(details.toJson)
+          } yield Response.json(details.toJson)
         },
       Method.GET / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             _      <- requireProfileReadAccess(claims, id, userProfileRepo)
             p      <- profileRepo
@@ -155,11 +156,11 @@ object ProfileRoutes:
             stls   <- siteTimeLimitRepo
               .listForProfile(id)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(ProfileDetail(p, scheds, tl, stls).toJson)
+          } yield Response.json(ProfileDetail(p, scheds, tl, stls).toJson)
         },
       Method.POST / "api" / "profiles"                        ->
         handler { (req: Request) =>
-          for
+          for {
             _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(Response.badRequest(""))
             upr  <- ZIO
@@ -189,11 +190,11 @@ object ProfileRoutes:
             _    <- siteTimeLimitRepo
               .replaceForProfile(id, upr.siteTimeLimits)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(s"""{"id":$id}""")
+          } yield Response.json(s"""{"id":$id}""")
         },
       Method.PUT / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
-          for
+          for {
             claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, id, userProfileRepo)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
@@ -218,14 +219,14 @@ object ProfileRoutes:
             _      <- scheduleRepo
               .replaceForProfile(id, upr.schedules)
               .orElseFail(Response.internalServerError(""))
-            _      <- (upr.timeLimit match
+            _      <- (upr.timeLimit match {
               case Some(mins) => timeLimitRepo.upsert(id, mins)
               case None       => timeLimitRepo.delete(id)
-            ).orElseFail(Response.internalServerError(""))
+            }).orElseFail(Response.internalServerError(""))
             _      <- siteTimeLimitRepo
               .replaceForProfile(id, upr.siteTimeLimits)
               .orElseFail(Response.internalServerError(""))
-          yield Response.ok
+          } yield Response.ok
         },
       Method.DELETE / "api" / "profiles" / long("id")         ->
         handler { (id: Long, req: Request) =>
@@ -235,7 +236,7 @@ object ProfileRoutes:
         },
       Method.POST / "api" / "profiles" / long("id") / "pause" ->
         handler { (id: Long, req: Request) =>
-          for
+          for {
             claims <- requireWriter(req, auth)
             _      <- requireProfileAccess(claims, id, userProfileRepo)
             p      <- profileRepo
@@ -244,13 +245,14 @@ object ProfileRoutes:
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("")))
             _      <-
               profileRepo.setPaused(id, !p.paused).orElseFail(Response.internalServerError(""))
-          yield Response.json(s"""{"paused":${!p.paused}}""")
+          } yield Response.json(s"""{"paused":${!p.paused}}""")
         },
     )
+}
 
 // ── Device routes ──────────────────────────────────────────────────────────
 
-object DeviceRoutes:
+object DeviceRoutes {
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
@@ -259,15 +261,15 @@ object DeviceRoutes:
     Routes(
       Method.GET / "api" / "devices"                    ->
         handler { (req: Request) =>
-          for
+          for {
             claims  <- requireAuth(req, auth)
             all     <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
             visible <- filterDevices(claims, all, userProfileRepo)
-          yield Response.json(visible.toJson)
+          } yield Response.json(visible.toJson)
         },
       Method.PUT / "api" / "devices"                    ->
         handler { (req: Request) =>
-          for
+          for {
             claims <- requireWriter(req, auth)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             udr    <- ZIO
@@ -278,11 +280,11 @@ object DeviceRoutes:
             id <- deviceRepo
               .upsert(mac, udr.name, udr.profileId, "")
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(s"""{"id":$id}""")
+          } yield Response.json(s"""{"id":$id}""")
         },
       Method.DELETE / "api" / "devices" / string("mac") ->
         handler { (mac: String, req: Request) =>
-          for
+          for {
             claims <- requireWriter(req, auth)
             normalized = normalizeMac(mac)
             existing <- deviceRepo
@@ -291,13 +293,14 @@ object DeviceRoutes:
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
             _        <- deviceRepo.delete(normalized).orElseFail(Response.internalServerError(""))
-          yield Response.ok
+          } yield Response.ok
         },
     )
+}
 
 // ── Time routes ────────────────────────────────────────────────────────────
 
-object TimeRoutes:
+object TimeRoutes {
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
@@ -312,7 +315,7 @@ object TimeRoutes:
     Routes(
       Method.GET / "api" / "time" / "status"                         ->
         handler { (req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
@@ -334,11 +337,11 @@ object TimeRoutes:
                 )
               }
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(statuses.toJson)
+          } yield Response.json(statuses.toJson)
         },
       Method.GET / "api" / "time" / "status" / string("mac")         ->
         handler { (mac: String, req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
@@ -358,11 +361,11 @@ object TimeRoutes:
               extRepo,
             )
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(status.toJson)
+          } yield Response.json(status.toJson)
         },
       Method.POST / "api" / "time" / "extend"                        ->
         handler { (req: Request) =>
-          for
+          for {
             claims <- requireWriter(req, auth)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             ger    <- ZIO
@@ -373,18 +376,18 @@ object TimeRoutes:
             id     <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(s"""{"id":$id,"grantedMinutes":${ger.extraMinutes}}""")
+          } yield Response.json(s"""{"id":$id,"grantedMinutes":${ger.extraMinutes}}""")
         },
       Method.GET / "api" / "time" / "extensions" / long("profileId") ->
         handler { (profileId: Long, req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             _      <- requireProfileAccess(claims, profileId, userProfileRepo)
             date   <- clock.today
             exts   <- extRepo
               .listForProfile(profileId, date)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(exts.toJson)
+          } yield Response.json(exts.toJson)
         },
     )
 
@@ -396,9 +399,9 @@ object TimeRoutes:
       stlRepo: SiteTimeLimitRepo,
       usageRepo: TimeUsageRepo,
       extRepo: TimeExtensionRepo,
-  ): Task[ProfileTimeStatus] =
+  ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
-    for
+    for {
       tl      <- tlRepo.findForProfile(profile.id)
       stls    <- stlRepo.listForProfile(profile.id)
       usages  <- usageRepo.listForDeviceMacs(macs, date)
@@ -426,7 +429,7 @@ object TimeRoutes:
         val dUsed = usages.filter(_.deviceMac == d.mac).map(_.minutesUsed).sum
         DeviceUsageSummary(d.mac, d.name, dUsed)
       }
-    yield ProfileTimeStatus(
+    } yield ProfileTimeStatus(
       profile.id,
       profile.name,
       date.toString,
@@ -437,6 +440,7 @@ object TimeRoutes:
       siteUsage,
       deviceSummaries,
     )
+  }
 
   private def buildDeviceTimeStatus(
       device: Device,
@@ -446,9 +450,9 @@ object TimeRoutes:
       stlRepo: SiteTimeLimitRepo,
       usageRepo: TimeUsageRepo,
       extRepo: TimeExtensionRepo,
-  ): Task[DeviceTimeStatus] =
+  ): Task[DeviceTimeStatus] = {
     val pid = device.profileId
-    for
+    for {
       tl      <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
       stls    <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
       usages  <- usageRepo.listForDevice(device.mac, date)
@@ -474,7 +478,7 @@ object TimeRoutes:
           (stl.dailyMinutes - used).max(0),
         )
       }
-    yield DeviceTimeStatus(
+    } yield DeviceTimeStatus(
       device.mac,
       device.name,
       date.toString,
@@ -486,14 +490,16 @@ object TimeRoutes:
       remaining,
       siteUsage,
     )
+  }
 
   private def matchesPattern(domain: String, pattern: String): Boolean =
     if pattern.startsWith("*.") then domain.endsWith(pattern.drop(1)) || domain == pattern.drop(2)
     else domain == pattern || domain.endsWith(s".$pattern")
+}
 
 // ── Query log routes ───────────────────────────────────────────────────────
 
-object LogRoutes:
+object LogRoutes {
   def routes(
       auth: AuthService,
       logRepo: QueryLogRepo,
@@ -502,7 +508,7 @@ object LogRoutes:
     Routes(
       Method.GET / "api" / "logs"  ->
         handler { (req: Request) =>
-          for
+          for {
             claims <- requireAuth(req, auth)
             filter = LogFilter(
               mac = req.url.queryParam("mac"),
@@ -515,7 +521,7 @@ object LogRoutes:
             )
             logs    <- logRepo.query(filter).orElseFail(Response.internalServerError(""))
             visible <- filterLogs(claims, logs, userProfileRepo)
-          yield Response.json(visible.toJson)
+          } yield Response.json(visible.toJson)
         },
       Method.GET / "api" / "stats" ->
         handler { (req: Request) =>
@@ -525,10 +531,11 @@ object LogRoutes:
               .orElseFail(Response.internalServerError(""))
         },
     )
+}
 
 // ── Blocklist routes ───────────────────────────────────────────────────────
 
-object BlocklistRoutes:
+object BlocklistRoutes {
   def routes(auth: AuthService, blRepo: BlocklistRepo): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "blocklists"                                 ->
@@ -549,6 +556,7 @@ object BlocklistRoutes:
             ZIO.succeed(Response.ok)
         },
     )
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -657,11 +665,12 @@ def requireProfileReadAccess(
     profileId: Option[Long],
     upRepo: UserProfileRepo,
 ): IO[Response, Unit] =
-  profileId match
+  profileId match {
     case None      =>
       if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
       else ZIO.fail(Response.forbidden("Device has no assigned profile"))
     case Some(pid) => requireProfileReadAccess(claims, pid, upRepo)
+  }
 
 /** Allow write access if admin or adult linked to the profile. Child is always denied. */
 def requireProfileAccess(
@@ -684,11 +693,12 @@ def requireProfileAccess(
     profileId: Option[Long],
     upRepo: UserProfileRepo,
 ): IO[Response, Unit] =
-  profileId match
+  profileId match {
     case None      =>
       if claims.role == "admin" then ZIO.succeed(())
       else ZIO.fail(Response.forbidden("Device has no assigned profile"))
     case Some(pid) => requireProfileAccess(claims, pid, upRepo)
+  }
 
 def normalizeMac(mac: String): String =
   mac.toLowerCase.replace("-", ":").trim

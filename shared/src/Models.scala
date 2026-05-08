@@ -10,19 +10,23 @@ given JsonCodec[UUID] =
     _.toString,
   )
 
-enum UserRole derives JsonCodec:
+enum UserRole derives JsonCodec {
   case Admin, Adult, Child
+}
 
-object UserRole:
-  def parse(s: String): Option[UserRole] = s.toLowerCase match
+object UserRole {
+  def parse(s: String): Option[UserRole] = s.toLowerCase match {
     case "admin" => Some(Admin)
     case "adult" => Some(Adult)
     case "child" => Some(Child)
     case _       => None
-  def asString(r: UserRole): String      = r match
+  }
+  def asString(r: UserRole): String      = r match {
     case Admin => "admin"
     case Adult => "adult"
     case Child => "child"
+  }
+}
 
 case class Profile(
     id: Long,
@@ -229,8 +233,9 @@ case class DnsCache(
     defaultProfile: Option[CachedProfile],
 )
 
-object DnsCache:
+object DnsCache {
   val empty: DnsCache = DnsCache(Map.empty, Map.empty, None)
+}
 
 case class TimeUsageSnapshot(
     domainUsage: Map[(String, String, String), Int],
@@ -238,8 +243,9 @@ case class TimeUsageSnapshot(
     extensions: Map[(String, String), Int],
 )
 
-object TimeUsageSnapshot:
+object TimeUsageSnapshot {
   val empty: TimeUsageSnapshot = TimeUsageSnapshot(Map.empty, Map.empty, Map.empty)
+}
 
 case class Router(
     id: UUID,

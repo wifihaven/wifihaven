@@ -27,10 +27,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
 
   private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock)
   private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
@@ -44,15 +44,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       role: String,
       profileIds: List[Long],
   ): Task[Long] =
-    for
+    for {
       hash <- auth.hashPassword("pass")
       id   <- userRepo.create(username, hash, role)
       _    <- upRepo.setProfilesForUser(id, profileIds)
-    yield id
+    } yield id
 
   def spec = suite("Role-based access")(
     test("child sees only profiles linked to them") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -72,12 +72,12 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp    <- routes.runZIO(req)
         body    <- resp.body.asString
         details <- ZIO.fromEither(body.fromJson[List[ProfileDetail]])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(details.length == 1) &&
         assertTrue(details.head.profile.name == "Kids")
     },
     test("child cannot read sibling's profile") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -96,10 +96,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .get(URL.decode(s"/api/profiles/$adultsId").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
         resp <- routes.runZIO(req)
-      yield assertTrue(resp.status == Status.Forbidden)
+      } yield assertTrue(resp.status == Status.Forbidden)
     },
     test("child cannot edit even their own profile") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -119,10 +119,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .addHeader(Header.Authorization.Bearer(token))
           .addHeader(Header.ContentType(MediaType.application.json))
         resp <- routes.runZIO(req)
-      yield assertTrue(resp.status == Status.Forbidden)
+      } yield assertTrue(resp.status == Status.Forbidden)
     },
     test("adult can edit profiles they're linked to") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -160,11 +160,11 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .addHeader(Header.ContentType(MediaType.application.json))
         resp    <- routes.runZIO(req)
         updated <- profileRepo.findById(kidsId)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(updated.exists(_.name == "Kids Renamed"))
     },
     test("adult cannot edit a profile they're not linked to") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -194,10 +194,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .addHeader(Header.Authorization.Bearer(token))
           .addHeader(Header.ContentType(MediaType.application.json))
         resp <- routes.runZIO(req)
-      yield assertTrue(resp.status == Status.Forbidden)
+      } yield assertTrue(resp.status == Status.Forbidden)
     },
     test("adult cannot create new profiles (admin only)") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -215,10 +215,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .addHeader(Header.Authorization.Bearer(token))
           .addHeader(Header.ContentType(MediaType.application.json))
         resp <- routes.runZIO(req)
-      yield assertTrue(resp.status == Status.Forbidden)
+      } yield assertTrue(resp.status == Status.Forbidden)
     },
     test("adult cannot manage users (admin only)") {
-      for
+      for {
         _        <- cleanDb
         userRepo <- ZIO.service[UserRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
@@ -230,10 +230,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .get(URL.decode("/api/users").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
         resp <- routes.runZIO(req)
-      yield assertTrue(resp.status == Status.Forbidden)
+      } yield assertTrue(resp.status == Status.Forbidden)
     },
     test("admin can set user-profile links and they take effect") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -273,12 +273,12 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         listResp <- profRoutes.runZIO(listReq)
         body     <- listResp.body.asString
         details  <- ZIO.fromEither(body.fromJson[List[ProfileDetail]])
-      yield assertTrue(setResp.status == Status.Ok) &&
+      } yield assertTrue(setResp.status == Status.Ok) &&
         assertTrue(details.length == 1) &&
         assertTrue(details.head.profile.id == kidsId)
     },
     test("GET /api/me returns username, role, and linked profile ids") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         userRepo    <- ZIO.service[UserRepo]
@@ -295,13 +295,13 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp <- routes.runZIO(req)
         body <- resp.body.asString
         me   <- ZIO.fromEither(body.fromJson[MeResponse])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(me.username == "alice") &&
         assertTrue(me.role == "child") &&
         assertTrue(me.profileIds == List(kidsId))
     },
     test("device list scoped to user's profiles for non-admin") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -322,12 +322,12 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp    <- routes.runZIO(req)
         body    <- resp.body.asString
         devices <- ZIO.fromEither(body.fromJson[List[Device]])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(devices.length == 1) &&
         assertTrue(devices.head.name == "kid-tablet")
     },
     test("adult sees ALL profiles (not just linked ones)") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -347,11 +347,11 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp    <- routes.runZIO(req)
         body    <- resp.body.asString
         details <- ZIO.fromEither(body.fromJson[List[ProfileDetail]])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(details.length == 2)
     },
     test("adult can GET any profile by id even if not linked") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
@@ -370,10 +370,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .get(URL.decode(s"/api/profiles/$adultsId").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
         resp <- routes.runZIO(req)
-      yield assertTrue(resp.status == Status.Ok)
+      } yield assertTrue(resp.status == Status.Ok)
     },
     test("adult sees ALL devices (not just linked ones)") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
@@ -394,11 +394,11 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp    <- routes.runZIO(req)
         body    <- resp.body.asString
         devices <- ZIO.fromEither(body.fromJson[List[Device]])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(devices.length == 2)
     },
     test("adult sees ALL logs (not just linked profiles)") {
-      for
+      for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         logRepo     <- ZIO.service[QueryLogRepo]
@@ -443,7 +443,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         resp <- routes.runZIO(req)
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(logs.length == 2)
     },
   ) @@ TestAspect.sequential

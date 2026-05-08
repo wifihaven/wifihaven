@@ -16,7 +16,7 @@ import java.util.UUID
  *
  * Both require a router bearer token resolved via [[RouterAuth]].
  */
-object RouterIngestRoutes:
+object RouterIngestRoutes {
 
   def routes(
       auth: RouterAuth,
@@ -29,7 +29,7 @@ object RouterIngestRoutes:
     Routes(
       Method.POST / "api" / "router" / "usage"  ->
         handler { (req: Request) =>
-          for
+          for {
             router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             rep    <- ZIO
@@ -42,11 +42,11 @@ object RouterIngestRoutes:
             pe     <- parseInstant(rep.periodEnd)
             _ <- handleUsage(router.id, ps, pe, rep.records, trafficRepo, timeUsageRepo, deviceRepo)
             _ <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))
-          yield Response.ok
+          } yield Response.ok
         },
       Method.POST / "api" / "router" / "events" ->
         handler { (req: Request) =>
-          for
+          for {
             router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             rep    <- ZIO
@@ -57,7 +57,7 @@ object RouterIngestRoutes:
               .when(rep.routerId != router.id)
             _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo)
             _      <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))
-          yield Response.ok
+          } yield Response.ok
         },
     )
 
@@ -72,7 +72,7 @@ object RouterIngestRoutes:
       trafficRepo: TrafficReportRepo,
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
-  ): IO[Response, Unit] =
+  ): IO[Response, Unit] = {
     val date    = periodStart.atZone(ZoneOffset.UTC).toLocalDate
     val inserts = records.map(r =>
       TrafficReportInsert(
@@ -88,14 +88,15 @@ object RouterIngestRoutes:
         r.bytesOut,
       ),
     )
-    for
+    for {
       // Idempotency: ON CONFLICT DO NOTHING returns the count of NEW rows.
       // Only those rows should drive time_usage / device updates; replays return 0.
       newCount <- trafficRepo.insertBatch(inserts).orElseFail(Response.internalServerError(""))
       _        <- ZIO.when(newCount > 0)(
         applyDelta(routerId, periodEnd, records, timeUsageRepo, deviceRepo),
       )
-    yield ()
+    } yield ()
+  }
 
   /**
    * Apply seconds/byte deltas + device last_seen for a freshly-accepted batch. We only enter here
@@ -114,7 +115,7 @@ object RouterIngestRoutes:
       records: List[UsageRecord],
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
-  ): IO[Response, Unit] =
+  ): IO[Response, Unit] = {
     val date = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
     ZIO.foreachDiscard(records) { r =>
       timeUsageRepo
@@ -128,23 +129,24 @@ object RouterIngestRoutes:
           .orElseFail(Response.internalServerError(""))
           .unit
       }
+  }
 
   private def handleEvents(
       routerId: UUID,
       events: List[RouterEvent],
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
-  ): IO[Response, Unit] =
+  ): IO[Response, Unit] = {
     val connInserts = events.collect {
       case e if e.`type` == "connection_attempt" =>
-        for
+        for {
           h    <- e.hostname.toRight("connection_attempt missing hostname")
           ts   <- scala.util.Try(Instant.parse(e.ts)).toEither.left.map(_.getMessage)
           allw <- e.allowed.toRight("connection_attempt missing allowed")
           rsn = e.reason.getOrElse(if allw then "allow" else "blocked")
-        yield ConnectionEventInsert(routerId, e.mac, h, e.destIp, allw, rsn, ts)
+        } yield ConnectionEventInsert(routerId, e.mac, h, e.destIp, allw, rsn, ts)
     }
-    for
+    for {
       // Surface JSON validation errors as 400.
       validated <- ZIO.foreach(connInserts)(e =>
         ZIO.fromEither(e).mapError(m => Response.badRequest(m)),
@@ -154,7 +156,8 @@ object RouterIngestRoutes:
         .orElseFail(Response.internalServerError(""))
         .when(validated.nonEmpty)
       _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo))
-    yield ()
+    } yield ()
+  }
 
   /**
    * DHCP lease + first-seen-MAC: upsert into devices. For a known MAC just refresh last_seen_ip /
@@ -167,15 +170,15 @@ object RouterIngestRoutes:
   ): IO[Response, Unit] =
     if e.`type` != "dhcp_lease" && e.`type` != "first_seen_mac" then ZIO.unit
     else
-      e.mac match
+      e.mac match {
         case None      => ZIO.unit
         case Some(mac) =>
-          for
+          for {
             ts       <- ZIO
               .attempt(Instant.parse(e.ts))
               .orElseFail(Response.badRequest(s"invalid ts: ${e.ts}"))
             existing <- deviceRepo.findByMac(mac).orElseFail(Response.internalServerError(""))
-            _        <- existing match
+            _        <- existing match {
               case Some(_) =>
                 deviceRepo
                   .touchLastSeen(mac, e.ip, ts)
@@ -186,4 +189,7 @@ object RouterIngestRoutes:
                   .upsertUnknown(mac, e.hostname.getOrElse("unknown"), e.ip, ts)
                   .orElseFail(Response.internalServerError(""))
                   .unit
-          yield ()
+            }
+          } yield ()
+      }
+}

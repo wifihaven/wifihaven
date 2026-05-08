@@ -29,13 +29,13 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
   )
 
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, jwtCfg, clock)
+    } yield AuthServiceLive(ur, jwtCfg, clock)
 
   private def makePolicyService =
-    for
+    for {
       pr    <- ZIO.service[ProfileRepo]
       sr    <- ZIO.service[ScheduleRepo]
       tlr   <- ZIO.service[TimeLimitRepo]
@@ -45,16 +45,16 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       ur    <- ZIO.service[TimeUsageRepo]
       er    <- ZIO.service[TimeExtensionRepo]
       clock <- ZIO.service[Clock]
-    yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clock)): PolicyService
+    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clock)): PolicyService
 
   /** Seed a router row with a known plain enrollment token, return (id, raw token). */
   private def seedRouter(name: String): ZIO[RouterRepo, Throwable, (UUID, String)] =
-    for
+    for {
       rr <- ZIO.service[RouterRepo]
       token = "et_" + UUID.randomUUID().toString.replace("-", "")
       hash  = PolicyService.hashToken(token)
       id <- rr.create(name, hash)
-    yield (id, token)
+    } yield (id, token)
 
   private def doRegister(routes: Routes[Any, Response], et: String): Task[Response] =
     routes.runZIO(
@@ -66,7 +66,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
 
   def spec = suite("Router API")(
     test("enrollment flow exchanges enrollment_token for router_token; row state updated") {
-      for
+      for {
         _        <- cleanDb
         rr       <- ZIO.service[RouterRepo]
         ber      <- ZIO.service[BlockEventRepo]
@@ -76,14 +76,14 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         body <- resp.body.asString
         out  <- ZIO.fromEither(body.fromJson[RegisterRouterResponse])
         row  <- rr.findById(id).map(_.get)
-      yield assertTrue(resp.status == Status.Ok) &&
+      } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(out.routerId == id) &&
         assertTrue(out.routerToken.startsWith("rt_")) &&
         assertTrue(row.enrollmentTokenHash.isEmpty) &&
         assertTrue(row.tokenHash.contains(PolicyService.hashToken(out.routerToken)))
     },
     test("enrollment token is single-use: second register returns 401") {
-      for
+      for {
         _       <- cleanDb
         rr      <- ZIO.service[RouterRepo]
         ber     <- ZIO.service[BlockEventRepo]
@@ -91,13 +91,13 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         routes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
         first  <- doRegister(routes, et)
         second <- doRegister(routes, et)
-      yield assertTrue(first.status == Status.Ok) &&
+      } yield assertTrue(first.status == Status.Ok) &&
         assertTrue(second.status == Status.Unauthorized)
     },
     test(
       "policy without bearer → 401; wrong bearer → 401; right bearer → 200; persists last_etag",
     ) {
-      for
+      for {
         _       <- cleanDb
         rr      <- ZIO.service[RouterRepo]
         ber     <- ZIO.service[BlockEventRepo]
@@ -119,7 +119,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
             .addHeader(Header.Authorization.Bearer(reg.routerToken)),
         )
         row     <- rr.findById(reg.routerId).map(_.get)
-      yield assertTrue(noAuth.status == Status.Unauthorized) &&
+      } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(wrong.status == Status.Unauthorized) &&
         assertTrue(ok.status == Status.Ok) &&
         assertTrue(row.lastEtag.exists(_.startsWith("\"sha256:")))
@@ -127,7 +127,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
     test(
       "policy snapshot composition: devices, profiles, schedules, site_limits, blocklists, time_used",
     ) {
-      for
+      for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
         sr    <- ZIO.service[ScheduleRepo]
@@ -164,7 +164,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         body    <- resp.body.asString
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
         kp = snap.profiles.find(_.id == kid).get
-      yield assertTrue(snap.devices.size == 2) &&
+      } yield assertTrue(snap.devices.size == 2) &&
         assertTrue(snap.profiles.exists(_.id == kid)) &&
         assertTrue(snap.profiles.exists(_.id == adult)) &&
         assertTrue(snap.defaultProfileId.exists(id => snap.profiles.exists(_.id == id))) &&
@@ -177,7 +177,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(snap.blocklists("ads").url == "/api/blocklists/ads.rpz")
     },
     test("etag deterministic across calls; If-None-Match → 304; mutation → fresh etag") {
-      for
+      for {
         _       <- cleanDb
         pr      <- ZIO.service[ProfileRepo]
         sr      <- ZIO.service[ScheduleRepo]
@@ -211,13 +211,13 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         )
         b3      <- r3.body.asString
         s3      <- ZIO.fromEither(b3.fromJson[PolicySnapshot])
-      yield assertTrue(r1.status == Status.Ok) &&
+      } yield assertTrue(r1.status == Status.Ok) &&
         assertTrue(r2.status == Status.NotModified) &&
         assertTrue(r3.status == Status.Ok) &&
         assertTrue(s1.etag != s3.etag)
     },
     test("RPZ blocklist: 200 with formatted body, 401 unauth, 404 unknown") {
-      for
+      for {
         _       <- cleanDb
         rr      <- ZIO.service[RouterRepo]
         blr     <- ZIO.service[BlocklistRepo]
@@ -241,7 +241,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
             .get(URL.decode("/api/blocklists/nonsense.rpz").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken)),
         )
-      yield assertTrue(noAuth.status == Status.Unauthorized) &&
+      } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(ok.status == Status.Ok) &&
         assertTrue(okBody.contains("$ORIGIN ads.rpz.")) &&
         assertTrue(okBody.contains("doubleclick.net CNAME .")) &&
@@ -251,7 +251,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(nf.status == Status.NotFound)
     },
     test("policy snapshot: unknown device (NULL profile_id) appears with profileId=null") {
-      for
+      for {
         _       <- cleanDb
         pr      <- ZIO.service[ProfileRepo]
         sr      <- ZIO.service[ScheduleRepo]
@@ -281,13 +281,13 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
         unknown = snap.devices.find(_.mac == "ff:ff:ff:aa:bb:cc")
         known   = snap.devices.find(_.mac == "aa:bb:cc:11:22:33")
-      yield assertTrue(snap.devices.size == 2) &&
+      } yield assertTrue(snap.devices.size == 2) &&
         assertTrue(unknown.isDefined) &&
         assertTrue(unknown.exists(_.profileId.isEmpty)) &&
         assertTrue(known.exists(_.profileId.contains(kid)))
     },
     test("admin can create router; non-admin gets 403; row stores enrollment hash, no token yet") {
-      for
+      for {
         _          <- cleanDb
         auth       <- makeAuth
         rr         <- ZIO.service[RouterRepo]
@@ -316,7 +316,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         okBody   <- ok.body.asString
         out      <- ZIO.fromEither(okBody.fromJson[CreateRouterResponse])
         row      <- rr.findById(out.routerId).map(_.get)
-      yield assertTrue(rejected.status == Status.Forbidden) &&
+      } yield assertTrue(rejected.status == Status.Forbidden) &&
         assertTrue(ok.status == Status.Ok) &&
         assertTrue(out.enrollmentToken.startsWith("et_")) &&
         assertTrue(row.tokenHash.isEmpty) &&

@@ -43,9 +43,9 @@ case class DnsClientConfig(
     logFlushSeconds: Int,
 )
 
-object AppConfig:
+object AppConfig {
   val layer: ZLayer[Any, Config.Error, AppConfig] =
-    ZLayer.fromZIO:
+    ZLayer.fromZIO {
       val path = sys.props.getOrElse("config.file", "config/application.conf")
       read(
         deriveConfig[AppConfig]
@@ -54,3 +54,5 @@ object AppConfig:
             TypesafeConfigProvider.fromHoconFile(new java.io.File(path)),
           ),
       )
+    }
+}

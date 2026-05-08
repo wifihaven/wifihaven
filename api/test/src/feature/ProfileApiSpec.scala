@@ -28,10 +28,10 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   private val adminJwt = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
 
   private def makeAuth =
-    for
+    for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
-    yield AuthServiceLive(ur, adminJwt, clock)
+    } yield AuthServiceLive(ur, adminJwt, clock)
 
   private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
@@ -40,7 +40,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   def spec = suite("Profile API")(
     suite("GET /api/profiles")(
       test("returns seeded default profiles") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
@@ -64,13 +64,13 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           resp    <- routes.runZIO(req)
           body    <- resp.body.asString
           details <- ZIO.fromEither(body.fromJson[List[ProfileDetail]])
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(details.length >= 2) &&
           assertTrue(details.exists(_.profile.name == "Kids")) &&
           assertTrue(details.exists(_.profile.name == "Adults"))
       },
       test("returns 401 without token") {
-        for
+        for {
           profileRepo     <- ZIO.service[ProfileRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
@@ -87,12 +87,12 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
           req    = Request.get(URL.decode("/api/profiles").toOption.get)
           resp <- routes.runZIO(req)
-        yield assertTrue(resp.status == Status.Unauthorized)
+        } yield assertTrue(resp.status == Status.Unauthorized)
       },
     ),
     suite("POST /api/profiles")(
       test("admin can create a profile with schedules and time limits") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
@@ -136,7 +136,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           scheds   <- schedRepo.listForProfile(teen.id)
           tl       <- tlRepo.findForProfile(teen.id)
           stls     <- stlRepo.listForProfile(teen.id)
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(teen.blockedCategories.contains("adult")) &&
           assertTrue(teen.extraBlocked.contains("tiktok.com")) &&
           assertTrue(teen.extraAllowed.contains("khanacademy.org")) &&
@@ -148,7 +148,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(stls.head.dailyMinutes == 45)
       },
       test("child user cannot create profiles") {
-        for
+        for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
@@ -173,12 +173,12 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
-        yield assertTrue(resp.status == Status.Forbidden)
+        } yield assertTrue(resp.status == Status.Forbidden)
       },
     ),
     suite("PUT /api/profiles/:id")(
       test("update profile name, categories, and time limit") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -221,7 +221,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           updated <- profileRepo.findById(kidsId)
           tl      <- tlRepo.findForProfile(kidsId)
           scheds  <- schedRepo.listForProfile(kidsId)
-        yield assertTrue(resp.status == Status.Ok) &&
+        } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(updated.exists(_.name == "Kids Updated")) &&
           assertTrue(updated.exists(_.extraAllowed.contains("pbs.org"))) &&
           assertTrue(tl.exists(_.dailyMinutes == 120)) &&
@@ -230,7 +230,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     ),
     suite("POST /api/profiles/:id/pause")(
       test("toggles pause state") {
-        for
+        for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
@@ -259,7 +259,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           afterPause  <- profileRepo.findById(kidsId)
           resp2       <- routes.runZIO(req)
           afterResume <- profileRepo.findById(kidsId)
-        yield assertTrue(resp1.status == Status.Ok) &&
+        } yield assertTrue(resp1.status == Status.Ok) &&
           assertTrue(afterPause.exists(_.paused)) &&
           assertTrue(resp2.status == Status.Ok) &&
           assertTrue(afterResume.exists(!_.paused))

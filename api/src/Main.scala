@@ -10,13 +10,13 @@ import zio.http.*
 import zio.logging.*
 import zio.logging.backend.SLF4J
 
-object Main extends ZIOAppDefault:
+object Main extends ZIOAppDefault {
 
   override val bootstrap =
     Runtime.removeDefaultLoggers >>> SLF4J.slf4j
 
   def run =
-    (for
+    (for {
       cfg    <- ZIO.service[AppConfig]
       _      <- ZIO.logInfo(s"FamilyDNS API starting on ${cfg.http.host}:${cfg.http.port}")
       _      <- Database.runMigrations(cfg.db)
@@ -25,7 +25,7 @@ object Main extends ZIOAppDefault:
       _      <- Server
         .serve(routes)
         .provide(Server.defaultWithPort(cfg.http.port))
-    yield ()).provide(serverEnv)
+    } yield ()).provide(serverEnv)
 
   private val serverEnv =
     AppConfig.layer >+>
@@ -38,7 +38,7 @@ object Main extends ZIOAppDefault:
       PolicyService.layer
 
   private def allRoutes =
-    for
+    for {
       auth        <- ZIO.service[AuthService]
       userRepo    <- ZIO.service[UserRepo]
       upRepo      <- ZIO.service[UserProfileRepo]
@@ -59,7 +59,7 @@ object Main extends ZIOAppDefault:
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
       routerAuth = new RouterAuthLive(routerRepo)
-    yield AuthRoutes.routes(auth, userRepo, upRepo) ++
+    } yield AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo) ++
       DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
       TimeRoutes.routes(
@@ -86,3 +86,4 @@ object Main extends ZIOAppDefault:
         connRepo,
       ) ++
       StaticRoutes.routes(cfg.http.staticDir)
+}

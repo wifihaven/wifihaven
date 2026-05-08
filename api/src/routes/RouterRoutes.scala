@@ -16,7 +16,7 @@ import java.util.{Base64, UUID}
  * `/register`, which uses a one-time enrollment token. `RouterAuth` lives in
  * [[familydns.api.routes.RouterAuth]].
  */
-object RouterRoutes:
+object RouterRoutes {
 
   def routes(
       routerRepo: RouterRepo,
@@ -27,7 +27,7 @@ object RouterRoutes:
     Routes(
       Method.POST / "api" / "router" / "register"        ->
         handler { (req: Request) =>
-          for
+          for {
             body <- req.body.asString.orElseFail(Response.badRequest(""))
             rr   <- ZIO
               .fromEither(body.fromJson[RegisterRouterRequest])
@@ -46,11 +46,11 @@ object RouterRoutes:
             _ <- routerRepo
               .completeEnrollment(router.id, tokenHash)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(RegisterRouterResponse(router.id, routerToken).toJson)
+          } yield Response.json(RegisterRouterResponse(router.id, routerToken).toJson)
         },
       Method.GET / "api" / "router" / "policy"           ->
         handler { (req: Request) =>
-          for
+          for {
             router <- routerAuth.authenticate(req)
             snap   <- policy.snapshot.orElseFail(Response.internalServerError(""))
             ifNoneMatch = req
@@ -69,11 +69,11 @@ object RouterRoutes:
                 Response
                   .json(snap.toJson)
                   .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))
-          yield resp
+          } yield resp
         },
       Method.GET / "api" / "blocklists" / string("file") ->
         handler { (file: String, req: Request) =>
-          for
+          for {
             _    <- routerAuth.authenticate(req)
             cat  <- ZIO
               .succeed(file.stripSuffix(".rpz"))
@@ -100,11 +100,11 @@ object RouterRoutes:
                     )
                 },
               )
-          yield resp
+          } yield resp
         },
       Method.POST / "api" / "router" / "decision"        ->
         handler { (req: Request) =>
-          for
+          for {
             router <- routerAuth.authenticate(req)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             dreq   <- ZIO
@@ -123,20 +123,22 @@ object RouterRoutes:
                   )
                   .orElseFail(Response.internalServerError(""))
               }
-          yield Response.json(result.toJson)
+          } yield Response.json(result.toJson)
         },
     )
 
   private def stripQuotes(s: String): String =
     if s.startsWith("\"") && s.endsWith("\"") then s.drop(1).dropRight(1) else s
 
-  private def newToken(prefix: String): String =
+  private def newToken(prefix: String): String = {
     val bytes = new Array[Byte](32)
     new SecureRandom().nextBytes(bytes)
     prefix + Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
+  }
+}
 
 /** Admin-only routes for managing routers (visible in admin UI). */
-object AdminRouterRoutes:
+object AdminRouterRoutes {
   def routes(
       auth: AuthService,
       routerRepo: RouterRepo,
@@ -144,7 +146,7 @@ object AdminRouterRoutes:
     Routes(
       Method.POST / "api" / "admin" / "routers"                  ->
         handler { (req: Request) =>
-          for
+          for {
             _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(Response.badRequest(""))
             cr   <- ZIO
@@ -158,24 +160,24 @@ object AdminRouterRoutes:
             id <- routerRepo
               .create(cr.name.trim, etHash)
               .orElseFail(Response.internalServerError(""))
-          yield Response.json(CreateRouterResponse(id, cr.name.trim, enrollmentToken).toJson)
+          } yield Response.json(CreateRouterResponse(id, cr.name.trim, enrollmentToken).toJson)
         },
       Method.GET / "api" / "admin" / "routers"                   ->
         handler { (req: Request) =>
-          for
+          for {
             _   <- requireAdmin(req, auth)
             all <- routerRepo.listAll.orElseFail(Response.internalServerError(""))
-          yield Response.json(all.map(toSummary).toJson)
+          } yield Response.json(all.map(toSummary).toJson)
         },
       Method.DELETE / "api" / "admin" / "routers" / string("id") ->
         handler { (id: String, req: Request) =>
-          for
+          for {
             _   <- requireAdmin(req, auth)
             uid <- ZIO
               .attempt(UUID.fromString(id))
               .orElseFail(Response.badRequest("bad uuid"))
             _   <- routerRepo.delete(uid).orElseFail(Response.internalServerError(""))
-          yield Response.ok
+          } yield Response.ok
         },
     )
 
@@ -189,7 +191,9 @@ object AdminRouterRoutes:
       createdAt = r.createdAt,
     )
 
-  private def newEnrollmentToken(): String =
+  private def newEnrollmentToken(): String = {
     val bytes = new Array[Byte](24)
     new SecureRandom().nextBytes(bytes)
     "et_" + Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
+  }
+}

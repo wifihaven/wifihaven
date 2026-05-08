@@ -9,7 +9,7 @@ object DnsPacketSpec extends ZIOSpecDefault {
 
   // A minimal valid DNS query for "google.com" type A
   // Built manually to test parsing without depending on a DNS library
-  private def buildQuery(domain: String, qtype: Int = 1): Array[Byte] =
+  private def buildQuery(domain: String, qtype: Int = 1): Array[Byte] = {
     val header   = Array[Byte](
       0x00, 0x01, // ID = 1
       0x01, 0x00, // Flags: standard query
@@ -30,6 +30,7 @@ object DnsPacketSpec extends ZIOSpecDefault {
       0x01,                // QCLASS IN
     )
     header ++ question
+  }
 
   def spec = suite("DnsPacket")(
     suite("parseQuery")(
