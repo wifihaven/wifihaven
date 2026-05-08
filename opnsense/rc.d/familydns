@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# PROVIDE: familydns
+# REQUIRE: NETWORKING unbound
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="familydns"
+rcvar="familydns_enable"
+command="/usr/local/sbin/familydns-agent"
+pidfile="/var/run/familydns.pid"
+start_cmd="familydns_start"
+stop_cmd="familydns_stop"
+
+: ${familydns_enable:="NO"}
+: ${familydns_config:="/usr/local/etc/familydns.conf"}
+
+familydns_start()
+{
+    export FAMILYDNS_CONFIG="${familydns_config}"
+    /usr/sbin/daemon -p "${pidfile}" -f "${command}"
+    echo "Starting ${name}."
+}
+
+familydns_stop()
+{
+    if [ -f "${pidfile}" ]; then
+        kill "$(cat "${pidfile}")" 2>/dev/null
+        rm -f "${pidfile}"
+    fi
+    echo "Stopping ${name}."
+}
+
+load_rc_config ${name}
+run_rc_command "$1"

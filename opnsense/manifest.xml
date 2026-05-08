@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package>
+  <name>os-familydns</name>
+  <version>0.1.0</version>
+  <comment>FamilyDNS router agent for OPNsense</comment>
+  <desc>
+    Tails pflog0 for new outbound flows, attributes hostnames via the Unbound
+    query log, and streams connection_attempt events to the FamilyDNS API
+    (POST /api/router/events).  Policy rendering and usage reporting are
+    planned for a follow-up release.
+  </desc>
+  <maintainer>sameer@creativedestruction.com</maintainer>
+  <www>https://github.com/sameerparekh/familydns</www>
+  <prefix>/usr/local</prefix>
+  <files>
+    <file>/usr/local/sbin/familydns-agent</file>
+    <file>/usr/local/lib/familydns/__init__.py</file>
+    <file>/usr/local/lib/familydns/agent.py</file>
+    <file>/usr/local/lib/familydns/pflog.py</file>
+    <file>/usr/local/lib/familydns/unbound.py</file>
+    <file>/usr/local/etc/rc.d/familydns</file>
+  </files>
+  <flatsize>32768</flatsize>
+</package>
