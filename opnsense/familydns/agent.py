@@ -3,8 +3,8 @@
 Wires together:
   - pflog watcher  → connection_attempt events → POST /api/router/events
   - unbound watcher → populates HostnameCache for hostname attribution
-  - policy polling + config rendering  (DEFERRED to follow-up issue)
-  - usage reporting                    (DEFERRED to follow-up issue)
+  - policy polling + config rendering  (TODO(#112): policy polling + pf/Unbound config rendering)
+  - usage reporting                    (TODO(#113): usage reporting POST /api/router/usage)
 
 Provides:
   - Batcher: size- and time-triggered event batcher
@@ -182,6 +182,7 @@ def main() -> None:
     flush_interval = int(sec.get("event_flush_interval", "10"))
     unbound_log = sec.get("unbound_log", "/var/log/unbound/unbound.log")
 
+    # TODO(#111): enrollment — exchange enrollmentToken for router_token/router_id automatically
     if not router_token:
         print("[familydns] router_token not set — run enrollment first", file=sys.stderr)
         sys.exit(1)
