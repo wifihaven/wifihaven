@@ -40,7 +40,8 @@ class PolicyServiceLive(
       tlMap    = tlims.toMap
       stlMap   = stlims.toMap
     yield
-      val devsByProfile = devices.groupBy(_.profileId)
+      val devsByProfile =
+        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
       val pProfiles     = profiles.map { p =>
         val pSched    = schedMap
           .getOrElse(p.id, Nil)
@@ -116,9 +117,9 @@ class PolicyServiceLive(
       now   <- clock.now
       today <- clock.today
       device  = snap.devices.find(_.mac.equalsIgnoreCase(mac))
-      profile = device.flatMap(d => snap.profiles.find(_.id == d.profileId))
+      profile = device.flatMap(d => d.profileId.flatMap(pid => snap.profiles.find(_.id == pid)))
       result <- profile match
-        case None    => ZIO.succeed(RouterDecisionResponse("allow", "unknown_device", None))
+        case None    => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
         case Some(p) =>
           val h = hostname.toLowerCase.stripSuffix(".")
           if p.paused then ZIO.succeed(RouterDecisionResponse("block", "paused", None))
@@ -262,7 +263,9 @@ object PolicyService:
   private[policy] def computeEtag(core: SnapshotCore): String =
     val parts = scala.collection.mutable.ArrayBuffer.empty[String]
     parts += s"d=${core.defaultProfileId.getOrElse("-")}"
-    core.devices.sortBy(_.mac).foreach(d => parts += s"dev:${d.mac}|${d.profileId}|${d.name}")
+    core.devices
+      .sortBy(_.mac)
+      .foreach(d => parts += s"dev:${d.mac}|${d.profileId.getOrElse("-")}|${d.name}")
     core.profiles.sortBy(_.id).foreach { p =>
       parts += s"p:${p.id}|${p.name}|${p.paused}|${p.dailyMinutes.getOrElse(-1)}|${p.extensionsTodayMinutes}"
       parts += s"  bc:${p.blockedCategories.sorted.mkString(",")}"

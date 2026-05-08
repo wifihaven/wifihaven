@@ -12,7 +12,7 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
-import java.time.{LocalDate, LocalDateTime}
+import java.time.{Instant, LocalDate, LocalDateTime}
 import java.util.UUID
 
 object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
@@ -102,7 +102,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(wrong.status == Status.Unauthorized)
     },
-    test("unrecognized mac → allow, no block_event") {
+    test("unrecognized mac → allow, no_profile, no block_event") {
       for
         _   <- cleanDb
         rr  <- ZIO.service[RouterRepo]
@@ -116,7 +116,26 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         events <- ber.recent(10)
       yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(dr.decision == "allow") &&
+        assertTrue(dr.reason == "no_profile") &&
         assertTrue(events.isEmpty)
+    },
+    test("MAC in devices with NULL profile_id → allow, no_profile") {
+      for
+        _     <- cleanDb
+        rr    <- ZIO.service[RouterRepo]
+        dRepo <- ZIO.service[DeviceRepo]
+        ber   <- ZIO.service[BlockEventRepo]
+        mac = "aa:bb:cc:11:22:99"
+        _  <- dRepo.upsertUnknown(mac, "mystery-laptop", Some("10.0.0.5"), Instant.now())
+        ps <- makePsDefault
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        tok  <- seedAndEnrollRouter(rr, routes)
+        resp <- callDecide(routes, tok, mac, "example.com")
+        body <- resp.body.asString
+        dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
+      yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(dr.decision == "allow") &&
+        assertTrue(dr.reason == "no_profile")
     },
     test("paused profile → block:paused, null expires_at, block_event recorded") {
       for

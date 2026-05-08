@@ -250,6 +250,42 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(ok.header(Header.ETag).isDefined) &&
         assertTrue(nf.status == Status.NotFound)
     },
+    test("policy snapshot: unknown device (NULL profile_id) appears with profileId=null") {
+      for
+        _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
+        sr      <- ZIO.service[ScheduleRepo]
+        dr      <- ZIO.service[DeviceRepo]
+        rr      <- ZIO.service[RouterRepo]
+        kid     <- TestLayers.seedKidsProfile(pr, sr)
+        _       <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        _       <- dr.upsertUnknown(
+          "ff:ff:ff:aa:bb:cc",
+          "mystery",
+          Some("10.0.0.99"),
+          java.time.Instant.now(),
+        )
+        ber     <- ZIO.service[BlockEventRepo]
+        ps      <- makePolicyService
+        (_, et) <- seedRouter("gw-snap-unknown")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        resp    <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+        body    <- resp.body.asString
+        snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
+        unknown = snap.devices.find(_.mac == "ff:ff:ff:aa:bb:cc")
+        known   = snap.devices.find(_.mac == "aa:bb:cc:11:22:33")
+      yield assertTrue(snap.devices.size == 2) &&
+        assertTrue(unknown.isDefined) &&
+        assertTrue(unknown.exists(_.profileId.isEmpty)) &&
+        assertTrue(known.exists(_.profileId.contains(kid)))
+    },
     test("admin can create router; non-admin gets 403; row stores enrollment hash, no token yet") {
       for
         _          <- cleanDb

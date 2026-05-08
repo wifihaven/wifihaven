@@ -79,7 +79,7 @@ case class Device(
     id: Long,
     mac: String,
     name: String,
-    profileId: Long,
+    profileId: Option[Long],
     profileName: Option[String],
     lastSeenIp: Option[String],
     lastSeenAt: Option[String],
@@ -339,7 +339,7 @@ case class RouterDecisionResponse(
     expiresAt: Option[String],
 ) derives JsonCodec
 
-case class PolicyDevice(mac: String, profileId: Long, name: String) derives JsonCodec
+case class PolicyDevice(mac: String, profileId: Option[Long], name: String) derives JsonCodec
 case class PolicySchedule(days: List[String], blockFrom: String, blockUntil: String)
     derives JsonCodec
 case class PolicySiteLimit(domain: String, minutes: Int, label: String) derives JsonCodec
