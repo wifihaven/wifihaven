@@ -58,7 +58,7 @@ object DnsMain extends ZIOAppDefault:
         val pstls = stls.filter(_.profileId == p.id)
         p.id -> CachedProfile(p, sched, tl, pstls)
       }.toMap
-      deviceMap = devices.flatMap(d => cached.get(d.profileId).map(d.mac -> _)).toMap
+      deviceMap = devices.flatMap(d => d.profileId.flatMap(cached.get).map(d.mac -> _)).toMap
     yield DnsCache(deviceMap, blocklists, cached.values.find(_.profile.name == "Adults"))
 
   private def loadUsage: ZIO[TimeUsageRepo & TimeExtensionRepo, Throwable, TimeUsageSnapshot] =

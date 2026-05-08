@@ -4,7 +4,7 @@ OpenWrt 23.x agent for FamilyDNS. Enforces per-device DNS filtering via
 dnsmasq + nftables, accounts traffic per `(mac, hostname)`, and streams
 connection events to the FamilyDNS API.
 
-## Package contents
+## Package layout
 
 ```
 openwrt/
@@ -16,34 +16,47 @@ openwrt/
 │   ├── usr/sbin/familydns-agent           main daemon entry point (Lua)
 │   └── usr/lib/familydns/
 │       ├── conntrack.lua                  conntrack new-flow watcher + event batcher
-│       ├── policy.lua                     snapshot fetcher, atomic apply  [pending #72]
-│       ├── usage.lua                      nftables counter scraper, reporter  [pending #72]
-│       └── render.lua                     writes dnsmasq + nft fragments  [pending #72]
+│       ├── policy.lua                     snapshot fetcher + atomic config apply
+│       ├── render.lua                     dnsmasq conf + nft fragment generator
+│       └── usage.lua                      nftables counter scraper + usage reporter
 └── test/
-    └── conntrack_spec.lua                 busted unit tests for conntrack.lua
+    ├── conntrack_spec.lua
+    ├── render_spec.lua
+    ├── policy_spec.lua
+    ├── usage_spec.lua
+    ├── init_spec.sh
+    └── run_tests.sh
 ```
 
-`policy.lua`, `usage.lua`, and `render.lua` land in #72. Deploy steps that
-depend on those modules are marked **[pending #72]**.
+## Daemon behaviour
+
+The agent runs three co-operative responsibilities in a single process:
+
+| Timer | Interval | What it does |
+|---|---|---|
+| Policy | 60 s | `GET /api/router/policy?since=<etag>`; on 200 atomically rewrites `/tmp/dnsmasq.d/familydns.conf` and `/tmp/nftables.d/familydns.nft`, then reloads dnsmasq + nft |
+| Usage | 5 min | Scrapes nftables counters, builds per-(mac, hostname) records, `POST /api/router/usage`, resets counters on success |
+| Events | per-flow | Watches `conntrack -E -e NEW`; batches `connection_attempt` events to `POST /api/router/events` |
+
+Policy decisions (drop, DNAT to block page) are enforced in-kernel by
+nftables — no round-trip to the API per request.
 
 ## Dependencies
 
 Installed automatically by opkg when you install the package:
 
-| Package | Purpose |
-|---------|---------|
-| `lua` | Lua 5.1 interpreter |
-| `luci-lib-jsonc` | `cjson` for JSON encoding |
-| `conntrack-tools` | `conntrack -E -e NEW` for event watching |
-| `curl` | HTTP POSTs to the API |
+- `lua` — Lua 5.1 interpreter
+- `luci-lib-jsonc` — provides `cjson` for JSON encoding
+- `conntrack-tools` — provides `conntrack -E -e NEW`
+- `curl` — HTTP client used by the agent
 
 The following must be present on the router (standard on OpenWrt 23.x):
 
 | Package | Purpose |
 |---------|---------|
 | `dnsmasq-full` | DNS server with `--ipset=` and `--dhcp-script` support |
-| `nftables` | Packet filter (policy rendering, traffic counters) **[pending #72]** |
-| `uhttpd` | Local block-page server **[pending #72]** |
+| `nftables` | Packet filter (policy rendering, traffic counters) |
+| `uhttpd` | Local block-page server |
 
 ## Build
 
@@ -95,51 +108,51 @@ git push origin v0.2.0
 ## Flash / Install
 
 ```sh
-# Copy the .ipk to the router and install:
 scp openwrt/familydns_*.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 opkg install /tmp/familydns_*.ipk
 ```
 
-opkg installs all files, runs the `postinst` script (which enables the
+opkg installs all files and runs the `postinst` script (which enables the
 procd service), but does **not** start the daemon yet — enrollment must
-happen first (see next section).
+happen first.
 
-## Enroll
+## Enrollment
 
-Enrollment exchanges a one-time token for a long-lived bearer token. Do
-this once per router.
+### 1. Create a router record in the admin UI
 
-### Step 1: generate an enrollment token
+Go to the FamilyDNS admin UI → **Routers → Add router**. Copy the
+one-time enrollment token (looks like `et_5f3c9b…`).
 
-In the FamilyDNS admin UI → **Routers** → **Add router**. Give the router
-a name (e.g. `home-gw`) and copy the enrollment token (`et_…`).
+### 2. Exchange the enrollment token for a router token
 
-### Step 2: register the router with the API
-
-Run this from the router shell (or any host that can reach the API):
+Run this from the router (or any host that can reach the API):
 
 ```sh
 curl -s -X POST http://<api-host>:8080/api/router/register \
   -H 'Content-Type: application/json' \
   -d '{
-    "enrollmentToken": "et_XXXX",
-    "routerName":      "home-gw",
-    "platformVersion": "23.05.5",
-    "agentVersion":    "0.1.0"
+    "enrollment_token": "et_…",
+    "router_name":      "home-gw",
+    "openwrt_version":  "23.05.5",
+    "agent_version":    "0.1.0"
   }'
-# → {"routerId":"9c1f2e8a-…","routerToken":"rt_…"}
+# → {"router_id":"9c1f2e8a-…","router_token":"rt_a7d12b…"}
 ```
 
 The enrollment token is single-use; it is invalidated on success.
 
-### Step 3: write the returned values to UCI
+### 3. Write the values into UCI config and start the agent
 
 ```sh
 uci set familydns.@familydns[0].api_url='http://<api-host>:8080'
-uci set familydns.@familydns[0].router_id='<routerId from response>'
-uci set familydns.@familydns[0].router_token='<routerToken from response>'
+uci set familydns.@familydns[0].router_id='<router_id>'
+uci set familydns.@familydns[0].router_token='<router_token>'
 uci commit familydns
+/etc/init.d/familydns start
 ```
+
+The agent is already enabled for autostart by the `postinst` script, so
+it will also start on the next reboot.
 
 Adjust `lan_prefix` if your LAN subnet is not `192.168.1.`:
 
@@ -148,14 +161,24 @@ uci set familydns.@familydns[0].lan_prefix='10.0.0.'
 uci commit familydns
 ```
 
-### Step 4: start the daemon
+## Block-page redirect
+
+Blocked HTTP/80 traffic is DNAT'd to `127.0.0.1:8081` (uhttpd).
+uhttpd serves `/www/familydns/block.html`, which uses JavaScript to
+redirect the browser to `http://<api>/blocked?host=…&reason=…`.
+
+HTTPS to blocked hosts times out intentionally — intercepting TLS without
+installing a custom CA on every client device is not practical.
+
+Configure uhttpd to listen on `127.0.0.1:8081`:
 
 ```sh
-/etc/init.d/familydns start
+uci add uhttpd uhttpd
+uci set uhttpd.@uhttpd[-1].listen_http='127.0.0.1:8081'
+uci set uhttpd.@uhttpd[-1].home='/www'
+uci commit uhttpd
+/etc/init.d/uhttpd reload
 ```
-
-The agent is already enabled for autostart by the `postinst` script, so
-it will also start on the next reboot.
 
 ## Verify
 
@@ -174,11 +197,10 @@ logread -f | grep familydns
 
 # Show current UCI config:
 uci show familydns
-
-# Check policy poll is working — the API admin UI should show
-# this router's last_seen_at updating every ~60 s under
-# Routers → <router name>.
 ```
+
+The FamilyDNS admin UI → Routers → `<router name>` shows `last_seen_at`;
+it should update every ~60 s once the policy timer is running.
 
 If the agent refuses to start, the most common cause is a missing or empty
 `router_token`. Check with `uci get familydns.@familydns[0].router_token`.
@@ -188,27 +210,22 @@ If the agent refuses to start, the most common cause is a missing or empty
 ### Manual update
 
 ```sh
-# On your dev machine — build the new .ipk:
+# Build the new .ipk:
 PKG_VERSION=0.2.0 ./openwrt/build-ipk.sh
 
-# Copy and upgrade (--force-reinstall overwrites config-protected files):
+# Copy and upgrade (--force-reinstall preserves /etc/config/familydns):
 scp openwrt/familydns_0.2.0-1_all.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 'opkg install --force-reinstall /tmp/familydns_0.2.0-1_all.ipk'
 ```
 
-opkg preserves `/etc/config/familydns` across upgrades (the file is
-declared with `INSTALL_CONF`, which marks it as a config file in the
-package control metadata). The bearer token and router ID survive the
-upgrade unchanged; no re-enrollment is needed.
+opkg preserves `/etc/config/familydns` across upgrades. The bearer token
+and router ID survive unchanged; no re-enrollment is needed.
 
-### Automated update via CI release
+### Via CI release
 
 1. Push a `v*` tag — CI builds the `.ipk` and attaches it to the GitHub release.
-2. Download the `.ipk` from the release page (or `gh release download`).
+2. Download the `.ipk` from the release page.
 3. `scp` + `opkg install --force-reinstall` as above.
-
-A self-update mechanism (the agent pulling its own upgrade) is out of scope
-for v1 but can be layered on later using `opkg` from within the agent.
 
 ## Rollback
 
@@ -219,23 +236,22 @@ If the new agent misbehaves:
 /etc/init.d/familydns stop
 /etc/init.d/familydns disable
 
-# (Optional) reinstall the previous .ipk if you kept it:
+# Reinstall the previous .ipk if you kept it:
 scp familydns_0.1.0-1_all.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 'opkg install --force-reinstall /tmp/familydns_0.1.0-1_all.ipk'
 /etc/init.d/familydns enable
 /etc/init.d/familydns start
 ```
 
-While the agent is stopped, DNS and packet-filter rules applied by the
-previous run remain in place until the router reboots or you manually
-clear them:
+While the agent is stopped, dnsmasq/nftables rules from the last policy
+apply remain in place until a reboot or you clear them manually:
 
 ```sh
-# Remove dnsmasq fragment and reload:  [pending #72 — render.lua]
+# Remove dnsmasq fragment and reload:
 rm -f /tmp/dnsmasq.d/familydns.conf
 /etc/init.d/dnsmasq restart
 
-# Remove nftables fragment and reload:  [pending #72 — render.lua]
+# Remove nftables fragment and flush:
 rm -f /tmp/nftables.d/familydns.nft
 nft flush ruleset
 ```
@@ -245,16 +261,29 @@ starting the service resumes operation without re-enrollment.
 
 ## Running tests
 
-Tests require [busted](https://olivinelabs.com/busted/) and `lua-cjson`
-(Lua 5.1 to match OpenWrt 23.x):
+Tests require [busted](https://olivinelabs.com/busted/) and `lua-cjson`.
+Install with [LuaRocks](https://luarocks.org/):
 
 ```sh
 luarocks install busted
 luarocks install lua-cjson
-busted openwrt/test/conntrack_spec.lua
 ```
 
-CI runs these automatically in the `lua-tests` job in `.github/workflows/ci.yml`.
+Run all tests from the repo root:
+
+```sh
+cd openwrt && sh test/run_tests.sh
+```
+
+Or run a single spec:
+
+```sh
+cd openwrt && LUA_PATH="./files/usr/lib/?.lua;./files/usr/lib/familydns/?.lua;;" \
+  busted test/render_spec.lua
+```
+
+CI runs Lua tests automatically in the `lua-tests` job in
+`.github/workflows/ci.yml`.
 
 ## conntrack hook: design rationale
 
@@ -262,15 +291,19 @@ CI runs these automatically in the `lua-tests` job in `.github/workflows/ci.yml`
 
 - Available on stock OpenWrt 23.x via the `conntrack-tools` package without
   enabling per-rule tracing.
-- Produces line-oriented output that can be consumed with a simple `io.popen`
-  loop in Lua.
+- Produces line-oriented output consumable with a simple `io.popen` loop in Lua.
 - `meta nftrace` requires a matching `nftrace` rule on every chain and
   produces verbose output that is harder to parse safely.
 
 Hostname attribution uses the `nft_sets` table populated by `render.lua`
-from dnsmasq `--ipset=` callbacks (§6.2 of `docs/architecture.md`).
-Reverse DNS is intentionally avoided because CDN PTR records do not reflect
-what the user resolved.
+from dnsmasq `--ipset=` callbacks. Reverse DNS is intentionally avoided
+because CDN PTR records do not reflect what the user resolved.
 
-Both allowed and blocked flows are reported so the admin UI shows a complete
-connection timeline, not just block events.
+Both allowed and blocked flows are reported so the admin UI shows a
+complete connection timeline, not just block events.
+
+## Architecture reference
+
+See [`docs/architecture.md`](../docs/architecture.md) for the full design —
+especially §7 (OpenWRT agent design), §7.2 (hostname attribution via dnsmasq
+`--ipset=`), and §7.6 (block-page redirect flow).

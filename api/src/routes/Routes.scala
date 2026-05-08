@@ -145,7 +145,7 @@ object ProfileRoutes:
         handler { (id: Long, req: Request) =>
           for
             claims <- requireAuth(req, auth)
-            _      <- requireProfileAccess(claims, id, userProfileRepo)
+            _      <- requireProfileReadAccess(claims, id, userProfileRepo)
             p      <- profileRepo
               .findById(id)
               .orElseFail(Response.internalServerError(""))
@@ -345,7 +345,7 @@ object TimeRoutes:
               .findByMac(normalizeMac(mac))
               .orElseFail(Response.internalServerError(""))
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileAccess(claims, device.profileId, userProfileRepo)
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
             status <- buildDeviceTimeStatus(
               device,
               date,
@@ -387,7 +387,7 @@ object TimeRoutes:
               .findByMac(normalized)
               .orElseFail(Response.internalServerError(""))
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileAccess(claims, device.profileId, userProfileRepo)
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
             date   <- clock.today
             exts   <- extRepo
               .listForDevice(normalized, date)
@@ -405,12 +405,15 @@ object TimeRoutes:
       usageRepo: TimeUsageRepo,
       extRepo: TimeExtensionRepo,
   ): Task[DeviceTimeStatus] =
+    val pid = device.profileId
     for
-      tl      <- tlRepo.findForProfile(device.profileId)
-      stls    <- stlRepo.listForProfile(device.profileId)
+      tl      <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
+      stls    <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
       usages  <- usageRepo.listForDevice(device.mac, date)
       extMins <- extRepo.getTotalExtension(device.mac, date)
-      profile <- profileRepo.findById(device.profileId).map(_.map(_.name).getOrElse("Unknown"))
+      profile <- pid.fold(ZIO.succeed("No profile"))(p =>
+        profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
+      )
       totalUsed = usages
         .filterNot(u => stls.exists(s => matchesPattern(u.domain, s.domainPattern)))
         .map(_.minutesUsed)
@@ -553,13 +556,13 @@ def requireWriter(req: Request, auth: AuthService): IO[Response, JwtClaims] =
         },
     )
 
-/** Admin sees all profiles. Adult/child only see profiles linked to their user. */
+/** Admin and adult see all profiles. Child only sees profiles linked to their user. */
 def visibleProfiles(
     claims: JwtClaims,
     all: List[Profile],
     upRepo: UserProfileRepo,
 ): IO[Response, List[Profile]] =
-  if claims.role == "admin" then ZIO.succeed(all)
+  if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
       .listProfilesForUsername(claims.sub)
@@ -571,26 +574,42 @@ def filterDevices(
     all: List[Device],
     upRepo: UserProfileRepo,
 ): IO[Response, List[Device]] =
-  if claims.role == "admin" then ZIO.succeed(all)
+  if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
       .listProfilesForUsername(claims.sub)
       .orElseFail(Response.internalServerError(""))
-      .map(pids => all.filter(d => pids.contains(d.profileId)))
+      .map(pids => all.filter(d => d.profileId.exists(pids.contains)))
 
 def filterLogs(
     claims: JwtClaims,
     all: List[QueryLog],
     upRepo: UserProfileRepo,
 ): IO[Response, List[QueryLog]] =
-  if claims.role == "admin" then ZIO.succeed(all)
+  if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(all)
   else
     upRepo
       .listProfilesForUsername(claims.sub)
       .orElseFail(Response.internalServerError(""))
       .map(pids => all.filter(l => l.profileId.exists(pids.contains)))
 
-/** Allow if admin, or the user is linked to that profile. */
+/** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
+def requireProfileReadAccess(
+    claims: JwtClaims,
+    profileId: Long,
+    upRepo: UserProfileRepo,
+): IO[Response, Unit] =
+  if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
+  else
+    upRepo
+      .listProfilesForUsername(claims.sub)
+      .orElseFail(Response.internalServerError(""))
+      .flatMap { pids =>
+        if pids.contains(profileId) then ZIO.succeed(())
+        else ZIO.fail(Response.forbidden("Not authorized for this profile"))
+      }
+
+/** Allow write access if admin or adult linked to the profile. Child is always denied. */
 def requireProfileAccess(
     claims: JwtClaims,
     profileId: Long,
@@ -605,6 +624,17 @@ def requireProfileAccess(
         if pids.contains(profileId) then ZIO.succeed(())
         else ZIO.fail(Response.forbidden("Not authorized for this profile"))
       }
+
+def requireProfileAccess(
+    claims: JwtClaims,
+    profileId: Option[Long],
+    upRepo: UserProfileRepo,
+): IO[Response, Unit] =
+  profileId match
+    case None      =>
+      if claims.role == "admin" then ZIO.succeed(())
+      else ZIO.fail(Response.forbidden("Device has no assigned profile"))
+    case Some(pid) => requireProfileAccess(claims, pid, upRepo)
 
 def normalizeMac(mac: String): String =
   mac.toLowerCase.replace("-", ":").trim

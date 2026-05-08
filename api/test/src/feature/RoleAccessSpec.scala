@@ -326,5 +326,125 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         assertTrue(devices.length == 1) &&
         assertTrue(devices.head.name == "kid-tablet")
     },
+    test("adult sees ALL profiles (not just linked ones)") {
+      for
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        schedRepo   <- ZIO.service[ScheduleRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        profiles    <- profileRepo.listAll
+        kidsId = profiles.find(_.name == "Kids").get.id
+        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token)
+        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        req    = Request
+          .get(URL.decode("/api/profiles").toOption.get)
+          .addHeader(Header.Authorization.Bearer(token))
+        resp    <- routes.runZIO(req)
+        body    <- resp.body.asString
+        details <- ZIO.fromEither(body.fromJson[List[ProfileDetail]])
+      yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(details.length == 2)
+    },
+    test("adult can GET any profile by id even if not linked") {
+      for
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        schedRepo   <- ZIO.service[ScheduleRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        profiles    <- profileRepo.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token)
+        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        req    = Request
+          .get(URL.decode(s"/api/profiles/$adultsId").toOption.get)
+          .addHeader(Header.Authorization.Bearer(token))
+        resp <- routes.runZIO(req)
+      yield assertTrue(resp.status == Status.Ok)
+    },
+    test("adult sees ALL devices (not just linked ones)") {
+      for
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        profiles    <- profileRepo.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        _     <- deviceRepo.upsert("aa:bb:cc:00:00:01", "kid-tablet", kidsId, "")
+        _     <- deviceRepo.upsert("aa:bb:cc:00:00:02", "dad-laptop", adultsId, "")
+        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token)
+        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        req    = Request
+          .get(URL.decode("/api/devices").toOption.get)
+          .addHeader(Header.Authorization.Bearer(token))
+        resp    <- routes.runZIO(req)
+        body    <- resp.body.asString
+        devices <- ZIO.fromEither(body.fromJson[List[Device]])
+      yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(devices.length == 2)
+    },
+    test("adult sees ALL logs (not just linked profiles)") {
+      for
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        logRepo     <- ZIO.service[QueryLogRepo]
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        profiles    <- profileRepo.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        _     <- logRepo.insertBatch(
+          List(
+            QueryLogInsert(
+              Some("aa:bb:cc:00:00:01"),
+              Some("kid-tablet"),
+              Some(kidsId),
+              Some("Kids"),
+              "youtube.com",
+              1,
+              blocked = false,
+              "allowed",
+              Some("home"),
+            ),
+            QueryLogInsert(
+              Some("aa:bb:cc:00:00:02"),
+              Some("dad-laptop"),
+              Some(adultsId),
+              Some("Adults"),
+              "nytimes.com",
+              1,
+              blocked = false,
+              "allowed",
+              Some("home"),
+            ),
+          ),
+        )
+        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token)
+        routes = LogRoutes.routes(auth, logRepo, upRepo)
+        req    = Request
+          .get(URL.decode("/api/logs").toOption.get)
+          .addHeader(Header.Authorization.Bearer(token))
+        resp <- routes.runZIO(req)
+        body <- resp.body.asString
+        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+      yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(logs.length == 2)
+    },
   ) @@ TestAspect.sequential
 }

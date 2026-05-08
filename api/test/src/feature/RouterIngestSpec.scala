@@ -283,8 +283,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _ <- post(routes, "/api/router/events", body, Some(tk))
         d <- dRepo.findByMac(unknownMac)
       yield assertTrue(d.exists(_.name == "mystery-laptop")) &&
-        // unassigned profile means profileId == 0 (the route DAO maps NULL → 0)
-        assertTrue(d.exists(_.profileId == 0L)) &&
+        assertTrue(d.exists(_.profileId.isEmpty)) &&
         assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.55")))
     },
     test("events: dhcp_lease for the same unknown mac twice is idempotent (no duplicate row)") {
@@ -325,7 +324,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _ <- post(routes, "/api/router/events", body, Some(tk))
         d <- dRepo.findByMac("aa:bb:cc:dd:ee:01")
       yield assertTrue(d.isDefined) &&
-        assertTrue(d.exists(_.profileId == 0L)) &&
+        assertTrue(d.exists(_.profileId.isEmpty)) &&
         assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.61")))
     },
   ) @@ TestAspect.sequential

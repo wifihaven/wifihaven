@@ -43,7 +43,7 @@ export interface Device {
   id: number
   mac: string
   name: string
-  profileId: number
+  profileId: number | null
   profileName: string | null
   lastSeenIp: string | null
   lastSeenAt: string | null
