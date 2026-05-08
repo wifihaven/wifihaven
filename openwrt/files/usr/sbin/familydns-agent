@@ -1,35 +1,38 @@
 #!/usr/bin/lua
 -- familydns-agent — main daemon for the familydns OpenWrt package
 --
--- Three concurrent responsibilities (run in co-operative timer loop):
+-- Three concurrent responsibilities (cooperative timer loop):
 --   1. Policy timer  (60 s)  — GET /api/router/policy; rewrite dnsmasq + nft config
 --   2. Usage timer   (5 min) — scrape nft counters; POST /api/router/usage
 --   3. Event watcher (async) — watch conntrack NEW flows; POST /api/router/events
 --
--- This file wires them together and reads UCI config.  The actual logic lives in
--- the usr/lib/familydns/*.lua modules so they can be unit-tested independently.
---
--- Modules #72 will add: policy.lua, usage.lua, render.lua.
--- This commit adds: conntrack.lua (event watcher) and the agent skeleton.
+-- Module layout:
+--   conntrack.lua  — event watcher (connection_attempt events)
+--   policy.lua     — snapshot fetcher + atomic config apply
+--   render.lua     — dnsmasq conf + nft fragment generator
+--   usage.lua      — nftables counter scraper + usage reporter
 
 local uci      = require("uci")
+local policy   = require("familydns.policy")
+local usage    = require("familydns.usage")
 local conntrack = require("familydns.conntrack")
+local render   = require("familydns.render")
 
--- ── Read UCI config ─────────────────────────────────────────────────────────
+-- ── UCI config ───────────────────────────────────────────────────────────────
 
 local cursor = uci.cursor()
-local cfg_section = "familydns"
-
 local function uci_get(opt, default)
-  return cursor:get(cfg_section, "@familydns[0]", opt) or default
+  return cursor:get("familydns", "@familydns[0]", opt) or default
 end
 
-local api_url      = uci_get("api_url",      "http://192.168.1.1:8080")
-local router_token = uci_get("router_token", "")
-local router_id    = uci_get("router_id",    "")
-local lan_prefix   = uci_get("lan_prefix",   "192.168.1.")
-local max_batch    = tonumber(uci_get("event_batch_size", "50"))
-local flush_int    = tonumber(uci_get("event_flush_interval", "10"))
+local api_url       = uci_get("api_url",              "http://192.168.1.1:8080")
+local router_token  = uci_get("router_token",         "")
+local router_id     = uci_get("router_id",            "")
+local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
+local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
+local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
+local policy_int    = tonumber(uci_get("policy_poll_interval",    "60"))
+local usage_int     = tonumber(uci_get("usage_report_interval",   "300"))
 
 if router_token == "" then
   io.stderr:write("[familydns] router_token not set — run enrollment first\n")
@@ -40,32 +43,101 @@ if router_id == "" then
   os.exit(1)
 end
 
--- ── Shared state (populated by render.lua on each policy reload) ─────────────
--- Other modules write into these tables; conntrack.lua reads them.
+-- ── Shared state (render.lua writes; conntrack.lua reads) ─────────────────────
 
 local nft_sets     = {}   -- { hostname -> { ip -> true } }
 local blocked_ips  = {}   -- { ip -> true }
 local blocked_reason = {} -- { ip -> reason_string }
 
--- ── HTTP helper (uses curl, available on all OpenWrt builds) ─────────────────
+-- ── HTTP helpers (curl, available on all OpenWrt builds) ──────────────────────
 
 local function http_post(url, body, headers)
-  local header_args = ""
+  local hdr_args = ""
   for k, v in pairs(headers or {}) do
-    header_args = header_args .. string.format(" -H '%s: %s'", k, v)
+    hdr_args = hdr_args .. string.format(" -H %q", k .. ": " .. v)
   end
   local cmd = string.format(
-    "curl -s -o /dev/null -w '%%{http_code}' -X POST%s --data-binary @- '%s'",
-    header_args, url
-  )
-  local pipe = io.popen("echo " .. string.format("%q", body) .. " | " .. cmd, "r")
+    "curl -s -o /dev/null -w '%%{http_code}' -X POST%s --data-binary @- %q",
+    hdr_args, url)
+  local pipe = io.popen("printf '%%s' " .. string.format("%q", body) .. " | " .. cmd, "r")
   if not pipe then return nil, "" end
   local code = pipe:read("*l")
   pipe:close()
   return tonumber(code), ""
 end
 
--- ── Start event watcher ───────────────────────────────────────────────────────
+local function http_get(url, headers)
+  local hdr_args = ""
+  for k, v in pairs(headers or {}) do
+    hdr_args = hdr_args .. string.format(" -H %q", k .. ": " .. v)
+  end
+  local cmd = string.format(
+    "curl -s -w '\\n%%{http_code}' %s %q", hdr_args, url)
+  local pipe = io.popen(cmd, "r")
+  if not pipe then return nil, "", {} end
+  local body = pipe:read("*a") or ""
+  pipe:close()
+  -- Last line is the status code; everything before is the body
+  local body_part, code_str = body:match("^(.*)\n(%d+)%s*$")
+  return tonumber(code_str), body_part or "", {}
+end
+
+local function write_file(path, content)
+  local f, err = io.open(path, "w")
+  if not f then return nil, err end
+  f:write(content)
+  f:close()
+  return true, nil
+end
+
+local function run_cmd(cmd)
+  return os.execute(cmd)
+end
+
+-- ── Ensure output directories exist ───────────────────────────────────────────
+
+os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d")
+
+-- ── Patch block.html with the actual API URL ─────────────────────────────────
+
+do
+  local html_path = "/www/familydns/block.html"
+  local f = io.open(html_path, "r")
+  if f then
+    local content = f:read("*a")
+    f:close()
+    if content:find("FAMILYDNS_API_URL", 1, true) then
+      local patched = content:gsub("FAMILYDNS_API_URL", api_url)
+      local out = io.open(html_path, "w")
+      if out then out:write(patched); out:close() end
+    end
+  end
+end
+
+-- ── Timer state ───────────────────────────────────────────────────────────────
+
+local current_etag    = nil
+local last_policy_run = 0
+local last_usage_run  = 0
+
+-- ── Initial policy fetch at startup ──────────────────────────────────────────
+
+do
+  local snap, etag = policy.fetch(api_url, router_token, nil, http_get)
+  if snap then
+    policy.apply(snap, write_file, run_cmd)
+    render.update_shared(snap, nft_sets, blocked_ips, blocked_reason)
+    current_etag = etag
+  end
+  last_policy_run = os.time()
+  last_usage_run  = os.time()
+end
+
+-- ── Start conntrack event watcher (blocking; runs for the lifetime of the process)
+
+-- The conntrack watcher runs in the foreground.  Policy and usage timers fire
+-- inside the watcher's tick callback which is called on each conntrack line.
+-- We inject them via cfg.on_tick so there's no need for threads or coroutines.
 
 conntrack.watch({
   router_id      = router_id,
@@ -78,4 +150,48 @@ conntrack.watch({
   max_batch      = max_batch,
   flush_interval = flush_int,
   http_post      = http_post,
+
+  -- Called on every conntrack line (after event processing).
+  -- Drives the policy and usage timers co-operatively.
+  on_tick = function()
+    local now = os.time()
+
+    -- Policy timer
+    if (now - last_policy_run) >= policy_int then
+      last_policy_run = now
+      local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get)
+      if snap then
+        policy.apply(snap, write_file, run_cmd)
+        render.update_shared(snap, nft_sets, blocked_ips, blocked_reason)
+        current_etag = etag
+      elseif etag then
+        current_etag = etag  -- 304: just update etag
+      end
+    end
+
+    -- Usage timer
+    if (now - last_usage_run) >= usage_int then
+      local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", now)
+      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", last_usage_run)
+      last_usage_run = now
+
+      local pipe = io.popen("nft -j list counters table inet familydns 2>/dev/null", "r")
+      if pipe then
+        local json_str = pipe:read("*a") or ""
+        pipe:close()
+        if json_str ~= "" then
+          local ok, counters = pcall(usage.parse_nft_counters, json_str)
+          if ok and counters then
+            local report = usage.build_report(
+              counters, nft_sets, period_start, period_end, router_id)
+            local posted = usage.post(api_url, router_token, report, http_post)
+            if posted then
+              -- Reset counters so next period starts clean
+              os.execute("nft reset counters table inet familydns 2>/dev/null")
+            end
+          end
+        end
+      end
+    end
+  end,
 })
