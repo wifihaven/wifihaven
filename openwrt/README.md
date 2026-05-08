@@ -1,13 +1,15 @@
 # familydns OpenWrt package
 
 OpenWrt 23.x agent for FamilyDNS. Enforces per-device DNS filtering via
-dnsmasq + nftables and reports traffic to the FamilyDNS API.
+dnsmasq + nftables, accounts traffic per `(mac, hostname)`, and streams
+connection events to the FamilyDNS API.
 
 ## Package layout
 
 ```
 openwrt/
 ├── Makefile                               opkg metadata (OpenWrt SDK)
+├── build-ipk.sh                           lightweight .ipk builder (no SDK needed)
 ├── files/
 │   ├── etc/init.d/familydns               procd init script
 │   ├── etc/config/familydns               UCI config (api_url, router_token, …)
@@ -41,28 +43,78 @@ nftables — no round-trip to the API per request.
 
 ## Dependencies
 
-Installed automatically by opkg:
+Installed automatically by opkg when you install the package:
 
 - `lua` — Lua 5.1 interpreter
 - `luci-lib-jsonc` — provides `cjson` for JSON encoding
 - `conntrack-tools` — provides `conntrack -E -e NEW`
 - `curl` — HTTP client used by the agent
 
-## Build (OpenWrt SDK)
+The following must be present on the router (standard on OpenWrt 23.x):
+
+| Package | Purpose |
+|---------|---------|
+| `dnsmasq-full` | DNS server with `--ipset=` and `--dhcp-script` support |
+| `nftables` | Packet filter (policy rendering, traffic counters) |
+| `uhttpd` | Local block-page server |
+
+## Build
+
+### Quick build (no SDK required)
+
+Because the package is pure Lua (`PKGARCH:=all`), no cross-compilation is
+needed. `build-ipk.sh` assembles the `.ipk` directly:
 
 ```sh
-# From inside an OpenWrt SDK checkout
+# From the repo root:
+./openwrt/build-ipk.sh
+# → openwrt/familydns_0.1.0-1_all.ipk
+
+# Override version (e.g. when cutting a release):
+PKG_VERSION=0.2.0 PKG_RELEASE=1 ./openwrt/build-ipk.sh
+```
+
+### Full SDK build
+
+Use this if you add any C extensions in the future:
+
+```sh
+# Obtain an OpenWrt SDK matching your router's target/arch:
+#   https://downloads.openwrt.org/releases/23.05.5/targets/
+# e.g. for x86-64:
+wget https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+tar xf openwrt-sdk-*.tar.xz
+cd openwrt-sdk-*/
+
 cp -r /path/to/familydns/openwrt package/familydns
 make package/familydns/compile V=s
-# .ipk appears in bin/packages/<arch>/base/
+# .ipk appears in: bin/packages/x86_64/base/familydns_*.ipk
 ```
 
-## Flash
+### CI / automated build
+
+The GitHub Actions workflow `.github/workflows/openwrt-build.yml` runs on
+every PR that touches `openwrt/` and on every `v*` tag push. On a tag it
+creates a GitHub release and attaches the `.ipk` as a release artifact.
+
+To cut a release:
 
 ```sh
-scp bin/packages/.../familydns_*.ipk root@192.168.1.1:/tmp/
+git tag v0.2.0
+git push origin v0.2.0
+# CI builds familydns_0.2.0-1_all.ipk and attaches it to the release.
+```
+
+## Flash / Install
+
+```sh
+scp openwrt/familydns_*.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 opkg install /tmp/familydns_*.ipk
 ```
+
+opkg installs all files and runs the `postinst` script (which enables the
+procd service), but does **not** start the daemon yet — enrollment must
+happen first.
 
 ## Enrollment
 
@@ -81,11 +133,13 @@ curl -s -X POST http://<api-host>:8080/api/router/register \
   -d '{
     "enrollment_token": "et_…",
     "router_name":      "home-gw",
-    "openwrt_version":  "23.05.3",
+    "openwrt_version":  "23.05.5",
     "agent_version":    "0.1.0"
   }'
 # → {"router_id":"9c1f2e8a-…","router_token":"rt_a7d12b…"}
 ```
+
+The enrollment token is single-use; it is invalidated on success.
 
 ### 3. Write the values into UCI config and start the agent
 
@@ -94,11 +148,18 @@ uci set familydns.@familydns[0].api_url='http://<api-host>:8080'
 uci set familydns.@familydns[0].router_id='<router_id>'
 uci set familydns.@familydns[0].router_token='<router_token>'
 uci commit familydns
-/etc/init.d/familydns restart
+/etc/init.d/familydns start
 ```
 
-The init script rewrites `FAMILYDNS_API_URL` in `/www/familydns/block.html`
-with the real `api_url` value on first start.
+The agent is already enabled for autostart by the `postinst` script, so
+it will also start on the next reboot.
+
+Adjust `lan_prefix` if your LAN subnet is not `192.168.1.`:
+
+```sh
+uci set familydns.@familydns[0].lan_prefix='10.0.0.'
+uci commit familydns
+```
 
 ## Block-page redirect
 
@@ -118,6 +179,85 @@ uci set uhttpd.@uhttpd[-1].home='/www'
 uci commit uhttpd
 /etc/init.d/uhttpd reload
 ```
+
+## Verify
+
+Confirm the agent is running and talking to the API:
+
+```sh
+# Is the process up?
+ps | grep familydns-agent
+
+# Tail the agent log (procd routes stderr to the system log):
+logread -f | grep familydns
+
+# Expected on a healthy start:
+#   [familydns] starting conntrack watcher
+#   [familydns] flushed N events to /api/router/events
+
+# Show current UCI config:
+uci show familydns
+```
+
+The FamilyDNS admin UI → Routers → `<router name>` shows `last_seen_at`;
+it should update every ~60 s once the policy timer is running.
+
+If the agent refuses to start, the most common cause is a missing or empty
+`router_token`. Check with `uci get familydns.@familydns[0].router_token`.
+
+## Update
+
+### Manual update
+
+```sh
+# Build the new .ipk:
+PKG_VERSION=0.2.0 ./openwrt/build-ipk.sh
+
+# Copy and upgrade (--force-reinstall preserves /etc/config/familydns):
+scp openwrt/familydns_0.2.0-1_all.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 'opkg install --force-reinstall /tmp/familydns_0.2.0-1_all.ipk'
+```
+
+opkg preserves `/etc/config/familydns` across upgrades. The bearer token
+and router ID survive unchanged; no re-enrollment is needed.
+
+### Via CI release
+
+1. Push a `v*` tag — CI builds the `.ipk` and attaches it to the GitHub release.
+2. Download the `.ipk` from the release page.
+3. `scp` + `opkg install --force-reinstall` as above.
+
+## Rollback
+
+If the new agent misbehaves:
+
+```sh
+# Stop immediately without waiting for procd to respawn it:
+/etc/init.d/familydns stop
+/etc/init.d/familydns disable
+
+# Reinstall the previous .ipk if you kept it:
+scp familydns_0.1.0-1_all.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 'opkg install --force-reinstall /tmp/familydns_0.1.0-1_all.ipk'
+/etc/init.d/familydns enable
+/etc/init.d/familydns start
+```
+
+While the agent is stopped, dnsmasq/nftables rules from the last policy
+apply remain in place until a reboot or you clear them manually:
+
+```sh
+# Remove dnsmasq fragment and reload:
+rm -f /tmp/dnsmasq.d/familydns.conf
+/etc/init.d/dnsmasq restart
+
+# Remove nftables fragment and flush:
+rm -f /tmp/nftables.d/familydns.nft
+nft flush ruleset
+```
+
+The API config (`/etc/config/familydns`) is preserved; re-enabling and
+starting the service resumes operation without re-enrollment.
 
 ## Running tests
 
@@ -142,8 +282,28 @@ cd openwrt && LUA_PATH="./files/usr/lib/?.lua;./files/usr/lib/familydns/?.lua;;"
   busted test/render_spec.lua
 ```
 
+CI runs Lua tests automatically in the `lua-tests` job in
+`.github/workflows/ci.yml`.
+
+## conntrack hook: design rationale
+
+`conntrack -E -e NEW` is used rather than nftables `meta nftrace` because:
+
+- Available on stock OpenWrt 23.x via the `conntrack-tools` package without
+  enabling per-rule tracing.
+- Produces line-oriented output consumable with a simple `io.popen` loop in Lua.
+- `meta nftrace` requires a matching `nftrace` rule on every chain and
+  produces verbose output that is harder to parse safely.
+
+Hostname attribution uses the `nft_sets` table populated by `render.lua`
+from dnsmasq `--ipset=` callbacks. Reverse DNS is intentionally avoided
+because CDN PTR records do not reflect what the user resolved.
+
+Both allowed and blocked flows are reported so the admin UI shows a
+complete connection timeline, not just block events.
+
 ## Architecture reference
 
-See [`docs/architecture-openwrt.md`](../docs/architecture-openwrt.md) for
-the full design — especially §6.2 (hostname attribution via dnsmasq
-`--ipset=`) and §6.6 (block-page redirect flow).
+See [`docs/architecture.md`](../docs/architecture.md) for the full design —
+especially §7 (OpenWRT agent design), §7.2 (hostname attribution via dnsmasq
+`--ipset=`), and §7.6 (block-page redirect flow).
