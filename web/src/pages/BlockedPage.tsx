@@ -27,6 +27,7 @@ export function BlockedPage() {
   const [extMins, setExtMins]   = useState(30)
   const [loginErr, setLoginErr] = useState<string | null>(null)
   const [granting, setGranting] = useState(false)
+  const [profileId, setProfileId] = useState<number | null>(null)
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -34,6 +35,8 @@ export function BlockedPage() {
     try {
       const res = await api.auth.login(username, password)
       localStorage.setItem('token', res.token)
+      const status = await api.time.statusDevice(mac)
+      setProfileId(status.profileId ?? null)
       setStep('grant')
     } catch (err) {
       setLoginErr(err instanceof Error ? err.message : 'Login failed')
@@ -42,9 +45,10 @@ export function BlockedPage() {
 
   async function handleGrant(e: React.FormEvent) {
     e.preventDefault()
+    if (profileId == null) return
     setGranting(true)
     try {
-      await api.time.grantExtension({ deviceMac: mac, extraMinutes: extMins, note: null })
+      await api.time.grantExtension({ profileId, extraMinutes: extMins, note: null })
       setStep('done')
     } finally {
       setGranting(false)

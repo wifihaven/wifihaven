@@ -325,7 +325,7 @@ object TimeRoutes:
               .foreach(visible) { p =>
                 buildProfileTimeStatus(
                   p,
-                  devicesByPid.getOrElse(p.id, Nil),
+                  devicesByPid.getOrElse(Some(p.id), Nil),
                   date,
                   timeLimitRepo,
                   siteTimeLimitRepo,
@@ -479,6 +479,7 @@ object TimeRoutes:
       device.name,
       date.toString,
       profile,
+      pid,
       tl.map(_.dailyMinutes),
       totalUsed,
       extMins,

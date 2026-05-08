@@ -183,6 +183,7 @@ case class DeviceTimeStatus(
     deviceName: String,
     date: String,
     profileName: String,
+    profileId: Option[Long],
     dailyLimitMins: Option[Int],
     usedMins: Int,
     extensionMins: Int,
