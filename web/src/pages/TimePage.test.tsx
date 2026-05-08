@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { DeviceTimeStatus } from '@/types/api'
+import type { ProfileTimeStatus } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -21,11 +21,10 @@ import { TimePage } from './TimePage'
 
 let mockAuth = { isAdmin: true }
 
-const limited: DeviceTimeStatus = {
-  deviceMac: 'aa:bb:cc:dd:ee:01',
-  deviceName: "Kid's iPad",
+const limited: ProfileTimeStatus = {
+  profileId: 1,
+  profileName: "Kid's iPad",
   date: '2026-05-07',
-  profileName: 'Kids',
   dailyLimitMins: 120,
   usedMins: 90,
   extensionMins: 0,
@@ -33,30 +32,31 @@ const limited: DeviceTimeStatus = {
   siteUsage: [
     { label: 'YouTube', domainPattern: 'youtube.com', limitMins: 30, usedMins: 30, remainingMins: 0 },
   ],
+  devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 90 }],
 }
 
-const overLimit: DeviceTimeStatus = {
-  deviceMac: 'aa:bb:cc:dd:ee:02',
-  deviceName: 'Phone',
+const overLimit: ProfileTimeStatus = {
+  profileId: 2,
+  profileName: 'Phone',
   date: '2026-05-07',
-  profileName: 'Kids',
   dailyLimitMins: 60,
   usedMins: 100,
   extensionMins: 30,
   remainingMins: 0,
   siteUsage: [],
+  devices: [{ deviceMac: 'aa:bb:cc:dd:ee:02', deviceName: 'Phone', usedMins: 100 }],
 }
 
-const noLimit: DeviceTimeStatus = {
-  deviceMac: 'aa:bb:cc:dd:ee:03',
-  deviceName: 'Laptop',
+const noLimit: ProfileTimeStatus = {
+  profileId: 3,
+  profileName: 'Laptop',
   date: '2026-05-07',
-  profileName: 'Adults',
   dailyLimitMins: null,
   usedMins: 0,
   extensionMins: 0,
   remainingMins: null,
   siteUsage: [],
+  devices: [{ deviceMac: 'aa:bb:cc:dd:ee:03', deviceName: 'Laptop', usedMins: 0 }],
 }
 
 beforeEach(() => {
@@ -102,7 +102,7 @@ describe('TimePage — grant extension', () => {
 
     await waitFor(() =>
       expect(api.time.grantExtension).toHaveBeenCalledWith({
-        deviceMac: 'aa:bb:cc:dd:ee:01',
+        profileId: 1,
         extraMinutes: 45,
         note: 'great job',
       })
@@ -120,7 +120,7 @@ describe('TimePage — grant extension', () => {
     await user.click(screen.getByRole('button', { name: /Grant 30m/ }))
     await waitFor(() =>
       expect(api.time.grantExtension).toHaveBeenCalledWith({
-        deviceMac: 'aa:bb:cc:dd:ee:01',
+        profileId: 1,
         extraMinutes: 30,
         note: null,
       })
