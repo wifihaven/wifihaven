@@ -277,6 +277,9 @@ function M.watch(cfg)
     end
 
     batcher.tick()
+
+    -- Drive co-operative timers (policy poll, usage report) from the main agent.
+    if cfg.on_tick then cfg.on_tick() end
   end
 
   handle:close()

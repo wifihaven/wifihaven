@@ -37,6 +37,9 @@ define Package/familydns/install
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/files/etc/config/familydns $(1)/etc/config/
+
+	$(INSTALL_DIR) $(1)/www/familydns
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/www/familydns/block.html $(1)/www/familydns/
 endef
 
 define Package/familydns/postinst
