@@ -1,7 +1,7 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardStats, Device,
-  DeviceTimeStatus, LoginResponse, MeResponse, ProfileDetail, QueryLog, RouterSummary,
-  SetUserProfilesRequest, TimeExtension, UpsertDeviceRequest, UpsertProfileRequest,
+  DeviceTimeStatus, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, QueryLog,
+  RouterSummary, SetUserProfilesRequest, TimeExtension, UpsertDeviceRequest, UpsertProfileRequest,
   GrantExtensionRequest, User,
 } from '@/types/api'
 
@@ -88,13 +88,13 @@ export const api = {
   // ── Time ───────────────────────────────────────────────────────────────
   time: {
     statusAll: (date?: string) =>
-      req<DeviceTimeStatus[]>('GET', `/time/status${date ? `?date=${date}` : ''}`),
+      req<ProfileTimeStatus[]>('GET', `/time/status${date ? `?date=${date}` : ''}`),
     statusDevice: (mac: string, date?: string) =>
       req<DeviceTimeStatus>('GET', `/time/status/${encodeURIComponent(mac)}${date ? `?date=${date}` : ''}`),
     grantExtension: (data: GrantExtensionRequest) =>
       req<{ id: number; grantedMinutes: number }>('POST', '/time/extend', data),
-    listExtensions: (mac: string) =>
-      req<TimeExtension[]>('GET', `/time/extensions/${encodeURIComponent(mac)}`),
+    listExtensions: (profileId: number) =>
+      req<TimeExtension[]>('GET', `/time/extensions/${profileId}`),
   },
 
   // ── Logs ───────────────────────────────────────────────────────────────

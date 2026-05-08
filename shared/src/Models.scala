@@ -67,7 +67,8 @@ case class TimeUsage(
 
 case class TimeExtension(
     id: Long,
-    deviceMac: String,
+    profileId: Option[Long],
+    deviceMac: Option[String],
     date: String,
     extraMinutes: Int,
     grantedBy: String,
@@ -152,7 +153,7 @@ case class UpsertDeviceRequest(
 ) derives JsonCodec
 
 case class GrantExtensionRequest(
-    deviceMac: String,
+    profileId: Long,
     extraMinutes: Int,
     note: Option[String],
 ) derives JsonCodec
@@ -182,11 +183,30 @@ case class DeviceTimeStatus(
     deviceName: String,
     date: String,
     profileName: String,
+    profileId: Option[Long],
     dailyLimitMins: Option[Int],
     usedMins: Int,
     extensionMins: Int,
     remainingMins: Option[Int],
     siteUsage: List[SiteUsage],
+) derives JsonCodec
+
+case class DeviceUsageSummary(
+    deviceMac: String,
+    deviceName: String,
+    usedMins: Int,
+) derives JsonCodec
+
+case class ProfileTimeStatus(
+    profileId: Long,
+    profileName: String,
+    date: String,
+    dailyLimitMins: Option[Int],
+    usedMins: Int,
+    extensionMins: Int,
+    remainingMins: Option[Int],
+    siteUsage: List[SiteUsage],
+    devices: List[DeviceUsageSummary],
 ) derives JsonCodec
 
 case class ProfileDetail(

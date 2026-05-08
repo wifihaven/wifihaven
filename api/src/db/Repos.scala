@@ -138,6 +138,7 @@ trait TimeUsageRepo:
       date: LocalDate,
   ): Task[(Long, Long, Long)]
   def listForDevice(mac: String, date: LocalDate): Task[List[TimeUsage]]
+  def listForDeviceMacs(macs: List[String], date: LocalDate): Task[List[TimeUsage]]
   def snapshotAll(date: LocalDate): Task[Map[(String, String), Int]]
 
 trait TimeExtensionRepo:
@@ -145,6 +146,17 @@ trait TimeExtensionRepo:
   def grant(mac: String, date: LocalDate, mins: Int, by: String, note: Option[String]): Task[Long]
   def listForDevice(mac: String, date: LocalDate): Task[List[TimeExtension]]
   def snapshotAll(date: LocalDate): Task[Map[String, Int]]
+  // Profile-level extension methods (V5+)
+  def grantForProfile(
+      profileId: Long,
+      date: LocalDate,
+      mins: Int,
+      by: String,
+      note: Option[String],
+  ): Task[Long]
+  def getProfileTotalExtension(profileId: Long, date: LocalDate): Task[Int]
+  def listForProfile(profileId: Long, date: LocalDate): Task[List[TimeExtension]]
+  def snapshotAllByProfile(date: LocalDate): Task[Map[Long, Int]]
 
 case class TrafficReportInsert(
     routerId: UUID,
@@ -498,6 +510,15 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo:
       .map(TimeUsage.apply)
       .to[List]
       .transact(xa)
+  def listForDeviceMacs(macs: List[String], d: LocalDate)                                  =
+    if macs.isEmpty then ZIO.succeed(Nil)
+    else
+      val arr = macs.toArray
+      sql"SELECT id,device_mac,domain,date::TEXT,minutes_used,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,minutes_used DESC"
+        .query[(Long, String, String, String, Int, String)]
+        .map(TimeUsage.apply)
+        .to[List]
+        .transact(xa)
   def snapshotAll(d: LocalDate)                                                            =
     sql"SELECT device_mac,domain,minutes_used FROM time_usage WHERE date=$d"
       .query[(String, String, Int)]
@@ -506,25 +527,47 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo:
       .map(_.map((m, dom, mins) => (m, dom) -> mins).toMap)
 
 class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo:
-  def getTotalExtension(mac: String, d: LocalDate)                                  =
+  def getTotalExtension(mac: String, d: LocalDate)                                          =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE device_mac=$mac AND date=$d"
       .query[Int]
       .unique
       .transact(xa)
-  def grant(mac: String, d: LocalDate, mins: Int, by: String, note: Option[String]) =
+  def grant(mac: String, d: LocalDate, mins: Int, by: String, note: Option[String])         =
     sql"INSERT INTO time_extensions(device_mac,date,extra_minutes,granted_by,note) VALUES($mac,$d,$mins,$by,$note) RETURNING id"
       .query[Long]
       .unique
       .transact(xa)
-  def listForDevice(mac: String, d: LocalDate)                                      =
-    sql"SELECT id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE device_mac=$mac AND date=$d ORDER BY created_at"
-      .query[(Long, String, String, Int, String, Option[String], String)]
+  def listForDevice(mac: String, d: LocalDate)                                              =
+    sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE device_mac=$mac AND date=$d ORDER BY created_at"
+      .query[(Long, Option[Long], Option[String], String, Int, String, Option[String], String)]
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAll(d: LocalDate)                                                     =
-    sql"SELECT device_mac,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d GROUP BY device_mac"
+  def snapshotAll(d: LocalDate)                                                             =
+    sql"SELECT device_mac,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND device_mac IS NOT NULL GROUP BY device_mac"
       .query[(String, Int)]
+      .to[List]
+      .transact(xa)
+      .map(_.toMap)
+  def grantForProfile(pid: Long, d: LocalDate, mins: Int, by: String, note: Option[String]) =
+    sql"INSERT INTO time_extensions(profile_id,date,extra_minutes,granted_by,note) VALUES($pid,$d,$mins,$by,$note) RETURNING id"
+      .query[Long]
+      .unique
+      .transact(xa)
+  def getProfileTotalExtension(pid: Long, d: LocalDate)                                     =
+    sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE profile_id=$pid AND date=$d"
+      .query[Int]
+      .unique
+      .transact(xa)
+  def listForProfile(pid: Long, d: LocalDate)                                               =
+    sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE profile_id=$pid AND date=$d ORDER BY created_at"
+      .query[(Long, Option[Long], Option[String], String, Int, String, Option[String], String)]
+      .map(TimeExtension.apply)
+      .to[List]
+      .transact(xa)
+  def snapshotAllByProfile(d: LocalDate)                                                    =
+    sql"SELECT profile_id,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND profile_id IS NOT NULL GROUP BY profile_id"
+      .query[(Long, Int)]
       .to[List]
       .transact(xa)
       .map(_.toMap)

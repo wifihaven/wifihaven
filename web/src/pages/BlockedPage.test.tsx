@@ -9,6 +9,7 @@ vi.mock('@/api/client', () => ({
       login: vi.fn(),
     },
     time: {
+      statusDevice: vi.fn(),
       grantExtension: vi.fn(),
     },
   },
@@ -17,8 +18,9 @@ vi.mock('@/api/client', () => ({
 import { api } from '@/api/client'
 import { BlockedPage } from './BlockedPage'
 
-const mockLogin = api.auth.login as unknown as ReturnType<typeof vi.fn>
-const mockGrant = api.time.grantExtension as unknown as ReturnType<typeof vi.fn>
+const mockLogin        = api.auth.login as unknown as ReturnType<typeof vi.fn>
+const mockStatusDevice = api.time.statusDevice as unknown as ReturnType<typeof vi.fn>
+const mockGrant        = api.time.grantExtension as unknown as ReturnType<typeof vi.fn>
 
 function renderBlocked(params: Record<string, string>) {
   const search = '?' + new URLSearchParams(params).toString()
@@ -85,6 +87,7 @@ describe('BlockedPage — request extension flow', () => {
 
   it('successful parent login then grants extension and shows confirmation', async () => {
     mockLogin.mockResolvedValue({ token: 'parent-token', username: 'mom', role: 'admin' })
+    mockStatusDevice.mockResolvedValue({ profileId: 7, profileName: 'Kids', usedMins: 60, extensionMins: 0, remainingMins: 60, dailyLimitMins: 120, siteUsage: [], devices: [] })
     mockGrant.mockResolvedValue({ id: 1, grantedMinutes: 30 })
 
     const user = userEvent.setup()
@@ -110,7 +113,7 @@ describe('BlockedPage — request extension flow', () => {
 
     await waitFor(() =>
       expect(mockGrant).toHaveBeenCalledWith(
-        expect.objectContaining({ deviceMac: 'aa:bb:cc:11:22:33' }),
+        expect.objectContaining({ profileId: 7 }),
       ),
     )
 

@@ -310,21 +310,23 @@ object TimeRoutes:
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "time" / "status"                     ->
+      Method.GET / "api" / "time" / "status"                         ->
         handler { (req: Request) =>
           for
             claims <- requireAuth(req, auth)
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            all      <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
-            visible  <- filterDevices(claims, all, userProfileRepo)
+            allProfiles <- profileRepo.listAll.orElseFail(Response.internalServerError(""))
+            allDevices  <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
+            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
-              .foreach(visible) { d =>
-                buildDeviceTimeStatus(
-                  d,
+              .foreach(visible) { p =>
+                buildProfileTimeStatus(
+                  p,
+                  devicesByPid.getOrElse(Some(p.id), Nil),
                   date,
-                  profileRepo,
                   timeLimitRepo,
                   siteTimeLimitRepo,
                   usageRepo,
@@ -334,7 +336,7 @@ object TimeRoutes:
               .orElseFail(Response.internalServerError(""))
           yield Response.json(statuses.toJson)
         },
-      Method.GET / "api" / "time" / "status" / string("mac")     ->
+      Method.GET / "api" / "time" / "status" / string("mac")         ->
         handler { (mac: String, req: Request) =>
           for
             claims <- requireAuth(req, auth)
@@ -358,7 +360,7 @@ object TimeRoutes:
               .orElseFail(Response.internalServerError(""))
           yield Response.json(status.toJson)
         },
-      Method.POST / "api" / "time" / "extend"                    ->
+      Method.POST / "api" / "time" / "extend"                        ->
         handler { (req: Request) =>
           for
             claims <- requireWriter(req, auth)
@@ -366,34 +368,74 @@ object TimeRoutes:
             ger    <- ZIO
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(e => Response.badRequest(e))
-            mac = normalizeMac(ger.deviceMac)
-            device <- deviceRepo
-              .findByMac(mac)
-              .orElseFail(Response.internalServerError(""))
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileAccess(claims, device.profileId, userProfileRepo)
+            _      <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
             today  <- clock.today
             id     <- extRepo
-              .grant(mac, today, ger.extraMinutes, claims.sub, ger.note)
+              .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .orElseFail(Response.internalServerError(""))
           yield Response.json(s"""{"id":$id,"grantedMinutes":${ger.extraMinutes}}""")
         },
-      Method.GET / "api" / "time" / "extensions" / string("mac") ->
-        handler { (mac: String, req: Request) =>
+      Method.GET / "api" / "time" / "extensions" / long("profileId") ->
+        handler { (profileId: Long, req: Request) =>
           for
             claims <- requireAuth(req, auth)
-            normalized = normalizeMac(mac)
-            device <- deviceRepo
-              .findByMac(normalized)
-              .orElseFail(Response.internalServerError(""))
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            _      <- requireProfileAccess(claims, profileId, userProfileRepo)
             date   <- clock.today
             exts   <- extRepo
-              .listForDevice(normalized, date)
+              .listForProfile(profileId, date)
               .orElseFail(Response.internalServerError(""))
           yield Response.json(exts.toJson)
         },
+    )
+
+  private def buildProfileTimeStatus(
+      profile: Profile,
+      devices: List[Device],
+      date: LocalDate,
+      tlRepo: TimeLimitRepo,
+      stlRepo: SiteTimeLimitRepo,
+      usageRepo: TimeUsageRepo,
+      extRepo: TimeExtensionRepo,
+  ): Task[ProfileTimeStatus] =
+    val macs = devices.map(_.mac)
+    for
+      tl      <- tlRepo.findForProfile(profile.id)
+      stls    <- stlRepo.listForProfile(profile.id)
+      usages  <- usageRepo.listForDeviceMacs(macs, date)
+      extMins <- extRepo.getProfileTotalExtension(profile.id, date)
+      siteDoms        = stls.map(_.domainPattern).toSet
+      totalUsed       = usages
+        .filterNot(u => siteDoms.exists(p => matchesPattern(u.domain, p)))
+        .map(_.minutesUsed)
+        .sum
+      remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
+      siteUsage       = stls.map { stl =>
+        val used = usages
+          .filter(u => matchesPattern(u.domain, stl.domainPattern))
+          .map(_.minutesUsed)
+          .sum
+        SiteUsage(
+          stl.label,
+          stl.domainPattern,
+          stl.dailyMinutes,
+          used,
+          (stl.dailyMinutes - used).max(0),
+        )
+      }
+      deviceSummaries = devices.map { d =>
+        val dUsed = usages.filter(_.deviceMac == d.mac).map(_.minutesUsed).sum
+        DeviceUsageSummary(d.mac, d.name, dUsed)
+      }
+    yield ProfileTimeStatus(
+      profile.id,
+      profile.name,
+      date.toString,
+      tl.map(_.dailyMinutes),
+      totalUsed,
+      extMins,
+      remaining,
+      siteUsage,
+      deviceSummaries,
     )
 
   private def buildDeviceTimeStatus(
@@ -410,7 +452,7 @@ object TimeRoutes:
       tl      <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
       stls    <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
       usages  <- usageRepo.listForDevice(device.mac, date)
-      extMins <- extRepo.getTotalExtension(device.mac, date)
+      extMins <- pid.fold(ZIO.succeed(0))(extRepo.getProfileTotalExtension(_, date))
       profile <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
@@ -437,6 +479,7 @@ object TimeRoutes:
       device.name,
       date.toString,
       profile,
+      pid,
       tl.map(_.dailyMinutes),
       totalUsed,
       extMins,

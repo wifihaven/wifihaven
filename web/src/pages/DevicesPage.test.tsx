@@ -1,3 +1,4 @@
+// TODO(#118): replace findByText(name).closest('.css-class') scoping with data-testid="device-row-{mac}"
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
