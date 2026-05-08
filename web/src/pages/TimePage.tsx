@@ -141,7 +141,7 @@ function ProfileTimeCard({
   const overLimit = hasLimit && status.remainingMins != null && status.remainingMins <= 0
 
   return (
-    <div className={`bg-gray-900 rounded-2xl border p-5 space-y-4 ${overLimit ? 'border-red-500/40' : 'border-gray-800'}`}>
+    <div data-testid={`time-card-${status.profileId}`} className={`bg-gray-900 rounded-2xl border p-5 space-y-4 ${overLimit ? 'border-red-500/40' : 'border-gray-800'}`}>
       <div className="flex items-start justify-between gap-2">
         <h3 className="font-semibold text-white text-lg">{status.profileName}</h3>
         {isAdmin && hasLimit && (

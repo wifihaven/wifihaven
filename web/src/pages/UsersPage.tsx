@@ -120,7 +120,7 @@ export function UsersPage() {
         {users.length === 0
           ? <p className="p-6 text-gray-500 text-sm">No users yet.</p>
           : users.map(u => (
-              <div key={u.id} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+              <div key={u.id} data-testid={`user-row-${u.id}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-white truncate">{u.username}</p>
                   <p className="text-xs text-gray-500">

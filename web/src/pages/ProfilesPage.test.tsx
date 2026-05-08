@@ -1,4 +1,3 @@
-// TODO(#118): replace findByText(name).closest('.css-class') scoping with data-testid="profile-card-{id}"
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -95,8 +94,8 @@ describe('ProfilesPage — pause / delete', () => {
   it('clicking Pause/Resume calls api.profiles.pause and reloads', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
-    const kidsCard = (await screen.findByText('Kids')).closest('div.bg-gray-900')!
-    await user.click(within(kidsCard as HTMLElement).getByRole('button', { name: /Pause/ }))
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /Pause/ }))
     await waitFor(() => expect(api.profiles.pause).toHaveBeenCalledWith(1))
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
   })
@@ -105,8 +104,8 @@ describe('ProfilesPage — pause / delete', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     render(<ProfilesPage />)
-    const kidsCard = (await screen.findByText('Kids')).closest('div.bg-gray-900')!
-    await user.click(within(kidsCard as HTMLElement).getByRole('button', { name: /^Delete$/ }))
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
     expect(confirmSpy).toHaveBeenCalled()
     await waitFor(() => expect(api.profiles.delete).toHaveBeenCalledWith(1))
     confirmSpy.mockRestore()
@@ -116,8 +115,8 @@ describe('ProfilesPage — pause / delete', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
     render(<ProfilesPage />)
-    const kidsCard = (await screen.findByText('Kids')).closest('div.bg-gray-900')!
-    await user.click(within(kidsCard as HTMLElement).getByRole('button', { name: /^Delete$/ }))
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
     expect(api.profiles.delete).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
@@ -188,8 +187,8 @@ describe('ProfilesPage — edit', () => {
   it('pre-fills editor from selected profile and calls api.profiles.update', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
-    const kidsCard = (await screen.findByText('Kids')).closest('div.bg-gray-900')!
-    await user.click(within(kidsCard as HTMLElement).getByRole('button', { name: /^Edit$/ }))
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
 
     expect(screen.getByDisplayValue('Kids')).toBeInTheDocument()
     expect(screen.getByDisplayValue('120')).toBeInTheDocument()

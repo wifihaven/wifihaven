@@ -61,7 +61,7 @@ export function DevicesPage() {
         {knownDevices.length === 0
           ? <p className="p-6 text-gray-500 text-sm">No devices yet.</p>
           : knownDevices.map(d => (
-              <div key={d.mac} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-white truncate">{d.name}</p>
                   <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
@@ -96,7 +96,7 @@ export function DevicesPage() {
           </h2>
           <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
             {unknownDevices.map(d => (
-              <div key={d.mac} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-400 truncate">{d.name}</p>
                   <p className="text-xs text-gray-500 font-mono">{d.mac}</p>

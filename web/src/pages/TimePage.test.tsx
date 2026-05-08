@@ -1,4 +1,3 @@
-// TODO(#118): replace findByText(name) load-wait and bare getByText with data-testid="time-card-{profileId}"
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -88,9 +87,9 @@ describe('TimePage — grant extension', () => {
   it('opens modal, picks 45m preset, types note, and calls grantExtension', async () => {
     const user = userEvent.setup()
     render(<TimePage />)
-    await screen.findByText("Kid's iPad")
+    await screen.findByTestId('time-card-1')
 
-    // Click first "+ Time" button (Kid's iPad)
+    // Click first "+ Time" button (Kids profile)
     const grantButtons = screen.getAllByRole('button', { name: /\+ Time/ })
     await user.click(grantButtons[0])
 
@@ -115,7 +114,7 @@ describe('TimePage — grant extension', () => {
   it('passes null note when blank', async () => {
     const user = userEvent.setup()
     render(<TimePage />)
-    await screen.findByText("Kid's iPad")
+    await screen.findByTestId('time-card-1')
     const grantButtons = screen.getAllByRole('button', { name: /\+ Time/ })
     await user.click(grantButtons[0])
     await user.click(screen.getByRole('button', { name: /Grant 30m/ }))
@@ -133,7 +132,7 @@ describe('TimePage — role gating', () => {
   it('hides "+ Time" button for non-admins', async () => {
     mockAuth = { isAdmin: false }
     render(<TimePage />)
-    await screen.findByText("Kid's iPad")
+    await screen.findByTestId('time-card-1')
     expect(screen.queryByRole('button', { name: /\+ Time/ })).not.toBeInTheDocument()
   })
 })

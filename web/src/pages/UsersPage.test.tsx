@@ -1,4 +1,3 @@
-// TODO(#118): replace getByText(name).closest('.css-class') scoping with data-testid="user-row-{id}"
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -109,8 +108,8 @@ describe('UsersPage — edit profile links', () => {
     await screen.findByText('bob')
 
     // Find bob's row and click its "Edit profiles" button
-    const bobRow = screen.getByText('bob').closest('.border-b')!
-    await user.click(within(bobRow as HTMLElement).getByRole('button', { name: /edit profiles/i }))
+    const bobRow = screen.getByTestId('user-row-11')
+    await user.click(within(bobRow).getByRole('button', { name: /edit profiles/i }))
 
     // Modal title includes bob
     await screen.findByText(/Edit profiles · bob/)
@@ -134,8 +133,8 @@ describe('UsersPage — delete', () => {
     render(<UsersPage />)
     await screen.findByText('alice')
 
-    const aliceRow = screen.getByText('alice').closest('.border-b')!
-    await user.click(within(aliceRow as HTMLElement).getByRole('button', { name: /delete/i }))
+    const aliceRow = screen.getByTestId('user-row-10')
+    await user.click(within(aliceRow).getByRole('button', { name: /delete/i }))
 
     expect(confirmSpy).toHaveBeenCalled()
     await waitFor(() => expect(api.users.delete).toHaveBeenCalledWith(10))
@@ -148,8 +147,8 @@ describe('UsersPage — delete', () => {
     render(<UsersPage />)
     await screen.findByText('alice')
 
-    const aliceRow = screen.getByText('alice').closest('.border-b')!
-    await user.click(within(aliceRow as HTMLElement).getByRole('button', { name: /delete/i }))
+    const aliceRow = screen.getByTestId('user-row-10')
+    await user.click(within(aliceRow).getByRole('button', { name: /delete/i }))
 
     expect(api.users.delete).not.toHaveBeenCalled()
     confirmSpy.mockRestore()

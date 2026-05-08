@@ -149,7 +149,7 @@ export function ProfilesPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         {profiles.map(pd => (
-          <div key={pd.profile.id} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
+          <div key={pd.profile.id} data-testid={`profile-card-${pd.profile.id}`} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <h3 className="font-bold text-white text-lg">{pd.profile.name}</h3>

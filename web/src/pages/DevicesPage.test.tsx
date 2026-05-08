@@ -1,4 +1,3 @@
-// TODO(#118): replace findByText(name).closest('.css-class') scoping with data-testid="device-row-{mac}"
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -94,8 +93,8 @@ describe('DevicesPage — edit', () => {
   it('pre-fills modal with existing device values', async () => {
     const user = userEvent.setup()
     render(<DevicesPage />)
-    const ipadRow = (await screen.findByText("Kid's iPad")).closest('div.flex.items-center')!
-    await user.click(within(ipadRow as HTMLElement).getByRole('button', { name: /Edit/ }))
+    const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
+    await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
 
     expect(screen.getByDisplayValue('aa:bb:cc:dd:ee:01')).toBeInTheDocument()
     expect(screen.getByDisplayValue("Kid's iPad")).toBeInTheDocument()
@@ -107,8 +106,8 @@ describe('DevicesPage — delete', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     render(<DevicesPage />)
-    const ipadRow = (await screen.findByText("Kid's iPad")).closest('div.flex.items-center')!
-    await user.click(within(ipadRow as HTMLElement).getByRole('button', { name: /Remove/ }))
+    const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
+    await user.click(within(ipadRow).getByRole('button', { name: /Remove/ }))
     expect(confirmSpy).toHaveBeenCalled()
     await waitFor(() => expect(api.devices.delete).toHaveBeenCalledWith('aa:bb:cc:dd:ee:01'))
     confirmSpy.mockRestore()
@@ -118,8 +117,8 @@ describe('DevicesPage — delete', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
     render(<DevicesPage />)
-    const ipadRow = (await screen.findByText("Kid's iPad")).closest('div.flex.items-center')!
-    await user.click(within(ipadRow as HTMLElement).getByRole('button', { name: /Remove/ }))
+    const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
+    await user.click(within(ipadRow).getByRole('button', { name: /Remove/ }))
     expect(api.devices.delete).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
