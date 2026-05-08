@@ -23,7 +23,7 @@ let mockAuth = { isAdmin: true }
 
 const limited: ProfileTimeStatus = {
   profileId: 1,
-  profileName: "Kid's iPad",
+  profileName: 'Kids',
   date: '2026-05-07',
   dailyLimitMins: 120,
   usedMins: 90,
@@ -37,7 +37,7 @@ const limited: ProfileTimeStatus = {
 
 const overLimit: ProfileTimeStatus = {
   profileId: 2,
-  profileName: 'Phone',
+  profileName: 'Teens',
   date: '2026-05-07',
   dailyLimitMins: 60,
   usedMins: 100,
@@ -49,7 +49,7 @@ const overLimit: ProfileTimeStatus = {
 
 const noLimit: ProfileTimeStatus = {
   profileId: 3,
-  profileName: 'Laptop',
+  profileName: 'Adults',
   date: '2026-05-07',
   dailyLimitMins: null,
   usedMins: 0,
