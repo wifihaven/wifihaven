@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Entry-point wrapper for the familydns OPNsense agent.
+
+Installed to /usr/local/sbin/familydns-agent.
+The actual logic lives in /usr/local/lib/familydns/.
+"""
+import sys
+sys.path.insert(0, "/usr/local/lib")
+
+from familydns.agent import main
+main()
