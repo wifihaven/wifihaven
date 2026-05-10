@@ -28,10 +28,7 @@ services:
       retries: 30
 
   api:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: familydns-api:latest
+    image: ghcr.io/sameerparekh/familydns-api:latest
     restart: unless-stopped
     depends_on:
       postgres:
