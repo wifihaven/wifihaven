@@ -1,4 +1,4 @@
-name: OpenWRT Build
+name: Publish OpenWRT Package
 
 on:
   push:
