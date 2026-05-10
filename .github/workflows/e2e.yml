@@ -9,10 +9,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Only one publish can run at a time.
+# Only one publish can run at a time. If a new run kicks off while an older
+# run is still paused waiting on the production environment approval, cancel
+# the older one — we always want the latest commit's run to take precedence.
 concurrency:
   group: e2e-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
