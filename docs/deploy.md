@@ -36,10 +36,12 @@ test suite is green. No separate publish workflow exists.
 | Event | Tags applied |
 |-------|-------------|
 | Push to `main` (after green e2e) | `latest`, `sha-<7-char-commit>` |
+| Push of a `v1.2.3` tag (after green e2e) | `1.2.3`, `1.2`, `1`, `sha-<7-char-commit>` |
 
-Semver tags (`1.2.3`, `1.2`, `1`) are not applied automatically — cut a
-release by pushing a `v*` git tag, which can be done after the `main` push
-has already published `latest`.
+Semver tags are produced by `docker/metadata-action`'s `type=semver` patterns
+when the workflow runs on a `v*` tag push. `latest` is only applied on default
+branch pushes, so a release tag does not move `latest` until the same commit
+has already been pushed to `main`.
 
 The `sha-` tag is immutable and safe to reference for rollbacks. `latest` is
 what the prod compose stack pulls on auto-update.
