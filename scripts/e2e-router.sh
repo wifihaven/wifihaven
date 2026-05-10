@@ -80,12 +80,14 @@ pass "bearer token accepted by /api/router/policy"
 # ── 2. ETag round-trip ─────────────────────────────────────────────────────
 step "Policy ETag round-trip"
 curl -fsS -D "$TMP/hdrs.txt" "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap1.json"
-ETAG=$(grep -i '^etag:' "$TMP/hdrs.txt" | tr -d '[:space:]\r' | cut -d: -f2 | tr -d '"')
+# Strip the "etag: " prefix; keep the quoted value verbatim, e.g. "sha256:abc...".
+# cut -d: -f2 would truncate at the second colon inside the hash — don't use it.
+ETAG=$(grep -i '^etag:' "$TMP/hdrs.txt" | sed 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//' | tr -d '\r')
 [ -n "$ETAG" ] || fail "no ETag in policy response headers"
 pass "ETag=$ETAG"
 
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${RAUTH[@]}" \
-  -H "if-none-match: \"$ETAG\"" "$BASE/api/router/policy")
+  -H "if-none-match: $ETAG" "$BASE/api/router/policy")
 [ "$CODE" = "304" ] || fail "expected 304 with same ETag, got $CODE"
 pass "304 on repeat ETag"
 
@@ -126,10 +128,10 @@ print(p['timeUsedToday']['totalMinutes'] if p else -1)
 pass "timeUsedToday.totalMinutes=$USED"
 
 # Device last_seen_ip should be updated.
-DEVS=$(curl -fsS "${AUTH[@]}" "$BASE/api/devices")
+curl -fsS "${AUTH[@]}" "$BASE/api/devices" >"$TMP/devices.json"
 LAST_IP=$(_py "
 import json
-devs = json.loads('''$DEVS''')
+devs = json.load(open('$TMP/devices.json'))
 d = next((d for d in devs if d['mac'] == '$MAC'), None)
 print((d or {}).get('lastSeenIp') or '')
 ")
@@ -139,7 +141,7 @@ pass "last_seen_ip=192.168.1.20"
 # ── 4. Time-limit exceeded is visible in the policy snapshot ──────────────
 step "Time-limit exceeded in policy snapshot (90s active > 1 min limit)"
 EXCEEDED=$(_py "
-import json
+import sys, json
 snap = json.load(open('$TMP/snap2.json'))
 p = next((p for p in snap['profiles'] if p['id'] == $PID), None)
 if p is None: sys.exit(1)

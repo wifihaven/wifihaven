@@ -432,7 +432,7 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
       .option
       .transact(xa)
   def upsert(mac: String, name: String, pid: Long, ip: String)                  =
-    sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,$ip,NOW()) ON CONFLICT(mac) DO UPDATE SET last_seen_ip=EXCLUDED.last_seen_ip,last_seen_at=NOW() RETURNING id"
+    sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
       .query[Long]
       .unique
       .transact(xa)
@@ -546,8 +546,10 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
         .to[List]
         .transact(xa)
     }
-  def snapshotAll(d: LocalDate)                                                            =
-    sql"SELECT device_mac,domain,minutes_used FROM time_usage WHERE date=$d"
+  def snapshotAll(d: LocalDate) =
+    // Combine legacy minutes_used (OPNsense path) with seconds_used (OpenWRT router path).
+    // seconds_used is floor-divided to minutes; both sources are additive so either agent works.
+    sql"SELECT device_mac,domain,COALESCE(minutes_used,0)+(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
       .query[(String, String, Int)]
       .to[List]
       .transact(xa)
