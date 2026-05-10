@@ -1,4 +1,4 @@
-name: E2E + publish
+name: Publish API Server
 
 # Runs e2e and smoke checks on every push to main, then publishes the image
 # to ghcr.io after all checks are green.
