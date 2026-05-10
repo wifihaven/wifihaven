@@ -184,6 +184,10 @@ opkg's upgrade behavior for config files:
 
 ### 3.1 API server
 
+> **See [`install-api.md`](install-api.md) for the full first-install guide.**
+> The summary below is enough orientation for an architecture reader; new
+> operators should follow the standalone guide instead.
+
 **Requirements**: a Linux host with Docker and Docker Compose installed.
 
 ```sh
