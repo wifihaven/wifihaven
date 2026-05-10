@@ -2,6 +2,7 @@ name: OpenWRT Build
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
     paths: ["openwrt/**"]
   pull_request:
