@@ -5,39 +5,30 @@ sites, set per-profile schedules ("no internet after 9pm"), enforce daily and
 per-site time limits, log queries, and grant temporary extensions — all on
 your own hardware, no third-party DNS provider.
 
-> **Architecture in flux.** Enforcement is moving from a host-based DNS +
-> pcap setup to a gateway router (OpenWRT or OpnSense) that pulls policy from
-> this API and reports usage back. See [`docs/architecture.md`](docs/architecture.md)
-> for the design and tracking issues #68–#73, #94. The diagram below
-> describes what's currently committed; it will change as those issues land.
+```
+                 +-------------------+    +-----------+
+HTTP / web ────▶ |  familydns-api    | ─▶ |  Postgres |
+   :8080         +-------------------+    +-----------+
+                   ▲              ▲
+                   │ policy pull  │ usage push
+                   │              │
+             OpenWRT router    OPNsense router
+             (openwrt/ agent)  (opnsense/ agent)
+```
 
-```
-                 +------------------+
-DNS query ─────▶ |   familydns-dns  | ─▶ category lists, schedules, time limits
-   :53           +------------------+         │
-                                              ▼
-                 +------------------+    +-----------+
-HTTP / web ────▶ |  familydns-api   | ─▶ |  Postgres |
-   :8080         +------------------+    +-----------+
-                          ▲
-                          │ static assets
-                          │
-                       web/dist/
-```
+Enforcement (DNS blocking, per-device usage tracking) runs on the gateway
+router. The router agent pulls a policy snapshot from the API and reports
+connection events back. See [`docs/architecture-openwrt.md`](docs/architecture-openwrt.md).
 
 ## Components
 
-| Module    | What it does                                             | Runtime |
-| --------- | -------------------------------------------------------- | ------- |
-| `api`     | REST + JWT auth, profiles, devices, time limits          | runnable (Main) |
-| `dns`     | UDP DNS server with blocking engine                      | library — needs entrypoint |
-| `traffic` | Pcap-based per-device session tracker (for time usage)   | library — needs entrypoint |
-| `shared`  | Common models, clock                                     | library |
-| `web`     | React + Vite admin UI                                    | static bundle (`web/dist`) |
-
-The `api` server is what runs in production today. The `dns` and `traffic`
-modules will be deleted once the router agent is in place (#71); until then
-their tests exercise their behavior end-to-end against an embedded Postgres.
+| Module      | What it does                                             | Runtime |
+| ----------- | -------------------------------------------------------- | ------- |
+| `api`       | REST + JWT auth, profiles, devices, policy snapshots     | runnable (Main) |
+| `shared`    | Common models, clock                                     | library |
+| `web`       | React + Vite admin UI                                    | static bundle (`web/dist`) |
+| `openwrt/`  | Lua agent: policy pull, dnsmasq/nft enforcement, usage   | OpenWRT ipk |
+| `opnsense/` | Python agent: pflog tail, connection_attempt events      | OPNsense plugin |
 
 ## Quick start (development, macOS or Linux)
 
@@ -88,9 +79,8 @@ Sanity check:
 ### Recommended: api + postgres as a single Docker Compose stack
 
 The api and its postgres database deploy together as one Compose stack.
-The dns and traffic services are **not** part of this stack — they will be
-replaced by a router agent (OpenWRT or OpnSense) that reaches the api over
-the network (see [`docs/architecture.md`](docs/architecture.md)).
+DNS enforcement and usage tracking run on the gateway router (OpenWRT/OPNsense
+agent) and reach the api over the network (see [`docs/architecture-openwrt.md`](docs/architecture-openwrt.md)).
 
 ```bash
 cp deploy/.env.example deploy/.env
@@ -114,9 +104,8 @@ frontend, and restarts a systemd unit. Every artifact (the unit file, the
 deploy script, the bootstrap script) lives in this repo, so updating any of
 them is a normal PR.
 
-This path is being phased out in favour of the Compose stack above and the
-OpenWRT agent for dns/traffic. The unit files under `deploy/` are kept for
-existing installs.
+This path is being phased out in favour of the Compose stack above. The api
+unit file under `deploy/` is kept for existing installs.
 
 ### One-shot host bootstrap (curl-pipe)
 
@@ -188,10 +177,8 @@ scripts/e2e-tests.sh
 ```
 
 Use this to drive the UI in your browser and to run live tests against
-the API exactly as CI runs them. The DNS server module does not yet have
-a runnable `Main`, so DNS-over-the-wire e2e from the staging container
-is a follow-up — `scripts/e2e-tests.sh` covers the API HTTP surface
-today.
+the API exactly as CI runs them. `scripts/e2e-tests.sh` covers the API HTTP
+surface.
 
 ### Production branch & deploy gate
 
@@ -255,8 +242,7 @@ but you lose the auto-update property.
 - `familydns.http.staticDir` — where to serve the React bundle from
 - `familydns.jwt.secret` — **must be ≥ 32 random chars**, change before going live
 - `familydns.jwt.expiryHours` — JWT lifetime (default 24h)
-- `familydns.dns.cacheRefreshSeconds` — how often the DNS server reloads
-  blocklists / schedules from Postgres
+- `familydns.dns.cacheRefreshSeconds` — how often the policy snapshot cache is refreshed
 
 ## Testing
 
@@ -266,16 +252,15 @@ so no external DB is required.
 ```bash
 mill __.test                  # everything
 mill api.test                 # api only
-mill dns.test                 # dns only
 mill shared.test
-mill traffic.test
 ```
 
 CI (`.github/workflows/ci.yml`) runs:
 1. `scalafmt --check`
 2. `mill __.compile`
-3. `mill __.test`
+3. `mill shared.test && mill api.test`
 4. `npm run type-check && npm run lint && npm run build`
+5. Lua tests (openwrt/), Python tests (opnsense/)
 
 ## Git hooks
 

@@ -11,8 +11,6 @@ reach this api over the network (see [`docs/architecture.md`](../docs/architectu
 | `docker-compose.prod.yml`         | Single-stack compose: postgres + api. |
 | `.env.example`                    | Template for secrets/config. Copy to `.env`. |
 | `familydns-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
-| `familydns-dns.service`           | Legacy host-based dns unit (replaced by router agent). |
-| `familydns-traffic.service`       | Legacy host-based traffic unit (replaced by router agent). |
 
 ## One-command deploy
 

@@ -12,35 +12,24 @@ FamilyDNS is a self-hosted parental control DNS server with per-device filtering
 familydns/
 ├── shared/        # Domain models shared across all modules (Scala 3, ZIO JSON)
 ├── api/           # REST API + web server (ZIO HTTP, Doobie, PostgreSQL)
-├── dns/           # DNS filtering server (UDP :53, ZIO, pure Scala DNS parsing)
-├── traffic/       # Passive traffic monitor (pcap4j, session tracking)
+├── openwrt/       # Lua agent for OpenWRT (dnsmasq + nftables policy enforcement)
+├── opnsense/      # Python agent for OPNsense (Unbound + pflog usage events)
 └── web/           # React TypeScript dashboard (Vite, Tailwind)
 ```
 
-Three JVM processes run at runtime (current host-based architecture):
-1. `api` — REST API on :8080, serves the React SPA, handles auth (JWT)
-2. `dns` — DNS server on :53, reads cache from Postgres, blocks by profile/schedule/time
-3. `traffic` — Packet capture via libpcap, tracks time-on-site per device per domain
+One JVM process runs in production:
+1. `api` — REST API on :8080, serves the React SPA, handles auth (JWT), owns the DB
 
-All three share a single PostgreSQL database.
-
-### Router-based enforcement (in progress — supersedes dns/ and traffic/)
-
-Enforcement is migrating to a gateway router (OpenWRT or OpnSense) that pulls
-policy from the API and reports usage back. The `dns/` and `traffic/` modules
-will be deleted once the router agent ships (#71). See
-[`docs/architecture.md`](docs/architecture.md) for the full design.
+DNS enforcement and per-device usage tracking run on the gateway router, not on the API host:
+- **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites dnsmasq/nftables rules; reports usage via `/api/router/events` and `/api/router/usage`
+- **OPNsense** — the `opnsense/` Python agent tails pflog and posts connection events
 
 Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - `POST /api/router/register` — one-time enrollment
 - `GET  /api/router/policy`   — ETag-polled enforcement snapshot
 - `GET  /api/blocklists/<cat>.rpz` — RPZ blocklist per category
-- `POST /api/router/usage`    — per-(mac, hostname) traffic records (pending #69)
-- `POST /api/router/events`   — DHCP lease + DNS query events (pending #69)
-
-Platform-specific agent modules (pending):
-- `openwrt/` — Lua agent for OpenWRT (dnsmasq + nftables), issue #72
-- `opnsense/` — Python agent for OpnSense (Unbound + pf), issue #94
+- `POST /api/router/usage`    — per-(mac, hostname) traffic records
+- `POST /api/router/events`   — DHCP lease + connection attempt events
 
 ## Key domain concepts
 
@@ -74,7 +63,7 @@ Platform-specific agent modules (pending):
 | ZIO HTTP | Native ZIO integration, good middleware support |
 | Doobie | Typesafe SQL, no magic ORM |
 | Flyway | Versioned DB migrations, easy to reason about schema |
-| pcap4j | JVM bindings for libpcap, works on Ubuntu |
+| Lua (OpenWRT) | Native on OpenWRT, zero-dep enforcement agent |
 | JWT (jwt-scala) | Stateless auth, easy to verify in DNS process too |
 | Mill | Faster than sbt, simpler build files |
 | React + Vite + TypeScript | Fast builds, good DX, type safety |
@@ -128,12 +117,6 @@ cp config/application.conf.example config/application.conf
 # Run API
 mill api.run
 
-# Run DNS server (needs root for port 53)
-sudo mill dns.run
-
-# Run traffic monitor (needs root for pcap)
-sudo mill traffic.run
-
 # Run frontend dev server
 cd web && npm run dev
 ```
@@ -141,18 +124,24 @@ cd web && npm run dev
 ## Testing
 
 ```bash
-# All tests
+# All Scala tests
 mill __.test
 
 # Single module
 mill api.test
-mill dns.test
+mill shared.test
 
 # Format check
 mill __.checkFormatting
 
 # Fix imports
 mill __.fix
+
+# OpenWRT agent tests (requires lua5.1 + busted + lua-cjson)
+cd openwrt && LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua -e 'print(package.path)')" busted test/
+
+# OPNsense agent tests (requires Python 3 + pytest)
+cd opnsense && python -m pytest test/ -v
 ```
 
 ## Database migrations
@@ -180,8 +169,7 @@ Pre-commit checks are different: they operate on staged files (`git diff --cache
 ## Security notes
 
 - JWT secret must be at least 32 chars, set in config
-- DNS server does not expose HTTP — no auth surface
-- Traffic monitor does not expose HTTP — no auth surface
+- Router tokens are single-use enrollment tokens; after enrollment a separate bearer token is issued
 - Passwords are bcrypt hashed (cost factor 12)
 - Admin vs ReadOnly enforced via JWT claims + middleware
 - SQL injection impossible via Doobie parameterized queries
@@ -208,7 +196,7 @@ HTTP request → Route handler → Service → Repository → Embedded Postgres 
 ```
 
 Unit tests are reserved for:
-- Pure functions with complex edge cases (`BlockingEngine`, `DnsPacket`, `SessionTracker`)
+- Pure functions with complex edge cases (e.g. policy decision logic in `openwrt/policy.lua`)
 - Schedule boundary conditions (exact on/off times, overnight wrapping, day-of-week)
 - Domain pattern matching edge cases
 - Time limit arithmetic (extensions, site-specific exemptions)
@@ -268,21 +256,18 @@ Use ZIO primitives everywhere except tight inner loops:
 | Atomic read-modify-write across effects | `Ref.Synchronized[A]` |
 | Producer/consumer queue | `Queue[A]` |
 | Broadcast | `Hub[A]` |
-| Tight inner loop (packet capture) | Scala `mutable.HashMap` inside single fiber — document why |
+| Tight inner loop | Scala `mutable.HashMap` inside single fiber — document why |
 
-The `SessionTracker` class is the only place Scala mutable collections are intentionally used.
-This is documented in the class — do not add more without strong justification.
+Avoid mutable Scala collections unless there is a strong, documented reason.
 
 ### Mocks — external I/O only
 
 Only mock things that can't run in CI:
-- `pcap4j` packet capture (no network interface in CI) — `SessionTracker` is unit-tested directly
-- Upstream DNS socket (port 53 forwarding) — `DnsServer.forwardUpstream` is the boundary
+- Network I/O in the router agents — use injected function parameters (see `policy.lua` `get_fn`, `write_fn`, `exec_fn` patterns)
 
 Never mock:
 - Repository traits
 - `AuthService`
-- `BlockingEngine` (pure functions, test directly)
 - `Clock` (use `TestClock`)
 
 ### Test structure
@@ -296,18 +281,21 @@ api/test/src/
     DeviceApiSpec.scala       ← upsert, MAC normalisation, delete
     TimeApiSpec.scala         ← usage tracking, extensions, site limits
     LogApiSpec.scala          ← query filtering, stats aggregation
-
-dns/test/src/
-  unit/
-    BlockingEngineSpec.scala  ← all decision paths, edge cases
-    DnsPacketSpec.scala       ← packet parsing edge cases
-  feature/
-    DnsBlockingSpec.scala     ← full stack with real DB + TestClock
-
-traffic/test/src/
-  unit/
-    SessionTrackerSpec.scala  ← session accumulation, expiry, drain
+    RouterApiSpec.scala       ← enrollment, policy snapshot, ETag
+    RouterIngestSpec.scala    ← usage + event ingest endpoints
+    RouterDecisionSpec.scala  ← /api/router/decision blocking logic
 
 shared/test/src/
   ClockSpec.scala             ← TestClock advance/set behaviour
+
+openwrt/test/
+  policy_spec.lua             ← policy fetch + apply (blocking decisions)
+  conntrack_spec.lua          ← conntrack event parsing
+  render_spec.lua             ← RPZ/dnsmasq render
+  usage_spec.lua              ← usage accumulation
+
+opnsense/test/
+  test_pflog.py               ← pflog line parsing
+  test_unbound.py             ← Unbound log parsing
+  test_agent.py               ← agent event loop
 ```

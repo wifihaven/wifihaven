@@ -473,7 +473,7 @@ DNS server as the source).
 | #68 | `GET /api/router/policy`, blocklists, enrollment, admin UI | done (#98) |
 | #69 | `POST /api/router/usage` + `POST /api/router/events` | done (#97) |
 | #70 | `POST /api/router/decision` + public `/blocked` page | pending |
-| #71 | Delete `dns/` and `traffic/` modules | pending |
+| #71 | Delete `dns/` and `traffic/` modules | done (#125) |
 | #72 | OpenWRT agent (Lua, opkg) | pending |
 | #73 | e2e fake-router in staging compose | pending |
 | #88 | OpenWRT deploy plan (`openwrt/README.md`, `openwrt/build-ipk.sh`, CI `.ipk` build) | pending |
