@@ -1,15 +1,11 @@
 name: E2E + publish
 
-# Runs e2e and smoke checks on every push to main and on pull requests.
-# On push to main (or a v* tag), the publish job pushes the image to ghcr.io
-# after all checks are green. Pull requests run the checks but do NOT publish.
+# Runs e2e and smoke checks on every push to main, then publishes the image
+# to ghcr.io after all checks are green.
 # The opkg .ipk is published separately by openwrt-build.yml on v* tags.
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -68,7 +64,6 @@ jobs:
   publish:
     name: Publish Docker image to ghcr.io
     needs: [bootstrap-smoke, e2e, prod-stack-smoke]
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -91,11 +86,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
             type=sha,prefix=sha-,format=short
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
 
       - name: Build and push
         uses: docker/build-push-action@v5
