@@ -120,22 +120,26 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       } yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.99"))) &&
         assertTrue(device.exists(_.profileId.contains(kidsId)))
     },
-    test("upsert updates last_seen_ip without losing profile assignment") {
+    test("upsert re-assigns device to a different profile and updates name") {
+      // The admin PUT /api/devices owns name + profile_id.
+      // last_seen_ip is router-owned and must not be overwritten by the admin upsert.
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
-        auth        <- makeAuth
-        token       <- auth.login("admin", "changeme").map(_.token)
         profiles    <- profileRepo.listAll
-        kidsId = profiles.find(_.name == "Kids").get.id
-        mac    = "aa:bb:cc:00:00:01"
-        _      <- deviceRepo.upsert(mac, "Phone", kidsId, "192.168.1.10")
-        // Upsert again with different IP (simulating DHCP lease change)
-        _      <- deviceRepo.upsert(mac, "Phone", kidsId, "192.168.1.20")
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        mac      = "aa:bb:cc:00:00:01"
+        // First insert: assigned to Kids, router later sets last_seen_ip.
+        _      <- deviceRepo.upsert(mac, "Phone", kidsId, "")
+        _      <- deviceRepo.updateLastSeen(mac, "192.168.1.10")
+        // Re-assign to Adults and rename — last_seen_ip must survive unchanged.
+        _      <- deviceRepo.upsert(mac, "Tablet", adultsId, "")
         device <- deviceRepo.findByMac(mac)
-      } yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.20"))) &&
-        assertTrue(device.exists(_.profileId.contains(kidsId)))
+      } yield assertTrue(device.exists(_.profileId.contains(adultsId))) &&
+        assertTrue(device.exists(_.name == "Tablet")) &&
+        assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.10")))
     },
   ) @@ TestAspect.sequential
 }
