@@ -105,7 +105,13 @@ git push origin v0.2.0
 # CI builds familydns_0.2.0-1_all.ipk and attaches it to the release.
 ```
 
-## Flash / Install
+## Install / Enrollment
+
+For end-user install instructions (download the latest release `.ipk`,
+enroll the router, configure `lan_prefix`, set up the block page),
+see [`docs/install-openwrt.md`](../docs/install-openwrt.md).
+
+For developer flashing of a locally built `.ipk`:
 
 ```sh
 scp openwrt/familydns_*.ipk root@192.168.1.1:/tmp/
@@ -114,52 +120,7 @@ ssh root@192.168.1.1 opkg install /tmp/familydns_*.ipk
 
 opkg installs all files and runs the `postinst` script (which enables the
 procd service), but does **not** start the daemon yet — enrollment must
-happen first.
-
-## Enrollment
-
-### 1. Create a router record in the admin UI
-
-Go to the FamilyDNS admin UI → **Routers → Add router**. Copy the
-one-time enrollment token (looks like `et_5f3c9b…`).
-
-### 2. Exchange the enrollment token for a router token
-
-Run this from the router (or any host that can reach the API):
-
-```sh
-curl -s -X POST http://<api-host>:8080/api/router/register \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "enrollment_token": "et_…",
-    "router_name":      "home-gw",
-    "openwrt_version":  "23.05.5",
-    "agent_version":    "0.1.0"
-  }'
-# → {"router_id":"9c1f2e8a-…","router_token":"rt_a7d12b…"}
-```
-
-The enrollment token is single-use; it is invalidated on success.
-
-### 3. Write the values into UCI config and start the agent
-
-```sh
-uci set familydns.@familydns[0].api_url='http://<api-host>:8080'
-uci set familydns.@familydns[0].router_id='<router_id>'
-uci set familydns.@familydns[0].router_token='<router_token>'
-uci commit familydns
-/etc/init.d/familydns start
-```
-
-The agent is already enabled for autostart by the `postinst` script, so
-it will also start on the next reboot.
-
-Adjust `lan_prefix` if your LAN subnet is not `192.168.1.`:
-
-```sh
-uci set familydns.@familydns[0].lan_prefix='10.0.0.'
-uci commit familydns
-```
+happen first. See the install guide above for the enrollment flow.
 
 ## Block-page redirect
 
