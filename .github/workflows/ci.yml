@@ -67,15 +67,11 @@ jobs:
         run: mill __.compile
 
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
-        # api.test and dns.test both spin up EmbeddedPostgres, which uses a
-        # JVM-wide file lock for binary unpacking. Running them in parallel
-        # (the default for `mill __.test`) hits OverlappingFileLockException
-        # in the second JVM. Run them in sequence — each is fast enough.
+        # api.test spins up EmbeddedPostgres; running sequentially avoids
+        # JVM-wide file-lock contention if more DB-heavy tests are added later.
         run: |
           mill shared.test
-          mill traffic.test
           mill api.test
-          mill dns.test
 
   # ── Migrations: forbid changes to existing files on PRs to main ─────────
   migrations-immutable:

@@ -20,14 +20,8 @@ WORKDIR /src
 COPY build.mill .scalafmt.conf .scalafix.conf ./
 COPY shared shared
 COPY api api
-COPY dns dns
-COPY traffic traffic
 RUN mill api.assembly \
- && cp out/api/assembly.dest/out.jar /tmp/api.jar \
- && mill dns.assembly \
- && cp out/dns/assembly.dest/out.jar /tmp/dns.jar \
- && mill traffic.assembly \
- && cp out/traffic/assembly.dest/out.jar /tmp/traffic.jar
+ && cp out/api/assembly.dest/out.jar /tmp/api.jar
 
 # ── 2. Web build ──────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS web-build
@@ -40,21 +34,18 @@ RUN npm run build
 # ── 3. Runtime ────────────────────────────────────────────────────────────
 FROM eclipse-temurin:21-jre
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-      curl ca-certificates dnsutils libpcap0.8 \
+      curl ca-certificates dnsutils \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=scala-build /tmp/api.jar /app/api.jar
-COPY --from=scala-build /tmp/dns.jar /app/dns.jar
-COPY --from=scala-build /tmp/traffic.jar /app/traffic.jar
 COPY --from=web-build /web/dist /app/web
 COPY config/application.conf.example /app/application.conf.example
 COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 8080 5354/udp
+EXPOSE 8080
 
 ENV FAMILYDNS_HTTP_PORT=8080 \
-    FAMILYDNS_DNS_PORT=5354 \
     FAMILYDNS_STATIC_DIR=/app/web
 
 ENTRYPOINT ["/app/entrypoint.sh"]

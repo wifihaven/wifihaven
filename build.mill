@@ -15,7 +15,6 @@ val jwtVersion         = "10.0.1"
 val bcryptVersion      = "0.10.2"
 val postgresVersion    = "42.7.4"
 val logbackVersion     = "1.5.8"
-val pcap4jVersion      = "1.8.2"
 val embeddedPgVersion  = "2.1.0"
 val flywayPgVersion    = "10.17.3"
 
@@ -93,63 +92,5 @@ object api extends CommonModule {
     def mvnDeps = super.mvnDeps() ++ Seq(
       mvn"dev.zio::zio-http-testkit:$zioHttpVersion",
     )
-  }
-}
-
-// ── DNS ────────────────────────────────────────────────────────────────────
-object dns extends CommonModule {
-  def moduleDeps = Seq(shared, api)
-  def mvnDeps = Seq(
-    mvn"dev.zio::zio:$zioVersion",
-    mvn"dev.zio::zio-streams:$zioVersion",
-    mvn"dev.zio::zio-config:$zioConfigVersion",
-    mvn"dev.zio::zio-config-typesafe:$zioConfigVersion",
-    mvn"dev.zio::zio-config-magnolia:$zioConfigVersion",
-    mvn"dev.zio::zio-logging:$zioLoggingVersion",
-    mvn"dev.zio::zio-logging-slf4j:$zioLoggingVersion",
-    mvn"org.tpolecat::doobie-core:$doobieVersion",
-    mvn"org.tpolecat::doobie-postgres:$doobieVersion",
-    mvn"org.tpolecat::doobie-hikari:$doobieVersion",
-    mvn"org.postgresql:postgresql:$postgresVersion",
-    mvn"ch.qos.logback:logback-classic:$logbackVersion",
-  )
-  // Same ServiceLoader concat rules as api — flyway-postgres + jdbc drivers
-  // need their META-INF/services entries preserved across the fat jar.
-  override def assemblyRules = super.assemblyRules ++ Seq(
-    Assembly.Rule.Append("META-INF/services/org.flywaydb.core.extensibility.Plugin", "\n"),
-    Assembly.Rule.Append("META-INF/services/java.sql.Driver", "\n"),
-  )
-  object test extends ScalaTests with FamilyDnsTestModule {
-    def moduleDeps = super.moduleDeps ++ Seq(dns, api.test)
-  }
-}
-
-// ── Traffic ────────────────────────────────────────────────────────────────
-object traffic extends CommonModule {
-  def moduleDeps = Seq(shared, api)
-  def mvnDeps = Seq(
-    mvn"dev.zio::zio:$zioVersion",
-    mvn"dev.zio::zio-streams:$zioVersion",
-    mvn"dev.zio::zio-config:$zioConfigVersion",
-    mvn"dev.zio::zio-config-typesafe:$zioConfigVersion",
-    mvn"dev.zio::zio-config-magnolia:$zioConfigVersion",
-    mvn"dev.zio::zio-logging:$zioLoggingVersion",
-    mvn"dev.zio::zio-logging-slf4j:$zioLoggingVersion",
-    mvn"org.pcap4j:pcap4j-core:$pcap4jVersion",
-    mvn"org.pcap4j:pcap4j-packetfactory-static:$pcap4jVersion",
-    mvn"org.tpolecat::doobie-core:$doobieVersion",
-    mvn"org.tpolecat::doobie-postgres:$doobieVersion",
-    mvn"org.tpolecat::doobie-hikari:$doobieVersion",
-    mvn"org.postgresql:postgresql:$postgresVersion",
-    mvn"ch.qos.logback:logback-classic:$logbackVersion",
-  )
-  // Mirrors api.assemblyRules — api is on the classpath and brings flyway + jdbc
-  // ServiceLoader entries that must be concatenated rather than overwritten.
-  override def assemblyRules = super.assemblyRules ++ Seq(
-    Assembly.Rule.Append("META-INF/services/org.flywaydb.core.extensibility.Plugin", "\n"),
-    Assembly.Rule.Append("META-INF/services/java.sql.Driver", "\n"),
-  )
-  object test extends ScalaTests with FamilyDnsTestModule {
-    def moduleDeps = super.moduleDeps ++ Seq(traffic)
   }
 }

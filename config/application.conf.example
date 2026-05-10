@@ -29,15 +29,4 @@ familydns {
     logBatchSize        = 500
     logFlushSeconds     = 5
   }
-
-  traffic {
-    # Network interface to capture packets on. Find with `ip link show`.
-    interface           = "eth0"
-    # Idle seconds before a session is rolled into the time_usage table.
-    sessionTimeoutSecs  = 60
-    # How often to flush rolled-up sessions to postgres.
-    flushIntervalSecs   = 30
-    # Free-form label persisted with usage rows (multi-site deployments).
-    location            = "home"
-  }
 }
