@@ -44,25 +44,28 @@ class PolicyServiceLive(
       val devsByProfile =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
       val pProfiles     = profiles.map { p =>
-        val pSched    = schedMap
+        val pSched     = schedMap
           .getOrElse(p.id, Nil)
           .map(s => PolicySchedule(s.days, s.blockFrom, s.blockUntil))
-        val pSiteLims = stlMap
+        val pSiteLims  = stlMap
           .getOrElse(p.id, Nil)
-          .map(s => PolicySiteLimit(s.domainPattern, s.dailyMinutes, s.label))
-        val devicesIn = devsByProfile.getOrElse(p.id, Nil)
-        val byDomain  = stlMap
+          .map(s => PolicySiteLimit(s.domainPattern, s.dailyMinutes, s.label, s.exemptFromDaily))
+        val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
+        val byDomain   = stlMap
           .getOrElse(p.id, Nil)
           .foldLeft(Map.empty[String, Int]) { (acc, stl) =>
             val mins =
               devicesIn.iterator.map(d => usages.getOrElse((d.mac, stl.domainPattern), 0)).sum
             if mins == 0 then acc else acc.updated(stl.domainPattern, mins)
           }
-        val siteDoms  = stlMap.getOrElse(p.id, Nil).map(_.domainPattern).toSet
-        val totalMins = usages.iterator.collect {
-          case ((mac, dom), m) if devicesIn.exists(_.mac == mac) && !siteDoms.contains(dom) => m
+        // Only exempt site domains are excluded from the daily total.
+        // Included sites (exemptFromDaily=false) count against the daily cap.
+        val exemptDoms =
+          stlMap.getOrElse(p.id, Nil).filter(_.exemptFromDaily).map(_.domainPattern).toSet
+        val totalMins  = usages.iterator.collect {
+          case ((mac, dom), m) if devicesIn.exists(_.mac == mac) && !exemptDoms.contains(dom) => m
         }.sum
-        val extMins   = exts.getOrElse(p.id, 0)
+        val extMins    = exts.getOrElse(p.id, 0)
         PolicyProfile(
           id = p.id,
           name = p.name,
@@ -184,6 +187,7 @@ class PolicyServiceLive(
       today: LocalDate,
   ): Option[RouterDecisionResponse] = {
     val midnight     = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
+    // Check per-site sub-cap first (applies to both exempt and included sites)
     val siteLimitHit = p.siteLimits.find { sl =>
       matchesDomainPattern(hostname, sl.domain) &&
       p.timeUsedToday.byDomain.getOrElse(sl.domain, 0) >= sl.minutes
@@ -191,13 +195,20 @@ class PolicyServiceLive(
     siteLimitHit
       .map(sl => RouterDecisionResponse("block", s"site_time_limit:${sl.label}", Some(midnight)))
       .orElse {
-        p.dailyMinutes.flatMap { limit =>
-          val used = p.timeUsedToday.totalMinutes
-          val ext  = p.extensionsTodayMinutes
-          Option.when(used >= limit + ext)(
-            RouterDecisionResponse("block", "time_limit", Some(midnight)),
-          )
-        }
+        // Daily total cap: skip entirely if this hostname belongs to an exempt site limit.
+        // Included sites (exemptFromDaily=false) already appear in totalMinutes via the
+        // snapshot calculation, so the check below naturally applies to them.
+        val isExemptSite =
+          p.siteLimits.exists(sl => sl.exemptFromDaily && matchesDomainPattern(hostname, sl.domain))
+        if isExemptSite then None
+        else
+          p.dailyMinutes.flatMap { limit =>
+            val used = p.timeUsedToday.totalMinutes
+            val ext  = p.extensionsTodayMinutes
+            Option.when(used >= limit + ext)(
+              RouterDecisionResponse("block", "time_limit", Some(midnight)),
+            )
+          }
       }
   }
 
@@ -286,7 +297,7 @@ object PolicyService {
         parts += s"  s:${s.days.mkString(",")}|${s.blockFrom}|${s.blockUntil}"
       }
       p.siteLimits.sortBy(_.domain).foreach { sl =>
-        parts += s"  sl:${sl.domain}|${sl.minutes}|${sl.label}"
+        parts += s"  sl:${sl.domain}|${sl.minutes}|${sl.label}|${sl.exemptFromDaily}"
       }
       parts += s"  u:${p.timeUsedToday.totalMinutes}"
       p.timeUsedToday.byDomain.toList.sortBy(_._1).foreach((k, v) => parts += s"    ud:$k=$v")

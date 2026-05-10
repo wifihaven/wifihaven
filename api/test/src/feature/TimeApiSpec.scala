@@ -131,6 +131,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- stlRepo.replaceForProfile(
             kidsId,
             List(
+              // default exemptFromDaily = true → does NOT count toward 120-min cap
               SiteTimeLimitRequest("*.youtube.com", 30, "YouTube"),
             ),
           )
@@ -163,6 +164,58 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(
             status.siteUsage.exists(su =>
               su.label == "YouTube" && su.usedMins == 20 && su.remainingMins == 10,
+            ),
+          )
+      },
+      test("included site (exemptFromDaily=false): usage IS counted in daily total") {
+        for
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          usageRepo   <- ZIO.service[TimeUsageRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          _           <- stlRepo.replaceForProfile(
+            kidsId,
+            List(
+              // exemptFromDaily=false → YouTube minutes count against the 120-min daily cap
+              SiteTimeLimitRequest("*.youtube.com", 60, "YouTube", exemptFromDaily = false),
+            ),
+          )
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // 60 min of YouTube usage; since exemptFromDaily=false it must appear in usedMins
+          _               <- usageRepo.incrementUsage(testMac, "youtube.com", today, 60)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            usageRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode(s"/api/time/status/$testMac").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp   <- routes.runZIO(req)
+          body   <- resp.body.asString
+          status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
+        yield assertTrue(status.usedMins == 60) &&         // YouTube IS counted in total
+          assertTrue(status.remainingMins.contains(60)) && // 120 - 60 = 60
+          assertTrue(
+            status.siteUsage.exists(su =>
+              su.label == "YouTube" && su.usedMins == 60 && su.remainingMins == 0,
             ),
           )
       },

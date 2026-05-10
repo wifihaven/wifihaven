@@ -30,6 +30,7 @@ export interface SiteTimeLimit {
   domainPattern: string
   dailyMinutes: number
   label: string
+  exemptFromDaily: boolean
 }
 
 export interface ProfileDetail {
@@ -179,6 +180,7 @@ export interface SiteTimeLimitRequest {
   domainPattern: string
   dailyMinutes: number
   label: string
+  exemptFromDaily: boolean
 }
 
 export interface UpsertProfileRequest {

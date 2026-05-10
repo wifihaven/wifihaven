@@ -375,16 +375,16 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
 }
 
 class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
-  private type R = (Long, Long, String, Int, String)
-  private def toS(r: R)         = SiteTimeLimit(r._1, r._2, r._3, r._4, r._5)
+  private type R = (Long, Long, String, Int, String, Boolean)
+  private def toS(r: R)         = SiteTimeLimit(r._1, r._2, r._3, r._4, r._5, r._6)
   def listForProfile(pid: Long) =
-    sql"SELECT id,profile_id,domain_pattern,daily_minutes,label FROM site_time_limits WHERE profile_id=$pid ORDER BY id"
+    sql"SELECT id,profile_id,domain_pattern,daily_minutes,label,exempt_from_daily FROM site_time_limits WHERE profile_id=$pid ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
   def listAll                   =
-    sql"SELECT id,profile_id,domain_pattern,daily_minutes,label FROM site_time_limits ORDER BY id"
+    sql"SELECT id,profile_id,domain_pattern,daily_minutes,label,exempt_from_daily FROM site_time_limits ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
@@ -392,7 +392,7 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
   def replaceForProfile(pid: Long, ls: List[SiteTimeLimitRequest]) = {
     val del = sql"DELETE FROM site_time_limits WHERE profile_id=$pid".update.run
     val ins = ls.map(l =>
-      sql"INSERT INTO site_time_limits(profile_id,domain_pattern,daily_minutes,label) VALUES($pid,${l.domainPattern},${l.dailyMinutes},${l.label})".update.run,
+      sql"INSERT INTO site_time_limits(profile_id,domain_pattern,daily_minutes,label,exempt_from_daily) VALUES($pid,${l.domainPattern},${l.dailyMinutes},${l.label},${l.exemptFromDaily})".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
   }
