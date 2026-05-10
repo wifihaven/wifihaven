@@ -4,9 +4,11 @@
 #
 # Then:
 #   - browse to http://localhost:8080
-#   - run e2e tests:  scripts/e2e-tests.sh
+#   - run e2e tests:  scripts/e2e-tests.sh && scripts/e2e-router.sh
 #
 # Used identically in GitHub Actions (.github/workflows/e2e.yml).
+# fake-router registers as a router, polls /policy, and posts canned usage/events
+# every few seconds — proving the OpenWRT API surface works end-to-end.
 
 services:
   postgres:
@@ -49,4 +51,28 @@ services:
       timeout: 3s
       retries: 30
       start_period: 20s
+
+  fake-router:
+    image: python:3.12-slim
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./fake-router.py:/fake-router.py:ro
+    environment:
+      API_BASE: "http://api:8080"
+      ADMIN_USER: "admin"
+      ADMIN_PASS: "changeme"
+      FAKE_ROUTER_SEED: "42"
+      POLL_INTERVAL: "3"
+      USAGE_INTERVAL: "10"
+      EVENT_INTERVAL: "15"
+    command: python /fake-router.py
+    healthcheck:
+      # Healthy once the registration token file is written.
+      test: ["CMD-SHELL", "test -f /tmp/fake-router-token"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 10s
 

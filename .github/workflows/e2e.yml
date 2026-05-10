@@ -39,11 +39,15 @@ jobs:
       - name: Run e2e tests
         run: scripts/e2e-tests.sh
 
-      - name: Dump api logs on failure
+      - name: Run router e2e tests
+        run: scripts/e2e-router.sh
+
+      - name: Dump logs on failure
         if: failure()
         run: |
-          docker compose -f docker/docker-compose.yml logs api || true
-          docker compose -f docker/docker-compose.yml logs postgres || true
+          docker compose -f docker/docker-compose.yml logs api          || true
+          docker compose -f docker/docker-compose.yml logs postgres     || true
+          docker compose -f docker/docker-compose.yml logs fake-router  || true
 
       - name: Tear down
         if: always()
