@@ -13,7 +13,11 @@
 # .env and offers to keep it, and `docker compose up -d` is idempotent.
 #
 # Env vars to skip prompts (useful for unattended installs):
-#   FAMILYDNS_INSTALL_DIR    install path                (default: /opt/familydns)
+#   FAMILYDNS_PREFIX         install path. Default: $HOME/.familydns when run
+#                            as a normal user (no sudo needed), /opt/familydns
+#                            when run as root. Set to /opt/familydns explicitly
+#                            for a system-wide install (requires sudo/root).
+#   FAMILYDNS_INSTALL_DIR    legacy alias for FAMILYDNS_PREFIX.
 #   FAMILYDNS_API_HOST_PORT  host port to bind           (default: 8080)
 #   FAMILYDNS_API_BIND       host interface to bind on   (default: 0.0.0.0)
 #   FAMILYDNS_DNS_LOCATION   free-form location label    (default: home)
@@ -97,7 +101,20 @@ ok "docker $(docker --version | awk '{print $3}' | tr -d ',') / compose $(docker
 
 step "Configuration"
 
-prompt FAMILYDNS_INSTALL_DIR    "Install directory"                           "/opt/familydns"
+# FAMILYDNS_PREFIX is the preferred name; FAMILYDNS_INSTALL_DIR is the legacy alias.
+if [ -n "${FAMILYDNS_PREFIX:-}" ] && [ -z "${FAMILYDNS_INSTALL_DIR:-}" ]; then
+  FAMILYDNS_INSTALL_DIR="$FAMILYDNS_PREFIX"
+fi
+
+# Default prefix: user-writable when not root (so `curl|bash` works without
+# sudo), /opt/familydns when running as root.
+if [ "$(id -u)" -eq 0 ]; then
+  DEFAULT_PREFIX="/opt/familydns"
+else
+  DEFAULT_PREFIX="${HOME}/.familydns"
+fi
+
+prompt FAMILYDNS_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
 prompt FAMILYDNS_API_HOST_PORT  "Host port for the API"                       "8080"
 prompt FAMILYDNS_API_BIND       "Bind address (0.0.0.0 or 127.0.0.1)"         "0.0.0.0"
 prompt FAMILYDNS_DNS_LOCATION   "Location label for query logs"               "home"
@@ -107,9 +124,36 @@ prompt FAMILYDNS_DNS_LOCATION   "Location label for query logs"               "h
 step "Preparing $FAMILYDNS_INSTALL_DIR"
 
 if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
-  if [ -w "$(dirname "$FAMILYDNS_INSTALL_DIR")" ]; then
+  parent_dir="$(dirname "$FAMILYDNS_INSTALL_DIR")"
+  if [ -w "$parent_dir" ]; then
+    mkdir -p "$FAMILYDNS_INSTALL_DIR"
+  elif [ "$(id -u)" -eq 0 ]; then
     mkdir -p "$FAMILYDNS_INSTALL_DIR"
   else
+    # Need sudo to create the install dir. If stdin is not a tty (e.g.
+    # `curl … | bash`), sudo can't prompt for a password and will fail
+    # silently with "a password is required". Detect that up front and
+    # tell the user how to recover.
+    if ! [ -t 0 ]; then
+      die "$(cat <<EOF
+
+  This install needs root to write to ${FAMILYDNS_INSTALL_DIR}, but stdin is
+  not a tty (curl|bash detected) so sudo cannot prompt for a password. Run
+  one of:
+
+    # 1. User-mode install (no sudo needed):
+    curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \\
+      | FAMILYDNS_PREFIX=\$HOME/.familydns bash
+
+    # 2. Save and run with sudo:
+    curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
+    sudo bash install.sh
+
+    # 3. Warm up sudo first, then pipe:
+    sudo -v && curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+EOF
+)"
+    fi
     sudo mkdir -p "$FAMILYDNS_INSTALL_DIR"
     sudo chown "$USER" "$FAMILYDNS_INSTALL_DIR"
   fi
