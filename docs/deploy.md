@@ -197,6 +197,14 @@ opkg's upgrade behavior for config files:
 
 ## 3. First-install bootstrap
 
+The full step-by-step install guides live in their own documents:
+
+- API server → [`install-api.md`](install-api.md)
+- OpenWRT agent → [`install-openwrt.md`](install-openwrt.md)
+
+The summaries below capture the shape of each bootstrap; consult the linked
+guides for runnable commands, prerequisites, and verification steps.
+
 ### 3.1 API server
 
 > **See [`install-api.md`](install-api.md) for the full first-install guide.**
@@ -242,51 +250,25 @@ Migrations run automatically at API startup via Flyway.
 
 ### 3.2 OpenWRT router
 
-**Requirements**: OpenWRT 23.x with internet access from the router.
+**Requirements**: OpenWRT 23.05.x with internet access from the router.
+
+End users install via the one-shot script — see
+[`install-openwrt.md`](install-openwrt.md) for the full guide and the
+manual-fallback path. The headline command, run as root on the router:
 
 ```sh
-# 1. Download the latest .ipk from GitHub Releases
-curl -fsSL -o /tmp/familydns.ipk \
-  $(curl -sf https://api.github.com/repos/sameerparekh/familydns/releases/latest \
-    | jsonfilter -e '@.assets[0].browser_download_url')
-
-# 2. Install (opkg resolves lua, luci-lib-jsonc, conntrack-tools, curl)
-opkg install /tmp/familydns.ipk
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 ```
 
-**One-time enrollment**:
+It prompts for the API URL, the one-time enrollment token (generated in the
+admin UI → **Routers → Add router**), a router name, and the LAN prefix
+(auto-detected from `network.lan.ipaddr`); downloads the latest `.ipk` from
+GitHub Releases; installs it; POSTs `/api/router/register` to exchange the
+enrollment token for `routerId` + `routerToken`; writes everything to UCI;
+sets up the `uhttpd` block-page listener on `127.0.0.1:8081`; and starts
+the agent.
 
-```sh
-# 3. Set the API URL
-uci set familydns.@familydns[0].api_url='http://<api-host>:8080'
-uci commit familydns
-
-# 4. Exchange enrollment token (token from the admin UI → Routers → Add router)
-curl -s -X POST http://<api-host>:8080/api/router/register \
-  -H 'Content-Type: application/json' \
-  -d '{"enrollmentToken":"et_…","routerName":"home-gw","platformVersion":"23.05.3","agentVersion":"0.1.0"}'
-# → {"routerId":"…","routerToken":"rt_…"}
-
-# 5. Write the returned values
-uci set familydns.@familydns[0].router_id='<routerId>'
-uci set familydns.@familydns[0].router_token='<routerToken>'
-uci commit familydns
-
-# 6. Start the agent (already enabled for autostart by postinst)
-/etc/init.d/familydns start
-
-# 7. (Optional) install the auto-update script
-#    See §2.3 above for the script content
-```
-
-The agent polls the API every 60 s. After a successful policy fetch the admin
-UI → Routers → `<name>` will show a fresh `last_seen_at`.
-
-**LAN subnet**: if your LAN is not `192.168.1.0/24`, also set:
-```sh
-uci set familydns.@familydns[0].lan_prefix='10.0.'   # adjust to your prefix
-uci commit familydns
-```
+The auto-update cron job (#131) is optional and not yet implemented.
 
 ---
 
