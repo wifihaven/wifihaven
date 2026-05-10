@@ -26,6 +26,13 @@
 
 set -euo pipefail
 
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
 REPO_RAW="https://raw.githubusercontent.com/sameerparekh/familydns/main"
 COMPOSE_URL="${REPO_RAW}/deploy/docker-compose.prod.yml"
 ENV_EXAMPLE_URL="${REPO_RAW}/deploy/.env.example"
@@ -40,8 +47,20 @@ ok()   { c_green "  ✓ $*"; }
 warn() { c_yellow "  ! $*"; }
 die()  { c_red "  ✗ $*"; exit 1; }
 
+# is_tty: stdin AND stdout are both terminals — true for `bash install.sh`,
+# false under `curl | bash` (stdin is the pipe).
 is_tty() { [ -t 0 ] && [ -t 1 ]; }
-noninteractive() { [ -n "${FAMILYDNS_NONINTERACTIVE:-}" ] || ! is_tty; }
+
+# can_prompt: we have *some* way to ask the user. Either stdin is a tty
+# (normal invocation), or /dev/tty is readable (the common `curl | bash`
+# case — the user has a controlling terminal, just not on stdin). The
+# `read` calls in prompt()/prompt_secret() already redirect from /dev/tty,
+# so checking /dev/tty here is consistent with what the prompts use.
+# Returns false in true non-interactive environments (CI, no controlling
+# tty), where we should fall back to env-var-or-default.
+can_prompt() { is_tty || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; }
+
+noninteractive() { [ -n "${FAMILYDNS_NONINTERACTIVE:-}" ] || ! can_prompt; }
 
 prompt() {
   # prompt VAR "Question" "default"
