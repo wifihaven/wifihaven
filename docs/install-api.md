@@ -52,10 +52,46 @@ Piping `curl … | sudo bash` works too, but only if sudo is already warmed up
 (`sudo -v` first) — otherwise sudo can't prompt for a password through the
 pipe. The script detects this case and prints a recovery hint.
 
-For unattended installs, set `FAMILYDNS_NONINTERACTIVE=1` and any of
-`FAMILYDNS_PREFIX` (or its legacy alias `FAMILYDNS_INSTALL_DIR`),
-`FAMILYDNS_API_HOST_PORT`, `FAMILYDNS_API_BIND`, `FAMILYDNS_DNS_LOCATION`,
-`FAMILYDNS_NEW_ADMIN_PW` to skip prompts.
+### Interactive prompts under `curl | bash`
+
+Under `curl … | bash`, the script's stdin is the pipe, not your terminal —
+so naively `read` would silently return empty for every prompt. The
+installer works around this by reading from `/dev/tty` whenever a
+controlling terminal is available, so the four configuration prompts
+(install dir, port, bind address, location) and the admin-password
+rotation prompt all work as you'd expect.
+
+In environments where there is no controlling terminal at all (CI runners,
+nohup, some container shells), `/dev/tty` is not available; the script
+detects that and switches to non-interactive mode automatically — values
+come from env vars (see below) or defaults. To force non-interactive mode
+even when a tty is present, set `FAMILYDNS_NONINTERACTIVE=1`.
+
+### Non-interactive install
+
+For unattended installs, set `FAMILYDNS_NONINTERACTIVE=1` and any of the
+env vars below to skip prompts. You can pass them on the same one-liner:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \
+  | FAMILYDNS_NONINTERACTIVE=1 \
+    FAMILYDNS_PREFIX=$HOME/.familydns \
+    FAMILYDNS_API_HOST_PORT=8080 \
+    FAMILYDNS_NEW_ADMIN_PW='choose-a-good-one' \
+    bash
+```
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `FAMILYDNS_PREFIX` | install path (preferred name) | `$HOME/.familydns` (non-root) or `/opt/familydns` (root) |
+| `FAMILYDNS_INSTALL_DIR` | legacy alias for `FAMILYDNS_PREFIX` | — |
+| `FAMILYDNS_API_HOST_PORT` | host port to bind | `8080` |
+| `FAMILYDNS_API_BIND` | host interface to bind on | `0.0.0.0` |
+| `FAMILYDNS_DNS_LOCATION` | free-form location label for query logs | `home` |
+| `FAMILYDNS_NEW_ADMIN_PW` | new admin password (skips rotation prompt) | prompt |
+| `FAMILYDNS_NONINTERACTIVE` | if set, never prompt; fail if any required value is missing | unset |
+
+Run `bash install.sh --help` to print the same list.
 
 The rest of this document is the manual walkthrough — read it if you'd
 rather understand each step, or if the script doesn't fit your environment

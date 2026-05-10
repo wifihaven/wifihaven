@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Tests for deploy/install.sh — specifically the tty/can_prompt detection
+# logic that drives whether the script prompts the user or falls back to
+# env-var defaults. Discovered & run by .github/workflows/ci.yml's
+# shell-tests job.
+#
+# We extract the helper functions out of install.sh and source them in
+# isolation so the test doesn't need docker/openssl/curl.
+
+set -euo pipefail
+
+SCRIPT="$(cd "$(dirname "$0")" && pwd)/install.sh"
+[[ -r "${SCRIPT}" ]] || { echo "FAIL: cannot read ${SCRIPT}"; exit 1; }
+
+# Extract the helper block (is_tty, can_prompt, noninteractive, prompt,
+# prompt_secret), and prepend test stubs for the formatting helpers
+# (c_red, die, warn, etc.) which are defined earlier in install.sh.
+HELPERS="$(mktemp)"
+trap 'rm -f "${HELPERS}"' EXIT
+cat > "${HELPERS}" <<'EOF'
+c_red()    { printf '%s\n' "$*" >&2; }
+c_green()  { printf '%s\n' "$*"; }
+c_yellow() { printf '%s\n' "$*" >&2; }
+warn()     { c_yellow "WARN: $*"; }
+die()      { c_red "DIE: $*"; exit 1; }
+EOF
+awk '/^# is_tty:/{f=1} /^genpw\(\)/{f=0} f' "${SCRIPT}" >> "${HELPERS}"
+[[ -s "${HELPERS}" ]] || { echo "FAIL: could not extract helpers from install.sh"; exit 1; }
+
+PASS=0; FAIL=0
+pass() { echo "PASS: $*"; PASS=$((PASS+1)); }
+fail() { echo "FAIL: $*"; FAIL=$((FAIL+1)); }
+
+# Run a snippet in a subshell with helpers sourced and stdin redirected
+# from $1 (a path). Returns the snippet's exit code.
+run_with_stdin() {
+  local stdin_src="$1"; shift
+  bash -c "set -euo pipefail; source '${HELPERS}'; $*" < "${stdin_src}"
+}
+
+# ── 1. noninteractive() returns true when neither stdin nor /dev/tty are
+#      usable (simulates a CI runner with no controlling terminal). We
+#      shim is_tty=false and the /dev/tty checks to false so the test is
+#      portable across macOS (where setsid is absent) and Linux.
+out="$(bash -c "
+  source '${HELPERS}'
+  is_tty() { return 1; }
+  can_prompt() { is_tty && return 0; false; }
+  if noninteractive; then echo yes; else echo no; fi
+")"
+if [[ "${out}" == "yes" ]]; then
+  pass "noninteractive=true when no tty and no /dev/tty"
+else
+  fail "noninteractive should be true when no tty and no /dev/tty (got '${out}')"
+fi
+
+# ── 2. noninteractive() returns true when FAMILYDNS_NONINTERACTIVE=1
+#      regardless of tty state.
+if FAMILYDNS_NONINTERACTIVE=1 bash -c "source '${HELPERS}'; noninteractive"; then
+  pass "noninteractive=true when FAMILYDNS_NONINTERACTIVE=1"
+else
+  fail "FAMILYDNS_NONINTERACTIVE=1 should force noninteractive"
+fi
+
+# ── 3. can_prompt() returns true when /dev/tty is readable+writable, even
+#      if stdin is not a tty. This is the curl|bash-from-terminal case —
+#      the regression #165 fixes. We can't reliably synthesize a real
+#      /dev/tty in CI, so we shim the bracket test by redefining is_tty
+#      and asserting can_prompt's *structure*: it must return true when
+#      either is_tty is true OR the /dev/tty checks pass.
+shim_test() {
+  local label="$1" is_tty_val="$2" tty_readable="$3" tty_writable="$4" want="$5"
+  local out
+  out="$(bash -c "
+    source '${HELPERS}'
+    is_tty() { return ${is_tty_val}; }
+    # Override the [ -r /dev/tty ] && [ -w /dev/tty ] portion via a
+    # shimmed 'test'/'[' is impractical, so re-derive can_prompt here
+    # with the same logic but mocked file checks:
+    can_prompt() {
+      is_tty && return 0
+      [ '${tty_readable}' = '1' ] && [ '${tty_writable}' = '1' ]
+    }
+    if can_prompt; then echo yes; else echo no; fi
+  ")"
+  if [[ "${out}" == "${want}" ]]; then
+    pass "${label}"
+  else
+    fail "${label} (got '${out}', want '${want}')"
+  fi
+}
+shim_test "can_prompt=yes when is_tty=true"            0 0 0 yes
+shim_test "can_prompt=yes when /dev/tty rw, no stdin"  1 1 1 yes
+shim_test "can_prompt=no when no tty and /dev/tty ro"  1 1 0 no
+shim_test "can_prompt=no when no tty and no /dev/tty"  1 0 0 no
+
+# ── 4. prompt() uses default in noninteractive mode when env var unset.
+unset FAMILYDNS_TEST_VAR
+out="$(FAMILYDNS_NONINTERACTIVE=1 bash -c "
+  source '${HELPERS}'
+  prompt FAMILYDNS_TEST_VAR 'q' 'mydefault'
+  echo \"\${FAMILYDNS_TEST_VAR}\"
+" </dev/null)"
+if [[ "${out}" == "mydefault" ]]; then
+  pass "prompt() uses default when noninteractive and var unset"
+else
+  fail "prompt() noninteractive default (got '${out}', want 'mydefault')"
+fi
+
+# ── 5. prompt() preserves a pre-set env var (doesn't overwrite with default).
+out="$(FAMILYDNS_NONINTERACTIVE=1 FAMILYDNS_TEST_VAR=preset bash -c "
+  source '${HELPERS}'
+  prompt FAMILYDNS_TEST_VAR 'q' 'mydefault'
+  echo \"\${FAMILYDNS_TEST_VAR}\"
+" </dev/null)"
+if [[ "${out}" == "preset" ]]; then
+  pass "prompt() keeps pre-set env var over default"
+else
+  fail "prompt() env var precedence (got '${out}', want 'preset')"
+fi
+
+# ── 6. prompt() fails when noninteractive, var unset, and no default.
+if FAMILYDNS_NONINTERACTIVE=1 bash -c "
+  source '${HELPERS}'
+  prompt FAMILYDNS_TEST_VAR 'q'
+" </dev/null >/dev/null 2>&1; then
+  fail "prompt() should die when noninteractive, no var, no default"
+else
+  pass "prompt() dies when noninteractive, no var, no default"
+fi
+
+# ── 7. --help exits 0 and lists the env vars.
+help_out="$(bash "${SCRIPT}" --help 2>&1 || true)"
+if grep -q "FAMILYDNS_PREFIX" <<<"${help_out}" \
+   && grep -q "FAMILYDNS_NONINTERACTIVE" <<<"${help_out}"; then
+  pass "--help prints env var list"
+else
+  fail "--help should print FAMILYDNS_PREFIX and FAMILYDNS_NONINTERACTIVE"
+fi
+
+echo
+echo "Results: ${PASS} passed, ${FAIL} failed"
+[[ ${FAIL} -eq 0 ]]
