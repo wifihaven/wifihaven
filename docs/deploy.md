@@ -19,23 +19,27 @@ is out of scope here; add it later without redesigning the API/OpenWRT path.
 
 ### 1.1 Build and publish: Docker image → ghcr.io
 
-Workflow: `.github/workflows/docker-publish.yml` (stub, implementation in #128).
+Workflow: `.github/workflows/e2e.yml`, `publish` job (implementation in #128).
 
-**Trigger**: push to `main`, or a `v*` tag push.
+**Trigger**: push to `main`, after all e2e and smoke jobs pass.
+
+The publish step is the CD gate — artifacts only reach ghcr.io after the full
+test suite is green. No separate publish workflow exists.
 
 **Steps**:
-1. Check out source.
-2. Build the Scala fat-jar via Mill (`api.assembly`).
-3. Build the React/Vite bundle.
-4. Build the Docker image (`docker/Dockerfile`).
-5. Push to `ghcr.io/sameerparekh/familydns-api` with the tag strategy below.
+1. `bootstrap-smoke`, `e2e`, `prod-stack-smoke` jobs run in parallel.
+2. On all green, the `publish` job logs in to ghcr.io and runs `docker/build-push-action`.
+3. GHA layer cache (`cache-from/cache-to: type=gha`) reuses layers built during the e2e job.
 
 **Tag strategy**:
 
 | Event | Tags applied |
 |-------|-------------|
-| Push to `main` | `latest`, `sha-<7-char-commit>` |
-| Push of `v1.2.3` tag | `latest`, `sha-<7-char-commit>`, `1.2.3`, `1.2`, `1` |
+| Push to `main` (after green e2e) | `latest`, `sha-<7-char-commit>` |
+
+Semver tags (`1.2.3`, `1.2`, `1`) are not applied automatically — cut a
+release by pushing a `v*` git tag, which can be done after the `main` push
+has already published `latest`.
 
 The `sha-` tag is immutable and safe to reference for rollbacks. `latest` is
 what the prod compose stack pulls on auto-update.
@@ -274,7 +278,7 @@ close before #123 is resolved:
 
 | Issue | Title |
 |-------|-------|
-| #128 | CD: publish Docker image to ghcr.io on push to main |
+| #128 | CD: wire Docker image publish into e2e.yml publish job |
 | #129 | Auto-update: systemd timer for API server Docker image |
 | #130 | CD: build and publish OpenWRT .ipk to GitHub Releases on push to main |
 | #131 | Auto-update: opkg cron job on OpenWRT router |

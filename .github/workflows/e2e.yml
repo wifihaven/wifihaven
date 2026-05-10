@@ -1,19 +1,23 @@
-name: E2E (staging stack) + promote production
+name: E2E + publish
 
-# Brings up the same docker-compose stack used locally, runs scripts/e2e-tests.sh
-# against it, and — on green builds of `main` — fast-forwards the `production`
-# branch. Production deploys (scripts/deploy.sh) track `production`, so only
-# e2e-passing commits ever reach the live host.
+# Runs e2e and smoke checks on every push to main.
+# On green, publishes the Docker image to ghcr.io (CD stage).
+# The opkg .ipk is published separately by openwrt-build.yml on v* tags.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Only one promotion can run at a time — avoids racing fast-forwards.
+# Only one publish can run at a time.
 concurrency:
   group: e2e-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/familydns-api
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   bootstrap-smoke:
@@ -57,25 +61,40 @@ jobs:
       - name: Run prod-stack smoke
         run: scripts/smoke-prod.sh
 
-  promote-production:
-    name: Fast-forward production branch
+  publish:
+    name: Publish Docker image to ghcr.io
     needs: [bootstrap-smoke, e2e, prod-stack-smoke]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      packages: write
+
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fast-forward production → main
-        run: |
-          git config user.name  "familydns-ci"
-          git config user.email "ci@familydns.local"
-          git fetch origin production:production || git branch production
-          # Only fast-forward; refuse if main diverged from production.
-          git checkout production
-          git merge --ff-only origin/main
-          git push origin production
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

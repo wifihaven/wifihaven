@@ -29,6 +29,9 @@ services:
 
   api:
     image: ghcr.io/sameerparekh/familydns-api:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
