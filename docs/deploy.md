@@ -114,14 +114,24 @@ Output: `openwrt/familydns_<version>-<release>_all.ipk`
 
 ### 2.2 Build and publish: `.ipk` → GitHub Releases
 
-Workflow: `.github/workflows/openwrt-build.yml` (already exists, updated in #130).
+Workflow: `.github/workflows/openwrt-build.yml`.
+
+**Release strategy: tagged releases only (Option B from #130).**
+Routers auto-update only when a `vX.Y.Z` tag is pushed. We do *not* publish
+per-commit pre-releases. Rationale: tagged releases are the natural cadence
+for router updates, avoid GitHub Release churn on every commit, and let the
+router's auto-update script target the simple `releases/latest` endpoint
+(which excludes pre-releases by default).
 
 **Trigger**:
-- Push to `main` touching `openwrt/**` → build + upload as a workflow artifact.
+- PR touching `openwrt/**` → build (verify only).
+- Push to `main` → build + upload as a workflow artifact (smoke test only,
+  not published as a release).
 - Push of a `v*` tag → build + attach to a GitHub Release.
 
-On a `v*` tag, `softprops/action-gh-release` creates the release and attaches
-the `.ipk`. The release is the distribution mechanism for the router.
+On a `v*` tag, `softprops/action-gh-release` creates the release named after
+the tag (e.g. `v0.2.0`) and attaches `openwrt/familydns_*.ipk`. The release
+is the distribution mechanism for the router.
 
 To cut a release:
 ```sh
@@ -129,8 +139,13 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-This produces `familydns_0.2.0-1_all.ipk` attached to the `v0.2.0` release on
-GitHub. Routers running the auto-update script pick it up within the next poll.
+This produces `familydns_0.2.0-1_all.ipk` attached to the `v0.2.0` release
+on GitHub. Routers running the auto-update script (§2.3) pick it up on their
+next poll.
+
+**Cadence**: cut a tag whenever a meaningful change to the agent lands on
+`main` — there is no fixed schedule. Typical expectation is at most weekly,
+often less. Trivial doc-only or test-only changes do not need a tag.
 
 ### 2.3 Auto-update on the router
 
