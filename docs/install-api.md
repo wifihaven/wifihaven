@@ -37,9 +37,25 @@ The script:
 Re-running it on an existing install is safe — it offers to keep your
 existing `.env` and `docker compose up -d` is idempotent.
 
+By default the one-liner installs into `$HOME/.familydns` (user-writable, no
+sudo required) — this is the recommended path for first-time users and is
+what the `curl | bash` invocation above will do. For a system-wide install
+under `/opt/familydns` (recommended for production hosts), set
+`FAMILYDNS_PREFIX` explicitly and run the script with `sudo`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
+sudo FAMILYDNS_PREFIX=/opt/familydns bash install.sh
+```
+
+Piping `curl … | sudo bash` works too, but only if sudo is already warmed up
+(`sudo -v` first) — otherwise sudo can't prompt for a password through the
+pipe. The script detects this case and prints a recovery hint.
+
 For unattended installs, set `FAMILYDNS_NONINTERACTIVE=1` and any of
-`FAMILYDNS_INSTALL_DIR`, `FAMILYDNS_API_HOST_PORT`, `FAMILYDNS_API_BIND`,
-`FAMILYDNS_DNS_LOCATION`, `FAMILYDNS_NEW_ADMIN_PW` to skip prompts.
+`FAMILYDNS_PREFIX` (or its legacy alias `FAMILYDNS_INSTALL_DIR`),
+`FAMILYDNS_API_HOST_PORT`, `FAMILYDNS_API_BIND`, `FAMILYDNS_DNS_LOCATION`,
+`FAMILYDNS_NEW_ADMIN_PW` to skip prompts.
 
 The rest of this document is the manual walkthrough — read it if you'd
 rather understand each step, or if the script doesn't fit your environment
