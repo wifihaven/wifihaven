@@ -508,7 +508,7 @@ object TimeRoutes {
 object LogRoutes {
   def routes(
       auth: AuthService,
-      logRepo: QueryLogRepo,
+      connRepo: ConnectionEventRepo,
       userProfileRepo: UserProfileRepo,
   ): Routes[Any, Response] =
     Routes(
@@ -525,14 +525,14 @@ object LogRoutes {
               limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(200),
               offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
             )
-            logs    <- logRepo.query(filter).orElseFail(Response.internalServerError(""))
+            logs    <- connRepo.query(filter).orElseFail(Response.internalServerError(""))
             visible <- filterLogs(claims, logs, userProfileRepo)
           } yield Response.json(visible.toJson)
         },
       Method.GET / "api" / "stats" ->
         handler { (req: Request) =>
           requireAdmin(req, auth) *>
-            logRepo.stats
+            connRepo.stats
               .map(s => Response.json(s.toJson))
               .orElseFail(Response.internalServerError(""))
         },
