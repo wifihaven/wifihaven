@@ -401,42 +401,40 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
-        logRepo     <- ZIO.service[QueryLogRepo]
+        connRepo    <- ZIO.service[ConnectionEventRepo]
+        routerRepo  <- ZIO.service[RouterRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
         profiles    <- profileRepo.listAll
-        kidsId   = profiles.find(_.name == "Kids").get.id
-        adultsId = profiles.find(_.name == "Adults").get.id
-        _     <- logRepo.insertBatch(
+        kidsId = profiles.find(_.name == "Kids").get.id
+        routerId <- routerRepo.create("home", "ENROLL_HASH")
+        _        <- routerRepo.completeEnrollment(routerId, "TOKEN_HASH")
+        _        <- connRepo.insertBatch(
           List(
-            QueryLogInsert(
+            ConnectionEventInsert(
+              routerId,
               Some("aa:bb:cc:00:00:01"),
-              Some("kid-tablet"),
-              Some(kidsId),
-              Some("Kids"),
               "youtube.com",
-              1,
-              blocked = false,
+              None,
+              true,
               "allowed",
-              Some("home"),
+              java.time.Instant.now().minusSeconds(300),
             ),
-            QueryLogInsert(
+            ConnectionEventInsert(
+              routerId,
               Some("aa:bb:cc:00:00:02"),
-              Some("dad-laptop"),
-              Some(adultsId),
-              Some("Adults"),
               "nytimes.com",
-              1,
-              blocked = false,
+              None,
+              true,
               "allowed",
-              Some("home"),
+              java.time.Instant.now().minusSeconds(300),
             ),
           ),
         )
-        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
-        token <- auth.login("mom", "pass").map(_.token)
-        routes = LogRoutes.routes(auth, logRepo, upRepo)
+        _        <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        token    <- auth.login("mom", "pass").map(_.token)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
         req    = Request
           .get(URL.decode("/api/logs").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))

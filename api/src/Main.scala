@@ -50,7 +50,6 @@ object Main extends ZIOAppDefault {
       blRepo      <- ZIO.service[BlocklistRepo]
       usageRepo   <- ZIO.service[TimeUsageRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
-      logRepo     <- ZIO.service[QueryLogRepo]
       routerRepo  <- ZIO.service[RouterRepo]
       trafficRepo <- ZIO.service[TrafficReportRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
@@ -73,7 +72,7 @@ object Main extends ZIOAppDefault {
         upRepo,
         clock,
       ) ++
-      LogRoutes.routes(auth, logRepo, upRepo) ++
+      LogRoutes.routes(auth, connRepo, upRepo) ++
       BlocklistRoutes.routes(auth, blRepo) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++

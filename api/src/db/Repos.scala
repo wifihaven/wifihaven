@@ -20,17 +20,6 @@ case class DbUser(
     role: String,
     createdAt: Instant,
 )
-case class QueryLogInsert(
-    mac: Option[String],
-    deviceName: Option[String],
-    profileId: Option[Long],
-    profileName: Option[String],
-    domain: String,
-    qtype: Int,
-    blocked: Boolean,
-    reason: String,
-    location: Option[String],
-)
 case class LogFilter(
     mac: Option[String] = None,
     blocked: Option[Boolean] = None,
@@ -225,10 +214,6 @@ trait ConnectionEventRepo {
   def recent(limit: Int): Task[List[ConnectionEvent]]
   def listForMac(mac: String, limit: Int): Task[List[ConnectionEvent]]
   def listForRouter(routerId: UUID, limit: Int): Task[List[ConnectionEvent]]
-}
-
-trait QueryLogRepo {
-  def insertBatch(logs: List[QueryLogInsert]): Task[Unit]
   def query(f: LogFilter): Task[List[QueryLog]]
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
@@ -702,45 +687,54 @@ class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
 class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo {
   private type R =
     (Long, UUID, Option[String], String, Option[String], Boolean, String, String)
-  private def toC(r: R)                                =
+  private def toC(r: R) =
     ConnectionEvent(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
+
   def insertBatch(events: List[ConnectionEventInsert]) =
     Update[ConnectionEventInsert](
       "INSERT INTO connection_events(router_id,mac,hostname,dest_ip,allowed,reason,ts) VALUES(?,?,?,?,?,?,?)",
     ).updateMany(events).transact(xa)
-  def recent(limit: Int)                               =
+
+  def recent(limit: Int) =
     sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
-  def listForMac(mac: String, limit: Int)              =
+
+  def listForMac(mac: String, limit: Int) =
     sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
-  def listForRouter(routerId: UUID, limit: Int)        =
+
+  def listForRouter(routerId: UUID, limit: Int) =
     sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
-}
 
-class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo {
-  def insertBatch(logs: List[QueryLogInsert]) = Update[QueryLogInsert](
-    "INSERT INTO query_logs(mac,device_name,profile_id,profile_name,domain,qtype,blocked,reason,location) VALUES(?,?,?,?,?,?,?,?,?)",
-  ).updateMany(logs).transact(xa).unit
-  def query(f: LogFilter)                     = {
+  // ── Dashboard / log API ──────────────────────────────────────────────────
+
+  def query(f: LogFilter) = {
+    // location is sourced from routers.name until routers.location lands (#136)
     val base  =
-      fr"SELECT id,mac,device_name,profile_id,profile_name,domain,qtype,blocked,reason,location,ts::TEXT FROM query_logs WHERE 1=1"
-    val since = fr"AND ts > NOW() - make_interval(hours => ${f.hours})"
-    val byMac = f.mac.fold(fr"")(m => fr"AND mac=$m")
-    val byBl  = f.blocked.fold(fr"")(b => fr"AND blocked=$b")
-    val byDom = f.domain.fold(fr"")(d => fr"AND domain ILIKE ${s"%$d%"}")
-    val byLoc = f.location.fold(fr"")(l => fr"AND location=$l")
-    (base ++ since ++ byMac ++ byBl ++ byDom ++ byLoc ++ fr"ORDER BY ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
+      fr"""SELECT ce.id, ce.mac, d.name, d.profile_id, p.name,
+                  ce.hostname, 1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
+           FROM connection_events ce
+           LEFT JOIN devices d  ON d.mac    = ce.mac
+           LEFT JOIN profiles p ON p.id     = d.profile_id
+           LEFT JOIN routers r  ON r.id     = ce.router_id
+           WHERE 1=1"""
+    val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
+    val byMac = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
+    val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
+    val byDom = f.domain.fold(fr"")(d => fr"AND ce.hostname ILIKE ${s"%$d%"}")
+    val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    (base ++ since ++ byMac ++ byBl ++ byDom ++ byLoc ++
+      fr"ORDER BY ce.ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
       .query[
         (
             Long,
@@ -760,40 +754,55 @@ class QueryLogRepoLive(xa: Transactor[Task]) extends QueryLogRepo {
       .to[List]
       .transact(xa)
   }
-  def stats                                   =
+
+  def stats =
     for {
-      tt <- sql"SELECT COUNT(*)::INT FROM query_logs WHERE ts > NOW()-INTERVAL '24 hours'"
+      tt  <- sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '24 hours'"
         .query[Int]
         .unique
         .transact(xa)
-      bt <-
-        sql"SELECT COUNT(*)::INT FROM query_logs WHERE ts > NOW()-INTERVAL '24 hours' AND blocked"
+      bt  <-
+        sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '24 hours' AND NOT allowed"
           .query[Int]
           .unique
           .transact(xa)
-      th <- sql"SELECT COUNT(*)::INT FROM query_logs WHERE ts > NOW()-INTERVAL '1 hour'"
+      th  <- sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour'"
         .query[Int]
         .unique
         .transact(xa)
-      bh <- sql"SELECT COUNT(*)::INT FROM query_logs WHERE ts > NOW()-INTERVAL '1 hour' AND blocked"
-        .query[Int]
-        .unique
+      bh  <-
+        sql"SELECT COUNT(*)::INT FROM connection_events WHERE ts > NOW()-INTERVAL '1 hour' AND NOT allowed"
+          .query[Int]
+          .unique
+          .transact(xa)
+      top <- sql"""SELECT hostname, COUNT(*)::INT
+                   FROM connection_events
+                   WHERE NOT allowed AND ts > NOW()-INTERVAL '24 hours'
+                   GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT 10"""
+        .query[(String, Int)]
+        .map(DomainCount.apply)
+        .to[List]
         .transact(xa)
-      top <-
-        sql"SELECT domain,COUNT(*)::INT FROM query_logs WHERE blocked AND ts > NOW()-INTERVAL '24 hours' GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 10"
-          .query[(String, Int)]
-          .map(DomainCount.apply)
-          .to[List]
-          .transact(xa)
-      dev <-
-        sql"SELECT COALESCE(mac,'unknown'),COALESCE(device_name,'unknown'),COUNT(*)::INT,SUM(CASE WHEN blocked THEN 1 ELSE 0 END)::INT FROM query_logs WHERE ts > NOW()-INTERVAL '24 hours' GROUP BY mac,device_name ORDER BY COUNT(*) DESC LIMIT 20"
-          .query[(String, String, Int, Int)]
-          .map(DeviceStats.apply)
-          .to[List]
-          .transact(xa)
+      dev <- sql"""SELECT COALESCE(ce.mac,'unknown'),
+                          COALESCE(d.name, ce.mac, 'unknown'),
+                          COUNT(*)::INT,
+                          SUM(CASE WHEN NOT ce.allowed THEN 1 ELSE 0 END)::INT
+                   FROM connection_events ce
+                   LEFT JOIN devices d ON d.mac = ce.mac
+                   WHERE ce.ts > NOW()-INTERVAL '24 hours'
+                   GROUP BY ce.mac, d.name
+                   ORDER BY COUNT(*) DESC LIMIT 20"""
+        .query[(String, String, Int, Int)]
+        .map(DeviceStats.apply)
+        .to[List]
+        .transact(xa)
     } yield DashboardStats(tt, bt, th, bh, top, dev)
-  def topBlocked(hours: Int, lim: Int)        =
-    sql"SELECT domain,COUNT(*)::INT FROM query_logs WHERE blocked AND ts > NOW() - make_interval(hours => $hours) GROUP BY domain ORDER BY COUNT(*) DESC LIMIT $lim"
+
+  def topBlocked(hours: Int, lim: Int) =
+    sql"""SELECT hostname, COUNT(*)::INT
+          FROM connection_events
+          WHERE NOT allowed AND ts > NOW() - make_interval(hours => $hours)
+          GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT $lim"""
       .query[(String, Int)]
       .map(DomainCount.apply)
       .to[List]
@@ -811,11 +820,10 @@ object Repos {
   val blocklistRepo     = ZLayer.fromFunction(BlocklistRepoLive(_))
   val timeUsageRepo     = ZLayer.fromFunction(TimeUsageRepoLive(_))
   val timeExtRepo       = ZLayer.fromFunction(TimeExtensionRepoLive(_))
-  val queryLogRepo      = ZLayer.fromFunction(QueryLogRepoLive(_))
   val routerRepo        = ZLayer.fromFunction(RouterRepoLive(_))
   val trafficReportRepo = ZLayer.fromFunction(TrafficReportRepoLive(_))
   val blockEventRepo    = ZLayer.fromFunction(BlockEventRepoLive(_))
   val connEventRepo     = ZLayer.fromFunction(ConnectionEventRepoLive(_))
   val all               =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ queryLogRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
 }

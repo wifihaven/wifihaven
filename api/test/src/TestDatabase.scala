@@ -83,7 +83,7 @@ object TestDatabase {
   /** All repo types bundled for convenience */
   type AllRepos =
     UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo &
-      DeviceRepo & BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & QueryLogRepo & RouterRepo &
+      DeviceRepo & BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo &
       TrafficReportRepo & BlockEventRepo & ConnectionEventRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & Transactor[Task] & AllRepos] = {
