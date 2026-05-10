@@ -13,6 +13,42 @@ For the OpenWRT router agent install, see `docs/install-openwrt.md` (issue
 
 ---
 
+## Quick install (one-liner)
+
+If you have Docker + the Compose plugin already installed and you trust
+the script (which you should read first — `curl … -o install.sh && less
+install.sh`), this gets you a running stack with sensible defaults and a
+rotated admin password:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+```
+
+The script:
+
+- checks Docker is installed and reachable,
+- prompts for install path, host port, bind address, and a new admin password,
+- generates a strong DB password and JWT secret with `openssl rand`,
+- writes `.env` (chmod 600), pulls the image, brings the stack up,
+- waits for the API to become healthy,
+- rotates the seeded `admin/changeme` password to whatever you entered,
+- prints next-step pointers (reverse proxy, auto-update, router enrollment).
+
+Re-running it on an existing install is safe — it offers to keep your
+existing `.env` and `docker compose up -d` is idempotent.
+
+For unattended installs, set `FAMILYDNS_NONINTERACTIVE=1` and any of
+`FAMILYDNS_INSTALL_DIR`, `FAMILYDNS_API_HOST_PORT`, `FAMILYDNS_API_BIND`,
+`FAMILYDNS_DNS_LOCATION`, `FAMILYDNS_NEW_ADMIN_PW` to skip prompts.
+
+The rest of this document is the manual walkthrough — read it if you'd
+rather understand each step, or if the script doesn't fit your environment
+(custom install path layout, atypical network setup, etc.). After a
+successful one-liner install you can skip ahead to §7 (reverse proxy)
+and §8 (firewall).
+
+---
+
 ## 1. Prerequisites
 
 - A Linux host (any distro). A small VPS, a home server, or a cloud VM all

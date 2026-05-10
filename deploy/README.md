@@ -12,6 +12,19 @@ reach this api over the network (see [`docs/architecture.md`](../docs/architectu
 | `.env.example`                    | Template for secrets/config. Copy to `.env`. |
 | `familydns-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
 
+## Quick install
+
+For a brand-new host, the one-liner installer handles everything in this
+README — prereq checks, secret generation, `.env`, image pull, stack
+start, health wait, and admin password rotation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+```
+
+See [`docs/install-api.md`](../docs/install-api.md) for the full
+walkthrough or to install manually.
+
 ## One-command deploy
 
 ```bash
