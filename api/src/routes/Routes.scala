@@ -406,9 +406,11 @@ object TimeRoutes {
       stls    <- stlRepo.listForProfile(profile.id)
       usages  <- usageRepo.listForDeviceMacs(macs, date)
       extMins <- extRepo.getProfileTotalExtension(profile.id, date)
-      siteDoms        = stls.map(_.domainPattern).toSet
+      // Only exempt site domains are excluded from the daily total.
+      // Included sites (exemptFromDaily=false) count against the daily cap.
+      exemptDoms      = stls.filter(_.exemptFromDaily).map(_.domainPattern).toSet
       totalUsed       = usages
-        .filterNot(u => siteDoms.exists(p => matchesPattern(u.domain, p)))
+        .filterNot(u => exemptDoms.exists(p => matchesPattern(u.domain, p)))
         .map(_.minutesUsed)
         .sum
       remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
@@ -460,8 +462,12 @@ object TimeRoutes {
       profile <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
+      // Only exempt site domains are excluded from the daily total.
+      // Included sites (exemptFromDaily=false) count against the daily cap.
       totalUsed = usages
-        .filterNot(u => stls.exists(s => matchesPattern(u.domain, s.domainPattern)))
+        .filterNot(u =>
+          stls.exists(s => s.exemptFromDaily && matchesPattern(u.domain, s.domainPattern)),
+        )
         .map(_.minutesUsed)
         .sum
       remaining = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))

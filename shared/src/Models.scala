@@ -58,6 +58,7 @@ case class SiteTimeLimit(
     domainPattern: String,
     dailyMinutes: Int,
     label: String,
+    exemptFromDaily: Boolean = true,
 ) derives JsonCodec
 
 case class TimeUsage(
@@ -148,6 +149,7 @@ case class SiteTimeLimitRequest(
     domainPattern: String,
     dailyMinutes: Int,
     label: String,
+    exemptFromDaily: Boolean = true,
 ) derives JsonCodec
 
 case class UpsertDeviceRequest(
@@ -368,7 +370,12 @@ case class RouterDecisionResponse(
 case class PolicyDevice(mac: String, profileId: Option[Long], name: String) derives JsonCodec
 case class PolicySchedule(days: List[String], blockFrom: String, blockUntil: String)
     derives JsonCodec
-case class PolicySiteLimit(domain: String, minutes: Int, label: String) derives JsonCodec
+case class PolicySiteLimit(
+    domain: String,
+    minutes: Int,
+    label: String,
+    exemptFromDaily: Boolean = true,
+) derives JsonCodec
 case class PolicyTimeUsedToday(totalMinutes: Int, byDomain: Map[String, Int]) derives JsonCodec
 case class PolicyProfile(
     id: Long,

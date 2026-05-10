@@ -41,7 +41,7 @@ const kidsProfile: ProfileDetail = {
   ],
   timeLimit: { id: 5, profileId: 1, dailyMinutes: 120 },
   siteTimeLimits: [
-    { id: 7, profileId: 1, domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube' },
+    { id: 7, profileId: 1, domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },
   ],
 }
 
@@ -176,7 +176,7 @@ describe('ProfilesPage — create', () => {
         { name: 'Bedtime', days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'], blockFrom: '21:00', blockUntil: '07:00' },
       ],
       siteTimeLimits: [
-        { label: 'YouTube', domainPattern: 'youtube.com', dailyMinutes: 30 },
+        { label: 'YouTube', domainPattern: 'youtube.com', dailyMinutes: 30, exemptFromDaily: true },
       ],
     })
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
@@ -208,7 +208,7 @@ describe('ProfilesPage — edit', () => {
         { name: 'Bedtime', days: ['mon', 'tue'], blockFrom: '21:00', blockUntil: '07:00' },
       ],
       siteTimeLimits: [
-        { domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube' },
+        { domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },
       ],
     })
   })

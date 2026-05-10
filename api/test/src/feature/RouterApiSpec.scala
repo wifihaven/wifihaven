@@ -141,7 +141,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         _     <- tlr.upsert(kid, 120)
         _     <- stlr.replaceForProfile(
           kid,
-          List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")),
+          List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")), // default exemptFromDaily=true
         )
         adult <- TestLayers.seedAdultsProfile(pr)
         _     <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
@@ -170,8 +170,8 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(snap.defaultProfileId.exists(id => snap.profiles.exists(_.id == id))) &&
         assertTrue(kp.dailyMinutes.contains(120)) &&
         assertTrue(kp.schedules.exists(_.blockFrom == "21:00")) &&
-        assertTrue(kp.siteLimits.exists(_.domain == "youtube.com")) &&
-        assertTrue(kp.timeUsedToday.totalMinutes == 47) &&
+        assertTrue(kp.siteLimits.exists(sl => sl.domain == "youtube.com" && sl.exemptFromDaily)) &&
+        assertTrue(kp.timeUsedToday.totalMinutes == 47) && // cnn.com only; exempt youtube excluded
         assertTrue(kp.timeUsedToday.byDomain.get("youtube.com").contains(12)) &&
         assertTrue(snap.blocklists.contains("ads")) &&
         assertTrue(snap.blocklists("ads").url == "/api/blocklists/ads.rpz")

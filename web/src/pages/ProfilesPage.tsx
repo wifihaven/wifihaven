@@ -44,7 +44,10 @@ function detailToForm(pd: ProfileDetail): FormState {
       name: s.name, days: s.days, blockFrom: s.blockFrom, blockUntil: s.blockUntil,
     })),
     siteTimeLimits: pd.siteTimeLimits.map(s => ({
-      domainPattern: s.domainPattern, dailyMinutes: s.dailyMinutes, label: s.label,
+      domainPattern: s.domainPattern,
+      dailyMinutes: s.dailyMinutes,
+      label: s.label,
+      exemptFromDaily: s.exemptFromDaily,
     })),
   }
 }
@@ -229,9 +232,18 @@ export function ProfilesPage() {
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Site Limits</p>
                 {pd.siteTimeLimits.map(s => (
-                  <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
+                  <div key={s.id} className="flex justify-between items-center text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
                     <span className="text-gray-300">{s.label}</span>
-                    <span className="text-emerald-400 text-xs font-mono">{s.dailyMinutes}m · {s.domainPattern}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-emerald-400 text-xs font-mono">{s.dailyMinutes}m · {s.domainPattern}</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+                        s.exemptFromDaily
+                          ? 'bg-gray-700 text-gray-400'
+                          : 'bg-amber-500/20 text-amber-400'
+                      }`}>
+                        {s.exemptFromDaily ? 'exempt' : 'counts'}
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -308,7 +320,10 @@ function ProfileEditor({
   function addSiteLimit() {
     setForm(f => ({
       ...f,
-      siteTimeLimits: [...f.siteTimeLimits, { label: '', domainPattern: '', dailyMinutes: 30 }],
+      siteTimeLimits: [
+        ...f.siteTimeLimits,
+        { label: '', domainPattern: '', dailyMinutes: 30, exemptFromDaily: true },
+      ],
     }))
   }
 
@@ -459,20 +474,36 @@ function ProfileEditor({
           {form.siteTimeLimits.length === 0 && <p className="text-xs text-gray-500">No site-specific limits.</p>}
           <div className="space-y-2">
             {form.siteTimeLimits.map((s, i) => (
-              <div key={i} className="bg-gray-950 border border-gray-700 rounded-xl p-3 grid grid-cols-12 gap-2">
-                <input type="text" value={s.label}
-                  onChange={e => updateSiteLimit(i, { label: e.target.value })}
-                  placeholder="YouTube"
-                  className="col-span-4 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
-                <input type="text" value={s.domainPattern}
-                  onChange={e => updateSiteLimit(i, { domainPattern: e.target.value })}
-                  placeholder="youtube.com"
-                  className="col-span-5 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm font-mono" />
-                <input type="number" min={0} value={s.dailyMinutes}
-                  onChange={e => updateSiteLimit(i, { dailyMinutes: Number(e.target.value) || 0 })}
-                  className="col-span-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
-                <button type="button" onClick={() => removeSiteLimit(i)}
-                  className="col-span-1 text-xs text-red-400 hover:text-red-300 bg-red-500/10 rounded-lg">×</button>
+              <div key={i} className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2">
+                <div className="grid grid-cols-12 gap-2">
+                  <input type="text" value={s.label}
+                    onChange={e => updateSiteLimit(i, { label: e.target.value })}
+                    placeholder="YouTube"
+                    className="col-span-4 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
+                  <input type="text" value={s.domainPattern}
+                    onChange={e => updateSiteLimit(i, { domainPattern: e.target.value })}
+                    placeholder="youtube.com"
+                    className="col-span-5 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm font-mono" />
+                  <input type="number" min={0} value={s.dailyMinutes}
+                    onChange={e => updateSiteLimit(i, { dailyMinutes: Number(e.target.value) || 0 })}
+                    className="col-span-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
+                  <button type="button" onClick={() => removeSiteLimit(i)}
+                    className="col-span-1 text-xs text-red-400 hover:text-red-300 bg-red-500/10 rounded-lg">×</button>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!s.exemptFromDaily}
+                    onChange={e => updateSiteLimit(i, { exemptFromDaily: !e.target.checked })}
+                    className="w-3.5 h-3.5 accent-amber-500"
+                  />
+                  <span>
+                    Counts toward daily limit
+                    {!s.exemptFromDaily && (
+                      <span className="ml-1 text-amber-400">(usage reduces overall remaining time)</span>
+                    )}
+                  </span>
+                </label>
               </div>
             ))}
           </div>
