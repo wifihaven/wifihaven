@@ -1,6 +1,7 @@
 package familydns.api.feature
 
 import familydns.api.db.*
+import familydns.api.policy.*
 import familydns.api.routes.*
 import familydns.shared.*
 import familydns.testinfra.*
@@ -10,7 +11,7 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
-import java.time.{Instant, LocalDate, OffsetDateTime}
+import java.time.{Instant, LocalDate, LocalDateTime, OffsetDateTime}
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
@@ -27,9 +28,13 @@ private object SeenParser {
   }
 }
 
-object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres] {
+object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
-  override val bootstrap = TestDatabase.layer
+  // Pin Clock to 2026-05-07 14:00 so PolicyService.snapshot's `today` matches
+  // the period_end date used by the ingest fixtures below.
+  private val testClockAt: LocalDateTime = LocalDateTime.of(2026, 5, 7, 14, 0, 0)
+
+  override val bootstrap = TestDatabase.layer ++ TestLayers.withClock(testClockAt)
 
   private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
@@ -53,6 +58,19 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       cRepo <- ZIO.service[ConnectionEventRepo]
       auth = new RouterAuthLive(rRepo)
     } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo)
+
+  private def makePolicyService =
+    for {
+      pr    <- ZIO.service[ProfileRepo]
+      sr    <- ZIO.service[ScheduleRepo]
+      tlr   <- ZIO.service[TimeLimitRepo]
+      stlr  <- ZIO.service[SiteTimeLimitRepo]
+      dr    <- ZIO.service[DeviceRepo]
+      blr   <- ZIO.service[BlocklistRepo]
+      ur    <- ZIO.service[TimeUsageRepo]
+      er    <- ZIO.service[TimeExtensionRepo]
+      clock <- ZIO.service[Clock]
+    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clock)): PolicyService
 
   private def post(
       routes: Routes[Any, Response],
@@ -309,6 +327,52 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _   <- post(routes, "/api/router/events", body, Some(tk))
         all <- dRepo.listAll
       } yield assertTrue(all.count(_.mac == unknownMac) == 1)
+    },
+    // ── ingest → policy round-trip (pins #135 fix) ───────────────────────────
+    test("usage→policy: 90 active_seconds is reflected as timeUsedToday >= dailyMinutes") {
+      // Pins the snapshotAll fix in #135: before the fix, snapshotAll read only
+      // the legacy minutes_used column and ignored seconds_used (written by the
+      // OpenWRT /api/router/usage path), so timeUsedToday.totalMinutes was 0
+      // and the agent never saw the daily limit being exceeded.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tlr      <- ZIO.service[TimeLimitRepo]
+        ber      <- ZIO.service[BlockEventRepo]
+        ingest   <- buildRoutes
+        ps       <- makePolicyService
+        // 1. Profile with dailyMinutes = 1
+        pid      <- pRepo.create("Kids", List.empty)
+        _        <- tlr.upsert(pid, 1)
+        // 2. Device assigned to that profile
+        _        <- dRepo.upsert(knownMac, "kid-ipad", pid, "192.168.1.10")
+        // 3. Router (RouterAuth.sha256Hex == PolicyService.hashToken, so the
+        //    same bearer authenticates against both ingest and policy routes).
+        (id, tk) <- seedRouter(rRepo)
+        policy = RouterRoutes.routes(rRepo, ps, RouterAuthLive(rRepo), ber)
+        // 4. POST /api/router/usage with 90 active seconds
+        rec    = UsageRecord(knownMac, Some("192.168.1.42"), "youtube.com", 90L, 0L, 0L)
+        body   = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        ingestResp <- post(ingest, "/api/router/usage", body, Some(tk))
+        // 5. GET /api/router/policy
+        polResp    <- policy.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(tk)),
+        )
+        polBody    <- polResp.body.asString
+        snap       <- ZIO.fromEither(polBody.fromJson[PolicySnapshot])
+        kp = snap.profiles.find(_.id == pid).get
+        // 6. Verify last_seen_ip update
+        d <- dRepo.findByMac(knownMac)
+      } yield assertTrue(ingestResp.status == Status.Ok) &&
+        assertTrue(polResp.status == Status.Ok) &&
+        assertTrue(kp.dailyMinutes.contains(1)) &&
+        assertTrue(kp.timeUsedToday.totalMinutes >= 1) &&
+        assertTrue(kp.timeUsedToday.totalMinutes >= kp.dailyMinutes.get) &&
+        assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42")))
     },
     test("events: first_seen_mac creates an unknown-device row when missing") {
       for {
