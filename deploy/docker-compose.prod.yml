@@ -8,8 +8,8 @@
 #   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
 #
 # This stack is target-agnostic. It runs on any Linux host with Docker —
-# a cheap VPS, a home server, or a cloud VM. The dns/ and traffic/ services
-# live elsewhere (OpenWRT router) and reach this api over the network.
+# a cheap VPS, a home server, or a cloud VM. DNS enforcement and usage
+# tracking run on the gateway router (openwrt/ or opnsense/ agent).
 
 services:
   postgres:

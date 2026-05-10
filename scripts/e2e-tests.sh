@@ -74,64 +74,8 @@ step "Blocklists endpoint"
 curl -fsS "${AUTH[@]}" "$BASE/api/blocklists" >/dev/null
 pass "blocklists OK"
 
-step "DNS server responds on UDP :5354"
-DNS_HOST="${E2E_DNS_HOST:-127.0.0.1}"
-DNS_PORT="${E2E_DNS_PORT:-5354}"
-if ! command -v dig >/dev/null 2>&1; then
-  fail "dig not installed — install dnsutils/bind-tools"
-fi
-# Wait for DNS server to bind (may start a moment after the api).
-for i in $(seq 1 30); do
-  if dig +tries=1 +time=2 @"$DNS_HOST" -p "$DNS_PORT" example.com >/dev/null 2>&1; then
-    pass "dns server reachable on $DNS_HOST:$DNS_PORT"
-    break
-  fi
-  if [ "$i" = 30 ]; then fail "dns server never came up on $DNS_HOST:$DNS_PORT"; fi
-  sleep 1
-done
-
-# Unknown client (no profile/device row) should still get an answer — it falls
-# through to the default Adults profile and forwards upstream. We just need a
-# well-formed response (status NOERROR or SERVFAIL is fine — the point is the
-# server is parsing queries and writing replies).
-DIG_OUT=$(dig +tries=1 +time=3 @"$DNS_HOST" -p "$DNS_PORT" example.com || true)
-echo "$DIG_OUT" | grep -qE 'status: (NOERROR|NXDOMAIN|SERVFAIL|REFUSED)' \
-  || fail "dns server did not return a parseable response: $DIG_OUT"
-pass "dns server answered example.com"
-
-step "Traffic monitor running + /api/time/status endpoint"
-# The traffic container captures pcap on its own bridge eth0, which only sees
-# its own packets — enough to verify the service starts and the pcap4j JNA
-# binding works. Real per-device capture happens on the host via systemd.
-if command -v docker >/dev/null 2>&1; then
-  COMPOSE_FILE="${COMPOSE_FILE:-docker/docker-compose.yml}"
-  if [ -f "$COMPOSE_FILE" ]; then
-    for i in $(seq 1 30); do
-      state=$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Service}} {{.State}}' 2>/dev/null \
-        | awk '$1=="traffic"{print $2}')
-      if [ "$state" = "running" ]; then pass "traffic container running"; break; fi
-      if [ "$i" = 30 ]; then fail "traffic container never reached running state (last: $state)"; fi
-      sleep 1
-    done
-    if docker compose -f "$COMPOSE_FILE" logs traffic 2>/dev/null \
-        | grep -q "FamilyDNS traffic monitor starting"; then
-      pass "traffic monitor logged startup"
-    else
-      fail "traffic monitor did not log expected startup line"
-    fi
-  fi
-fi
-
-# Synthetic queries to drive a tiny bit of traffic past the dns server (the
-# traffic container can't see this on its own veth, but if pcap is broken or
-# the upstream resolver is wedged the dns server itself will fail to answer).
-for d in example.com wikipedia.org github.com; do
-  dig +tries=1 +time=2 @"$DNS_HOST" -p "$DNS_PORT" "$d" >/dev/null 2>&1 || true
-done
-
-# Confirm /api/time/status returns a JSON array. Usage rows only appear when
-# the traffic container actually captures matching packets, which the bridge
-# topology can't guarantee — so we don't gate on row content here.
+step "Time status endpoint"
+# Confirm /api/time/status returns a JSON array.
 STATUS=$(curl -fsS "${AUTH[@]}" "$BASE/api/time/status")
 echo "$STATUS" | grep -q '^\[' || fail "time/status did not return a JSON array: $STATUS"
 pass "/api/time/status responded"
