@@ -224,17 +224,19 @@ Press `Ctrl-C` to stop tailing — the containers keep running.
 
 ## 5. Verify health
 
-There is no dedicated `/api/health` route. The recommended check (and the
-one the container's own healthcheck uses) is to hit `POST /api/auth/login`
-with an empty JSON body and expect a 400/401 — this proves the HTTP server
-is up *and* its database round-trip is working:
+Hit the unauthenticated `GET /api/health` endpoint. It performs a cheap
+`SELECT 1` against Postgres and returns 200 only if both the HTTP server
+and its database round-trip are working:
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' \
-  -X POST -H 'content-type: application/json' \
-  -d '{}' http://localhost:8080/api/auth/login
-# → 400 (or 401)
+curl -fsS http://localhost:8080/api/health
+# → {"status":"ok","db":"ok"}
 ```
+
+If the DB is unreachable the endpoint returns 503 with
+`{"status":"error","db":"<error class>"}`. This is the same probe used by
+the container's own healthcheck and is safe to point uptime monitors and
+reverse-proxy health checks at.
 
 You can also check the container healthcheck status directly:
 

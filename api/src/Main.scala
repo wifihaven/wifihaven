@@ -1,5 +1,7 @@
 package familydns.api
 
+import doobie.*
+import doobie.implicits.*
 import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.policy.*
@@ -7,6 +9,7 @@ import familydns.api.routes.*
 import familydns.shared.Clock
 import zio.*
 import zio.http.*
+import zio.interop.catz.*
 import zio.logging.*
 import zio.logging.backend.SLF4J
 
@@ -57,8 +60,11 @@ object Main extends ZIOAppDefault {
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
-      routerAuth = new RouterAuthLive(routerRepo)
-    } yield AuthRoutes.routes(auth, userRepo, upRepo) ++
+      xa          <- ZIO.service[Transactor[Task]]
+      routerAuth    = new RouterAuthLive(routerRepo)
+      dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
+    } yield HealthRoutes.routes(dbHealthCheck) ++
+      AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo) ++
       DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
       TimeRoutes.routes(
