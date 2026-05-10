@@ -107,9 +107,15 @@ git push origin v0.2.0
 
 ## Install / Enrollment
 
-For end-user install instructions (download the latest release `.ipk`,
-enroll the router, configure `lan_prefix`, set up the block page),
-see [`docs/install-openwrt.md`](../docs/install-openwrt.md).
+End users install via the one-shot script:
+
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+```
+
+The script source is [`install.sh`](install.sh); the full guide (with the
+manual-fallback path for debugging) is in
+[`docs/install-openwrt.md`](../docs/install-openwrt.md).
 
 For developer flashing of a locally built `.ipk`:
 

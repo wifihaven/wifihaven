@@ -233,24 +233,21 @@ Migrations run automatically at API startup via Flyway.
 
 **Requirements**: OpenWRT 23.05.x with internet access from the router.
 
-The full install flow (download, enrollment, `lan_prefix` configuration,
-block-page setup, and verification) is in
-[`install-openwrt.md`](install-openwrt.md). Outline:
+End users install via the one-shot script — see
+[`install-openwrt.md`](install-openwrt.md) for the full guide and the
+manual-fallback path. The headline command, run as root on the router:
 
-1. Download the latest `.ipk` from GitHub Releases (one-liner via
-   `curl` + `jsonfilter`).
-2. `opkg install /tmp/familydns.ipk` (resolves `lua`, `luci-lib-jsonc`,
-   `conntrack-tools`, `curl`).
-3. Set `api_url` in UCI.
-4. Generate an enrollment token in the admin UI → **Routers → Add router**,
-   then `POST /api/router/register` from the router to exchange it for
-   `routerId` + `routerToken`.
-5. Write the returned values into UCI and start the agent.
-6. Override `lan_prefix` if your LAN is not on `192.168.1.0/24` — without
-   this, the agent mis-attributes every flow.
-7. Add a uhttpd listener on `127.0.0.1:8081` for the local block page.
-8. Verify via `logread -f | grep familydns` and the admin UI's
-   `last_seen_at`.
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+```
+
+It prompts for the API URL, the one-time enrollment token (generated in the
+admin UI → **Routers → Add router**), a router name, and the LAN prefix
+(auto-detected from `network.lan.ipaddr`); downloads the latest `.ipk` from
+GitHub Releases; installs it; POSTs `/api/router/register` to exchange the
+enrollment token for `routerId` + `routerToken`; writes everything to UCI;
+sets up the `uhttpd` block-page listener on `127.0.0.1:8081`; and starts
+the agent.
 
 The auto-update cron job (#131) is optional and not yet implemented.
 
