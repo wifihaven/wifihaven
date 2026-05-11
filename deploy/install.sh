@@ -206,11 +206,47 @@ if [ -f .env ]; then
     docker compose -f ${FAMILYDNS_INSTALL_DIR}/docker-compose.prod.yml \\
       --env-file ${FAMILYDNS_INSTALL_DIR}/.env <pull|up -d|restart|down>
 
-  If you really want to start over from scratch (this destroys all data):
+  ⚠  DANGER — only run the next block if you intend to PERMANENTLY DELETE
+     all FamilyDNS data on this host (devices, profiles, query logs,
+     admin user, everything). There is no undo.
 
     docker compose -f ${FAMILYDNS_INSTALL_DIR}/docker-compose.prod.yml \\
       --env-file ${FAMILYDNS_INSTALL_DIR}/.env down -v
     rm ${FAMILYDNS_INSTALL_DIR}/.env
+    # then re-run install.sh
+EOF
+)"
+fi
+
+# Compose derives the project name from the install dir's basename:
+# lowercased, with non [a-z0-9_-] stripped and any leading non-alphanum
+# removed. The pgdata volume is then named "<project>_pgdata".
+proj="$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's/^[^a-z0-9]*//')"
+if [ -n "$proj" ] && docker volume inspect "${proj}_pgdata" >/dev/null 2>&1; then
+  die "$(cat <<EOF
+
+  A postgres data volume already exists for this install:
+
+      docker volume: ${proj}_pgdata
+
+  but no .env was found alongside it. Either a previous install was
+  aborted partway through, or the .env was deleted while the data was
+  left behind. Either way, install.sh will not auto-wipe a data volume —
+  doing so could destroy real user data.
+
+  Inspect what's in the volume before deciding:
+
+    docker volume inspect ${proj}_pgdata
+    docker run --rm -v ${proj}_pgdata:/var/lib/postgresql/data \\
+      postgres:16-alpine ls /var/lib/postgresql/data
+
+  ⚠  DANGER — only run this if you are CERTAIN the volume is empty or
+     contains nothing you care about. This PERMANENTLY DELETES all data
+     in it. There is no undo.
+
+    docker compose -f ${FAMILYDNS_INSTALL_DIR}/docker-compose.prod.yml \\
+      --env-file ${FAMILYDNS_INSTALL_DIR}/.env down -v 2>/dev/null || true
+    docker volume rm ${proj}_pgdata
     # then re-run install.sh
 EOF
 )"
@@ -242,36 +278,6 @@ EOF
 chmod 600 .env
 ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"
 
-# ── 5b. Wipe stale pgdata from an aborted prior install ───────────────────
-#
-# Postgres only honours POSTGRES_PASSWORD on first init. If a pgdata
-# volume from a prior install attempt that never reached the .env-write
-# step is still around (e.g. the previous run was Ctrl-C'd or the api
-# crashed during bring-up), it holds different credentials and the api
-# would fail with "FATAL: password authentication failed". We only get
-# here when no .env existed, so any leftover volume is orphaned and safe
-# to remove.
-proj="$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's/^[^a-z0-9]*//')"
-if [ -n "$proj" ] && docker volume inspect "${proj}_pgdata" >/dev/null 2>&1; then
-  stale_vol="${proj}_pgdata"
-  if noninteractive; then
-    warn "Orphan postgres volume '$stale_vol' (no .env was present) — removing."
-    wipe="Y"
-  else
-    echo "  An orphan postgres data volume ($stale_vol) was found, but no .env"
-    echo "  exists alongside it — it's left over from an aborted install. It"
-    echo "  must be wiped to use the freshly generated credentials."
-    read -r -p "  Wipe it now? [Y/n]: " wipe </dev/tty
-    wipe="${wipe:-Y}"
-  fi
-  if [[ "$wipe" =~ ^[Yy] ]]; then
-    docker compose -f docker-compose.prod.yml --env-file .env down -v >/dev/null 2>&1 || true
-    docker volume rm "$stale_vol" >/dev/null 2>&1 || true
-    ok "Removed $stale_vol"
-  else
-    die "Cannot start with new credentials against the old data volume."
-  fi
-fi
 
 # ── 6. Pull + start ───────────────────────────────────────────────────────
 
@@ -418,7 +424,42 @@ if [ "$ALREADY_ROTATED" -eq 0 ]; then
   fi
 fi
 
-# ── 9. Done ───────────────────────────────────────────────────────────────
+# ── 9. Ensure stack restarts on boot ──────────────────────────────────────
+#
+# The compose file already declares `restart: unless-stopped`, so the
+# api + postgres containers come back whenever the docker daemon does.
+# That only helps across reboots if docker.service is enabled at boot.
+# Most distros enable it by default at install time, but not all (e.g.
+# fresh Debian, some minimal cloud images), so check and offer to fix.
+step "Configuring restart-on-reboot"
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  warn "systemctl not found — can't verify docker is enabled at boot."
+  warn "Make sure your init system starts docker on boot, or the stack"
+  warn "won't come back after a reboot."
+elif systemctl is-enabled docker.service >/dev/null 2>&1 \
+     || systemctl is-enabled docker.socket >/dev/null 2>&1; then
+  ok "docker is enabled at boot — stack will restart automatically (compose 'restart: unless-stopped')"
+else
+  warn "docker is not enabled to start at boot — the stack will NOT come back after a reboot."
+  enable_now=""
+  if noninteractive; then
+    enable_now="N"
+    warn "Enable it with:  sudo systemctl enable --now docker"
+  else
+    read -r -p "  Run 'sudo systemctl enable --now docker' now? [Y/n]: " enable_now </dev/tty
+    enable_now="${enable_now:-Y}"
+  fi
+  if [[ "$enable_now" =~ ^[Yy] ]]; then
+    if sudo systemctl enable --now docker 2>&1 | sed 's/^/    /'; then
+      ok "docker enabled at boot"
+    else
+      warn "Could not enable docker. Run manually:  sudo systemctl enable --now docker"
+    fi
+  fi
+fi
+
+# ── 10. Done ──────────────────────────────────────────────────────────────
 
 echo
 c_green "═══════════════════════════════════════════════════════════════"
