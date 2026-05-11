@@ -195,6 +195,40 @@ If the agent refuses to start, the most common cause is a missing or empty
 
 ## Update
 
+### Auto-update (default)
+
+The package installs `/usr/sbin/familydns-update` and a cron entry that runs
+it every 6 hours:
+
+```
+0 */6 * * * /usr/sbin/familydns-update
+```
+
+Each run hits the GitHub Releases API for the `latest` release, parses the
+`.ipk` asset version, and only invokes `opkg install --force-reinstall` when
+the released version is strictly newer than the installed one (verified via
+`opkg compare-versions`). All output goes to syslog under tag `familydns`
+(`logread | grep familydns`). `/etc/config/familydns` is declared as a
+conffile so the router token survives the upgrade — no re-enrollment.
+
+On OpenWRT 24.10+/SNAPSHOT (apk-only systems) the script exits silently;
+the parallel `.apk` track is in [#176](https://github.com/sameerparekh/familydns/issues/176).
+
+To force an update immediately:
+
+```sh
+/usr/sbin/familydns-update
+```
+
+To disable auto-updates (e.g. on a pinned router), edit the cron table and
+delete the `familydns-update` line:
+
+```sh
+crontab -e
+# remove the "0 */6 * * * /usr/sbin/familydns-update" line, save, exit
+/etc/init.d/cron restart
+```
+
 ### Manual update
 
 ```sh

@@ -1,0 +1,63 @@
+#!/bin/sh
+# Auto-updater for the familydns package.
+# Checks GitHub Releases for a newer .ipk and upgrades in place.
+# opkg preserves /etc/config/familydns, so the router_token survives upgrades.
+# Safe to run from cron; logs to syslog under tag "familydns".
+set -u
+
+API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/latest"
+
+log() { logger -t familydns "update: $*"; }
+
+# Skip silently on apk-only systems (OpenWRT 24.10+); the .apk track lives
+# elsewhere (see #176).
+command -v opkg >/dev/null 2>&1 || exit 0
+
+CURRENT=$(opkg info familydns 2>/dev/null | awk '/^Version:/{print $2; exit}')
+if [ -z "$CURRENT" ]; then
+  log "familydns not installed via opkg; nothing to update"
+  exit 0
+fi
+
+LATEST_URL=$(curl -sf "$API_URL" \
+  | jsonfilter -e '@.assets[*].browser_download_url' \
+  | grep -E '\.ipk$' \
+  | head -n1)
+if [ -z "$LATEST_URL" ]; then
+  log "could not resolve latest .ipk asset URL; skipping"
+  exit 0
+fi
+
+LATEST_VER=$(echo "$LATEST_URL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -n1)
+if [ -z "$LATEST_VER" ]; then
+  log "could not parse version from $LATEST_URL; skipping"
+  exit 0
+fi
+
+# Prefer opkg's version comparator (handles 1.10.0 > 1.9.0); fall back to
+# string equality.
+if opkg compare-versions "$LATEST_VER" '>' "$CURRENT" 2>/dev/null; then
+  :
+elif [ "$LATEST_VER" = "$CURRENT" ]; then
+  exit 0
+else
+  # compare-versions said not-newer (could be equal or older). Either way no upgrade.
+  exit 0
+fi
+
+log "upgrading $CURRENT -> $LATEST_VER"
+TMP=/tmp/familydns-update.ipk
+if ! curl -fsSL -o "$TMP" "$LATEST_URL"; then
+  log "download failed: $LATEST_URL"
+  rm -f "$TMP"
+  exit 1
+fi
+
+if opkg install --force-reinstall "$TMP" >/tmp/familydns-update.log 2>&1; then
+  log "installed $LATEST_VER"
+  rm -f "$TMP" /tmp/familydns-update.log
+else
+  log "opkg install failed; see /tmp/familydns-update.log"
+  rm -f "$TMP"
+  exit 1
+fi
