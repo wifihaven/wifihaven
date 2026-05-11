@@ -72,10 +72,14 @@ jobs:
           echo "Package: $apk_file"
           ls -lh "$apk_file"
           apk_bin="$HOME/.cache/familydns-apk-tools/build/src/apk"
-          echo "--- apk manifest ---"
-          "$apk_bin" manifest "$apk_file" || true
-          echo "--- payload (tar listing) ---"
-          tar tzf "$apk_file"
+          echo "--- file type ---"
+          file "$apk_file"
+          echo "--- apk adbdump (metadata) ---"
+          "$apk_bin" adbdump "$apk_file"
+          echo "--- payload (extracted listing) ---"
+          extract_dir=$(mktemp -d)
+          "$apk_bin" extract --no-chown --destination "$extract_dir" "$apk_file"
+          ( cd "$extract_dir" && find . -type f -o -type l | sort )
 
       - name: Upload .ipk artifact
         uses: actions/upload-artifact@v4
