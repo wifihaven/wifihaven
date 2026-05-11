@@ -3,11 +3,11 @@
 #
 # Usage (on an OpenWRT 23.05.x router, as root):
 #
-#   sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 #
 # Or download then run:
 #
-#   curl -fsSL -o /tmp/familydns-install.sh \
+#   uclient-fetch -qO /tmp/familydns-install.sh \
 #     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh
 #   sh /tmp/familydns-install.sh
 #

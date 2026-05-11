@@ -29,7 +29,7 @@ ship with stock OpenWRT 23.05. The remaining runtime dependencies (`lua`,
 SSH into the router as root and run:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 ```
 
 The script prompts for:
@@ -60,7 +60,7 @@ router in a clean state so you can re-run after fixing the underlying issue.
 Download and inspect the script first:
 
 ```sh
-curl -fsSL -o /tmp/familydns-install.sh \
+uclient-fetch -qO /tmp/familydns-install.sh \
   https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh
 less /tmp/familydns-install.sh
 sh /tmp/familydns-install.sh

@@ -257,7 +257,7 @@ End users install via the one-shot script — see
 manual-fallback path. The headline command, run as root on the router:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 ```
 
 It prompts for the API URL, the one-time enrollment token (generated in the

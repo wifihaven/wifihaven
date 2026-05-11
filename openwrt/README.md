@@ -110,7 +110,7 @@ git push origin v0.2.0
 End users install via the one-shot script:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 ```
 
 The script source is [`install.sh`](install.sh); the full guide (with the
