@@ -66,6 +66,20 @@ less /tmp/familydns-install.sh
 sh /tmp/familydns-install.sh
 ```
 
+### Uninstalling
+
+To cleanly revert the install (stop and disable the service, remove the
+package, drop the uhttpd block-page listener, wipe the familydns UCI
+config):
+
+```sh
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
+```
+
+Pass `--purge` to additionally remove `/usr/lib/familydns`,
+`/usr/lib/lua/familydns`, and the extra deps (`libuci-lua`, `lua-cjson`).
+The script is idempotent — re-running on an already-clean router exits 0.
+
 ## 3. Verify
 
 ```sh
