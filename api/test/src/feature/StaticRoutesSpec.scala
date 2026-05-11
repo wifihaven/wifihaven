@@ -76,6 +76,32 @@ object StaticRoutesSpec extends ZIOSpecDefault {
         } yield assertTrue(resp.status == Status.NotFound)
       }
     },
+    test("refuses to serve SPA for unparseable request URI (zio-http URL.empty fallback)") {
+      withTempDir { dir =>
+        for {
+          _ <- write(dir, "index.html", "<html>spa</html>")
+          rs = StaticRoutes.routes(dir.getAbsolutePath)
+          // zio-http substitutes URL.empty when netty can't parse the URI —
+          // e.g. when the agent issued GET /api/router/policy?since="..." with
+          // literal unencoded quotes (see issue #214).
+          resp <- rs(Request.get(URL.empty)).merge
+          ct = resp.header(Header.ContentType).map(_.renderedValue).getOrElse("")
+        } yield assertTrue(resp.status.code >= 400 && resp.status.code < 500) &&
+          assertTrue(!ct.startsWith("text/html"))
+      }
+    },
+    test("returns 404 (not SPA) for /api/router/* even with malformed query string") {
+      withTempDir { dir =>
+        for {
+          _ <- write(dir, "index.html", "<html>spa</html>")
+          rs = StaticRoutes.routes(dir.getAbsolutePath)
+          // mimic the agent bug: literal unencoded quotes in the query string
+          resp <- get(rs, "/api/router/policy?since=%22bogus%22")
+          ct = resp.header(Header.ContentType).map(_.renderedValue).getOrElse("")
+        } yield assertTrue(resp.status.code >= 400 && resp.status.code < 500) &&
+          assertTrue(!ct.startsWith("text/html"))
+      }
+    },
     test("rejects path traversal attempts") {
       withTempDir { dir =>
         for {
