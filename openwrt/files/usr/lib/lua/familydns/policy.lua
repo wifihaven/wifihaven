@@ -15,13 +15,26 @@ local M = {}
 
 local render = require("familydns.render")
 
+-- Percent-encode characters that would break a query-string value:
+-- the canonical HTTP etag is wrapped in literal `"` characters, which a raw
+-- concatenation would emit into the URL and break server-side routing.
+-- Encodes `"`, space, `?`, `#`, `&`, `=`, `+`, `%`, control bytes, and any
+-- non-ASCII byte. Leaves `:` and other pchars (e.g. in `sha256:abc`) alone.
+local function urlencode(s)
+  return (s:gsub("[%c%z\"%%%+%&%=%?%# ]", function(c)
+    return string.format("%%%02X", string.byte(c))
+  end):gsub("[\128-\255]", function(c)
+    return string.format("%%%02X", string.byte(c))
+  end))
+end
+
 -- ---------------------------------------------------------------------------
 -- policy.fetch
 -- ---------------------------------------------------------------------------
 function M.fetch(api_url, router_token, etag, http_get_fn)
   local url = api_url .. "/api/router/policy"
   if etag then
-    url = url .. "?since=" .. etag
+    url = url .. "?since=" .. urlencode(etag)
   end
 
   local hdrs = { ["Authorization"] = "Bearer " .. router_token }
