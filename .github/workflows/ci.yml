@@ -3,10 +3,10 @@ name: CI
 on:
   pull_request:
     # Run on PRs targeting any branch
-  push:
-    # Only run on main post-merge — feature/claude branches get coverage via
-    # the PR's pull_request trigger. Avoids double-runs (issue #53).
-    branches: [main]
+  workflow_call:
+    # Invoked by master.yml on push to main so the CD pipeline gates publish
+    # on the same test matrix PRs run. Direct push: main is intentionally
+    # omitted — main coverage flows through master.yml (issue #190).
   workflow_dispatch:
 
 env:

@@ -1,8 +1,13 @@
-name: Publish OpenWRT Package
+name: OpenWRT Package Build
 
+# Branch pushes to main are intentionally excluded — that path burned CI on
+# unrelated changes (docs-only merges) and the per-PR `paths` filter already
+# covers code changes pre-merge. A release only happens on a v* tag push;
+# the `Create GitHub release` step below stays gated on the tag ref.
+# See issues #191 (no branch pushes) and #212 (workflow name no longer
+# implies every run publishes).
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
     paths: ["openwrt/**"]
