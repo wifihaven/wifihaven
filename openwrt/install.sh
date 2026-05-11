@@ -61,7 +61,12 @@ else
   err "neither apk nor opkg found — is this OpenWRT?"
 fi
 
-command -v curl       >/dev/null 2>&1 || err "curl not found — install it first (e.g. '$PKG_MGR update && $PKG_MGR $PKG_INSTALL curl')"
+if ! command -v curl >/dev/null 2>&1; then
+  info "curl not found — installing via $PKG_MGR..."
+  $PKG_MGR update
+  $PKG_MGR $PKG_INSTALL curl
+  command -v curl >/dev/null 2>&1 || err "curl still not found after '$PKG_MGR $PKG_INSTALL curl'"
+fi
 
 # Auto-detect defaults.
 lan_ip=$(uci -q get network.lan.ipaddr || true)
