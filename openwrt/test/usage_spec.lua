@@ -97,11 +97,11 @@ describe("usage.build_report", function()
   local P_END    = "2026-05-08T14:05:00Z"
   local ROUTER   = "9c1f2e8a-0000-0000-0000-000000000001"
 
-  it("sets router_id, period_start, period_end on the top-level report", function()
+  it("sets routerId, periodStart, periodEnd on the top-level report", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
-    assert.equal(ROUTER,  r.router_id)
-    assert.equal(P_START, r.period_start)
-    assert.equal(P_END,   r.period_end)
+    assert.equal(ROUTER,  r.routerId)
+    assert.equal(P_START, r.periodStart)
+    assert.equal(P_END,   r.periodEnd)
   end)
 
   it("produces one record per (mac, hostname) pair", function()
@@ -114,7 +114,7 @@ describe("usage.build_report", function()
     local by_hostname = {}
     for _, rec in ipairs(r.records) do by_hostname[rec.hostname] = rec end
     assert.equal("aa:bb:cc:11:22:33", by_hostname["youtube.com"].mac)
-    assert.equal(50000,               by_hostname["youtube.com"].bytes_in)
+    assert.equal(50000,               by_hostname["youtube.com"].bytesIn)
   end)
 
   it("falls back hostname to 'unknown' when dst_ip is not in any nft_set", function()
@@ -124,10 +124,10 @@ describe("usage.build_report", function()
     assert.equal("unknown", r.records[1].hostname)
   end)
 
-  it("sets active_seconds = 300 (full period) for any counter with bytes > 0", function()
+  it("sets activeSeconds = 300 (full period) for any counter with bytes > 0", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
     for _, rec in ipairs(r.records) do
-      assert.equal(300, rec.active_seconds)
+      assert.equal(300, rec.activeSeconds)
     end
   end)
 
@@ -163,15 +163,15 @@ describe("usage.build_report", function()
     local json = require("cjson")
     local r    = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
     local dec  = json.decode(json.encode(r))
-    assert.not_nil(dec.router_id)
-    assert.not_nil(dec.period_start)
-    assert.not_nil(dec.period_end)
+    assert.not_nil(dec.routerId)
+    assert.not_nil(dec.periodStart)
+    assert.not_nil(dec.periodEnd)
     assert.not_nil(dec.records)
     local rec = dec.records[1]
     assert.not_nil(rec.mac)
     assert.not_nil(rec.hostname)
-    assert.not_nil(rec.active_seconds)
-    assert.not_nil(rec.bytes_in)
+    assert.not_nil(rec.activeSeconds)
+    assert.not_nil(rec.bytesIn)
   end)
 
   it("handles an empty counters list (zero records)", function()
@@ -191,7 +191,7 @@ describe("usage.post", function()
       got_url = url; got_body = body; got_hdrs = hdrs
       return 200, ""
     end
-    local report = { router_id = "r1", period_start = "t0", period_end = "t1", records = {} }
+    local report = { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = {} }
     local ok = usage.post("http://api:8080", "rt_tok", report, post_fn)
     assert.is_true(ok)
     assert.truthy(got_url:find("/api/router/usage", 1, true))
@@ -202,10 +202,10 @@ describe("usage.post", function()
     local json = require("cjson")
     local got_body
     local function post_fn(_url, body, _hdrs) got_body = body; return 200, "" end
-    local report = { router_id = "r1", period_start = "t0", period_end = "t1", records = {} }
+    local report = { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = {} }
     usage.post("http://api:8080", "rt_tok", report, post_fn)
     local dec = json.decode(got_body)
-    assert.equal("r1", dec.router_id)
+    assert.equal("r1", dec.routerId)
   end)
 
   it("sets Content-Type: application/json", function()

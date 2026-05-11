@@ -93,11 +93,11 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
   for _, c in ipairs(counters or {}) do
     local hostname = hostname_for_ip(c.dst_ip, nft_sets)
     local rec = {
-      mac            = c.mac,
-      hostname       = hostname,
-      active_seconds = (c.bytes > 0) and 300 or 0,
-      bytes_in       = c.bytes,
-      bytes_out      = 0,   -- nftables ingress-only counters; egress tracked separately
+      mac           = c.mac,
+      hostname      = hostname,
+      activeSeconds = (c.bytes > 0) and 300 or 0,
+      bytesIn       = c.bytes,
+      bytesOut      = 0,   -- nftables ingress-only counters; egress tracked separately
     }
     if leases then
       rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
@@ -106,10 +106,10 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
   end
 
   return {
-    router_id    = router_id,
-    period_start = period_start,
-    period_end   = period_end,
-    records      = records,
+    routerId    = router_id,
+    periodStart = period_start,
+    periodEnd   = period_end,
+    records     = records,
   }
 end
 
