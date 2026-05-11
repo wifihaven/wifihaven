@@ -10,9 +10,14 @@ of #144 (router VM) and #146 (client VM).
 - `qemu-system-x86_64`, `qemu-img`
 - One of `xorrisofs`, `genisoimage`, or `mkisofs` (for the NoCloud seed)
 - `openssl`, `curl`, `ssh` (client), `iproute2` (for `ip`)
-- `socat` (used by `client-down.sh` to send a clean ACPI shutdown via QMP — optional, the script falls back to signals)
+- `socat` (used by `client-down.sh` and by the router monitor / snapshot
+  scripts — optional for client tear-down, required for `router-snapshot.sh`
+  and `router-restore.sh`)
 - The LAN bridge from the router VM (#144) must already be up before
-  `client-up.sh` runs.
+  `client-up.sh` runs. `router-up.sh` brings it up automatically; otherwise
+  call `lan-bridge-up.sh` directly.
+- `/etc/qemu/bridge.conf` must contain `allow ${FDNS_LAN_BRIDGE}` (default
+  `allow fdns-lan0`) so `qemu-bridge-helper` will attach taps.
 
 The harness is not expected to work on macOS — no KVM. Use a Linux dev host
 or CI runner.
@@ -98,4 +103,88 @@ from outside the host. **Never reuse it for anything real.** See
 
 ## Router VM
 
-Tracked in #144 — not in this directory yet.
+OpenWRT 23.05.6 x86/64 booted in QEMU/KVM with two NICs:
+
+| iface | attached to | purpose |
+|---|---|---|
+| eth0 | `${FDNS_LAN_BRIDGE}` bridge | LAN side — shared with client VMs (#146). |
+| eth1 | QEMU user-mode (SLIRP) | WAN side — gets NAT-to-internet for free, plus host port-forwards for orchestrator access. |
+
+OpenWRT's default board config assigns eth0→lan, eth1→wan, matching the order
+above.
+
+### Lifecycle
+
+```
+lan-bridge-up.sh             # idempotent — also called by router-up.sh
+router-up.sh                 # download + verify image, qcow2 overlay, boot
+router-snapshot.sh <name>    # savevm
+router-restore.sh  <name>    # loadvm (running) / qemu-img -a (stopped)
+router-down.sh               # graceful shutdown via monitor → SIGTERM → SIGKILL
+lan-bridge-down.sh           # tear down the bridge (only when all VMs are stopped)
+```
+
+`router-up.sh` writes its overlay, pidfile, monitor socket, and serial console
+log under `.run/router/`. Snapshots live inside the overlay (qcow2 internal
+snapshots) and can be inspected with `qemu-img snapshot -l`.
+
+### Image pinning + bumping
+
+The OpenWRT version and SHA256 are pinned in [`config.sh`](config.sh)
+(`FDNS_OPENWRT_VERSION`, `FDNS_OPENWRT_SHA256`). To bump:
+
+1. Edit `FDNS_OPENWRT_VERSION`.
+2. Fetch the new SHA256:
+   ```bash
+   curl -sSL "https://downloads.openwrt.org/releases/${VER}/targets/x86/64/sha256sums" \
+     | grep generic-ext4-combined.img.gz
+   ```
+3. Update `FDNS_OPENWRT_SHA256`.
+4. `rm -rf scripts/vm/.cache scripts/vm/.run/router` and re-run `router-up.sh`.
+
+### Host access
+
+- **SSH**: `ssh -p ${FDNS_ROUTER_SSH_PORT} root@127.0.0.1` (default 2222).
+  Stock OpenWRT root password is empty on first boot — set one immediately or
+  wait for #150 (custom image bakes in a known test password + SSH key).
+- **LuCI HTTP**: `http://127.0.0.1:${FDNS_ROUTER_HTTP_PORT}` (default 8080).
+- **QEMU monitor** (savevm / loadvm / info network / system_powerdown):
+  ```bash
+  socat - UNIX-CONNECT:scripts/vm/.run/router/monitor.sock
+  ```
+
+### Snapshots
+
+`savevm`/`loadvm` capture disk + RAM in the qcow2 overlay, so scenarios can
+reset to a known-good state in seconds:
+
+```bash
+scripts/vm/router-snapshot.sh enrolled
+scripts/vm/router-restore.sh  enrolled    # running or stopped
+qemu-img snapshot -l scripts/vm/.run/router/overlay.qcow2
+```
+
+Snapshot names must match `[A-Za-z0-9_.-]+`.
+
+### Known quirks (v1 — deferred)
+
+- **OpenWRT's default LAN IP is `192.168.1.1`, not in `${FDNS_LAN_SUBNET}`.**
+  Clients DHCP from the router so this still works end-to-end, but the host
+  cannot reach the router over the LAN bridge by a `${FDNS_LAN_SUBNET}`
+  address yet. The uci-defaults rework that aligns this lives in #150
+  (custom image). Until then, manage the router via the WAN-side SSH
+  hostfwd (`127.0.0.1:2222`).
+- **Empty root password.** Stock OpenWRT default. Fixed by #150.
+- **No automatic image build.** This slice consumes the stock image only;
+  the familydns-agent ipk is baked in by #150.
+
+### Manual verification (until #148 lands)
+
+1. `scripts/vm/router-up.sh` boots without error; re-running is a no-op
+   while the VM is running; `router-down.sh` is a no-op when not running.
+2. `ssh -p 2222 root@127.0.0.1` lands a shell on the router (empty password).
+3. From the router: `ping -c2 8.8.8.8` succeeds (WAN NAT working).
+4. From the router: `ip link show eth0` is `UP`. On the host, `bridge link
+   show` lists a tap attached to `${FDNS_LAN_BRIDGE}`.
+5. `router-snapshot.sh smoke` succeeds; `qemu-img snapshot -l ...` lists it;
+   `router-down.sh && router-up.sh && router-restore.sh smoke` round-trips.
