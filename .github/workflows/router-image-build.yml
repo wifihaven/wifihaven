@@ -1,0 +1,64 @@
+name: Build OpenWRT VM image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openwrt/**"
+      - "scripts/vm/**"
+      - ".github/workflows/router-image-build.yml"
+  pull_request:
+    paths:
+      - "openwrt/**"
+      - "scripts/vm/**"
+      - ".github/workflows/router-image-build.yml"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-image:
+    name: Image Builder (x86_64) + familydns-agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned OpenWRT version
+        id: ver
+        run: |
+          # shellcheck disable=SC1091
+          . scripts/vm/versions.sh
+          {
+            echo "openwrt_version=${OPENWRT_VERSION}"
+            echo "tarball=${OPENWRT_IMAGEBUILDER_TARBALL}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cache Image Builder download
+        uses: actions/cache@v4
+        with:
+          path: scripts/vm/.cache/downloads
+          key: openwrt-ib-${{ steps.ver.outputs.openwrt_version }}-${{ steps.ver.outputs.tarball }}
+
+      - name: Build router image
+        env:
+          IPK_SOURCE: local
+        run: |
+          chmod +x scripts/vm/build-router-image.sh openwrt/build-ipk.sh
+          scripts/vm/build-router-image.sh
+
+      - name: Image summary
+        run: |
+          ls -lh scripts/vm/.cache/openwrt-familydns.img
+          file scripts/vm/.cache/openwrt-familydns.img
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-familydns-${{ steps.ver.outputs.openwrt_version }}-${{ github.sha }}
+          path: scripts/vm/.cache/openwrt-familydns.img
+          if-no-files-found: error
+          retention-days: 14

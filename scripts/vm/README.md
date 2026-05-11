@@ -166,17 +166,86 @@ qemu-img snapshot -l scripts/vm/.run/router/overlay.qcow2
 
 Snapshot names must match `[A-Za-z0-9_.-]+`.
 
+## Custom router image (familydns-agent baked in, #150)
+
+`router-up.sh` defaults to the stock OpenWRT image pinned in `config.sh`.
+For end-to-end testing, [`build-router-image.sh`](build-router-image.sh)
+produces an OpenWRT image with the `familydns-agent` ipk pre-installed
+and first-boot defaults seeded under `/etc/uci-defaults/`. It wraps
+OpenWRT's official Image Builder, run inside a pinned Debian container
+for reproducibility.
+
+```bash
+# Local dev: build the ipk from the working tree, bake it in.
+scripts/vm/build-router-image.sh
+
+# Use a previously-published release ipk:
+IPK_SOURCE=release scripts/vm/build-router-image.sh
+
+# Use a specific ipk file:
+IPK_SOURCE=path IPK_PATH=/abs/path/familydns_X.Y.Z-1_all.ipk \
+    scripts/vm/build-router-image.sh
+```
+
+Output: `.cache/openwrt-familydns.img` (uncompressed, ready to feed
+directly to QEMU). Image size: ~30–50 MB.
+
+To boot it via the existing harness, point `router-up.sh` at the file
+through `FDNS_ROUTER_IMAGE_PATH`:
+
+```bash
+FDNS_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-familydns.img \
+    scripts/vm/router-up.sh
+```
+
+When the env var is set, `ensure_openwrt_image` skips the stock-image
+download + sha256 check and uses the file verbatim.
+
+### Pinning + bumping the Image Builder release
+
+The Image Builder version lives in [`versions.sh`](versions.sh)
+(`OPENWRT_VERSION`). It does **not** have to match the stock-image
+version in `config.sh`, though keeping them aligned is a good habit. The
+build script downloads the official `sha256sums` from the same release
+directory and verifies the tarball against it, so there's no hash to
+hand-edit when bumping.
+
+### Source-of-truth for the ipk
+
+The image bakes in the **same `.ipk` artifact** that production routers
+install via `opkg` — built by `openwrt/build-ipk.sh`, published by
+`openwrt-build.yml`. VM e2e and the real install path therefore
+exercise the same bits. If the package contents change, change them in
+`openwrt/` — never patch a staged copy here.
+
+### First-boot config (`uci-defaults/99-familydns`)
+
+OpenWRT runs `/etc/uci-defaults/*` exactly once on first boot, then
+deletes each script. The seeded values (`api_url`, `lan_prefix`) are
+defaults the orchestrator (#148) overrides over SSH at boot — they only
+exist so a developer who boots the image and pokes at it sees something
+sensible. To extend the first-boot setup, add UCI commands to
+`uci-defaults/99-familydns` and rebuild.
+
+The script also seeds an empty `/etc/dropbear/authorized_keys` — the
+orchestrator drops its public key in via the QEMU console. **Only safe
+for ephemeral VMs**; do not flash this image to a real router.
+
+### CI
+
+[`.github/workflows/router-image-build.yml`](../../.github/workflows/router-image-build.yml)
+runs the build on every push to `main` and on PRs touching `openwrt/`
+or `scripts/vm/`. The resulting image is published as a workflow
+artifact named `openwrt-familydns-<openwrt-version>-<sha>`, which the
+VM e2e suite (#148) consumes.
+
 ### Known quirks (v1 — deferred)
 
 - **OpenWRT's default LAN IP is `192.168.1.1`, not in `${FDNS_LAN_SUBNET}`.**
   Clients DHCP from the router so this still works end-to-end, but the host
   cannot reach the router over the LAN bridge by a `${FDNS_LAN_SUBNET}`
-  address yet. The uci-defaults rework that aligns this lives in #150
-  (custom image). Until then, manage the router via the WAN-side SSH
-  hostfwd (`127.0.0.1:2222`).
-- **Empty root password.** Stock OpenWRT default. Fixed by #150.
-- **No automatic image build.** This slice consumes the stock image only;
-  the familydns-agent ipk is baked in by #150.
+  address yet. Use the WAN-side SSH hostfwd (`127.0.0.1:2222`) to manage
+  the router. Tracked as a follow-up.
 
 ### Manual verification (until #148 lands)
 

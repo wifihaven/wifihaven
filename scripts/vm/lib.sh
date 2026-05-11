@@ -26,7 +26,19 @@ sha256_file() {
 }
 
 # Download (if missing) and decompress the pinned OpenWRT image.
+#
+# If FDNS_ROUTER_IMAGE_PATH is set, treat it as a pre-built local image
+# (e.g. the output of build-router-image.sh) and use it verbatim, skipping
+# the download + sha256 check. This is how the custom-image flow from #150
+# plugs into the stock router-up.sh path.
 ensure_openwrt_image() {
+  if [[ -n "${FDNS_ROUTER_IMAGE_PATH:-}" ]]; then
+    [[ -f "${FDNS_ROUTER_IMAGE_PATH}" ]] || \
+      die "FDNS_ROUTER_IMAGE_PATH set but file missing: ${FDNS_ROUTER_IMAGE_PATH}"
+    FDNS_ROUTER_BASE_IMG="${FDNS_ROUTER_IMAGE_PATH}"
+    return 0
+  fi
+
   local gz="${FDNS_CACHE_DIR}/${FDNS_OPENWRT_IMAGE}"
   local img="${FDNS_ROUTER_BASE_IMG}"
 

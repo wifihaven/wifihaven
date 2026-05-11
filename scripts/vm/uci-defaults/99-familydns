@@ -1,0 +1,27 @@
+#!/bin/sh
+# First-boot defaults for the VM-e2e router image.
+#
+# This file is baked into the image at /etc/uci-defaults/99-familydns by
+# scripts/vm/build-router-image.sh. OpenWRT executes everything in
+# /etc/uci-defaults exactly once on the first boot and then deletes the
+# script — so these values are seed defaults, not enforced state.
+#
+# The e2e orchestrator (#148) overrides api_url and lan_prefix over SSH
+# once it knows the host's LAN-bridge IP. The defaults here are only
+# meant for "just boot it and poke at it" debugging.
+
+uci batch <<EOF
+set familydns.@familydns[0]=familydns
+set familydns.@familydns[0].api_url='http://10.0.2.2:8080'
+set familydns.@familydns[0].lan_prefix='192.168.1.'
+EOF
+uci commit familydns
+
+# Allow password-less root SSH from the QEMU host so the orchestrator can
+# drive the router without an interactive enrollment step. This image is
+# intended for ephemeral VMs only — never flash it to real hardware.
+mkdir -p /etc/dropbear
+touch /etc/dropbear/authorized_keys
+chmod 0600 /etc/dropbear/authorized_keys
+
+exit 0
