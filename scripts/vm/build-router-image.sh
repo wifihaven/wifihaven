@@ -166,16 +166,26 @@ docker run --rm \
         chmod +x /usr/local/bin/sha256
         # Image Builder writes to bin/; ensure it is clean.
         rm -rf bin/
-        # Regenerate the local package index so our ipk is discoverable
-        # by opkg. (make package_index would also sign the index with
-        # usign, but those host keys havent been generated yet on the
-        # very first build — skip the signing step and disable signature
-        # checks in repositories.conf below.)
-        (cd packages && /ib/scripts/ipkg-make-index.sh . > Packages \
-            && gzip -9nc Packages > Packages.gz)
+        # Build a minimal Packages index for opkg. We deliberately do not
+        # call scripts/ipkg-make-index.sh: it choked on our control file
+        # in earlier CI runs ("sed: unknown option to `s'") and the usign
+        # signing step it normally pairs with requires host keys that
+        # havent been generated yet on a first IB build. We control the
+        # inputs here, so generate the index by hand.
+        (cd packages
+         : > Packages
+         for ipk in *.ipk; do
+             tar -xzOf "$ipk" ./control.tar.gz | tar -xzO ./control >> Packages
+             size=$(stat -c%s "$ipk")
+             sha=$(sha256sum "$ipk" | awk "{print \$1}")
+             printf "Filename: %s\nSize: %s\nSHA256sum: %s\n\n" \
+                 "$ipk" "$size" "$sha" >> Packages
+         done
+         gzip -9nc Packages > Packages.gz)
+        # Local ipk is unsigned; disable signature checking.
         sed -i "s/^option check_signature/# option check_signature/" repositories.conf
-        echo "--- packages/Packages (head) ---"
-        head -20 packages/Packages
+        echo "--- packages/Packages ---"
+        cat packages/Packages
         # The set of packages to include. Dependencies declared by the ipk
         # (lua, libuci-lua, luci-lib-jsonc, conntrack-tools, curl) are
         # pulled in automatically from the upstream OpenWRT feed.
