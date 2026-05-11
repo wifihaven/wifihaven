@@ -33,9 +33,10 @@ case "${1:-}" in
     ;;
 esac
 
-REPO_RAW="https://raw.githubusercontent.com/sameerparekh/familydns/main"
+REPO_RAW="${FAMILYDNS_REPO_RAW:-https://raw.githubusercontent.com/sameerparekh/familydns/main}"
 COMPOSE_URL="${REPO_RAW}/deploy/docker-compose.prod.yml"
 ENV_EXAMPLE_URL="${REPO_RAW}/deploy/.env.example"
+HELPER_SCRIPTS=(start stop restart logs status update)
 
 c_red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 c_green()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -186,7 +187,11 @@ step "Fetching deploy files"
 
 curl -fsSL "$COMPOSE_URL"     -o docker-compose.prod.yml
 curl -fsSL "$ENV_EXAMPLE_URL" -o .env.example
-ok "docker-compose.prod.yml + .env.example downloaded"
+for s in "${HELPER_SCRIPTS[@]}"; do
+  curl -fsSL "${REPO_RAW}/deploy/scripts/${s}.sh" -o "${s}.sh"
+  chmod +x "${s}.sh"
+done
+ok "docker-compose.prod.yml + .env.example + ${#HELPER_SCRIPTS[@]} helper scripts downloaded"
 
 # ── 5. Refuse to clobber an existing install ──────────────────────────────
 #
@@ -201,17 +206,21 @@ if [ -f .env ]; then
   like an existing install. install.sh only handles first-install and will
   not overwrite an existing one.
 
-  To manage an existing install, use the update/relaunch tooling instead:
+  To manage an existing install, use the helper scripts in the install
+  dir:
 
-    docker compose -f ${FAMILYDNS_INSTALL_DIR}/docker-compose.prod.yml \\
-      --env-file ${FAMILYDNS_INSTALL_DIR}/.env <pull|up -d|restart|down>
+    ${FAMILYDNS_INSTALL_DIR}/update.sh    # pull latest images and restart
+    ${FAMILYDNS_INSTALL_DIR}/restart.sh   # restart in place
+    ${FAMILYDNS_INSTALL_DIR}/stop.sh      # stop (data preserved)
+    ${FAMILYDNS_INSTALL_DIR}/start.sh     # bring back up
+    ${FAMILYDNS_INSTALL_DIR}/logs.sh      # tail api logs
+    ${FAMILYDNS_INSTALL_DIR}/status.sh    # container status
 
   ⚠  DANGER — only run the next block if you intend to PERMANENTLY DELETE
      all FamilyDNS data on this host (devices, profiles, query logs,
      admin user, everything). There is no undo.
 
-    docker compose -f ${FAMILYDNS_INSTALL_DIR}/docker-compose.prod.yml \\
-      --env-file ${FAMILYDNS_INSTALL_DIR}/.env down -v
+    ${FAMILYDNS_INSTALL_DIR}/stop.sh -v
     rm ${FAMILYDNS_INSTALL_DIR}/.env
     # then re-run install.sh
 EOF
@@ -244,8 +253,6 @@ if [ -n "$proj" ] && docker volume inspect "${proj}_pgdata" >/dev/null 2>&1; the
      contains nothing you care about. This PERMANENTLY DELETES all data
      in it. There is no undo.
 
-    docker compose -f ${FAMILYDNS_INSTALL_DIR}/docker-compose.prod.yml \\
-      --env-file ${FAMILYDNS_INSTALL_DIR}/.env down -v 2>/dev/null || true
     docker volume rm ${proj}_pgdata
     # then re-run install.sh
 EOF
@@ -468,9 +475,12 @@ c_green "═══════════════════════�
 cat <<EOF
 
   Install dir : ${FAMILYDNS_INSTALL_DIR}
-  Compose     : docker compose -f docker-compose.prod.yml --env-file .env <cmd>
-  Logs        : docker compose -f docker-compose.prod.yml --env-file .env logs -f api
-  Stop        : docker compose -f docker-compose.prod.yml --env-file .env down
+  Update      : ${FAMILYDNS_INSTALL_DIR}/update.sh    # pull latest images and restart
+  Restart     : ${FAMILYDNS_INSTALL_DIR}/restart.sh
+  Stop        : ${FAMILYDNS_INSTALL_DIR}/stop.sh      # data preserved
+  Start       : ${FAMILYDNS_INSTALL_DIR}/start.sh
+  Logs        : ${FAMILYDNS_INSTALL_DIR}/logs.sh      # tail api logs
+  Status      : ${FAMILYDNS_INSTALL_DIR}/status.sh
 
 Next steps:
   1. (optional) Put a TLS-terminating reverse proxy (Caddy / nginx) in
