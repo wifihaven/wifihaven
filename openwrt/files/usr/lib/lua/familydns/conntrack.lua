@@ -85,7 +85,7 @@ function M.build_event(opts)
     ["type"]    = "connection_attempt",
     mac         = opts.mac,
     hostname    = hostname,
-    dest_ip     = opts.dest_ip,
+    destIp      = opts.dest_ip,
     allowed     = opts.allowed,
     reason      = reason,
     ts          = opts.ts,
@@ -233,8 +233,8 @@ function M.watch(cfg)
 
   local batcher = M.new_batcher(max_batch, flush_int, function(events)
     local payload = json.encode({
-      router_id = cfg.router_id,
-      events    = events,
+      routerId = cfg.router_id,
+      events   = events,
     })
     local ok = M.post_with_retry(events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
     if not ok then
