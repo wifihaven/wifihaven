@@ -52,14 +52,21 @@ command -v jsonfilter >/dev/null 2>&1 || err "jsonfilter not found — this shou
 if command -v apk >/dev/null 2>&1; then
   PKG_MGR=apk
   PKG_EXT=apk
+  PKG_INSTALL=add
 elif command -v opkg >/dev/null 2>&1; then
   PKG_MGR=opkg
   PKG_EXT=ipk
+  PKG_INSTALL=install
 else
   err "neither apk nor opkg found — is this OpenWRT?"
 fi
 
-command -v curl       >/dev/null 2>&1 || err "curl not found — install it first (e.g. '$PKG_MGR update && $PKG_MGR install curl')"
+if ! command -v curl >/dev/null 2>&1; then
+  info "curl not found — installing via $PKG_MGR..."
+  $PKG_MGR update
+  $PKG_MGR $PKG_INSTALL curl
+  command -v curl >/dev/null 2>&1 || err "curl still not found after '$PKG_MGR $PKG_INSTALL curl'"
+fi
 
 # Auto-detect defaults.
 lan_ip=$(uci -q get network.lan.ipaddr || true)
