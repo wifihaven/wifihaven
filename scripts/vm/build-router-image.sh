@@ -147,7 +147,8 @@ docker run --rm \
         apt-get update -qq
         apt-get install -y --no-install-recommends \
             build-essential libncurses-dev zlib1g-dev gawk git \
-            gettext libssl-dev xsltproc rsync wget unzip python3 file \
+            gettext libssl-dev xsltproc rsync wget unzip file \
+            python3 python3-distutils \
             ca-certificates
         # Image Builder writes to bin/; ensure it is clean.
         rm -rf bin/
