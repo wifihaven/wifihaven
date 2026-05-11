@@ -231,6 +231,44 @@ EOF
   ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"
 fi
 
+# ── 5b. Wipe stale pgdata if we just generated fresh credentials ──────────
+#
+# Postgres only honours POSTGRES_PASSWORD on first init. If a pgdata volume
+# from a prior install attempt is still around, it keeps the OLD password
+# and the api will fail with "FATAL: password authentication failed". When
+# we've just written a fresh .env, find any compose-managed pgdata volume
+# tied to this install dir and remove it.
+if [ "$KEEP_EXISTING_ENV" -eq 0 ]; then
+  # Compose derives the project name from the install dir's basename:
+  # lowercased, with non [a-z0-9_-] stripped and any leading non-alphanum
+  # removed. The pgdata volume is then named "<project>_pgdata".
+  proj="$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's/^[^a-z0-9]*//')"
+  stale_vol=""
+  if [ -n "$proj" ] && docker volume inspect "${proj}_pgdata" >/dev/null 2>&1; then
+    stale_vol="${proj}_pgdata"
+  fi
+
+  if [ -n "$stale_vol" ]; then
+    if noninteractive; then
+      warn "Stale postgres volume '$stale_vol' from a prior install — removing (new credentials require fresh init)."
+      wipe="Y"
+    else
+      echo "  A postgres data volume from a prior install ($stale_vol) was found."
+      echo "  It was initialized with a different password and won't accept the new"
+      echo "  one in .env. The volume must be wiped (this deletes any prior data)."
+      read -r -p "  Wipe it now? [Y/n]: " wipe </dev/tty
+      wipe="${wipe:-Y}"
+    fi
+    if [[ "$wipe" =~ ^[Yy] ]]; then
+      docker compose -f docker-compose.prod.yml --env-file .env down -v >/dev/null 2>&1 || true
+      docker volume rm "$stale_vol" >/dev/null 2>&1 || true
+      ok "Removed $stale_vol"
+    else
+      die "Cannot start with new credentials against the old data volume. Re-run and answer Y, or restore the previous .env."
+    fi
+  fi
+fi
+
 # ── 6. Pull + start ───────────────────────────────────────────────────────
 
 step "Pulling image"
@@ -245,20 +283,31 @@ ok "Containers started"
 
 API_URL="http://127.0.0.1:${FAMILYDNS_API_HOST_PORT}"
 
-# wait_for_api polls GET /api/health until it returns 2xx, or until the
-# timeout (FAMILYDNS_WAIT_TIMEOUT seconds, default 90) elapses. On failure
-# it dumps the last 100 lines of the api container logs plus `compose ps`
-# so the user can diagnose without re-running anything by hand.
+# wait_for_api polls the api until it's accepting JSON requests, or until
+# the timeout (FAMILYDNS_WAIT_TIMEOUT seconds, default 90) elapses. On
+# failure it dumps the last 100 lines of the api container logs plus
+# `compose ps` so the user can diagnose without re-running anything by hand.
+#
+# We probe POST /api/auth/login with an empty body and accept 400/401 as
+# proof of life. Two reasons over a dedicated /api/health endpoint:
+#   1. /api/auth/login has existed since v0.1 — works against every
+#      published image, including older :latest tags users may have
+#      pulled before /api/health was added.
+#   2. It mirrors the compose healthcheck, so install.sh and `compose ps`
+#      agree on what "healthy" means.
 wait_for_api() {
-  local url="${API_URL}/api/health"
+  local url="${API_URL}/api/auth/login"
   local timeout="${FAMILYDNS_WAIT_TIMEOUT:-90}"
-  local start elapsed
+  local start elapsed code
   start=$(date +%s)
   elapsed=0
   step "Waiting for API to come up"
   printf "  "
   while [ "$elapsed" -lt "$timeout" ]; do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+    code="$(curl -s -o /dev/null -w '%{http_code}' \
+      -X POST -H 'content-type: application/json' -d '{}' \
+      "$url" 2>/dev/null || true)"
+    if [ "$code" = "400" ] || [ "$code" = "401" ]; then
       echo
       ok "API healthy at ${API_URL}"
       return 0
@@ -329,19 +378,38 @@ if [ "$ALREADY_ROTATED" -eq 0 ]; then
   fi
 
   if [ -n "$NEW_PW" ]; then
-    body="$(printf '{"username":"admin","oldPassword":"changeme","newPassword":%s}' \
-      "$(printf '%s' "$NEW_PW" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
-        || printf '"%s"' "${NEW_PW//\"/\\\"}")")"
-    rot_code="$(curl -s -o /dev/null -w '%{http_code}' \
-      -X POST -H 'content-type: application/json' \
-      -d "$body" "${API_URL}/api/auth/change-password" || true)"
-    if [ "$rot_code" = "200" ]; then
-      ok "admin password rotated"
+    # /api/auth/change-password requires a valid bearer token and takes
+    # {currentPassword, newPassword} (the username comes from the JWT
+    # subject). Log in with admin/changeme to get the token first, then
+    # post the change.
+    json_pw="$(printf '%s' "$NEW_PW" \
+      | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
+      || printf '"%s"' "${NEW_PW//\"/\\\"}")"
+    login_body='{"username":"admin","password":"changeme"}'
+    token="$(curl -s -X POST -H 'content-type: application/json' \
+      -d "$login_body" "${API_URL}/api/auth/login" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null \
+      || true)"
+    if [ -z "$token" ]; then
+      warn "Could not obtain admin token to rotate password. Rotate manually."
     else
-      warn "Password rotation returned HTTP ${rot_code}. Rotate manually:"
-      warn "  curl -X POST -H 'content-type: application/json' \\"
-      warn "    -d '{\"username\":\"admin\",\"oldPassword\":\"changeme\",\"newPassword\":\"...\"}' \\"
-      warn "    ${API_URL}/api/auth/change-password"
+      body="$(printf '{"currentPassword":"changeme","newPassword":%s}' "$json_pw")"
+      rot_code="$(curl -s -o /dev/null -w '%{http_code}' \
+        -X POST -H 'content-type: application/json' \
+        -H "authorization: Bearer ${token}" \
+        -d "$body" "${API_URL}/api/auth/change-password" || true)"
+      if [ "$rot_code" = "200" ]; then
+        ok "admin password rotated"
+      else
+        warn "Password rotation returned HTTP ${rot_code}. Rotate manually:"
+        warn "  TOKEN=\$(curl -s -X POST -H 'content-type: application/json' \\"
+        warn "    -d '{\"username\":\"admin\",\"password\":\"changeme\"}' \\"
+        warn "    ${API_URL}/api/auth/login | jq -r .token)"
+        warn "  curl -X POST -H 'content-type: application/json' \\"
+        warn "    -H \"authorization: Bearer \$TOKEN\" \\"
+        warn "    -d '{\"currentPassword\":\"changeme\",\"newPassword\":\"...\"}' \\"
+        warn "    ${API_URL}/api/auth/change-password"
+      fi
     fi
   fi
 fi

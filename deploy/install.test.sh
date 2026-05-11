@@ -151,7 +151,10 @@ out="$(bash -c "
   step() { :; }
   ok()   { echo \"OK: \$*\"; }
   API_URL='http://127.0.0.1:8080'
-  curl() { return 0; }
+  # wait_for_api parses the HTTP code from curl's stdout and treats 400/401
+  # as proof-of-life (matches the compose healthcheck). Mock curl to print
+  # '400' so the success path triggers immediately.
+  curl() { echo 400; return 0; }
   $(cat "${WAIT_FN}")
   wait_for_api
 " 2>&1)"
