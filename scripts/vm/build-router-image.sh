@@ -149,7 +149,12 @@ docker run --rm \
             build-essential libncurses-dev zlib1g-dev gawk git \
             gettext libssl-dev xsltproc rsync wget unzip file \
             python3 python3-distutils \
-            ca-certificates
+            ca-certificates coreutils
+        # OpenWRT scripts/ipkg-make-index.sh calls a bare `sha256` binary
+        # that is normally built as a host tool but is not in the Image
+        # Builder distribution. Shim it to sha256sum (compatible output).
+        printf "#!/bin/sh\nexec sha256sum \"\$@\"\n" > /usr/local/bin/sha256
+        chmod +x /usr/local/bin/sha256
         # Image Builder writes to bin/; ensure it is clean.
         rm -rf bin/
         # Regenerate the local package index so our ipk is discoverable
