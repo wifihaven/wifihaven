@@ -133,12 +133,15 @@ function M.post(api_url, router_token, report, post_fn)
     ["Content-Type"]  = "application/json",
   }
 
-  local status, _ = post_fn(url, body, hdrs)
+  local status, resp_body, err = post_fn(url, body, hdrs)
   if status and status >= 200 and status < 300 then
     return true
   end
+  local body_str = resp_body and tostring(resp_body) or ""
+  if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
   io.stderr:write(string.format(
-    "[familydns] usage.post: POST failed, status=%s\n", tostring(status)))
+    "[familydns] usage.post: POST failed (status=%s body=%q) err=%s\n",
+    tostring(status), body_str, tostring(err)))
   return false
 end
 

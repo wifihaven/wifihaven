@@ -56,14 +56,43 @@ local function http_post(url, body, headers)
   for k, v in pairs(headers or {}) do
     hdr_args = hdr_args .. string.format(" -H %q", k .. ": " .. v)
   end
+  -- Capture body to a tmp file, status code on stdout, curl stderr to another tmp file.
+  -- This lets us surface the response body and connection-failure messages
+  -- (curl exit codes / "Connection refused" / TLS errors) on failure.
+  local body_tmp = os.tmpname()
+  local err_tmp  = os.tmpname()
   local cmd = string.format(
-    "curl -s -o /dev/null -w '%%{http_code}' -X POST%s --data-binary @- %q",
-    hdr_args, url)
+    "curl -sS -o %q -w '%%{http_code}' -X POST%s --data-binary @- %q 2>%q",
+    body_tmp, hdr_args, url, err_tmp)
   local pipe = io.popen("printf '%%s' " .. string.format("%q", body) .. " | " .. cmd, "r")
-  if not pipe then return nil, "" end
-  local code = pipe:read("*l")
+  if not pipe then
+    os.remove(body_tmp); os.remove(err_tmp)
+    return nil, nil, "io.popen failed"
+  end
+  local code_str = pipe:read("*a") or ""
   pipe:close()
-  return tonumber(code), ""
+  local code = tonumber((code_str:gsub("%s+$", "")))
+
+  local resp_body = ""
+  local bf = io.open(body_tmp, "r")
+  if bf then resp_body = bf:read("*a") or ""; bf:close() end
+  os.remove(body_tmp)
+
+  local err_str
+  local ef = io.open(err_tmp, "r")
+  if ef then
+    local e = ef:read("*a") or ""
+    ef:close()
+    e = e:gsub("^%s+", ""):gsub("%s+$", "")
+    if e ~= "" then err_str = e end
+  end
+  os.remove(err_tmp)
+
+  if not code then
+    -- Connection error (no HTTP status). Prefer curl's stderr; fall back generic.
+    return nil, resp_body, err_str or "curl: connection error"
+  end
+  return code, resp_body, err_str
 end
 
 local function http_get(url, headers)
