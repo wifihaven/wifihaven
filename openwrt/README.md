@@ -117,6 +117,11 @@ The script source is [`install.sh`](install.sh); the full guide (with the
 manual-fallback path for debugging) is in
 [`docs/install-openwrt.md`](../docs/install-openwrt.md).
 
+The script auto-detects the router's package manager (`opkg` on OpenWRT
+23.05.x and earlier, `apk` on 24.10+/SNAPSHOT) and downloads the matching
+release asset. Only `.ipk` is currently published; `.apk` support is tracked
+in [#176](https://github.com/sameerparekh/familydns/issues/176).
+
 For developer flashing of a locally built `.ipk`:
 
 ```sh

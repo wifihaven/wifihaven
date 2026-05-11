@@ -44,10 +44,22 @@ prompt() {
 
 # Sanity checks.
 [ "$(id -u)" -eq 0 ] || err "must run as root"
-command -v opkg       >/dev/null 2>&1 || err "opkg not found — is this OpenWRT?"
 command -v uci        >/dev/null 2>&1 || err "uci not found — is this OpenWRT?"
-command -v curl       >/dev/null 2>&1 || err "curl not found — install it first: opkg update && opkg install curl"
 command -v jsonfilter >/dev/null 2>&1 || err "jsonfilter not found — this should be present on stock OpenWRT"
+
+# Detect the package manager. OpenWRT 24.10+ (SNAPSHOT) uses apk; earlier
+# releases use opkg.
+if command -v apk >/dev/null 2>&1; then
+  PKG_MGR=apk
+  PKG_EXT=apk
+elif command -v opkg >/dev/null 2>&1; then
+  PKG_MGR=opkg
+  PKG_EXT=ipk
+else
+  err "neither apk nor opkg found — is this OpenWRT?"
+fi
+
+command -v curl       >/dev/null 2>&1 || err "curl not found — install it first (e.g. '$PKG_MGR update && $PKG_MGR install curl')"
 
 # Auto-detect defaults.
 lan_ip=$(uci -q get network.lan.ipaddr || true)
@@ -83,19 +95,38 @@ case "$LAN_PREFIX" in
   *)  err "lan_prefix must end with a dot (e.g. '10.0.0.'); got '$LAN_PREFIX'" ;;
 esac
 
-# Download the latest .ipk.
-info "Resolving latest release asset..."
-ipk_url=$(curl -fsSL "$RELEASES_API" | jsonfilter -e '@.assets[0].browser_download_url' | head -n1)
-[ -n "$ipk_url" ] || err "could not resolve latest release asset URL from $RELEASES_API"
-info "Downloading $ipk_url"
-curl -fsSL -o /tmp/familydns.ipk "$ipk_url"
+# Download the latest package matching this system's package manager.
+info "Resolving latest release asset (.$PKG_EXT)..."
+releases_json=$(curl -fsSL "$RELEASES_API")
+pkg_url=$(echo "$releases_json" \
+  | jsonfilter -e '@.assets[*].browser_download_url' \
+  | grep -E "\.${PKG_EXT}\$" \
+  | head -n1)
+if [ -z "$pkg_url" ]; then
+  if [ "$PKG_MGR" = apk ]; then
+    err "no .apk asset in the latest release — apk-based OpenWRT (24.10+/SNAPSHOT) is not yet supported, see https://github.com/sameerparekh/familydns/issues/176"
+  else
+    err "could not find a .$PKG_EXT asset in the latest release at $RELEASES_API"
+  fi
+fi
+pkg_path="/tmp/familydns.${PKG_EXT}"
+info "Downloading $pkg_url"
+curl -fsSL -o "$pkg_path" "$pkg_url"
 
-# Install (refresh opkg index for runtime deps, then install the .ipk).
-info "Refreshing opkg index..."
-opkg update >/dev/null
+# Install (refresh package index for runtime deps, then install the package).
+info "Refreshing $PKG_MGR index..."
+if [ "$PKG_MGR" = apk ]; then
+  apk update >/dev/null
+else
+  opkg update >/dev/null
+fi
 
-info "Installing /tmp/familydns.ipk..."
-opkg install /tmp/familydns.ipk
+info "Installing $pkg_path..."
+if [ "$PKG_MGR" = apk ]; then
+  apk add --allow-untrusted "$pkg_path"
+else
+  opkg install "$pkg_path"
+fi
 
 # Write base UCI config before enrolling so a re-run after a failed enroll
 # does not have to re-enter these.
@@ -105,7 +136,11 @@ uci commit familydns
 
 # Enroll.
 info "Enrolling router with $API_URL..."
-agent_ver=$(opkg info familydns | awk '/^Version:/{print $2}' | head -n1)
+if [ "$PKG_MGR" = apk ]; then
+  agent_ver=$(apk list -I familydns 2>/dev/null | head -n1 | awk '{print $1}' | sed 's/^familydns-//')
+else
+  agent_ver=$(opkg info familydns | awk '/^Version:/{print $2}' | head -n1)
+fi
 body=$(printf '{"enrollmentToken":"%s","routerName":"%s","platformVersion":"%s","agentVersion":"%s"}' \
   "$ENROLLMENT_TOKEN" "$ROUTER_NAME" "$platform_ver" "$agent_ver")
 
