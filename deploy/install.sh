@@ -155,7 +155,10 @@ if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
     # silently with "a password is required". Detect that up front and
     # tell the user how to recover.
     if ! [ -t 0 ]; then
-      die "$(cat <<EOF
+      # NOTE: heredoc assigned via `read` instead of `die "$(cat <<EOF…)"`
+      # because bash 3.2 (still default on macOS) can't parse a heredoc
+      # inside command substitution.
+      IFS= read -r -d '' msg <<EOF || true
 
   This install needs root to write to ${FAMILYDNS_INSTALL_DIR}, but stdin is
   not a tty (curl|bash detected) so sudo cannot prompt for a password. Run
@@ -172,7 +175,7 @@ if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
     # 3. Warm up sudo first, then pipe:
     sudo -v && curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
 EOF
-)"
+      die "$msg"
     fi
     sudo mkdir -p "$FAMILYDNS_INSTALL_DIR"
     sudo chown "$USER" "$FAMILYDNS_INSTALL_DIR"
@@ -200,7 +203,7 @@ ok "docker-compose.prod.yml + .env.example + ${#HELPER_SCRIPTS[@]} helper script
 # than risk regenerating credentials that don't match the existing pgdata
 # volume. Update / restart / reconfigure flows live in a separate tool.
 if [ -f .env ]; then
-  die "$(cat <<EOF
+  IFS= read -r -d '' msg <<EOF || true
 
   An existing .env was found at ${FAMILYDNS_INSTALL_DIR}/.env — this looks
   like an existing install. install.sh only handles first-install and will
@@ -224,7 +227,7 @@ if [ -f .env ]; then
     rm ${FAMILYDNS_INSTALL_DIR}/.env
     # then re-run install.sh
 EOF
-)"
+  die "$msg"
 fi
 
 # Compose derives the project name from the install dir's basename:
@@ -232,7 +235,7 @@ fi
 # removed. The pgdata volume is then named "<project>_pgdata".
 proj="$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's/^[^a-z0-9]*//')"
 if [ -n "$proj" ] && docker volume inspect "${proj}_pgdata" >/dev/null 2>&1; then
-  die "$(cat <<EOF
+  IFS= read -r -d '' msg <<EOF || true
 
   A postgres data volume already exists for this install:
 
@@ -256,7 +259,7 @@ if [ -n "$proj" ] && docker volume inspect "${proj}_pgdata" >/dev/null 2>&1; the
     docker volume rm ${proj}_pgdata
     # then re-run install.sh
 EOF
-)"
+  die "$msg"
 fi
 
 # ── 5a. Generate a fresh .env ─────────────────────────────────────────────
