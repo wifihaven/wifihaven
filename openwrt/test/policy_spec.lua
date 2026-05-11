@@ -81,6 +81,22 @@ describe("policy.fetch", function()
     assert.truthy(called_url:find("sha256:prev", 1, true))
   end)
 
+  it("URL-encodes the etag in the ?since= param so quotes are not literal", function()
+    local called_url
+    local function get_fn(url, _hdrs)
+      called_url = url
+      return 304, "", {}
+    end
+    -- Canonical HTTP etag includes surrounding double quotes.
+    policy.fetch("http://api:8080", "rt_tok", '"sha256:abc123"', get_fn)
+    assert.truthy(called_url)
+    assert.is_nil(called_url:find('"', 1, true),
+      "URL must not contain literal double-quote characters: " .. tostring(called_url))
+    -- Sanity: the encoded form should appear.
+    assert.truthy(called_url:find("%22", 1, true),
+      "expected percent-encoded quote (%22) in URL: " .. tostring(called_url))
+  end)
+
   it("returns nil, nil on a 5xx error", function()
     local function get_fn(_url, _hdrs) return 503, "unavailable", {} end
     local snap, etag = policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
