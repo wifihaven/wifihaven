@@ -243,27 +243,50 @@ ok "Containers started"
 
 # ── 7. Wait for health ────────────────────────────────────────────────────
 
-step "Waiting for API to come up"
-
 API_URL="http://127.0.0.1:${FAMILYDNS_API_HOST_PORT}"
-HEALTHY=0
-for i in $(seq 1 60); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' \
-    -X POST -H 'content-type: application/json' \
-    -d '{}' "${API_URL}/api/auth/login" || true)"
-  if [ "$code" = "400" ] || [ "$code" = "401" ]; then
-    HEALTHY=1
-    break
-  fi
-  sleep 2
-done
 
-if [ "$HEALTHY" -eq 0 ]; then
-  warn "API didn't become healthy within ~120s. Check 'docker compose logs api'."
+# wait_for_api polls GET /api/health until it returns 2xx, or until the
+# timeout (FAMILYDNS_WAIT_TIMEOUT seconds, default 90) elapses. On failure
+# it dumps the last 100 lines of the api container logs plus `compose ps`
+# so the user can diagnose without re-running anything by hand.
+wait_for_api() {
+  local url="${API_URL}/api/health"
+  local timeout="${FAMILYDNS_WAIT_TIMEOUT:-90}"
+  local start elapsed
+  start=$(date +%s)
+  elapsed=0
+  step "Waiting for API to come up"
+  printf "  "
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      echo
+      ok "API healthy at ${API_URL}"
+      return 0
+    fi
+    printf "."
+    sleep 2
+    elapsed=$(( $(date +%s) - start ))
+  done
+  echo
+  c_red "  ✗ API did not become healthy in ${timeout}s"
+  echo
+  echo "Recent api container logs:"
+  echo "------------------------------------------------------------------"
+  docker compose -f docker-compose.prod.yml --env-file .env logs api --tail=100 || true
+  echo "------------------------------------------------------------------"
+  echo "Container status:"
   docker compose -f docker-compose.prod.yml --env-file .env ps || true
-  exit 1
-fi
-ok "API is healthy at ${API_URL}"
+  echo
+  echo "Common causes:"
+  echo "  - DB credentials in .env don't match what postgres was created with"
+  echo "    (try: docker compose -f docker-compose.prod.yml --env-file .env down -v"
+  echo "     and re-run install.sh)"
+  echo "  - FAMILYDNS_JWT_SECRET missing or empty in .env"
+  echo "  - Postgres still initializing (rare; retry install.sh once)"
+  return 1
+}
+
+wait_for_api || exit 1
 
 # ── 8. Rotate admin password ──────────────────────────────────────────────
 

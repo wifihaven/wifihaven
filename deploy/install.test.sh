@@ -138,6 +138,61 @@ else
   fail "--help should print FAMILYDNS_PREFIX and FAMILYDNS_NONINTERACTIVE"
 fi
 
+# ── 8. wait_for_api: success path. Mock curl to return 0 immediately.
+#      Should print "API healthy" and exit 0 well under the timeout.
+WAIT_FN="$(mktemp)"
+trap 'rm -f "${HELPERS}" "${WAIT_FN}"' EXIT
+awk '/^wait_for_api\(\) \{/{f=1} f; /^\}$/{if(f){f=0; exit}}' "${SCRIPT}" > "${WAIT_FN}"
+[[ -s "${WAIT_FN}" ]] || { echo "FAIL: could not extract wait_for_api from install.sh"; exit 1; }
+
+start_ts=$(date +%s)
+out="$(bash -c "
+  source '${HELPERS}'
+  step() { :; }
+  ok()   { echo \"OK: \$*\"; }
+  API_URL='http://127.0.0.1:8080'
+  curl() { return 0; }
+  $(cat "${WAIT_FN}")
+  wait_for_api
+" 2>&1)"
+rc=$?
+end_ts=$(date +%s)
+duration=$((end_ts - start_ts))
+if [[ ${rc} -eq 0 ]] && grep -q "API healthy" <<<"${out}" && [[ ${duration} -lt 10 ]]; then
+  pass "wait_for_api succeeds quickly when curl returns 0 (${duration}s)"
+else
+  fail "wait_for_api success path (rc=${rc}, duration=${duration}s, out=${out})"
+fi
+
+# ── 9. wait_for_api: timeout path. Mock curl to always fail and docker to
+#      noop. Use a short FAMILYDNS_WAIT_TIMEOUT so the test runs fast. The
+#      function should return non-zero and print diagnostics.
+start_ts=$(date +%s)
+set +e
+out="$(FAMILYDNS_WAIT_TIMEOUT=3 bash -c "
+  source '${HELPERS}'
+  step() { :; }
+  ok()   { echo \"OK: \$*\"; }
+  API_URL='http://127.0.0.1:8080'
+  curl()   { return 7; }
+  docker() { echo \"(mocked docker \$*)\"; }
+  $(cat "${WAIT_FN}")
+  wait_for_api
+" 2>&1)"
+rc=$?
+set -e
+end_ts=$(date +%s)
+duration=$((end_ts - start_ts))
+if [[ ${rc} -ne 0 ]] \
+   && grep -q "did not become healthy" <<<"${out}" \
+   && grep -q "Recent api container logs" <<<"${out}" \
+   && grep -q "Common causes" <<<"${out}" \
+   && [[ ${duration} -ge 3 ]] && [[ ${duration} -lt 15 ]]; then
+  pass "wait_for_api times out, prints diagnostics, exits non-zero (${duration}s)"
+else
+  fail "wait_for_api timeout path (rc=${rc}, duration=${duration}s, out=${out})"
+fi
+
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]
