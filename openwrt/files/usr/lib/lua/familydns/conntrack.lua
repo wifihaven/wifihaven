@@ -134,31 +134,34 @@ function M.new_batcher(max_size, flush_interval_sec, flush_fn)
 end
 
 -- ---------------------------------------------------------------------------
--- post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn) -> bool
+-- post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn)
+--   -> ok, last_status, last_body, last_err
 --
--- post_fn(url, body) -> status_code, body_str
+-- post_fn(url, body) -> status_code, body_str [, err_str]
 -- sleep_fn(seconds)  — injectable for tests (defaults to os.execute("sleep N"))
 --
 -- Retries on 5xx / connection errors with exponential back-off.
 -- Does NOT retry on 4xx (client errors are not transient).
--- Returns true on success, false after max_retries are exhausted.
--- Never blocks a caller waiting longer than necessary; callers should run this
--- in a coroutine or dedicate a goroutine-equivalent (Lua co-routine) if needed.
+-- Returns (true, status, body, nil) on success, or
+--         (false, last_status, last_body, last_err) when retries are exhausted
+--         or a 4xx short-circuits retrying.
 -- ---------------------------------------------------------------------------
 function M.post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn)
   sleep_fn = sleep_fn or function(s)
     os.execute("sleep " .. tostring(math.floor(s)))
   end
 
+  local last_status, last_body, last_err
   local delay = base_delay
   for attempt = 1, max_retries do
-    local status, _ = post_fn(url, body)
+    local status, resp_body, err = post_fn(url, body)
+    last_status, last_body, last_err = status, resp_body, err
     if status and status >= 200 and status < 300 then
-      return true
+      return true, status, resp_body, nil
     end
     if status and status >= 400 and status < 500 then
       -- Client error: no point retrying.
-      return false
+      return false, status, resp_body, err
     end
     -- 5xx or nil (connection failure): retry with back-off.
     if attempt < max_retries then
@@ -166,7 +169,7 @@ function M.post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn
       delay = delay * 2
     end
   end
-  return false
+  return false, last_status, last_body, last_err
 end
 
 -- ---------------------------------------------------------------------------
@@ -236,10 +239,15 @@ function M.watch(cfg)
       routerId = cfg.router_id,
       events   = events,
     })
-    local ok = M.post_with_retry(events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
+    local ok, last_status, last_body, last_err = M.post_with_retry(
+      events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
     if not ok then
       -- best-effort: log and continue; never block a flow waiting for the API
-      io.stderr:write("[familydns] conntrack: failed to POST events batch after retries, dropping\n")
+      local body_str = last_body and tostring(last_body) or ""
+      if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
+      io.stderr:write(string.format(
+        "[familydns] conntrack: failed to POST events batch after %d retries (status=%s body=%q) err=%s, dropping %d events\n",
+        max_retry, tostring(last_status), body_str, tostring(last_err), #events))
     end
   end)
 

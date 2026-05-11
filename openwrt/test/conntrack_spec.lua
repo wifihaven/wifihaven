@@ -188,10 +188,14 @@ describe("post_with_retry", function()
     local calls = 0
     local function post_fn(_url, _body)
       calls = calls + 1
-      return 200, ""
+      return 200, "ok-body"
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status, body, err = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_true(ok)
+    assert.equal(200, status)
+    assert.equal("ok-body", body)
+    assert.is_nil(err)
     assert.equal(1, calls)
   end)
 
@@ -202,30 +206,68 @@ describe("post_with_retry", function()
       if calls < 2 then return 500, "err" end
       return 200, ""
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_true(ok)
+    assert.equal(200, status)
     assert.equal(2, calls)
   end)
 
-  it("drops and returns false after max retries are exhausted", function()
+  it("drops and returns false after max retries are exhausted, surfacing last status/body", function()
     local calls = 0
     local function post_fn(_url, _body)
       calls = calls + 1
       return 503, "unavailable"
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status, body, err = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_false(ok)
+    assert.equal(503, status)
+    assert.equal("unavailable", body)
+    assert.is_nil(err)
     assert.equal(MAX_RETRIES, calls)
   end)
 
-  it("does not retry on 4xx (client error)", function()
+  it("drops and returns false when all retries return 500, surfacing status=500", function()
+    local calls = 0
+    local function post_fn(_url, _body)
+      calls = calls + 1
+      return 500, "boom"
+    end
+    local ok, status, body = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    assert.is_false(ok)
+    assert.equal(500, status)
+    assert.equal("boom", body)
+    assert.equal(MAX_RETRIES, calls)
+  end)
+
+  it("surfaces connection error (nil status) with err string when post_fn fails", function()
+    local calls = 0
+    local function post_fn(_url, _body)
+      calls = calls + 1
+      return nil, nil, "curl: (7) Failed to connect"
+    end
+    local ok, status, body, err = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    assert.is_false(ok)
+    assert.is_nil(status)
+    assert.is_nil(body)
+    assert.equal("curl: (7) Failed to connect", err)
+    assert.equal(MAX_RETRIES, calls)
+  end)
+
+  it("does not retry on 4xx (client error), surfacing status/body", function()
     local calls = 0
     local function post_fn(_url, _body)
       calls = calls + 1
       return 401, "unauthorized"
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status, body = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_false(ok)
+    assert.equal(401, status)
+    assert.equal("unauthorized", body)
     assert.equal(1, calls)   -- no retry on 4xx
   end)
 

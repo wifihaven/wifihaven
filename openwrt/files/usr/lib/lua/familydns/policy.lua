@@ -47,12 +47,20 @@ function M.fetch(api_url, router_token, etag, http_get_fn)
       local new_etag = (snap.etag ~= nil) and snap.etag or etag
       return snap, new_etag
     end
+    -- snap_or_err holds the error message when pcall returns false (e.g. the
+    -- luci.jsonc require itself failed, or parse raised/returned nil).
+    local body_str = body and tostring(body) or ""
+    if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
     io.stderr:write(string.format(
-      "[familydns] policy.fetch: JSON parse failed: %s\n", tostring(snap_or_err)))
+      "[familydns] policy.fetch: JSON parse failed: %s (body=%q)\n",
+      tostring(snap_or_err), body_str))
     return nil, nil
   else
+    local body_str = body and tostring(body) or ""
+    if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
     io.stderr:write(string.format(
-      "[familydns] policy.fetch: unexpected status %s\n", tostring(status)))
+      "[familydns] policy.fetch: unexpected status %s body=%q\n",
+      tostring(status), body_str))
     return nil, nil
   end
 end
