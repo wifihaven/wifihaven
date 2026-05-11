@@ -138,7 +138,7 @@ mill __.checkFormatting
 mill __.fix
 
 # OpenWRT agent tests (requires lua5.1 + busted + lua-cjson)
-cd openwrt && LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua -e 'print(package.path)')" busted test/
+cd openwrt && LUA_PATH="./files/usr/lib/lua/familydns/?.lua;$(lua -e 'print(package.path)')" busted test/
 
 # OPNsense agent tests (requires Python 3 + pytest)
 cd opnsense && python -m pytest test/ -v

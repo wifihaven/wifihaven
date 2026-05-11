@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/familydns/usage.lua
+-- Tests for openwrt/files/usr/lib/lua/familydns/usage.lua
 -- Run with: cd openwrt && busted test/usage_spec.lua
 --
 -- Counter name convention (produced by render.lua, consumed here):

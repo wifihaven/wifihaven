@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/familydns/render.lua
+-- Tests for openwrt/files/usr/lib/lua/familydns/render.lua
 -- Run with: cd openwrt && busted test/render_spec.lua
 
 local render = require("render")

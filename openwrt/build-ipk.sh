@@ -48,7 +48,7 @@ cp -r "$SCRIPT_DIR/files/." "$WORK/data/"
 # Fix permissions
 find "$WORK/data/usr/sbin"            -type f -exec chmod 0755 {} \;
 find "$WORK/data/etc/init.d"          -type f -exec chmod 0755 {} \;
-find "$WORK/data/usr/lib/familydns"   -type f -exec chmod 0644 {} \; 2>/dev/null || true
+find "$WORK/data/usr/lib/lua/familydns" -type f -exec chmod 0644 {} \; 2>/dev/null || true
 if [ -f "$WORK/data/etc/config/familydns" ]; then
     chmod 0600 "$WORK/data/etc/config/familydns"
 fi

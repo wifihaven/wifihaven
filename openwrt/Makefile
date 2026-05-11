@@ -29,8 +29,8 @@ define Package/familydns/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/familydns-agent $(1)/usr/sbin/
 
-	$(INSTALL_DIR) $(1)/usr/lib/familydns
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/lib/familydns/*.lua $(1)/usr/lib/familydns/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/familydns
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/lib/lua/familydns/*.lua $(1)/usr/lib/lua/familydns/
 
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/init.d/familydns $(1)/etc/init.d/
