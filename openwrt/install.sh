@@ -113,18 +113,19 @@ pkg_path="/tmp/familydns.${PKG_EXT}"
 info "Downloading $pkg_url"
 curl -fsSL -o "$pkg_path" "$pkg_url"
 
-# Install (refresh package index for runtime deps, then install the package).
-info "Refreshing $PKG_MGR index..."
+# Install the package.
 if [ "$PKG_MGR" = apk ]; then
-  apk update >/dev/null
-else
-  opkg update >/dev/null
-fi
-
-info "Installing $pkg_path..."
-if [ "$PKG_MGR" = apk ]; then
+  # apk installs a local file directly; no repo refresh needed since the .apk
+  # carries its own dependency metadata and the runtime deps are in base.
+  info "Installing $pkg_path..."
   apk add --allow-untrusted "$pkg_path"
 else
+  # opkg needs the package index refreshed before installing a local .ipk so
+  # that runtime deps (e.g. dnsmasq-full bits) can be resolved against the
+  # repos.
+  info "Refreshing opkg index..."
+  opkg update >/dev/null
+  info "Installing $pkg_path..."
   opkg install "$pkg_path"
 fi
 
