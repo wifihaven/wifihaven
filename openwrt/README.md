@@ -133,10 +133,10 @@ familydns UCI config including the bearer token):
 sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
 ```
 
-Pass `--purge` to additionally remove `/usr/lib/familydns`,
-`/usr/lib/lua/familydns`, and the extra deps (`libuci-lua`, `lua-cjson`).
-The script is idempotent — re-running on an already-clean router exits 0
-with "nothing to do".
+Pass `--purge` to additionally remove `/usr/lib/familydns` and
+`/usr/lib/lua/familydns` (manual-workaround leftovers from older e2e
+shakeouts). The script is idempotent — re-running on an already-clean
+router exits 0 with "nothing to do".
 
 For developer flashing of a locally built `.ipk`:
 

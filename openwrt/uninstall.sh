@@ -19,10 +19,8 @@
 # Flags:
 #   -y, --yes     skip the confirmation prompt
 #       --purge   also remove /usr/lib/familydns and /usr/lib/lua/familydns
-#                 (manual-workaround leftovers) and the extra deps
-#                 libuci-lua and lua-cjson that were installed alongside
-#                 during e2e shakeouts. Default behaviour only undoes
-#                 what install.sh did.
+#                 (manual-workaround leftovers from older e2e shakeouts).
+#                 Default behaviour only undoes what install.sh did.
 #   -h, --help    print this usage and exit
 
 set -eu
@@ -98,7 +96,6 @@ EOF
   if [ "$PURGE" -eq 1 ]; then
     cat >"$TTY" <<EOF
   - [purge] rm -rf /usr/lib/familydns /usr/lib/lua/familydns
-  - [purge] remove libuci-lua and lua-cjson
 EOF
   fi
   printf '\n' >"$TTY"
@@ -169,7 +166,8 @@ if [ -e /etc/config/familydns ]; then
   note "removed /etc/config/familydns"
 fi
 
-# 5. Purge mode: also kill manual-workaround leftovers and extra deps.
+# 5. Purge mode: also kill manual-workaround leftovers from older e2e
+# shakeouts (pre-#202, when modules were dropped under these paths by hand).
 if [ "$PURGE" -eq 1 ]; then
   for d in /usr/lib/familydns /usr/lib/lua/familydns; do
     if [ -e "$d" ]; then
@@ -177,24 +175,6 @@ if [ "$PURGE" -eq 1 ]; then
       rm -rf "$d"
       note "removed $d"
     fi
-  done
-  for dep in libuci-lua lua-cjson; do
-    case "$PKG_MGR" in
-      apk)
-        if apk list -I "$dep" 2>/dev/null | grep -q "^${dep}"; then
-          info "Removing $dep via apk..."
-          apk del "$dep" >/dev/null 2>&1 || true
-          note "removed $dep (apk)"
-        fi
-        ;;
-      opkg)
-        if opkg list-installed 2>/dev/null | grep -q "^${dep} "; then
-          info "Removing $dep via opkg..."
-          opkg remove "$dep" >/dev/null 2>&1 || true
-          note "removed $dep (opkg)"
-        fi
-        ;;
-    esac
   done
 fi
 
