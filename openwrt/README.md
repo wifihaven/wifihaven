@@ -123,6 +123,21 @@ The script auto-detects the router's package manager (`opkg` on OpenWRT
 release asset. Only `.ipk` is currently published; `.apk` support is tracked
 in [#176](https://github.com/sameerparekh/familydns/issues/176).
 
+### Uninstalling
+
+To cleanly revert what `install.sh` did (stop and disable the service,
+remove the package, drop the uhttpd block-page listener, wipe the
+familydns UCI config including the bearer token):
+
+```sh
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
+```
+
+Pass `--purge` to additionally remove `/usr/lib/familydns` and
+`/usr/lib/lua/familydns` (manual-workaround leftovers from older e2e
+shakeouts). The script is idempotent — re-running on an already-clean
+router exits 0 with "nothing to do".
+
 For developer flashing of a locally built `.ipk`:
 
 ```sh
