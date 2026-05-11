@@ -16,7 +16,8 @@
 #
 # Acceptance test (cf. issue #150):
 #   1. This script runs to completion on a clean checkout.
-#   2. scripts/vm/router-up.sh --image familydns (provided by #144) boots it.
+#   2. FDNS_ROUTER_IMAGE_PATH=$PWD/scripts/vm/.cache/openwrt-familydns.img \
+#        scripts/vm/router-up.sh boots it.
 #   3. opkg list-installed | grep familydns shows the agent.
 #   4. logread | grep familydns shows the agent starting up.
 #   5. uci show familydns returns the pre-baked defaults.
@@ -168,10 +169,10 @@ docker run --rm \
         rm -rf bin/
         # Build a minimal Packages index for opkg. We deliberately do not
         # call scripts/ipkg-make-index.sh: it choked on our control file
-        # in earlier CI runs ("sed: unknown option to `s'") and the usign
-        # signing step it normally pairs with requires host keys that
-        # havent been generated yet on a first IB build. We control the
-        # inputs here, so generate the index by hand.
+        # in earlier CI runs with a sed error, and the usign signing step
+        # it normally pairs with requires host keys that have not been
+        # generated yet on a first IB build. We control the inputs here,
+        # so generate the index by hand.
         (cd packages
          : > Packages
          for ipk in *.ipk; do
@@ -211,4 +212,4 @@ SIZE_MB=$(( $(stat -f%z "$OUTPUT_IMG" 2>/dev/null || stat -c%s "$OUTPUT_IMG") / 
 echo ""
 echo "==> Done."
 echo "    Image: $OUTPUT_IMG (${SIZE_MB} MB)"
-echo "    Boot with: scripts/vm/router-up.sh --image familydns"
+echo "    Boot with: FDNS_ROUTER_IMAGE_PATH=$OUTPUT_IMG scripts/vm/router-up.sh"

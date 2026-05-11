@@ -87,7 +87,6 @@ curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/
 | `FAMILYDNS_INSTALL_DIR` | legacy alias for `FAMILYDNS_PREFIX` | — |
 | `FAMILYDNS_API_HOST_PORT` | host port to bind | `8080` |
 | `FAMILYDNS_API_BIND` | host interface to bind on | `0.0.0.0` |
-| `FAMILYDNS_DNS_LOCATION` | free-form location label for query logs | `home` |
 | `FAMILYDNS_NEW_ADMIN_PW` | new admin password (skips rotation prompt) | prompt |
 | `FAMILYDNS_NONINTERACTIVE` | if set, never prompt; fail if any required value is missing | unset |
 
@@ -193,7 +192,6 @@ Edit `.env` and set each variable. **Never commit this file.** All values:
 | `FAMILYDNS_JWT_HOURS` | no (default `24`) | Session token lifetime in hours. | Leave default unless you need shorter sessions. |
 | `FAMILYDNS_API_BIND` | no (default `0.0.0.0`) | Host interface the API port binds to. Set to `127.0.0.1` if you're putting a reverse proxy in front (§7). | `127.0.0.1` for proxied installs, `0.0.0.0` for direct LAN access. |
 | `FAMILYDNS_API_PORT` | no (default `8080`) | Host port mapped to the API. | Change only if 8080 is taken. |
-| `FAMILYDNS_DNS_LOCATION` | no (default `home`) | Free-form label persisted with query/connection logs. Useful if you run multiple deployments. | `home`, `vacation`, etc. |
 
 After editing, `chmod 600 .env` so secrets aren't world-readable.
 

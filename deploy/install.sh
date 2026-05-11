@@ -20,7 +20,6 @@
 #   FAMILYDNS_INSTALL_DIR    legacy alias for FAMILYDNS_PREFIX.
 #   FAMILYDNS_API_HOST_PORT  host port to bind           (default: 8080)
 #   FAMILYDNS_API_BIND       host interface to bind on   (default: 0.0.0.0)
-#   FAMILYDNS_DNS_LOCATION   free-form location label    (default: home)
 #   FAMILYDNS_NEW_ADMIN_PW   new admin password          (default: prompt)
 #   FAMILYDNS_NONINTERACTIVE if set, never prompt; fail if any value missing.
 
@@ -137,7 +136,6 @@ fi
 prompt FAMILYDNS_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
 prompt FAMILYDNS_API_HOST_PORT  "Host port for the API"                       "8080"
 prompt FAMILYDNS_API_BIND       "Bind address (0.0.0.0 or 127.0.0.1)"         "0.0.0.0"
-prompt FAMILYDNS_DNS_LOCATION   "Location label for query logs"               "home"
 
 # ── 3. Install directory ──────────────────────────────────────────────────
 
@@ -282,8 +280,6 @@ FAMILYDNS_JWT_HOURS=24
 
 FAMILYDNS_API_BIND=${FAMILYDNS_API_BIND}
 FAMILYDNS_API_PORT=${FAMILYDNS_API_HOST_PORT}
-
-FAMILYDNS_DNS_LOCATION=${FAMILYDNS_DNS_LOCATION}
 EOF
 chmod 600 .env
 ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"
