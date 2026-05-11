@@ -152,14 +152,16 @@ docker run --rm \
             ca-certificates
         # Image Builder writes to bin/; ensure it is clean.
         rm -rf bin/
-        echo "--- packages/ contents ---"
-        ls -la packages/
-        echo "--- repositories.conf ---"
-        cat repositories.conf
-        # Regenerate the local package index so our ipk is discoverable.
-        make package_index V=s
+        # Regenerate the local package index so our ipk is discoverable
+        # by opkg. (make package_index would also sign the index with
+        # usign, but those host keys havent been generated yet on the
+        # very first build — skip the signing step and disable signature
+        # checks in repositories.conf below.)
+        (cd packages && /ib/scripts/ipkg-make-index.sh . > Packages \
+            && gzip -9nc Packages > Packages.gz)
+        sed -i "s/^option check_signature/# option check_signature/" repositories.conf
         echo "--- packages/Packages (head) ---"
-        head -40 packages/Packages || true
+        head -20 packages/Packages
         # The set of packages to include. Dependencies declared by the ipk
         # (lua, libuci-lua, luci-lib-jsonc, conntrack-tools, curl) are
         # pulled in automatically from the upstream OpenWRT feed.
