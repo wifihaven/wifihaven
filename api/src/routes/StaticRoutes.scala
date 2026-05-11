@@ -40,16 +40,25 @@ object StaticRoutes {
         )
 
     Routes(
-      Method.GET / trailing -> handler { (path: Path, _: Request) =>
-        val rel = path.encode.stripPrefix("/")
-        if rel.startsWith("api/") then ZIO.succeed(Response.notFound)
-        else
-          resolve(rel) match {
-            case Some(f) => serve(f)
-            case None    =>
-              if index.isFile then serve(index)
-              else ZIO.succeed(Response.notFound)
-          }
+      Method.GET / trailing -> handler { (_: Path, req: Request) =>
+        // Use req.url.path rather than the trailing-captured path: zio-http
+        // substitutes URL.empty (encode == "") when netty can't parse the
+        // request URI — e.g. unencoded `"` in a query string (issue #214).
+        // The real "/" gives encode == "/", so this distinguishes them.
+        val encoded = req.url.path.encode
+        if encoded.isEmpty then ZIO.succeed(Response.badRequest("malformed request URI"))
+        else {
+          val rel = encoded.stripPrefix("/")
+          if rel.startsWith("api/") then
+            ZIO.succeed(Response.notFound(s"no such API route: ${req.method} /$rel"))
+          else
+            resolve(rel) match {
+              case Some(f) => serve(f)
+              case None    =>
+                if index.isFile then serve(index)
+                else ZIO.succeed(Response.notFound)
+            }
+        }
       },
     )
   }
