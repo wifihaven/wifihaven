@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;$(lua -e 'print(package.path)')" \
+LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
   busted test/conntrack_spec.lua \
          test/render_spec.lua \
          test/policy_spec.lua \
