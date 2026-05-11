@@ -177,6 +177,139 @@ describe("batcher", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 4b. parse_dhcp_leases
+-- ---------------------------------------------------------------------------
+
+describe("parse_dhcp_leases", function()
+  local function write_tmp(contents)
+    local path = os.tmpname()
+    local f = assert(io.open(path, "w"))
+    f:write(contents)
+    f:close()
+    return path
+  end
+
+  it("returns an empty table when the file doesn't exist", function()
+    local leases = conntrack.parse_dhcp_leases("/tmp/__does_not_exist_familydns__")
+    assert.same({}, leases)
+  end)
+
+  it("parses mac -> {ip, hostname} entries", function()
+    local path = write_tmp(
+      "1715000000 aa:bb:cc:11:22:33 192.168.1.42 laptop 01:aa:bb:cc:11:22:33\n" ..
+      "1715000001 de:ad:be:ef:00:01 192.168.1.99 phone *\n")
+    local leases = conntrack.parse_dhcp_leases(path)
+    os.remove(path)
+    assert.equal("192.168.1.42", leases["aa:bb:cc:11:22:33"].ip)
+    assert.equal("laptop",       leases["aa:bb:cc:11:22:33"].hostname)
+    assert.equal("192.168.1.99", leases["de:ad:be:ef:00:01"].ip)
+    assert.equal("phone",        leases["de:ad:be:ef:00:01"].hostname)
+  end)
+
+  it("treats a hostname of '*' as nil", function()
+    local path = write_tmp("1715000000 aa:bb:cc:11:22:33 192.168.1.42 * *\n")
+    local leases = conntrack.parse_dhcp_leases(path)
+    os.remove(path)
+    assert.equal("192.168.1.42", leases["aa:bb:cc:11:22:33"].ip)
+    assert.is_nil(leases["aa:bb:cc:11:22:33"].hostname)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 4c. handle_flow — first_seen_mac emission semantics
+-- ---------------------------------------------------------------------------
+
+describe("handle_flow", function()
+  local MAC      = "aa:bb:cc:11:22:33"
+  local SRC_IP   = "192.168.1.42"
+  local DST_IP   = "1.2.3.4"
+
+  local function collecting_batcher()
+    local events = {}
+    return {
+      add   = function(ev) table.insert(events, ev) end,
+      flush = function() end,
+      tick  = function() end,
+      events = events,
+    }
+  end
+
+  local function ctx_with(overrides)
+    local base = {
+      arp_table      = { [SRC_IP] = MAC },
+      nft_sets       = {},
+      blocked_ips    = {},
+      blocked_reason = {},
+      reported_macs  = {},
+      leases         = {},
+      ts             = "2026-05-11T00:00:00Z",
+    }
+    for k, v in pairs(overrides or {}) do base[k] = v end
+    return base
+  end
+
+  it("emits first_seen_mac and connection_attempt on first flow from a new MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    assert.equal(2, #b.events)
+    assert.equal("first_seen_mac",     b.events[1]["type"])
+    assert.equal(MAC,                  b.events[1].mac)
+    assert.equal("connection_attempt", b.events[2]["type"])
+    assert.equal(MAC,                  b.events[2].mac)
+    assert.is_true(ctx.reported_macs[MAC])
+  end)
+
+  it("does not re-emit first_seen_mac on subsequent flows from the same MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "5.6.7.8" }, ctx, b)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "9.9.9.9" }, ctx, b)
+
+    -- 1 first_seen_mac + 3 connection_attempts
+    assert.equal(4, #b.events)
+    assert.equal("first_seen_mac",     b.events[1]["type"])
+    assert.equal("connection_attempt", b.events[2]["type"])
+    assert.equal("connection_attempt", b.events[3]["type"])
+    assert.equal("connection_attempt", b.events[4]["type"])
+  end)
+
+  it("carries ip and hostname from the lease into the first_seen_mac event", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    local ev = b.events[1]
+    assert.equal("first_seen_mac",  ev["type"])
+    assert.equal(MAC,               ev.mac)
+    assert.equal("192.168.1.42",    ev.ip)
+    assert.equal("laptop",          ev.hostname)
+    assert.equal("2026-05-11T00:00:00Z", ev.ts)
+  end)
+
+  it("emits first_seen_mac with nil ip/hostname when the MAC has no lease entry", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({ leases = {} })  -- no lease for this MAC
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    local ev = b.events[1]
+    assert.equal("first_seen_mac", ev["type"])
+    assert.equal(MAC,              ev.mac)
+    assert.is_nil(ev.ip)
+    assert.is_nil(ev.hostname)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 5. Retry logic
 -- ---------------------------------------------------------------------------
 

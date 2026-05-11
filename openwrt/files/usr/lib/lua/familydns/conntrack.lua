@@ -64,6 +64,49 @@ function M.parse_arp_table()
 end
 
 -- ---------------------------------------------------------------------------
+-- parse_dhcp_leases(path) -> { mac -> { ip = string, hostname = string|nil } }
+--
+-- Reads a dnsmasq lease file (default /tmp/dhcp.leases).  Each line is:
+--   <expiry-epoch> <mac> <ip> <hostname-or-*> <client-id-or-*>
+-- A hostname of "*" is treated as absent (nil).
+-- Returns an empty table if the file can't be opened.
+-- ---------------------------------------------------------------------------
+function M.parse_dhcp_leases(path)
+  local result = {}
+  local f = io.open(path or "/tmp/dhcp.leases", "r")
+  if not f then return result end
+  for line in f:lines() do
+    local parts = {}
+    for w in line:gmatch("%S+") do parts[#parts + 1] = w end
+    if #parts >= 3 then
+      local mac      = parts[2]
+      local ip       = parts[3]
+      local hostname = parts[4]
+      if hostname == "*" or hostname == "" then hostname = nil end
+      result[mac] = { ip = ip, hostname = hostname }
+    end
+  end
+  f:close()
+  return result
+end
+
+-- ---------------------------------------------------------------------------
+-- build_first_seen_mac_event(opts) -> table
+--
+-- opts: { mac, ip, hostname, ts }
+-- ip / hostname may be nil (e.g. MAC has no DHCP lease — static IP client).
+-- ---------------------------------------------------------------------------
+function M.build_first_seen_mac_event(opts)
+  return {
+    ["type"] = "first_seen_mac",
+    mac      = opts.mac,
+    ip       = opts.ip,
+    hostname = opts.hostname,
+    ts       = opts.ts,
+  }
+end
+
+-- ---------------------------------------------------------------------------
 -- build_event(opts) -> table
 --
 -- opts: { mac, hostname, dest_ip, allowed, reason, ts }
@@ -173,6 +216,51 @@ function M.post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn
 end
 
 -- ---------------------------------------------------------------------------
+-- handle_flow(flow, ctx, batcher)
+--
+-- Processes a single outbound flow: emits a first_seen_mac event the first
+-- time we observe a given MAC, then always emits a connection_attempt event.
+--
+-- ctx: {
+--   arp_table      table   { ip -> mac }
+--   nft_sets       table   { hostname -> { ip -> true } }
+--   blocked_ips    table   { ip -> true }
+--   blocked_reason table   { ip -> reason }
+--   reported_macs  table   { mac -> true }  (mutated)
+--   leases         table   { mac -> { ip, hostname } } (may be nil/empty)
+--   ts             string  ISO8601 timestamp to attach to the events
+-- }
+-- ---------------------------------------------------------------------------
+function M.handle_flow(flow, ctx, batcher)
+  local mac = M.arp_lookup_mac(flow.src_ip, ctx.arp_table or {})
+
+  if mac and not (ctx.reported_macs or {})[mac] then
+    local lease = (ctx.leases or {})[mac]
+    local ip, hostname
+    if lease then ip = lease.ip; hostname = lease.hostname end
+    batcher.add(M.build_first_seen_mac_event({
+      mac = mac, ip = ip, hostname = hostname, ts = ctx.ts,
+    }))
+    if ctx.reported_macs then ctx.reported_macs[mac] = true end
+  end
+
+  local hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
+  local allowed = not (ctx.blocked_ips and ctx.blocked_ips[flow.dst_ip])
+  local reason
+  if not allowed and ctx.blocked_reason then
+    reason = ctx.blocked_reason[flow.dst_ip]
+  end
+  batcher.add(M.build_event({
+    mac      = mac,
+    hostname = hname,
+    dest_ip  = flow.dst_ip,
+    allowed  = allowed,
+    reason   = reason,
+    ts       = ctx.ts,
+  }))
+end
+
+-- ---------------------------------------------------------------------------
 -- parse_conntrack_line(line) -> { src_ip, dst_ip, proto, dport } | nil
 --
 -- Parses a line from `conntrack -E -e NEW`.  Example input:
@@ -257,31 +345,32 @@ function M.watch(cfg)
     return
   end
 
+  local reported_macs = {}
+  local leases_path   = cfg.leases_path or "/tmp/dhcp.leases"
+
   while true do
     local line = handle:read("*l")
     if not line then break end
 
     local flow = M.parse_conntrack_line(line)
     if flow and M.is_outbound(flow, lan_prefix) then
-      local arp   = M.parse_arp_table()
-      local mac   = M.arp_lookup_mac(flow.src_ip, arp)
-      local hname = M.ipset_lookup_hostname(flow.dst_ip, cfg.nft_sets or {})
-
-      local allowed = not (cfg.blocked_ips and cfg.blocked_ips[flow.dst_ip])
-      local reason
-      if not allowed and cfg.blocked_reason then
-        reason = cfg.blocked_reason[flow.dst_ip]
+      local arp = M.parse_arp_table()
+      local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
+      -- Only parse the lease file when we actually need it (new MAC).
+      local leases
+      if mac_candidate and not reported_macs[mac_candidate] then
+        leases = M.parse_dhcp_leases(leases_path)
       end
 
-      local ev = M.build_event({
-        mac      = mac,
-        hostname = hname,
-        dest_ip  = flow.dst_ip,
-        allowed  = allowed,
-        reason   = reason,
-        ts       = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-      })
-      batcher.add(ev)
+      M.handle_flow(flow, {
+        arp_table      = arp,
+        nft_sets       = cfg.nft_sets or {},
+        blocked_ips    = cfg.blocked_ips,
+        blocked_reason = cfg.blocked_reason,
+        reported_macs  = reported_macs,
+        leases         = leases or {},
+        ts             = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+      }, batcher)
     end
 
     batcher.tick()
