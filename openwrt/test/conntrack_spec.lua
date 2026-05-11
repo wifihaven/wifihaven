@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/familydns/conntrack.lua
+-- Tests for openwrt/files/usr/lib/lua/familydns/conntrack.lua
 -- Run with: busted openwrt/test/conntrack_spec.lua
 -- Requires: busted (luarocks install busted)
 

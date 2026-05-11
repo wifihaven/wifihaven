@@ -14,7 +14,7 @@ openwrt/
 │   ├── etc/init.d/familydns               procd init script
 │   ├── etc/config/familydns               UCI config (api_url, router_token, …)
 │   ├── usr/sbin/familydns-agent           main daemon entry point (Lua)
-│   └── usr/lib/familydns/
+│   └── usr/lib/lua/familydns/
 │       ├── conntrack.lua                  conntrack new-flow watcher + event batcher
 │       ├── policy.lua                     snapshot fetcher + atomic config apply
 │       ├── render.lua                     dnsmasq conf + nft fragment generator
@@ -251,7 +251,7 @@ cd openwrt && sh test/run_tests.sh
 Or run a single spec:
 
 ```sh
-cd openwrt && LUA_PATH="./files/usr/lib/?.lua;./files/usr/lib/familydns/?.lua;;" \
+cd openwrt && LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;;" \
   busted test/render_spec.lua
 ```
 

@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/familydns/policy.lua
+-- Tests for openwrt/files/usr/lib/lua/familydns/policy.lua
 -- Run with: cd openwrt && busted test/policy_spec.lua
 
 local policy = require("policy")
