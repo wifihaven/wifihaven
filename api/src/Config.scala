@@ -9,7 +9,6 @@ case class AppConfig(
     db: DbConfig,
     http: HttpConfig,
     jwt: JwtConfig,
-    dns: DnsClientConfig,
 )
 
 case class DbConfig(
@@ -30,17 +29,6 @@ case class HttpConfig(
 case class JwtConfig(
     secret: String,
     expiryHours: Int,
-)
-
-case class DnsClientConfig(
-    cacheRefreshSeconds: Int,
-    port: Int,
-    location: String,
-    upstreamPrimary: String,
-    upstreamSecondary: String,
-    upstreamPort: Int,
-    logBatchSize: Int,
-    logFlushSeconds: Int,
 )
 
 object AppConfig {

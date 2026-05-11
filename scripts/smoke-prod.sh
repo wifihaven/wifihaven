@@ -22,7 +22,6 @@ FAMILYDNS_JWT_SECRET=smoke-test-jwt-secret-min-32-chars-long-yes
 FAMILYDNS_JWT_HOURS=24
 FAMILYDNS_API_BIND=127.0.0.1
 FAMILYDNS_API_PORT=18080
-FAMILYDNS_DNS_LOCATION=smoke
 EOF
 
 COMPOSE=(docker compose -f deploy/docker-compose.prod.yml --env-file "$ENV_FILE")
