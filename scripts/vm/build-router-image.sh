@@ -117,10 +117,19 @@ install -m 0755 "$SCRIPT_DIR/uci-defaults/99-familydns" \
     "$STAGING_DIR/etc/uci-defaults/99-familydns"
 
 # ── 5. Drop the familydns ipk into the Image Builder's local packages dir ───
-# Image Builder auto-scans packages/ for additional .ipk files and includes
-# them in its package index, so PACKAGES="familydns" Just Works.
+# OpenWRT 23.05's scripts/ipkg-make-index.sh expects .ipk files to be
+# tarballs (`tar czf foo.ipk debian-binary control.tar.gz data.tar.gz`),
+# but openwrt/build-ipk.sh produces the deb-style `ar` format that opkg
+# also accepts when installed directly. Repackage on the fly so the
+# Image Builder can index it. (We deliberately do not change
+# openwrt/build-ipk.sh — production routers install the ar-format ipk
+# directly and bumping the format risks the deploy path.)
 mkdir -p "$IB_ROOT/packages"
-cp "$IPK_FILE" "$IB_ROOT/packages/"
+IPK_CONV_DIR="$(mktemp -d)"
+(cd "$IPK_CONV_DIR" && ar x "$IPK_FILE")
+tar -C "$IPK_CONV_DIR" -czf "$IB_ROOT/packages/$(basename "$IPK_FILE")" \
+    debian-binary control.tar.gz data.tar.gz
+rm -rf "$IPK_CONV_DIR"
 
 # ── 6. Invoke Image Builder inside a Docker container ────────────────────────
 # Image Builder needs a Linux toolchain; running it through Docker means
