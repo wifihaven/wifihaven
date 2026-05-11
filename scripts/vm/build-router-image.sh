@@ -127,8 +127,8 @@ install -m 0755 "$SCRIPT_DIR/uci-defaults/99-familydns" \
 mkdir -p "$IB_ROOT/packages"
 IPK_CONV_DIR="$(mktemp -d)"
 (cd "$IPK_CONV_DIR" && ar x "$IPK_FILE")
-tar -C "$IPK_CONV_DIR" -czf "$IB_ROOT/packages/$(basename "$IPK_FILE")" \
-    debian-binary control.tar.gz data.tar.gz
+(cd "$IPK_CONV_DIR" && tar -czf "$IB_ROOT/packages/$(basename "$IPK_FILE")" \
+    ./debian-binary ./control.tar.gz ./data.tar.gz)
 rm -rf "$IPK_CONV_DIR"
 
 # ── 6. Invoke Image Builder inside a Docker container ────────────────────────
