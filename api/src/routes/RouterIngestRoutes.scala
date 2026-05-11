@@ -46,18 +46,30 @@ object RouterIngestRoutes {
         },
       Method.POST / "api" / "router" / "events" ->
         handler { (req: Request) =>
-          for {
+          val handle = for {
             router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             rep    <- ZIO
               .fromEither(body.fromJson[RouterEventsRequest])
+              .tapError(e =>
+                ZIO.logWarning(
+                  s"router events: deserialization failed for router=${router.id} bodyLen=${body.length} err=$e",
+                ),
+              )
               .mapError(e => Response.badRequest(e))
             _      <- ZIO
-              .fail(Response.badRequest("router_id mismatch"))
+              .logWarning(
+                s"router events: routerId mismatch token=${router.id} body=${rep.routerId}",
+              )
+              .zipRight(ZIO.fail(Response.badRequest("router_id mismatch")))
               .when(rep.routerId != router.id)
+            _      <- ZIO.logInfo(
+              s"router events: router=${router.id} batchSize=${rep.events.size}",
+            )
             _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo)
             _      <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))
           } yield Response.ok
+          handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
         },
     )
 
