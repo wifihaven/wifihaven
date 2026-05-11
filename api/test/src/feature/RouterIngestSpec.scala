@@ -374,6 +374,31 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(kp.timeUsedToday.totalMinutes >= kp.dailyMinutes.get) &&
         assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42")))
     },
+    test("events: accepts the raw JSON shape the OpenWRT Lua agent emits (regression for #215)") {
+      // Verbatim payload shape produced by openwrt/files/usr/lib/lua/familydns/conntrack.lua
+      // build_event + jsonc.stringify({ routerId, events }). Hand-rolled rather than going
+      // through RouterEventsRequest.toJson so that any drift in case-class field names
+      // (snake_case → camelCase regressions etc.) is caught by deserialization here.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        rawBody = s"""{
+          "routerId":"$id",
+          "events":[
+            {"type":"connection_attempt","mac":"$knownMac","hostname":"youtube.com",
+             "destIp":"1.2.3.4","allowed":false,"reason":"category:adult",
+             "ts":"2026-05-07T14:01:14Z"}
+          ]
+        }"""
+        resp <- post(routes, "/api/router/events", rawBody, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.size == 1) &&
+        assertTrue(rows.exists(r => r.hostname == "youtube.com" && !r.allowed))
+    },
     test("events: first_seen_mac creates an unknown-device row when missing") {
       for {
         _        <- cleanDb
