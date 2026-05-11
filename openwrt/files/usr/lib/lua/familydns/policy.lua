@@ -34,15 +34,21 @@ function M.fetch(api_url, router_token, etag, http_get_fn)
   if status == 304 then
     return nil, etag
   elseif status == 200 then
-    local ok, snap = pcall(function()
-      local json = require("cjson")
-      return json.decode(body)
+    local ok, snap_or_err = pcall(function()
+      local jsonc = require("luci.jsonc")
+      local parsed = jsonc.parse(body)
+      if parsed == nil then
+        error("luci.jsonc.parse returned nil (invalid JSON)")
+      end
+      return parsed
     end)
-    if ok and snap then
+    if ok and snap_or_err then
+      local snap = snap_or_err
       local new_etag = (snap.etag ~= nil) and snap.etag or etag
       return snap, new_etag
     end
-    io.stderr:write("[familydns] policy.fetch: JSON decode failed\n")
+    io.stderr:write(string.format(
+      "[familydns] policy.fetch: JSON parse failed: %s\n", tostring(snap_or_err)))
     return nil, nil
   else
     io.stderr:write(string.format(

@@ -50,9 +50,11 @@ end
 -- usage.parse_nft_counters(json_str)
 -- ---------------------------------------------------------------------------
 function M.parse_nft_counters(json_str)
-  local json     = require("cjson")
-  local decoded  = json.decode(json_str)
+  local jsonc    = require("luci.jsonc")
+  local decoded  = jsonc.parse(json_str)
   local result   = {}
+
+  if not decoded then return result end
 
   for _, entry in ipairs(decoded.nftables or {}) do
     local c = entry.counter
@@ -117,8 +119,14 @@ end
 -- usage.post(api_url, router_token, report, post_fn)
 -- ---------------------------------------------------------------------------
 function M.post(api_url, router_token, report, post_fn)
-  local json = require("cjson")
-  local body = json.encode(report)
+  local jsonc = require("luci.jsonc")
+  -- luci.jsonc encodes empty Lua tables as `{}` (object). The API requires
+  -- `records` to be a JSON array, so when no usage was observed in this
+  -- window, skip the POST entirely rather than send a malformed payload.
+  if report.records and next(report.records) == nil then
+    return true
+  end
+  local body = jsonc.stringify(report)
   local url  = api_url .. "/api/router/usage"
   local hdrs = {
     ["Authorization"] = "Bearer " .. router_token,

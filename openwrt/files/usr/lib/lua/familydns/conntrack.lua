@@ -215,7 +215,7 @@ end
 -- }
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
-  local json       = require("cjson")
+  local jsonc      = require("luci.jsonc")
   local lan_prefix = cfg.lan_prefix     or "192.168.1."
   local max_batch  = cfg.max_batch      or 50
   local flush_int  = cfg.flush_interval or 10
@@ -232,7 +232,7 @@ function M.watch(cfg)
   end
 
   local batcher = M.new_batcher(max_batch, flush_int, function(events)
-    local payload = json.encode({
+    local payload = jsonc.stringify({
       routerId = cfg.router_id,
       events   = events,
     })

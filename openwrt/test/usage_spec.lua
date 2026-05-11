@@ -185,14 +185,18 @@ end)
 
 describe("usage.post", function()
 
+  local SAMPLE_REC = { mac="aa:bb:cc:11:22:33", hostname="x", activeSeconds=300, bytesIn=1, bytesOut=0 }
+  local function with_records()
+    return { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = { SAMPLE_REC } }
+  end
+
   it("POSTs to /api/router/usage with correct Authorization header", function()
     local got_url, got_hdrs, got_body
     local function post_fn(url, body, hdrs)
       got_url = url; got_body = body; got_hdrs = hdrs
       return 200, ""
     end
-    local report = { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = {} }
-    local ok = usage.post("http://api:8080", "rt_tok", report, post_fn)
+    local ok = usage.post("http://api:8080", "rt_tok", with_records(), post_fn)
     assert.is_true(ok)
     assert.truthy(got_url:find("/api/router/usage", 1, true))
     assert.equal("Bearer rt_tok", got_hdrs["Authorization"])
@@ -202,8 +206,7 @@ describe("usage.post", function()
     local json = require("cjson")
     local got_body
     local function post_fn(_url, body, _hdrs) got_body = body; return 200, "" end
-    local report = { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = {} }
-    usage.post("http://api:8080", "rt_tok", report, post_fn)
+    usage.post("http://api:8080", "rt_tok", with_records(), post_fn)
     local dec = json.decode(got_body)
     assert.equal("r1", dec.routerId)
   end)
@@ -211,18 +214,26 @@ describe("usage.post", function()
   it("sets Content-Type: application/json", function()
     local got_hdrs
     local function post_fn(_url, _body, hdrs) got_hdrs = hdrs; return 200, "" end
-    usage.post("http://api:8080", "rt_tok", {records={}}, post_fn)
+    usage.post("http://api:8080", "rt_tok", with_records(), post_fn)
     assert.equal("application/json", got_hdrs["Content-Type"])
   end)
 
   it("returns false on HTTP 5xx", function()
     local function post_fn(_url, _body, _hdrs) return 500, "error" end
-    assert.is_false(usage.post("http://api:8080", "rt_tok", {records={}}, post_fn))
+    assert.is_false(usage.post("http://api:8080", "rt_tok", with_records(), post_fn))
   end)
 
   it("returns false when post_fn returns nil status (connection failure)", function()
     local function post_fn(_url, _body, _hdrs) return nil, "" end
-    assert.is_false(usage.post("http://api:8080", "rt_tok", {records={}}, post_fn))
+    assert.is_false(usage.post("http://api:8080", "rt_tok", with_records(), post_fn))
+  end)
+
+  it("skips POST and returns true when records is empty", function()
+    local called = false
+    local function post_fn(_url, _body, _hdrs) called = true; return 200, "" end
+    local report = { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = {} }
+    assert.is_true(usage.post("http://api:8080", "rt_tok", report, post_fn))
+    assert.is_false(called)
   end)
 
 end)
