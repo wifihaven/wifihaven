@@ -46,6 +46,7 @@ nftables — no round-trip to the API per request.
 Installed automatically by opkg when you install the package:
 
 - `lua` — Lua 5.1 interpreter
+- `libuci-lua` — Lua bindings for UCI (`require("uci")`)
 - `luci-lib-jsonc` — provides `cjson` for JSON encoding
 - `conntrack-tools` — provides `conntrack -E -e NEW`
 - `curl` — HTTP client used by the agent
