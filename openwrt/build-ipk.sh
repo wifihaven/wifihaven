@@ -25,7 +25,7 @@ mkdir "$WORK/ctrl"
 cat > "$WORK/ctrl/control" <<EOF
 Package: familydns
 Version: ${PKG_VERSION}-${PKG_RELEASE}
-Depends: lua, luci-lib-jsonc, conntrack-tools, curl
+Depends: lua, libuci-lua, luci-lib-jsonc, conntrack-tools, curl
 Architecture: all
 Maintainer: FamilyDNS <noreply@example.com>
 Description: Agent daemon for FamilyDNS. Enforces per-device DNS filtering
