@@ -206,7 +206,17 @@ if [ ! -f "$BUILT" ]; then
 fi
 
 echo "==> Decompressing image to $OUTPUT_IMG"
+# gzip returns 2 on warnings — OpenWRT's ext4-combined.img.gz has a few bytes
+# of trailing padding past the deflate stream, which trips "trailing garbage
+# ignored". The decompressed image itself is correct, so tolerate exit 2.
+set +e
 gunzip -c "$BUILT" > "$OUTPUT_IMG"
+GUNZIP_RC=$?
+set -e
+if [ "$GUNZIP_RC" -ne 0 ] && [ "$GUNZIP_RC" -ne 2 ]; then
+    echo "ERROR: gunzip failed with code $GUNZIP_RC" >&2
+    exit "$GUNZIP_RC"
+fi
 
 SIZE_MB=$(( $(stat -f%z "$OUTPUT_IMG" 2>/dev/null || stat -c%s "$OUTPUT_IMG") / 1024 / 1024 ))
 echo ""
