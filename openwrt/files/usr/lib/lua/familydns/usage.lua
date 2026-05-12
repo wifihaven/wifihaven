@@ -22,6 +22,18 @@
 
 local M = {}
 
+-- log is injectable; default to the real logger wrapper, fall back to stderr.
+local function default_log()
+  local ok, l = pcall(require, "familydns.log")
+  if ok then return l end
+  return {
+    info  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    err   = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    warn  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    debug = function() end,
+  }
+end
+
 -- ---------------------------------------------------------------------------
 -- decode_counter_name(name) → mac, dst_ip  or  nil
 -- ---------------------------------------------------------------------------
@@ -118,12 +130,14 @@ end
 -- ---------------------------------------------------------------------------
 -- usage.post(api_url, router_token, report, post_fn)
 -- ---------------------------------------------------------------------------
-function M.post(api_url, router_token, report, post_fn)
+function M.post(api_url, router_token, report, post_fn, log)
+  log = log or default_log()
   local jsonc = require("luci.jsonc")
   -- luci.jsonc encodes empty Lua tables as `{}` (object). The API requires
   -- `records` to be a JSON array, so when no usage was observed in this
   -- window, skip the POST entirely rather than send a malformed payload.
   if report.records and next(report.records) == nil then
+    log.debug("usage.post: skipping (no records)")
     return true
   end
   local body = jsonc.stringify(report)
@@ -133,15 +147,18 @@ function M.post(api_url, router_token, report, post_fn)
     ["Content-Type"]  = "application/json",
   }
 
+  log.debug("usage.post: POST url=%s records=%d periodStart=%s periodEnd=%s",
+            url, #report.records, tostring(report.periodStart),
+            tostring(report.periodEnd))
   local status, resp_body, err = post_fn(url, body, hdrs)
   if status and status >= 200 and status < 300 then
+    log.debug("usage.post: success status=%d", status)
     return true
   end
   local body_str = resp_body and tostring(resp_body) or ""
   if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
-  io.stderr:write(string.format(
-    "[familydns] usage.post: POST failed (status=%s body=%q) err=%s\n",
-    tostring(status), body_str, tostring(err)))
+  log.err("usage.post: POST failed (status=%s body=%q) err=%s",
+          tostring(status), body_str, tostring(err))
   return false
 end
 

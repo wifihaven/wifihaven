@@ -22,6 +22,12 @@ object Main extends ZIOAppDefault {
     (for {
       cfg    <- ZIO.service[AppConfig]
       _      <- ZIO.logInfo(s"FamilyDNS API starting on ${cfg.http.host}:${cfg.http.port}")
+      _      <- ZIO
+        .logWarning(
+          "FAMILYDNS_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
+            "Disable in production.",
+        )
+        .when(cfg.debugEnabled)
       _      <- Database.runMigrations(cfg.db)
       _      <- ZIO.logInfo("Database migrations complete")
       routes <- allRoutes
@@ -90,5 +96,6 @@ object Main extends ZIOAppDefault {
         deviceRepo,
         connRepo,
       ) ++
+      DebugRoutes.routes(cfg.debugEnabled, deviceRepo, connRepo, usageRepo, clock) ++
       StaticRoutes.routes(cfg.http.staticDir)
 }

@@ -70,5 +70,11 @@ grep -q 'procd_set_param stderr' "$INIT" \
   && check "enables stderr logging via procd" ok \
   || check "enables stderr logging via procd" "not found"
 
+# 11. stdout logging must also be enabled (#228: agent stdout was previously
+# discarded, leaving `logread -f | grep familydns` empty)
+grep -q 'procd_set_param stdout' "$INIT" \
+  && check "enables stdout logging via procd" ok \
+  || check "enables stdout logging via procd" "not found"
+
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

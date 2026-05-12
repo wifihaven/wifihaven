@@ -5,9 +5,15 @@
     </encoder>
   </appender>
 
+  <!--
+    FAMILYDNS_LOG_LEVEL controls verbosity of the familydns.* loggers.
+    Defaults to INFO. Set to DEBUG to see per-request detail on the
+    /api/router/* endpoints (mac, hostname, allowed/blocked, etc.). See
+    docs/install-api.md § Debugging.
+  -->
   <root level="WARN">
     <appender-ref ref="STDOUT" />
   </root>
 
-  <logger name="familydns" level="DEBUG" />
+  <logger name="familydns" level="${FAMILYDNS_LOG_LEVEL:-INFO}" />
 </configuration>
