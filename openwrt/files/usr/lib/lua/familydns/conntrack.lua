@@ -118,6 +118,23 @@ function M.build_first_seen_mac_event(opts)
 end
 
 -- ---------------------------------------------------------------------------
+-- build_dhcp_lease_event(opts) -> table
+--
+-- Emitted when a previously hostname-less MAC later acquires a hostname via
+-- DHCP (fixes #249 — the race where the first conntrack flow precedes the
+-- dnsmasq lease write, leaving the device named "unknown" forever).
+-- ---------------------------------------------------------------------------
+function M.build_dhcp_lease_event(opts)
+  return {
+    ["type"] = "dhcp_lease",
+    mac      = opts.mac,
+    ip       = opts.ip,
+    hostname = opts.hostname,
+    ts       = opts.ts,
+  }
+end
+
+-- ---------------------------------------------------------------------------
 -- build_event(opts) -> table
 --
 -- opts: { mac, hostname, dest_ip, allowed, reason, ts }
@@ -256,6 +273,22 @@ function M.handle_flow(flow, ctx, batcher)
       mac = mac, ip = ip, hostname = hostname, ts = ctx.ts,
     }))
     if ctx.reported_macs then ctx.reported_macs[mac] = true end
+    -- #249: if we emitted first_seen_mac with no hostname (DHCP race or
+    -- iOS Private Address without option 12), remember to re-emit once
+    -- dnsmasq's lease file catches up.
+    if not hostname and ctx.pending_hostname_macs then
+      ctx.pending_hostname_macs[mac] = true
+    end
+  elseif mac and ctx.pending_hostname_macs and ctx.pending_hostname_macs[mac] then
+    local lease = (ctx.leases or {})[mac]
+    if lease and lease.hostname then
+      log.debug("handle_flow: dhcp_lease (late) mac=%s ip=%s hostname=%s",
+                mac, tostring(lease.ip), tostring(lease.hostname))
+      batcher.add(M.build_dhcp_lease_event({
+        mac = mac, ip = lease.ip, hostname = lease.hostname, ts = ctx.ts,
+      }))
+      ctx.pending_hostname_macs[mac] = nil
+    end
   end
 
   local hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
@@ -368,8 +401,9 @@ function M.watch(cfg)
     return
   end
 
-  local reported_macs = {}
-  local leases_path   = cfg.leases_path or "/tmp/dhcp.leases"
+  local reported_macs         = {}
+  local pending_hostname_macs = {}
+  local leases_path           = cfg.leases_path or "/tmp/dhcp.leases"
 
   while true do
     local line = handle:read("*l")
@@ -379,21 +413,24 @@ function M.watch(cfg)
     if flow and M.is_outbound(flow, lan_prefix) then
       local arp = M.parse_arp_table()
       local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
-      -- Only parse the lease file when we actually need it (new MAC).
+      -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a
+      -- late hostname (#249 — re-emit dhcp_lease once dnsmasq writes it).
       local leases
-      if mac_candidate and not reported_macs[mac_candidate] then
+      if mac_candidate and
+         (not reported_macs[mac_candidate] or pending_hostname_macs[mac_candidate]) then
         leases = M.parse_dhcp_leases(leases_path)
       end
 
       M.handle_flow(flow, {
-        arp_table      = arp,
-        nft_sets       = cfg.nft_sets or {},
-        blocked_ips    = cfg.blocked_ips,
-        blocked_reason = cfg.blocked_reason,
-        reported_macs  = reported_macs,
-        leases         = leases or {},
-        ts             = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        log            = log,
+        arp_table             = arp,
+        nft_sets              = cfg.nft_sets or {},
+        blocked_ips           = cfg.blocked_ips,
+        blocked_reason        = cfg.blocked_reason,
+        reported_macs         = reported_macs,
+        pending_hostname_macs = pending_hostname_macs,
+        leases                = leases or {},
+        ts                    = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        log                   = log,
       }, batcher)
     end
 
