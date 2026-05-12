@@ -30,6 +30,34 @@ connection events back. See [`docs/architecture-openwrt.md`](docs/architecture-o
 | `openwrt/`  | Lua agent: policy pull, dnsmasq/nft enforcement, usage   | OpenWRT ipk |
 | `opnsense/` | Python agent: pflog tail, connection_attempt events      | OPNsense plugin |
 
+## Quick install
+
+Get a running stack on a Linux host plus an enforcement agent on your gateway
+router. Each script prompts for the values it needs and is safe to re-run.
+
+**1. API + Postgres** — on a Linux host with Docker + Compose v2:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+```
+
+Prompts for install path, port, bind address, and a new admin password;
+generates secrets, brings the stack up, rotates the seeded `admin/changeme`.
+Full walkthrough (TLS, reverse proxy, firewall, debugging): [`docs/install-api.md`](docs/install-api.md).
+
+**2. OpenWRT router agent** — SSH in as root, then:
+
+```sh
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+```
+
+Prompts for the API URL, an enrollment token (admin UI → **Routers → Add
+router**), and the LAN prefix. Detects 23.05.x (opkg) vs 24.10+ (apk) and
+installs the matching artifact. Full walkthrough: [`docs/install-openwrt.md`](docs/install-openwrt.md).
+
+**3. OPNsense router agent** — installer not yet published. See the
+[`opnsense/`](opnsense/) directory for the in-progress plugin.
+
 ## Quick start (development, macOS or Linux)
 
 ```bash
