@@ -65,7 +65,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         req    = Request
           .get(URL.decode("/api/profiles").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
@@ -91,7 +99,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         req    = Request
           .get(URL.decode(s"/api/profiles/$adultsId").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
@@ -112,7 +128,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         body   = UpsertProfileRequest("Hacked", Nil, Nil, Nil, false, Nil, None, Nil).toJson
         req    = Request
           .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
@@ -143,7 +167,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           List(kidsId, adultsId),
         )
         token <- auth.login("mom", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         body   = UpsertProfileRequest(
           "Kids Renamed",
           List("adult"),
@@ -178,7 +210,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         body   = UpsertProfileRequest(
           "Pwned",
           Nil,
@@ -208,7 +248,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         auth        <- makeAuth
         _           <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
         token       <- auth.login("mom", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         body   = UpsertProfileRequest("New", Nil, Nil, Nil, false, Nil, None, Nil).toJson
         req    = Request
           .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
@@ -266,6 +314,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo,
           stlRepo,
           upRepo,
+          userRepo,
         )
         listReq    = Request
           .get(URL.decode("/api/profiles").toOption.get)
@@ -340,7 +389,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         req    = Request
           .get(URL.decode("/api/profiles").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))
@@ -365,7 +422,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token)
-        routes = ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo)
+        routes = ProfileRoutes.routes(
+          auth,
+          profileRepo,
+          schedRepo,
+          tlRepo,
+          stlRepo,
+          upRepo,
+          userRepo,
+        )
         req    = Request
           .get(URL.decode(s"/api/profiles/$adultsId").toOption.get)
           .addHeader(Header.Authorization.Bearer(token))

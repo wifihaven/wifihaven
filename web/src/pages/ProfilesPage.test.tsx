@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ProfileDetail } from '@/types/api'
+import type { Device, ProfileDetail, User } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -11,9 +11,16 @@ vi.mock('@/api/client', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       pause: vi.fn(),
+      setUsers: vi.fn(),
     },
     blocklists: {
       counts: vi.fn(),
+    },
+    devices: {
+      list: vi.fn(),
+    },
+    users: {
+      list: vi.fn(),
     },
   },
 }))
@@ -59,6 +66,19 @@ const adultsProfile: ProfileDetail = {
   siteTimeLimits: [],
 }
 
+const phoneDevice: Device = {
+  id: 100, mac: 'aa:bb:cc:dd:ee:01', name: 'Kid Phone', profileId: 1,
+  profileName: 'Kids', lastSeenIp: null, lastSeenAt: null,
+}
+const tabletDevice: Device = {
+  id: 101, mac: 'aa:bb:cc:dd:ee:02', name: 'Adult Tablet', profileId: 2,
+  profileName: 'Adults', lastSeenIp: null, lastSeenAt: null,
+}
+
+const aliceUser: User = { id: 10, username: 'alice', role: 'child', profileIds: [1] }
+const bobUser:   User = { id: 11, username: 'bob',   role: 'adult', profileIds: [2] }
+const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: [1, 2] }
+
 beforeEach(() => {
   vi.resetAllMocks()
   mockAuth = { isAdmin: true }
@@ -72,16 +92,22 @@ beforeEach(() => {
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.pause as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ paused: true })
+  ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
+  ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
 })
 
 describe('ProfilesPage — list', () => {
   it('renders profile names, paused badge, blocked categories, schedules, site limits, and daily limit', async () => {
     render(<ProfilesPage />)
-    expect(await screen.findByText('Kids')).toBeInTheDocument()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    expect(within(kidsCard).getByText('Kids')).toBeInTheDocument()
     expect(screen.getByText('Adults')).toBeInTheDocument()
     expect(screen.getByText('Paused')).toBeInTheDocument()
-    expect(screen.getByText('adult')).toBeInTheDocument()
-    expect(screen.getByText('gambling')).toBeInTheDocument()
+    // 'adult' (the blocked category) lives inside the Kids card; the bob/admin role
+    // badges read 'adult' too, so scope this lookup to the Kids card.
+    expect(within(kidsCard).getByText('adult')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('gambling')).toBeInTheDocument()
     expect(screen.getByText('Bedtime')).toBeInTheDocument()
     expect(screen.getByText('21:00 → 07:00')).toBeInTheDocument()
     expect(screen.getByText('YouTube')).toBeInTheDocument()
@@ -223,5 +249,68 @@ describe('ProfilesPage — role gating', () => {
     expect(screen.queryByRole('button', { name: /Pause/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Edit users/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — devices section', () => {
+  it('renders devices grouped under their profile', async () => {
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    const adultsCard = screen.getByTestId('profile-card-2')
+
+    expect(within(kidsCard).getByTestId('profile-device-100')).toHaveTextContent('Kid Phone')
+    expect(within(kidsCard).getByTestId('profile-device-100')).toHaveTextContent('aa:bb:cc:dd:ee:01')
+    expect(within(kidsCard).queryByTestId('profile-device-101')).not.toBeInTheDocument()
+
+    expect(within(adultsCard).getByTestId('profile-device-101')).toHaveTextContent('Adult Tablet')
+  })
+})
+
+describe('ProfilesPage — linked users section', () => {
+  it('renders linked users for each profile (admin view)', async () => {
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    const adultsCard = screen.getByTestId('profile-card-2')
+
+    expect(within(kidsCard).getByTestId('profile-user-10')).toHaveTextContent('alice')
+    expect(within(kidsCard).getByTestId('profile-user-12')).toHaveTextContent('carol')
+    expect(within(kidsCard).queryByTestId('profile-user-11')).not.toBeInTheDocument()
+
+    expect(within(adultsCard).getByTestId('profile-user-11')).toHaveTextContent('bob')
+    expect(within(adultsCard).getByTestId('profile-user-12')).toHaveTextContent('carol')
+  })
+
+  it('hides the linked-users section entirely for non-admins', async () => {
+    mockAuth = { isAdmin: false }
+    render(<ProfilesPage />)
+    await screen.findByText('Kids')
+    expect(screen.queryByTestId('profile-users-1')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('profile-users-2')).not.toBeInTheDocument()
+    expect(api.users.list).not.toHaveBeenCalled()
+  })
+
+  it('admin clicks Edit users → modal opens with current users pre-checked → Save calls api.profiles.setUsers', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /Edit users/ }))
+
+    const modal = await screen.findByTestId('edit-users-modal')
+    // Pre-checked: alice (id 10) and carol (id 12) on Kids
+    expect(within(modal).getByTestId('user-pick-10').textContent).toMatch(/✓/)
+    expect(within(modal).getByTestId('user-pick-12').textContent).toMatch(/✓/)
+    expect(within(modal).getByTestId('user-pick-11').textContent).not.toMatch(/✓/)
+
+    // Toggle alice off, bob on.
+    await user.click(within(modal).getByTestId('user-pick-10'))
+    await user.click(within(modal).getByTestId('user-pick-11'))
+
+    await user.click(within(modal).getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() => expect(api.profiles.setUsers).toHaveBeenCalledTimes(1))
+    const call = (api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[0]).toBe(1)
+    expect([...call[1]].sort((a, b) => a - b)).toEqual([11, 12])
   })
 })

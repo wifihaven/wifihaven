@@ -42,8 +42,10 @@ trait UserRepo {
 trait UserProfileRepo {
   def listProfilesForUser(userId: Long): Task[List[Long]]
   def listProfilesForUsername(username: String): Task[List[Long]]
+  def listUsersForProfile(profileId: Long): Task[List[Long]]
   def listAllMappings: Task[List[(Long, Long)]] // (userId, profileId)
   def setProfilesForUser(userId: Long, profileIds: List[Long]): Task[Unit]
+  def setUsersForProfile(profileId: Long, userIds: List[Long]): Task[Unit]
   def addLink(userId: Long, profileId: Long): Task[Unit]
   def removeLink(userId: Long, profileId: Long): Task[Unit]
   def hasAccess(userId: Long, profileId: Long): Task[Boolean]
@@ -252,37 +254,49 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
 }
 
 class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
-  def listProfilesForUser(userId: Long)                  =
+  def listProfilesForUser(userId: Long)                     =
     sql"SELECT profile_id FROM user_profiles WHERE user_id=$userId ORDER BY profile_id"
       .query[Long]
       .to[List]
       .transact(xa)
-  def listProfilesForUsername(u: String)                 =
+  def listProfilesForUsername(u: String)                    =
     sql"SELECT up.profile_id FROM user_profiles up JOIN users us ON us.id=up.user_id WHERE us.username=$u ORDER BY up.profile_id"
       .query[Long]
       .to[List]
       .transact(xa)
-  def listAllMappings                                    =
+  def listUsersForProfile(profileId: Long)                  =
+    sql"SELECT user_id FROM user_profiles WHERE profile_id=$profileId ORDER BY user_id"
+      .query[Long]
+      .to[List]
+      .transact(xa)
+  def listAllMappings                                       =
     sql"SELECT user_id, profile_id FROM user_profiles"
       .query[(Long, Long)]
       .to[List]
       .transact(xa)
-  def setProfilesForUser(userId: Long, pids: List[Long]) = {
+  def setProfilesForUser(userId: Long, pids: List[Long])    = {
     val del = sql"DELETE FROM user_profiles WHERE user_id=$userId".update.run
     val ins = pids.distinct.map(pid =>
       sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($userId,$pid) ON CONFLICT DO NOTHING".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
   }
-  def addLink(userId: Long, pid: Long)                   =
+  def setUsersForProfile(profileId: Long, uids: List[Long]) = {
+    val del = sql"DELETE FROM user_profiles WHERE profile_id=$profileId".update.run
+    val ins = uids.distinct.map(uid =>
+      sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($uid,$profileId) ON CONFLICT DO NOTHING".update.run,
+    )
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+  }
+  def addLink(userId: Long, pid: Long)                      =
     sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($userId,$pid) ON CONFLICT DO NOTHING".update.run
       .transact(xa)
       .unit
-  def removeLink(userId: Long, pid: Long)                =
+  def removeLink(userId: Long, pid: Long)                   =
     sql"DELETE FROM user_profiles WHERE user_id=$userId AND profile_id=$pid".update.run
       .transact(xa)
       .unit
-  def hasAccess(userId: Long, pid: Long)                 =
+  def hasAccess(userId: Long, pid: Long)                    =
     sql"SELECT 1 FROM user_profiles WHERE user_id=$userId AND profile_id=$pid"
       .query[Int]
       .option

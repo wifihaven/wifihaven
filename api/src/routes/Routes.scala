@@ -123,6 +123,7 @@ object ProfileRoutes {
       timeLimitRepo: TimeLimitRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
       userProfileRepo: UserProfileRepo,
+      userRepo: UserRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "profiles"                         ->
@@ -233,6 +234,33 @@ object ProfileRoutes {
           requireAdmin(req, auth) *>
             profileRepo.delete(id).orElseFail(Response.internalServerError("")) *>
             ZIO.succeed(Response.ok)
+        },
+      Method.GET / "api" / "profiles" / long("id") / "users"  ->
+        handler { (id: Long, req: Request) =>
+          for {
+            _     <- requireAdmin(req, auth)
+            uids  <- userProfileRepo
+              .listUsersForProfile(id)
+              .orElseFail(Response.internalServerError(""))
+            users <- userRepo.listAll.orElseFail(Response.internalServerError(""))
+            byId      = users.map(u => u.id -> u).toMap
+            summaries = uids.flatMap(byId.get).map { u =>
+              UserSummary(u.id, u.username, u.role, List(id))
+            }
+          } yield Response.json(summaries.toJson)
+        },
+      Method.PUT / "api" / "profiles" / long("id") / "users"  ->
+        handler { (id: Long, req: Request) =>
+          for {
+            _    <- requireAdmin(req, auth)
+            body <- req.body.asString.orElseFail(Response.badRequest(""))
+            r    <- ZIO
+              .fromEither(body.fromJson[SetProfileUsersRequest])
+              .mapError(e => Response.badRequest(e))
+            _    <- userProfileRepo
+              .setUsersForProfile(id, r.userIds)
+              .orElseFail(Response.internalServerError(""))
+          } yield Response.ok
         },
       Method.POST / "api" / "profiles" / long("id") / "pause" ->
         handler { (id: Long, req: Request) =>

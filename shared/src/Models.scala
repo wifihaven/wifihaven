@@ -126,6 +126,7 @@ case class MeResponse(
     profileIds: List[Long],
 ) derives JsonCodec
 case class SetUserProfilesRequest(profileIds: List[Long]) derives JsonCodec
+case class SetProfileUsersRequest(userIds: List[Long]) derives JsonCodec
 
 case class UpsertProfileRequest(
     name: String,
