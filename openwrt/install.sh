@@ -109,13 +109,7 @@ pkg_url=$(echo "$releases_json" \
   | jsonfilter -e '@.assets[*].browser_download_url' \
   | grep -E "\.${PKG_EXT}\$" \
   | head -n1)
-if [ -z "$pkg_url" ]; then
-  if [ "$PKG_MGR" = apk ]; then
-    err "no .apk asset in the latest release — apk-based OpenWRT (24.10+/SNAPSHOT) is not yet supported, see https://github.com/sameerparekh/familydns/issues/176"
-  else
-    err "could not find a .$PKG_EXT asset in the latest release at $RELEASES_API"
-  fi
-fi
+[ -n "$pkg_url" ] || err "could not find a .$PKG_EXT asset in the latest release at $RELEASES_API"
 pkg_path="/tmp/familydns.${PKG_EXT}"
 info "Downloading $pkg_url"
 curl -fsSL -o "$pkg_path" "$pkg_url"

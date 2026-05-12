@@ -10,8 +10,9 @@ The agent enforces per-device DNS filtering, accounts traffic per
 
 ## 1. Prerequisites
 
-- A router running **OpenWRT 23.05.x** (the package is built and tested
-  against 23.05.5 by `.github/workflows/openwrt-build.yml`).
+- A router running **OpenWRT 23.05.x** (opkg / `.ipk`) **or OpenWRT 24.10+ /
+  SNAPSHOT** (apk / `.apk`). CI builds and attaches both artifacts to every
+  release.
 - Internet access from the router.
 - Root SSH access to the router.
 - A FamilyDNS API server already deployed and reachable from the router. See
@@ -20,9 +21,10 @@ The agent enforces per-device DNS filtering, accounts traffic per
   **Routers → Add router** (looks like `et_5f3c9b…`).
 
 The agent depends on `dnsmasq-full`, `nftables`, and `uhttpd`, all of which
-ship with stock OpenWRT 23.05. The remaining runtime dependencies (`lua`,
-`luci-lib-jsonc`, `conntrack-tools`, `curl`) are pulled in automatically by
-`opkg`.
+ship with stock OpenWRT on both 23.05.x and 24.10+. The remaining runtime
+dependencies (`lua`, `luci-lib-jsonc`, `conntrack-tools`, `curl`) are pulled
+in automatically by the system package manager (`opkg` on 23.05.x, `apk` on
+24.10+) — the package names are the same on both.
 
 ## 2. Install with the one-shot script (recommended)
 
@@ -45,8 +47,10 @@ when you generated the enrollment token — the agent does not collect it.
 
 It then:
 
-1. Downloads the latest `.ipk` from the GitHub Releases API and installs it
-   via `opkg`.
+1. Detects the router's package manager (`opkg` on 23.05.x, `apk` on
+   24.10+/SNAPSHOT), downloads the matching asset (`.ipk` or `.apk`) from
+   the latest GitHub release, and installs it (`opkg install …` or
+   `apk add --allow-untrusted …`).
 2. Writes `api_url` and `lan_prefix` to `/etc/config/familydns`.
 3. POSTs `/api/router/register` to exchange the enrollment token for a
    `routerId` and `routerToken`, and writes both to UCI.
@@ -108,9 +112,9 @@ Routers running unattended should pull new agent releases automatically. The
 auto-update cron job is tracked in
 [#131](https://github.com/sameerparekh/familydns/issues/131). Until then,
 upgrade manually by re-running the one-shot install command from §2 — the
-script's `opkg install` step uses the standard upgrade path, which preserves
-`/etc/config/familydns`, so the router credentials survive and no
-re-enrollment is needed.
+script's install step (`opkg install` or `apk add --allow-untrusted`) uses
+the standard upgrade path, which preserves `/etc/config/familydns`, so the
+router credentials survive and no re-enrollment is needed.
 
 ## Manual install (fallback)
 
@@ -118,27 +122,42 @@ Use this if you cannot or do not want to run the one-shot script — for
 example, if you're debugging a failed install or want to script each step
 into your own provisioning system.
 
-### M1. Download the `.ipk`
+### M1. Download the matching package
+
+Pick the asset that matches your router's package manager (`.ipk` on
+23.05.x, `.apk` on 24.10+/SNAPSHOT). Both are pure Lua (`PKGARCH:=all` /
+`noarch`), so the same artifact works on every OpenWRT target of that
+generation.
 
 ```sh
+# OpenWRT 23.05.x (opkg):
 curl -fsSL -o /tmp/familydns.ipk \
   $(curl -sf https://api.github.com/repos/sameerparekh/familydns/releases/latest \
-    | jsonfilter -e '@.assets[0].browser_download_url')
-```
+    | jsonfilter -e '@.assets[*].browser_download_url' \
+    | grep -E '\.ipk$' | head -n1)
 
-The package is pure Lua (`PKGARCH:=all`), so the same `.ipk` works on every
-OpenWRT target.
+# OpenWRT 24.10+/SNAPSHOT (apk):
+curl -fsSL -o /tmp/familydns.apk \
+  $(curl -sf https://api.github.com/repos/sameerparekh/familydns/releases/latest \
+    | jsonfilter -e '@.assets[*].browser_download_url' \
+    | grep -E '\.apk$' | head -n1)
+```
 
 ### M2. Install
 
 ```sh
+# OpenWRT 23.05.x (opkg):
 opkg update
 opkg install /tmp/familydns.ipk
+
+# OpenWRT 24.10+/SNAPSHOT (apk):
+apk add --allow-untrusted /tmp/familydns.apk
 ```
 
-`opkg` resolves and installs `lua`, `luci-lib-jsonc`, `conntrack-tools`, and
-`curl`. The `postinst` script enables the `familydns` procd service for
-autostart but does **not** start it yet — enrollment must complete first.
+Either manager resolves and installs `lua`, `luci-lib-jsonc`,
+`conntrack-tools`, and `curl`. The post-install hook enables the
+`familydns` procd service for autostart but does **not** start it yet —
+enrollment must complete first.
 
 ### M3. Configure the API URL and LAN prefix
 

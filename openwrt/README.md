@@ -1,15 +1,21 @@
 # familydns OpenWrt package
 
-OpenWrt 23.x agent for FamilyDNS. Enforces per-device DNS filtering via
-dnsmasq + nftables, accounts traffic per `(mac, hostname)`, and streams
-connection events to the FamilyDNS API.
+OpenWrt agent for FamilyDNS. Supports both **OpenWRT 23.05.x** (opkg / `.ipk`)
+and **OpenWRT 24.10+ / SNAPSHOT** (apk / `.apk`). Enforces per-device DNS
+filtering via dnsmasq + nftables, accounts traffic per `(mac, hostname)`, and
+streams connection events to the FamilyDNS API.
+
+Each release attaches both a `.ipk` and a `.apk` built from the same
+`openwrt/files/` tree; the one-line installer auto-detects the router's
+package manager and downloads the matching asset.
 
 ## Package layout
 
 ```
 openwrt/
 ├── Makefile                               opkg metadata (OpenWrt SDK)
-├── build-ipk.sh                           lightweight .ipk builder (no SDK needed)
+├── build-ipk.sh                           lightweight .ipk builder for opkg (23.05.x)
+├── build-apk.sh                           .apk builder for apk-tools (24.10+/SNAPSHOT)
 ├── files/
 │   ├── etc/init.d/familydns               procd init script
 │   ├── etc/config/familydns               UCI config (api_url, router_token, …)
@@ -43,7 +49,8 @@ nftables — no round-trip to the API per request.
 
 ## Dependencies
 
-Installed automatically by opkg when you install the package:
+Installed automatically by opkg/apk when you install the package (same package
+names on both managers):
 
 - `lua` — Lua 5.1 interpreter
 - `libuci-lua` — Lua bindings for UCI (`require("uci")`)
@@ -51,7 +58,8 @@ Installed automatically by opkg when you install the package:
 - `conntrack-tools` — provides `conntrack -E -e NEW`
 - `curl` — HTTP client used by the agent
 
-The following must be present on the router (standard on OpenWrt 23.x):
+The following must be present on the router (standard on both OpenWRT 23.05.x
+and 24.10+/SNAPSHOT):
 
 | Package | Purpose |
 |---------|---------|
@@ -64,15 +72,21 @@ The following must be present on the router (standard on OpenWrt 23.x):
 ### Quick build (no SDK required)
 
 Because the package is pure Lua (`PKGARCH:=all`), no cross-compilation is
-needed. `build-ipk.sh` assembles the `.ipk` directly:
+needed. Two builders assemble the package directly:
 
 ```sh
-# From the repo root:
+# .ipk for OpenWRT 23.05.x (opkg) — works on any host with ar+tar:
 ./openwrt/build-ipk.sh
 # → openwrt/familydns_0.1.0-1_all.ipk
 
+# .apk for OpenWRT 24.10+/SNAPSHOT (apk-tools v3) — Linux only; the script
+# builds apk-tools from source the first time, then caches it:
+./openwrt/build-apk.sh
+# → openwrt/familydns_0.1.0-1_all.apk
+
 # Override version (e.g. when cutting a release):
 PKG_VERSION=0.2.0 PKG_RELEASE=1 ./openwrt/build-ipk.sh
+PKG_VERSION=0.2.0 PKG_RELEASE=1 ./openwrt/build-apk.sh
 ```
 
 ### Full SDK build
@@ -96,14 +110,16 @@ make package/familydns/compile V=s
 
 The GitHub Actions workflow `.github/workflows/openwrt-build.yml` runs on
 every PR that touches `openwrt/` and on every `v*` tag push. On a tag it
-creates a GitHub release and attaches the `.ipk` as a release artifact.
+creates a GitHub release and attaches both the `.ipk` and the `.apk` as
+release artifacts.
 
 To cut a release:
 
 ```sh
 git tag v0.2.0
 git push origin v0.2.0
-# CI builds familydns_0.2.0-1_all.ipk and attaches it to the release.
+# CI builds familydns_0.2.0-1_all.ipk and familydns_0.2.0-1_all.apk
+# and attaches both to the release.
 ```
 
 ## Install / Enrollment
@@ -120,8 +136,7 @@ manual-fallback path for debugging) is in
 
 The script auto-detects the router's package manager (`opkg` on OpenWRT
 23.05.x and earlier, `apk` on 24.10+/SNAPSHOT) and downloads the matching
-release asset. Only `.ipk` is currently published; `.apk` support is tracked
-in [#176](https://github.com/sameerparekh/familydns/issues/176).
+release asset.
 
 ### Uninstalling
 
@@ -138,15 +153,20 @@ Pass `--purge` to additionally remove `/usr/lib/familydns` and
 shakeouts). The script is idempotent — re-running on an already-clean
 router exits 0 with "nothing to do".
 
-For developer flashing of a locally built `.ipk`:
+### For developer flashing of a locally built package:
 
 ```sh
+# OpenWRT 23.05.x (opkg):
 scp openwrt/familydns_*.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 opkg install /tmp/familydns_*.ipk
+
+# OpenWRT 24.10+/SNAPSHOT (apk):
+scp openwrt/familydns_*.apk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 apk add --allow-untrusted /tmp/familydns_*.apk
 ```
 
-opkg installs all files and runs the `postinst` script (which enables the
-procd service), but does **not** start the daemon yet — enrollment must
+Both managers install all files and run the post-install hook (which enables
+the procd service), but neither starts the daemon yet — enrollment must
 happen first. See the install guide above for the enrollment flow.
 
 ## Block-page redirect
@@ -232,22 +252,26 @@ crontab -e
 ### Manual update
 
 ```sh
-# Build the new .ipk:
+# OpenWRT 23.05.x (opkg) — build, copy, upgrade. --force-reinstall preserves
+# /etc/config/familydns:
 PKG_VERSION=0.2.0 ./openwrt/build-ipk.sh
-
-# Copy and upgrade (--force-reinstall preserves /etc/config/familydns):
 scp openwrt/familydns_0.2.0-1_all.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 'opkg install --force-reinstall /tmp/familydns_0.2.0-1_all.ipk'
+
+# OpenWRT 24.10+/SNAPSHOT (apk):
+PKG_VERSION=0.2.0 ./openwrt/build-apk.sh
+scp openwrt/familydns_0.2.0-1_all.apk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 'apk add --allow-untrusted /tmp/familydns_0.2.0-1_all.apk'
 ```
 
-opkg preserves `/etc/config/familydns` across upgrades. The bearer token
-and router ID survive unchanged; no re-enrollment is needed.
+Both managers preserve `/etc/config/familydns` across upgrades. The bearer
+token and router ID survive unchanged; no re-enrollment is needed.
 
 ### Via CI release
 
-1. Push a `v*` tag — CI builds the `.ipk` and attaches it to the GitHub release.
-2. Download the `.ipk` from the release page.
-3. `scp` + `opkg install --force-reinstall` as above.
+1. Push a `v*` tag — CI builds both `.ipk` and `.apk` and attaches them to the GitHub release.
+2. Download the asset matching your router's package manager from the release page.
+3. `scp` + `opkg install --force-reinstall` (23.05.x) or `apk add --allow-untrusted` (24.10+) as above.
 
 ## Rollback
 
