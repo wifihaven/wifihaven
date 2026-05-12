@@ -103,6 +103,22 @@ instance-id: fdns-client-base
 local-hostname: fdns-client
 EOF
 
+# network-config: tell cloud-init's network renderer how to set up both NICs.
+# Without this, cloud-init's default network module overwrites
+# /etc/network/interfaces with eth0=dhcp only, leaving eth1 (the mgmt NIC
+# the orchestrator SSHes into via 127.0.0.1:hostfwd) DOWN forever.
+# Match interfaces by MAC: eth0 = LAN-side virtio (any MAC, set per-client
+# at client-up time), eth1 = the QEMU user-net MAC 52:54:00:12:34:56.
+cat >"${SEED_DIR}/network-config" <<EOF
+version: 2
+ethernets:
+  eth0:
+    dhcp4: true
+  eth1:
+    addresses:
+      - 10.0.2.15/24
+EOF
+
 # user-data: install packages, set up SSH, write /etc/network/interfaces, then
 # poweroff so the caller (this script) knows the build is done.
 cat >"${SEED_DIR}/user-data" <<EOF
@@ -115,6 +131,18 @@ users:
       - ${PUBKEY}
 
 write_files:
+  # Stop cloud-init's network module from rewriting /etc/network/interfaces
+  # on every subsequent boot. Without this, cloud-init's "fallback" config
+  # (used when no seed is present, i.e. every boot after the build) renders
+  # eth0=dhcp only and wipes the eth1 config we want.
+  - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+    permissions: '0644'
+    content: |
+      network: {config: disabled}
+  # /etc/network/interfaces: cloud-init's network renderer writes a version
+  # of this from the seed's network-config at first boot — we overwrite
+  # with the eth0=dhcp + eth1=static config we actually want. write_files
+  # runs in the "init" stage, after the renderer's "init-local" stage.
   - path: /etc/network/interfaces
     permissions: '0644'
     content: |
@@ -126,8 +154,8 @@ write_files:
 
       auto eth1
       iface eth1 inet static
-        address 10.0.2.15
-        netmask 255.255.255.0
+          address 10.0.2.15
+          netmask 255.255.255.0
   # Write the test SSH key under /etc (parent dir exists) — runcmd below
   # installs it into /root/.ssh. write_files to /root/.ssh/* is unreliable
   # on this Alpine cloud-init build because the parent dir doesn't yet exist.
@@ -151,6 +179,13 @@ packages:
   - ca-certificates
 
 runcmd:
+  # Alpine cloud images ship with root's /etc/shadow entry set to '!' (locked).
+  # PAM rejects SSH for locked accounts even with PermitRootLogin
+  # prohibit-password and a valid key in authorized_keys ("User root not
+  # allowed because account is locked"). Unlock by setting the password
+  # field to '*' — login via password is still impossible, but the account
+  # is no longer "locked" for PAM purposes, so key auth works.
+  - sed -i 's|^root:[!*]*:|root:*:|' /etc/shadow
   - rc-update add sshd default
   - rc-update add qemu-guest-agent default
   # On Alpine cloud images the networking service is not in the default
@@ -171,11 +206,11 @@ SEED_ISO="${WORK}/seed.iso"
 case "${ISO_TOOL}" in
   xorrisofs)
     xorrisofs -output "${SEED_ISO}" -volid cidata -joliet -rock \
-      "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" >/dev/null
+      "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" "${SEED_DIR}/network-config" >/dev/null
     ;;
   genisoimage|mkisofs)
     "${ISO_TOOL}" -output "${SEED_ISO}" -volid cidata -joliet -rock \
-      "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" >/dev/null
+      "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" "${SEED_DIR}/network-config" >/dev/null
     ;;
 esac
 

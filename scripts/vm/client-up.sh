@@ -55,6 +55,13 @@ if ! ip link show "${FDNS_LAN_BRIDGE}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Git doesn't track non-executable file modes, so the committed private key
+# checks out with the umask default (often 0644). SSH refuses to use a key
+# that's group/world-readable. Fix it idempotently before any client SSH.
+if [[ -f "${FDNS_CLIENT_SSH_KEY}" ]]; then
+  chmod 0600 "${FDNS_CLIENT_SSH_KEY}" 2>/dev/null || true
+fi
+
 RUN_DIR="${FDNS_RUN_DIR}/${NAME}"
 if [[ -f "${RUN_DIR}/qemu.pid" ]] && kill -0 "$(cat "${RUN_DIR}/qemu.pid")" 2>/dev/null; then
   echo "client-up.sh: client '${NAME}' already running (pid $(cat "${RUN_DIR}/qemu.pid"))" >&2

@@ -38,6 +38,10 @@ if [[ ! -f "${RUN_DIR}/ssh.port" ]]; then
 fi
 SSH_PORT="$(cat "${RUN_DIR}/ssh.port")"
 
+# Git doesn't track non-executable file modes; the committed private key may
+# check out world-readable, which SSH refuses to use. Tighten it idempotently.
+chmod 0600 "${FDNS_CLIENT_SSH_KEY}" 2>/dev/null || true
+
 exec ssh -o StrictHostKeyChecking=no \
          -o UserKnownHostsFile=/dev/null \
          -o LogLevel=ERROR \
