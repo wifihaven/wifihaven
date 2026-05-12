@@ -25,6 +25,30 @@ uci set network.lan.ipaddr='192.168.100.1'
 uci set network.lan.netmask='255.255.255.0'
 uci commit network
 
+# Block out-of-band DNS leaks: drop LAN→WAN forwarded traffic to port 53
+# (UDP+TCP). Without this, OpenWRT's stock LAN→WAN accept rule lets a client
+# run `dig @1.1.1.1 …` straight through SLIRP to the host's real upstream
+# resolver, defeating the harness's DNS-leak test (issue #226 step 5). The
+# rule is on FORWARD only, so LAN→router (INPUT) DNS — i.e. the router's own
+# dnsmasq, which is the only resolver in the client's /etc/resolv.conf —
+# keeps working, and step 6 (`dig example.com` via the router) is unaffected.
+#
+# In production the familydns-agent is expected to install equivalent
+# enforcement once it's enrolled against an API and has a policy. Until that
+# path lands (#148 orchestrator + agent-side egress-DNS rules in render.lua),
+# seed it here so the harness in scripts/vm/ is testable standalone without
+# a live API stack.
+uci batch <<EOF
+add firewall rule
+set firewall.@rule[-1].name='block-dns-leak'
+set firewall.@rule[-1].src='lan'
+set firewall.@rule[-1].dest='wan'
+set firewall.@rule[-1].proto='tcpudp'
+set firewall.@rule[-1].dest_port='53'
+set firewall.@rule[-1].target='DROP'
+EOF
+uci commit firewall
+
 # Allow password-less root SSH from the QEMU host so the orchestrator can
 # drive the router without an interactive enrollment step. This image is
 # intended for ephemeral VMs only — never flash it to real hardware.
