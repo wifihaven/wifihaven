@@ -35,15 +35,15 @@ grep -q 'command -v apk' "$SCRIPT" && grep -q 'command -v opkg' "$SCRIPT" \
   && check "detects both apk and opkg package managers" ok \
   || check "detects both apk and opkg package managers" "missing apk/opkg detection"
 
-# 4. Uses opkg compare-versions for robust version compare on opkg path
-grep -q 'opkg compare-versions' "$SCRIPT" \
-  && check "uses opkg compare-versions on opkg path" ok \
-  || check "uses opkg compare-versions on opkg path" "missing — string compare alone breaks 1.10 vs 1.9"
+# 4. Rolling-release mode: compares release published_at stamp instead of semver.
+#    Reverts to semver compare alongside #244.
+grep -q '@.published_at' "$SCRIPT" \
+  && check "uses release published_at as freshness signal" ok \
+  || check "uses release published_at as freshness signal" "missing published_at compare"
 
-# 4b. Uses apk version -t for robust version compare on apk path
-grep -q 'apk version -t' "$SCRIPT" \
-  && check "uses apk version -t on apk path" ok \
-  || check "uses apk version -t on apk path" "missing — apk needs its own comparator"
+grep -q 'last_update_stamp' "$SCRIPT" \
+  && check "persists last-applied stamp under /var/lib/familydns" ok \
+  || check "persists last-applied stamp under /var/lib/familydns" "missing stamp file"
 
 # 4c. Installs via apk add --allow-untrusted on apk path
 grep -q 'apk add --allow-untrusted' "$SCRIPT" \
@@ -58,15 +58,13 @@ grep -q "'\\\\.ipk\$'" "$SCRIPT" \
   && check "filters .ipk asset on opkg path" ok \
   || check "filters .ipk asset on opkg path" "missing .ipk regex"
 
-# 4e. Reads current installed version on apk path (apk list -I or db parse)
-grep -qE 'apk (list -I|info)' "$SCRIPT" \
-  && check "reads current version on apk path" ok \
-  || check "reads current version on apk path" "missing apk version lookup"
+# 4e. Rolling mode doesn't need to read installed version — the published_at
+#     stamp is authoritative. Restored alongside #244.
 
-# 5. Hits GitHub releases/latest API
-grep -q 'releases/latest' "$SCRIPT" \
-  && check "fetches GitHub latest release" ok \
-  || check "fetches GitHub latest release" "wrong API endpoint"
+# 5. Hits the rolling openwrt-latest pre-release (see #245; reverts with #244).
+grep -q 'releases/tags/openwrt-latest' "$SCRIPT" \
+  && check "fetches rolling openwrt-latest release" ok \
+  || check "fetches rolling openwrt-latest release" "wrong API endpoint"
 
 # 6. Installs with --force-reinstall (preserves conffiles)
 grep -q 'opkg install --force-reinstall' "$SCRIPT" \

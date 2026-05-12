@@ -1,13 +1,23 @@
 #!/bin/sh
 # Auto-updater for the familydns package.
-# Checks GitHub Releases for a newer build and upgrades in place.
+# Pulls the rolling `openwrt-latest` GitHub pre-release and re-installs whenever
+# that release's published_at timestamp changes. This matches the rolling-build
+# CD set up by #245 (image-per-push to main, no per-release tag cut).
+#
+# Reverted alongside #244, once we're ready for semver-gated production updates
+# again — see TODO(#244) below.
+#
 # Supports both opkg (OpenWRT <= 23.05) and apk-tools (OpenWRT 24.10+).
 # /etc/config/familydns is declared as a conffile, so router_token survives
 # upgrades under either package manager.
 # Safe to run from cron; logs to syslog under tag "familydns".
 set -u
 
-API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/latest"
+# TODO(#244): revert to /releases/latest + semver compare once the rolling
+# debug period for #228 is done and proper tags resume.
+API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"
+STATE_DIR=/var/lib/familydns
+STAMP_FILE="$STATE_DIR/last_update_stamp"
 
 log() { logger -t familydns "update: $*"; }
 
@@ -26,65 +36,30 @@ else
   exit 0
 fi
 
-# Current installed version.
-case "$PM" in
-  apk)
-    # `apk list -I familydns` prints lines like:
-    #   familydns-1.2.3-r0 x86_64 {familydns} (license) [installed]
-    # Strip the leading "familydns-" to get the version.
-    CURRENT=$(apk list -I familydns 2>/dev/null \
-      | awk '{print $1; exit}' \
-      | sed -n 's/^familydns-//p')
-    ;;
-  opkg)
-    CURRENT=$(opkg info familydns 2>/dev/null | awk '/^Version:/{print $2; exit}')
-    ;;
-esac
-
-if [ -z "$CURRENT" ]; then
-  log "familydns not installed via $PM; nothing to update"
+META=$(curl -sf "$API_URL") || META=
+if [ -z "$META" ]; then
+  log "could not fetch $API_URL; skipping"
   exit 0
 fi
 
-LATEST_URL=$(curl -sf "$API_URL" \
+# Rolling-release freshness signal: the release's published_at timestamp
+# changes every time CI replaces the rolling asset.
+LATEST_STAMP=$(printf '%s' "$META" | jsonfilter -e '@.published_at')
+LATEST_URL=$(printf '%s' "$META" \
   | jsonfilter -e '@.assets[*].browser_download_url' \
   | grep -E "$PKG_EXT" \
   | head -n1)
-if [ -z "$LATEST_URL" ]; then
-  log "could not resolve latest $PM asset URL; skipping"
+if [ -z "$LATEST_STAMP" ] || [ -z "$LATEST_URL" ]; then
+  log "could not resolve rolling release stamp/asset; skipping"
   exit 0
 fi
 
-LATEST_VER=$(echo "$LATEST_URL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -n1)
-if [ -z "$LATEST_VER" ]; then
-  log "could not parse version from $LATEST_URL; skipping"
+LAST_STAMP=$(cat "$STAMP_FILE" 2>/dev/null || true)
+if [ "$LATEST_STAMP" = "$LAST_STAMP" ]; then
   exit 0
 fi
 
-# Robust version compare per package manager. Both opkg and apk-tools handle
-# 1.10.0 > 1.9.0 correctly; the string-equality fallback covers parse failures.
-case "$PM" in
-  apk)
-    # `apk version -t a b` prints one of <, =, > to stdout.
-    CMP=$(apk version -t "$LATEST_VER" "$CURRENT" 2>/dev/null || echo '?')
-    if [ "$CMP" = '>' ]; then
-      :
-    else
-      exit 0
-    fi
-    ;;
-  opkg)
-    if opkg compare-versions "$LATEST_VER" '>' "$CURRENT" 2>/dev/null; then
-      :
-    elif [ "$LATEST_VER" = "$CURRENT" ]; then
-      exit 0
-    else
-      exit 0
-    fi
-    ;;
-esac
-
-log "upgrading $CURRENT -> $LATEST_VER via $PM"
+log "rolling release changed ($LAST_STAMP -> $LATEST_STAMP); upgrading via $PM"
 if ! curl -fsSL -o "$TMP" "$LATEST_URL"; then
   log "download failed: $LATEST_URL"
   rm -f "$TMP"
@@ -94,7 +69,7 @@ fi
 case "$PM" in
   apk)
     if apk add --allow-untrusted "$TMP" >/tmp/familydns-update.log 2>&1; then
-      log "installed $LATEST_VER"
+      log "installed rolling build $LATEST_STAMP"
       rm -f "$TMP" /tmp/familydns-update.log
     else
       log "apk add failed; see /tmp/familydns-update.log"
@@ -104,7 +79,7 @@ case "$PM" in
     ;;
   opkg)
     if opkg install --force-reinstall "$TMP" >/tmp/familydns-update.log 2>&1; then
-      log "installed $LATEST_VER"
+      log "installed rolling build $LATEST_STAMP"
       rm -f "$TMP" /tmp/familydns-update.log
     else
       log "opkg install failed; see /tmp/familydns-update.log"
@@ -113,3 +88,6 @@ case "$PM" in
     fi
     ;;
 esac
+
+mkdir -p "$STATE_DIR"
+printf '%s\n' "$LATEST_STAMP" > "$STAMP_FILE"
