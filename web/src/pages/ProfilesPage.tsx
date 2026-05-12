@@ -361,7 +361,7 @@ function ProfileEditor({
           <input type="checkbox" checked={form.paused}
             onChange={e => setForm(f => ({ ...f, paused: e.target.checked }))}
             className="w-4 h-4 accent-emerald-500" />
-          Paused (blocks all DNS for devices on this profile)
+          Paused — blocks all internet traffic for devices on this profile.
         </label>
 
         <div>
