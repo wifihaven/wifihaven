@@ -13,7 +13,7 @@ define Package/familydns
   SECTION:=net
   CATEGORY:=Network
   TITLE:=FamilyDNS router agent
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack-tools +curl
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl
   PKGARCH:=all
 endef
 
