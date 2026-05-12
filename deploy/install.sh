@@ -465,6 +465,66 @@ else
   fi
 fi
 
+# ── 9b. Install auto-update timer ─────────────────────────────────────────
+#
+# Drops familydns-update.service + .timer into /etc/systemd/system/ and
+# enables the timer so the host pulls a fresh image every 5 minutes. This
+# is what closes the deploy gap for issue #254: without it, fixes that
+# land on `main` don't reach existing installs until someone ssh's in to
+# run update.sh by hand.
+#
+# Idempotent: `install -m 0644` overwrites cleanly, daemon-reload is a
+# no-op when nothing changed, and `systemctl enable --now` on an
+# already-enabled/active timer succeeds without error.
+step "Installing auto-update timer"
+
+SUDO=""
+if ! command -v systemctl >/dev/null 2>&1; then
+  warn "systemctl not found — skipping auto-update timer."
+  warn "Update manually with ${FAMILYDNS_INSTALL_DIR}/update.sh, or install a"
+  warn "cron entry that runs it on your preferred cadence."
+else
+  if [ "$(id -u)" -ne 0 ]; then
+    SUDO="sudo"
+  fi
+
+  UNIT_TMP="$(mktemp -d)"
+  if curl -fsSL "${REPO_RAW}/deploy/systemd/familydns-update.service" \
+        -o "${UNIT_TMP}/familydns-update.service" \
+     && curl -fsSL "${REPO_RAW}/deploy/systemd/familydns-update.timer" \
+        -o "${UNIT_TMP}/familydns-update.timer"; then
+    # The shipped unit hard-codes /opt/familydns/deploy as the
+    # WorkingDirectory (matches the documented system-wide install
+    # path). Patch it to the actual install dir so user-mode installs
+    # at $HOME/.familydns also get auto-update.
+    if [ "$FAMILYDNS_INSTALL_DIR" != "/opt/familydns" ]; then
+      sed -i.bak "s|^WorkingDirectory=/opt/familydns/deploy$|WorkingDirectory=${FAMILYDNS_INSTALL_DIR}|" \
+        "${UNIT_TMP}/familydns-update.service"
+      rm -f "${UNIT_TMP}/familydns-update.service.bak"
+    fi
+
+    install_ok=1
+    $SUDO install -m 0644 "${UNIT_TMP}/familydns-update.service" \
+      /etc/systemd/system/familydns-update.service || install_ok=0
+    $SUDO install -m 0644 "${UNIT_TMP}/familydns-update.timer" \
+      /etc/systemd/system/familydns-update.timer || install_ok=0
+
+    if [ "$install_ok" -eq 1 ] \
+       && $SUDO systemctl daemon-reload \
+       && $SUDO systemctl enable --now familydns-update.timer; then
+      ok "familydns-update.timer enabled (polls ghcr.io daily)"
+      ok "Disable with:  ${SUDO:+sudo }systemctl disable --now familydns-update.timer"
+    else
+      warn "Could not install/enable familydns-update.timer."
+      warn "Install manually — see docs/deploy.md §1.3."
+    fi
+  else
+    warn "Could not download systemd unit files from ${REPO_RAW}/deploy/systemd/."
+    warn "Auto-update timer not installed — see docs/deploy.md §1.3."
+  fi
+  rm -rf "${UNIT_TMP}"
+fi
+
 # ── 10. Done ──────────────────────────────────────────────────────────────
 
 echo
@@ -484,7 +544,10 @@ cat <<EOF
 Next steps:
   1. (optional) Put a TLS-terminating reverse proxy (Caddy / nginx) in
      front of the API. See docs/install-api.md §7.
-  2. (optional) Install the systemd auto-update timer. See docs/deploy.md §1.3.
-  3. Log in at ${API_URL} as 'admin' and head to Routers → Add router to
+  2. Log in at ${API_URL} as 'admin' and head to Routers → Add router to
      enroll your OpenWRT gateway. Then follow docs/install-openwrt.md.
+
+  Auto-update is on by default (familydns-update.timer, every 5 minutes).
+  To turn it off: ${SUDO:+sudo }systemctl disable --now familydns-update.timer
+     See docs/deploy.md §1.3.
 EOF

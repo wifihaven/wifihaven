@@ -51,13 +51,14 @@ define Package/familydns/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/familydns enable
-# Install cron entry for the auto-updater (every 6 hours).
-if ! grep -q familydns-update /etc/crontabs/root 2>/dev/null; then
-	mkdir -p /etc/crontabs
-	echo '0 */6 * * * /usr/sbin/familydns-update' >> /etc/crontabs/root
-	/etc/init.d/cron enable 2>/dev/null || true
-	/etc/init.d/cron restart 2>/dev/null || true
-fi
+# Install cron entry for the auto-updater (daily, 04:00 router-local).
+# Replace any existing familydns-update entry so upgrades migrate the
+# cadence — older packages installed it at "0 */6 * * *".
+mkdir -p /etc/crontabs
+[ -f /etc/crontabs/root ] && sed -i '/familydns-update/d' /etc/crontabs/root
+echo '0 4 * * * /usr/sbin/familydns-update' >> /etc/crontabs/root
+/etc/init.d/cron enable 2>/dev/null || true
+/etc/init.d/cron restart 2>/dev/null || true
 endef
 
 $(eval $(call BuildPackage,familydns))
