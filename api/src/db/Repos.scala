@@ -30,6 +30,13 @@ case class LogFilter(
     offset: Int = 0,
 )
 
+case class SessionFilter(
+    macs: Option[List[String]] = None, // None = no MAC restriction; Some(Nil) = match nothing
+    host: Option[String] = None,
+    since: Option[Instant] = None,
+    until: Option[Instant] = None,
+)
+
 trait UserRepo {
   def findByUsername(u: String): Task[Option[DbUser]]
   def findById(id: Long): Task[Option[DbUser]]
@@ -207,6 +214,13 @@ trait TrafficReportRepo {
   def insertBatch(reports: List[TrafficReportInsert]): Task[Int]
   def listForDevice(mac: String, date: LocalDate): Task[List[TrafficReport]]
   def listForRouter(routerId: UUID, limit: Int): Task[List[TrafficReport]]
+
+  /**
+   * Rows fit for session stitching: returned ordered by (router_id, mac, hostname, date,
+   * period_start) so the caller can fold contiguous runs directly. Filters are AND-composed. `macs
+   * \= Some(Nil)` returns an empty list (no devices match).
+   */
+  def listSessionRows(f: SessionFilter): Task[List[familydns.api.sessions.SessionRow]]
 }
 
 trait BlockEventRepo {
@@ -670,6 +684,43 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .map(toT)
       .to[List]
       .transact(xa)
+
+  def listSessionRows(f: SessionFilter) = {
+    type Row = (UUID, String, String, LocalDate, Instant, Instant, Int, Long, Long)
+    val base    = fr"""SELECT router_id, mac, hostname, date, period_start, period_end,
+                              active_seconds, bytes_in, bytes_out
+                       FROM traffic_reports
+                       WHERE 1=1"""
+    val byMacs  = f.macs match {
+      case None      => fr""
+      case Some(Nil) => fr"AND FALSE"
+      case Some(ms)  =>
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms)
+        fr"AND " ++ Fragments.in(fr"mac", nel)
+    }
+    val byHost  = f.host.fold(fr"")(h => fr"AND hostname ILIKE ${s"%$h%"}")
+    val bySince = f.since.fold(fr"")(s => fr"AND period_end > $s")
+    val byUntil = f.until.fold(fr"")(u => fr"AND period_start < $u")
+    val sql_    = base ++ byMacs ++ byHost ++ bySince ++ byUntil ++
+      fr"ORDER BY router_id, mac, hostname, date, period_start"
+    sql_
+      .query[Row]
+      .map { r =>
+        familydns.api.sessions.SessionRow(
+          routerId = r._1,
+          mac = r._2,
+          hostname = r._3,
+          date = r._4,
+          periodStart = r._5,
+          periodEnd = r._6,
+          activeSeconds = r._7,
+          bytesIn = r._8,
+          bytesOut = r._9,
+        )
+      }
+      .to[List]
+      .transact(xa)
+  }
 }
 
 class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {

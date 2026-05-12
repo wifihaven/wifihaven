@@ -274,6 +274,27 @@ case class TrafficReport(
     bytesOut: Long,
 ) derives JsonCodec
 
+case class Session(
+    mac: String,
+    deviceName: Option[String],
+    profileId: Option[Long],
+    profileName: Option[String],
+    hostname: String,
+    routerId: UUID,
+    date: String,
+    startedAt: String,
+    endedAt: String,
+    durationSeconds: Long,
+    bytesIn: Long,
+    bytesOut: Long,
+    periodCount: Int,
+) derives JsonCodec
+
+case class SessionPage(
+    sessions: List[Session],
+    nextCursor: Option[String],
+) derives JsonCodec
+
 case class BlockEvent(
     id: Long,
     mac: Option[String],
