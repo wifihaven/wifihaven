@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { QueryLog } from '@/types/api'
+import type { QueryLog, Session, SessionPage } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
+    sessions: {
+      list: vi.fn(),
+    },
     logs: {
       query: vi.fn(),
     },
@@ -14,91 +17,112 @@ vi.mock('@/api/client', () => ({
 import { api } from '@/api/client'
 import { LogsPage } from './LogsPage'
 
+const session1: Session = {
+  mac: 'aa:bb:cc:dd:ee:01',
+  deviceName: "Kid's iPad",
+  profileId: 1,
+  profileName: 'Kids',
+  hostname: 'youtube.com',
+  routerId: 'r-1',
+  date: '2026-05-12',
+  startedAt: '2026-05-12T14:30:00Z',
+  endedAt:   '2026-05-12T14:40:00Z',
+  durationSeconds: 600,
+  bytesIn: 12_000_000,
+  bytesOut: 500_000,
+  periodCount: 2,
+}
+const session2: Session = {
+  mac: 'aa:bb:cc:dd:ee:02',
+  deviceName: 'Phone',
+  profileId: 1,
+  profileName: 'Kids',
+  hostname: 'tiktok.com',
+  routerId: 'r-1',
+  date: '2026-05-12',
+  startedAt: '2026-05-12T13:00:00Z',
+  endedAt:   '2026-05-12T13:05:00Z',
+  durationSeconds: 180,
+  bytesIn: 1_500_000,
+  bytesOut: 90_000,
+  periodCount: 1,
+}
+const page: SessionPage = { sessions: [session1, session2], nextCursor: null }
+
 const log1: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
   domain: 'example.com', qtype: 1, blocked: false, reason: '',
-  location: 'home', ts: '2026-05-07T10:15:30Z',
-}
-const log2: QueryLog = {
-  id: 2, mac: 'aa:bb:cc:dd:ee:02', deviceName: 'Phone',
-  profileId: 1, profileName: 'Kids',
-  domain: 'evil.com', qtype: 1, blocked: true, reason: 'category:adult',
-  location: 'home', ts: '2026-05-07T10:16:00Z',
+  location: 'home', ts: '2026-05-12T10:15:30Z',
 }
 
 beforeEach(() => {
   vi.resetAllMocks()
-  ;(api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([log1, log2])
+  ;(api.sessions.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(page)
+  ;(api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([log1])
 })
 
-describe('LogsPage — list', () => {
-  it('renders rows from api.logs.query', async () => {
+describe('LogsPage — Sessions tab (default)', () => {
+  it('renders Sessions tab by default and calls api.sessions.list', async () => {
     render(<LogsPage />)
+    expect(await screen.findByText('youtube.com')).toBeInTheDocument()
+    expect(screen.getByText('tiktok.com')).toBeInTheDocument()
+    expect(api.sessions.list).toHaveBeenCalledWith({
+      host: undefined,
+      hours: 24,
+      limit: 100,
+    })
+    expect(api.logs.query).not.toHaveBeenCalled()
+  })
+
+  it('shows device name, profile, duration, host for each session', async () => {
+    render(<LogsPage />)
+    expect(await screen.findByText("Kid's iPad")).toBeInTheDocument()
+    expect(screen.getByText('Phone')).toBeInTheDocument()
+    // 600s → "10m", 180s → "3m"
+    expect(screen.getByText('10m')).toBeInTheDocument()
+    expect(screen.getByText('3m')).toBeInTheDocument()
+  })
+
+  it('typing into the host input refetches with the host filter', async () => {
+    const user = userEvent.setup()
+    render(<LogsPage />)
+    await screen.findByText('youtube.com')
+    await user.type(screen.getByTestId('sessions-filter-host'), 'youtube')
+    await waitFor(() => {
+      expect(api.sessions.list).toHaveBeenLastCalledWith({
+        host: 'youtube',
+        hours: 24,
+        limit: 100,
+      })
+    })
+  })
+
+  it('shows empty state when no sessions', async () => {
+    (api.sessions.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sessions: [], nextCursor: null,
+    } satisfies SessionPage)
+    render(<LogsPage />)
+    expect(await screen.findByText('No sessions found.')).toBeInTheDocument()
+  })
+})
+
+describe('LogsPage — Raw events tab', () => {
+  it('clicking Raw events tab calls api.logs.query and renders connection-event rows', async () => {
+    const user = userEvent.setup()
+    render(<LogsPage />)
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
     expect(await screen.findByText('example.com')).toBeInTheDocument()
-    expect(screen.getByText('evil.com')).toBeInTheDocument()
-    expect(screen.getByText('✗ blocked')).toBeInTheDocument()
-    expect(screen.getByText('✓ ok')).toBeInTheDocument()
-    expect(screen.getByText('category:adult')).toBeInTheDocument()
+    expect(api.logs.query).toHaveBeenCalled()
   })
 
-  it('renders empty state when no logs', async () => {
+  it('Raw events shows empty state with its own copy', async () => {
     (api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
-    render(<LogsPage />)
-    expect(await screen.findByText('No logs found.')).toBeInTheDocument()
-  })
-
-  it('initial fetch passes default params (no domain, no blocked filter)', async () => {
-    render(<LogsPage />)
-    await screen.findByText('example.com')
-    expect(api.logs.query).toHaveBeenCalledWith({
-      domain: undefined,
-      blocked: undefined,
-      limit: 200,
-    })
-  })
-})
-
-describe('LogsPage — filters', () => {
-  it('typing into the domain input refetches with the domain filter', async () => {
     const user = userEvent.setup()
     render(<LogsPage />)
-    await screen.findByText('example.com')
-    await user.type(screen.getByPlaceholderText(/Filter by domain/), 'foo.com')
-    await waitFor(() => {
-      expect(api.logs.query).toHaveBeenLastCalledWith({
-        domain: 'foo.com',
-        blocked: undefined,
-        limit: 200,
-      })
-    })
-  })
-
-  it('selecting "Blocked only" sends blocked: true', async () => {
-    const user = userEvent.setup()
-    render(<LogsPage />)
-    await screen.findByText('example.com')
-    await user.selectOptions(screen.getByRole('combobox'), 'true')
-    await waitFor(() => {
-      expect(api.logs.query).toHaveBeenLastCalledWith({
-        domain: undefined,
-        blocked: true,
-        limit: 200,
-      })
-    })
-  })
-
-  it('selecting "Allowed only" sends blocked: false', async () => {
-    const user = userEvent.setup()
-    render(<LogsPage />)
-    await screen.findByText('example.com')
-    await user.selectOptions(screen.getByRole('combobox'), 'false')
-    await waitFor(() => {
-      expect(api.logs.query).toHaveBeenLastCalledWith({
-        domain: undefined,
-        blocked: false,
-        limit: 200,
-      })
-    })
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    expect(await screen.findByText('No events found.')).toBeInTheDocument()
   })
 })

@@ -64,6 +64,27 @@ export interface QueryLog {
   ts: string
 }
 
+export interface Session {
+  mac: string
+  deviceName: string | null
+  profileId: number | null
+  profileName: string | null
+  hostname: string
+  routerId: string
+  date: string
+  startedAt: string
+  endedAt: string
+  durationSeconds: number
+  bytesIn: number
+  bytesOut: number
+  periodCount: number
+}
+
+export interface SessionPage {
+  sessions: Session[]
+  nextCursor: string | null
+}
+
 export interface DashboardStats {
   totalToday: number
   blockedToday: number
