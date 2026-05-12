@@ -25,7 +25,7 @@ mkdir "$WORK/ctrl"
 cat > "$WORK/ctrl/control" <<EOF
 Package: familydns
 Version: ${PKG_VERSION}-${PKG_RELEASE}
-Depends: lua, luci-lib-jsonc, conntrack-tools, curl
+Depends: lua, libuci-lua, luci-lib-jsonc, conntrack, curl
 Architecture: all
 Maintainer: FamilyDNS <noreply@example.com>
 Description: Agent daemon for FamilyDNS. Enforces per-device DNS filtering
@@ -36,8 +36,21 @@ cat > "$WORK/ctrl/postinst" <<'POSTINST'
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 /etc/init.d/familydns enable
+# Install cron entry for the auto-updater (every 6 hours).
+if ! grep -q familydns-update /etc/crontabs/root 2>/dev/null; then
+    mkdir -p /etc/crontabs
+    echo '0 */6 * * * /usr/sbin/familydns-update' >> /etc/crontabs/root
+    /etc/init.d/cron enable 2>/dev/null || true
+    /etc/init.d/cron restart 2>/dev/null || true
+fi
 POSTINST
 chmod 0755 "$WORK/ctrl/postinst"
+
+# Mark UCI config as a conffile so opkg preserves it across upgrades
+# (router_token must survive auto-updates; see #131).
+cat > "$WORK/ctrl/conffiles" <<'CONFFILES'
+/etc/config/familydns
+CONFFILES
 
 (cd "$WORK/ctrl" && tar czf "$WORK/control.tar.gz" .)
 
@@ -48,7 +61,7 @@ cp -r "$SCRIPT_DIR/files/." "$WORK/data/"
 # Fix permissions
 find "$WORK/data/usr/sbin"            -type f -exec chmod 0755 {} \;
 find "$WORK/data/etc/init.d"          -type f -exec chmod 0755 {} \;
-find "$WORK/data/usr/lib/familydns"   -type f -exec chmod 0644 {} \; 2>/dev/null || true
+find "$WORK/data/usr/lib/lua/familydns" -type f -exec chmod 0644 {} \; 2>/dev/null || true
 if [ -f "$WORK/data/etc/config/familydns" ]; then
     chmod 0600 "$WORK/data/etc/config/familydns"
 fi

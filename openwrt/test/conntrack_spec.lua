@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/familydns/conntrack.lua
+-- Tests for openwrt/files/usr/lib/lua/familydns/conntrack.lua
 -- Run with: busted openwrt/test/conntrack_spec.lua
 -- Requires: busted (luarocks install busted)
 
@@ -65,7 +65,7 @@ describe("build_event", function()
     assert.equal("connection_attempt", ev["type"])
     assert.equal("aa:bb:cc:11:22:33", ev.mac)
     assert.equal("youtube.com",        ev.hostname)
-    assert.equal("1.2.3.4",            ev.dest_ip)
+    assert.equal("1.2.3.4",            ev.destIp)
     assert.equal(false,                ev.allowed)
     assert.equal("category:adult",     ev.reason)
     assert.equal("2026-05-07T14:01:14Z", ev.ts)
@@ -95,7 +95,7 @@ describe("build_event", function()
     local decoded = json.decode(encoded)
     assert.equal("connection_attempt", decoded["type"])
     assert.equal("example.com",        decoded.hostname)
-    assert.equal("1.1.1.1",            decoded.dest_ip)   -- snake_case, not camelCase
+    assert.equal("1.1.1.1",            decoded.destIp)    -- camelCase to match server schema
     assert.is_boolean(decoded.allowed)
   end)
 end)
@@ -177,6 +177,215 @@ describe("batcher", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 4b. parse_dhcp_leases
+-- ---------------------------------------------------------------------------
+
+describe("parse_dhcp_leases", function()
+  local function write_tmp(contents)
+    local path = os.tmpname()
+    local f = assert(io.open(path, "w"))
+    f:write(contents)
+    f:close()
+    return path
+  end
+
+  it("returns an empty table when the file doesn't exist", function()
+    local leases = conntrack.parse_dhcp_leases("/tmp/__does_not_exist_familydns__")
+    assert.same({}, leases)
+  end)
+
+  it("parses mac -> {ip, hostname} entries", function()
+    local path = write_tmp(
+      "1715000000 aa:bb:cc:11:22:33 192.168.1.42 laptop 01:aa:bb:cc:11:22:33\n" ..
+      "1715000001 de:ad:be:ef:00:01 192.168.1.99 phone *\n")
+    local leases = conntrack.parse_dhcp_leases(path)
+    os.remove(path)
+    assert.equal("192.168.1.42", leases["aa:bb:cc:11:22:33"].ip)
+    assert.equal("laptop",       leases["aa:bb:cc:11:22:33"].hostname)
+    assert.equal("192.168.1.99", leases["de:ad:be:ef:00:01"].ip)
+    assert.equal("phone",        leases["de:ad:be:ef:00:01"].hostname)
+  end)
+
+  it("treats a hostname of '*' as nil", function()
+    local path = write_tmp("1715000000 aa:bb:cc:11:22:33 192.168.1.42 * *\n")
+    local leases = conntrack.parse_dhcp_leases(path)
+    os.remove(path)
+    assert.equal("192.168.1.42", leases["aa:bb:cc:11:22:33"].ip)
+    assert.is_nil(leases["aa:bb:cc:11:22:33"].hostname)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 4c. handle_flow — first_seen_mac emission semantics
+-- ---------------------------------------------------------------------------
+
+describe("handle_flow", function()
+  local MAC      = "aa:bb:cc:11:22:33"
+  local SRC_IP   = "192.168.1.42"
+  local DST_IP   = "1.2.3.4"
+
+  local function collecting_batcher()
+    local events = {}
+    return {
+      add   = function(ev) table.insert(events, ev) end,
+      flush = function() end,
+      tick  = function() end,
+      events = events,
+    }
+  end
+
+  local function ctx_with(overrides)
+    local base = {
+      arp_table      = { [SRC_IP] = MAC },
+      nft_sets       = {},
+      blocked_ips    = {},
+      blocked_reason = {},
+      reported_macs  = {},
+      leases         = {},
+      ts             = "2026-05-11T00:00:00Z",
+    }
+    for k, v in pairs(overrides or {}) do base[k] = v end
+    return base
+  end
+
+  it("emits first_seen_mac and connection_attempt on first flow from a new MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    assert.equal(2, #b.events)
+    assert.equal("first_seen_mac",     b.events[1]["type"])
+    assert.equal(MAC,                  b.events[1].mac)
+    assert.equal("connection_attempt", b.events[2]["type"])
+    assert.equal(MAC,                  b.events[2].mac)
+    assert.is_true(ctx.reported_macs[MAC])
+  end)
+
+  it("does not re-emit first_seen_mac on subsequent flows from the same MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "5.6.7.8" }, ctx, b)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = "9.9.9.9" }, ctx, b)
+
+    -- 1 first_seen_mac + 3 connection_attempts
+    assert.equal(4, #b.events)
+    assert.equal("first_seen_mac",     b.events[1]["type"])
+    assert.equal("connection_attempt", b.events[2]["type"])
+    assert.equal("connection_attempt", b.events[3]["type"])
+    assert.equal("connection_attempt", b.events[4]["type"])
+  end)
+
+  it("carries ip and hostname from the lease into the first_seen_mac event", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    local ev = b.events[1]
+    assert.equal("first_seen_mac",  ev["type"])
+    assert.equal(MAC,               ev.mac)
+    assert.equal("192.168.1.42",    ev.ip)
+    assert.equal("laptop",          ev.hostname)
+    assert.equal("2026-05-11T00:00:00Z", ev.ts)
+  end)
+
+  it("emits first_seen_mac with nil ip/hostname when the MAC has no lease entry", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({ leases = {} })  -- no lease for this MAC
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    local ev = b.events[1]
+    assert.equal("first_seen_mac", ev["type"])
+    assert.equal(MAC,              ev.mac)
+    assert.is_nil(ev.ip)
+    assert.is_nil(ev.hostname)
+  end)
+
+  -- ── #249: re-emit a dhcp_lease event when a later lease attaches a hostname ──
+  it("flags MAC as pending-hostname when first_seen_mac is emitted with nil hostname", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({ leases = {}, pending_hostname_macs = {} })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    assert.is_true(ctx.pending_hostname_macs[MAC])
+  end)
+
+  it("does NOT flag MAC as pending when first_seen_mac already has a hostname", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      pending_hostname_macs = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    assert.is_nil(ctx.pending_hostname_macs[MAC])
+  end)
+
+  it("emits dhcp_lease event when a pending MAC later acquires a hostname", function()
+    local b = collecting_batcher()
+    -- Already reported (first_seen_mac was emitted earlier without a hostname).
+    local ctx = ctx_with({
+      reported_macs         = { [MAC] = true },
+      pending_hostname_macs = { [MAC] = true },
+      leases                = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    -- Should emit one dhcp_lease + one connection_attempt (NOT another first_seen_mac).
+    local found_dhcp = false
+    for _, ev in ipairs(b.events) do
+      if ev["type"] == "dhcp_lease" then
+        found_dhcp = true
+        assert.equal(MAC,             ev.mac)
+        assert.equal("192.168.1.42",  ev.ip)
+        assert.equal("laptop",        ev.hostname)
+        assert.equal("2026-05-11T00:00:00Z", ev.ts)
+      end
+      assert.not_equal("first_seen_mac", ev["type"])
+    end
+    assert.is_true(found_dhcp)
+    -- And the flag is cleared so we don't keep re-emitting.
+    assert.is_nil(ctx.pending_hostname_macs[MAC])
+  end)
+
+  it("does NOT emit dhcp_lease while the pending MAC's lease still has no hostname", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs         = { [MAC] = true },
+      pending_hostname_macs = { [MAC] = true },
+      leases                = { [MAC] = { ip = "192.168.1.42", hostname = nil } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    for _, ev in ipairs(b.events) do
+      assert.not_equal("dhcp_lease", ev["type"])
+    end
+    assert.is_true(ctx.pending_hostname_macs[MAC])
+  end)
+end)
+
+describe("build_dhcp_lease_event", function()
+  it("builds a dhcp_lease event with mac/ip/hostname/ts", function()
+    local ev = conntrack.build_dhcp_lease_event({
+      mac = "aa:bb:cc:11:22:33",
+      ip = "192.168.1.42",
+      hostname = "laptop",
+      ts = "2026-05-11T00:00:00Z",
+    })
+    assert.equal("dhcp_lease", ev["type"])
+    assert.equal("aa:bb:cc:11:22:33", ev.mac)
+    assert.equal("192.168.1.42",      ev.ip)
+    assert.equal("laptop",            ev.hostname)
+    assert.equal("2026-05-11T00:00:00Z", ev.ts)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 5. Retry logic
 -- ---------------------------------------------------------------------------
 
@@ -188,10 +397,14 @@ describe("post_with_retry", function()
     local calls = 0
     local function post_fn(_url, _body)
       calls = calls + 1
-      return 200, ""
+      return 200, "ok-body"
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status, body, err = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_true(ok)
+    assert.equal(200, status)
+    assert.equal("ok-body", body)
+    assert.is_nil(err)
     assert.equal(1, calls)
   end)
 
@@ -202,30 +415,68 @@ describe("post_with_retry", function()
       if calls < 2 then return 500, "err" end
       return 200, ""
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_true(ok)
+    assert.equal(200, status)
     assert.equal(2, calls)
   end)
 
-  it("drops and returns false after max retries are exhausted", function()
+  it("drops and returns false after max retries are exhausted, surfacing last status/body", function()
     local calls = 0
     local function post_fn(_url, _body)
       calls = calls + 1
       return 503, "unavailable"
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status, body, err = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_false(ok)
+    assert.equal(503, status)
+    assert.equal("unavailable", body)
+    assert.is_nil(err)
     assert.equal(MAX_RETRIES, calls)
   end)
 
-  it("does not retry on 4xx (client error)", function()
+  it("drops and returns false when all retries return 500, surfacing status=500", function()
+    local calls = 0
+    local function post_fn(_url, _body)
+      calls = calls + 1
+      return 500, "boom"
+    end
+    local ok, status, body = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    assert.is_false(ok)
+    assert.equal(500, status)
+    assert.equal("boom", body)
+    assert.equal(MAX_RETRIES, calls)
+  end)
+
+  it("surfaces connection error (nil status) with err string when post_fn fails", function()
+    local calls = 0
+    local function post_fn(_url, _body)
+      calls = calls + 1
+      return nil, nil, "curl: (7) Failed to connect"
+    end
+    local ok, status, body, err = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    assert.is_false(ok)
+    assert.is_nil(status)
+    assert.is_nil(body)
+    assert.equal("curl: (7) Failed to connect", err)
+    assert.equal(MAX_RETRIES, calls)
+  end)
+
+  it("does not retry on 4xx (client error), surfacing status/body", function()
     local calls = 0
     local function post_fn(_url, _body)
       calls = calls + 1
       return 401, "unauthorized"
     end
-    local ok = conntrack.post_with_retry("http://api/events", "{}", MAX_RETRIES, 0, post_fn)
+    local ok, status, body = conntrack.post_with_retry(
+      "http://api/events", "{}", MAX_RETRIES, 0, post_fn)
     assert.is_false(ok)
+    assert.equal(401, status)
+    assert.equal("unauthorized", body)
     assert.equal(1, calls)   -- no retry on 4xx
   end)
 

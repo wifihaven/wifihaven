@@ -31,7 +31,7 @@ in automatically by the system package manager (`opkg` on 23.05.x, `apk` on
 SSH into the router as root and run:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 ```
 
 The script prompts for:
@@ -40,8 +40,10 @@ The script prompts for:
 |---|---|
 | API server URL | e.g. `https://api.example.com` (no trailing slash needed; the script trims it). |
 | Enrollment token | The `et_…` value from the admin UI. Single-use; invalidated on success. |
-| Router name | Defaults to the router's hostname. |
 | LAN prefix | Auto-detected from `network.lan.ipaddr` (last octet stripped). Must end with a dot. |
+
+The router's display name comes from whatever you typed in the admin UI
+when you generated the enrollment token — the agent does not collect it.
 
 It then:
 
@@ -64,11 +66,26 @@ router in a clean state so you can re-run after fixing the underlying issue.
 Download and inspect the script first:
 
 ```sh
-curl -fsSL -o /tmp/familydns-install.sh \
+uclient-fetch -qO /tmp/familydns-install.sh \
   https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh
 less /tmp/familydns-install.sh
 sh /tmp/familydns-install.sh
 ```
+
+### Uninstalling
+
+To cleanly revert the install (stop and disable the service, remove the
+package, drop the uhttpd block-page listener, wipe the familydns UCI
+config):
+
+```sh
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
+```
+
+Pass `--purge` to additionally remove `/usr/lib/familydns` and
+`/usr/lib/lua/familydns` (manual-workaround leftovers from older e2e
+shakeouts). The script is idempotent — re-running on an already-clean
+router exits 0.
 
 ## 3. Verify
 
@@ -165,7 +182,6 @@ curl -s -X POST https://api.example.com/api/router/register \
   -H 'Content-Type: application/json' \
   -d '{
     "enrollmentToken": "et_5f3c9b…",
-    "routerName":      "home-router",
     "platformVersion": "23.05.5",
     "agentVersion":    "0.1.0"
   }'

@@ -13,7 +13,7 @@ define Package/familydns
   SECTION:=net
   CATEGORY:=Network
   TITLE:=FamilyDNS router agent
-  DEPENDS:=+lua +luci-lib-jsonc +conntrack-tools +curl
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl
   PKGARCH:=all
 endef
 
@@ -25,12 +25,17 @@ endef
 define Build/Compile
 endef
 
+define Package/familydns/conffiles
+/etc/config/familydns
+endef
+
 define Package/familydns/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/familydns-agent $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/familydns-update $(1)/usr/sbin/
 
-	$(INSTALL_DIR) $(1)/usr/lib/familydns
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/lib/familydns/*.lua $(1)/usr/lib/familydns/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/familydns
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/lib/lua/familydns/*.lua $(1)/usr/lib/lua/familydns/
 
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/init.d/familydns $(1)/etc/init.d/
@@ -46,6 +51,13 @@ define Package/familydns/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/familydns enable
+# Install cron entry for the auto-updater (every 6 hours).
+if ! grep -q familydns-update /etc/crontabs/root 2>/dev/null; then
+	mkdir -p /etc/crontabs
+	echo '0 */6 * * * /usr/sbin/familydns-update' >> /etc/crontabs/root
+	/etc/init.d/cron enable 2>/dev/null || true
+	/etc/init.d/cron restart 2>/dev/null || true
+fi
 endef
 
 $(eval $(call BuildPackage,familydns))

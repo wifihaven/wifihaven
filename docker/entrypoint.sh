@@ -13,14 +13,14 @@ set -euo pipefail
 : "${FAMILYDNS_STATIC_DIR:=/app/web}"
 : "${FAMILYDNS_JWT_SECRET:=staging-jwt-secret-do-not-use-in-prod-32ch}"
 : "${FAMILYDNS_JWT_HOURS:=24}"
-: "${FAMILYDNS_DNS_REFRESH:=10}"
-: "${FAMILYDNS_DNS_PORT:=5354}"
-: "${FAMILYDNS_DNS_LOCATION:=staging}"
-: "${FAMILYDNS_DNS_UPSTREAM_PRIMARY:=1.1.1.1}"
-: "${FAMILYDNS_DNS_UPSTREAM_SECONDARY:=8.8.8.8}"
-: "${FAMILYDNS_DNS_UPSTREAM_PORT:=53}"
-: "${FAMILYDNS_DNS_LOG_BATCH:=500}"
-: "${FAMILYDNS_DNS_LOG_FLUSH:=5}"
+: "${FAMILYDNS_LOG_LEVEL:=INFO}"
+: "${FAMILYDNS_DEBUG:=}"
+
+export FAMILYDNS_LOG_LEVEL FAMILYDNS_DEBUG
+
+if [ -n "${FAMILYDNS_DEBUG}" ]; then
+  echo "[entrypoint] WARNING: FAMILYDNS_DEBUG is set — debug endpoints will be mounted (loopback only). Disable in production."
+fi
 
 mkdir -p /app/config
 cat > /app/config/application.conf <<EOF
@@ -41,16 +41,6 @@ familydns {
   jwt {
     secret      = "${FAMILYDNS_JWT_SECRET}"
     expiryHours = ${FAMILYDNS_JWT_HOURS}
-  }
-  dns {
-    cacheRefreshSeconds = ${FAMILYDNS_DNS_REFRESH}
-    port                = ${FAMILYDNS_DNS_PORT}
-    location            = "${FAMILYDNS_DNS_LOCATION}"
-    upstreamPrimary     = "${FAMILYDNS_DNS_UPSTREAM_PRIMARY}"
-    upstreamSecondary   = "${FAMILYDNS_DNS_UPSTREAM_SECONDARY}"
-    upstreamPort        = ${FAMILYDNS_DNS_UPSTREAM_PORT}
-    logBatchSize        = ${FAMILYDNS_DNS_LOG_BATCH}
-    logFlushSeconds     = ${FAMILYDNS_DNS_LOG_FLUSH}
   }
 }
 EOF

@@ -11,6 +11,30 @@ export function RoutersPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showToken, setShowToken] = useState<CreateRouterResponse | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  async function copyToken(text: string) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.setAttribute('readonly', '')
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        const ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+        if (!ok) throw new Error('execCommand copy failed')
+      }
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+    setTimeout(() => setCopyState('idle'), 2000)
+  }
 
   async function reload() {
     const list = await api.routers.list()
@@ -98,16 +122,22 @@ export function RoutersPage() {
             </div>
           )}
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Name</label>
-            <input type="text" value={name} autoFocus
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              Name <span className="text-red-400">*</span>
+            </label>
+            <input type="text" value={name} autoFocus required
               onChange={e => setName(e.target.value)}
               placeholder="home-gw"
               className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500" />
+            <p className="text-xs text-gray-500 mt-2">
+              This is the only place the router's display name is set — the
+              install script on the router doesn't ask for it.
+            </p>
           </div>
           <p className="text-sm text-gray-400">
-            We'll generate a one-time enrollment token. Paste it into the
-            OpenWRT package's UCI config (<code className="font-mono text-gray-300">/etc/config/familydns</code>),
-            then start the agent. The token is single-use.
+            We'll generate a one-time enrollment token. Run the OpenWRT
+            install script on the router and paste the token when prompted;
+            no other identifier is needed. The token is single-use.
           </p>
           <div className="flex gap-3 pt-2">
             <button onClick={() => setCreating(false)} disabled={saving}
@@ -132,15 +162,30 @@ export function RoutersPage() {
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
               Enrollment token for {showToken.name}
             </label>
-            <code className="block w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-emerald-300 font-mono text-sm break-all">
-              {showToken.enrollmentToken}
-            </code>
+            <input
+              type="text"
+              readOnly
+              value={showToken.enrollmentToken}
+              onFocus={e => e.currentTarget.select()}
+              className="block w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-emerald-300 font-mono text-sm break-all"
+            />
           </div>
           <button
-            onClick={() => navigator.clipboard?.writeText(showToken.enrollmentToken)}
-            className="w-full py-2 rounded-xl bg-gray-800 text-gray-200 text-sm font-medium hover:bg-gray-700"
+            onClick={() => copyToken(showToken.enrollmentToken)}
+            aria-label="Copy enrollment token to clipboard"
+            className={`w-full py-2 rounded-xl text-sm font-medium transition-colors ${
+              copyState === 'copied'
+                ? 'bg-emerald-500/20 text-emerald-300'
+                : copyState === 'failed'
+                ? 'bg-red-500/20 text-red-300'
+                : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
+            }`}
           >
-            Copy to clipboard
+            {copyState === 'copied'
+              ? 'Copied!'
+              : copyState === 'failed'
+              ? 'Copy failed — select the token above and copy manually'
+              : 'Copy to clipboard'}
           </button>
           <button
             onClick={() => setShowToken(null)}

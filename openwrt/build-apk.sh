@@ -67,7 +67,7 @@ cp -r "$SCRIPT_DIR/files/." "$WORK/data/"
 
 find "$WORK/data/usr/sbin"            -type f -exec chmod 0755 {} \;
 find "$WORK/data/etc/init.d"          -type f -exec chmod 0755 {} \;
-find "$WORK/data/usr/lib/familydns"   -type f -exec chmod 0644 {} \; 2>/dev/null || true
+find "$WORK/data/usr/lib/lua/familydns" -type f -exec chmod 0644 {} \; 2>/dev/null || true
 if [ -f "$WORK/data/etc/config/familydns" ]; then
     chmod 0600 "$WORK/data/etc/config/familydns"
 fi
@@ -92,7 +92,7 @@ rm -f "$OUT_APK"
     --info "license:MIT" \
     --info "url:https://github.com/sameerparekh/familydns" \
     --info "maintainer:FamilyDNS <noreply@example.com>" \
-    --info "depends:lua luci-lib-jsonc conntrack-tools curl" \
+    --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl" \
     --script "post-install:$WORK/post-install" \
     --files "$WORK/data" \
     --output "$OUT_APK"

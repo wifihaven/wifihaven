@@ -1,0 +1,115 @@
+#!/bin/sh
+# Auto-updater for the familydns package.
+# Checks GitHub Releases for a newer build and upgrades in place.
+# Supports both opkg (OpenWRT <= 23.05) and apk-tools (OpenWRT 24.10+).
+# /etc/config/familydns is declared as a conffile, so router_token survives
+# upgrades under either package manager.
+# Safe to run from cron; logs to syslog under tag "familydns".
+set -u
+
+API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/latest"
+
+log() { logger -t familydns "update: $*"; }
+
+# Detect package manager. Prefer apk (24.10+) when both are present, since
+# routers mid-migration may still ship a vestigial opkg binary.
+if command -v apk >/dev/null 2>&1; then
+  PM=apk
+  PKG_EXT='\.apk$'
+  TMP=/tmp/familydns-update.apk
+elif command -v opkg >/dev/null 2>&1; then
+  PM=opkg
+  PKG_EXT='\.ipk$'
+  TMP=/tmp/familydns-update.ipk
+else
+  log "no package manager found (neither apk nor opkg); skipping"
+  exit 0
+fi
+
+# Current installed version.
+case "$PM" in
+  apk)
+    # `apk list -I familydns` prints lines like:
+    #   familydns-1.2.3-r0 x86_64 {familydns} (license) [installed]
+    # Strip the leading "familydns-" to get the version.
+    CURRENT=$(apk list -I familydns 2>/dev/null \
+      | awk '{print $1; exit}' \
+      | sed -n 's/^familydns-//p')
+    ;;
+  opkg)
+    CURRENT=$(opkg info familydns 2>/dev/null | awk '/^Version:/{print $2; exit}')
+    ;;
+esac
+
+if [ -z "$CURRENT" ]; then
+  log "familydns not installed via $PM; nothing to update"
+  exit 0
+fi
+
+LATEST_URL=$(curl -sf "$API_URL" \
+  | jsonfilter -e '@.assets[*].browser_download_url' \
+  | grep -E "$PKG_EXT" \
+  | head -n1)
+if [ -z "$LATEST_URL" ]; then
+  log "could not resolve latest $PM asset URL; skipping"
+  exit 0
+fi
+
+LATEST_VER=$(echo "$LATEST_URL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -n1)
+if [ -z "$LATEST_VER" ]; then
+  log "could not parse version from $LATEST_URL; skipping"
+  exit 0
+fi
+
+# Robust version compare per package manager. Both opkg and apk-tools handle
+# 1.10.0 > 1.9.0 correctly; the string-equality fallback covers parse failures.
+case "$PM" in
+  apk)
+    # `apk version -t a b` prints one of <, =, > to stdout.
+    CMP=$(apk version -t "$LATEST_VER" "$CURRENT" 2>/dev/null || echo '?')
+    if [ "$CMP" = '>' ]; then
+      :
+    else
+      exit 0
+    fi
+    ;;
+  opkg)
+    if opkg compare-versions "$LATEST_VER" '>' "$CURRENT" 2>/dev/null; then
+      :
+    elif [ "$LATEST_VER" = "$CURRENT" ]; then
+      exit 0
+    else
+      exit 0
+    fi
+    ;;
+esac
+
+log "upgrading $CURRENT -> $LATEST_VER via $PM"
+if ! curl -fsSL -o "$TMP" "$LATEST_URL"; then
+  log "download failed: $LATEST_URL"
+  rm -f "$TMP"
+  exit 1
+fi
+
+case "$PM" in
+  apk)
+    if apk add --allow-untrusted "$TMP" >/tmp/familydns-update.log 2>&1; then
+      log "installed $LATEST_VER"
+      rm -f "$TMP" /tmp/familydns-update.log
+    else
+      log "apk add failed; see /tmp/familydns-update.log"
+      rm -f "$TMP"
+      exit 1
+    fi
+    ;;
+  opkg)
+    if opkg install --force-reinstall "$TMP" >/tmp/familydns-update.log 2>&1; then
+      log "installed $LATEST_VER"
+      rm -f "$TMP" /tmp/familydns-update.log
+    else
+      log "opkg install failed; see /tmp/familydns-update.log"
+      rm -f "$TMP"
+      exit 1
+    fi
+    ;;
+esac

@@ -60,8 +60,14 @@ object RouterRoutes {
             _ <- routerRepo
               .touch(router.id, Some(snap.etag))
               .orElseFail(Response.internalServerError(""))
+            notMod = ifNoneMatch.contains(snap.etag)
+            _ <- ZIO.logDebug(
+              s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
+                s"etagOut=${snap.etag} notModified=$notMod devices=${snap.devices.size} " +
+                s"profiles=${snap.profiles.size}",
+            )
             resp =
-              if ifNoneMatch.contains(snap.etag) then
+              if notMod then
                 Response
                   .status(Status.NotModified)
                   .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))

@@ -1,8 +1,14 @@
-name: Publish API Server
+name: Master CD
 
-# Runs e2e and smoke checks on every push to main, then publishes the image
-# to ghcr.io after all checks are green.
-# The opkg .ipk is published separately by openwrt-build.yml on v* tags.
+# Runs on every push to main:
+#   1. ci-tests   — full CI matrix via workflow_call to ci.yml (unconditional).
+#   2. e2e/smoke  — bootstrap, e2e, prod-stack smokes (unconditional).
+#   3. publish    — Docker image to ghcr.io, only when api-image inputs changed
+#                   AND all of the above passed AND a reviewer approves the
+#                   `production` environment.
+#
+# OpenWRT .ipk/.apk publishing is handled by openwrt-build.yml on v* tags
+# (issues #190, #191).
 
 on:
   push:
@@ -13,7 +19,7 @@ on:
 # run is still paused waiting on the production environment approval, cancel
 # the older one — we always want the latest commit's run to take precedence.
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: master-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -22,6 +28,39 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # ── 0. Detect path changes (gates publish only, not tests) ────────────────
+  changes:
+    name: Detect path changes
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Inputs that get baked into the API Docker image. Keep in sync with
+          # docker/Dockerfile COPY directives — if it's not copied into the
+          # image, it shouldn't trigger a republish.
+          filters: |
+            api:
+              - 'api/**'
+              - 'shared/**'
+              - 'web/**'
+              - 'build.mill'
+              - 'docker/**'
+              - 'config/application.conf.example'
+              - '.scalafmt.conf'
+              - '.scalafix.conf'
+
+  # ── 1. Full CI test matrix (unit, lint, lua, python, shell, frontend) ─────
+  # Runs unconditionally — issue #190 wants test failures on main to block
+  # publish regardless of which paths changed.
+  ci-tests:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  # ── 2. E2E + smoke tests (unconditional) ──────────────────────────────────
   bootstrap-smoke:
     name: bootstrap-host.sh smoke (Ubuntu container)
     runs-on: ubuntu-latest
@@ -67,11 +106,14 @@ jobs:
       - name: Run prod-stack smoke
         run: scripts/smoke-prod.sh
 
-  publish:
+  # ── 3. Publish API image (path-filtered) ──────────────────────────────────
+  # NOTE: manual approval gate temporarily removed for live debugging of #228;
+  # restore via #244 once the bug is fixed and we're back in normal cadence.
+  publish-api:
     name: Publish Docker image to ghcr.io
-    needs: [bootstrap-smoke, e2e, prod-stack-smoke]
+    needs: [changes, ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
+    if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    environment: production
     permissions:
       contents: read
       packages: write

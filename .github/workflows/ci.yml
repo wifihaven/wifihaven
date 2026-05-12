@@ -3,10 +3,10 @@ name: CI
 on:
   pull_request:
     # Run on PRs targeting any branch
-  push:
-    # Only run on main post-merge — feature/claude branches get coverage via
-    # the PR's pull_request trigger. Avoids double-runs (issue #53).
-    branches: [main]
+  workflow_call:
+    # Invoked by master.yml on push to main so the CD pipeline gates publish
+    # on the same test matrix PRs run. Direct push: main is intentionally
+    # omitted — main coverage flows through master.yml (issue #190).
   workflow_dispatch:
 
 env:
@@ -136,7 +136,7 @@ jobs:
       - name: Run openwrt agent tests
         working-directory: openwrt
         run: |
-          LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua -e 'print(package.path)')" \
+          LUA_PATH="./files/usr/lib/lua/familydns/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
             busted test/conntrack_spec.lua
 
   # ── OPNsense agent: Python unit tests ───────────────────────────────────

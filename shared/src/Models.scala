@@ -350,7 +350,6 @@ case class RouterSummary(
 
 case class RegisterRouterRequest(
     enrollmentToken: String,
-    routerName: Option[String] = None,
     platformVersion: Option[String] = None,
     agentVersion: Option[String] = None,
 ) derives JsonCodec

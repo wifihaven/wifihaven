@@ -80,6 +80,43 @@ Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - **Formatting**: `scalafmt` enforced in CI. Run `mill __.reformat` before committing.
 - **Imports**: managed by `scalafix OrganizeImports`. Run `mill __.fix` before committing.
 
+## Always isolate spawned work in a worktree
+
+This repo is actively developed across many parallel sessions, so the main
+checkout at `/Users/sameer/workspace/familydns` is usually on some in-flight
+branch. **Spawning a session or agent that edits files without an isolated
+worktree pollutes that working tree and causes branch conflicts.**
+
+Rules:
+
+- When delegating with the `Agent` tool and the agent will edit files, pass
+  `isolation: "worktree"`. Read-only research agents (Explore, plain lookups)
+  don't need it.
+- When spinning off background work with `spawn_task`, write the prompt so
+  the spawned session creates its own worktree before doing anything else
+  (e.g. `git worktree add .claude/worktrees/<slug> -b <branch>` off the
+  latest `main`). State this explicitly in the prompt — the spawned session
+  starts with no context.
+- Never push to or check out a new branch in the top-level
+  `/Users/sameer/workspace/familydns` checkout from a spawned session. Treat
+  it as someone else's working tree.
+- Worktrees live under `.claude/worktrees/<slug>` and use branch names
+  `claude/<slug>` by convention (see `git worktree list`).
+
+## Backwards compatibility
+
+Nothing has been deployed yet. **Do not add backwards-compatibility shims,
+deprecation paths, or "ignore unknown fields" tolerance for the sake of
+older clients.** Breaking changes to API request/response shapes, UCI keys,
+DB schema (pre-migration), and CLI flags are fine — just change the code
+on all sides in the same PR.
+
+This policy flips once we've done our first real deploy, which is gated on
+picking a permanent project name ([#38](https://github.com/sameerparekh/familydns/issues/38)).
+After that ships, API request/response shapes become a public contract and
+we keep them backwards compatible (additive fields, ignore-unknown on input,
+deprecation windows for removals).
+
 ## Docker inside Claude Code agents (worktrees)
 
 Docker commands (`docker info`, `docker compose`, etc.) will **hang
@@ -138,7 +175,7 @@ mill __.checkFormatting
 mill __.fix
 
 # OpenWRT agent tests (requires lua5.1 + busted + lua-cjson)
-cd openwrt && LUA_PATH="./files/usr/lib/familydns/?.lua;$(lua -e 'print(package.path)')" busted test/
+cd openwrt && LUA_PATH="./files/usr/lib/lua/familydns/?.lua;$(lua -e 'print(package.path)')" busted test/
 
 # OPNsense agent tests (requires Python 3 + pytest)
 cd opnsense && python -m pytest test/ -v

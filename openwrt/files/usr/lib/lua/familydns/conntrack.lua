@@ -14,6 +14,17 @@
 
 local M = {}
 
+local function default_log()
+  local ok, l = pcall(require, "familydns.log")
+  if ok then return l end
+  return {
+    info  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    err   = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    warn  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    debug = function() end,
+  }
+end
+
 -- ---------------------------------------------------------------------------
 -- ipset_lookup_hostname(dest_ip, nft_sets) -> string | nil
 --
@@ -64,6 +75,66 @@ function M.parse_arp_table()
 end
 
 -- ---------------------------------------------------------------------------
+-- parse_dhcp_leases(path) -> { mac -> { ip = string, hostname = string|nil } }
+--
+-- Reads a dnsmasq lease file (default /tmp/dhcp.leases).  Each line is:
+--   <expiry-epoch> <mac> <ip> <hostname-or-*> <client-id-or-*>
+-- A hostname of "*" is treated as absent (nil).
+-- Returns an empty table if the file can't be opened.
+-- ---------------------------------------------------------------------------
+function M.parse_dhcp_leases(path)
+  local result = {}
+  local f = io.open(path or "/tmp/dhcp.leases", "r")
+  if not f then return result end
+  for line in f:lines() do
+    local parts = {}
+    for w in line:gmatch("%S+") do parts[#parts + 1] = w end
+    if #parts >= 3 then
+      local mac      = parts[2]
+      local ip       = parts[3]
+      local hostname = parts[4]
+      if hostname == "*" or hostname == "" then hostname = nil end
+      result[mac] = { ip = ip, hostname = hostname }
+    end
+  end
+  f:close()
+  return result
+end
+
+-- ---------------------------------------------------------------------------
+-- build_first_seen_mac_event(opts) -> table
+--
+-- opts: { mac, ip, hostname, ts }
+-- ip / hostname may be nil (e.g. MAC has no DHCP lease — static IP client).
+-- ---------------------------------------------------------------------------
+function M.build_first_seen_mac_event(opts)
+  return {
+    ["type"] = "first_seen_mac",
+    mac      = opts.mac,
+    ip       = opts.ip,
+    hostname = opts.hostname,
+    ts       = opts.ts,
+  }
+end
+
+-- ---------------------------------------------------------------------------
+-- build_dhcp_lease_event(opts) -> table
+--
+-- Emitted when a previously hostname-less MAC later acquires a hostname via
+-- DHCP (fixes #249 — the race where the first conntrack flow precedes the
+-- dnsmasq lease write, leaving the device named "unknown" forever).
+-- ---------------------------------------------------------------------------
+function M.build_dhcp_lease_event(opts)
+  return {
+    ["type"] = "dhcp_lease",
+    mac      = opts.mac,
+    ip       = opts.ip,
+    hostname = opts.hostname,
+    ts       = opts.ts,
+  }
+end
+
+-- ---------------------------------------------------------------------------
 -- build_event(opts) -> table
 --
 -- opts: { mac, hostname, dest_ip, allowed, reason, ts }
@@ -85,7 +156,7 @@ function M.build_event(opts)
     ["type"]    = "connection_attempt",
     mac         = opts.mac,
     hostname    = hostname,
-    dest_ip     = opts.dest_ip,
+    destIp      = opts.dest_ip,
     allowed     = opts.allowed,
     reason      = reason,
     ts          = opts.ts,
@@ -134,31 +205,34 @@ function M.new_batcher(max_size, flush_interval_sec, flush_fn)
 end
 
 -- ---------------------------------------------------------------------------
--- post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn) -> bool
+-- post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn)
+--   -> ok, last_status, last_body, last_err
 --
--- post_fn(url, body) -> status_code, body_str
+-- post_fn(url, body) -> status_code, body_str [, err_str]
 -- sleep_fn(seconds)  — injectable for tests (defaults to os.execute("sleep N"))
 --
 -- Retries on 5xx / connection errors with exponential back-off.
 -- Does NOT retry on 4xx (client errors are not transient).
--- Returns true on success, false after max_retries are exhausted.
--- Never blocks a caller waiting longer than necessary; callers should run this
--- in a coroutine or dedicate a goroutine-equivalent (Lua co-routine) if needed.
+-- Returns (true, status, body, nil) on success, or
+--         (false, last_status, last_body, last_err) when retries are exhausted
+--         or a 4xx short-circuits retrying.
 -- ---------------------------------------------------------------------------
 function M.post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn)
   sleep_fn = sleep_fn or function(s)
     os.execute("sleep " .. tostring(math.floor(s)))
   end
 
+  local last_status, last_body, last_err
   local delay = base_delay
   for attempt = 1, max_retries do
-    local status, _ = post_fn(url, body)
+    local status, resp_body, err = post_fn(url, body)
+    last_status, last_body, last_err = status, resp_body, err
     if status and status >= 200 and status < 300 then
-      return true
+      return true, status, resp_body, nil
     end
     if status and status >= 400 and status < 500 then
       -- Client error: no point retrying.
-      return false
+      return false, status, resp_body, err
     end
     -- 5xx or nil (connection failure): retry with back-off.
     if attempt < max_retries then
@@ -166,7 +240,74 @@ function M.post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn
       delay = delay * 2
     end
   end
-  return false
+  return false, last_status, last_body, last_err
+end
+
+-- ---------------------------------------------------------------------------
+-- handle_flow(flow, ctx, batcher)
+--
+-- Processes a single outbound flow: emits a first_seen_mac event the first
+-- time we observe a given MAC, then always emits a connection_attempt event.
+--
+-- ctx: {
+--   arp_table      table   { ip -> mac }
+--   nft_sets       table   { hostname -> { ip -> true } }
+--   blocked_ips    table   { ip -> true }
+--   blocked_reason table   { ip -> reason }
+--   reported_macs  table   { mac -> true }  (mutated)
+--   leases         table   { mac -> { ip, hostname } } (may be nil/empty)
+--   ts             string  ISO8601 timestamp to attach to the events
+-- }
+-- ---------------------------------------------------------------------------
+function M.handle_flow(flow, ctx, batcher)
+  local log = ctx.log or default_log()
+  local mac = M.arp_lookup_mac(flow.src_ip, ctx.arp_table or {})
+
+  if mac and not (ctx.reported_macs or {})[mac] then
+    local lease = (ctx.leases or {})[mac]
+    local ip, hostname
+    if lease then ip = lease.ip; hostname = lease.hostname end
+    log.debug("handle_flow: first_seen_mac mac=%s ip=%s hostname=%s",
+              mac, tostring(ip), tostring(hostname))
+    batcher.add(M.build_first_seen_mac_event({
+      mac = mac, ip = ip, hostname = hostname, ts = ctx.ts,
+    }))
+    if ctx.reported_macs then ctx.reported_macs[mac] = true end
+    -- #249: if we emitted first_seen_mac with no hostname (DHCP race or
+    -- iOS Private Address without option 12), remember to re-emit once
+    -- dnsmasq's lease file catches up.
+    if not hostname and ctx.pending_hostname_macs then
+      ctx.pending_hostname_macs[mac] = true
+    end
+  elseif mac and ctx.pending_hostname_macs and ctx.pending_hostname_macs[mac] then
+    local lease = (ctx.leases or {})[mac]
+    if lease and lease.hostname then
+      log.debug("handle_flow: dhcp_lease (late) mac=%s ip=%s hostname=%s",
+                mac, tostring(lease.ip), tostring(lease.hostname))
+      batcher.add(M.build_dhcp_lease_event({
+        mac = mac, ip = lease.ip, hostname = lease.hostname, ts = ctx.ts,
+      }))
+      ctx.pending_hostname_macs[mac] = nil
+    end
+  end
+
+  local hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
+  local allowed = not (ctx.blocked_ips and ctx.blocked_ips[flow.dst_ip])
+  local reason
+  if not allowed and ctx.blocked_reason then
+    reason = ctx.blocked_reason[flow.dst_ip]
+  end
+  log.debug("handle_flow: connection_attempt src=%s dst=%s mac=%s hostname=%s allowed=%s reason=%s",
+            flow.src_ip, flow.dst_ip, tostring(mac), tostring(hname),
+            tostring(allowed), tostring(reason))
+  batcher.add(M.build_event({
+    mac      = mac,
+    hostname = hname,
+    dest_ip  = flow.dst_ip,
+    allowed  = allowed,
+    reason   = reason,
+    ts       = ctx.ts,
+  }))
 end
 
 -- ---------------------------------------------------------------------------
@@ -215,7 +356,8 @@ end
 -- }
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
-  local json       = require("cjson")
+  local jsonc      = require("luci.jsonc")
+  local log        = cfg.log            or default_log()
   local lan_prefix = cfg.lan_prefix     or "192.168.1."
   local max_batch  = cfg.max_batch      or 50
   local flush_int  = cfg.flush_interval or 10
@@ -232,22 +374,36 @@ function M.watch(cfg)
   end
 
   local batcher = M.new_batcher(max_batch, flush_int, function(events)
-    local payload = json.encode({
-      router_id = cfg.router_id,
-      events    = events,
+    log.debug("conntrack: flushing batch size=%d url=%s", #events, events_url)
+    local payload = jsonc.stringify({
+      routerId = cfg.router_id,
+      events   = events,
     })
-    local ok = M.post_with_retry(events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
+    local ok, last_status, last_body, last_err = M.post_with_retry(
+      events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
     if not ok then
       -- best-effort: log and continue; never block a flow waiting for the API
-      io.stderr:write("[familydns] conntrack: failed to POST events batch after retries, dropping\n")
+      local body_str = last_body and tostring(last_body) or ""
+      if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
+      log.err("conntrack: failed to POST events batch after %d retries (status=%s body=%q) err=%s, dropping %d events",
+              max_retry, tostring(last_status), body_str, tostring(last_err), #events)
+    else
+      log.debug("conntrack: POST events success status=%d events=%d",
+                last_status, #events)
     end
   end)
 
+  log.info("conntrack: starting watcher lan_prefix=%s max_batch=%d flush_interval=%ds",
+           lan_prefix, max_batch, flush_int)
   local handle = io.popen("conntrack -E -e NEW 2>/dev/null", "r")
   if not handle then
-    io.stderr:write("[familydns] conntrack: cannot start conntrack -E -e NEW\n")
+    log.err("conntrack: cannot start conntrack -E -e NEW")
     return
   end
+
+  local reported_macs         = {}
+  local pending_hostname_macs = {}
+  local leases_path           = cfg.leases_path or "/tmp/dhcp.leases"
 
   while true do
     local line = handle:read("*l")
@@ -255,25 +411,27 @@ function M.watch(cfg)
 
     local flow = M.parse_conntrack_line(line)
     if flow and M.is_outbound(flow, lan_prefix) then
-      local arp   = M.parse_arp_table()
-      local mac   = M.arp_lookup_mac(flow.src_ip, arp)
-      local hname = M.ipset_lookup_hostname(flow.dst_ip, cfg.nft_sets or {})
-
-      local allowed = not (cfg.blocked_ips and cfg.blocked_ips[flow.dst_ip])
-      local reason
-      if not allowed and cfg.blocked_reason then
-        reason = cfg.blocked_reason[flow.dst_ip]
+      local arp = M.parse_arp_table()
+      local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
+      -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a
+      -- late hostname (#249 — re-emit dhcp_lease once dnsmasq writes it).
+      local leases
+      if mac_candidate and
+         (not reported_macs[mac_candidate] or pending_hostname_macs[mac_candidate]) then
+        leases = M.parse_dhcp_leases(leases_path)
       end
 
-      local ev = M.build_event({
-        mac      = mac,
-        hostname = hname,
-        dest_ip  = flow.dst_ip,
-        allowed  = allowed,
-        reason   = reason,
-        ts       = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-      })
-      batcher.add(ev)
+      M.handle_flow(flow, {
+        arp_table             = arp,
+        nft_sets              = cfg.nft_sets or {},
+        blocked_ips           = cfg.blocked_ips,
+        blocked_reason        = cfg.blocked_reason,
+        reported_macs         = reported_macs,
+        pending_hostname_macs = pending_hostname_macs,
+        leases                = leases or {},
+        ts                    = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        log                   = log,
+      }, batcher)
     end
 
     batcher.tick()

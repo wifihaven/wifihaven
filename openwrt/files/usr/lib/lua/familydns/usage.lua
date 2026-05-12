@@ -22,6 +22,18 @@
 
 local M = {}
 
+-- log is injectable; default to the real logger wrapper, fall back to stderr.
+local function default_log()
+  local ok, l = pcall(require, "familydns.log")
+  if ok then return l end
+  return {
+    info  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    err   = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    warn  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    debug = function() end,
+  }
+end
+
 -- ---------------------------------------------------------------------------
 -- decode_counter_name(name) → mac, dst_ip  or  nil
 -- ---------------------------------------------------------------------------
@@ -50,9 +62,11 @@ end
 -- usage.parse_nft_counters(json_str)
 -- ---------------------------------------------------------------------------
 function M.parse_nft_counters(json_str)
-  local json     = require("cjson")
-  local decoded  = json.decode(json_str)
+  local jsonc    = require("luci.jsonc")
+  local decoded  = jsonc.parse(json_str)
   local result   = {}
+
+  if not decoded then return result end
 
   for _, entry in ipairs(decoded.nftables or {}) do
     local c = entry.counter
@@ -93,11 +107,11 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
   for _, c in ipairs(counters or {}) do
     local hostname = hostname_for_ip(c.dst_ip, nft_sets)
     local rec = {
-      mac            = c.mac,
-      hostname       = hostname,
-      active_seconds = (c.bytes > 0) and 300 or 0,
-      bytes_in       = c.bytes,
-      bytes_out      = 0,   -- nftables ingress-only counters; egress tracked separately
+      mac           = c.mac,
+      hostname      = hostname,
+      activeSeconds = (c.bytes > 0) and 300 or 0,
+      bytesIn       = c.bytes,
+      bytesOut      = 0,   -- nftables ingress-only counters; egress tracked separately
     }
     if leases then
       rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
@@ -106,31 +120,45 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
   end
 
   return {
-    router_id    = router_id,
-    period_start = period_start,
-    period_end   = period_end,
-    records      = records,
+    routerId    = router_id,
+    periodStart = period_start,
+    periodEnd   = period_end,
+    records     = records,
   }
 end
 
 -- ---------------------------------------------------------------------------
 -- usage.post(api_url, router_token, report, post_fn)
 -- ---------------------------------------------------------------------------
-function M.post(api_url, router_token, report, post_fn)
-  local json = require("cjson")
-  local body = json.encode(report)
+function M.post(api_url, router_token, report, post_fn, log)
+  log = log or default_log()
+  local jsonc = require("luci.jsonc")
+  -- luci.jsonc encodes empty Lua tables as `{}` (object). The API requires
+  -- `records` to be a JSON array, so when no usage was observed in this
+  -- window, skip the POST entirely rather than send a malformed payload.
+  if report.records and next(report.records) == nil then
+    log.debug("usage.post: skipping (no records)")
+    return true
+  end
+  local body = jsonc.stringify(report)
   local url  = api_url .. "/api/router/usage"
   local hdrs = {
     ["Authorization"] = "Bearer " .. router_token,
     ["Content-Type"]  = "application/json",
   }
 
-  local status, _ = post_fn(url, body, hdrs)
+  log.debug("usage.post: POST url=%s records=%d periodStart=%s periodEnd=%s",
+            url, #report.records, tostring(report.periodStart),
+            tostring(report.periodEnd))
+  local status, resp_body, err = post_fn(url, body, hdrs)
   if status and status >= 200 and status < 300 then
+    log.debug("usage.post: success status=%d", status)
     return true
   end
-  io.stderr:write(string.format(
-    "[familydns] usage.post: POST failed, status=%s\n", tostring(status)))
+  local body_str = resp_body and tostring(resp_body) or ""
+  if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
+  log.err("usage.post: POST failed (status=%s body=%q) err=%s",
+          tostring(status), body_str, tostring(err))
   return false
 end
 

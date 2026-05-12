@@ -3,19 +3,21 @@
 #
 # Usage (on an OpenWRT 23.05.x router, as root):
 #
-#   sh -c "$(curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
 #
 # Or download then run:
 #
-#   curl -fsSL -o /tmp/familydns-install.sh \
+#   uclient-fetch -qO /tmp/familydns-install.sh \
 #     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh
 #   sh /tmp/familydns-install.sh
 #
-# The script prompts for the API URL, the one-time enrollment token, a router
-# name, and the LAN prefix; downloads the latest .ipk from GitHub Releases;
-# installs it; enrolls the router against the API; writes the returned
-# credentials into UCI; sets up the uhttpd block-page listener; and starts
-# the agent.
+# The script prompts for the API URL, the one-time enrollment token, and the
+# LAN prefix; downloads the latest .ipk from GitHub Releases; installs it;
+# enrolls the router against the API; writes the returned credentials into
+# UCI; sets up the uhttpd block-page listener; and starts the agent.
+#
+# The router's display name is set in the admin UI when the enrollment token
+# is generated — the agent does not collect it.
 
 set -eu
 
@@ -52,14 +54,21 @@ command -v jsonfilter >/dev/null 2>&1 || err "jsonfilter not found — this shou
 if command -v apk >/dev/null 2>&1; then
   PKG_MGR=apk
   PKG_EXT=apk
+  PKG_INSTALL=add
 elif command -v opkg >/dev/null 2>&1; then
   PKG_MGR=opkg
   PKG_EXT=ipk
+  PKG_INSTALL=install
 else
   err "neither apk nor opkg found — is this OpenWRT?"
 fi
 
-command -v curl       >/dev/null 2>&1 || err "curl not found — install it first (e.g. '$PKG_MGR update && $PKG_MGR install curl')"
+if ! command -v curl >/dev/null 2>&1; then
+  info "curl not found — installing via $PKG_MGR..."
+  $PKG_MGR update
+  $PKG_MGR $PKG_INSTALL curl
+  command -v curl >/dev/null 2>&1 || err "curl still not found after '$PKG_MGR $PKG_INSTALL curl'"
+fi
 
 # Auto-detect defaults.
 lan_ip=$(uci -q get network.lan.ipaddr || true)
@@ -68,7 +77,6 @@ if [ -n "$lan_ip" ]; then
 else
   lan_default="192.168.1."
 fi
-hostname_default=$(uci -q get system.@system[0].hostname || echo home-router)
 platform_ver=$(awk -F"'" '/DISTRIB_RELEASE/{print $2}' /etc/openwrt_release 2>/dev/null || echo unknown)
 
 cat >"$TTY" <<EOF
@@ -87,7 +95,6 @@ API_URL=${API_URL%/}
 prompt ENROLLMENT_TOKEN "One-time enrollment token (admin UI -> Routers -> Add router)"
 [ -n "${ENROLLMENT_TOKEN:-}" ] || err "enrollment token is required"
 
-prompt ROUTER_NAME      "Router name" "$hostname_default"
 prompt LAN_PREFIX       "LAN prefix (literal, with trailing dot)" "$lan_default"
 
 case "$LAN_PREFIX" in
@@ -136,8 +143,8 @@ if [ "$PKG_MGR" = apk ]; then
 else
   agent_ver=$(opkg info familydns | awk '/^Version:/{print $2}' | head -n1)
 fi
-body=$(printf '{"enrollmentToken":"%s","routerName":"%s","platformVersion":"%s","agentVersion":"%s"}' \
-  "$ENROLLMENT_TOKEN" "$ROUTER_NAME" "$platform_ver" "$agent_ver")
+body=$(printf '{"enrollmentToken":"%s","platformVersion":"%s","agentVersion":"%s"}' \
+  "$ENROLLMENT_TOKEN" "$platform_ver" "$agent_ver")
 
 resp=$(curl -fsS -X POST "$API_URL/api/router/register" \
   -H 'Content-Type: application/json' \
@@ -173,7 +180,6 @@ cat <<EOF
 
 Done. Router enrolled successfully.
 
-  Router name: $ROUTER_NAME
   Router ID:   $router_id
   API URL:     $API_URL
   LAN prefix:  $LAN_PREFIX
@@ -181,6 +187,6 @@ Done. Router enrolled successfully.
 Watch the agent log:
   logread -f | grep familydns
 
-The admin UI -> Routers -> $ROUTER_NAME should show a fresh last_seen_at
+The admin UI -> Routers should show a fresh last_seen_at for this router
 within ~60 seconds.
 EOF

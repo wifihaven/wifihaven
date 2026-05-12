@@ -1,9 +1,15 @@
-name: Publish OpenWRT Package
+name: OpenWRT Package Build
 
+# Normally, releases happen only on v* tag pushes (#191, #212). For live
+# debugging of #228 we also publish a rolling "openwrt-latest" pre-release
+# on every push to main that touches openwrt/**, so the field router can
+# fetch the updated .apk without us cutting a real tag each iteration.
+# This is reverted by #244 once #228 is fixed.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
+    branches: ["main"]
+    paths: ["openwrt/**"]
   pull_request:
     paths: ["openwrt/**"]
   workflow_dispatch:
@@ -72,10 +78,10 @@ jobs:
           echo "Package: $apk_file"
           ls -lh "$apk_file"
           apk_bin="$HOME/.cache/familydns-apk-tools/build/src/apk"
-          echo "--- apk manifest ---"
-          "$apk_bin" manifest "$apk_file" || true
-          echo "--- payload (tar listing) ---"
-          tar tzf "$apk_file"
+          echo "--- file type ---"
+          file "$apk_file"
+          echo "--- apk adbdump (metadata + payload listing) ---"
+          "$apk_bin" adbdump "$apk_file"
 
       - name: Upload .ipk artifact
         uses: actions/upload-artifact@v4
@@ -91,7 +97,7 @@ jobs:
           path: openwrt/familydns_*.apk
           if-no-files-found: error
 
-      - name: Create GitHub release and attach packages
+      - name: Create GitHub release and attach packages (tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -99,3 +105,19 @@ jobs:
             openwrt/familydns_*.ipk
             openwrt/familydns_*.apk
           generate_release_notes: true
+
+      # Rolling pre-release for #228 live debugging. Reverted by #244.
+      - name: Publish rolling openwrt-latest release (main push)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-latest
+          name: "openwrt-latest (rolling)"
+          body: |
+            Rolling build of the OpenWRT agent from the latest `main`.
+            Replaced on every push to `main` touching `openwrt/**`.
+            For #228 live debugging — see #243 / #244.
+          prerelease: true
+          files: |
+            openwrt/familydns_*.ipk
+            openwrt/familydns_*.apk

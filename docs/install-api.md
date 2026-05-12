@@ -87,7 +87,6 @@ curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/
 | `FAMILYDNS_INSTALL_DIR` | legacy alias for `FAMILYDNS_PREFIX` | — |
 | `FAMILYDNS_API_HOST_PORT` | host port to bind | `8080` |
 | `FAMILYDNS_API_BIND` | host interface to bind on | `0.0.0.0` |
-| `FAMILYDNS_DNS_LOCATION` | free-form location label for query logs | `home` |
 | `FAMILYDNS_NEW_ADMIN_PW` | new admin password (skips rotation prompt) | prompt |
 | `FAMILYDNS_NONINTERACTIVE` | if set, never prompt; fail if any required value is missing | unset |
 
@@ -193,7 +192,6 @@ Edit `.env` and set each variable. **Never commit this file.** All values:
 | `FAMILYDNS_JWT_HOURS` | no (default `24`) | Session token lifetime in hours. | Leave default unless you need shorter sessions. |
 | `FAMILYDNS_API_BIND` | no (default `0.0.0.0`) | Host interface the API port binds to. Set to `127.0.0.1` if you're putting a reverse proxy in front (§7). | `127.0.0.1` for proxied installs, `0.0.0.0` for direct LAN access. |
 | `FAMILYDNS_API_PORT` | no (default `8080`) | Host port mapped to the API. | Change only if 8080 is taken. |
-| `FAMILYDNS_DNS_LOCATION` | no (default `home`) | Free-form label persisted with query/connection logs. Useful if you run multiple deployments. | `home`, `vacation`, etc. |
 
 After editing, `chmod 600 .env` so secrets aren't world-readable.
 
@@ -379,7 +377,75 @@ polls in. The host does need outbound HTTPS to `ghcr.io` for image pulls
 
 ---
 
-## 9. Next steps
+## 9. Debugging
+
+When devices are missing from the UI, showing up as 'unknown', or the
+router agent appears silent, three opt-in surfaces help trace the
+mac → API → DB → UI hop without exposing anything in normal production.
+
+### 9.1 Verbose logging (`FAMILYDNS_LOG_LEVEL=DEBUG`)
+
+Each `/api/router/{usage,events,policy}` request emits one log line per
+record/event with the mac, hostname, allowed/blocked flag, and ts. Combine
+with `docker compose logs -f api` while the offending device is active.
+Defaults to `INFO`; set in `deploy/.env` (or use the debug overlay below,
+which turns this on for you).
+
+On the **OpenWRT side**, set `uci set familydns.@familydns[0].debug=1; uci
+commit; /etc/init.d/familydns restart` to make the agent log every policy
+fetch, usage POST, event flush, and per-flow mac/hostname attribution to
+`logread -t familydns` (#228).
+
+### 9.2 Loopback-only debug endpoints (`FAMILYDNS_DEBUG=1`)
+
+When set, the API mounts three unauthenticated read-only JSON dumps,
+restricted by both `remoteAddress` and the `Host` header to loopback
+callers on the API host:
+
+- `GET /api/debug/devices` — all rows in the `devices` table
+- `GET /api/debug/events?limit=N` — recent `connection_events` (default 50, max 500)
+- `GET /api/debug/time_usage` — per-(mac, domain) usage for today
+
+These are equivalent to running `psql` against the DB without the network
+exposure. Every request — allowed or refused — logs at INFO/WARN, so an
+accidentally-left-on debug build is loud in production. The startup banner
+also emits a `FAMILYDNS_DEBUG=1` WARNING.
+
+Usage from the API host:
+
+```sh
+curl -s http://localhost:8080/api/debug/devices | jq .
+curl -s 'http://localhost:8080/api/debug/events?limit=200' | jq '.[].mac'
+```
+
+From off-host: refused with `403`.
+
+### 9.3 Exposed Postgres (`docker-compose.debug.yml`)
+
+For ad-hoc SQL, an overlay file maps the `postgres` service to a host port
+(default `127.0.0.1:5433`) and enables the API knobs above:
+
+```sh
+docker compose \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.debug.yml \
+  --env-file deploy/.env up -d
+psql -h 127.0.0.1 -p 5433 -U familydns familydns
+```
+
+Override the bind with `FAMILYDNS_DB_BIND=127.0.0.1:5433` in `deploy/.env`
+if the default port is taken. Keep the bind on `127.0.0.1` — exposing the
+DB on `0.0.0.0` leaks credentials.
+
+To return to a clean prod stack, restart without the debug file:
+
+```sh
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
+```
+
+---
+
+## 10. Next steps
 
 - **Auto-update.** Install the `familydns-update.timer` systemd unit so the
   host pulls and restarts on each new `latest` build. See `deploy.md §1.3`.

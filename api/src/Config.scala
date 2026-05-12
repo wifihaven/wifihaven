@@ -9,8 +9,13 @@ case class AppConfig(
     db: DbConfig,
     http: HttpConfig,
     jwt: JwtConfig,
-    dns: DnsClientConfig,
-)
+) {
+  // FAMILYDNS_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
+  // value, mounts the read-only /api/debug/* endpoints (loopback only).
+  // Read from env, not HOCON, so it stays out of application.conf — debug
+  // belongs to the runtime environment, not the persistent config.
+  val debugEnabled: Boolean = AppConfig.envTruthy(sys.env.get("FAMILYDNS_DEBUG"))
+}
 
 case class DbConfig(
     host: String,
@@ -32,18 +37,13 @@ case class JwtConfig(
     expiryHours: Int,
 )
 
-case class DnsClientConfig(
-    cacheRefreshSeconds: Int,
-    port: Int,
-    location: String,
-    upstreamPrimary: String,
-    upstreamSecondary: String,
-    upstreamPort: Int,
-    logBatchSize: Int,
-    logFlushSeconds: Int,
-)
-
 object AppConfig {
+  private[api] def envTruthy(v: Option[String]): Boolean =
+    v.map(_.trim.toLowerCase).exists {
+      case "" | "0" | "false" | "no" | "off" => false
+      case _                                 => true
+    }
+
   val layer: ZLayer[Any, Config.Error, AppConfig] =
     ZLayer.fromZIO {
       val path = sys.props.getOrElse("config.file", "config/application.conf")

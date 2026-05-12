@@ -1,0 +1,59 @@
+#!/bin/sh
+# First-boot defaults for the VM-e2e router image.
+#
+# This file is baked into the image at /etc/uci-defaults/99-familydns by
+# scripts/vm/build-router-image.sh. OpenWRT executes everything in
+# /etc/uci-defaults exactly once on the first boot and then deletes the
+# script — so these values are seed defaults, not enforced state.
+#
+# The e2e orchestrator (#148) overrides api_url and lan_prefix over SSH
+# once it knows the host's LAN-bridge IP. The defaults here are only
+# meant for "just boot it and poke at it" debugging.
+
+uci batch <<EOF
+set familydns.@familydns[0]=familydns
+set familydns.@familydns[0].api_url='http://10.0.2.2:8080'
+set familydns.@familydns[0].lan_prefix='192.168.100.'
+EOF
+uci commit familydns
+
+# Align the OpenWRT LAN with the harness's FDNS_LAN_SUBNET=192.168.100.0/24
+# (defined in scripts/vm/config.sh). Without this the LAN stays on OpenWRT's
+# 192.168.1.0/24 default, which doesn't match what scripts/vm/client-up.sh and
+# the e2e plan (#226) expect.
+uci set network.lan.ipaddr='192.168.100.1'
+uci set network.lan.netmask='255.255.255.0'
+uci commit network
+
+# Block out-of-band DNS leaks: drop LAN→WAN forwarded traffic to port 53
+# (UDP+TCP). Without this, OpenWRT's stock LAN→WAN accept rule lets a client
+# run `dig @1.1.1.1 …` straight through SLIRP to the host's real upstream
+# resolver, defeating the harness's DNS-leak test (issue #226 step 5). The
+# rule is on FORWARD only, so LAN→router (INPUT) DNS — i.e. the router's own
+# dnsmasq, which is the only resolver in the client's /etc/resolv.conf —
+# keeps working, and step 6 (`dig example.com` via the router) is unaffected.
+#
+# In production the familydns-agent is expected to install equivalent
+# enforcement once it's enrolled against an API and has a policy. Until that
+# path lands (#148 orchestrator + agent-side egress-DNS rules in render.lua),
+# seed it here so the harness in scripts/vm/ is testable standalone without
+# a live API stack.
+uci batch <<EOF
+add firewall rule
+set firewall.@rule[-1].name='block-dns-leak'
+set firewall.@rule[-1].src='lan'
+set firewall.@rule[-1].dest='wan'
+set firewall.@rule[-1].proto='tcpudp'
+set firewall.@rule[-1].dest_port='53'
+set firewall.@rule[-1].target='DROP'
+EOF
+uci commit firewall
+
+# Allow password-less root SSH from the QEMU host so the orchestrator can
+# drive the router without an interactive enrollment step. This image is
+# intended for ephemeral VMs only — never flash it to real hardware.
+mkdir -p /etc/dropbear
+touch /etc/dropbear/authorized_keys
+chmod 0600 /etc/dropbear/authorized_keys
+
+exit 0

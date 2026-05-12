@@ -361,9 +361,9 @@ openwrt/
 │   ├── etc/init.d/familydns            # procd init script
 │   ├── etc/config/familydns            # UCI: api_url, router_token, poll_interval
 │   ├── usr/sbin/familydns-agent        # main daemon (Lua)
-│   ├── usr/lib/familydns/policy.lua    # snapshot fetcher, atomic apply
-│   ├── usr/lib/familydns/usage.lua     # nftables counter scraper, reporter
-│   ├── usr/lib/familydns/render.lua    # writes dnsmasq + nft fragments
+│   ├── usr/lib/lua/familydns/policy.lua    # snapshot fetcher, atomic apply
+│   ├── usr/lib/lua/familydns/usage.lua     # nftables counter scraper, reporter
+│   ├── usr/lib/lua/familydns/render.lua    # writes dnsmasq + nft fragments
 │   └── www/familydns/block.html        # local block page → 302 to api /blocked
 └── README.md
 ```
