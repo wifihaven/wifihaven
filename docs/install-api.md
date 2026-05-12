@@ -447,8 +447,9 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
 
 ## 10. Next steps
 
-- **Auto-update.** Install the `familydns-update.timer` systemd unit so the
-  host pulls and restarts on each new `latest` build. See `deploy.md §1.3`.
+- **Auto-update.** Enabled by default via `familydns-update.timer` (installed
+  by `deploy/install.sh`). The host pulls and restarts on each new `latest`
+  build, every 5 minutes. See `deploy.md §1.3` to disable.
 - **Enroll a router.** In the admin UI, **Routers → Add router** generates
   an enrollment token. Then follow `docs/install-openwrt.md` (issue #133)
   on the OpenWRT side.

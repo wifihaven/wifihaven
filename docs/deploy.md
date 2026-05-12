@@ -62,7 +62,7 @@ api:
 
 The image is never built on the prod host. All builds happen in CI.
 
-### 1.3 Auto-update: systemd timer
+### 1.3 Auto-update: systemd timer (on by default)
 
 **Chosen approach**: systemd timer that runs `docker compose pull && docker compose
 up -d` on the host.
@@ -72,10 +72,15 @@ the Docker socket, which is a significant attack surface expansion. The systemd
 timer approach is equally simple, more transparent (standard Linux tooling), and
 doesn't add another long-running container to maintain.
 
-**Implementation** (sub-issue #129):
+**Status**: enabled automatically by `deploy/install.sh` (issue #254). The
+units live in-tree at [`deploy/systemd/familydns-update.service`](../deploy/systemd/familydns-update.service)
+and [`deploy/systemd/familydns-update.timer`](../deploy/systemd/familydns-update.timer)
+(sub-issue #129). The bootstrap installer copies them into
+`/etc/systemd/system/`, runs `systemctl daemon-reload`, and
+`systemctl enable --now familydns-update.timer` on first install. The step
+is idempotent — re-running `install.sh` is safe.
 
-Place on the prod host at `/etc/systemd/system/familydns-update.service` and
-`familydns-update.timer`:
+**Units** (excerpt — see the files for the full content):
 
 ```ini
 # familydns-update.service
@@ -91,14 +96,30 @@ ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env up 
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=5min
+Unit=familydns-update.service
+
+[Install]
+WantedBy=timers.target
 ```
 
 This polls ghcr.io every 5 minutes. `docker compose pull` is a no-op when
 `latest` already matches the local digest, so it's cheap.
 
-Enable with:
+**User-mode installs** (`FAMILYDNS_PREFIX=$HOME/.familydns`): `install.sh`
+rewrites `WorkingDirectory=` to the actual install dir before copying the
+unit into `/etc/systemd/system/`, so user-mode installs also get auto-update.
+
+**Disable** — for operators who prefer manual control over when prod pulls
+a new image:
+
 ```sh
-systemctl enable --now familydns-update.timer
+sudo systemctl disable --now familydns-update.timer
+```
+
+After that, run updates by hand from the install dir:
+
+```sh
+/opt/familydns/update.sh
 ```
 
 ---

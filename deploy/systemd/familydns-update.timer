@@ -1,0 +1,10 @@
+[Unit]
+Description=FamilyDNS API auto-update timer (poll ghcr.io every 5 minutes)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=familydns-update.service
+
+[Install]
+WantedBy=timers.target
