@@ -44,7 +44,7 @@ qemu-system-x86_64 \
   -name fdns-router \
   -m "${FDNS_ROUTER_MEM_MB}" -smp 2 \
   "${ACCEL_ARGS[@]}" \
-  -nographic \
+  -display none \
   -serial "file:${FDNS_ROUTER_SERIAL_LOG}" \
   -monitor "unix:${FDNS_ROUTER_MONITOR_SOCK},server,nowait" \
   -pidfile "${FDNS_ROUTER_PIDFILE}" \
