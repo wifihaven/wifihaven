@@ -339,18 +339,37 @@ guidance, not part of the wire contract.
   for kids' devices and resolve normally for parents'.
 - **nftables counter objects** keyed on `ether saddr . ip daddr` for per-MAC,
   per-IP byte counts.
-- **dnsmasq query log** (`--log-queries=extra`) maps `(mac, time) → hostname`
-  so byte counts can be attributed to the hostname the client actually resolved.
+- **dnsmasq query log** (`--log-queries=extra`, written to a private file at
+  `/tmp/familydns-dnsmasq.log`) is the primary source for `dst_ip → hostname`
+  attribution on every connection event. A sidecar process
+  (`familydns-dns-tail`) tails the file, parses `query[A] <name>` and
+  `reply <name> is <ip>` lines into a TTL-bounded cache, and writes a snapshot
+  to `/tmp/familydns-dns-cache.txt`. The main agent reads the snapshot when a
+  new conntrack flow arrives.
 - **uhttpd** on a loopback port serves the local block page; nftables `dnat`
   redirects blocked HTTP/80 to it.
 
 ### 7.2 Forward-lookup hostnames, not reverse DNS
 
 Reverse DNS of a destination IP often returns generic CDN PTRs
-(`lb-13.akamai.net`) unrelated to the user's intent. dnsmasq's `--ipset=`
-populates the nftables set *at lookup time*, so the hostname is known
-definitively. HTTPS connections that bypass dnsmasq get attributed to an
-`unknown` bucket.
+(`lb-13.akamai.net`) unrelated to the user's intent. Instead, dns-tail
+captures dnsmasq's forward-lookup answers *at resolution time* and tracks
+the original queried name across CNAME chains via the dnsmasq query id —
+so a flow to `142.250.x.x` shortly after `query[A] youtube.com` is logged as
+`youtube.com`, not `youtube-ui.l.google.com` (the last CNAME hop) and not
+the IP literal.
+
+The per-domain `--ipset=` mechanism is still used for the `site_limits`
+enforcement chains (nftables matches `ip daddr @profileN_<domain>`), but it
+is no longer load-bearing for hostname attribution in the query log — that
+moved to dns-tail in #259, which fixed the regression where every log entry
+displayed a raw IP because the ipset table was only ever populated for the
+handful of site-limit domains.
+
+Connection attempts whose destination IP isn't in the dns-tail cache (e.g.
+direct-IP traffic, DoH-resolved domains, agent restart racing a flow) fall
+back to the IP literal in the `hostname` field. The UI shows that IP
+verbatim.
 
 ### 7.3 Package layout
 
@@ -361,8 +380,10 @@ openwrt/
 │   ├── etc/init.d/familydns            # procd init script
 │   ├── etc/config/familydns            # UCI: api_url, router_token, poll_interval
 │   ├── usr/sbin/familydns-agent        # main daemon (Lua)
+│   ├── usr/sbin/familydns-dns-tail     # dnsmasq query-log tailer (sidecar)
 │   ├── usr/lib/lua/familydns/policy.lua    # snapshot fetcher, atomic apply
 │   ├── usr/lib/lua/familydns/usage.lua     # nftables counter scraper, reporter
+│   ├── usr/lib/lua/familydns/dns_log.lua   # forward-lookup hostname cache (#259)
 │   ├── usr/lib/lua/familydns/render.lua    # writes dnsmasq + nft fragments
 │   └── www/familydns/block.html        # local block page → 302 to api /blocked
 └── README.md

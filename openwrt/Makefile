@@ -32,6 +32,7 @@ endef
 define Package/familydns/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/familydns-agent $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/familydns-dns-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/familydns-update $(1)/usr/sbin/
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/familydns

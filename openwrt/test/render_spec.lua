@@ -117,6 +117,14 @@ describe("render.dnsmasq", function()
     assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
   end)
 
+  -- #259: the agent's hostname attribution relies on tailing the dnsmasq
+  -- query log. dnsmasq must be told to emit it.
+  it("emits log-queries=extra and a deterministic log-facility path", function()
+    local conf = render.dnsmasq(snap_one())
+    assert.truthy(conf:find("log-queries=extra", 1, true))
+    assert.truthy(conf:find("log-facility=/tmp/familydns-dnsmasq.log", 1, true))
+  end)
+
 end)
 
 -- ── nftables config ───────────────────────────────────────────────────────
