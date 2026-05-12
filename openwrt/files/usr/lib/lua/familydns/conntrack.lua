@@ -14,6 +14,17 @@
 
 local M = {}
 
+local function default_log()
+  local ok, l = pcall(require, "familydns.log")
+  if ok then return l end
+  return {
+    info  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    err   = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    warn  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
+    debug = function() end,
+  }
+end
+
 -- ---------------------------------------------------------------------------
 -- ipset_lookup_hostname(dest_ip, nft_sets) -> string | nil
 --
@@ -232,12 +243,15 @@ end
 -- }
 -- ---------------------------------------------------------------------------
 function M.handle_flow(flow, ctx, batcher)
+  local log = ctx.log or default_log()
   local mac = M.arp_lookup_mac(flow.src_ip, ctx.arp_table or {})
 
   if mac and not (ctx.reported_macs or {})[mac] then
     local lease = (ctx.leases or {})[mac]
     local ip, hostname
     if lease then ip = lease.ip; hostname = lease.hostname end
+    log.debug("handle_flow: first_seen_mac mac=%s ip=%s hostname=%s",
+              mac, tostring(ip), tostring(hostname))
     batcher.add(M.build_first_seen_mac_event({
       mac = mac, ip = ip, hostname = hostname, ts = ctx.ts,
     }))
@@ -250,6 +264,9 @@ function M.handle_flow(flow, ctx, batcher)
   if not allowed and ctx.blocked_reason then
     reason = ctx.blocked_reason[flow.dst_ip]
   end
+  log.debug("handle_flow: connection_attempt src=%s dst=%s mac=%s hostname=%s allowed=%s reason=%s",
+            flow.src_ip, flow.dst_ip, tostring(mac), tostring(hname),
+            tostring(allowed), tostring(reason))
   batcher.add(M.build_event({
     mac      = mac,
     hostname = hname,
@@ -307,6 +324,7 @@ end
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
   local jsonc      = require("luci.jsonc")
+  local log        = cfg.log            or default_log()
   local lan_prefix = cfg.lan_prefix     or "192.168.1."
   local max_batch  = cfg.max_batch      or 50
   local flush_int  = cfg.flush_interval or 10
@@ -323,6 +341,7 @@ function M.watch(cfg)
   end
 
   local batcher = M.new_batcher(max_batch, flush_int, function(events)
+    log.debug("conntrack: flushing batch size=%d url=%s", #events, events_url)
     local payload = jsonc.stringify({
       routerId = cfg.router_id,
       events   = events,
@@ -333,15 +352,19 @@ function M.watch(cfg)
       -- best-effort: log and continue; never block a flow waiting for the API
       local body_str = last_body and tostring(last_body) or ""
       if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
-      io.stderr:write(string.format(
-        "[familydns] conntrack: failed to POST events batch after %d retries (status=%s body=%q) err=%s, dropping %d events\n",
-        max_retry, tostring(last_status), body_str, tostring(last_err), #events))
+      log.err("conntrack: failed to POST events batch after %d retries (status=%s body=%q) err=%s, dropping %d events",
+              max_retry, tostring(last_status), body_str, tostring(last_err), #events)
+    else
+      log.debug("conntrack: POST events success status=%d events=%d",
+                last_status, #events)
     end
   end)
 
+  log.info("conntrack: starting watcher lan_prefix=%s max_batch=%d flush_interval=%ds",
+           lan_prefix, max_batch, flush_int)
   local handle = io.popen("conntrack -E -e NEW 2>/dev/null", "r")
   if not handle then
-    io.stderr:write("[familydns] conntrack: cannot start conntrack -E -e NEW\n")
+    log.err("conntrack: cannot start conntrack -E -e NEW")
     return
   end
 
@@ -370,6 +393,7 @@ function M.watch(cfg)
         reported_macs  = reported_macs,
         leases         = leases or {},
         ts             = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        log            = log,
       }, batcher)
     end
 

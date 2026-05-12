@@ -13,6 +13,14 @@ set -euo pipefail
 : "${FAMILYDNS_STATIC_DIR:=/app/web}"
 : "${FAMILYDNS_JWT_SECRET:=staging-jwt-secret-do-not-use-in-prod-32ch}"
 : "${FAMILYDNS_JWT_HOURS:=24}"
+: "${FAMILYDNS_LOG_LEVEL:=INFO}"
+: "${FAMILYDNS_DEBUG:=}"
+
+export FAMILYDNS_LOG_LEVEL FAMILYDNS_DEBUG
+
+if [ -n "${FAMILYDNS_DEBUG}" ]; then
+  echo "[entrypoint] WARNING: FAMILYDNS_DEBUG is set — debug endpoints will be mounted (loopback only). Disable in production."
+fi
 
 mkdir -p /app/config
 cat > /app/config/application.conf <<EOF

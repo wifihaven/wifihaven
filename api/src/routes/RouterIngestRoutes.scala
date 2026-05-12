@@ -40,6 +40,15 @@ object RouterIngestRoutes {
               .when(rep.routerId != router.id)
             ps     <- parseInstant(rep.periodStart)
             pe     <- parseInstant(rep.periodEnd)
+            _      <- ZIO.logDebug(
+              s"router usage: router=${router.id} period=$ps..$pe records=${rep.records.size}",
+            )
+            _      <- ZIO.foreachDiscard(rep.records)(r =>
+              ZIO.logDebug(
+                s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
+                  s"host=${r.hostname} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
+              ),
+            )
             _ <- handleUsage(router.id, ps, pe, rep.records, trafficRepo, timeUsageRepo, deviceRepo)
             _ <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))
           } yield Response.ok
@@ -65,6 +74,14 @@ object RouterIngestRoutes {
               .when(rep.routerId != router.id)
             _      <- ZIO.logInfo(
               s"router events: router=${router.id} batchSize=${rep.events.size}",
+            )
+            _      <- ZIO.foreachDiscard(rep.events)(e =>
+              ZIO.logDebug(
+                s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
+                  s"ip=${e.ip.getOrElse("-")} host=${e.hostname.getOrElse("-")} " +
+                  s"destIp=${e.destIp.getOrElse("-")} allowed=${e.allowed.map(_.toString).getOrElse("-")} " +
+                  s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
+              ),
             )
             _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo)
             _      <- routerRepo.touch(router.id, None).orElseFail(Response.internalServerError(""))

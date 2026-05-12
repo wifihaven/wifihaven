@@ -17,6 +17,7 @@ local policy   = require("familydns.policy")
 local usage    = require("familydns.usage")
 local conntrack = require("familydns.conntrack")
 local render   = require("familydns.render")
+local log      = require("familydns.log")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -33,13 +34,18 @@ local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "60"))
 local usage_int     = tonumber(uci_get("usage_report_interval",   "300"))
+local debug_opt     = uci_get("debug",                            "0")
+
+log.init({ debug = debug_opt })
+log.info("familydns-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds",
+         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int)
 
 if router_token == "" then
-  io.stderr:write("[familydns] router_token not set — run enrollment first\n")
+  log.err("router_token not set — run enrollment first")
   os.exit(1)
 end
 if router_id == "" then
-  io.stderr:write("[familydns] router_id not set — run enrollment first\n")
+  log.err("router_id not set — run enrollment first")
   os.exit(1)
 end
 
@@ -167,11 +173,15 @@ local last_usage_run  = 0
 -- ── Initial policy fetch at startup ──────────────────────────────────────────
 
 do
-  local snap, etag = policy.fetch(api_url, router_token, nil, http_get)
+  log.debug("startup: initial policy fetch")
+  local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
   if snap then
-    policy.apply(snap, write_file, run_cmd)
+    policy.apply(snap, write_file, run_cmd, log)
     render.update_shared(snap, nft_sets, blocked_ips, blocked_reason)
     current_etag = etag
+    log.info("startup: applied initial policy etag=%s", tostring(etag))
+  else
+    log.warn("startup: initial policy fetch returned no snapshot (will retry on timer)")
   end
   last_policy_run = os.time()
   last_usage_run  = os.time()
@@ -194,6 +204,7 @@ conntrack.watch({
   max_batch      = max_batch,
   flush_interval = flush_int,
   http_post      = http_post,
+  log            = log,
 
   -- Called on every conntrack line (after event processing).
   -- Drives the policy and usage timers co-operatively.
@@ -203,13 +214,15 @@ conntrack.watch({
     -- Policy timer
     if (now - last_policy_run) >= policy_int then
       last_policy_run = now
-      local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get)
+      local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
       if snap then
-        policy.apply(snap, write_file, run_cmd)
+        policy.apply(snap, write_file, run_cmd, log)
         render.update_shared(snap, nft_sets, blocked_ips, blocked_reason)
         current_etag = etag
+        log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
       elseif etag then
         current_etag = etag  -- 304: just update etag
+        log.debug("policy timer: 304 not modified etag=%s", tostring(etag))
       end
     end
 
@@ -228,7 +241,9 @@ conntrack.watch({
           if ok and counters then
             local report = usage.build_report(
               counters, nft_sets, period_start, period_end, router_id)
-            local posted = usage.post(api_url, router_token, report, http_post)
+            log.debug("usage timer: %d counter(s), %d record(s) prepared",
+                      #counters, report.records and #report.records or 0)
+            local posted = usage.post(api_url, router_token, report, http_post, log)
             if posted then
               -- Reset counters so next period starts clean
               os.execute("nft reset counters table inet familydns 2>/dev/null")
