@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type {
-  ProfileDetail, ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest,
+  Device, ProfileDetail, ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
@@ -71,19 +71,50 @@ export function ProfilesPage() {
   const { isAdmin } = useAuth()
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   const [categories, setCategories] = useState<string[]>([])
+  const [devices, setDevices] = useState<Device[]>([])
+  const [allUsers, setAllUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<number | 'new' | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
+  const [userPick, setUserPick] = useState<number[]>([])
+
+  const devicesByProfile = useMemo(() => {
+    const m = new Map<number, Device[]>()
+    for (const d of devices) {
+      if (d.profileId == null) continue
+      const arr = m.get(d.profileId) ?? []
+      arr.push(d)
+      m.set(d.profileId, arr)
+    }
+    return m
+  }, [devices])
+
+  const usersByProfile = useMemo(() => {
+    const m = new Map<number, User[]>()
+    for (const u of allUsers) {
+      for (const pid of u.profileIds) {
+        const arr = m.get(pid) ?? []
+        arr.push(u)
+        m.set(pid, arr)
+      }
+    }
+    return m
+  }, [allUsers])
 
   async function reload() {
-    const [p, cats] = await Promise.all([
+    const [p, cats, devs, users] = await Promise.all([
       api.profiles.list(),
       api.blocklists.counts().catch(() => []),
+      api.devices.list().catch(() => [] as Device[]),
+      isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
     ])
     setProfiles(p)
     setCategories(cats.map(c => c.category))
+    setDevices(devs)
+    setAllUsers(users)
   }
 
   useEffect(() => {
@@ -119,6 +150,28 @@ export function ProfilesPage() {
       await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function startEditUsers(profileId: number) {
+    const current = usersByProfile.get(profileId) ?? []
+    setEditingUsersFor(profileId)
+    setUserPick(current.map(u => u.id))
+    setError(null)
+  }
+
+  async function saveUserLinks() {
+    if (editingUsersFor == null) return
+    setSaving(true)
+    setError(null)
+    try {
+      await api.profiles.setUsers(editingUsersFor, userPick)
+      setEditingUsersFor(null)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update user links')
     } finally {
       setSaving(false)
     }
@@ -174,6 +227,10 @@ export function ProfilesPage() {
                     className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
                     Edit
                   </button>
+                  <button onClick={() => startEditUsers(pd.profile.id)}
+                    className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
+                    Edit users
+                  </button>
                   <button onClick={() => del(pd.profile.id, pd.profile.name)}
                     className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
                     Delete
@@ -228,6 +285,50 @@ export function ProfilesPage() {
               </div>
             )}
 
+            <div data-testid={`profile-devices-${pd.profile.id}`}>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
+              {(devicesByProfile.get(pd.profile.id) ?? []).length === 0
+                ? <p className="text-xs text-gray-600">No devices assigned.</p>
+                : (
+                  <div className="space-y-1">
+                    {(devicesByProfile.get(pd.profile.id) ?? []).map(d => (
+                      <div key={d.id} data-testid={`profile-device-${d.id}`}
+                        className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+                        <span className="text-gray-300">{d.name}</span>
+                        <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+
+            {isAdmin && (
+              <div data-testid={`profile-users-${pd.profile.id}`}>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Linked users</p>
+                {(usersByProfile.get(pd.profile.id) ?? []).length === 0
+                  ? <p className="text-xs text-gray-600">No users linked.</p>
+                  : (
+                    <div className="flex flex-wrap gap-2">
+                      {(usersByProfile.get(pd.profile.id) ?? []).map(u => (
+                        <span key={u.id} data-testid={`profile-user-${u.id}`}
+                          className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-1 rounded-lg">
+                          {u.username}
+                          <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${
+                            u.role === 'admin'
+                              ? 'bg-emerald-500/10 text-emerald-400'
+                              : u.role === 'adult'
+                                ? 'bg-blue-500/10 text-blue-400'
+                                : 'bg-yellow-500/10 text-yellow-400'
+                          }`}>{u.role}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )
+                }
+              </div>
+            )}
+
             {pd.siteTimeLimits.length > 0 && (
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Site Limits</p>
@@ -251,6 +352,58 @@ export function ProfilesPage() {
           </div>
         ))}
       </div>
+
+      {editingUsersFor !== null && (
+        <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto"
+          onClick={() => setEditingUsersFor(null)}>
+          <div data-testid="edit-users-modal"
+            className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-white">
+              Edit users · {profiles.find(p => p.profile.id === editingUsersFor)?.profile.name ?? ''}
+            </h3>
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+                {error}
+              </div>
+            )}
+            {allUsers.length === 0
+              ? <p className="text-sm text-gray-500">No users available.</p>
+              : (
+                <div className="flex flex-wrap gap-2">
+                  {allUsers.map(u => {
+                    const on = userPick.includes(u.id)
+                    return (
+                      <button key={u.id} type="button"
+                        data-testid={`user-pick-${u.id}`}
+                        onClick={() =>
+                          setUserPick(on ? userPick.filter(x => x !== u.id) : [...userPick, u.id])
+                        }
+                        className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+                          on
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                        }`}>
+                        {on ? '✓ ' : ''}{u.username} <span className="text-xs opacity-70">({u.role})</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            }
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setEditingUsersFor(null)} disabled={saving}
+                className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
+                Cancel
+              </button>
+              <button onClick={saveUserLinks} disabled={saving}
+                className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editingId !== null && (
         <ProfileEditor
