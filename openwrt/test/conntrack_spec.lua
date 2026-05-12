@@ -307,6 +307,82 @@ describe("handle_flow", function()
     assert.is_nil(ev.ip)
     assert.is_nil(ev.hostname)
   end)
+
+  -- ── #249: re-emit a dhcp_lease event when a later lease attaches a hostname ──
+  it("flags MAC as pending-hostname when first_seen_mac is emitted with nil hostname", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({ leases = {}, pending_hostname_macs = {} })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    assert.is_true(ctx.pending_hostname_macs[MAC])
+  end)
+
+  it("does NOT flag MAC as pending when first_seen_mac already has a hostname", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      pending_hostname_macs = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    assert.is_nil(ctx.pending_hostname_macs[MAC])
+  end)
+
+  it("emits dhcp_lease event when a pending MAC later acquires a hostname", function()
+    local b = collecting_batcher()
+    -- Already reported (first_seen_mac was emitted earlier without a hostname).
+    local ctx = ctx_with({
+      reported_macs         = { [MAC] = true },
+      pending_hostname_macs = { [MAC] = true },
+      leases                = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    -- Should emit one dhcp_lease + one connection_attempt (NOT another first_seen_mac).
+    local found_dhcp = false
+    for _, ev in ipairs(b.events) do
+      if ev["type"] == "dhcp_lease" then
+        found_dhcp = true
+        assert.equal(MAC,             ev.mac)
+        assert.equal("192.168.1.42",  ev.ip)
+        assert.equal("laptop",        ev.hostname)
+        assert.equal("2026-05-11T00:00:00Z", ev.ts)
+      end
+      assert.not_equal("first_seen_mac", ev["type"])
+    end
+    assert.is_true(found_dhcp)
+    -- And the flag is cleared so we don't keep re-emitting.
+    assert.is_nil(ctx.pending_hostname_macs[MAC])
+  end)
+
+  it("does NOT emit dhcp_lease while the pending MAC's lease still has no hostname", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs         = { [MAC] = true },
+      pending_hostname_macs = { [MAC] = true },
+      leases                = { [MAC] = { ip = "192.168.1.42", hostname = nil } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    for _, ev in ipairs(b.events) do
+      assert.not_equal("dhcp_lease", ev["type"])
+    end
+    assert.is_true(ctx.pending_hostname_macs[MAC])
+  end)
+end)
+
+describe("build_dhcp_lease_event", function()
+  it("builds a dhcp_lease event with mac/ip/hostname/ts", function()
+    local ev = conntrack.build_dhcp_lease_event({
+      mac = "aa:bb:cc:11:22:33",
+      ip = "192.168.1.42",
+      hostname = "laptop",
+      ts = "2026-05-11T00:00:00Z",
+    })
+    assert.equal("dhcp_lease", ev["type"])
+    assert.equal("aa:bb:cc:11:22:33", ev.mac)
+    assert.equal("192.168.1.42",      ev.ip)
+    assert.equal("laptop",            ev.hostname)
+    assert.equal("2026-05-11T00:00:00Z", ev.ts)
+  end)
 end)
 
 -- ---------------------------------------------------------------------------

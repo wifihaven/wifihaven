@@ -418,7 +418,77 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         d <- dRepo.findByMac("aa:bb:cc:dd:ee:01")
       } yield assertTrue(d.isDefined) &&
         assertTrue(d.exists(_.profileId.isEmpty)) &&
-        assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.61")))
+        assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.61"))) &&
+        // #249: when no hostname is provided we now generate a disambiguable
+        // placeholder name from the MAC instead of the literal string "unknown".
+        assertTrue(d.exists(_.name == "device-ddee01"))
+    },
+
+    // ── #249: late-arriving DHCP lease renames auto-generated devices ────────
+    test("events: dhcp_lease renames a device whose name is literal 'unknown' (legacy rows)") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        // Pre-existing row with the legacy "unknown" name (e.g. created before
+        // the device-XXYYZZ change shipped).
+        _        <- dRepo.upsertUnknown(unknownMac, "unknown", Some("192.168.1.55"), periodStart)
+        ev   = RouterEvent(
+          "dhcp_lease",
+          mac = Some(unknownMac),
+          ip = Some("192.168.1.55"),
+          hostname = Some("kid-phone"),
+          ts = "2026-05-07T14:02:30Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _ <- post(routes, "/api/router/events", body, Some(tk))
+        d <- dRepo.findByMac(unknownMac)
+      } yield assertTrue(d.exists(_.name == "kid-phone"))
+    },
+    test("events: dhcp_lease renames a device whose name matches device-XXYYZZ") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        _ <- dRepo.upsertUnknown(unknownMac, "device-999999", Some("192.168.1.55"), periodStart)
+        ev   = RouterEvent(
+          "dhcp_lease",
+          mac = Some(unknownMac),
+          ip = Some("192.168.1.55"),
+          hostname = Some("kid-phone"),
+          ts = "2026-05-07T14:02:30Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _ <- post(routes, "/api/router/events", body, Some(tk))
+        d <- dRepo.findByMac(unknownMac)
+      } yield assertTrue(d.exists(_.name == "kid-phone"))
+    },
+    test("events: dhcp_lease does NOT clobber an admin-set device name") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo) // creates knownMac with name "kid-ipad"
+        (id, tk) <- seedRouter(rRepo)
+        // dnsmasq reports a generic hostname like "android-1234" — must not overwrite
+        // the curated name the admin chose in the UI.
+        ev   = RouterEvent(
+          "dhcp_lease",
+          mac = Some(knownMac),
+          ip = Some("192.168.1.10"),
+          hostname = Some("android-1234"),
+          ts = "2026-05-07T14:02:30Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _ <- post(routes, "/api/router/events", body, Some(tk))
+        d <- dRepo.findByMac(knownMac)
+      } yield assertTrue(d.exists(_.name == "kid-ipad"))
     },
   ) @@ TestAspect.sequential
 }
