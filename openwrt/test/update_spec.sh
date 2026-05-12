@@ -30,15 +30,38 @@ grep -q 'logger -t familydns' "$SCRIPT" \
   && check "logs to syslog tag familydns" ok \
   || check "logs to syslog tag familydns" "no logger -t familydns"
 
-# 3. Bails silently on apk-only systems (no opkg)
-grep -q 'command -v opkg' "$SCRIPT" \
-  && check "checks for opkg presence (apk-only safe)" ok \
-  || check "checks for opkg presence (apk-only safe)" "missing command -v opkg guard"
+# 3. Detects both package managers (apk for 24.10+, opkg for older)
+grep -q 'command -v apk' "$SCRIPT" && grep -q 'command -v opkg' "$SCRIPT" \
+  && check "detects both apk and opkg package managers" ok \
+  || check "detects both apk and opkg package managers" "missing apk/opkg detection"
 
-# 4. Uses opkg compare-versions for robust version compare
+# 4. Uses opkg compare-versions for robust version compare on opkg path
 grep -q 'opkg compare-versions' "$SCRIPT" \
-  && check "uses opkg compare-versions" ok \
-  || check "uses opkg compare-versions" "missing — string compare alone breaks 1.10 vs 1.9"
+  && check "uses opkg compare-versions on opkg path" ok \
+  || check "uses opkg compare-versions on opkg path" "missing — string compare alone breaks 1.10 vs 1.9"
+
+# 4b. Uses apk version -t for robust version compare on apk path
+grep -q 'apk version -t' "$SCRIPT" \
+  && check "uses apk version -t on apk path" ok \
+  || check "uses apk version -t on apk path" "missing — apk needs its own comparator"
+
+# 4c. Installs via apk add --allow-untrusted on apk path
+grep -q 'apk add --allow-untrusted' "$SCRIPT" \
+  && check "uses apk add --allow-untrusted on apk path" ok \
+  || check "uses apk add --allow-untrusted on apk path" "missing apk install command"
+
+# 4d. Filters for .apk assets on apk path (and still filters .ipk on opkg path)
+grep -q "'\\\\.apk\$'" "$SCRIPT" \
+  && check "filters .apk asset on apk path" ok \
+  || check "filters .apk asset on apk path" "missing .apk regex"
+grep -q "'\\\\.ipk\$'" "$SCRIPT" \
+  && check "filters .ipk asset on opkg path" ok \
+  || check "filters .ipk asset on opkg path" "missing .ipk regex"
+
+# 4e. Reads current installed version on apk path (apk list -I or db parse)
+grep -qE 'apk (list -I|info)' "$SCRIPT" \
+  && check "reads current version on apk path" ok \
+  || check "reads current version on apk path" "missing apk version lookup"
 
 # 5. Hits GitHub releases/latest API
 grep -q 'releases/latest' "$SCRIPT" \
@@ -50,10 +73,10 @@ grep -q 'opkg install --force-reinstall' "$SCRIPT" \
   && check "uses opkg install --force-reinstall" ok \
   || check "uses opkg install --force-reinstall" "must --force-reinstall"
 
-# 7. Cleans up the downloaded .ipk
-grep -qE 'rm -f .*(\.ipk|\$TMP|"\$TMP")' "$SCRIPT" \
-  && check "cleans up downloaded .ipk after install" ok \
-  || check "cleans up downloaded .ipk after install" "no rm -f for downloaded .ipk"
+# 7. Cleans up the downloaded package after install
+grep -qE 'rm -f .*(\.ipk|\.apk|\$TMP|"\$TMP")' "$SCRIPT" \
+  && check "cleans up downloaded package after install" ok \
+  || check "cleans up downloaded package after install" "no rm -f for downloaded package"
 
 # 8. Makefile installs the update script
 grep -q 'familydns-update' "$MAKEFILE" \
