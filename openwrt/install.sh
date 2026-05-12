@@ -21,7 +21,9 @@
 
 set -eu
 
-RELEASES_API="https://api.github.com/repos/sameerparekh/familydns/releases/latest"
+# TODO(#244): revert to /releases/latest once the rolling debug period for
+# #228 is done and proper tags resume. Pairs with #280 (auto-updater swap).
+RELEASES_API="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
