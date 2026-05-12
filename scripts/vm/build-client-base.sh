@@ -128,6 +128,14 @@ write_files:
       iface eth1 inet static
         address 10.0.2.15
         netmask 255.255.255.0
+  # Write the test SSH key under /etc (parent dir exists) — runcmd below
+  # installs it into /root/.ssh. write_files to /root/.ssh/* is unreliable
+  # on this Alpine cloud-init build because the parent dir doesn't yet exist.
+  - path: /etc/fdns-authorized_keys
+    permissions: '0600'
+    owner: root:root
+    content: |
+      ${PUBKEY}
   - path: /etc/motd
     content: |
       familydns test client VM — TEST FIXTURE, not for real use.
@@ -145,8 +153,16 @@ packages:
 runcmd:
   - rc-update add sshd default
   - rc-update add qemu-guest-agent default
+  # On Alpine cloud images the networking service is not in the default
+  # runlevel out of the box — without this, openrc never reads
+  # /etc/network/interfaces on subsequent boots and eth1 stays down.
+  - rc-update add networking default
   # PermitRootLogin prohibit-password is the Alpine default; make explicit.
   - sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  # Install the test SSH key staged at /etc/fdns-authorized_keys.
+  - mkdir -p /root/.ssh
+  - chmod 700 /root/.ssh
+  - install -m 0600 -o root -g root /etc/fdns-authorized_keys /root/.ssh/authorized_keys
   # Signal "build complete" by powering off cleanly.
   - poweroff
 EOF

@@ -94,7 +94,7 @@ qemu-system-x86_64 \
   -name "fdns-${NAME}" \
   -m 512 -smp 1 \
   "${ACCEL_ARGS[@]}" \
-  -nographic -serial "file:${RUN_DIR}/console.log" \
+  -display none -serial "file:${RUN_DIR}/console.log" \
   -drive "if=virtio,file=${OVERLAY},format=qcow2" \
   -netdev "${LAN_NETDEV}" -device "${LAN_DEVICE}" \
   -netdev "${MGMT_NETDEV}" -device "${MGMT_DEVICE}" \
