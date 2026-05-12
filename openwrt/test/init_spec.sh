@@ -41,6 +41,11 @@ grep -q 'familydns-agent' "$INIT" \
   && check "command points to familydns-agent" ok \
   || check "command points to familydns-agent" "not found"
 
+# 5b. dns-tail sidecar must also be started (#259 — hostname attribution)
+grep -q 'familydns-dns-tail' "$INIT" \
+  && check "starts familydns-dns-tail sidecar" ok \
+  || check "starts familydns-dns-tail sidecar" "not found"
+
 # 6. Must configure procd_set_param respawn (auto-restart on crash)
 grep -q 'procd_set_param respawn' "$INIT" \
   && check "sets procd_set_param respawn" ok \

@@ -353,6 +353,41 @@ describe("handle_flow", function()
     assert.is_nil(ctx.pending_hostname_macs[MAC])
   end)
 
+  -- #259: dnsmasq query-log path is the real source of truth for hostname
+  -- attribution; nft_sets only ever covers site_limits domains and is empty
+  -- the rest of the time. handle_flow must prefer ctx.lookup_hostname.
+  it("uses ctx.lookup_hostname when provided (dns_log path)", function()
+    local b = collecting_batcher()
+    local lookups = {}
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      lookup_hostname = function(ip)
+        lookups[#lookups + 1] = ip
+        if ip == DST_IP then return "youtube.com" end
+        return nil
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    -- connection_attempt event (index 2, after first_seen_mac) should carry
+    -- the looked-up hostname, not the dst_ip fallback.
+    assert.equal("connection_attempt", b.events[2]["type"])
+    assert.equal("youtube.com",        b.events[2].hostname)
+    assert.equal(DST_IP,               b.events[2].destIp)
+    assert.same({ DST_IP }, lookups)
+  end)
+
+  it("falls back to nft_sets when ctx.lookup_hostname returns nil", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      leases          = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      nft_sets        = { ["legacy.example"] = { [DST_IP] = true } },
+      lookup_hostname = function(_ip) return nil end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    assert.equal("legacy.example", b.events[2].hostname)
+  end)
+
   it("does NOT emit dhcp_lease while the pending MAC's lease still has no hostname", function()
     local b = collecting_batcher()
     local ctx = ctx_with({

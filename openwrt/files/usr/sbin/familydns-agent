@@ -17,6 +17,7 @@ local policy   = require("familydns.policy")
 local usage    = require("familydns.usage")
 local conntrack = require("familydns.conntrack")
 local render   = require("familydns.render")
+local dns_log  = require("familydns.dns_log")
 local log      = require("familydns.log")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
@@ -193,18 +194,49 @@ end
 -- inside the watcher's tick callback which is called on each conntrack line.
 -- We inject them via cfg.on_tick so there's no need for threads or coroutines.
 
+-- Hostname lookup backed by the dns-tail sidecar's snapshot file (#259).
+-- Memoized for 1s by mtime to keep per-flow overhead bounded.
+local dns_cache_path = "/tmp/familydns-dns-cache.txt"
+local dns_cache_ttl  = 3600
+local dns_cache_tbl  = {}
+local dns_cache_mt   = 0
+local dns_cache_load = 0
+
+local function lookup_hostname(dst_ip)
+  local now = os.time()
+  if (now - dns_cache_load) >= 1 then
+    dns_cache_load = now
+    local f = io.open(dns_cache_path, "r")
+    if f then
+      -- Cheap freshness check: re-parse only if the file changed.
+      local stat_pipe = io.popen(
+        string.format("stat -c %%Y %q 2>/dev/null", dns_cache_path), "r")
+      local mt = stat_pipe and tonumber(stat_pipe:read("*l") or "") or 0
+      if stat_pipe then stat_pipe:close() end
+      if mt ~= dns_cache_mt then
+        local text = f:read("*a") or ""
+        dns_cache_tbl = dns_log.load_table(text, dns_cache_ttl, now)
+        dns_cache_mt  = mt
+      end
+      f:close()
+    end
+  end
+  return dns_cache_tbl[dst_ip]
+end
+
 conntrack.watch({
-  router_id      = router_id,
-  api_url        = api_url,
-  router_token   = router_token,
-  nft_sets       = nft_sets,
-  blocked_ips    = blocked_ips,
-  blocked_reason = blocked_reason,
-  lan_prefix     = lan_prefix,
-  max_batch      = max_batch,
-  flush_interval = flush_int,
-  http_post      = http_post,
-  log            = log,
+  router_id       = router_id,
+  api_url         = api_url,
+  router_token    = router_token,
+  nft_sets        = nft_sets,
+  lookup_hostname = lookup_hostname,
+  blocked_ips     = blocked_ips,
+  blocked_reason  = blocked_reason,
+  lan_prefix      = lan_prefix,
+  max_batch       = max_batch,
+  flush_interval  = flush_int,
+  http_post       = http_post,
+  log             = log,
 
   -- Called on every conntrack line (after event processing).
   -- Drives the policy and usage timers co-operatively.

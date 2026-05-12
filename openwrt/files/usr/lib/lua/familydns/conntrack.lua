@@ -291,7 +291,16 @@ function M.handle_flow(flow, ctx, batcher)
     end
   end
 
-  local hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
+  -- Hostname attribution: prefer the injected lookup (dnsmasq query-log cache,
+-- see dns_log.lua + #259), fall back to ipset attribution. Both can miss for
+-- direct-IP traffic; build_event uses dest_ip as a last resort.
+  local hname
+  if ctx.lookup_hostname then
+    hname = ctx.lookup_hostname(flow.dst_ip)
+  end
+  if not hname then
+    hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
+  end
   local allowed = not (ctx.blocked_ips and ctx.blocked_ips[flow.dst_ip])
   local reason
   if not allowed and ctx.blocked_reason then
@@ -424,6 +433,7 @@ function M.watch(cfg)
       M.handle_flow(flow, {
         arp_table             = arp,
         nft_sets              = cfg.nft_sets or {},
+        lookup_hostname       = cfg.lookup_hostname,
         blocked_ips           = cfg.blocked_ips,
         blocked_reason        = cfg.blocked_reason,
         reported_macs         = reported_macs,
