@@ -188,7 +188,7 @@ docker run --rm \
         echo "--- packages/Packages ---"
         cat packages/Packages
         # The set of packages to include. Dependencies declared by the ipk
-        # (lua, libuci-lua, luci-lib-jsonc, conntrack-tools, curl) are
+        # (lua, libuci-lua, luci-lib-jsonc, conntrack, curl) are
         # pulled in automatically from the upstream OpenWRT feed.
         make image \
             PROFILE=generic \
