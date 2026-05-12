@@ -80,7 +80,37 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(out.routerId == id) &&
         assertTrue(out.routerToken.startsWith("rt_")) &&
         assertTrue(row.enrollmentTokenHash.isEmpty) &&
-        assertTrue(row.tokenHash.contains(PolicyService.hashToken(out.routerToken)))
+        assertTrue(row.tokenHash.contains(PolicyService.hashToken(out.routerToken))) &&
+        assertTrue(row.name == "home-gw")
+    },
+    test("admin-created name survives enrollment end-to-end") {
+      for {
+        _          <- cleanDb
+        auth       <- makeAuth
+        rr         <- ZIO.service[RouterRepo]
+        ber        <- ZIO.service[BlockEventRepo]
+        adminLogin <- auth.login("admin", "changeme")
+        adminRoutes = AdminRouterRoutes.routes(auth, rr)
+        agentRoutes = RouterRoutes.routes(rr, null, RouterAuthLive(rr), ber)
+        createResp <- adminRoutes.runZIO(
+          Request
+            .post(
+              URL.decode("/api/admin/routers").toOption.get,
+              Body.fromString(CreateRouterRequest("kitchen-gw").toJson),
+            )
+            .addHeader(Header.Authorization.Bearer(adminLogin.token)),
+        )
+        createBody <- createResp.body.asString
+        created    <- ZIO.fromEither(createBody.fromJson[CreateRouterResponse])
+        regResp    <- doRegister(agentRoutes, created.enrollmentToken)
+        regBody    <- regResp.body.asString
+        reg        <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        row        <- rr.findById(reg.routerId).map(_.get)
+      } yield assertTrue(createResp.status == Status.Ok) &&
+        assertTrue(regResp.status == Status.Ok) &&
+        assertTrue(reg.routerId == created.routerId) &&
+        assertTrue(reg.routerToken.startsWith("rt_")) &&
+        assertTrue(row.name == "kitchen-gw")
     },
     test("enrollment token is single-use: second register returns 401") {
       for {

@@ -103,6 +103,20 @@ Rules:
 - Worktrees live under `.claude/worktrees/<slug>` and use branch names
   `claude/<slug>` by convention (see `git worktree list`).
 
+## Backwards compatibility
+
+Nothing has been deployed yet. **Do not add backwards-compatibility shims,
+deprecation paths, or "ignore unknown fields" tolerance for the sake of
+older clients.** Breaking changes to API request/response shapes, UCI keys,
+DB schema (pre-migration), and CLI flags are fine — just change the code
+on all sides in the same PR.
+
+This policy flips once we've done our first real deploy, which is gated on
+picking a permanent project name ([#38](https://github.com/sameerparekh/familydns/issues/38)).
+After that ships, API request/response shapes become a public contract and
+we keep them backwards compatible (additive fields, ignore-unknown on input,
+deprecation windows for removals).
+
 ## Docker inside Claude Code agents (worktrees)
 
 Docker commands (`docker info`, `docker compose`, etc.) will **hang

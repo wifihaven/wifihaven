@@ -38,8 +38,10 @@ The script prompts for:
 |---|---|
 | API server URL | e.g. `https://api.example.com` (no trailing slash needed; the script trims it). |
 | Enrollment token | The `et_…` value from the admin UI. Single-use; invalidated on success. |
-| Router name | Defaults to the router's hostname. |
 | LAN prefix | Auto-detected from `network.lan.ipaddr` (last octet stripped). Must end with a dot. |
+
+The router's display name comes from whatever you typed in the admin UI
+when you generated the enrollment token — the agent does not collect it.
 
 It then:
 
@@ -161,7 +163,6 @@ curl -s -X POST https://api.example.com/api/router/register \
   -H 'Content-Type: application/json' \
   -d '{
     "enrollmentToken": "et_5f3c9b…",
-    "routerName":      "home-router",
     "platformVersion": "23.05.5",
     "agentVersion":    "0.1.0"
   }'

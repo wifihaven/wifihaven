@@ -122,16 +122,22 @@ export function RoutersPage() {
             </div>
           )}
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Name</label>
-            <input type="text" value={name} autoFocus
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              Name <span className="text-red-400">*</span>
+            </label>
+            <input type="text" value={name} autoFocus required
               onChange={e => setName(e.target.value)}
               placeholder="home-gw"
               className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500" />
+            <p className="text-xs text-gray-500 mt-2">
+              This is the only place the router's display name is set — the
+              install script on the router doesn't ask for it.
+            </p>
           </div>
           <p className="text-sm text-gray-400">
-            We'll generate a one-time enrollment token. Paste it into the
-            OpenWRT package's UCI config (<code className="font-mono text-gray-300">/etc/config/familydns</code>),
-            then start the agent. The token is single-use.
+            We'll generate a one-time enrollment token. Run the OpenWRT
+            install script on the router and paste the token when prompted;
+            no other identifier is needed. The token is single-use.
           </p>
           <div className="flex gap-3 pt-2">
             <button onClick={() => setCreating(false)} disabled={saving}
