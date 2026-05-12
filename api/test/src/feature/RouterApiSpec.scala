@@ -158,28 +158,42 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       "policy snapshot composition: devices, profiles, schedules, site_limits, blocklists, time_used",
     ) {
       for {
-        _     <- cleanDb
-        pr    <- ZIO.service[ProfileRepo]
-        sr    <- ZIO.service[ScheduleRepo]
-        tlr   <- ZIO.service[TimeLimitRepo]
-        stlr  <- ZIO.service[SiteTimeLimitRepo]
-        dr    <- ZIO.service[DeviceRepo]
-        blr   <- ZIO.service[BlocklistRepo]
-        ur    <- ZIO.service[TimeUsageRepo]
-        rr    <- ZIO.service[RouterRepo]
-        kid   <- TestLayers.seedKidsProfile(pr, sr)
-        _     <- tlr.upsert(kid, 120)
-        _     <- stlr.replaceForProfile(
+        _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
+        sr      <- ZIO.service[ScheduleRepo]
+        tlr     <- ZIO.service[TimeLimitRepo]
+        stlr    <- ZIO.service[SiteTimeLimitRepo]
+        dr      <- ZIO.service[DeviceRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        ur      <- ZIO.service[TimeUsageRepo]
+        rr      <- ZIO.service[RouterRepo]
+        kid     <- TestLayers.seedKidsProfile(pr, sr)
+        _       <- tlr.upsert(kid, 120)
+        _       <- stlr.replaceForProfile(
           kid,
           List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")), // default exemptFromDaily=true
         )
-        adult <- TestLayers.seedAdultsProfile(pr)
-        _     <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _     <- TestLayers.seedDevice(dr, "11:22:33:44:55:66", "parent-phone", adult)
-        _     <- ur.incrementUsage("aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 12)
-        _     <- ur.incrementUsage("aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 47)
-        _     <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
-        ber   <- ZIO.service[BlockEventRepo]
+        adult   <- TestLayers.seedAdultsProfile(pr)
+        _       <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        _       <- TestLayers.seedDevice(dr, "11:22:33:44:55:66", "parent-phone", adult)
+        _       <- ur.incrementSecondsAndBytes(
+          "aa:bb:cc:11:22:33",
+          "youtube.com",
+          LocalDate.of(2025, 1, 6),
+          12L * 60L,
+          0L,
+          0L,
+        )
+        _       <- ur.incrementSecondsAndBytes(
+          "aa:bb:cc:11:22:33",
+          "cnn.com",
+          LocalDate.of(2025, 1, 6),
+          47L * 60L,
+          0L,
+          0L,
+        )
+        _       <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
+        ber     <- ZIO.service[BlockEventRepo]
         (_, et) <- seedRouter("gw")
         ps      <- makePolicyService
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)

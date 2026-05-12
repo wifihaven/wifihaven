@@ -115,9 +115,6 @@ trait BlocklistRepo {
 }
 
 trait TimeUsageRepo {
-  def getUsage(mac: String, domain: String, date: LocalDate): Task[Int]
-  def getTotalUsage(mac: String, date: LocalDate): Task[Int]
-  def incrementUsage(mac: String, domain: String, date: LocalDate, mins: Int): Task[Unit]
 
   /**
    * Increment seconds + byte counters for (mac, domain, date). Repeats are *additive* — the caller
@@ -484,21 +481,6 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
 }
 
 class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
-  def getUsage(mac: String, dom: String, d: LocalDate)                                     =
-    sql"SELECT COALESCE(minutes_used,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
-      .query[Int]
-      .option
-      .transact(xa)
-      .map(_.getOrElse(0))
-  def getTotalUsage(mac: String, d: LocalDate)                                             =
-    sql"SELECT COALESCE(SUM(minutes_used),0)::INT FROM time_usage WHERE device_mac=$mac AND date=$d"
-      .query[Int]
-      .unique
-      .transact(xa)
-  def incrementUsage(mac: String, dom: String, d: LocalDate, mins: Int)                    =
-    sql"INSERT INTO time_usage(device_mac,domain,date,minutes_used,last_seen_at) VALUES($mac,$dom,$d,$mins,NOW()) ON CONFLICT(device_mac,domain,date) DO UPDATE SET minutes_used=time_usage.minutes_used+EXCLUDED.minutes_used,last_seen_at=NOW()".update.run
-      .transact(xa)
-      .unit
   def incrementSecondsAndBytes(
       mac: String,
       dom: String,
@@ -529,7 +511,7 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       .transact(xa)
       .map(_.getOrElse((0L, 0L, 0L)))
   def listForDevice(mac: String, d: LocalDate)                                             =
-    sql"SELECT id,device_mac,domain,date::TEXT,minutes_used,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY minutes_used DESC"
+    sql"SELECT id,device_mac,domain,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY seconds_used DESC"
       .query[(Long, String, String, String, Int, String)]
       .map(TimeUsage.apply)
       .to[List]
@@ -538,16 +520,14 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
     if macs.isEmpty then ZIO.succeed(Nil)
     else {
       val arr = macs.toArray
-      sql"SELECT id,device_mac,domain,date::TEXT,minutes_used,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,minutes_used DESC"
+      sql"SELECT id,device_mac,domain,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,seconds_used DESC"
         .query[(Long, String, String, String, Int, String)]
         .map(TimeUsage.apply)
         .to[List]
         .transact(xa)
     }
-  def snapshotAll(d: LocalDate) =
-    // Combine legacy minutes_used (OPNsense path) with seconds_used (OpenWRT router path).
-    // seconds_used is floor-divided to minutes; both sources are additive so either agent works.
-    sql"SELECT device_mac,domain,COALESCE(minutes_used,0)+(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
+  def snapshotAll(d: LocalDate)                                                            =
+    sql"SELECT device_mac,domain,(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
       .query[(String, String, Int)]
       .to[List]
       .transact(xa)

@@ -90,8 +90,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
-          _               <- usageRepo.incrementUsage(testMac, "minecraft.net", today, 45)
-          _               <- usageRepo.incrementUsage(testMac, "google.com", today, 30)
+          _ <- usageRepo.incrementSecondsAndBytes(
+            testMac,
+            "minecraft.net",
+            today,
+            45L * 60L,
+            0L,
+            0L,
+          )
+          _ <- usageRepo.incrementSecondsAndBytes(testMac, "google.com", today, 30L * 60L, 0L, 0L)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -138,8 +145,8 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
           // 60 min general browsing + 20 min YouTube (site-specific, should NOT count toward 120)
-          _               <- usageRepo.incrementUsage(testMac, "google.com", today, 60)
-          _               <- usageRepo.incrementUsage(testMac, "youtube.com", today, 20)
+          _ <- usageRepo.incrementSecondsAndBytes(testMac, "google.com", today, 60L * 60L, 0L, 0L)
+          _ <- usageRepo.incrementSecondsAndBytes(testMac, "youtube.com", today, 20L * 60L, 0L, 0L)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -191,7 +198,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
           // 60 min of YouTube usage; since exemptFromDaily=false it must appear in usedMins
-          _               <- usageRepo.incrementUsage(testMac, "youtube.com", today, 60)
+          _ <- usageRepo.incrementSecondsAndBytes(testMac, "youtube.com", today, 60L * 60L, 0L, 0L)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -237,7 +244,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
-          _               <- usageRepo.incrementUsage(testMac, "minecraft.net", today, 120)
+          _               <- usageRepo.incrementSecondsAndBytes(
+            testMac,
+            "minecraft.net",
+            today,
+            120L * 60L,
+            0L,
+            0L,
+          )
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes  = TimeRoutes.routes(
@@ -456,8 +470,8 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
           // Device 1: 40 min, Device 2: 35 min → combined 75 min > 60 min limit
-          _               <- usageRepo.incrementUsage(mac1, "minecraft.net", today, 40)
-          _               <- usageRepo.incrementUsage(mac2, "youtube.com", today, 35)
+          _ <- usageRepo.incrementSecondsAndBytes(mac1, "minecraft.net", today, 40L * 60L, 0L, 0L)
+          _ <- usageRepo.incrementSecondsAndBytes(mac2, "youtube.com", today, 35L * 60L, 0L, 0L)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -508,8 +522,8 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
           // Each device uses 20 min YouTube → combined 40 min > 30 min limit
-          _               <- usageRepo.incrementUsage(mac1, "youtube.com", today, 20)
-          _               <- usageRepo.incrementUsage(mac2, "youtube.com", today, 20)
+          _ <- usageRepo.incrementSecondsAndBytes(mac1, "youtube.com", today, 20L * 60L, 0L, 0L)
+          _ <- usageRepo.incrementSecondsAndBytes(mac2, "youtube.com", today, 20L * 60L, 0L, 0L)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -555,8 +569,8 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
           _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
           today = TestClock.schoolDayAfternoon.toLocalDate
-          _             <- usageRepo.incrementUsage(mac1, "minecraft.net", today, 30)
-          _             <- usageRepo.incrementUsage(mac2, "roblox.com", today, 25)
+          _ <- usageRepo.incrementSecondsAndBytes(mac1, "minecraft.net", today, 30L * 60L, 0L, 0L)
+          _ <- usageRepo.incrementSecondsAndBytes(mac2, "roblox.com", today, 25L * 60L, 0L, 0L)
           // Build policy snapshot directly via PolicyService
           blocklistRepo <- ZIO.service[BlocklistRepo]
           clock         <- ZIO.service[Clock]
