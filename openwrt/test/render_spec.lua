@@ -40,7 +40,7 @@ describe("render.dnsmasq", function()
 
   it("emits dhcp-host entry that tags each device MAC to its profile", function()
     local conf = render.dnsmasq(snap_one())
-    assert.truthy(conf:find("dhcp%-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
   end)
 
   it("emits NXDOMAIN address= for each extra_blocked domain", function()
@@ -76,8 +76,8 @@ describe("render.dnsmasq", function()
       extensions_today_minutes = 0,
     }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find("dhcp%-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
-    assert.truthy(conf:find("dhcp%-host=de:ad:be:ef:00:01,set:profile1", 1, true))
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
+    assert.truthy(conf:find("dhcp-host=de:ad:be:ef:00:01,set:profile1", 1, true))
   end)
 
   it("deduplicates extra_blocked domains that appear in multiple profiles", function()
@@ -98,6 +98,23 @@ describe("render.dnsmasq", function()
   it("returns a non-empty string", function()
     local conf = render.dnsmasq(snap_one())
     assert.truthy(type(conf) == "string" and #conf > 0)
+  end)
+
+  -- Regression for #228: devices auto-created via /api/router/events
+  -- first_seen_mac have profile_id=nil until an admin assigns them in the UI.
+  -- The earlier render.dnsmasq used string.format("%d", nil) on them and the
+  -- whole agent crash-looped in policy.apply.
+  it("skips devices with nil profile_id (no string.format %d nil crash)", function()
+    local s = snap_one()
+    table.insert(s.devices,
+      { mac = "be:89:10:82:c7:4c", profile_id = nil, name = "iPhone" })
+    local conf
+    local ok = pcall(function() conf = render.dnsmasq(s) end)
+    assert.is_true(ok)
+    -- The unassigned device must not appear at all in the dhcp-host lines.
+    assert.is_nil(conf:find("dhcp-host=be:89:10:82:c7:4c", 1, true))
+    -- ... while the assigned device still does.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
   end)
 
 end)
@@ -185,6 +202,21 @@ describe("render.nft", function()
   it("returns a non-empty string", function()
     local nft = render.nft(snap_one())
     assert.truthy(type(nft) == "string" and #nft > 0)
+  end)
+
+  -- Regression for #228: same nil-profile_id crash that hit render.dnsmasq
+  -- also hit render.nft at `profile_macs[nil][#profile_macs[nil] + 1]`.
+  it("skips devices with nil profile_id when building profile-mac sets", function()
+    local s = snap_one()
+    table.insert(s.devices,
+      { mac = "be:89:10:82:c7:4c", profile_id = nil, name = "iPhone" })
+    local nft
+    local ok = pcall(function() nft = render.nft(s) end)
+    assert.is_true(ok)
+    -- The unassigned MAC must not show up anywhere in the nft output.
+    assert.is_nil(nft:find("be:89:10:82:c7:4c", 1, true))
+    -- The assigned device still lands in its profile set.
+    assert.truthy(nft:find("aa:bb:cc:11:22:33", 1, true))
   end)
 
 end)
