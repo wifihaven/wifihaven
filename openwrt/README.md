@@ -198,10 +198,10 @@ If the agent refuses to start, the most common cause is a missing or empty
 ### Auto-update (default)
 
 The package installs `/usr/sbin/familydns-update` and a cron entry that runs
-it every 6 hours:
+it once a day at 04:00 router-local time:
 
 ```
-0 */6 * * * /usr/sbin/familydns-update
+0 4 * * * /usr/sbin/familydns-update
 ```
 
 Each run hits the GitHub Releases API for the `latest` release, parses the
@@ -225,7 +225,7 @@ delete the `familydns-update` line:
 
 ```sh
 crontab -e
-# remove the "0 */6 * * * /usr/sbin/familydns-update" line, save, exit
+# remove the "0 4 * * * /usr/sbin/familydns-update" line, save, exit
 /etc/init.d/cron restart
 ```
 

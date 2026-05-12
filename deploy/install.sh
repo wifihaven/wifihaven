@@ -512,7 +512,7 @@ else
     if [ "$install_ok" -eq 1 ] \
        && $SUDO systemctl daemon-reload \
        && $SUDO systemctl enable --now familydns-update.timer; then
-      ok "familydns-update.timer enabled (polls ghcr.io every 5 minutes)"
+      ok "familydns-update.timer enabled (polls ghcr.io daily)"
       ok "Disable with:  ${SUDO:+sudo }systemctl disable --now familydns-update.timer"
     else
       warn "Could not install/enable familydns-update.timer."

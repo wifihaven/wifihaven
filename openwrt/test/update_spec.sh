@@ -82,14 +82,14 @@ grep -A2 'ctrl/conffiles' "$BUILDER" | grep -q '/etc/config/familydns' \
   && check "build-ipk.sh declares conffile" ok \
   || check "build-ipk.sh declares conffile" "missing conffiles file"
 
-# 12. Cron interval is every 6 hours (matches design)
-grep -q '0 \*/6 \* \* \* /usr/sbin/familydns-update' "$MAKEFILE" \
-  && check "Makefile cron is every 6 hours" ok \
-  || check "Makefile cron is every 6 hours" "wrong cron expression"
+# 12. Cron interval is daily at 04:00 (issue #254 — see deploy.md §1.3 / §2.3)
+grep -q '0 4 \* \* \* /usr/sbin/familydns-update' "$MAKEFILE" \
+  && check "Makefile cron is daily at 04:00" ok \
+  || check "Makefile cron is daily at 04:00" "wrong cron expression"
 
-grep -q '0 \*/6 \* \* \* /usr/sbin/familydns-update' "$BUILDER" \
-  && check "build-ipk.sh cron is every 6 hours" ok \
-  || check "build-ipk.sh cron is every 6 hours" "wrong cron expression"
+grep -q '0 4 \* \* \* /usr/sbin/familydns-update' "$BUILDER" \
+  && check "build-ipk.sh cron is daily at 04:00" ok \
+  || check "build-ipk.sh cron is daily at 04:00" "wrong cron expression"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
