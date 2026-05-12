@@ -252,7 +252,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           xa <- ZIO.service[doobie.Transactor[Task]]
           mac = "aa:bb:cc:dd:ee:01"
           d   = LocalDate.of(2026, 5, 2)
-          _   <- tu.incrementUsage(mac, "youtube.com", d, 5)
+          _   <- tu.incrementSecondsAndBytes(mac, "youtube.com", d, 5L * 60L, 0L, 0L)
           row <-
             sql"SELECT bytes_in, bytes_out FROM time_usage WHERE device_mac=$mac AND domain='youtube.com' AND date=$d"
               .query[(Long, Long)]

@@ -231,11 +231,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr, sr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _   <- ur.incrementUsage(
+        _   <- ur.incrementSecondsAndBytes(
           "aa:bb:cc:11:22:33",
           "cnn.com",
           LocalDate.of(2025, 1, 6),
-          121,
+          121L * 60L,
+          0L,
+          0L,
         )
         ps  <- makePsDefault // schoolDayAfternoon: 14:00, no schedule active
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -264,7 +266,14 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         kid <- TestLayers.seedKidsProfile(pr, sr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _   <- ur.incrementUsage("aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 121)
+        _   <- ur.incrementSecondsAndBytes(
+          "aa:bb:cc:11:22:33",
+          "cnn.com",
+          LocalDate.of(2025, 1, 6),
+          121L * 60L,
+          0L,
+          0L,
+        )
         _   <- er.grantForProfile(kid, LocalDate.of(2025, 1, 6), 30, "admin", None)
         ps  <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -400,7 +409,14 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           List(SiteTimeLimitRequest("youtube.com", 200, "YouTube", exemptFromDaily = false)),
         )
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _    <- ur.incrementUsage("aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 121)
+        _    <- ur.incrementSecondsAndBytes(
+          "aa:bb:cc:11:22:33",
+          "youtube.com",
+          LocalDate.of(2025, 1, 6),
+          121L * 60L,
+          0L,
+          0L,
+        )
         ps   <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok  <- seedAndEnrollRouter(rr, routes)
@@ -435,7 +451,14 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           ),
         )
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _    <- ur.incrementUsage("aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 121)
+        _    <- ur.incrementSecondsAndBytes(
+          "aa:bb:cc:11:22:33",
+          "youtube.com",
+          LocalDate.of(2025, 1, 6),
+          121L * 60L,
+          0L,
+          0L,
+        )
         ps   <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok  <- seedAndEnrollRouter(rr, routes)
