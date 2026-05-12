@@ -1,14 +1,15 @@
 name: OpenWRT Package Build
 
-# Branch pushes to main are intentionally excluded — that path burned CI on
-# unrelated changes (docs-only merges) and the per-PR `paths` filter already
-# covers code changes pre-merge. A release only happens on a v* tag push;
-# the `Create GitHub release` step below stays gated on the tag ref.
-# See issues #191 (no branch pushes) and #212 (workflow name no longer
-# implies every run publishes).
+# Normally, releases happen only on v* tag pushes (#191, #212). For live
+# debugging of #228 we also publish a rolling "openwrt-latest" pre-release
+# on every push to main that touches openwrt/**, so the field router can
+# fetch the updated .apk without us cutting a real tag each iteration.
+# This is reverted by #244 once #228 is fixed.
 on:
   push:
     tags: ["v*"]
+    branches: ["main"]
+    paths: ["openwrt/**"]
   pull_request:
     paths: ["openwrt/**"]
   workflow_dispatch:
@@ -96,7 +97,7 @@ jobs:
           path: openwrt/familydns_*.apk
           if-no-files-found: error
 
-      - name: Create GitHub release and attach packages
+      - name: Create GitHub release and attach packages (tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -104,3 +105,19 @@ jobs:
             openwrt/familydns_*.ipk
             openwrt/familydns_*.apk
           generate_release_notes: true
+
+      # Rolling pre-release for #228 live debugging. Reverted by #244.
+      - name: Publish rolling openwrt-latest release (main push)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-latest
+          name: "openwrt-latest (rolling)"
+          body: |
+            Rolling build of the OpenWRT agent from the latest `main`.
+            Replaced on every push to `main` touching `openwrt/**`.
+            For #228 live debugging — see #243 / #244.
+          prerelease: true
+          files: |
+            openwrt/familydns_*.ipk
+            openwrt/familydns_*.apk
