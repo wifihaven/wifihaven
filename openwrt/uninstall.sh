@@ -171,6 +171,16 @@ if [ -n "${uhttpd_section:-}" ]; then
   note "removed uhttpd listener on 127.0.0.1:8081"
 fi
 
+# 3a. #303: revert the route_localnet sysctl. The package removal takes the
+# /etc/sysctl.d/99-familydns.conf file, but the running kernel still has the
+# value set until reboot — reset it explicitly so we don't leave LAN clients
+# able to route to 127.0.0.0/8 after uninstall.
+if [ -f /etc/sysctl.d/99-familydns.conf ] || [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
+  rm -f /etc/sysctl.d/99-familydns.conf
+  sysctl -w net.ipv4.conf.br-lan.route_localnet=0 >/dev/null 2>&1 || true
+  note "reset net.ipv4.conf.br-lan.route_localnet=0"
+fi
+
 # 4. Wipe familydns UCI. apk/opkg removal should have taken /etc/config/familydns
 # (the package owns it), but be defensive: scrub UCI state and the file if it
 # survived.

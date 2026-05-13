@@ -49,7 +49,10 @@ define Package/familydns/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/share/familydns/boot.nft $(1)/usr/share/familydns/
 
 	$(INSTALL_DIR) $(1)/www/familydns
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/www/familydns/block.html $(1)/www/familydns/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/www/familydns/index.html $(1)/www/familydns/
+
+	$(INSTALL_DIR) $(1)/etc/sysctl.d
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/etc/sysctl.d/99-familydns.conf $(1)/etc/sysctl.d/
 endef
 
 define Package/familydns/postinst

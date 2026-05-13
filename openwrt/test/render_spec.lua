@@ -219,16 +219,22 @@ describe("render.nft", function()
     assert.truthy(nft:find("11:22:33:44:55:66", 1, true))
   end)
 
-  -- #297: previous render emitted `tcp dport 80 dnat to 127.0.0.1:8081` to
-  -- DNAT blocked HTTP to a block page, but `dnat` in an inet filter chain is
-  -- rejected by `nft -f` (DNAT requires a nat-type chain), which silently
-  -- failed the entire ruleset and disabled all blocking. Drop the redirect
-  -- until block-page support is rebuilt on a prerouting nat chain.
-  it("does NOT emit dnat in the block filter chain (inet filter rejects it)", function()
+  -- #297/#303: previous render emitted `tcp dport 80 dnat to 127.0.0.1:8081`
+  -- inside the inet *filter* block chain. `dnat` is not supported in an inet
+  -- filter chain, so `nft -f` rejected the whole ruleset. #303 reintroduces
+  -- block-page DNAT on a dedicated nat-prerouting chain; the filter chain
+  -- itself must still be free of dnat rules.
+  it("does NOT emit dnat inside the familydns_block filter chain", function()
     local s = snap_one()
-    s.profiles[1].paused = true
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
     local nft = render.nft(s)
-    assert.is_nil(nft:find("dnat", 1, true))
+    local block_start = nft:find("chain familydns_block {", 1, true)
+    assert.truthy(block_start)
+    -- Find the matching closing brace by scanning forward to the next chain/table close
+    -- at the same indent. We approximate by taking everything up to the next "chain " or end of table.
+    local next_chain = nft:find("\n%s*chain ", block_start + 1)
+    local block_body = nft:sub(block_start, (next_chain or #nft + 1) - 1)
+    assert.is_nil(block_body:find("dnat", 1, true))
   end)
 
   it("returns a non-empty string", function()
@@ -297,6 +303,106 @@ describe("render.nft", function()
     assert.is_nil(nft:find("be:89:10:82:c7:4c", 1, true))
     -- The assigned device still lands in its profile set.
     assert.truthy(nft:find("aa:bb:cc:11:22:33", 1, true))
+  end)
+
+end)
+
+-- ── nat chain (block-page DNAT) ───────────────────────────────────────────
+
+describe("render.nft nat chain", function()
+
+  -- #303: block-page DNAT lives in a dedicated nat-prerouting chain.
+  -- DNAT cannot live in a filter chain — see #297 incident.
+  it("emits chain familydns_block_nat with nat hook prerouting when blockedMacs is non-empty", function()
+    local s = snap_one()
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("chain familydns_block_nat", 1, true))
+    assert.truthy(nft:find("type nat hook prerouting priority dstnat", 1, true))
+  end)
+
+  -- #303: inet tables require the family qualifier on dnat — `dnat ip to ...`
+  -- for v4. The bare `dnat to ...` form is what #297 emitted, and it's exactly
+  -- what `nft -f` rejected with "Could not process rule: Not supported".
+  it("uses the inet family qualifier (`dnat ip to`, not bare `dnat to`)", function()
+    local s = snap_one()
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("dnat ip to 127.0.0.1:8081", 1, true))
+    -- The bare form must NOT appear anywhere
+    assert.is_nil(nft:find("dnat to 127.0.0.1", 1, true))
+  end)
+
+  -- #303 + #305: DNAT references the unified @blocked_macs set (which is
+  -- populated from snapshot.blockedMacs), not per-profile sets. The API
+  -- decides who's blocked; the agent just enforces against the one set.
+  it("emits a DNAT rule scoped to the @blocked_macs set", function()
+    local s = snap_one()
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  -- #303 + #305: pause vs time_limit vs schedule reason is opaque to the
+  -- agent — the API computes blockedMacs and the rule shape is identical.
+  -- This regression test guards against a future refactor accidentally
+  -- re-introducing per-reason rule emission.
+  it("emits the same DNAT rule regardless of block reason", function()
+    local s = snap_one()
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "time_limit" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  -- #303: the chain is omitted entirely when nothing is blocked. Avoids
+  -- installing a prerouting hook with no work to do (every forwarded
+  -- packet would otherwise traverse it just to fall through accept).
+  it("does NOT emit the nat chain at all when blockedMacs is empty", function()
+    local nft = render.nft(snap_one())  -- blockedMacs = {} from snap_one()
+    assert.is_nil(nft:find("familydns_block_nat", 1, true))
+    assert.is_nil(nft:find("hook prerouting", 1, true))
+  end)
+
+  it("filter chain still drops blocked traffic (HTTPS / non-port-80 path)", function()
+    -- DNAT covers HTTP/80; HTTPS still needs the filter-chain drop. Make sure
+    -- the nat-chain addition didn't accidentally remove the drop behavior.
+    local s = snap_one()
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("ether saddr @blocked_macs drop", 1, true))
+  end)
+
+end)
+
+-- ── nft syntax validation (skipped if `nft` binary unavailable) ───────────
+
+describe("render.nft syntax validation", function()
+
+  local function nft_available()
+    local ok = os.execute("command -v nft >/dev/null 2>&1")
+    -- Lua 5.1 returns 0 on success; Lua 5.2+ returns true.
+    return ok == 0 or ok == true
+  end
+
+  it("rendered output loads cleanly via `nft -c -f -` when blockedMacs is non-empty", function()
+    if not nft_available() then
+      pending("nft binary not available on this host")
+      return
+    end
+    local s = snap_one()
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
+    local nft_text = render.nft(s)
+    local tmp = os.tmpname()
+    local f = io.open(tmp, "w")
+    f:write(nft_text)
+    f:close()
+    local ok = os.execute("nft -c -f " .. tmp .. " >/dev/null 2>&1")
+    os.remove(tmp)
+    assert.is_true(ok == 0 or ok == true)
   end)
 
 end)

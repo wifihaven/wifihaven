@@ -67,5 +67,27 @@ grep -qE "Router name|router_name|routerName" "$SCRIPT" \
            "install.sh still references router-name input" \
   || check "install.sh does not prompt for router name" ok
 
+# #303: block-page uhttpd listener must have home=/www/familydns (not /www).
+# When nft prerouting DNAT redirects http://<anything>/ to 127.0.0.1:8081,
+# uhttpd serves home/index.html — with home=/www that's the LuCI redirect
+# page, not the block page (which lives at /www/familydns/index.html).
+grep -q "home=/www/familydns" "$SCRIPT" \
+  && check "block-page uhttpd home is /www/familydns" ok \
+  || check "block-page uhttpd home is /www/familydns" "expected home=/www/familydns"
+
+# #303: the installer must not leave a bare home=/www behind. Use a regex
+# that excludes /www/<anything> so home=/www/familydns doesn't match.
+if grep -Eq "home=/www([^/a-z]|\$)" "$SCRIPT"; then
+  check "no leftover home=/www in block-page section" "found bare home=/www"
+else
+  check "no leftover home=/www in block-page section" ok
+fi
+
+# #303: installer must idempotently fix an existing listener whose home is
+# still the pre-#303 value (uci set + commit + uhttpd reload on upgrade).
+grep -q "Updating block-page uhttpd home" "$SCRIPT" \
+  && check "upgrades existing block-page listener to new home" ok \
+  || check "upgrades existing block-page listener to new home" "missing upgrade path"
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

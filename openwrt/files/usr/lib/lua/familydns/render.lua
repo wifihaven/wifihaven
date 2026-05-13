@@ -159,8 +159,8 @@ function M.nft(snapshot)
   -- #305: blocked-MAC set. The API precomputes which MACs should be blocked
   -- *right now* from pause / daily time limit / active schedule window and
   -- ships them in snapshot.blockedMacs. We just enforce it — no wall-clock
-  -- evaluation here, no per-profile decision logic. The set is read by the
-  -- block chain below.
+  -- evaluation here, no per-profile decision logic. The set is read by both
+  -- the filter-drop chain and the block-page DNAT chain (#303).
   local blocked = snapshot.blockedMacs or {}
   ind("set blocked_macs {")
   ind2("type ether_addr")
@@ -172,11 +172,11 @@ function M.nft(snapshot)
   ind("}")
   emit("")
 
-  -- Block chain: drop forwarded traffic from any MAC in blocked_macs.
-  -- DNAT to a block page would be nicer UX but needs a separate nat-type
-  -- chain (DNAT is not supported in inet filter chains), and the bare
-  -- `dnat to` form rejected `nft -f` entirely (#297) — so until we wire up
-  -- a prerouting nat chain, we just drop.
+  -- Block chain: drops forwarded traffic from any MAC in blocked_macs.
+  -- HTTPS/443 and any non-port-80 traffic falls through here (no transparent
+  -- MITM possible for TLS, so blocked HTTPS just dies). HTTP/80 is also
+  -- caught here, but the prerouting nat chain below DNATs it first so the
+  -- user lands on the block page instead of seeing a hung connection.
   ind("chain familydns_block {")
   ind2("type filter hook forward priority 0; policy accept;")
   if #blocked > 0 then
@@ -184,6 +184,25 @@ function M.nft(snapshot)
   end
   ind("}")
   emit("")
+
+  -- Block-page DNAT chain (#303): redirect HTTP/80 from blocked devices to
+  -- the local uhttpd block page on 127.0.0.1:8081 so users see *why* their
+  -- device is blocked instead of a hung connection. DNAT can't live in a
+  -- filter chain (#297), so it lives in a dedicated nat-prerouting chain.
+  -- inet tables require the family qualifier on dnat (`dnat ip to ...` for
+  -- v4) — the bare `dnat to ...` form is what crashed the ruleset in #297.
+  -- HTTPS/443 is intentionally not redirected: there's no way to MITM TLS
+  -- transparently, so blocked HTTPS continues to drop in the filter chain.
+  -- The chain is omitted entirely when nothing is blocked, to avoid an
+  -- unconditional prerouting hook with no work to do.
+  if #blocked > 0 then
+    ind("chain familydns_block_nat {")
+    ind2("type nat hook prerouting priority dstnat; policy accept;")
+    ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
+    ind("}")
+    emit("")
+  end
+
   emit("}")
   emit("")
 

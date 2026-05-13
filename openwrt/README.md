@@ -171,9 +171,13 @@ happen first. See the install guide above for the enrollment flow.
 
 ## Block-page redirect
 
-Blocked HTTP/80 traffic is DNAT'd to `127.0.0.1:8081` (uhttpd).
-uhttpd serves `/www/familydns/block.html`, which uses JavaScript to
-redirect the browser to `http://<api>/blocked?host=…&reason=…`.
+Blocked HTTP/80 traffic is DNAT'd to `127.0.0.1:8081` (uhttpd) via a
+dedicated `nat hook prerouting` chain in `inet familydns`. uhttpd serves
+`/www/familydns/index.html`, which uses JavaScript to redirect the browser
+to `http://<api>/blocked?host=…&reason=…`.
+
+The block-page listener's document root is `/www/familydns` (not `/www`)
+so the DNAT's `/` path serves the block page directly rather than LuCI.
 
 HTTPS to blocked hosts times out intentionally — intercepting TLS without
 installing a custom CA on every client device is not practical.
@@ -183,7 +187,7 @@ Configure uhttpd to listen on `127.0.0.1:8081`:
 ```sh
 uci add uhttpd uhttpd
 uci set uhttpd.@uhttpd[-1].listen_http='127.0.0.1:8081'
-uci set uhttpd.@uhttpd[-1].home='/www'
+uci set uhttpd.@uhttpd[-1].home='/www/familydns'
 uci commit uhttpd
 /etc/init.d/uhttpd reload
 ```
