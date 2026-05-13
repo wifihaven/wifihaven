@@ -264,7 +264,11 @@ conntrack.watch({
       local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", last_usage_run)
       last_usage_run = now
 
-      local pipe = io.popen("nft -j list counters table inet familydns 2>/dev/null", "r")
+      -- Per-(mac,ip) counters live as element counters on the dynamic set
+      -- `mac_ip_tracking` (see render.lua). After a successful POST we
+      -- `nft reset set ...` to zero those per-element counters in place.
+      local pipe = io.popen(
+        "nft -j list set inet familydns mac_ip_tracking 2>/dev/null", "r")
       if pipe then
         local json_str = pipe:read("*a") or ""
         pipe:close()
@@ -277,8 +281,7 @@ conntrack.watch({
                       #counters, report.records and #report.records or 0)
             local posted = usage.post(api_url, router_token, report, http_post, log)
             if posted then
-              -- Reset counters so next period starts clean
-              os.execute("nft reset counters table inet familydns 2>/dev/null")
+              os.execute("nft reset set inet familydns mac_ip_tracking >/dev/null 2>&1")
             end
           end
         end

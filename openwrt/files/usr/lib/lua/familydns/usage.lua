@@ -1,15 +1,30 @@
 -- usage.lua — nftables counter scraper and usage reporter
 --
--- Counter naming convention (must match render.lua + conntrack.lua):
---   ct_<mac_underscored>__<dst_ip_underscored>
---   e.g.  aa:bb:cc:11:22:33 → dst 1.2.3.4  →  ct_aa_bb_cc_11_22_33__1_2_3_4
---   ':'  and '.'  →  '_'
---   MAC and IP separated by double-underscore '__' to avoid ambiguity.
+-- Per-(mac, dst_ip) byte/packet accounting comes from the dynamic set
+-- `mac_ip_tracking` declared in render.lua:
+--
+--   set mac_ip_tracking {
+--     type ether_addr . ipv4_addr
+--     flags dynamic,timeout
+--     counter
+--     ...
+--   }
+--   chain familydns_account {
+--     type filter hook forward priority 1; policy accept;
+--     update @mac_ip_tracking { ether saddr . ip daddr } counter
+--   }
+--
+-- Each set element carries its own counter, so we read
+-- `nft -j list set inet familydns mac_ip_tracking` and walk
+-- `nftables[*].set.elem[*].elem.{val.concat:[mac,ip], counter:{packets,bytes}}`.
+-- After a successful POST the agent calls
+-- `nft reset set inet familydns mac_ip_tracking` to zero the per-element
+-- counters in place so the next bucket starts clean.
 --
 -- Public API:
 --   usage.parse_nft_counters(json_str)
 --     → list of { mac, dst_ip, bytes, packets }
---     Input: JSON from `nft -j list counters table inet familydns`
+--     Input: JSON from `nft -j list set inet familydns mac_ip_tracking`
 --
 --   usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases])
 --     → report table ready for JSON encoding and POST /api/router/usage
@@ -35,50 +50,46 @@ local function default_log()
 end
 
 -- ---------------------------------------------------------------------------
--- decode_counter_name(name) → mac, dst_ip  or  nil
--- ---------------------------------------------------------------------------
-local function decode_counter_name(name)
-  if name:sub(1, 3) ~= "ct_" then return nil end
-  local body = name:sub(4)
-
-  -- split on the first "__" to separate MAC-encoded from IP-encoded
-  local mac_enc, ip_enc = body:match("^(.-)__(.+)$")
-  if not mac_enc then return nil end
-
-  -- MAC: 6 hex octets separated by '_'
-  local mac_parts = {}
-  for p in mac_enc:gmatch("[^_]+") do mac_parts[#mac_parts + 1] = p end
-  if #mac_parts ~= 6 then return nil end
-
-  -- IP: 4 decimal octets separated by '_'
-  local ip_parts = {}
-  for p in ip_enc:gmatch("[^_]+") do ip_parts[#ip_parts + 1] = p end
-  if #ip_parts ~= 4 then return nil end
-
-  return table.concat(mac_parts, ":"), table.concat(ip_parts, ".")
-end
-
--- ---------------------------------------------------------------------------
 -- usage.parse_nft_counters(json_str)
+--
+-- Walks the JSON output of `nft -j list set inet familydns mac_ip_tracking`
+-- and returns one record per set element with a non-zero counter.
+--
+-- Shape (nftables 1.x):
+--   { "nftables": [
+--       { "metainfo": {...} },
+--       { "set": { "name": "mac_ip_tracking",
+--                  "elem": [
+--                    { "elem": { "val": { "concat": [<mac>, <ip>] },
+--                                "counter": { "packets": N, "bytes": M } } },
+--                    ...
+--                  ] } }
+--   ] }
 -- ---------------------------------------------------------------------------
 function M.parse_nft_counters(json_str)
-  local jsonc    = require("luci.jsonc")
-  local decoded  = jsonc.parse(json_str)
-  local result   = {}
+  local jsonc   = require("luci.jsonc")
+  local decoded = jsonc.parse(json_str)
+  local result  = {}
 
   if not decoded then return result end
 
   for _, entry in ipairs(decoded.nftables or {}) do
-    local c = entry.counter
-    if c and type(c.name) == "string" then
-      local mac, dst_ip = decode_counter_name(c.name)
-      if mac then
-        result[#result + 1] = {
-          mac     = mac,
-          dst_ip  = dst_ip,
-          bytes   = c.bytes   or 0,
-          packets = c.packets or 0,
-        }
+    local set = entry.set
+    if set and set.elem then
+      for _, wrapper in ipairs(set.elem) do
+        -- `nft -j` wraps each element as { elem = { val = ..., counter = ... } }
+        local e = wrapper.elem or wrapper
+        local val = e.val
+        local concat = val and val.concat
+        local counter = e.counter
+        if concat and counter and concat[1] and concat[2] then
+          result[#result + 1] = {
+            mac     = concat[1],
+            dst_ip  = concat[2],
+            bytes   = counter.bytes   or 0,
+            packets = counter.packets or 0,
+          }
+        end
       end
     end
   end
