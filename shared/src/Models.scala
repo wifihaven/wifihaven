@@ -412,11 +412,16 @@ case class PolicyProfile(
     extensionsTodayMinutes: Int,
 ) derives JsonCodec
 case class PolicyBlocklist(version: String, url: String) derives JsonCodec
+// Reason is one of: "paused", "time_limit", "schedule" (precedence in that order).
+// The API computes this list against the current wall clock; the OpenWRT agent
+// just enforces it (drop forwarded traffic from these MACs). See #305.
+case class BlockedMac(mac: String, reason: String) derives JsonCodec
 case class PolicySnapshot(
     etag: String,
     generatedAt: String,
     defaultProfileId: Option[Long],
     devices: List[PolicyDevice],
     profiles: List[PolicyProfile],
+    blockedMacs: List[BlockedMac],
     blocklists: Map[String, PolicyBlocklist],
 ) derives JsonCodec
