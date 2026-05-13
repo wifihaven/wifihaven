@@ -107,8 +107,8 @@ describe('LogsPage — Sessions tab (default)', () => {
   })
 })
 
-describe('LogsPage — Raw events tab', () => {
-  it('clicking Raw events tab calls api.logs.query and renders connection-event rows', async () => {
+describe('LogsPage — Connection events tab', () => {
+  it('clicking Connection events tab calls api.logs.query and renders connection-event rows', async () => {
     const user = userEvent.setup()
     render(<LogsPage />)
     await screen.findByText('youtube.com')
@@ -117,7 +117,12 @@ describe('LogsPage — Raw events tab', () => {
     expect(api.logs.query).toHaveBeenCalled()
   })
 
-  it('Raw events shows empty state with its own copy', async () => {
+  it('renders the "Connection events" tab label', async () => {
+    render(<LogsPage />)
+    expect(await screen.findByRole('tab', { name: 'Connection events' })).toBeInTheDocument()
+  })
+
+  it('Connection events shows empty state with its own copy', async () => {
     (api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const user = userEvent.setup()
     render(<LogsPage />)

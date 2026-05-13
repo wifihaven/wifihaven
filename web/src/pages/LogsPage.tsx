@@ -13,7 +13,7 @@ export function LogsPage() {
 
       <div className="flex gap-2" role="tablist">
         <TabButton id="sessions" current={tab} onClick={setTab}>Sessions</TabButton>
-        <TabButton id="raw"      current={tab} onClick={setTab}>Raw events</TabButton>
+        <TabButton id="raw"      current={tab} onClick={setTab}>Connection events</TabButton>
       </div>
 
       {tab === 'sessions' ? <SessionsTab /> : <RawEventsTab />}
@@ -121,7 +121,7 @@ function SessionsTab() {
   )
 }
 
-// ── Raw events tab (legacy /api/logs view) ────────────────────────────────
+// ── Connection events tab (every row is a connection_attempt from /api/logs) ─
 
 function RawEventsTab() {
   const [logs,    setLogs]    = useState<QueryLog[]>([])
