@@ -1,6 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/api/client'
-import type { DashboardStats, QueryLog } from '@/types/api'
+import type {
+  DashboardNow,
+  DashboardNowDevice,
+  DashboardNowProfile,
+  DashboardStats,
+  QueryLog,
+} from '@/types/api'
+
+const NOW_POLL_MS = 10_000
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
@@ -18,6 +26,8 @@ export function DashboardPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-white">Dashboard</h1>
+
+      <NowSection />
 
       {stats && (
         <>
@@ -75,6 +85,111 @@ export function DashboardPage() {
       </section>
     </div>
   )
+}
+
+// ── "Now" section — live snapshot, polls every 10s ───────────────────────────
+
+export function NowSection() {
+  const [data, setData] = useState<DashboardNow | null>(null)
+  const dataRef = useRef<DashboardNow | null>(null)
+  dataRef.current = data
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = () => {
+      api.dashboard.now()
+        .then(d => { if (!cancelled) setData(d) })
+        .catch(() => { /* keep showing previous snapshot on transient errors */ })
+    }
+    tick()
+    const id = setInterval(tick, NOW_POLL_MS)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
+  return (
+    <section data-testid="now-section" className="space-y-3">
+      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Now</h2>
+      {data === null
+        ? <p className="text-gray-600 text-sm">Loading live activity…</p>
+        : data.profiles.length === 0
+          ? <p className="text-gray-600 text-sm">No profiles configured yet.</p>
+          : (
+            <div className="grid md:grid-cols-2 gap-4">
+              {data.profiles.map(p => <NowProfileCard key={p.id} profile={p} />)}
+            </div>
+          )
+      }
+    </section>
+  )
+}
+
+function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
+  const idle = profile.activeDevices.length === 0
+  return (
+    <div
+      data-testid={`now-profile-${profile.id}`}
+      className={`bg-gray-900 rounded-2xl border p-5 ${idle ? 'border-gray-800 opacity-60' : 'border-emerald-900/50'}`}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-base font-semibold text-white">{profile.name}</h3>
+        {profile.paused && (
+          <span className="text-[10px] font-bold uppercase tracking-wider bg-yellow-900/60 text-yellow-300 px-2 py-0.5 rounded">
+            Paused
+          </span>
+        )}
+      </div>
+      {idle
+        ? <p className="text-gray-600 text-xs">No activity in the last 5 minutes</p>
+        : (
+          <div className="space-y-3">
+            {profile.activeDevices.map(d => <NowDeviceRow key={d.mac} device={d} />)}
+          </div>
+        )
+      }
+    </div>
+  )
+}
+
+function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
+  return (
+    <div data-testid={`now-device-${device.mac}`} className="border-t border-gray-800 first:border-0 pt-3 first:pt-0">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-sm font-medium text-white truncate">{device.name}</p>
+        <p className="text-xs text-gray-500 shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
+      </div>
+      {device.currentSession && (
+        <p className="text-xs text-emerald-400 mt-1">
+          watching <span className="font-mono">{device.currentSession.hostname}</span>
+          {' · '}{formatDuration(device.currentSession.durationSeconds)}
+        </p>
+      )}
+      {device.topHosts.length > 0 && (
+        <ul className="mt-2 space-y-0.5">
+          {device.topHosts.map(h => (
+            <li key={h.hostname} className="flex justify-between text-xs text-gray-400">
+              <span className="font-mono truncate">{h.hostname}</span>
+              <span className="text-gray-600 ml-2 shrink-0">{formatDuration(h.activeSeconds)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function formatLastSeen(seconds: number): string {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s ago`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
+  return `${Math.round(seconds / 3600)}h ago`
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const mins = Math.round(seconds / 60)
+  if (mins < 60) return `${mins}m`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return m === 0 ? `${h}h` : `${h}h ${m}m`
 }
 
 function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
