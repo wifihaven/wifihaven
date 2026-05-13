@@ -49,5 +49,23 @@ grep -q "/etc/init.d/dnsmasq restart" "$SCRIPT" \
   && check "restarts dnsmasq after UCI changes" ok \
   || check "restarts dnsmasq after UCI changes" "missing dnsmasq restart"
 
+# #281 / TODO(#244): install.sh must fetch the rolling openwrt-latest
+# release, not /releases/latest. The latter pins the install to a stale
+# v0.0.99 snapshot and the auto-updater is then stuck behind it until
+# the 24h cron tick, leaving fresh installs up to a day stale.
+grep -q "releases/tags/openwrt-latest" "$SCRIPT" \
+  && check "install.sh fetches releases/tags/openwrt-latest" ok \
+  || check "install.sh fetches releases/tags/openwrt-latest" \
+           "install.sh appears to hit /releases/latest — would land stale build"
+
+# #197: the installer must not collect a router name. The name is set
+# once in the admin UI when the enrollment token is issued; the install
+# script only needs the token. A second prompt risks a mismatch that
+# confuses users.
+grep -qE "Router name|router_name|routerName" "$SCRIPT" \
+  && check "install.sh does not prompt for router name" \
+           "install.sh still references router-name input" \
+  || check "install.sh does not prompt for router name" ok
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

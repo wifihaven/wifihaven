@@ -220,6 +220,12 @@ describe('ProfilesPage — edit', () => {
     expect(screen.getByDisplayValue('120')).toBeInTheDocument()
     expect(screen.getByDisplayValue('school.com')).toBeInTheDocument()
 
+    // #265: Paused checkbox helper text must describe *all internet traffic*, not just DNS.
+    expect(
+      screen.getByText(/blocks all internet traffic for devices on this profile/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/blocks all DNS/i)).not.toBeInTheDocument()
+
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
 
     await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))

@@ -196,6 +196,26 @@ else
   fail "wait_for_api timeout path (rc=${rc}, duration=${duration}s, out=${out})"
 fi
 
+# ── 10. #254: install.sh must wire the auto-update systemd timer so
+#       fixes landing on main reach existing hosts without manual ssh.
+#       The unit files ship in-tree under deploy/systemd/; the installer
+#       drops them into /etc/systemd/system/ and enable --now's the timer.
+#       Without this, the deploy gap that motivated #254 reopens silently.
+SYSTEMD_DIR="$(dirname "${SCRIPT}")/systemd"
+if [[ -f "${SYSTEMD_DIR}/familydns-update.service" \
+   && -f "${SYSTEMD_DIR}/familydns-update.timer" ]]; then
+  pass "deploy/systemd ships familydns-update.{service,timer}"
+else
+  fail "deploy/systemd missing familydns-update.{service,timer}"
+fi
+
+if grep -q "/etc/systemd/system/familydns-update.timer" "${SCRIPT}" \
+   && grep -q "systemctl enable --now familydns-update.timer" "${SCRIPT}"; then
+  pass "install.sh installs + enables familydns-update.timer (#254)"
+else
+  fail "install.sh does not install/enable familydns-update.timer — #254 deploy gap"
+fi
+
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]
