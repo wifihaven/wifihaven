@@ -240,14 +240,31 @@ silent usage misattribution is exactly the kind of bug that erodes trust
 in daily limits. A loud-but-non-blocking warning is the right posture.
 
 ### Implementation
-- `openwrt/files/usr/lib/lua/familydns/policy.lua`: capture API `Date`
-  header on each successful poll; compute drift; store on agent.
-- `openwrt/files/usr/lib/lua/familydns/usage.lua`: include
-  `clockSkewSeconds` in usage POST body.
-- `api/src/routes/RouterIngestRoutes.scala`: persist last reported skew
-  per-router.
-- Admin UI router page: display warning banner if `|skew| > 60s`.
-- `docs/install-api.md`: document NTP as a prerequisite for the API host.
+- `openwrt/files/usr/lib/lua/familydns/policy.lua`: captures API `Date`
+  header on each successful poll (200 and 304); parses RFC 1123 form;
+  exposes `policy.clock_skew()` returning signed seconds (positive =
+  router ahead). Logs a `WARN` line via `logger -t familydns` on each
+  poll when `|drift| > 60s`. Implemented in #321.
+- `openwrt/files/usr/lib/lua/familydns/usage.lua`: `build_report` takes
+  an optional `clock_skew_seconds` arg and adds it to the report body
+  as `clockSkewSeconds` when non-nil (the field is omitted when the
+  agent has never measured drift, so older API builds still parse the
+  payload).
+- `api/src/routes/RouterIngestRoutes.scala`: on every `/api/router/usage`
+  POST that carries `clockSkewSeconds`, calls `RouterRepo.recordSkew`
+  which UPDATEs `routers.last_clock_skew_seconds` (migration `V9`).
+  Older agents that don't ship the field leave the column at its
+  previous value so a forward-compat downgrade cannot silently clear
+  a stale-clock warning.
+- Admin UI router page: `RoutersPage` renders a yellow banner under
+  each router row when `|lastClockSkewSeconds| > 60`, naming the drift
+  in seconds and whether the router is ahead/behind. Banner is hidden
+  when skew is `null` (never measured) so brand-new enrolments don't
+  flag themselves while the first poll cycle is in flight.
+- `docs/install-api.md`: NTP / clock-sync added as a prerequisite for
+  the API host (the API clock is authoritative for schedule windows).
+- `docs/install-openwrt.md`: NTP verification step added for the router
+  side, covering cellular-failover and isolated-network installs.
 
 ### How to verify
 - On a test router, `date -s '2020-01-01'`. Within one poll cycle, agent

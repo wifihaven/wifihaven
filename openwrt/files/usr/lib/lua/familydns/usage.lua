@@ -188,7 +188,7 @@ end
 --     element first appeared after the last per-minute sample) falls back to
 --     one active minute when bytes > 0.
 --   * Without a tracker (legacy / back-compat): bytes > 0 → 300, else 0.
-function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname, tracker)
+function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname, tracker, clock_skew_seconds)
   local records = {}
 
   for _, c in ipairs(counters or {}) do
@@ -217,12 +217,19 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
     records[#records + 1] = rec
   end
 
-  return {
+  local report = {
     routerId    = router_id,
     periodStart = period_start,
     periodEnd   = period_end,
     records     = records,
   }
+  -- Issue #312: surface the router's clock drift to the API on every POST so
+  -- the admin UI can warn the operator. Omit the field entirely when the
+  -- agent hasn't measured a drift yet so older deployments stay wire-clean.
+  if clock_skew_seconds ~= nil then
+    report.clockSkewSeconds = clock_skew_seconds
+  end
+  return report
 end
 
 -- ---------------------------------------------------------------------------

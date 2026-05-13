@@ -289,6 +289,7 @@ case class Router(
     lastSeenAt: Option[String],
     lastEtag: Option[String],
     createdAt: String,
+    lastClockSkewSeconds: Option[Long] = None,
 ) derives JsonCodec
 
 case class TrafficReport(
@@ -359,6 +360,7 @@ case class UsageReport(
     periodStart: String,
     periodEnd: String,
     records: List[UsageRecord],
+    clockSkewSeconds: Option[Long] = None,
 ) derives JsonCodec
 
 /**
@@ -399,6 +401,7 @@ case class RouterSummary(
     lastSeenAt: Option[String],
     lastEtag: Option[String],
     createdAt: String,
+    lastClockSkewSeconds: Option[Long] = None,
 ) derives JsonCodec
 
 case class RegisterRouterRequest(

@@ -225,6 +225,32 @@ describe("usage.build_report", function()
     assert.equal(0, #r.records)
   end)
 
+  -- #312: clock skew is reported alongside each usage POST so the admin UI
+  -- can surface "router clock drift" warnings without the agent having to
+  -- expose a separate endpoint.
+  it("omits clockSkewSeconds entirely when no skew was supplied", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    assert.is_nil(r.clockSkewSeconds)
+  end)
+
+  it("includes clockSkewSeconds when supplied (positive)", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, nil, 120)
+    assert.equal(120, r.clockSkewSeconds)
+  end)
+
+  it("includes clockSkewSeconds when supplied (negative)", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, nil, -45)
+    assert.equal(-45, r.clockSkewSeconds)
+  end)
+
+  it("includes clockSkewSeconds = 0 (in-sync) as an explicit field, not nil", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, nil, 0)
+    assert.equal(0, r.clockSkewSeconds)
+  end)
+
 end)
 
 -- ── tracker (per-minute activity sampler) ─────────────────────────────────

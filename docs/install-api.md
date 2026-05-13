@@ -119,6 +119,18 @@ and §8 (firewall).
   host. Make sure that filesystem has room (a few GB is plenty for typical
   household traffic; query/connection logs grow over time).
 - **Outbound HTTPS** to `ghcr.io` so the host can pull the image.
+- **NTP / system clock sync.** The API server's clock is **authoritative**
+  for schedule enforcement and daily-limit windows — those decisions are
+  computed server-side and baked into the policy snapshot the router
+  enforces, so a wrong clock on the API host silently shifts kids' bedtime
+  blocks and daily quotas. Most Linux distros enable `systemd-timesyncd`
+  or `chrony` out of the box; verify with `timedatectl status` and look
+  for `System clock synchronized: yes`. If you're running on a host
+  without internet (rare for this stack, but e.g. an air-gapped network),
+  point chrony at a local stratum-1 source before bringing the API up.
+  The OpenWRT agent measures drift on every poll and surfaces a banner
+  on the admin Routers page if `|skew| > 60s` — that warning will fire
+  for skewed routers but cannot detect skew on the API host itself.
 
 ---
 
