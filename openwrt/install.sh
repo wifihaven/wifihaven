@@ -204,15 +204,40 @@ if [ "$dnsmasq_changed" = 1 ]; then
 fi
 
 # Idempotent uhttpd listener for the local block page on 127.0.0.1:8081.
-if uci show uhttpd 2>/dev/null | grep -q "listen_http='127.0.0.1:8081'"; then
-  info "Block-page uhttpd listener already configured."
+# Document root is /www/familydns so that the nft DNAT (which lands at "/" —
+# the user's original HTTP request had Host: example.com, path /) serves
+# /www/familydns/index.html, not the LuCI redirect at /www/index.html (#303).
+uhttpd_section=$(uci show uhttpd 2>/dev/null \
+  | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http='127\\.0\\.0\\.1:8081'\$/{print \$2; exit}")
+if [ -n "$uhttpd_section" ]; then
+  current_home=$(uci -q get "uhttpd.${uhttpd_section}.home" || echo "")
+  if [ "$current_home" = "/www/familydns" ]; then
+    info "Block-page uhttpd listener already configured."
+  else
+    info "Updating block-page uhttpd home to /www/familydns..."
+    uci set "uhttpd.${uhttpd_section}.home=/www/familydns"
+    uci commit uhttpd
+    /etc/init.d/uhttpd reload
+  fi
 else
   info "Configuring uhttpd block-page listener on 127.0.0.1:8081..."
-  section=$(uci add uhttpd uhttpd)
-  uci set "uhttpd.${section}.listen_http=127.0.0.1:8081"
-  uci set "uhttpd.${section}.home=/www"
+  uhttpd_section=$(uci add uhttpd uhttpd)
+  uci set "uhttpd.${uhttpd_section}.listen_http=127.0.0.1:8081"
+  uci set "uhttpd.${uhttpd_section}.home=/www/familydns"
   uci commit uhttpd
   /etc/init.d/uhttpd reload
+fi
+
+# #303: enable route_localnet on the LAN bridge so the nft prerouting DNAT
+# to 127.0.0.1:8081 (block-page uhttpd) is routable for LAN clients. The
+# persistent file is shipped at /etc/sysctl.d/99-familydns.conf by the
+# package; apply it now so the running kernel picks it up without a reboot.
+# Manual installs (no package manager) also need this — sysctl -p loads the
+# file if present.
+if [ -f /etc/sysctl.d/99-familydns.conf ]; then
+  sysctl -p /etc/sysctl.d/99-familydns.conf >/dev/null 2>&1 || true
+else
+  sysctl -w net.ipv4.conf.br-lan.route_localnet=1 >/dev/null 2>&1 || true
 fi
 
 # Enable and start.

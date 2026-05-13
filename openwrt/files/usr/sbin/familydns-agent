@@ -149,10 +149,10 @@ end
 
 os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d")
 
--- ── Patch block.html with the actual API URL ─────────────────────────────────
+-- ── Patch block page with the actual API URL ────────────────────────────────
 
 do
-  local html_path = "/www/familydns/block.html"
+  local html_path = "/www/familydns/index.html"
   local f = io.open(html_path, "r")
   if f then
     local content = f:read("*a")
