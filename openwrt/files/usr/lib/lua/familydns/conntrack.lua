@@ -252,8 +252,8 @@ end
 -- ctx: {
 --   arp_table      table   { ip -> mac }
 --   nft_sets       table   { hostname -> { ip -> true } }
---   blocked_ips    table   { ip -> true }
---   blocked_reason table   { ip -> reason }
+--   blocked_macs   table   { mac -> true }       (filled by render.update_shared)
+--   blocked_reason table   { mac -> reason }     (filled by render.update_shared)
 --   reported_macs  table   { mac -> true }  (mutated)
 --   leases         table   { mac -> { ip, hostname } } (may be nil/empty)
 --   ts             string  ISO8601 timestamp to attach to the events
@@ -301,10 +301,13 @@ function M.handle_flow(flow, ctx, batcher)
   if not hname then
     hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
   end
-  local allowed = not (ctx.blocked_ips and ctx.blocked_ips[flow.dst_ip])
+  -- Per-MAC block lookup (#297): pause and time-limit block every flow from
+  -- the device, regardless of destination IP. render.update_shared rebuilds
+  -- blocked_macs/blocked_reason from the policy snapshot on every poll.
+  local allowed = not (mac and ctx.blocked_macs and ctx.blocked_macs[mac])
   local reason
   if not allowed and ctx.blocked_reason then
-    reason = ctx.blocked_reason[flow.dst_ip]
+    reason = ctx.blocked_reason[mac]
   end
   log.debug("handle_flow: connection_attempt src=%s dst=%s mac=%s hostname=%s allowed=%s reason=%s",
             flow.src_ip, flow.dst_ip, tostring(mac), tostring(hname),
@@ -353,8 +356,8 @@ end
 --   api_url        string    base URL, e.g. "http://192.168.1.1:8080"
 --   router_token   string    bearer token
 --   nft_sets       table     shared ref: { hostname -> { ip -> true } }
---   blocked_ips    table     shared ref: { ip -> true }  (filled by render.lua)
---   blocked_reason table     shared ref: { ip -> reason_string }
+--   blocked_macs   table     shared ref: { mac -> true }  (filled by render.lua)
+--   blocked_reason table     shared ref: { mac -> reason_string }
 --   lan_prefix     string    default "192.168.1."
 --   max_batch      int       default 50
 --   flush_interval int       default 10  (seconds)
@@ -434,7 +437,7 @@ function M.watch(cfg)
         arp_table             = arp,
         nft_sets              = cfg.nft_sets or {},
         lookup_hostname       = cfg.lookup_hostname,
-        blocked_ips           = cfg.blocked_ips,
+        blocked_macs          = cfg.blocked_macs,
         blocked_reason        = cfg.blocked_reason,
         reported_macs         = reported_macs,
         pending_hostname_macs = pending_hostname_macs,
