@@ -13,6 +13,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;./test/s
          test/render_spec.lua \
          test/policy_spec.lua \
          test/usage_spec.lua \
+         test/clock_spec.lua \
          "$@"
 
 echo ""
