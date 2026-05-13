@@ -244,6 +244,86 @@ function M.post_with_retry(url, body, max_retries, base_delay, post_fn, sleep_fn
 end
 
 -- ---------------------------------------------------------------------------
+-- Events retry queue (#330). Mirrors the usage retry queue from #309:
+-- the in-call `post_with_retry` above handles transient blips with short
+-- backoff; on its final failure the events batch is enqueued here and drained
+-- oldest-first when the API recovers.
+--
+-- Backoff: 30, 60, 120, 240, 480, 900 seconds (capped at 900), ±10% jitter —
+-- identical to usage.lua so docs/resilience.md §2 covers both with one rule.
+--
+-- Bounded in-memory queue. Events are higher-volume than usage, so when the
+-- cap is exceeded we drop the OLDEST batches and keep recent activity —
+-- prolonged outage tradeoff is documented in docs/resilience.md §2.
+-- ---------------------------------------------------------------------------
+local BACKOFF_BASE       = 30
+local BACKOFF_MAX        = 900   -- 15 min
+local EVENTS_QUEUE_CAP   = 1000  -- batches; conntrack flushes up to ~6/min, so ~5–10 min of buffer
+
+local function next_backoff(attempts, rng_fn)
+  local nominal = BACKOFF_BASE * (2 ^ (attempts - 1))
+  if nominal > BACKOFF_MAX then nominal = BACKOFF_MAX end
+  local j = (rng_fn or math.random)()
+  local scale = 0.9 + 0.2 * j
+  return math.floor(nominal * scale + 0.5)
+end
+
+function M.new_event_queue()
+  return { batches = {}, cap = EVENTS_QUEUE_CAP }
+end
+
+-- enqueue_events(queue, events, now, rng_fn, log)
+-- Push an event batch with attempts=1; if the queue exceeds its cap, drop the
+-- oldest batches (intentional — keep recent activity over ancient under
+-- prolonged outage) and log each drop loudly.
+function M.enqueue_events(queue, events, now, rng_fn, log)
+  log = log or default_log()
+  queue.batches[#queue.batches + 1] = {
+    events          = events,
+    attempts        = 1,
+    next_attempt_at = now + next_backoff(1, rng_fn),
+  }
+  local cap = queue.cap or EVENTS_QUEUE_CAP
+  while #queue.batches > cap do
+    local dropped = table.remove(queue.batches, 1)
+    log.err("conntrack: events queue cap %d exceeded, dropping oldest batch (%d events)",
+            cap, #(dropped.events or {}))
+  end
+end
+
+-- drain_events(events_url, router_id, queue, post_fn, now, rng_fn, log)
+-- Walk the queue in insertion order. For each batch whose next_attempt_at ≤
+-- now, POST it. On success remove and continue; on failure reschedule with
+-- the next backoff and STOP draining — same shape as usage.drain so that a
+-- still-flapping API doesn't get hammered with the whole backlog at once.
+function M.drain_events(events_url, router_id, queue, post_fn, now, rng_fn, log)
+  log = log or default_log()
+  local jsonc = require("luci.jsonc")
+  local i = 1
+  while i <= #queue.batches do
+    local b = queue.batches[i]
+    if b.next_attempt_at > now then
+      i = i + 1
+    else
+      local payload = jsonc.stringify({
+        routerId = router_id,
+        events   = b.events,
+      })
+      local status, _body, _err = post_fn(events_url, payload)
+      if status and status >= 200 and status < 300 then
+        table.remove(queue.batches, i)
+      else
+        b.attempts        = b.attempts + 1
+        b.next_attempt_at = now + next_backoff(b.attempts, rng_fn)
+        log.warn("conntrack: drain batch failed attempt=%d events=%d; next in %ds (status=%s)",
+                 b.attempts, #b.events, b.next_attempt_at - now, tostring(status))
+        return
+      end
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- handle_flow(flow, ctx, batcher)
 --
 -- Processes a single outbound flow: emits a first_seen_mac event the first
@@ -377,6 +457,7 @@ function M.watch(cfg)
   local base_delay = cfg.base_delay     or 2
 
   local events_url = cfg.api_url .. "/api/router/events"
+  local event_queue = cfg.event_queue or M.new_event_queue()
 
   local function do_post(url, body)
     return cfg.http_post(url, body, {
@@ -394,11 +475,15 @@ function M.watch(cfg)
     local ok, last_status, last_body, last_err = M.post_with_retry(
       events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
     if not ok then
-      -- best-effort: log and continue; never block a flow waiting for the API
+      -- #330: instead of dropping after the in-call retries are exhausted,
+      -- enqueue the batch for long-form retry mirroring the usage queue (#309).
+      -- drain happens in the main watch loop below on every tick.
       local body_str = last_body and tostring(last_body) or ""
       if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
-      log.err("conntrack: failed to POST events batch after %d retries (status=%s body=%q) err=%s, dropping %d events",
-              max_retry, tostring(last_status), body_str, tostring(last_err), #events)
+      log.warn("conntrack: events POST failed after %d in-call retries (status=%s body=%q) err=%s; enqueuing %d events (queue depth=%d)",
+               max_retry, tostring(last_status), body_str, tostring(last_err),
+               #events, #event_queue.batches + 1)
+      M.enqueue_events(event_queue, events, os.time(), nil, log)
     else
       log.debug("conntrack: POST events success status=%d events=%d",
                 last_status, #events)
@@ -448,6 +533,14 @@ function M.watch(cfg)
     end
 
     batcher.tick()
+
+    -- Drain the events retry queue on every iteration. Cheap when empty
+    -- (just checks #batches); when populated, drain_events posts at most one
+    -- batch per tick (stops at first failure — see comment on drain_events).
+    if #event_queue.batches > 0 then
+      M.drain_events(events_url, cfg.router_id, event_queue, do_post,
+                     os.time(), nil, log)
+    end
 
     -- Drive co-operative timers (policy poll, usage report) from the main agent.
     if cfg.on_tick then cfg.on_tick() end

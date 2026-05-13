@@ -560,3 +560,166 @@ describe("post_with_retry", function()
     assert.equal(4, delays_used[3])
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- 6. Events retry queue (#330)
+--
+-- Mirrors the usage retry queue (#309): the in-call `post_with_retry` handles
+-- transient blips with short backoff; on its final failure the batch goes onto
+-- a bounded in-memory queue and is drained oldest-first when the API recovers.
+-- ---------------------------------------------------------------------------
+
+describe("events retry queue", function()
+  -- rng_fn=0.5 → midpoint of the ±10% jitter band, so backoff is the nominal
+  -- value and tests can assert exact next_attempt_at integers.
+  local function no_jitter() return 0.5 end
+
+  local function ev(n)
+    local r = {}
+    for i = 1, (n or 1) do
+      r[i] = { ["type"] = "connection_attempt", mac = "aa", hostname = "h" .. i,
+               destIp = "1.1.1.1", allowed = true, reason = "allow", ts = "t" .. i }
+    end
+    return r
+  end
+
+  describe("new_event_queue / enqueue_events", function()
+    it("starts empty", function()
+      local q = conntrack.new_event_queue()
+      assert.equal(0, #q.batches)
+    end)
+
+    it("schedules first retry at now + 30s with no jitter midpoint", function()
+      local q = conntrack.new_event_queue()
+      conntrack.enqueue_events(q, ev(3), 1000, no_jitter)
+      assert.equal(1, #q.batches)
+      assert.equal(1030, q.batches[1].next_attempt_at)
+      assert.equal(1, q.batches[1].attempts)
+      assert.equal(3, #q.batches[1].events)
+    end)
+
+    it("applies ±10% jitter around the nominal delay", function()
+      local q1 = conntrack.new_event_queue()
+      conntrack.enqueue_events(q1, ev(1), 1000, function() return 0 end)
+      assert.equal(1000 + 27, q1.batches[1].next_attempt_at)  -- 30 * 0.9
+      local q2 = conntrack.new_event_queue()
+      conntrack.enqueue_events(q2, ev(1), 1000, function() return 1 end)
+      assert.equal(1000 + 33, q2.batches[1].next_attempt_at)  -- 30 * 1.1
+    end)
+  end)
+
+  describe("backoff schedule", function()
+    it("doubles per attempt: 30, 60, 120, 240, 480, 900 (capped at 900)", function()
+      local q = conntrack.new_event_queue()
+      local expected = { 30, 60, 120, 240, 480, 900, 900, 900 }
+      conntrack.enqueue_events(q, ev(1), 1000, no_jitter)
+      assert.equal(1000 + expected[1], q.batches[1].next_attempt_at)
+      local function fail(_u, _b) return 500, "err" end
+      for i = 2, #expected do
+        local now = q.batches[1].next_attempt_at
+        conntrack.drain_events("http://api/events", "r1", q, fail, now, no_jitter)
+        assert.equal(now + expected[i], q.batches[1].next_attempt_at,
+          "attempt " .. i .. ": expected " .. expected[i] .. "s")
+      end
+    end)
+  end)
+
+  describe("drain_events", function()
+    it("does nothing when no batch is due yet", function()
+      local q = conntrack.new_event_queue()
+      conntrack.enqueue_events(q, ev(2), 1000, no_jitter)  -- next at 1030
+      local calls = 0
+      local function ok_fn(_u, _b) calls = calls + 1; return 200, "" end
+      conntrack.drain_events("http://api/events", "r1", q, ok_fn, 1020, no_jitter)
+      assert.equal(0, calls)
+      assert.equal(1, #q.batches)
+    end)
+
+    it("posts due batch and removes it on success", function()
+      local q = conntrack.new_event_queue()
+      conntrack.enqueue_events(q, ev(2), 1000, no_jitter)
+      local seen_payload
+      local function ok_fn(_u, body) seen_payload = body; return 200, "" end
+      conntrack.drain_events("http://api/events", "r1", q, ok_fn, 1030, no_jitter)
+      assert.equal(0, #q.batches)
+      -- Payload shape: { routerId, events: [...] }
+      local cjson = require("cjson")
+      local decoded = cjson.decode(seen_payload)
+      assert.equal("r1", decoded.routerId)
+      assert.equal(2, #decoded.events)
+    end)
+
+    it("drains in insertion order (oldest-first)", function()
+      local q = conntrack.new_event_queue()
+      conntrack.enqueue_events(q, ev(1), 1000, no_jitter)  -- first
+      conntrack.enqueue_events(q, ev(2), 1001, no_jitter)  -- second
+      local seen_sizes = {}
+      local function ok_fn(_u, body)
+        local cjson = require("cjson")
+        seen_sizes[#seen_sizes + 1] = #cjson.decode(body).events
+        return 200, ""
+      end
+      conntrack.drain_events("http://api/events", "r1", q, ok_fn, 9999, no_jitter)
+      assert.equal(1, seen_sizes[1])
+      assert.equal(2, seen_sizes[2])
+    end)
+
+    it("stops at first failure; reschedules with next backoff", function()
+      local q = conntrack.new_event_queue()
+      conntrack.enqueue_events(q, ev(1), 1000, no_jitter)
+      conntrack.enqueue_events(q, ev(1), 1000, no_jitter)
+      local attempts = 0
+      local function fail(_u, _b) attempts = attempts + 1; return 500, "" end
+      conntrack.drain_events("http://api/events", "r1", q, fail, 1030, no_jitter)
+      assert.equal(1, attempts, "must stop at first failure")
+      assert.equal(2, #q.batches)
+      assert.equal(1030 + 60, q.batches[1].next_attempt_at)
+      assert.equal(2, q.batches[1].attempts)
+    end)
+
+    it("treats connection error (nil status) as failure", function()
+      local q = conntrack.new_event_queue()
+      conntrack.enqueue_events(q, ev(1), 1000, no_jitter)
+      local function net_err(_u, _b) return nil, nil, "curl: (7) connect failed" end
+      conntrack.drain_events("http://api/events", "r1", q, net_err, 1030, no_jitter)
+      assert.equal(1, #q.batches)
+      assert.equal(2, q.batches[1].attempts)
+    end)
+  end)
+
+  describe("queue cap (drop oldest on overflow)", function()
+    it("retains exactly `cap` batches, dropping the oldest", function()
+      local q = conntrack.new_event_queue()
+      q.cap = 3
+      for i = 1, 5 do
+        conntrack.enqueue_events(q, { { marker = i } }, 1000 + i, no_jitter)
+      end
+      assert.equal(3, #q.batches)
+      -- Oldest 2 dropped → remaining markers 3, 4, 5 (recent retained).
+      assert.equal(3, q.batches[1].events[1].marker)
+      assert.equal(4, q.batches[2].events[1].marker)
+      assert.equal(5, q.batches[3].events[1].marker)
+    end)
+
+    it("logs an err line on each drop", function()
+      local q = conntrack.new_event_queue()
+      q.cap = 2
+      local drop_logs = 0
+      local log = {
+        info  = function() end,
+        warn  = function() end,
+        debug = function() end,
+        err   = function(fmt, ...)
+          if fmt:find("queue cap") and fmt:find("dropping") then
+            drop_logs = drop_logs + 1
+          end
+        end,
+      }
+      for _ = 1, 4 do
+        conntrack.enqueue_events(q, { { type = "x" } }, 1000, no_jitter, log)
+      end
+      assert.equal(2, drop_logs)
+      assert.equal(2, #q.batches)
+    end)
+  end)
+end)
