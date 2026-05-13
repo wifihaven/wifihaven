@@ -117,12 +117,14 @@ describe("render.dnsmasq", function()
     assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
   end)
 
-  -- #259: the agent's hostname attribution relies on tailing the dnsmasq
-  -- query log. dnsmasq must be told to emit it.
-  it("emits log-queries=extra and a deterministic log-facility path", function()
+  -- #287: query logging is configured via UCI (`option logqueries`,
+  -- `option logfacility`) rather than emitted into familydns.conf — that
+  -- way dnsmasq's init.d wires the log file into the ujail RW mount.
+  -- Re-emitting them here would trip "illegal repeated keyword".
+  it("does NOT re-emit log-queries / log-facility (set via UCI)", function()
     local conf = render.dnsmasq(snap_one())
-    assert.truthy(conf:find("log-queries=extra", 1, true))
-    assert.truthy(conf:find("log-facility=/tmp/familydns-dnsmasq.log", 1, true))
+    assert.is_nil(conf:find("log-queries=", 1, true))
+    assert.is_nil(conf:find("log-facility=", 1, true))
   end)
 
 end)
