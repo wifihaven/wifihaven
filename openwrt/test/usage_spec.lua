@@ -462,3 +462,155 @@ describe("usage.post", function()
   end)
 
 end)
+
+-- ── usage retry queue (#309) ──────────────────────────────────────────────
+
+describe("usage retry queue", function()
+
+  local SAMPLE_REC = { mac = "aa:bb:cc:11:22:33", hostname = "x",
+                       activeSeconds = 300, bytesIn = 1, bytesOut = 0 }
+
+  local function report(period_start, period_end)
+    return {
+      routerId    = "r1",
+      periodStart = period_start,
+      periodEnd   = period_end,
+      records     = { SAMPLE_REC },
+    }
+  end
+
+  -- Deterministic "jitter" — return the midpoint (no randomness) so tests
+  -- exercise exact nominal backoff values.
+  local function no_jitter() return 0.5 end
+
+  describe("post_with_retry", function()
+
+    it("posts immediately and leaves queue empty on success", function()
+      local q = usage.new_queue()
+      local function post_fn(_url, _body, _hdrs) return 200, "" end
+      local ok = usage.post_with_retry(
+        "http://api", "tok", report("t0", "t1"), post_fn, q, 1000, no_jitter)
+      assert.is_true(ok)
+      assert.equal(0, #q.buckets)
+    end)
+
+    it("enqueues the report with next_attempt_at ≈ now + 30 on first failure", function()
+      local q = usage.new_queue()
+      local function post_fn(_url, _body, _hdrs) return 500, "err" end
+      local ok = usage.post_with_retry(
+        "http://api", "tok", report("t0", "t1"), post_fn, q, 1000, no_jitter)
+      assert.is_false(ok)
+      assert.equal(1, #q.buckets)
+      assert.equal(1030, q.buckets[1].next_attempt_at)
+      assert.equal(1,    q.buckets[1].attempts)
+    end)
+
+    it("skips queueing (and posting) empty-records reports", function()
+      local q = usage.new_queue()
+      local called = false
+      local function post_fn(_url, _body, _hdrs) called = true; return 500, "" end
+      local empty = { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = {} }
+      local ok = usage.post_with_retry("http://api", "tok", empty, post_fn, q, 1000, no_jitter)
+      assert.is_true(ok)
+      assert.is_false(called)
+      assert.equal(0, #q.buckets)
+    end)
+
+  end)
+
+  describe("backoff schedule", function()
+
+    -- Walk the backoff sequence by repeatedly failing the same bucket and
+    -- inspecting next_attempt_at - now.
+    it("doubles per attempt: 30, 60, 120, 240, 480, 900 (capped)", function()
+      local q = usage.new_queue()
+      local function fail(_url, _body, _hdrs) return 500, "" end
+      local expected = { 30, 60, 120, 240, 480, 900, 900, 900 }
+      local now = 1000
+      -- First failure enqueues the bucket.
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q, now, no_jitter)
+      assert.equal(now + 30, q.buckets[1].next_attempt_at)
+      -- Subsequent drain attempts at-or-after next_attempt_at hit the same fail_fn.
+      for i = 2, #expected do
+        now = q.buckets[1].next_attempt_at
+        usage.drain("http://api", "tok", q, fail, now, no_jitter)
+        assert.equal(now + expected[i], q.buckets[1].next_attempt_at,
+          "attempt " .. i .. ": expected " .. expected[i] .. "s backoff")
+      end
+    end)
+
+    it("applies ±10% jitter around the nominal delay", function()
+      -- rng returns 0 → -10% (low edge); 1 → +10% (high edge).
+      local q1 = usage.new_queue()
+      local function fail(_url, _body, _hdrs) return 500, "" end
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q1, 1000, function() return 0 end)
+      assert.equal(1000 + 27, q1.buckets[1].next_attempt_at)  -- 30 * 0.9
+
+      local q2 = usage.new_queue()
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q2, 1000, function() return 1 end)
+      assert.equal(1000 + 33, q2.buckets[1].next_attempt_at)  -- 30 * 1.1
+    end)
+
+  end)
+
+  describe("drain", function()
+
+    it("does nothing when all buckets are scheduled for the future", function()
+      local q = usage.new_queue()
+      local function fail(_url, _body, _hdrs) return 500, "" end
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q, 1000, no_jitter)
+      -- Next attempt at 1030; drain at 1020 must NOT touch it.
+      local calls = 0
+      local function count_fn(_url, _body, _hdrs) calls = calls + 1; return 200, "" end
+      usage.drain("http://api", "tok", q, count_fn, 1020, no_jitter)
+      assert.equal(0, calls)
+      assert.equal(1, #q.buckets)
+    end)
+
+    it("drains successful buckets oldest-first by periodEnd", function()
+      local q = usage.new_queue()
+      local function fail(_url, _body, _hdrs) return 500, "" end
+      -- Enqueue two buckets out of chronological order.
+      usage.post_with_retry("http://api", "tok", report("t2", "t3"), fail, q, 1000, no_jitter)
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q, 1000, no_jitter)
+      local seen = {}
+      local function ok_fn(_url, body, _hdrs)
+        local json = require("cjson")
+        table.insert(seen, json.decode(body).periodEnd)
+        return 200, ""
+      end
+      usage.drain("http://api", "tok", q, ok_fn, 9999, no_jitter)
+      assert.equal("t1", seen[1])
+      assert.equal("t3", seen[2])
+      assert.equal(0, #q.buckets)
+    end)
+
+    it("stops at the first failure, leaving later buckets queued", function()
+      local q = usage.new_queue()
+      local function fail(_url, _body, _hdrs) return 500, "" end
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q, 1000, no_jitter)
+      usage.post_with_retry("http://api", "tok", report("t2", "t3"), fail, q, 1000, no_jitter)
+      -- Both due at 1030; drain attempts only the first, then stops on failure.
+      local attempts = 0
+      local function fail_then_count(_url, _body, _hdrs)
+        attempts = attempts + 1
+        return 500, ""
+      end
+      usage.drain("http://api", "tok", q, fail_then_count, 1030, no_jitter)
+      assert.equal(1, attempts, "drain must stop at first failure")
+      assert.equal(2, #q.buckets, "no buckets removed on failure")
+    end)
+
+    it("reschedules failing bucket and continues retrying on subsequent drains", function()
+      local q = usage.new_queue()
+      local function fail(_url, _body, _hdrs) return 500, "" end
+      usage.post_with_retry("http://api", "tok", report("t0", "t1"), fail, q, 1000, no_jitter)
+      usage.drain("http://api", "tok", q, fail, 1030, no_jitter)
+      -- Second attempt → backoff 60s from now (1030 + 60 = 1090).
+      assert.equal(1090, q.buckets[1].next_attempt_at)
+      assert.equal(2,    q.buckets[1].attempts)
+    end)
+
+  end)
+
+end)

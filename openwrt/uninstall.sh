@@ -166,6 +166,13 @@ if [ -e /etc/config/familydns ]; then
   note "removed /etc/config/familydns"
 fi
 
+# Cached policy snapshot (#309). Lives outside the package's tracked files
+# (the agent writes it at runtime), so the package manager won't remove it.
+if [ -d /etc/familydns ]; then
+  rm -rf /etc/familydns
+  note "removed /etc/familydns (cached policy snapshot)"
+fi
+
 # 5. Purge mode: also kill manual-workaround leftovers from older e2e
 # shakeouts (pre-#202, when modules were dropped under these paths by hand).
 if [ "$PURGE" -eq 1 ]; then
