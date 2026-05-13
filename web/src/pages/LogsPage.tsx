@@ -13,7 +13,7 @@ export function LogsPage() {
 
       <div className="flex gap-2" role="tablist">
         <TabButton id="sessions" current={tab} onClick={setTab}>Sessions</TabButton>
-        <TabButton id="raw"      current={tab} onClick={setTab}>Raw events</TabButton>
+        <TabButton id="raw"      current={tab} onClick={setTab}>Connection events</TabButton>
       </div>
 
       {tab === 'sessions' ? <SessionsTab /> : <RawEventsTab />}
@@ -121,7 +121,7 @@ function SessionsTab() {
   )
 }
 
-// ── Raw events tab (legacy /api/logs view) ────────────────────────────────
+// ── Connection events tab (every row is a connection_attempt from /api/logs) ─
 
 function RawEventsTab() {
   const [logs,    setLogs]    = useState<QueryLog[]>([])
@@ -174,7 +174,6 @@ function RawEventsTab() {
                 <thead>
                   <tr className="text-gray-600 border-b border-gray-800">
                     <th className="text-left px-4 py-3">Time</th>
-                    <th className="text-left px-4 py-3">Type</th>
                     <th className="text-left px-4 py-3">Device</th>
                     <th className="text-left px-4 py-3">Domain</th>
                     <th className="text-left px-4 py-3">Status</th>
@@ -186,7 +185,6 @@ function RawEventsTab() {
                   {logs.map(l => (
                     <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                       <td className="px-4 py-2.5 text-gray-500">{l.ts.slice(11,19)}</td>
-                      <td className="px-4 py-2.5 text-gray-400">{l.type}</td>
                       <td className="px-4 py-2.5 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
                       <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate">{l.domain}</td>
                       <td className={`px-4 py-2.5 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>

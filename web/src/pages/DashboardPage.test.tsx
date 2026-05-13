@@ -32,7 +32,7 @@ const recent: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
   domain: 'example.com', qtype: 1, blocked: false, reason: '',
-  location: 'home', ts: '2026-05-07T10:15:30Z', type: 'dns_allow',
+  location: 'home', ts: '2026-05-07T10:15:30Z',
 }
 
 beforeEach(() => {

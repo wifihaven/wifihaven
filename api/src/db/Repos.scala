@@ -782,8 +782,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // location is sourced from routers.name until routers.location lands (#136)
     val base  =
       fr"""SELECT ce.id, ce.mac, d.name, d.profile_id, p.name,
-                  ce.hostname, 1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT,
-                  CASE WHEN ce.allowed THEN 'dns_allow' ELSE 'dns_block' END
+                  ce.hostname, 1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac    = ce.mac
            LEFT JOIN profiles p ON p.id     = d.profile_id
@@ -808,7 +807,6 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             Boolean,
             String,
             Option[String],
-            String,
             String,
         ),
       ]

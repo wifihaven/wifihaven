@@ -103,7 +103,6 @@ case class QueryLog(
     reason: String,
     location: Option[String],
     ts: String,
-    `type`: String,
 ) derives JsonCodec
 
 case class LoginRequest(username: String, password: String) derives JsonCodec

@@ -62,7 +62,6 @@ export interface QueryLog {
   reason: string
   location: string | null
   ts: string
-  type: string
 }
 
 export interface Session {
