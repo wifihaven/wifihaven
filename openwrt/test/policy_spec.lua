@@ -440,7 +440,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      function(domain) probed = domain; return "0.0.0.0" end)
+      { dns_check_fn = function(domain) probed = domain; return "0.0.0.0" end })
     assert.equal("badsite.example.com", probed)
   end)
 
@@ -450,7 +450,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      function(_domain) return "93.184.216.34" end)
+      { dns_check_fn = function(_domain) return "93.184.216.34" end })
     local matched = false
     for _, w in ipairs(warns) do
       if w:find("smoke", 1, true) and w:find("93.184.216.34", 1, true) then
@@ -468,7 +468,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      function(_d) return "0.0.0.0" end)
+      { dns_check_fn = function(_d) return "0.0.0.0" end })
     for _, w in ipairs(warns) do
       assert.is_nil(w:find("smoke", 1, true),
         "unexpected smoke-check warning: " .. w)
@@ -481,7 +481,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      function(_d) return "" end)
+      { dns_check_fn = function(_d) return "" end })
     for _, w in ipairs(warns) do
       assert.is_nil(w:find("smoke", 1, true))
     end
@@ -493,7 +493,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      function(_d) return nil end)
+      { dns_check_fn = function(_d) return nil end })
     for _, w in ipairs(warns) do
       assert.is_nil(w:find("smoke", 1, true))
     end
@@ -507,7 +507,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      function(_d) called = true; return "0.0.0.0" end)
+      { dns_check_fn = function(_d) called = true; return "0.0.0.0" end })
     assert.is_false(called,
       "dns_check_fn should not be called when no address=/.../# lines were rendered")
   end)
@@ -517,9 +517,125 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      function(_d) return "93.184.216.34" end)
+      { dns_check_fn = function(_d) return "93.184.216.34" end })
     assert.is_true(ok,
       "smoke-check failure must not fail the apply — propagation is a separate concern")
+  end)
+
+  -- #331: opts pass-through. Use an inline snapshot with an explicit
+  -- failureMode="closed" profile so render.lua's failover branch (which
+  -- gates on `prof.failureMode == "closed"`) actually fires.
+  local function snap_with_closed_profile()
+    return {
+      etag = "sha256:test",
+      defaultProfileId = 1,
+      devices = {
+        { mac = "aa:aa:aa:00:00:01", profileId = 1, name = "kid-A" },
+      },
+      profiles = {
+        { id = 1, name = "kids", paused = false, failureMode = "closed",
+          blockedCategories = {}, extraBlocked = {}, extraAllowed = {},
+          schedules = {}, dailyMinutes = 0, siteLimits = {},
+          timeUsedToday = { totalMinutes = 0, byDomain = {} },
+          extensionsTodayMinutes = 0 },
+      },
+      blockedMacs = {},
+    }
+  end
+
+  it("passes opts through to render.nft so failover branch fires (#331)", function()
+    local nft_content
+    policy.apply(snap_with_closed_profile(),
+      function(path, content)
+        if path:find("%.nft$") then nft_content = content end
+        return true, nil
+      end,
+      function(_cmd) return 0 end,
+      nil,
+      { poll_age_seconds = 301 })
+    assert.truthy(nft_content)
+    assert.truthy(nft_content:find("set failover_drop", 1, true),
+      "expected failover_drop set when opts.poll_age_seconds > 300")
+    assert.truthy(nft_content:find("familydns_failover", 1, true),
+      "expected familydns_failover chain when opts.poll_age_seconds > 300")
+    assert.truthy(nft_content:find("aa:aa:aa:00:00:01", 1, true),
+      "expected the Closed-profile device MAC inside the failover set")
+  end)
+
+  it("omitting opts leaves the failover branch unreached (#331 regression)", function()
+    local nft_content
+    policy.apply(snap_with_closed_profile(),
+      function(path, content)
+        if path:find("%.nft$") then nft_content = content end
+        return true, nil
+      end,
+      function(_cmd) return 0 end)
+    assert.truthy(nft_content)
+    assert.is_nil(nft_content:find("failover_drop", 1, true),
+      "no failover artifacts when opts omitted")
+  end)
+
+end)
+
+-- ── policy.failover_transition (#331) ─────────────────────────────────────
+
+describe("policy.failover_transition", function()
+
+  it("no-op when fetch succeeds and we were not in failover", function()
+    local should, opts, new = policy.failover_transition(false, true, 0)
+    assert.is_false(should)
+    assert.is_nil(opts)
+    assert.is_false(new)
+  end)
+
+  it("no-op when fetch fails but poll_age is within 5-min window", function()
+    local should, opts, new = policy.failover_transition(false, false, 60)
+    assert.is_false(should)
+    assert.is_nil(opts)
+    assert.is_false(new)
+  end)
+
+  it("triggers failover when fetch fails and poll_age > 300", function()
+    local should, opts, new = policy.failover_transition(false, false, 301)
+    assert.is_true(should)
+    assert.equal(301, opts.poll_age_seconds)
+    assert.is_true(new)
+  end)
+
+  it("does NOT re-trigger while already in failover (dedupe)", function()
+    local should, opts, new = policy.failover_transition(true, false, 500)
+    assert.is_false(should)
+    assert.is_nil(opts)
+    assert.is_true(new)
+  end)
+
+  it("lifts failover on successful fetch with opts.poll_age_seconds=0", function()
+    local should, opts, new = policy.failover_transition(true, true, 0)
+    assert.is_true(should)
+    assert.equal(0, opts.poll_age_seconds)
+    assert.is_false(new)
+  end)
+
+  it("boundary: poll_age=300 stays in-window; 301 trips failover", function()
+    local s300 = (select(1, policy.failover_transition(false, false, 300)))
+    local s301 = (select(1, policy.failover_transition(false, false, 301)))
+    assert.is_false(s300)
+    assert.is_true(s301)
+  end)
+
+  it("rapid recover + re-fail re-arms the transition", function()
+    -- t=295: fail, in_failover=false → no trip
+    local s1, _, nif1 = policy.failover_transition(false, false, 295)
+    assert.is_false(s1); assert.is_false(nif1)
+    -- t=296: success → no-op
+    local s2, _, nif2 = policy.failover_transition(nif1, true, 0)
+    assert.is_false(s2); assert.is_false(nif2)
+    -- t=356: fail with fresh 60s poll_age (last_successful was at 296) → no trip
+    local s3, _, nif3 = policy.failover_transition(nif2, false, 60)
+    assert.is_false(s3); assert.is_false(nif3)
+    -- much later, t=657: poll_age=361 → trip
+    local s4, opts4, nif4 = policy.failover_transition(nif3, false, 361)
+    assert.is_true(s4); assert.equal(361, opts4.poll_age_seconds); assert.is_true(nif4)
   end)
 
 end)

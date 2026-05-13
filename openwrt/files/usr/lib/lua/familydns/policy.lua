@@ -6,17 +6,20 @@
 --     http_get_fn(url, headers) → status_code, body, response_headers
 --     Returns (nil, etag) on 304, (nil, nil) on error, (snapshot, etag) on 200.
 --
---   policy.apply(snapshot, write_fn, reload_fn, log, dns_check_fn)
+--   policy.apply(snapshot, write_fn, reload_fn, log, opts)
 --     → bool (true on success)
 --     write_fn(path, content) → ok, err
 --     reload_fn(cmd)          → exit_code
---     dns_check_fn(domain)    → string|nil (optional; result of resolving
---                               `domain` via the router's own resolver — used
---                               by the #328 smoke probe to detect a dnsmasq
---                               reload that silently no-op'd. Nil/empty/
---                               "0.0.0.0"/"::" mean sinkholed (OK); anything
---                               else triggers a WARN log. Defaults to a
---                               `dig @127.0.0.1` shell call.)
+--     opts (optional table)   → bag of options. Recognised keys:
+--       opts.dns_check_fn(domain) → string|nil — result of resolving `domain`
+--                                   via the router's own resolver, used by
+--                                   the #328 smoke probe to detect a dnsmasq
+--                                   restart that silently no-op'd. Nil/empty/
+--                                   "0.0.0.0"/"::" mean sinkholed (OK);
+--                                   anything else triggers a WARN. Defaults
+--                                   to a `dig @127.0.0.1` shell call.
+--       opts.poll_age_seconds → forwarded to render.nft for the #311 / #331
+--                                 failover branch.
 
 local M = {}
 
@@ -189,11 +192,13 @@ end
 -- write_fn(path, content) must return (truthy, nil) on success or (nil, err_string).
 -- reload_fn(cmd) is called with a shell command string; return value is ignored.
 --
--- dns_check_fn is optional. When the rendered dnsmasq.conf contains at least
--- one `address=/<domain>/#` line, we probe the first such domain via the
--- router's own resolver after the dnsmasq restart and WARN if it doesn't
--- look sinkholed (#328 — detects the silent no-op when dnsmasq fails to
--- restart, or when conf-dir wasn't actually re-read).
+-- opts is an optional table. opts.dns_check_fn (#328): when the rendered
+-- dnsmasq.conf contains at least one `address=/<domain>/#` line, we probe
+-- the first such domain via the router's own resolver after the dnsmasq
+-- restart and WARN if it doesn't look sinkholed (detects the silent no-op
+-- when dnsmasq fails to restart, or when conf-dir wasn't actually re-read).
+-- opts.poll_age_seconds (#331): forwarded to render.nft so the agent's
+-- failover-edge re-render can request the closed-mode drop chain.
 
 -- Default smoke probe: `dig @127.0.0.1` and return the first line of stdout.
 local function default_dns_check(domain)
@@ -226,10 +231,11 @@ local function first_blocked_domain(dnsmasq_content)
       or dnsmasq_content:match("^address=/([^/\n]+)/#")
 end
 
-function M.apply(snapshot, write_fn, reload_fn, log, dns_check_fn)
+function M.apply(snapshot, write_fn, reload_fn, log, opts)
   log = log or default_log()
+  opts = opts or {}
   local dnsmasq_content = render.dnsmasq(snapshot)
-  local nft_content     = render.nft(snapshot)
+  local nft_content     = render.nft(snapshot, opts)
 
   local ok1, err1 = write_fn("/tmp/dnsmasq.d/familydns.conf", dnsmasq_content)
   if not ok1 then
@@ -257,7 +263,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, dns_check_fn)
   -- #328 smoke probe. Skip cleanly when there's nothing to probe.
   local probe_domain = first_blocked_domain(dnsmasq_content)
   if probe_domain then
-    local check = dns_check_fn or default_dns_check
+    local check = opts.dns_check_fn or default_dns_check
     local result = check(probe_domain)
     if not looks_sinkholed(result) then
       log.warn(
@@ -350,6 +356,37 @@ end
 -- Test-only: reset module-level poll state between specs.
 function M.reset_poll_state()
   M.last_successful_poll_ts = nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Failover transition decision (#331). Pure function so the agent's on_tick
+-- can stay thin and the boundary behavior is unit-testable.
+--
+-- Inputs:
+--   in_failover : bool  — was the last apply rendered with failover opts?
+--   fetch_ok    : bool  — did this tick's poll succeed (200 or 304)?
+--   poll_age    : number — seconds since last_successful_poll_ts (computed
+--                          by caller; on success this is 0).
+-- Returns:
+--   should_apply       : bool — re-render is needed this tick
+--   apply_opts         : table|nil — opts to pass to policy.apply
+--   new_in_failover    : bool — updated state flag
+--
+-- The threshold matches docs/resilience.md §4 (and render.lua's
+-- `poll_age > 300` check): strictly greater than 5 minutes flips Closed
+-- profiles into drop-mode; any successful poll lifts it immediately.
+-- ---------------------------------------------------------------------------
+function M.failover_transition(in_failover, fetch_ok, poll_age)
+  if fetch_ok then
+    if in_failover then
+      return true, { poll_age_seconds = 0 }, false
+    end
+    return false, nil, false
+  end
+  if poll_age > 300 and not in_failover then
+    return true, { poll_age_seconds = poll_age }, true
+  end
+  return false, nil, in_failover
 end
 
 return M

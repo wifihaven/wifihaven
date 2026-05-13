@@ -197,6 +197,14 @@ end
 -- ── Timer state ───────────────────────────────────────────────────────────────
 
 local current_etag        = nil
+-- #331: tracks the most recently applied snapshot so we can re-render with
+-- failover opts when the API stays unreachable past the §4 5-minute window
+-- (without a fresh fetch we have no other snapshot to render from).
+local last_snapshot       = nil
+-- #331: whether the last apply emitted the failover chain. Used to dedupe
+-- re-renders while we sit in failover and to detect the recovery edge so we
+-- can apply a clean (non-failover) ruleset on the next successful poll.
+local in_failover_render  = false
 local last_policy_run     = 0
 local last_usage_run      = 0
 local last_activity_sample = 0
@@ -216,6 +224,7 @@ do
   if cached then
     if policy.apply(cached, write_file, run_cmd, log) then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason)
+      last_snapshot = cached
       log.info("startup: applied cached policy from /etc/familydns/policy.json")
     else
       log.warn("startup: cached policy apply failed — staying on default-deny")
@@ -239,6 +248,7 @@ do
     if policy.apply(snap, write_file, run_cmd, log) then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
       current_etag = etag
+      last_snapshot = snap
       policy.mark_poll_success(os.time())
       policy.save_snapshot(snap, write_file, rename_file, log)
       log.info("startup: applied initial policy etag=%s", tostring(etag))
@@ -329,21 +339,68 @@ conntrack.watch({
     if (mono - last_policy_run) >= policy_int then
       last_policy_run = mono
       local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
+      local fetch_ok
       if snap then
+        -- 200: apply with no failover opts. If we were in failover, this
+        -- apply already emits a clean ruleset (no failover chain), so we
+        -- just need to clear the flag below.
         if policy.apply(snap, write_file, run_cmd, log) then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
           current_etag = etag
+          last_snapshot = snap
           policy.mark_poll_success(wall)
           policy.save_snapshot(snap, write_file, rename_file, log)
           log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
+          fetch_ok = true
         end
       elseif etag then
         current_etag = etag  -- 304: just update etag
         policy.mark_poll_success(wall)  -- 304 still counts as a successful poll
         log.debug("policy timer: 304 not modified etag=%s poll_age=%ds",
                   tostring(etag), policy.poll_age_seconds(wall))
+        fetch_ok = true
       else
         log.debug("policy timer: fetch failed poll_age=%ds", policy.poll_age_seconds(wall))
+        fetch_ok = false
+      end
+
+      -- #331: failover transition. On the failure→failover edge we re-render
+      -- the cached snapshot with poll_age_seconds so render.lua emits the
+      -- failover_drop set + familydns_failover chain (#311). On the recovery
+      -- edge we re-render to clear those rules. A 200 already applied a
+      -- clean ruleset above, so we only need to flip the flag in that case;
+      -- a 304 needs an explicit re-apply to drop the failover chain.
+      if fetch_ok ~= nil then
+        local poll_age = policy.poll_age_seconds(wall)
+        local should_apply, fo_opts, new_in_failover =
+          policy.failover_transition(in_failover_render, fetch_ok, poll_age)
+        if should_apply and not snap and last_snapshot then
+          -- Recovery via 304, or entering failover. Re-render last_snapshot
+          -- with the computed opts. Skip if we have no cached snapshot at
+          -- all (cold boot during outage): the #308 boot skeleton stays in
+          -- effect and there's nothing useful we can render.
+          if policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts) then
+            if new_in_failover then
+              log.info("failover render: poll_age=%ds, applying failover chain for closed-mode profiles",
+                       poll_age)
+            else
+              log.info("failover lifted: applying fresh snapshot (poll_age=0)")
+            end
+          else
+            log.warn("failover transition: apply failed (in_failover=%s→%s)",
+                     tostring(in_failover_render), tostring(new_in_failover))
+            -- Don't flip the flag if the apply failed — we'll retry next tick.
+            new_in_failover = in_failover_render
+          end
+        elseif should_apply and not last_snapshot then
+          -- Cold boot during API outage with no cached snapshot. Boot
+          -- skeleton (#308) is still enforcing default-deny; nothing to
+          -- render. Don't flip the flag so we keep retrying on each tick.
+          log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active, poll_age=%ds)",
+                   poll_age)
+          new_in_failover = in_failover_render
+        end
+        in_failover_render = new_in_failover
       end
     end
 
