@@ -6,10 +6,17 @@
 --     http_get_fn(url, headers) → status_code, body, response_headers
 --     Returns (nil, etag) on 304, (nil, nil) on error, (snapshot, etag) on 200.
 --
---   policy.apply(snapshot, write_fn, reload_fn)
+--   policy.apply(snapshot, write_fn, reload_fn, log, dns_check_fn)
 --     → bool (true on success)
 --     write_fn(path, content) → ok, err
 --     reload_fn(cmd)          → exit_code
+--     dns_check_fn(domain)    → string|nil (optional; result of resolving
+--                               `domain` via the router's own resolver — used
+--                               by the #328 smoke probe to detect a dnsmasq
+--                               reload that silently no-op'd. Nil/empty/
+--                               "0.0.0.0"/"::" mean sinkholed (OK); anything
+--                               else triggers a WARN log. Defaults to a
+--                               `dig @127.0.0.1` shell call.)
 
 local M = {}
 
@@ -181,7 +188,45 @@ end
 -- ---------------------------------------------------------------------------
 -- write_fn(path, content) must return (truthy, nil) on success or (nil, err_string).
 -- reload_fn(cmd) is called with a shell command string; return value is ignored.
-function M.apply(snapshot, write_fn, reload_fn, log)
+--
+-- dns_check_fn is optional. When the rendered dnsmasq.conf contains at least
+-- one `address=/<domain>/#` line, we probe the first such domain via the
+-- router's own resolver after the dnsmasq restart and WARN if it doesn't
+-- look sinkholed (#328 — detects the silent no-op when dnsmasq fails to
+-- restart, or when conf-dir wasn't actually re-read).
+
+-- Default smoke probe: `dig @127.0.0.1` and return the first line of stdout.
+local function default_dns_check(domain)
+  local cmd = string.format(
+    "dig @127.0.0.1 -p 53 %s +short +time=2 +tries=1 2>/dev/null",
+    domain)
+  local f = io.popen(cmd, "r")
+  if not f then return nil end
+  local out = f:read("*l")
+  f:close()
+  return out
+end
+
+local SINKHOLE_RESULTS = {
+  ["0.0.0.0"] = true,
+  ["::"]      = true,
+  ["::0"]     = true,
+}
+
+local function looks_sinkholed(result)
+  if result == nil or result == "" then return true end
+  return SINKHOLE_RESULTS[result] == true
+end
+
+-- Extract the first `address=/<domain>/#` line from the rendered dnsmasq
+-- content. Returns nil if there are no such lines (e.g. no extraBlocked
+-- entries in any profile).
+local function first_blocked_domain(dnsmasq_content)
+  return dnsmasq_content:match("\naddress=/([^/\n]+)/#")
+      or dnsmasq_content:match("^address=/([^/\n]+)/#")
+end
+
+function M.apply(snapshot, write_fn, reload_fn, log, dns_check_fn)
   log = log or default_log()
   local dnsmasq_content = render.dnsmasq(snapshot)
   local nft_content     = render.nft(snapshot)
@@ -198,13 +243,29 @@ function M.apply(snapshot, write_fn, reload_fn, log)
     return false
   end
 
-  log.debug("policy.apply: wrote dnsmasq=%dB nft=%dB; reloading",
+  log.debug("policy.apply: wrote dnsmasq=%dB nft=%dB; restarting",
             #dnsmasq_content, #nft_content)
-  reload_fn("/etc/init.d/dnsmasq reload")
+  -- #328: must be `restart`, not `reload`. SIGHUP doesn't re-read conf-dir,
+  -- so `reload` leaves new address=/, dhcp-host=, and ipset= directives
+  -- silently inactive until something else restarts the service.
+  reload_fn("/etc/init.d/dnsmasq restart")
   -- Single atomic `nft -f`. The rendered file's prelude removes both the
   -- boot default-deny skeleton (table inet familydns_boot — #308) and any
   -- prior runtime table in one transaction, then installs the new ruleset.
   reload_fn("nft -f /tmp/nftables.d/familydns.nft")
+
+  -- #328 smoke probe. Skip cleanly when there's nothing to probe.
+  local probe_domain = first_blocked_domain(dnsmasq_content)
+  if probe_domain then
+    local check = dns_check_fn or default_dns_check
+    local result = check(probe_domain)
+    if not looks_sinkholed(result) then
+      log.warn(
+        "policy.apply: smoke check failed; dnsmasq may not have restarted — " ..
+        "got %q for %s (expected sinkhole)",
+        tostring(result), probe_domain)
+    end
+  end
 
   return true
 end

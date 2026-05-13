@@ -297,16 +297,24 @@ describe("policy.apply", function()
     assert.truthy(writes["/tmp/nftables.d/familydns.nft"])
   end)
 
-  it("calls a dnsmasq reload command after writing", function()
+  -- #328: SIGHUP doesn't re-read conf-dir, so a `reload` leaves the new
+  -- /tmp/dnsmasq.d/familydns.conf entries silently inactive until something
+  -- else restarts dnsmasq. We must `restart` to pick up address=/, dhcp-host=,
+  -- and ipset= directives.
+  it("calls `/etc/init.d/dnsmasq restart` (not reload) after writing (#328)", function()
     local reloads = {}
     policy.apply(decode_snap(),
       function(_path, _content) return true, nil end,
       function(cmd) table.insert(reloads, cmd); return 0 end)
-    local found = false
+    local found_restart, found_reload = false, false
     for _, cmd in ipairs(reloads) do
-      if cmd:find("dnsmasq") then found = true end
+      if cmd == "/etc/init.d/dnsmasq restart" then found_restart = true end
+      if cmd == "/etc/init.d/dnsmasq reload"  then found_reload  = true end
     end
-    assert.is_true(found, "expected a dnsmasq reload command")
+    assert.is_true(found_restart,
+      "expected `/etc/init.d/dnsmasq restart`; got: " .. table.concat(reloads, " | "))
+    assert.is_false(found_reload,
+      "must not use `reload` — SIGHUP doesn't re-read conf-dir (#328)")
   end)
 
   it("calls an nft reload command after writing", function()
@@ -389,6 +397,129 @@ describe("policy.apply", function()
       function(_path, _content) return nil, "io error" end,
       function(_cmd) return 0 end)
     assert.is_false(ok)
+  end)
+
+  -- ── #328 smoke check: confirm dnsmasq actually picked up the new policy ──
+  --
+  -- The snapshot uses camelCase keys (the API's wire format — render.lua reads
+  -- `extraBlocked` directly). The canonical SNAPSHOT_JSON above uses snake_case
+  -- for historical fetch-test reasons, so render() emits no address= lines from
+  -- it; we need a camelCase snapshot to exercise the smoke probe path.
+  local SMOKE_SNAPSHOT_JSON = [[{
+    "etag": "sha256:smoke",
+    "devices": [{ "mac": "aa:bb:cc:11:22:33", "profileId": 3, "name": "k" }],
+    "profiles": [{
+      "id": 3, "name": "kids", "paused": false,
+      "extraBlocked": ["badsite.example.com"],
+      "extraAllowed": [], "schedules": [], "siteLimits": [],
+      "dailyMinutes": 120,
+      "timeUsedToday": { "totalMinutes": 0, "byDomain": {} },
+      "extensionsTodayMinutes": 0
+    }],
+    "blockedMacs": []
+  }]]
+
+  local function decode_smoke()
+    local json = require("cjson")
+    return json.decode(SMOKE_SNAPSHOT_JSON)
+  end
+
+  local function capture_log()
+    local warns, infos = {}, {}
+    return {
+      info  = function(fmt, ...) infos[#infos+1] = string.format(fmt, ...) end,
+      err   = function() end,
+      warn  = function(fmt, ...) warns[#warns+1] = string.format(fmt, ...) end,
+      debug = function() end,
+    }, warns, infos
+  end
+
+  it("invokes dns_check_fn with a blocked domain after the restart (#328)", function()
+    local probed
+    policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      nil,
+      function(domain) probed = domain; return "0.0.0.0" end)
+    assert.equal("badsite.example.com", probed)
+  end)
+
+  it("logs a warning when dns_check_fn returns a non-sinkhole result (#328)", function()
+    local stub_log, warns = capture_log()
+    policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      stub_log,
+      function(_domain) return "93.184.216.34" end)
+    local matched = false
+    for _, w in ipairs(warns) do
+      if w:find("smoke", 1, true) and w:find("93.184.216.34", 1, true) then
+        matched = true
+      end
+    end
+    assert.is_true(matched,
+      "expected a smoke-check warning mentioning the non-sinkhole IP; got: " ..
+      table.concat(warns, " | "))
+  end)
+
+  it("does NOT warn when dns_check_fn returns 0.0.0.0 (sinkhole)", function()
+    local stub_log, warns = capture_log()
+    policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      stub_log,
+      function(_d) return "0.0.0.0" end)
+    for _, w in ipairs(warns) do
+      assert.is_nil(w:find("smoke", 1, true),
+        "unexpected smoke-check warning: " .. w)
+    end
+  end)
+
+  it("does NOT warn when dns_check_fn returns empty (NXDOMAIN)", function()
+    local stub_log, warns = capture_log()
+    policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      stub_log,
+      function(_d) return "" end)
+    for _, w in ipairs(warns) do
+      assert.is_nil(w:find("smoke", 1, true))
+    end
+  end)
+
+  it("does NOT warn when dns_check_fn returns nil", function()
+    local stub_log, warns = capture_log()
+    policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      stub_log,
+      function(_d) return nil end)
+    for _, w in ipairs(warns) do
+      assert.is_nil(w:find("smoke", 1, true))
+    end
+  end)
+
+  it("skips dns_check_fn when the snapshot has no extraBlocked entries (#328)", function()
+    local called = false
+    -- Use the canonical SNAPSHOT_JSON: with snake_case keys render emits no
+    -- address= lines, so the probe path should not fire.
+    policy.apply(decode_snap(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      nil,
+      function(_d) called = true; return "0.0.0.0" end)
+    assert.is_false(called,
+      "dns_check_fn should not be called when no address=/.../# lines were rendered")
+  end)
+
+  it("still returns true when dns_check_fn reports a non-sinkhole result (#328)", function()
+    local ok = policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      nil,
+      function(_d) return "93.184.216.34" end)
+    assert.is_true(ok,
+      "smoke-check failure must not fail the apply — propagation is a separate concern")
   end)
 
 end)
