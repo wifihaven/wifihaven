@@ -125,4 +125,25 @@ describe('LogsPage — Raw events tab', () => {
     await user.click(screen.getByTestId('logs-tab-raw'))
     expect(await screen.findByText('No events found.')).toBeInTheDocument()
   })
+
+  it('Raw events Time column renders in viewer local time (not UTC slice)', async () => {
+    const user = userEvent.setup()
+    render(<LogsPage />)
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    await screen.findByText('example.com')
+    const expected = new Date(log1.ts).toLocaleTimeString()
+    expect(screen.getByText(expected)).toBeInTheDocument()
+  })
+})
+
+describe('LogsPage — Sessions tab timestamps', () => {
+  it('Started column renders session start in viewer local time', async () => {
+    render(<LogsPage />)
+    await screen.findByText('youtube.com')
+    const expected = new Date(session1.startedAt).toLocaleTimeString([], {
+      hour: '2-digit', minute: '2-digit',
+    })
+    expect(screen.getAllByText(expected).length).toBeGreaterThan(0)
+  })
 })
