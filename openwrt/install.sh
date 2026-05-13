@@ -97,6 +97,18 @@ API_URL=${API_URL%/}
 prompt ENROLLMENT_TOKEN "One-time enrollment token (admin UI -> Routers -> Add router)"
 [ -n "${ENROLLMENT_TOKEN:-}" ] || err "enrollment token is required"
 
+cat >"$TTY" <<EOF
+
+The LAN prefix is the literal IP-string prefix the agent uses to decide
+which side of each connection is on your LAN when attributing flows to a
+device. The default below was auto-detected from this router's LAN IP
+(network.lan.ipaddr) and is correct for ~all home LANs — just press Enter
+to accept it. Only override if your LAN is not on a /24 starting at .1
+(e.g. you've carved up 10.0.0.0/16). A wrong value silently mis-attributes
+every flow. For unattended provisioning, skip this script and use the
+manual 'uci set ... lan_prefix=...' path in docs/install-openwrt.md §M3.
+
+EOF
 prompt LAN_PREFIX       "LAN prefix (literal, with trailing dot)" "$lan_default"
 
 case "$LAN_PREFIX" in
