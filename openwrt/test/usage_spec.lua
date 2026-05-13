@@ -170,7 +170,7 @@ describe("usage.build_report", function()
     assert.equal("youtube.com", r.records[1].hostname)
   end)
 
-  it("sets activeSeconds = 300 (full period) for any counter with bytes > 0", function()
+  it("sets activeSeconds = 300 (full period) for any counter with bytes > 0 (legacy, no tracker)", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
     for _, rec in ipairs(r.records) do
       assert.equal(300, rec.activeSeconds)
@@ -223,6 +223,185 @@ describe("usage.build_report", function()
   it("handles an empty counters list (zero records)", function()
     local r = usage.build_report({}, NF_SETS, P_START, P_END, ROUTER)
     assert.equal(0, #r.records)
+  end)
+
+end)
+
+-- ── tracker (per-minute activity sampler) ─────────────────────────────────
+--
+-- The router scrapes nft counters every 60 s within a 5-min bucket and feeds
+-- them to a tracker; the tracker remembers how many distinct minutes each
+-- (mac, dst_ip) saw counter growth, which build_report converts into
+-- activeSeconds.  Counter reset / set-element expiry (bytes goes DOWN) is
+-- treated as a fresh start so we don't double-count.
+
+describe("usage.tracker", function()
+
+  local function s(mac, dst_ip, bytes)
+    return { mac = mac, dst_ip = dst_ip, bytes = bytes, packets = 0 }
+  end
+
+  it("new_tracker returns an empty tracker", function()
+    local t = usage.new_tracker()
+    assert.is_table(t)
+    assert.is_table(t.active_minutes)
+    assert.is_nil(next(t.active_minutes))
+  end)
+
+  it("counts a single sample with bytes > 0 (from 0 baseline) as 1 active minute", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
+    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("counts each subsequent sample with growth as another active minute", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  100) })
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  500) })
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 1200) })
+    assert.equal(3, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("does NOT count a sample where bytes are unchanged", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- +1
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- no growth
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- no growth
+    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("treats a counter decrease (reset / element-expire-and-reappear) as a fresh active minute", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })  -- +1
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  50) })  -- reset, bytes>0 → +1
+    assert.equal(2, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("does not count a counter decrease to 0 as an active minute", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })  -- +1
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",   0) })  -- decrease to 0 → no
+    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+  it("tracks each (mac, dst_ip) independently", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
+      s("de:ad:be:ef:00:01", "8.8.8.8", 200),
+    })
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),     -- no growth
+      s("de:ad:be:ef:00:01", "8.8.8.8", 999),     -- growth
+    })
+    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(2, t.active_minutes["de:ad:be:ef:00:01|8.8.8.8"])
+  end)
+
+  it("tracks each dst_ip independently for the same mac", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
+      s("aa:bb:cc:11:22:33", "5.6.7.8", 200),
+    })
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
+      s("aa:bb:cc:11:22:33", "5.6.7.8", 800),
+    })
+    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(2, t.active_minutes["aa:bb:cc:11:22:33|5.6.7.8"])
+  end)
+
+  it("tracker_reset clears all state", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
+    usage.tracker_reset(t)
+    assert.is_nil(next(t.active_minutes))
+    -- After reset, the next sample starts from a fresh 0 baseline.
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 50) })
+    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+  end)
+
+end)
+
+describe("usage.build_report with tracker", function()
+
+  local NF_SETS  = { ["youtube.com"] = { ["1.2.3.4"] = true } }
+  local P_START  = "2026-05-08T14:00:00Z"
+  local P_END    = "2026-05-08T14:05:00Z"
+  local ROUTER   = "9c1f2e8a-0000-0000-0000-000000000001"
+
+  local function s(mac, dst_ip, bytes)
+    return { mac = mac, dst_ip = dst_ip, bytes = bytes, packets = 0 }
+  end
+
+  it("uses 60 * active_minutes from the tracker (1 minute → 60s)", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })
+    local r = usage.build_report(
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+    assert.equal(60, r.records[1].activeSeconds)
+  end)
+
+  it("reports 300s when all 5 minutes were active", function()
+    local t = usage.new_tracker()
+    for i = 1, 5 do
+      usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100 * i) })
+    end
+    local r = usage.build_report(
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+    assert.equal(300, r.records[1].activeSeconds)
+  end)
+
+  it("caps activeSeconds at 300 even if the tracker recorded more than 5 minutes (drift)", function()
+    local t = usage.new_tracker()
+    for i = 1, 7 do
+      usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100 * i) })
+    end
+    local r = usage.build_report(
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 700) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+    assert.equal(300, r.records[1].activeSeconds)
+  end)
+
+  it("falls back to 60s when bytes > 0 but tracker has no entry (entry appeared after last sample)", function()
+    local t = usage.new_tracker()
+    -- tracker has seen device A but not B
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
+    local r = usage.build_report(
+      { s("de:ad:be:ef:00:01", "9.9.9.9", 200) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+    assert.equal(60, r.records[1].activeSeconds)
+  end)
+
+  it("retains legacy 300 behavior when no tracker is passed (back-compat)", function()
+    local r = usage.build_report(
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
+      NF_SETS, P_START, P_END, ROUTER)
+    assert.equal(300, r.records[1].activeSeconds)
+  end)
+
+  it("assigns activeSeconds per (mac, dst_ip) independently from the same tracker", function()
+    local t = usage.new_tracker()
+    -- device A: 1 active minute
+    usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
+    -- device B joins at minute 2 with growth across 4 more samples
+    for i = 1, 4 do
+      usage.tracker_sample(t, {
+        s("aa:bb:cc:11:22:33", "1.2.3.4", 100),         -- no growth for A
+        s("de:ad:be:ef:00:01", "8.8.8.8", 100 * i),     -- growth for B
+      })
+    end
+    local r = usage.build_report({
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
+      s("de:ad:be:ef:00:01", "8.8.8.8", 400),
+    }, NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+    local by_mac = {}
+    for _, rec in ipairs(r.records) do by_mac[rec.mac] = rec end
+    assert.equal(60,  by_mac["aa:bb:cc:11:22:33"].activeSeconds)
+    assert.equal(240, by_mac["de:ad:be:ef:00:01"].activeSeconds)
   end)
 
 end)

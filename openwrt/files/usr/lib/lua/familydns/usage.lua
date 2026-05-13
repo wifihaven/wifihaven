@@ -26,13 +26,20 @@
 --     → list of { mac, dst_ip, bytes, packets }
 --     Input: JSON from `nft -j list set inet familydns mac_ip_tracking`
 --
---   usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases [, lookup_hostname]])
+--   usage.build_report(counters, nft_sets, period_start, period_end, router_id
+--                      [, leases [, lookup_hostname [, tracker]]])
 --     → report table ready for JSON encoding and POST /api/router/usage
 --     nft_sets:        { hostname → { ip → true } }  (maintained by render.update_shared + dnsmasq)
 --     leases:          { mac → ip }  (optional; populates the ip field on each record)
 --     lookup_hostname: fn(dst_ip) → string|nil  (optional; consulted before
 --                      falling back to "unknown" — same dnsmasq-query-log
 --                      cache the conntrack path uses, see #287)
+--     tracker:         opaque tracker from usage.new_tracker(), fed every 60 s
+--                      via usage.tracker_sample() during the bucket; supplies
+--                      real per-minute activeSeconds (issue #295).
+--
+--   usage.new_tracker() / usage.tracker_sample(t, counters) / usage.tracker_reset(t)
+--     Per-minute activity sampler — see comment above the function.
 --
 --   usage.post(api_url, router_token, report, post_fn)
 --     → bool
@@ -123,19 +130,84 @@ local function hostname_for_ip(dst_ip, nft_sets, lookup_hostname)
 end
 
 -- ---------------------------------------------------------------------------
--- usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases [, lookup_hostname]])
+-- Activity tracker — per-minute "is this (mac, dst_ip) actively using the
+-- network?" sampling.  See #295.
 -- ---------------------------------------------------------------------------
--- active_seconds heuristic (§9 architecture doc):
---   Any counter with bytes > 0 in the 5-min bucket counts as the full period (300 s).
-function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname)
+-- The nftables set element counters in `mac_ip_tracking` are reset to 0 once
+-- per 5-min bucket.  The agent calls `tracker_sample` every 60 s with the
+-- currently-parsed counters; each call that observes byte growth bumps the
+-- (mac, dst_ip)'s active-minute count.  At end-of-bucket `build_report`
+-- multiplies that count by 60 (capped at 300) to produce `activeSeconds`,
+-- and the agent resets the tracker for the next bucket.
+--
+-- Wire format is unchanged — `activeSeconds` is still an integer.  The
+-- minute granularity is purely router-side; sub-minute is a future extension
+-- (issue #295 "Future work") that only needs to change SECONDS_PER_SAMPLE
+-- and the sampling cadence in the agent loop.
+local SECONDS_PER_SAMPLE = 60
+local BUCKET_SECONDS     = 300
+
+local function tracker_key(mac, dst_ip) return mac .. "|" .. dst_ip end
+
+function M.new_tracker()
+  return { last = {}, active_minutes = {} }
+end
+
+-- Compare each counter to its previous byte total; an increase counts as one
+-- active minute.  A counter that went DOWN is treated as a fresh start
+-- (element expired and reappeared, or counters reset out-of-band); we still
+-- count it as an active minute if the new value is > 0.
+function M.tracker_sample(tracker, counters)
+  for _, c in ipairs(counters or {}) do
+    local key  = tracker_key(c.mac, c.dst_ip)
+    local prev = tracker.last[key] or 0
+    if c.bytes > prev then
+      tracker.active_minutes[key] = (tracker.active_minutes[key] or 0) + 1
+      tracker.last[key] = c.bytes
+    elseif c.bytes < prev then
+      if c.bytes > 0 then
+        tracker.active_minutes[key] = (tracker.active_minutes[key] or 0) + 1
+      end
+      tracker.last[key] = c.bytes
+    end
+  end
+end
+
+function M.tracker_reset(tracker)
+  tracker.last           = {}
+  tracker.active_minutes = {}
+end
+
+-- ---------------------------------------------------------------------------
+-- usage.build_report(counters, nft_sets, period_start, period_end, router_id
+--                    [, leases [, lookup_hostname [, tracker]]])
+-- ---------------------------------------------------------------------------
+-- activeSeconds:
+--   * With a tracker: 60 × active_minutes[(mac, dst_ip)], capped at 300.
+--     A counter present in `counters` but missing from the tracker (e.g. set
+--     element first appeared after the last per-minute sample) falls back to
+--     one active minute when bytes > 0.
+--   * Without a tracker (legacy / back-compat): bytes > 0 → 300, else 0.
+function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname, tracker)
   local records = {}
 
   for _, c in ipairs(counters or {}) do
     local hostname = hostname_for_ip(c.dst_ip, nft_sets, lookup_hostname)
+    local active_seconds
+    if tracker then
+      local minutes = tracker.active_minutes[tracker_key(c.mac, c.dst_ip)]
+      if minutes then
+        active_seconds = math.min(SECONDS_PER_SAMPLE * minutes, BUCKET_SECONDS)
+      else
+        active_seconds = (c.bytes > 0) and SECONDS_PER_SAMPLE or 0
+      end
+    else
+      active_seconds = (c.bytes > 0) and BUCKET_SECONDS or 0
+    end
     local rec = {
       mac           = c.mac,
       hostname      = hostname,
-      activeSeconds = (c.bytes > 0) and 300 or 0,
+      activeSeconds = active_seconds,
       bytesIn       = c.bytes,
       bytesOut      = 0,   -- nftables ingress-only counters; egress tracked separately
     }

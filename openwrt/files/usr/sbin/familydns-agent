@@ -167,9 +167,12 @@ end
 
 -- ── Timer state ───────────────────────────────────────────────────────────────
 
-local current_etag    = nil
-local last_policy_run = 0
-local last_usage_run  = 0
+local current_etag        = nil
+local last_policy_run     = 0
+local last_usage_run      = 0
+local last_activity_sample = 0
+local activity_sample_int  = 60                 -- per-minute activity granularity (#295)
+local activity_tracker     = usage.new_tracker()
 
 -- ── Initial policy fetch at startup ──────────────────────────────────────────
 
@@ -184,8 +187,23 @@ do
   else
     log.warn("startup: initial policy fetch returned no snapshot (will retry on timer)")
   end
-  last_policy_run = os.time()
-  last_usage_run  = os.time()
+  last_policy_run        = os.time()
+  last_usage_run         = os.time()
+  last_activity_sample   = os.time()
+end
+
+-- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
+-- read at flush time) and reused by both the per-minute sampler and the
+-- 5-min usage timer below.
+local function read_nft_counters()
+  local pipe = io.popen("nft -j list set inet familydns mac_ip_tracking 2>/dev/null", "r")
+  if not pipe then return nil end
+  local json_str = pipe:read("*a") or ""
+  pipe:close()
+  if json_str == "" then return nil end
+  local ok, counters = pcall(usage.parse_nft_counters, json_str)
+  if not ok then return nil end
+  return counters
 end
 
 -- ── Start conntrack event watcher (blocking; runs for the lifetime of the process)
@@ -253,6 +271,17 @@ conntrack.watch({
       end
     end
 
+    -- Activity sampler (#295): every 60 s, snapshot counters and feed them
+    -- to the tracker so end-of-bucket activeSeconds reflects real per-minute
+    -- usage rather than collapsing to {0, 300}.
+    if (now - last_activity_sample) >= activity_sample_int then
+      last_activity_sample = now
+      local counters = read_nft_counters()
+      if counters then
+        usage.tracker_sample(activity_tracker, counters)
+      end
+    end
+
     -- Usage timer
     if (now - last_usage_run) >= usage_int then
       local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", now)
@@ -262,24 +291,23 @@ conntrack.watch({
       -- Per-(mac,ip) counters live as element counters on the dynamic set
       -- `mac_ip_tracking` (see render.lua). After a successful POST we
       -- `nft reset set ...` to zero those per-element counters in place.
-      local pipe = io.popen(
-        "nft -j list set inet familydns mac_ip_tracking 2>/dev/null", "r")
-      if pipe then
-        local json_str = pipe:read("*a") or ""
-        pipe:close()
-        if json_str ~= "" then
-          local ok, counters = pcall(usage.parse_nft_counters, json_str)
-          if ok and counters then
-            local report = usage.build_report(
-              counters, nft_sets, period_start, period_end, router_id,
-              nil, lookup_hostname)
-            log.debug("usage timer: %d counter(s), %d record(s) prepared",
-                      #counters, report.records and #report.records or 0)
-            local posted = usage.post(api_url, router_token, report, http_post, log)
-            if posted then
-              os.execute("nft reset set inet familydns mac_ip_tracking >/dev/null 2>&1")
-            end
-          end
+      local counters = read_nft_counters()
+      if counters then
+        -- Final per-minute sample at flush so set elements that appeared
+        -- after the last 60s tick still get an active minute counted.
+        usage.tracker_sample(activity_tracker, counters)
+        last_activity_sample = now
+        local report = usage.build_report(
+          counters, nft_sets, period_start, period_end, router_id,
+          nil, lookup_hostname, activity_tracker)
+        log.debug("usage timer: %d counter(s), %d record(s) prepared",
+                  #counters, report.records and #report.records or 0)
+        local posted = usage.post(api_url, router_token, report, http_post, log)
+        if posted then
+          os.execute("nft reset set inet familydns mac_ip_tracking >/dev/null 2>&1")
+          -- Counters are now zeroed; clear tracker so the next bucket starts
+          -- from a 0 baseline like the nft set itself.
+          usage.tracker_reset(activity_tracker)
         end
       end
     end
