@@ -77,6 +77,12 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
   in tmpfs queued for retry. On API return, the agent **drains the queue
   sequentially in chronological order** — not batched into one request —
   so server-side dedup (per #294) operates on coherent per-bucket payloads.
+- **Conntrack events follow the same retry-queue policy** (#330): base 30s,
+  max 15 min, ±10% jitter, drained oldest-first on API return. Events are
+  best-effort under prolonged outage — the in-memory queue is capped at
+  ~1000 batches and on cap-exceeded the **oldest** batches are dropped to
+  preserve recent activity. This is intentional: when memory is constrained
+  we want the most recent traffic on the Activity tab, not stale history.
 - **Polling resumes on API return.** Poll cadence is unchanged during the
   outage (default 30s); the agent does not back off poll attempts as
   aggressively as usage POSTs because policy freshness matters more than
@@ -97,6 +103,9 @@ correct policy within one poll interval.
   `/etc/familydns/policy.json` after each successful apply.
 - `openwrt/files/usr/lib/lua/familydns/usage.lua`: maintain in-memory
   retry queue; on failure, exponential backoff per-bucket.
+- `openwrt/files/usr/lib/lua/familydns/conntrack.lua`: same retry-queue
+  pattern for events POSTs (#330); cap = 1000 batches, drop-oldest on
+  overflow; drained from the conntrack watcher loop on every tick.
 - Agent main loop: track `last_successful_poll_ts`; if `now -
   last_successful_poll_ts > 300s`, transition enforcement per §4.
 
