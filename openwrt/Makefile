@@ -40,9 +40,13 @@ define Package/familydns/install
 
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/init.d/familydns $(1)/etc/init.d/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/init.d/familydns-boot $(1)/etc/init.d/
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/files/etc/config/familydns $(1)/etc/config/
+
+	$(INSTALL_DIR) $(1)/usr/share/familydns
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/share/familydns/boot.nft $(1)/usr/share/familydns/
 
 	$(INSTALL_DIR) $(1)/www/familydns
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/www/familydns/block.html $(1)/www/familydns/
@@ -52,6 +56,12 @@ define Package/familydns/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/familydns enable
+# #308: enable the boot default-deny skeleton init script so every reboot
+# loads it before fw4 brings forwarding up. Also load it now so the very
+# first install (no reboot) is protected during the gap until the agent's
+# first policy.apply().
+/etc/init.d/familydns-boot enable
+/etc/init.d/familydns-boot start 2>/dev/null || true
 # Install cron entry for the auto-updater (daily, 04:00 router-local).
 # Replace any existing familydns-update entry so upgrades migrate the
 # cadence — older packages installed it at "0 */6 * * *".
