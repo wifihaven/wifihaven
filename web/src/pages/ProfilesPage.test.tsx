@@ -42,6 +42,7 @@ const kidsProfile: ProfileDetail = {
     extraBlocked: ['bad.com', 'evil.com'],
     extraAllowed: ['school.com'],
     paused: false,
+    failureMode: 'closed',
   },
   schedules: [
     { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], blockFrom: '21:00', blockUntil: '07:00' },
@@ -60,6 +61,7 @@ const adultsProfile: ProfileDetail = {
     extraBlocked: [],
     extraAllowed: [],
     paused: true,
+    failureMode: 'open',
   },
   schedules: [],
   timeLimit: null,
@@ -204,6 +206,8 @@ describe('ProfilesPage — create', () => {
       siteTimeLimits: [
         { label: 'YouTube', domainPattern: 'youtube.com', dailyMinutes: 30, exemptFromDaily: true },
       ],
+      // #311: form default for a brand-new profile is Closed (safe default).
+      failureMode: 'closed',
     })
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
   })
@@ -242,6 +246,8 @@ describe('ProfilesPage — edit', () => {
       siteTimeLimits: [
         { domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },
       ],
+      // #311: edit preserves the existing failureMode unless changed.
+      failureMode: 'closed',
     })
   })
 })
@@ -318,5 +324,63 @@ describe('ProfilesPage — linked users section', () => {
     const call = (api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(call[0]).toBe(1)
     expect([...call[1]].sort((a, b) => a - b)).toEqual([11, 12])
+  })
+})
+
+describe('ProfilesPage — #311 failureMode', () => {
+  it('edit form pre-fills failureMode from the profile (Closed for Kids)', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    const closed = screen.getByTestId('profile-failure-mode-closed') as HTMLInputElement
+    const open   = screen.getByTestId('profile-failure-mode-open')   as HTMLInputElement
+    expect(closed.checked).toBe(true)
+    expect(open.checked).toBe(false)
+  })
+
+  it('edit form pre-fills failureMode from the profile (Open for Adults)', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await user.click(within(adultsCard).getByRole('button', { name: /^Edit$/ }))
+    const closed = screen.getByTestId('profile-failure-mode-closed') as HTMLInputElement
+    const open   = screen.getByTestId('profile-failure-mode-open')   as HTMLInputElement
+    expect(open.checked).toBe(true)
+    expect(closed.checked).toBe(false)
+  })
+
+  it('toggling failureMode and saving sends the new value', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-failure-mode-open'))
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
+    const call = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[1].failureMode).toBe('open')
+  })
+
+  it('new profile form defaults to Closed (safe default)', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    await screen.findByText('Kids')
+    await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
+    const closed = screen.getByTestId('profile-failure-mode-closed') as HTMLInputElement
+    expect(closed.checked).toBe(true)
+  })
+
+  it('renders explanatory copy for each mode (not a bare checkbox)', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    expect(
+      screen.getByText(/when the router can't reach the API for 5 minutes, block all internet traffic/i),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/keep enforcing the last-known rules; never auto-block/i),
+    ).toBeInTheDocument()
   })
 })

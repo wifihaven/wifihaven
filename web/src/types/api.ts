@@ -1,5 +1,7 @@
 // Mirrors familydns.shared Models.scala
 
+export type FailureMode = 'open' | 'closed'
+
 export interface Profile {
   id: number
   name: string
@@ -7,6 +9,7 @@ export interface Profile {
   extraBlocked: string[]
   extraAllowed: string[]
   paused: boolean
+  failureMode: FailureMode
 }
 
 export interface Schedule {
@@ -245,6 +248,7 @@ export interface UpsertProfileRequest {
   schedules: ScheduleRequest[]
   timeLimit: number | null
   siteTimeLimits: SiteTimeLimitRequest[]
+  failureMode: FailureMode
 }
 
 export interface UpsertDeviceRequest {

@@ -81,9 +81,22 @@ function M.dnsmasq(snapshot)
 end
 
 -- ---------------------------------------------------------------------------
--- render.nft(snapshot) → string
+-- render.nft(snapshot, opts) → string
 -- ---------------------------------------------------------------------------
-function M.nft(snapshot)
+-- opts (optional table):
+--   poll_age_seconds  number — seconds since the last successful policy poll.
+--                              When > 300 (the #269 §4 threshold), profiles
+--                              with failureMode == "closed" get an additional
+--                              failover drop rule for ALL their devices'
+--                              MACs. failureMode == "open" profiles are
+--                              unaffected (cached snapshot keeps enforcing).
+--                              When nil or <= 300, no failover output.
+--
+-- TODO(#323): the agent main loop must compute poll_age and pass it here once
+-- #309 lands last_successful_poll_ts. Until then nothing populates opts, so
+-- this branch is dormant in production — but the field is in the snapshot
+-- and the rendering logic is tested, so flipping it on is a one-liner.
+function M.nft(snapshot, opts)
   local out = {}
   local function emit(s)  out[#out + 1] = s  end
   local function ind(s)   out[#out + 1] = "  " .. s  end
@@ -201,6 +214,44 @@ function M.nft(snapshot)
     ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
     ind("}")
     emit("")
+  end
+
+  -- #311: API-unreachable failover. When poll_age_seconds > 300 we collect
+  -- every device MAC belonging to a profile whose failureMode == "closed"
+  -- and emit a drop rule. failureMode == "open" profiles are left to keep
+  -- enforcing the cached snapshot. We skip emission entirely when there
+  -- are no MACs to drop (empty Closed profile, or no Closed profiles) so
+  -- we don't ship a degenerate rule that matches nothing.
+  --
+  -- TODO(#323): also DNAT HTTP/80 for @failover_drop into the #303 block
+  -- page so failover-cut HTTP requests land on the explanatory page rather
+  -- than hanging. Currently this branch is drop-only.
+  local poll_age = opts and opts.poll_age_seconds
+  if poll_age and poll_age > 300 then
+    local closed_profile_ids = {}
+    for _, prof in ipairs(snapshot.profiles or {}) do
+      if prof.failureMode == "closed" then
+        closed_profile_ids[prof.id] = true
+      end
+    end
+    local failover_macs = {}
+    for _, dev in ipairs(snapshot.devices or {}) do
+      if dev.profileId and closed_profile_ids[dev.profileId] then
+        failover_macs[#failover_macs + 1] = dev.mac
+      end
+    end
+    if #failover_macs > 0 then
+      ind("set failover_drop {")
+      ind2("type ether_addr")
+      ind2("elements = { " .. table.concat(failover_macs, ", ") .. " }")
+      ind("}")
+      emit("")
+      ind("chain familydns_failover {")
+      ind2("type filter hook forward priority -1; policy accept;")
+      ind2("ether saddr @failover_drop drop")
+      ind("}")
+      emit("")
+    end
   end
 
   emit("}")

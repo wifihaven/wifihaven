@@ -14,6 +14,35 @@ enum UserRole derives JsonCodec {
   case Admin, Adult, Child
 }
 
+// #311: per-profile failover behaviour when the agent loses contact with the
+// API for >5 min. Closed = drop all forwarded traffic for the profile's
+// devices (fail-safe for kids); Open = keep enforcing the cached snapshot
+// exactly as-is (avoids locking adults out during ISP blips).
+//
+// Wire format is lowercase "open" / "closed" so the lua agent can read the
+// JSON field directly. The default in DB and in UpsertProfileRequest is
+// Closed — the pessimistic choice. The web UI's "new profile" form likewise
+// defaults to Closed; admins can override to Open per profile.
+enum FailureMode {
+  case Open, Closed
+}
+
+object FailureMode {
+  def asString(m: FailureMode): String      = m match {
+    case Open   => "open"
+    case Closed => "closed"
+  }
+  def parse(s: String): Option[FailureMode] = s.toLowerCase match {
+    case "open"   => Some(Open)
+    case "closed" => Some(Closed)
+    case _        => None
+  }
+  given JsonCodec[FailureMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown failureMode: $s"),
+    asString,
+  )
+}
+
 object UserRole {
   def parse(s: String): Option[UserRole] = s.toLowerCase match {
     case "admin" => Some(Admin)
@@ -35,6 +64,7 @@ case class Profile(
     extraBlocked: List[String],
     extraAllowed: List[String],
     paused: Boolean,
+    failureMode: FailureMode = FailureMode.Closed,
 ) derives JsonCodec
 
 case class Schedule(
@@ -137,6 +167,8 @@ case class UpsertProfileRequest(
     schedules: List[ScheduleRequest],
     timeLimit: Option[Int],
     siteTimeLimits: List[SiteTimeLimitRequest],
+    // #311: optional on the wire; server defaults to Closed when omitted.
+    failureMode: Option[FailureMode] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(
@@ -444,6 +476,9 @@ case class PolicyProfile(
     siteLimits: List[PolicySiteLimit],
     timeUsedToday: PolicyTimeUsedToday,
     extensionsTodayMinutes: Int,
+    // #311: failover mode for the OpenWRT agent when the API is unreachable
+    // for >5 minutes. See FailureMode at the top of this file.
+    failureMode: FailureMode = FailureMode.Closed,
 ) derives JsonCodec
 case class PolicyBlocklist(version: String, url: String) derives JsonCodec
 // Reason is one of: "paused", "time_limit", "schedule" (precedence in that order).

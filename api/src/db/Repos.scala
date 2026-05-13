@@ -345,16 +345,26 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
 }
 
 class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
-  private type R = (Long, String, List[String], List[String], List[String], Boolean)
-  private def toP(r: R)                        = Profile(r._1, r._2, r._3, r._4, r._5, r._6)
+  private type R = (Long, String, List[String], List[String], List[String], Boolean, String)
+  private def toP(r: R)                        = Profile(
+    r._1,
+    r._2,
+    r._3,
+    r._4,
+    r._5,
+    r._6,
+    // Column has a CHECK constraint of ('open','closed'); fall back to Closed if
+    // somehow violated — fail-safe matches the migration default.
+    FailureMode.parse(r._7).getOrElse(FailureMode.Closed),
+  )
   def listAll                                  =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused FROM profiles ORDER BY id"
+    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles ORDER BY id"
       .query[R]
       .map(toP)
       .to[List]
       .transact(xa)
   def findById(id: Long)                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused FROM profiles WHERE id=$id"
+    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles WHERE id=$id"
       .query[R]
       .map(toP)
       .option
@@ -365,7 +375,14 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       .unique
       .transact(xa)
   def update(p: Profile)                       =
-    sql"UPDATE profiles SET name=${p.name},blocked_categories=${p.blockedCategories.toArray},extra_blocked=${p.extraBlocked.toArray},extra_allowed=${p.extraAllowed.toArray},paused=${p.paused} WHERE id=${p.id}".update.run
+    sql"""UPDATE profiles SET
+            name=${p.name},
+            blocked_categories=${p.blockedCategories.toArray},
+            extra_blocked=${p.extraBlocked.toArray},
+            extra_allowed=${p.extraAllowed.toArray},
+            paused=${p.paused},
+            failure_mode=${FailureMode.asString(p.failureMode)}
+          WHERE id=${p.id}""".update.run
       .transact(xa)
       .unit
   def delete(id: Long) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit

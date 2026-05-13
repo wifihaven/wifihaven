@@ -37,11 +37,11 @@ const laptop: Device = {
 }
 
 const kidsProfile: ProfileDetail = {
-  profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false },
+  profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'closed' },
   schedules: [], timeLimit: null, siteTimeLimits: [],
 }
 const adultsProfile: ProfileDetail = {
-  profile: { id: 2, name: 'Adults', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false },
+  profile: { id: 2, name: 'Adults', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'open' },
   schedules: [], timeLimit: null, siteTimeLimits: [],
 }
 

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type {
-  Device, ProfileDetail, ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
+  Device, FailureMode, ProfileDetail, ScheduleRequest, SiteTimeLimitRequest,
+  UpsertProfileRequest, User,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
@@ -17,6 +18,7 @@ interface FormState {
   timeLimit: string
   schedules: ScheduleRequest[]
   siteTimeLimits: SiteTimeLimitRequest[]
+  failureMode: FailureMode
 }
 
 function emptyForm(): FormState {
@@ -29,6 +31,8 @@ function emptyForm(): FormState {
     timeLimit: '',
     schedules: [],
     siteTimeLimits: [],
+    // #311: safe default for a brand-new profile is fail-closed.
+    failureMode: 'closed',
   }
 }
 
@@ -49,6 +53,7 @@ function detailToForm(pd: ProfileDetail): FormState {
       label: s.label,
       exemptFromDaily: s.exemptFromDaily,
     })),
+    failureMode: pd.profile.failureMode,
   }
 }
 
@@ -64,6 +69,7 @@ function formToRequest(f: FormState): UpsertProfileRequest {
     timeLimit: tl !== null && Number.isFinite(tl) ? tl : null,
     schedules: f.schedules,
     siteTimeLimits: f.siteTimeLimits,
+    failureMode: f.failureMode,
   }
 }
 
@@ -516,6 +522,51 @@ function ProfileEditor({
             className="w-4 h-4 accent-emerald-500" />
           Paused — blocks all internet traffic for devices on this profile.
         </label>
+
+        {/* #311: per-profile failover when the router can't reach the API.
+            Radio (not checkbox) because the concept isn't boolean-friendly
+            without context — both options need their own copy. */}
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+            Failure mode
+          </label>
+          <div className="space-y-2">
+            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="radio"
+                name="failureMode"
+                data-testid="profile-failure-mode-closed"
+                checked={form.failureMode === 'closed'}
+                onChange={() => setForm(f => ({ ...f, failureMode: 'closed' }))}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span>
+                <span className="font-medium text-white">Fail closed</span>
+                <span className="text-gray-500"> (recommended for children)</span>
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  when the router can't reach the API for 5 minutes, block all internet traffic for this profile.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="radio"
+                name="failureMode"
+                data-testid="profile-failure-mode-open"
+                checked={form.failureMode === 'open'}
+                onChange={() => setForm(f => ({ ...f, failureMode: 'open' }))}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span>
+                <span className="font-medium text-white">Fail open</span>
+                <span className="text-gray-500"> (recommended for adults)</span>
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  when the router can't reach the API, keep enforcing the last-known rules; never auto-block.
+                </span>
+              </span>
+            </label>
+          </div>
+        </div>
 
         <div>
           <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Blocked categories</label>
