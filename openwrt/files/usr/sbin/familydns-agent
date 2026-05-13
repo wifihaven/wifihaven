@@ -159,9 +159,23 @@ local function run_cmd(cmd)
   return os.execute(cmd)
 end
 
+local function read_file(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
+local function rename_file(from, to)
+  local ok, err = os.rename(from, to)
+  if not ok then return nil, err end
+  return true
+end
+
 -- ── Ensure output directories exist ───────────────────────────────────────────
 
-os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d")
+os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/familydns")
 
 -- ── Patch block.html with the actual API URL ─────────────────────────────────
 
@@ -187,17 +201,40 @@ local last_usage_run      = 0
 local last_activity_sample = 0
 local activity_sample_int  = 60                 -- per-minute activity granularity (#295)
 local activity_tracker     = usage.new_tracker()
+local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
 -- ── Initial policy fetch at startup ──────────────────────────────────────────
+
+-- Load cached policy from flash BEFORE the first network poll (#309). If the
+-- router rebooted during an API outage, this restores the last-known policy
+-- so enforcement resumes within seconds instead of waiting on the first
+-- successful poll. The boot-time default-deny skeleton (#308) stays in
+-- effect until apply() succeeds.
+do
+  local cached = policy.load_snapshot(read_file, log)
+  if cached then
+    if policy.apply(cached, write_file, run_cmd, log) then
+      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason)
+      log.info("startup: applied cached policy from /etc/familydns/policy.json")
+    else
+      log.warn("startup: cached policy apply failed — staying on default-deny")
+    end
+  else
+    log.info("startup: no cached policy snapshot on flash (fresh install or first boot)")
+  end
+end
 
 do
   log.debug("startup: initial policy fetch")
   local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
   if snap then
-    policy.apply(snap, write_file, run_cmd, log)
-    render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
-    current_etag = etag
-    log.info("startup: applied initial policy etag=%s", tostring(etag))
+    if policy.apply(snap, write_file, run_cmd, log) then
+      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
+      current_etag = etag
+      policy.mark_poll_success(os.time())
+      policy.save_snapshot(snap, write_file, rename_file, log)
+      log.info("startup: applied initial policy etag=%s", tostring(etag))
+    end
   else
     log.warn("startup: initial policy fetch returned no snapshot (will retry on timer)")
   end
@@ -275,13 +312,20 @@ conntrack.watch({
       last_policy_run = now
       local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
       if snap then
-        policy.apply(snap, write_file, run_cmd, log)
-        render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
-        current_etag = etag
-        log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
+        if policy.apply(snap, write_file, run_cmd, log) then
+          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
+          current_etag = etag
+          policy.mark_poll_success(now)
+          policy.save_snapshot(snap, write_file, rename_file, log)
+          log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
+        end
       elseif etag then
         current_etag = etag  -- 304: just update etag
-        log.debug("policy timer: 304 not modified etag=%s", tostring(etag))
+        policy.mark_poll_success(now)  -- 304 still counts as a successful poll
+        log.debug("policy timer: 304 not modified etag=%s poll_age=%ds",
+                  tostring(etag), policy.poll_age_seconds(now))
+      else
+        log.debug("policy timer: fetch failed poll_age=%ds", policy.poll_age_seconds(now))
       end
     end
 
@@ -316,14 +360,23 @@ conntrack.watch({
           nil, lookup_hostname, activity_tracker, policy.clock_skew())
         log.debug("usage timer: %d counter(s), %d record(s) prepared",
                   #counters, report.records and #report.records or 0)
-        local posted = usage.post(api_url, router_token, report, http_post, log)
-        if posted then
-          os.execute("nft reset set inet familydns mac_ip_tracking >/dev/null 2>&1")
-          -- Counters are now zeroed; clear tracker so the next bucket starts
-          -- from a 0 baseline like the nft set itself.
-          usage.tracker_reset(activity_tracker)
+        local posted = usage.post_with_retry(
+          api_url, router_token, report, http_post, usage_queue, now, nil, log)
+        -- Reset counters and tracker regardless of post outcome: the report
+        -- is now owned by the retry queue (or already sent), so leaving the
+        -- nft counters intact would double-count on the next bucket.
+        os.execute("nft reset set inet familydns mac_ip_tracking >/dev/null 2>&1")
+        usage.tracker_reset(activity_tracker)
+        if not posted then
+          log.warn("usage timer: queued for retry (queue depth=%d)",
+                   #usage_queue.buckets)
         end
       end
+    end
+
+    -- Drain any retry-queued buckets whose backoff has elapsed.
+    if #usage_queue.buckets > 0 then
+      usage.drain(api_url, router_token, usage_queue, http_post, now, nil, log)
     end
   end,
 })

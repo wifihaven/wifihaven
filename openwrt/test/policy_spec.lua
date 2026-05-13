@@ -392,3 +392,128 @@ describe("policy.apply", function()
   end)
 
 end)
+
+-- ── policy.save_snapshot / load_snapshot (flash persistence, #309) ────────
+
+describe("policy.save_snapshot", function()
+
+  local SNAPSHOT_PATH = "/etc/familydns/policy.json"
+
+  local function decode_snap()
+    local json = require("cjson")
+    return json.decode(SNAPSHOT_JSON)
+  end
+
+  it("writes JSON to a tmp file and renames to /etc/familydns/policy.json", function()
+    local writes = {}
+    local renames = {}
+    local ok = policy.save_snapshot(decode_snap(),
+      function(path, content) writes[path] = content; return true, nil end,
+      function(from, to) table.insert(renames, { from = from, to = to }); return true end)
+    assert.is_true(ok)
+    assert.equal(1, #renames)
+    assert.equal(SNAPSHOT_PATH, renames[1].to)
+    -- Tmp path is some path other than the final path.
+    assert.not_equal(SNAPSHOT_PATH, renames[1].from)
+    -- The tmp path is what received the write.
+    assert.truthy(writes[renames[1].from])
+    -- And the final path was NEVER written directly (atomic).
+    assert.is_nil(writes[SNAPSHOT_PATH])
+  end)
+
+  it("writes JSON that round-trips to the original snapshot", function()
+    local json = require("cjson")
+    local captured_content
+    policy.save_snapshot(decode_snap(),
+      function(_path, content) captured_content = content; return true, nil end,
+      function(_from, _to) return true end)
+    local decoded = json.decode(captured_content)
+    assert.equal(3, decoded.profiles[1].id)
+    assert.equal("kid-ipad", decoded.devices[1].name)
+  end)
+
+  it("returns false and does not rename when the write fails", function()
+    local renamed = false
+    local ok = policy.save_snapshot(decode_snap(),
+      function(_path, _content) return nil, "disk full" end,
+      function(_from, _to) renamed = true; return true end)
+    assert.is_false(ok)
+    assert.is_false(renamed)
+  end)
+
+  it("returns false when the rename fails", function()
+    local ok = policy.save_snapshot(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(_from, _to) return nil, "rename failed" end)
+    assert.is_false(ok)
+  end)
+
+end)
+
+describe("policy.load_snapshot", function()
+
+  it("returns the decoded snapshot when the read returns valid JSON", function()
+    local snap = policy.load_snapshot(function(_path) return SNAPSHOT_JSON end)
+    assert.not_nil(snap)
+    assert.equal(3, snap.profiles[1].id)
+  end)
+
+  it("reads from /etc/familydns/policy.json", function()
+    local read_path
+    policy.load_snapshot(function(path) read_path = path; return SNAPSHOT_JSON end)
+    assert.equal("/etc/familydns/policy.json", read_path)
+  end)
+
+  it("returns nil when the file is missing (read_fn returns nil)", function()
+    assert.is_nil(policy.load_snapshot(function(_path) return nil end))
+  end)
+
+  it("returns nil when the file contents are corrupt JSON", function()
+    assert.is_nil(policy.load_snapshot(function(_path) return "{ not valid json" end))
+  end)
+
+  it("returns nil when the file is empty", function()
+    assert.is_nil(policy.load_snapshot(function(_path) return "" end))
+  end)
+
+end)
+
+-- ── policy.mark_poll_success / poll_age_seconds (#309, drives #311) ──────
+
+describe("policy.mark_poll_success / poll_age_seconds", function()
+
+  before_each(function()
+    -- Reset module-level state between tests.
+    policy.reset_poll_state()
+  end)
+
+  it("poll_age_seconds returns math.huge before any successful poll", function()
+    assert.equal(math.huge, policy.poll_age_seconds(1000))
+  end)
+
+  it("mark_poll_success(t) makes poll_age_seconds(t) return 0", function()
+    policy.mark_poll_success(1000)
+    assert.equal(0, policy.poll_age_seconds(1000))
+  end)
+
+  it("poll_age_seconds grows monotonically as `now` advances", function()
+    policy.mark_poll_success(1000)
+    assert.equal(0,   policy.poll_age_seconds(1000))
+    assert.equal(60,  policy.poll_age_seconds(1060))
+    assert.equal(300, policy.poll_age_seconds(1300))
+  end)
+
+  it("a later mark_poll_success resets the age to 0", function()
+    policy.mark_poll_success(1000)
+    assert.equal(120, policy.poll_age_seconds(1120))
+    policy.mark_poll_success(1200)
+    assert.equal(0,   policy.poll_age_seconds(1200))
+  end)
+
+  it("last_successful_poll_ts is exposed as a module field", function()
+    assert.is_nil(policy.last_successful_poll_ts)
+    policy.mark_poll_success(1234)
+    assert.equal(1234, policy.last_successful_poll_ts)
+  end)
+
+end)

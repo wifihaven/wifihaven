@@ -267,4 +267,90 @@ function M.post(api_url, router_token, report, post_fn, log)
   return false
 end
 
+-- ---------------------------------------------------------------------------
+-- Retry queue (#309). In-memory tmpfs queue — usage is best-effort per
+-- docs/resilience.md §1, so a power loss can forfeit pending buckets.
+--
+-- Backoff: 30, 60, 120, 240, 480, 900 seconds, capped at 900s, with ±10%
+-- jitter. Drained sequentially in chronological order on each agent tick
+-- so an API recovery doesn't stampede the server with one batched POST.
+-- ---------------------------------------------------------------------------
+
+local BACKOFF_BASE = 30
+local BACKOFF_MAX  = 900   -- 15 min
+
+-- next_backoff(attempts, rng_fn) → seconds
+-- attempts is 1-indexed (1 = the first retry after the initial POST failed).
+-- rng_fn() returns [0, 1]; nominal × (0.9 + 0.2 * rng_fn()).
+local function next_backoff(attempts, rng_fn)
+  local nominal = BACKOFF_BASE * (2 ^ (attempts - 1))
+  if nominal > BACKOFF_MAX then nominal = BACKOFF_MAX end
+  local j = (rng_fn or math.random)()
+  local scale = 0.9 + 0.2 * j
+  return math.floor(nominal * scale + 0.5)
+end
+
+function M.new_queue()
+  return { buckets = {} }
+end
+
+local function enqueue_failure(queue, report, now, rng_fn, attempts)
+  attempts = attempts or 1
+  queue.buckets[#queue.buckets + 1] = {
+    report           = report,
+    attempts         = attempts,
+    next_attempt_at  = now + next_backoff(attempts, rng_fn),
+  }
+end
+
+-- post_with_retry(api_url, token, report, post_fn, queue, now, rng_fn, log)
+-- → bool (true on immediate success; false if enqueued for retry).
+function M.post_with_retry(api_url, token, report, post_fn, queue, now, rng_fn, log)
+  log = log or default_log()
+  if report.records and next(report.records) == nil then
+    log.debug("usage.post_with_retry: skipping (no records)")
+    return true
+  end
+  if M.post(api_url, token, report, post_fn, log) then
+    return true
+  end
+  enqueue_failure(queue, report, now, rng_fn, 1)
+  log.warn("usage.post_with_retry: enqueued bucket periodEnd=%s for retry",
+           tostring(report.periodEnd))
+  return false
+end
+
+local function periodEnd_lt(a, b)
+  -- ISO-8601 lexical compare works for "%Y-%m-%dT%H:%M:%SZ".
+  return tostring(a.report.periodEnd) < tostring(b.report.periodEnd)
+end
+
+-- drain(api_url, token, queue, post_fn, now, rng_fn, log)
+-- Walks buckets in chronological order of periodEnd. For each bucket whose
+-- next_attempt_at ≤ now, posts it. On success removes it and proceeds; on
+-- failure reschedules with the next backoff and stops draining (so the
+-- failing window's backoff is honored before later buckets are tried — this
+-- also avoids hammering the API once it starts rejecting again).
+function M.drain(api_url, token, queue, post_fn, now, rng_fn, log)
+  log = log or default_log()
+  table.sort(queue.buckets, periodEnd_lt)
+  local i = 1
+  while i <= #queue.buckets do
+    local b = queue.buckets[i]
+    if b.next_attempt_at > now then
+      i = i + 1
+    else
+      if M.post(api_url, token, b.report, post_fn, log) then
+        table.remove(queue.buckets, i)
+      else
+        b.attempts        = b.attempts + 1
+        b.next_attempt_at = now + next_backoff(b.attempts, rng_fn)
+        log.warn("usage.drain: bucket periodEnd=%s failed attempt=%d; next in %ds",
+                 tostring(b.report.periodEnd), b.attempts, b.next_attempt_at - now)
+        return
+      end
+    end
+  end
+end
+
 return M

@@ -209,4 +209,79 @@ function M.apply(snapshot, write_fn, reload_fn, log)
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- Flash persistence (#309). Survives reboot during API outage so the agent
+-- comes back up enforcing the last-known policy instead of dropping to the
+-- default-deny boot skeleton (§1 / #308) until the first poll succeeds.
+-- ---------------------------------------------------------------------------
+
+local SNAPSHOT_PATH = "/etc/familydns/policy.json"
+
+-- save_snapshot(snap, write_fn, rename_fn) → bool
+--   write_fn(path, content)  → ok, err
+--   rename_fn(from_path, to) → ok[, err]
+-- Atomic: writes to <path>.tmp then renames over <path>. Skips the rename
+-- if the write fails, so a torn or partial write never replaces a good
+-- on-disk snapshot.
+function M.save_snapshot(snap, write_fn, rename_fn, log)
+  log = log or default_log()
+  local jsonc = require("luci.jsonc")
+  local body = jsonc.stringify(snap)
+  local tmp = SNAPSHOT_PATH .. ".tmp"
+  local ok, err = write_fn(tmp, body)
+  if not ok then
+    log.err("policy.save_snapshot: write %s failed: %s", tmp, tostring(err))
+    return false
+  end
+  local rok, rerr = rename_fn(tmp, SNAPSHOT_PATH)
+  if not rok then
+    log.err("policy.save_snapshot: rename %s → %s failed: %s",
+            tmp, SNAPSHOT_PATH, tostring(rerr))
+    return false
+  end
+  return true
+end
+
+-- load_snapshot(read_fn) → snapshot|nil
+--   read_fn(path) → content|nil (nil if the file doesn't exist)
+-- Returns nil on missing/empty/corrupt content so the caller can fall back
+-- to a fresh-start posture without crashing.
+function M.load_snapshot(read_fn, log)
+  log = log or default_log()
+  local content = read_fn(SNAPSHOT_PATH)
+  if not content or content == "" then return nil end
+  local ok, snap_or_err = pcall(function()
+    local jsonc = require("luci.jsonc")
+    local parsed = jsonc.parse(content)
+    if parsed == nil then error("invalid JSON") end
+    return parsed
+  end)
+  if not ok then
+    log.warn("policy.load_snapshot: failed to parse cached snapshot: %s",
+             tostring(snap_or_err))
+    return nil
+  end
+  return snap_or_err
+end
+
+-- ---------------------------------------------------------------------------
+-- Successful-poll timestamp tracking (#309, consumed by #311).
+-- ---------------------------------------------------------------------------
+
+M.last_successful_poll_ts = nil
+
+function M.mark_poll_success(now)
+  M.last_successful_poll_ts = now
+end
+
+function M.poll_age_seconds(now)
+  if not M.last_successful_poll_ts then return math.huge end
+  return now - M.last_successful_poll_ts
+end
+
+-- Test-only: reset module-level poll state between specs.
+function M.reset_poll_state()
+  M.last_successful_poll_ts = nil
+end
+
 return M
