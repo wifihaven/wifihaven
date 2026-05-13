@@ -268,6 +268,9 @@ export interface RouterSummary {
   lastSeenAt: string | null
   lastEtag: string | null
   createdAt: string
+  // Signed seconds; positive = router clock ahead of API. null when the
+  // agent has never reported a measurement (issue #312).
+  lastClockSkewSeconds: number | null
 }
 
 export interface CreateRouterRequest {

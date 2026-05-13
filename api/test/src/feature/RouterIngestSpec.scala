@@ -495,6 +495,80 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         d <- dRepo.findByMac(unknownMac)
       } yield assertTrue(d.exists(_.name == "kid-phone"))
     },
+    // ── #312: clock skew is reported via usage POST and persisted per router ─
+    test("usage: clockSkewSeconds in the POST body is persisted on the routers row") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        body = UsageReport(
+          id,
+          periodStart.toString,
+          periodEnd.toString,
+          Nil,
+          clockSkewSeconds = Some(120L),
+        ).toJson
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        r    <- rRepo.findById(id)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(r.flatMap(_.lastClockSkewSeconds).contains(120L))
+    },
+    test("usage: negative clockSkewSeconds is persisted as-is (router behind API)") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        body = UsageReport(
+          id,
+          periodStart.toString,
+          periodEnd.toString,
+          Nil,
+          clockSkewSeconds = Some(-90L),
+        ).toJson
+        _ <- post(routes, "/api/router/usage", body, Some(tk))
+        r <- rRepo.findById(id)
+      } yield assertTrue(r.flatMap(_.lastClockSkewSeconds).contains(-90L))
+    },
+    test(
+      "usage: omitting clockSkewSeconds leaves the column at its previous value (forward-compat)",
+    ) {
+      // Older agents that don't ship the field should still POST successfully,
+      // and a previously-recorded skew should not be wiped to NULL by a
+      // skew-less follow-up.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        b1 = UsageReport(
+          id,
+          periodStart.toString,
+          periodEnd.toString,
+          Nil,
+          clockSkewSeconds = Some(75L),
+        ).toJson
+        b2 =
+          s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[]}"""
+        _ <- post(routes, "/api/router/usage", b1, Some(tk))
+        _ <- post(routes, "/api/router/usage", b2, Some(tk))
+        r <- rRepo.findById(id)
+      } yield assertTrue(r.flatMap(_.lastClockSkewSeconds).contains(75L))
+    },
+    test("usage: an older agent's POST (no clockSkewSeconds field at all) returns 200") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        rawBody =
+          s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[]}"""
+        resp <- post(routes, "/api/router/usage", rawBody, Some(tk))
+        r    <- rRepo.findById(id)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(r.flatMap(_.lastClockSkewSeconds).isEmpty)
+    },
     test("events: dhcp_lease does NOT clobber an admin-set device name") {
       for {
         _        <- cleanDb

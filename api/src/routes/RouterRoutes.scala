@@ -195,6 +195,7 @@ object AdminRouterRoutes {
       lastSeenAt = r.lastSeenAt,
       lastEtag = r.lastEtag,
       createdAt = r.createdAt,
+      lastClockSkewSeconds = r.lastClockSkewSeconds,
     )
 
   private def newEnrollmentToken(): String = {

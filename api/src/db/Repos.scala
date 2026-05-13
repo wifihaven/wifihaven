@@ -207,6 +207,15 @@ trait RouterRepo {
   def create(name: String, enrollmentTokenHash: String): Task[UUID]
   def completeEnrollment(id: UUID, tokenHash: String): Task[Unit]
   def touch(id: UUID, etag: Option[String]): Task[Unit]
+
+  /**
+   * Persist the most recent router-vs-API clock drift reported on a /api/router/usage POST (#312).
+   * Positive means the router is ahead of the API. Called only when the agent included the field —
+   * callers skip it for older agents so the column is not wiped to NULL on a forward-compat
+   * downgrade.
+   */
+  def recordSkew(id: UUID, skewSeconds: Long): Task[Unit]
+
   def delete(id: UUID): Task[Unit]
 }
 
@@ -628,7 +637,16 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
 
 class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
   private type R =
-    (UUID, String, Option[String], Option[String], Option[Instant], Option[String], Instant)
+    (
+        UUID,
+        String,
+        Option[String],
+        Option[String],
+        Option[Instant],
+        Option[String],
+        Instant,
+        Option[Int],
+    )
   private def toR(r: R)                                 =
     Router(
       r._1,
@@ -638,27 +656,30 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._5.map(_.toString),
       r._6,
       r._7.toString,
+      r._8.map(_.toLong),
     )
+  private val cols                                      =
+    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,last_clock_skew_seconds"
   def listAll                                           =
-    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers ORDER BY created_at"
+    (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
       .map(toR)
       .to[List]
       .transact(xa)
   def findById(id: UUID)                                =
-    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers WHERE id=$id"
+    (fr"SELECT " ++ cols ++ fr" FROM routers WHERE id=$id")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
   def findByEnrollmentTokenHash(h: String)              =
-    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers WHERE enrollment_token_hash=$h"
+    (fr"SELECT " ++ cols ++ fr" FROM routers WHERE enrollment_token_hash=$h")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
   def findByTokenHash(h: String)                        =
-    sql"SELECT id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at FROM routers WHERE token_hash=$h"
+    (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
       .query[R]
       .map(toR)
       .option
@@ -676,6 +697,12 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
     sql"UPDATE routers SET last_seen_at=NOW(), last_etag=COALESCE($etag,last_etag) WHERE id=$id".update.run
       .transact(xa)
       .unit
+  def recordSkew(id: UUID, skewSeconds: Long)           = {
+    val s = skewSeconds.toInt
+    sql"UPDATE routers SET last_clock_skew_seconds=$s WHERE id=$id".update.run
+      .transact(xa)
+      .unit
+  }
   def delete(id: UUID)                                  =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
 }
