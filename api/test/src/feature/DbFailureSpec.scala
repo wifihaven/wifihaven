@@ -63,6 +63,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def create(n: String, h: String)            = throwing
     def completeEnrollment(id: UUID, h: String) = throwing
     def touch(id: UUID, etag: Option[String])   = throwing
+    def recordSkew(id: UUID, skewSeconds: Long) = throwing
     def delete(id: UUID)                        = throwing
   }
 

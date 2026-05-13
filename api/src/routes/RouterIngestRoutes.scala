@@ -51,6 +51,14 @@ object RouterIngestRoutes {
             )
             _ <- handleUsage(router.id, ps, pe, rep.records, trafficRepo, timeUsageRepo, deviceRepo)
             _ <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            // Issue #312: persist the agent's most recent clock-drift
+            // measurement only when present. Older agents that don't ship
+            // the field leave the column at its previous value, so a
+            // forward-compat downgrade can't silently clear a stale-clock
+            // warning.
+            _ <- ZIO.foreachDiscard(rep.clockSkewSeconds)(s =>
+              routerRepo.recordSkew(router.id, s).mapError(ErrorMapper.dbErrorToResponse),
+            )
           } yield Response.ok
         },
       Method.POST / "api" / "router" / "events" ->

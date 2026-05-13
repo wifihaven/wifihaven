@@ -1,0 +1,18 @@
+#!/bin/sh /etc/rc.common
+# familydns-boot — load the default-deny nft skeleton at boot (#308).
+#
+# START=19: must run BEFORE fw4 (START=20) so the `inet familydns_boot`
+# table is in place when forwarding comes up. A drop verdict in any chain
+# at the forward hook terminates evaluation, so we'd survive being ordered
+# later, but earlier is the clear reading.
+#
+# No stop() / restart() that removes the table: handover from skeleton to
+# the agent's runtime `inet familydns` table is owned exclusively by
+# render.lua / policy.apply() (single nft -f transaction, see
+# render_spec.lua #308 tests). Stopping this service after boot is a no-op.
+
+START=19
+
+start() {
+    nft -f /usr/share/familydns/boot.nft
+}

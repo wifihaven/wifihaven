@@ -236,6 +236,54 @@ describe("render.nft", function()
     assert.truthy(type(nft) == "string" and #nft > 0)
   end)
 
+  -- #308: the renderer's output is the atomic-swap that hands runtime
+  -- enforcement over from the boot skeleton (table inet familydns_boot,
+  -- installed by /etc/init.d/familydns-boot) to the runtime table
+  -- (table inet familydns). The whole thing must be one nft -f
+  -- transaction so there is no zero-second leak window. The
+  -- `add table X; delete table X` pattern is idempotent — works on the
+  -- first apply (when the boot table exists and the runtime doesn't)
+  -- and on every subsequent apply (when the boot table is already gone
+  -- and the runtime table exists).
+
+  it("emits the atomic-swap prelude removing the boot skeleton (#308)", function()
+    local nft = render.nft(snap_one())
+    local add_boot_pos = nft:find("add table inet familydns_boot", 1, true)
+    local del_boot_pos = nft:find("delete table inet familydns_boot", 1, true)
+    assert.truthy(add_boot_pos, "expected 'add table inet familydns_boot' line")
+    assert.truthy(del_boot_pos, "expected 'delete table inet familydns_boot' line")
+    assert.is_true(add_boot_pos < del_boot_pos,
+      "expected add-before-delete for the boot table (idempotent pattern)")
+  end)
+
+  it("uses idempotent add+delete for the runtime table before the body (#308)", function()
+    local nft = render.nft(snap_one())
+    local add_pos  = nft:find("add table inet familydns\n", 1, true)
+                  or nft:find("add table inet familydns$", 1, true)
+                  or nft:find("add table inet familydns%s")
+    local del_pos  = nft:find("delete table inet familydns\n", 1, true)
+                  or nft:find("delete table inet familydns$", 1, true)
+                  or nft:find("delete table inet familydns%s")
+    local body_pos = nft:find("table inet familydns {", 1, true)
+    assert.truthy(add_pos,  "expected 'add table inet familydns' line in prelude")
+    assert.truthy(del_pos,  "expected 'delete table inet familydns' line in prelude")
+    assert.truthy(body_pos, "expected 'table inet familydns {' body")
+    assert.is_true(add_pos < del_pos,
+      "expected add-before-delete for the runtime table (idempotent pattern)")
+    assert.is_true(del_pos < body_pos,
+      "expected delete-before-body so the new table replaces the old atomically")
+  end)
+
+  it("removes the boot skeleton before installing the runtime body (#308)", function()
+    local nft = render.nft(snap_one())
+    local del_boot_pos = nft:find("delete table inet familydns_boot", 1, true)
+    local body_pos     = nft:find("table inet familydns {", 1, true)
+    assert.truthy(del_boot_pos)
+    assert.truthy(body_pos)
+    assert.is_true(del_boot_pos < body_pos,
+      "boot skeleton must be deleted before the runtime table body so a single nft -f swap is atomic")
+  end)
+
   -- Regression for #228: same nil-profileId crash that hit render.dnsmasq
   -- also hit render.nft at `profile_macs[nil][#profile_macs[nil] + 1]`.
   it("skips devices with nil profileId when building profile-mac sets", function()

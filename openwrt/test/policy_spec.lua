@@ -123,6 +123,155 @@ describe("policy.fetch", function()
 
 end)
 
+-- ── policy.clock_skew (issue #312) ────────────────────────────────────────
+
+describe("policy.clock_skew", function()
+
+  -- Stub os.time so the "now" the fetch logic compares against the API's
+  -- Date header is deterministic. 2026-05-08T14:00:30Z (30s after the
+  -- canonical SNAPSHOT_JSON generated_at) — verified via os.time of the
+  -- broken-down struct: this is the real UTC epoch.
+  local FAKE_NOW = 1778245230
+  local real_os_time
+
+  before_each(function()
+    real_os_time = os.time
+    -- Only stub the no-arg form (the "current time" query). The
+    -- broken-down-time → epoch conversion form (os.time({year=...})) still
+    -- needs the real implementation so the agent's RFC 1123 Date parser
+    -- can resolve the API timestamp.
+    os.time = function(t)
+      if t then return real_os_time(t) end
+      return FAKE_NOW
+    end
+  end)
+  after_each(function()
+    os.time = real_os_time
+  end)
+
+  it("returns nil before any successful fetch has measured drift", function()
+    -- Reload the module to clear any cached state from prior tests.
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    assert.is_nil(fresh.clock_skew())
+  end)
+
+  it("captures positive drift when the router clock is ahead of the API", function()
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    -- API says it's 14:00:00; router says 14:00:30 → drift = +30
+    local function get_fn(_url, _hdrs)
+      return 200, SNAPSHOT_JSON,
+             { Date = "Fri, 08 May 2026 14:00:00 GMT" }
+    end
+    fresh.fetch("http://api:8080", "rt_tok", nil, get_fn)
+    assert.equal(30, fresh.clock_skew())
+  end)
+
+  it("captures negative drift when the router clock is behind the API", function()
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    -- API says 14:01:00; router (FAKE_NOW) is at 14:00:30 → drift = -30
+    local function get_fn(_url, _hdrs)
+      return 200, SNAPSHOT_JSON,
+             { Date = "Fri, 08 May 2026 14:01:00 GMT" }
+    end
+    fresh.fetch("http://api:8080", "rt_tok", nil, get_fn)
+    assert.equal(-30, fresh.clock_skew())
+  end)
+
+  it("looks up the Date header case-insensitively (curl emits lowercase)", function()
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    local function get_fn(_url, _hdrs)
+      return 200, SNAPSHOT_JSON,
+             { date = "Fri, 08 May 2026 14:00:00 GMT" }
+    end
+    fresh.fetch("http://api:8080", "rt_tok", nil, get_fn)
+    assert.equal(30, fresh.clock_skew())
+  end)
+
+  it("also updates skew on a 304 Not Modified response", function()
+    -- The agent's most common response in steady state is 304; we still
+    -- need to capture skew, otherwise the warning never updates after the
+    -- first poll.
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    local function get_fn(_url, _hdrs)
+      return 304, "",
+             { Date = "Fri, 08 May 2026 14:00:00 GMT" }
+    end
+    fresh.fetch("http://api:8080", "rt_tok", "sha256:abc", get_fn)
+    assert.equal(30, fresh.clock_skew())
+  end)
+
+  it("logs a warning when |drift| exceeds 60 seconds", function()
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    local warnings = {}
+    local stub_log = {
+      info  = function() end,
+      err   = function() end,
+      warn  = function(fmt, ...) warnings[#warnings+1] = string.format(fmt, ...) end,
+      debug = function() end,
+    }
+    -- 5-minute skew (300s)
+    local function get_fn(_url, _hdrs)
+      return 200, SNAPSHOT_JSON,
+             { Date = "Fri, 08 May 2026 13:55:30 GMT" }
+    end
+    fresh.fetch("http://api:8080", "rt_tok", nil, get_fn, stub_log)
+    assert.equal(300, fresh.clock_skew())
+    local matched = false
+    for _, w in ipairs(warnings) do
+      if w:find("skew", 1, true) or w:find("clock", 1, true) then matched = true end
+    end
+    assert.is_true(matched, "expected a clock-skew warning log line")
+  end)
+
+  it("does NOT log a warning for small drift (≤ 60s)", function()
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    local warnings = {}
+    local stub_log = {
+      info  = function() end,
+      err   = function() end,
+      warn  = function(fmt, ...) warnings[#warnings+1] = string.format(fmt, ...) end,
+      debug = function() end,
+    }
+    local function get_fn(_url, _hdrs)
+      return 200, SNAPSHOT_JSON,
+             { Date = "Fri, 08 May 2026 14:00:00 GMT" }  -- 30s drift
+    end
+    fresh.fetch("http://api:8080", "rt_tok", nil, get_fn, stub_log)
+    assert.equal(0, #warnings)
+  end)
+
+  it("leaves clock_skew unchanged when the response omits a Date header", function()
+    package.loaded["familydns.policy"] = nil
+    package.loaded["policy"] = nil
+    local fresh = require("policy")
+    -- First call seeds a known skew.
+    fresh.fetch("http://api:8080", "rt_tok", nil, function()
+      return 200, SNAPSHOT_JSON, { Date = "Fri, 08 May 2026 14:00:00 GMT" }
+    end)
+    assert.equal(30, fresh.clock_skew())
+    -- Second call has no Date header — skew must not regress to nil/0.
+    fresh.fetch("http://api:8080", "rt_tok", nil, function()
+      return 200, SNAPSHOT_JSON, {}
+    end)
+    assert.equal(30, fresh.clock_skew())
+  end)
+
+end)
+
 -- ── policy.apply ──────────────────────────────────────────────────────────
 
 describe("policy.apply", function()
@@ -210,6 +359,29 @@ describe("policy.apply", function()
       function(_path, _content) return true, nil end,
       function(_cmd) return 0 end)
     assert.is_true(ok)
+  end)
+
+  -- #308: the atomic-swap (boot skeleton → runtime table) is baked into
+  -- the rendered nft file as `add+delete` prelude statements, so policy.apply
+  -- no longer needs a separate `nft delete table ...` shell command before
+  -- the `nft -f`. The single `nft -f` invocation must do the whole swap in
+  -- one atomic transaction.
+  it("issues exactly one nft command and it is `nft -f` on the rendered file (#308)", function()
+    local nft_cmds = {}
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd)
+        if cmd:find("nft") then table.insert(nft_cmds, cmd) end
+        return 0
+      end)
+    assert.equal(1, #nft_cmds,
+      "expected exactly one nft command (atomic swap is in the rendered file)")
+    assert.truthy(nft_cmds[1]:find("nft -f", 1, true),
+      "expected `nft -f` invocation; got: " .. tostring(nft_cmds[1]))
+    assert.truthy(nft_cmds[1]:find("/tmp/nftables.d/familydns.nft", 1, true),
+      "expected the rendered file path in the nft command")
+    assert.is_nil(nft_cmds[1]:find("delete table", 1, true),
+      "policy.apply must not issue a separate `nft delete table` — the prelude in the rendered file handles it atomically")
   end)
 
   it("returns false when a write fails", function()

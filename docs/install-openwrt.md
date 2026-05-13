@@ -19,6 +19,18 @@ The agent enforces per-device DNS filtering, accounts traffic per
   [`install-api.md`](install-api.md) if you need to set one up first.
 - A one-time enrollment token generated in the admin UI under
   **Routers → Add router** (looks like `et_5f3c9b…`).
+- **Working NTP on the router.** Stock OpenWRT enables `sysntpd` against
+  the OpenWRT NTP pool out of the box, so most installs are fine. But
+  cellular failover links and isolated networks sometimes lack NTP
+  reachability, and the router clock is used for usage-period
+  boundaries — a 6-hour skew silently attributes a kid's afternoon
+  usage to the previous day's quota. To verify before installing:
+  `date` on the router should match wall-clock UTC. If you're skewed,
+  fix NTP first (`/etc/init.d/sysntpd restart`, or set
+  `system.ntp.server` in UCI). The agent measures drift on each poll
+  and surfaces a banner on the admin Routers page when `|skew| > 60s`
+  — schedule blocking still works (it's computed server-side), but
+  daily limits will be misattributed until you fix the clock.
 
 The agent depends on `dnsmasq-full`, `nftables`, and `uhttpd`, all of which
 ship with stock OpenWRT on both 23.05.x and 24.10+. The remaining runtime
