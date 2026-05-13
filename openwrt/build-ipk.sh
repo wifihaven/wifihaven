@@ -36,6 +36,11 @@ cat > "$WORK/ctrl/postinst" <<'POSTINST'
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 /etc/init.d/familydns enable
+# #308: enable + start the boot default-deny skeleton init so first install
+# (no reboot) is protected immediately, and every subsequent boot loads it
+# before fw4.
+/etc/init.d/familydns-boot enable
+/etc/init.d/familydns-boot start 2>/dev/null || true
 # Install cron entry for the auto-updater (daily, 04:00 router-local).
 # Replace any existing familydns-update entry so upgrades migrate the
 # cadence — older packages installed it at "0 */6 * * *".

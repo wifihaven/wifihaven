@@ -120,6 +120,26 @@ if [ -x /etc/init.d/familydns ]; then
   note "stopped and disabled familydns service"
 fi
 
+# 1b. #308: disable the boot default-deny skeleton init and drop any live
+# `inet familydns_boot` table so the router stops blocking forwarded LAN→WAN
+# traffic. If we don't do this an admin who uninstalls without rebooting
+# is left with a default-deny router.
+if [ -x /etc/init.d/familydns-boot ]; then
+  info "Disabling familydns-boot default-deny skeleton..."
+  /etc/init.d/familydns-boot disable >/dev/null 2>&1 || true
+  note "disabled familydns-boot service"
+fi
+if command -v nft >/dev/null 2>&1 && nft list table inet familydns_boot >/dev/null 2>&1; then
+  info "Removing live familydns_boot nft table..."
+  nft delete table inet familydns_boot >/dev/null 2>&1 || true
+  note "removed inet familydns_boot table"
+fi
+if command -v nft >/dev/null 2>&1 && nft list table inet familydns >/dev/null 2>&1; then
+  info "Removing live familydns runtime nft table..."
+  nft delete table inet familydns >/dev/null 2>&1 || true
+  note "removed inet familydns table"
+fi
+
 # 2. Remove the package.
 case "$PKG_MGR" in
   apk)

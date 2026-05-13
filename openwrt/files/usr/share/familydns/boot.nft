@@ -1,0 +1,36 @@
+# familydns — default-deny boot skeleton (#308)
+#
+# Loaded by /etc/init.d/familydns-boot at START=19, BEFORE fw4 (START=20).
+# Purpose: drop all forwarded LAN→WAN traffic between kernel boot and the
+# agent's first successful policy.apply(). Without this skeleton there's a
+# 30–60s window after every reboot where a kid who power-cycles the router
+# gets unrestricted internet — the entire reason for issue #308.
+#
+# Atomic handover: the agent's render.lua emits an nft fragment whose first
+# statements are `add table inet familydns_boot; delete table inet
+# familydns_boot` followed by the runtime `table inet familydns { ... }`.
+# Loaded via a single `nft -f` that's one atomic transaction — the skeleton
+# is removed and the real rules go live with zero gap.
+#
+# This file is intentionally NOT generated from policy. It must work even
+# when the agent has never run (first boot, no cached snapshot — that's
+# the gap #309 separately addresses for warm reboots).
+
+table inet familydns_boot {
+    chain forward {
+        # priority `filter - 10` (= -10) runs before fw4's default-priority
+        # forward chains. In nftables a `drop` verdict in any chain at the
+        # forward hook terminates evaluation regardless of order, so this
+        # is belt-and-braces — but it makes the intent obvious to readers.
+        type filter hook forward priority filter - 10; policy drop;
+
+        # Established/return traffic for flows that pre-date the skeleton.
+        # On a real reboot conntrack is empty so this matches nothing; it
+        # matters only if the script is reloaded against a live system.
+        ct state established,related accept
+
+        # Default: drop. No allow rules for fresh LAN→WAN traffic — that
+        # is precisely what we're gating until the agent installs the real
+        # policy.
+    }
+}

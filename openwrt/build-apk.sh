@@ -79,6 +79,11 @@ fi
 cat > "$WORK/post-install" <<'POSTINSTALL'
 #!/bin/sh
 /etc/init.d/familydns enable
+# #308: enable + start the boot default-deny skeleton init so first install
+# (no reboot) is protected immediately, and every subsequent boot loads it
+# before fw4.
+/etc/init.d/familydns-boot enable
+/etc/init.d/familydns-boot start 2>/dev/null || true
 POSTINSTALL
 chmod 0755 "$WORK/post-install"
 

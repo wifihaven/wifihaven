@@ -212,6 +212,29 @@ describe("policy.apply", function()
     assert.is_true(ok)
   end)
 
+  -- #308: the atomic-swap (boot skeleton → runtime table) is baked into
+  -- the rendered nft file as `add+delete` prelude statements, so policy.apply
+  -- no longer needs a separate `nft delete table ...` shell command before
+  -- the `nft -f`. The single `nft -f` invocation must do the whole swap in
+  -- one atomic transaction.
+  it("issues exactly one nft command and it is `nft -f` on the rendered file (#308)", function()
+    local nft_cmds = {}
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd)
+        if cmd:find("nft") then table.insert(nft_cmds, cmd) end
+        return 0
+      end)
+    assert.equal(1, #nft_cmds,
+      "expected exactly one nft command (atomic swap is in the rendered file)")
+    assert.truthy(nft_cmds[1]:find("nft -f", 1, true),
+      "expected `nft -f` invocation; got: " .. tostring(nft_cmds[1]))
+    assert.truthy(nft_cmds[1]:find("/tmp/nftables.d/familydns.nft", 1, true),
+      "expected the rendered file path in the nft command")
+    assert.is_nil(nft_cmds[1]:find("delete table", 1, true),
+      "policy.apply must not issue a separate `nft delete table` — the prelude in the rendered file handles it atomically")
+  end)
+
   it("returns false when a write fails", function()
     local ok = policy.apply(decode_snap(),
       function(_path, _content) return nil, "io error" end,

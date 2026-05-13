@@ -123,8 +123,10 @@ function M.apply(snapshot, write_fn, reload_fn, log)
   log.debug("policy.apply: wrote dnsmasq=%dB nft=%dB; reloading",
             #dnsmasq_content, #nft_content)
   reload_fn("/etc/init.d/dnsmasq reload")
-  -- Delete the table first so sets/chains don't conflict on re-import
-  reload_fn("nft delete table inet familydns 2>/dev/null; nft -f /tmp/nftables.d/familydns.nft")
+  -- Single atomic `nft -f`. The rendered file's prelude removes both the
+  -- boot default-deny skeleton (table inet familydns_boot — #308) and any
+  -- prior runtime table in one transaction, then installs the new ruleset.
+  reload_fn("nft -f /tmp/nftables.d/familydns.nft")
 
   return true
 end

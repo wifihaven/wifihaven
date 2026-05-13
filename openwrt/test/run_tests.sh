@@ -17,6 +17,8 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;./test/s
 
 echo ""
 sh test/init_spec.sh
+sh test/init_boot_spec.sh
+sh test/boot_skeleton_spec.sh
 sh test/update_spec.sh
 sh test/install_spec.sh
 sh test/agent_spec.sh
