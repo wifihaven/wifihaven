@@ -99,7 +99,9 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         assertTrue(logs.exists(_.domain == "youtube.com")) &&
         assertTrue(logs.exists(l => l.domain == "pornhub.com" && l.blocked)) &&
         assertTrue(logs.exists(l => l.domain == "youtube.com" && !l.blocked)) &&
-        assertTrue(logs.forall(_.location.contains("home")))
+        assertTrue(logs.forall(_.location.contains("home"))) &&
+        assertTrue(logs.exists(l => l.domain == "pornhub.com" && l.`type` == "dns_block")) &&
+        assertTrue(logs.exists(l => l.domain == "youtube.com" && l.`type` == "dns_allow"))
     },
     test("GET /api/logs?blocked=true returns only blocked (allowed=false) events") {
       for {

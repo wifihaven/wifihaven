@@ -53,7 +53,7 @@ const log1: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
   domain: 'example.com', qtype: 1, blocked: false, reason: '',
-  location: 'home', ts: '2026-05-12T10:15:30Z',
+  location: 'home', ts: '2026-05-12T10:15:30Z', type: 'dns_allow',
 }
 
 beforeEach(() => {
@@ -115,6 +115,15 @@ describe('LogsPage — Raw events tab', () => {
     await user.click(screen.getByTestId('logs-tab-raw'))
     expect(await screen.findByText('example.com')).toBeInTheDocument()
     expect(api.logs.query).toHaveBeenCalled()
+  })
+
+  it('Raw events grid renders a Type column with the event-type discriminator', async () => {
+    const user = userEvent.setup()
+    render(<LogsPage />)
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    expect(await screen.findByRole('columnheader', { name: 'Type' })).toBeInTheDocument()
+    expect(await screen.findByText('dns_allow')).toBeInTheDocument()
   })
 
   it('Raw events shows empty state with its own copy', async () => {
