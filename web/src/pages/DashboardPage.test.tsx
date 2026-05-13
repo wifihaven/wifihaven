@@ -63,4 +63,11 @@ describe('DashboardPage', () => {
     render(<DashboardPage />)
     expect(await screen.findByText(/No blocked queries yet/)).toBeInTheDocument()
   })
+
+  it('recent activity Time column renders in viewer local time (not UTC slice)', async () => {
+    render(<DashboardPage />)
+    await screen.findByText('example.com')
+    const expected = new Date(recent.ts).toLocaleTimeString()
+    expect(screen.getByText(expected)).toBeInTheDocument()
+  })
 })

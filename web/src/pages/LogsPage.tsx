@@ -184,7 +184,7 @@ function RawEventsTab() {
                 <tbody>
                   {logs.map(l => (
                     <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                      <td className="px-4 py-2.5 text-gray-500">{l.ts.slice(11,19)}</td>
+                      <td className="px-4 py-2.5 text-gray-500">{fmtTime(l.ts)}</td>
                       <td className="px-4 py-2.5 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
                       <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate">{l.domain}</td>
                       <td className={`px-4 py-2.5 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
@@ -224,6 +224,9 @@ function fmtBytes(n: number): string {
 }
 
 function fmtStarted(iso: string): string {
-  // ISO 2026-05-12T14:30:00Z → 14:30 (display only, no timezone math)
-  return iso.slice(11, 16)
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString()
 }
