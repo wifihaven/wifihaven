@@ -221,6 +221,17 @@ trait TrafficReportRepo {
    * \= Some(Nil)` returns an empty list (no devices match).
    */
   def listSessionRows(f: SessionFilter): Task[List[familydns.api.sessions.SessionRow]]
+
+  /**
+   * Minimal projection used by presence-based minute accounting (see
+   * [[familydns.api.presence.Presence]]). One row per (mac, period_start, hostname) for the given
+   * macs/date; the caller deduplicates by `(mac, period_start)` so per-hostname rows in a single
+   * bucket don't inflate total screen time.
+   */
+  def listPresenceRows(
+      macs: List[String],
+      date: LocalDate,
+  ): Task[List[familydns.api.presence.PresenceRow]]
 }
 
 trait BlockEventRepo {
@@ -684,6 +695,22 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .map(toT)
       .to[List]
       .transact(xa)
+
+  def listPresenceRows(macs: List[String], date: LocalDate) = {
+    type Row = (String, Instant, String, Int)
+    macs match {
+      case Nil => ZIO.succeed(List.empty[familydns.api.presence.PresenceRow])
+      case ms  =>
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms)
+        val q   = fr"""SELECT mac, period_start, hostname, active_seconds
+                       FROM traffic_reports
+                       WHERE date = $date AND """ ++ Fragments.in(fr"mac", nel)
+        q.query[Row]
+          .map((m, ps, h, s) => familydns.api.presence.PresenceRow(m, ps, h, s))
+          .to[List]
+          .transact(xa)
+    }
+  }
 
   def listSessionRows(f: SessionFilter) = {
     type Row = (UUID, String, String, LocalDate, Instant, Instant, Int, Long, Long)

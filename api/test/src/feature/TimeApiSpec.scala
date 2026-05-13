@@ -15,6 +15,9 @@ import zio.json.*
 import zio.test.*
 import zio.test.Assertion.*
 
+import java.time.{LocalDate, ZoneOffset}
+import java.util.UUID
+
 object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
   override val bootstrap =
@@ -32,6 +35,46 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
 
   private val testMac = "aa:bb:cc:dd:ee:01"
 
+  // Seed a router row so traffic_reports FK passes. A single enrollment is enough — tests don't
+  // care about router identity, just that the inserts succeed.
+  private def seedRouter: ZIO[RouterRepo, Throwable, UUID] =
+    ZIO.serviceWithZIO[RouterRepo] { rr =>
+      for {
+        id <- rr.create("test-router", "ENROLL_HASH")
+        _  <- rr.completeEnrollment(id, "TOKEN_HASH")
+      } yield id
+    }
+
+  /**
+   * Seed `minutes` minutes of traffic for (mac, hostname, date) as `minutes/5` non-overlapping
+   * 5-min buckets starting at `bucketOffset * 300s` past midnight UTC. Returns the next free bucket
+   * index so consecutive seeds for the same mac don't collide — which is what would happen in the
+   * wild between different hostnames the device touched at the same instant.
+   *
+   * Bucket-level non-overlap matters: presence-based accounting counts each `(mac, period_start)`
+   * once, so two hostnames sharing a bucket would only contribute one bucket's worth of minutes to
+   * the device's total. Tests that want "30m on A + 20m on B = 50m on this device" must use
+   * distinct bucket ranges.
+   */
+  private def seedTraffic(
+      routerId: UUID,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      minutes: Int,
+      bucketOffset: Int = 0,
+  ): ZIO[TrafficReportRepo, Throwable, Int] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val buckets = minutes / 5
+      val today0  = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until buckets).map { i =>
+        val start = today0.plusSeconds((bucketOffset + i) * 300L)
+        val end   = start.plusSeconds(300)
+        TrafficReportInsert(routerId, mac, None, hostname, date, start, end, 300, 0L, 0L)
+      }.toList
+      tr.insertBatch(inserts).as(bucketOffset + buckets)
+    }
+
   def spec = suite("Time API")(
     suite("GET /api/time/status")(
       test("shows zero usage for a new device") {
@@ -42,7 +85,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
-          usageRepo       <- ZIO.service[TimeUsageRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token)
@@ -56,7 +99,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -82,23 +125,17 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
-          _ <- usageRepo.incrementSecondsAndBytes(
-            testMac,
-            "minecraft.net",
-            today,
-            45L * 60L,
-            0L,
-            0L,
-          )
-          _ <- usageRepo.incrementSecondsAndBytes(testMac, "google.com", today, 30L * 60L, 0L, 0L)
+          off1            <- seedTraffic(routerId, testMac, "minecraft.net", today, 45)
+          _               <- seedTraffic(routerId, testMac, "google.com", today, 30, off1)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -106,7 +143,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -129,7 +166,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
@@ -143,10 +180,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             ),
           )
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
           // 60 min general browsing + 20 min YouTube (site-specific, should NOT count toward 120)
-          _ <- usageRepo.incrementSecondsAndBytes(testMac, "google.com", today, 60L * 60L, 0L, 0L)
-          _ <- usageRepo.incrementSecondsAndBytes(testMac, "youtube.com", today, 20L * 60L, 0L, 0L)
+          off1            <- seedTraffic(routerId, testMac, "google.com", today, 60)
+          _               <- seedTraffic(routerId, testMac, "youtube.com", today, 20, off1)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -154,7 +192,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -182,7 +220,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
@@ -196,9 +234,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             ),
           )
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
           // 60 min of YouTube usage; since exemptFromDaily=false it must appear in usedMins
-          _ <- usageRepo.incrementSecondsAndBytes(testMac, "youtube.com", today, 60L * 60L, 0L, 0L)
+          _               <- seedTraffic(routerId, testMac, "youtube.com", today, 60)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -206,7 +245,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -236,22 +275,16 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
-          _               <- usageRepo.incrementSecondsAndBytes(
-            testMac,
-            "minecraft.net",
-            today,
-            120L * 60L,
-            0L,
-            0L,
-          )
+          _               <- seedTraffic(routerId, testMac, "minecraft.net", today, 120)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes  = TimeRoutes.routes(
@@ -259,7 +292,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -289,7 +322,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
-          usageRepo       <- ZIO.service[TimeUsageRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token)
@@ -303,7 +336,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -329,7 +362,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
-          usageRepo       <- ZIO.service[TimeUsageRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           userRepo        <- ZIO.service[UserRepo]
           auth            <- makeAuth
@@ -345,7 +378,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -366,7 +399,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
-          usageRepo       <- ZIO.service[TimeUsageRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
           token           <- auth.login("admin", "changeme").map(_.token)
@@ -380,7 +413,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -417,7 +450,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
@@ -432,7 +465,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -458,7 +491,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
@@ -466,12 +499,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
-          _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
-          _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
           // Device 1: 40 min, Device 2: 35 min → combined 75 min > 60 min limit
-          _ <- usageRepo.incrementSecondsAndBytes(mac1, "minecraft.net", today, 40L * 60L, 0L, 0L)
-          _ <- usageRepo.incrementSecondsAndBytes(mac2, "youtube.com", today, 35L * 60L, 0L, 0L)
+          _               <- seedTraffic(routerId, mac1, "minecraft.net", today, 40)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 35)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -479,7 +513,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -506,7 +540,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
@@ -518,12 +552,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           )
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
-          _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
-          _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
           // Each device uses 20 min YouTube → combined 40 min > 30 min limit
-          _ <- usageRepo.incrementSecondsAndBytes(mac1, "youtube.com", today, 20L * 60L, 0L, 0L)
-          _ <- usageRepo.incrementSecondsAndBytes(mac2, "youtube.com", today, 20L * 60L, 0L, 0L)
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today, 20)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 20)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
           routes = TimeRoutes.routes(
@@ -531,7 +566,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             deviceRepo,
             tlRepo,
             stlRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             profileRepo,
             userProfileRepo,
@@ -558,7 +593,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
-          usageRepo   <- ZIO.service[TimeUsageRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
           token       <- auth.login("admin", "changeme").map(_.token)
@@ -566,11 +601,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
-          _ <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
-          _ <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
-          _ <- usageRepo.incrementSecondsAndBytes(mac1, "minecraft.net", today, 30L * 60L, 0L, 0L)
-          _ <- usageRepo.incrementSecondsAndBytes(mac2, "roblox.com", today, 25L * 60L, 0L, 0L)
+          _             <- seedTraffic(routerId, mac1, "minecraft.net", today, 30)
+          _             <- seedTraffic(routerId, mac2, "roblox.com", today, 25)
           // Build policy snapshot directly via PolicyService
           blocklistRepo <- ZIO.service[BlocklistRepo]
           clock         <- ZIO.service[Clock]
@@ -581,7 +617,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             stlRepo,
             deviceRepo,
             blocklistRepo,
-            usageRepo,
+            trafficRepo,
             extRepo,
             clock,
           )

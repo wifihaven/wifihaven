@@ -61,16 +61,16 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
 
   private def makePolicyService =
     for {
-      pr    <- ZIO.service[ProfileRepo]
-      sr    <- ZIO.service[ScheduleRepo]
-      tlr   <- ZIO.service[TimeLimitRepo]
-      stlr  <- ZIO.service[SiteTimeLimitRepo]
-      dr    <- ZIO.service[DeviceRepo]
-      blr   <- ZIO.service[BlocklistRepo]
-      ur    <- ZIO.service[TimeUsageRepo]
-      er    <- ZIO.service[TimeExtensionRepo]
-      clock <- ZIO.service[Clock]
-    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clock)): PolicyService
+      pr     <- ZIO.service[ProfileRepo]
+      sr     <- ZIO.service[ScheduleRepo]
+      tlr    <- ZIO.service[TimeLimitRepo]
+      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      dr     <- ZIO.service[DeviceRepo]
+      blr    <- ZIO.service[BlocklistRepo]
+      trRepo <- ZIO.service[TrafficReportRepo]
+      er     <- ZIO.service[TimeExtensionRepo]
+      clock  <- ZIO.service[Clock]
+    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, trRepo, er, clock)): PolicyService
 
   private def post(
       routes: Routes[Any, Response],
