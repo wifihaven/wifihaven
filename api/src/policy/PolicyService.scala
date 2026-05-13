@@ -89,7 +89,13 @@ class PolicyServiceLive(
         c -> PolicyBlocklist(version = today.toString, url = s"/api/blocklists/$c.rpz")
       }.toMap
       val defaultId     = profiles.map(_.id).minOption
-      val core          = SnapshotCore(defaultId, pDevices, pProfiles, pBlocklists)
+      // #305: precompute the set of MACs that should be blocked right now from
+      // pause / daily time limit / active schedule window. The OpenWRT agent
+      // used to derive this itself but never implemented schedule windows;
+      // doing it server-side keeps the router-side enforcement dumb.
+      val blockedMacs   =
+        PolicyService.computeBlockedMacs(pProfiles, pDevices, now.toLocalTime, today)
+      val core          = SnapshotCore(defaultId, pDevices, pProfiles, blockedMacs, pBlocklists)
       val etag          = PolicyService.computeEtag(core)
       PolicySnapshot(
         etag = etag,
@@ -97,6 +103,7 @@ class PolicyServiceLive(
         defaultProfileId = defaultId,
         devices = pDevices,
         profiles = pProfiles,
+        blockedMacs = blockedMacs,
         blocklists = pBlocklists,
       )
     }
@@ -266,6 +273,7 @@ private case class SnapshotCore(
     defaultProfileId: Option[Long],
     devices: List[PolicyDevice],
     profiles: List[PolicyProfile],
+    blockedMacs: List[BlockedMac],
     blocklists: Map[String, PolicyBlocklist],
 )
 
@@ -306,7 +314,72 @@ object PolicyService {
       parts += s"  u:${p.timeUsedToday.totalMinutes}"
       p.timeUsedToday.byDomain.toList.sortBy(_._1).foreach((k, v) => parts += s"    ud:$k=$v")
     }
+    // #305: blockedMacs participates in the etag so an unchanged-row policy
+    // still flips the etag when the wall clock crosses a schedule window edge.
+    core.blockedMacs.sortBy(_.mac).foreach(b => parts += s"bm:${b.mac}|${b.reason}")
     core.blocklists.toList.sortBy(_._1).foreach((k, v) => parts += s"bl:$k=${v.version}")
     "\"sha256:" + sha256Hex(parts.mkString("\n")) + "\""
+  }
+
+  /**
+   * #305: compute the currently-blocked MACs from pause / daily time limit / active schedule
+   * window. Precedence is pause > time_limit > schedule — matches the legacy /api/router/decision
+   * ordering in [[PolicyServiceLive.decide]].
+   */
+  private[policy] def computeBlockedMacs(
+      profiles: List[PolicyProfile],
+      devices: List[PolicyDevice],
+      nowTime: java.time.LocalTime,
+      today: java.time.LocalDate,
+  ): List[BlockedMac] = {
+    val todayName                                  = today.getDayOfWeek match {
+      case java.time.DayOfWeek.MONDAY    => "mon"
+      case java.time.DayOfWeek.TUESDAY   => "tue"
+      case java.time.DayOfWeek.WEDNESDAY => "wed"
+      case java.time.DayOfWeek.THURSDAY  => "thu"
+      case java.time.DayOfWeek.FRIDAY    => "fri"
+      case java.time.DayOfWeek.SATURDAY  => "sat"
+      case java.time.DayOfWeek.SUNDAY    => "sun"
+    }
+    val prevName                                   = today.minusDays(1).getDayOfWeek match {
+      case java.time.DayOfWeek.MONDAY    => "mon"
+      case java.time.DayOfWeek.TUESDAY   => "tue"
+      case java.time.DayOfWeek.WEDNESDAY => "wed"
+      case java.time.DayOfWeek.THURSDAY  => "thu"
+      case java.time.DayOfWeek.FRIDAY    => "fri"
+      case java.time.DayOfWeek.SATURDAY  => "sat"
+      case java.time.DayOfWeek.SUNDAY    => "sun"
+    }
+    def parseTime(s: String): java.time.LocalTime  = {
+      val Array(h, m) = s.split(':')
+      java.time.LocalTime.of(h.toInt, m.toInt)
+    }
+    def scheduleActive(s: PolicySchedule): Boolean = {
+      val from  = parseTime(s.blockFrom)
+      val until = parseTime(s.blockUntil)
+      if from.isAfter(until) then
+        (s.days.contains(todayName) && !nowTime.isBefore(from)) ||
+        (s.days.contains(prevName) && nowTime.isBefore(until))
+      else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
+    }
+    val byProfile                                  = profiles.iterator.map { p =>
+      val reason =
+        if p.paused then Some("paused")
+        else
+          p.dailyMinutes match {
+            case Some(limit) if p.timeUsedToday.totalMinutes >= limit + p.extensionsTodayMinutes =>
+              Some("time_limit")
+            case _                                                                               =>
+              if p.schedules.exists(scheduleActive) then Some("schedule") else None
+          }
+      p.id -> reason
+    }.toMap
+
+    devices.flatMap { d =>
+      for {
+        pid    <- d.profileId
+        reason <- byProfile.getOrElse(pid, None)
+      } yield BlockedMac(d.mac, reason)
+    }
   }
 }

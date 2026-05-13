@@ -37,6 +37,9 @@ local function snap_one()
         extensionsTodayMinutes = 15,
       },
     },
+    -- #305: API precomputes which MACs are currently blocked (pause /
+    -- time_limit / schedule). The agent just enforces. Empty by default.
+    blockedMacs = {},
   }
 end
 
@@ -178,33 +181,42 @@ describe("render.nft", function()
     assert.truthy(nft:find("mac_ip_tracking", 1, true))
   end)
 
-  it("includes a drop rule when profile time limit is exhausted", function()
-    local s = snap_one()
-    -- remaining = 120 + 15 - 47 = 88 → NOT exhausted yet
-    local nft_ok = render.nft(s)
-    -- exhaust it: 136 >= 120 + 15 = 135
-    s.profiles[1].timeUsedToday.totalMinutes = 136
-    local nft_ex = render.nft(s)
-    -- exhausted config must contain a drop referencing profile3_macs
-    assert.truthy(nft_ex:find("profile3_macs", 1, true))
-    assert.truthy(nft_ex:find("drop", 1, true))
+  -- #305: enforcement is driven entirely by snapshot.blockedMacs (API-precomputed).
+  -- The agent no longer evaluates pause / time_limit / schedule itself.
+
+  it("declares a blocked_macs set (type ether_addr)", function()
+    local nft = render.nft(snap_one())
+    local pos = nft:find("set blocked_macs")
+    assert.truthy(pos)
+    local block = nft:sub(pos, pos + 200)
+    assert.truthy(block:find("ether_addr", 1, true))
   end)
 
-  it("includes a drop rule when the profile is paused", function()
+  it("emits a drop rule on @blocked_macs when blockedMacs is non-empty", function()
     local s = snap_one()
-    s.profiles[1].paused = true
+    s.blockedMacs = { { mac = "aa:bb:cc:11:22:33", reason = "paused" } }
     local nft = render.nft(s)
-    assert.truthy(nft:find("profile3_macs", 1, true))
+    assert.truthy(nft:find("aa:bb:cc:11:22:33", 1, true))
+    assert.truthy(nft:find("@blocked_macs", 1, true))
     assert.truthy(nft:find("drop", 1, true))
   end)
 
-  it("does NOT include a drop for profile3 when it still has remaining time", function()
+  it("does NOT emit an @blocked_macs drop rule when blockedMacs is empty", function()
+    local nft = render.nft(snap_one())
+    -- empty blocked_macs set is fine, but no drop rule should reference it
+    assert.falsy(nft:find("@blocked_macs%s+drop"))
+  end)
+
+  it("includes every blocked MAC as a set element regardless of reason", function()
     local s = snap_one()
-    s.profiles[1].paused = false
-    s.profiles[1].timeUsedToday.totalMinutes = 10  -- well within 120 + 15
+    s.devices[2] = { mac = "11:22:33:44:55:66", profileId = 3, name = "kid-phone" }
+    s.blockedMacs = {
+      { mac = "aa:bb:cc:11:22:33", reason = "schedule" },
+      { mac = "11:22:33:44:55:66", reason = "time_limit" },
+    }
     local nft = render.nft(s)
-    -- There must be no 'ether saddr @profile3_macs drop' pattern
-    assert.falsy(nft:find("@profile3_macs%s+drop"))
+    assert.truthy(nft:find("aa:bb:cc:11:22:33", 1, true))
+    assert.truthy(nft:find("11:22:33:44:55:66", 1, true))
   end)
 
   -- #297: previous render emitted `tcp dport 80 dnat to 127.0.0.1:8081` to
@@ -269,54 +281,50 @@ describe("render.update_shared", function()
     end)
   end)
 
-  -- #297: pause must populate blocked_macs so the conntrack classifier labels
-  -- the paused device's flows as blocked (not "permitted"). nftables also
-  -- drops the packets, but conntrack -E -e NEW still sees the SYN_SENT entry
-  -- and needs an independent signal to classify it.
-  it("marks devices of a paused profile in blocked_macs with reason=paused", function()
+  -- #305: blocked_macs / blocked_reason are populated directly from
+  -- snapshot.blockedMacs (API-precomputed). The conntrack classifier reads
+  -- them to label connection_attempt events as blocked with the right reason,
+  -- since `conntrack -E -e NEW` still emits SYN_SENT entries for the dropped
+  -- flows (the in-kernel nft drop happens later).
+
+  it("populates blocked_macs / blocked_reason from snapshot.blockedMacs", function()
     local s = snap_one()
-    s.profiles[1].paused = true
+    s.blockedMacs = {
+      { mac = "aa:bb:cc:11:22:33", reason = "paused" },
+    }
     local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
     render.update_shared(s, nft_sets, blocked_macs, blocked_reason)
     assert.is_true(blocked_macs["aa:bb:cc:11:22:33"])
     assert.equal("paused", blocked_reason["aa:bb:cc:11:22:33"])
   end)
 
-  it("marks devices of a time-exhausted profile with reason=time_limit", function()
+  it("preserves the reason verbatim (schedule / time_limit / paused)", function()
     local s = snap_one()
-    -- dailyMinutes=120, extensions=15 → exhaust at 135
-    s.profiles[1].timeUsedToday.totalMinutes = 200
+    s.devices[2] = { mac = "11:22:33:44:55:66", profileId = 3, name = "kid-phone" }
+    s.blockedMacs = {
+      { mac = "aa:bb:cc:11:22:33", reason = "schedule" },
+      { mac = "11:22:33:44:55:66", reason = "time_limit" },
+    }
     local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
     render.update_shared(s, nft_sets, blocked_macs, blocked_reason)
-    assert.is_true(blocked_macs["aa:bb:cc:11:22:33"])
-    assert.equal("time_limit", blocked_reason["aa:bb:cc:11:22:33"])
+    assert.equal("schedule",   blocked_reason["aa:bb:cc:11:22:33"])
+    assert.equal("time_limit", blocked_reason["11:22:33:44:55:66"])
   end)
 
-  it("clears stale blocked_macs entries when a profile un-pauses", function()
-    -- Simulate a previous tick that flagged the device as paused.
+  it("clears stale entries when blockedMacs goes empty (un-pause / window ended)", function()
+    -- Previous tick: device was flagged. Now the snapshot has no blockedMacs.
     local nft_sets        = {}
     local blocked_macs    = { ["aa:bb:cc:11:22:33"] = true }
     local blocked_reason  = { ["aa:bb:cc:11:22:33"] = "paused" }
-    -- Now apply a fresh snapshot where the profile is no longer paused.
     render.update_shared(snap_one(), nft_sets, blocked_macs, blocked_reason)
     assert.is_nil(blocked_macs["aa:bb:cc:11:22:33"])
     assert.is_nil(blocked_reason["aa:bb:cc:11:22:33"])
   end)
 
-  it("does not mark devices whose profile is not paused or time-exhausted", function()
+  it("leaves blocked_macs empty when snapshot.blockedMacs is empty", function()
     local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
     render.update_shared(snap_one(), nft_sets, blocked_macs, blocked_reason)
     assert.is_nil(blocked_macs["aa:bb:cc:11:22:33"])
-  end)
-
-  it("ignores devices with nil profileId (unassigned)", function()
-    local s = snap_one()
-    s.profiles[1].paused = true
-    table.insert(s.devices,
-      { mac = "be:89:10:82:c7:4c", profileId = nil, name = "iPhone" })
-    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
-    render.update_shared(s, nft_sets, blocked_macs, blocked_reason)
-    assert.is_nil(blocked_macs["be:89:10:82:c7:4c"])
   end)
 
 end)

@@ -147,37 +147,32 @@ function M.nft(snapshot)
   ind("}")
   emit("")
 
-  -- Block chain: drop/redirect for exhausted time limits, paused profiles, schedules
-  ind("chain familydns_block {")
-  ind2("type filter hook forward priority 0; policy accept;")
+  -- #305: blocked-MAC set. The API precomputes which MACs should be blocked
+  -- *right now* from pause / daily time limit / active schedule window and
+  -- ships them in snapshot.blockedMacs. We just enforce it — no wall-clock
+  -- evaluation here, no per-profile decision logic. The set is read by the
+  -- block chain below.
+  local blocked = snapshot.blockedMacs or {}
+  ind("set blocked_macs {")
+  ind2("type ether_addr")
+  if #blocked > 0 then
+    local macs = {}
+    for i, b in ipairs(blocked) do macs[i] = b.mac end
+    ind2("elements = { " .. table.concat(macs, ", ") .. " }")
+  end
+  ind("}")
   emit("")
 
-  for _, prof in ipairs(snapshot.profiles or {}) do
-    local block_reason = nil
-
-    if prof.paused then
-      block_reason = "paused"
-    elseif (prof.dailyMinutes or 0) > 0 then
-      local used       = (prof.timeUsedToday and prof.timeUsedToday.totalMinutes) or 0
-      local extensions = prof.extensionsTodayMinutes or 0
-      local remaining  = prof.dailyMinutes + extensions - used
-      if remaining <= 0 then
-        block_reason = "time_limit"
-      end
-    end
-
-    if block_reason then
-      ind2(string.format("# profile %d (%s): %s", prof.id, prof.name, block_reason))
-      -- Drop all forwarded traffic from devices on this profile. DNAT to a
-      -- block page would be nicer UX but needs a separate nat-type chain
-      -- (DNAT is not supported in filter chains), and the bare `dnat to`
-      -- form rejected `nft -f` entirely (#297) — so until we wire up a
-      -- prerouting nat chain, we just drop.
-      ind2(string.format("ether saddr @profile%d_macs drop", prof.id))
-      emit("")
-    end
+  -- Block chain: drop forwarded traffic from any MAC in blocked_macs.
+  -- DNAT to a block page would be nicer UX but needs a separate nat-type
+  -- chain (DNAT is not supported in inet filter chains), and the bare
+  -- `dnat to` form rejected `nft -f` entirely (#297) — so until we wire up
+  -- a prerouting nat chain, we just drop.
+  ind("chain familydns_block {")
+  ind2("type filter hook forward priority 0; policy accept;")
+  if #blocked > 0 then
+    ind2("ether saddr @blocked_macs drop")
   end
-
   ind("}")
   emit("")
   emit("}")
@@ -193,17 +188,16 @@ end
 -- conntrack.lua can attribute hostnames from the moment the agent starts.
 -- Actual IPs are populated at runtime by dnsmasq --ipset= callbacks.
 --
--- Also rebuilds blocked_macs / blocked_reason from the current snapshot so
--- conntrack.lua can label connection_attempt events as blocked when the
--- device's profile is paused or has exhausted its daily time (#297). nft
--- already drops these flows at the forward hook, but the conntrack -E -e NEW
--- watcher still sees the SYN_SENT entry and needs an independent signal to
--- classify it correctly — labeling purely by destination IP misses pause
--- (every IP is blocked) and time-limit (same).
+-- Also rebuilds blocked_macs / blocked_reason from snapshot.blockedMacs (#305)
+-- so conntrack.lua can label connection_attempt events as blocked. nft already
+-- drops these flows at the forward hook, but the conntrack -E -e NEW watcher
+-- still sees the SYN_SENT entry and needs an independent signal to classify
+-- it correctly — labeling purely by destination IP misses pause /
+-- time_limit / schedule (every IP is blocked).
 --
 -- Both tables are mutated in place (shared refs held by conntrack.lua); we
--- clear stale entries first so a profile that un-pauses stops marking flows
--- as blocked on the next poll.
+-- clear stale entries first so a profile that un-pauses or a schedule window
+-- that ends stops marking flows as blocked on the next poll.
 function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
   for _, prof in ipairs(snapshot.profiles or {}) do
     for _, sl in ipairs(prof.siteLimits or {}) do
@@ -220,28 +214,9 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
     for k in pairs(blocked_reason) do blocked_reason[k] = nil end
   end
 
-  local profile_block = {}
-  for _, prof in ipairs(snapshot.profiles or {}) do
-    local reason
-    if prof.paused then
-      reason = "paused"
-    elseif (prof.dailyMinutes or 0) > 0 then
-      local used = (prof.timeUsedToday and prof.timeUsedToday.totalMinutes) or 0
-      local ext  = prof.extensionsTodayMinutes or 0
-      if used >= prof.dailyMinutes + ext then
-        reason = "time_limit"
-      end
-    end
-    if reason then profile_block[prof.id] = reason end
-  end
-
-  for _, dev in ipairs(snapshot.devices or {}) do
-    local pid    = dev.profileId
-    local reason = pid and profile_block[pid] or nil
-    if reason then
-      if blocked_macs   then blocked_macs[dev.mac]   = true end
-      if blocked_reason then blocked_reason[dev.mac] = reason end
-    end
+  for _, b in ipairs(snapshot.blockedMacs or {}) do
+    if blocked_macs   then blocked_macs[b.mac]   = true end
+    if blocked_reason then blocked_reason[b.mac] = b.reason end
   end
 end
 
