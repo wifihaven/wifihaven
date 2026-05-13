@@ -145,10 +145,28 @@ object RouterIngestRoutes {
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
   ): IO[Response, Unit] = {
-    val date = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
-    ZIO.foreachDiscard(records) { r =>
+    val date    = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
+    // A batch carries one record per (mac, dst_ip) but time_usage is keyed
+    // by (mac, hostname, date), and activeSeconds is the bucket duration
+    // (the 5-min window — same value on every record that saw bytes>0). Two
+    // records with the same (mac, hostname) describe the *same* window of
+    // active time, not two windows back-to-back, so the seconds delta is
+    // the max of activeSeconds, not the sum. Bytes still sum because they
+    // count distinct flows.
+    val grouped = records
+      .groupBy(r => (r.mac, r.hostname))
+      .view
+      .mapValues { rs =>
+        (
+          rs.map(_.activeSeconds).maxOption.getOrElse(0L),
+          rs.map(_.bytesIn).sum,
+          rs.map(_.bytesOut).sum,
+        )
+      }
+      .toList
+    ZIO.foreachDiscard(grouped) { case ((mac, hostname), (secs, bIn, bOut)) =>
       timeUsageRepo
-        .incrementSecondsAndBytes(r.mac, r.hostname, date, r.activeSeconds, r.bytesIn, r.bytesOut)
+        .incrementSecondsAndBytes(mac, hostname, date, secs, bIn, bOut)
         .orElseFail(Response.internalServerError(""))
     } *>
       // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).
