@@ -195,11 +195,14 @@ end
 -- We inject them via cfg.on_tick so there's no need for threads or coroutines.
 
 -- Hostname lookup backed by the dns-tail sidecar's snapshot file (#259).
--- Memoized for 1s by mtime to keep per-flow overhead bounded.
+-- Memoized for 1s to keep per-flow overhead bounded. The previous mtime-based
+-- freshness check used `stat -c %Y`, which isn't present on stock OpenWRT
+-- busybox — the popen returned no output, mt fell to 0, and the equality
+-- check with the initial dns_cache_mt=0 meant the cache was never loaded
+-- (#287). Re-reading the (small) snapshot once per second is cheap enough.
 local dns_cache_path = "/tmp/familydns-dns-cache.txt"
 local dns_cache_ttl  = 3600
 local dns_cache_tbl  = {}
-local dns_cache_mt   = 0
 local dns_cache_load = 0
 
 local function lookup_hostname(dst_ip)
@@ -208,16 +211,8 @@ local function lookup_hostname(dst_ip)
     dns_cache_load = now
     local f = io.open(dns_cache_path, "r")
     if f then
-      -- Cheap freshness check: re-parse only if the file changed.
-      local stat_pipe = io.popen(
-        string.format("stat -c %%Y %q 2>/dev/null", dns_cache_path), "r")
-      local mt = stat_pipe and tonumber(stat_pipe:read("*l") or "") or 0
-      if stat_pipe then stat_pipe:close() end
-      if mt ~= dns_cache_mt then
-        local text = f:read("*a") or ""
-        dns_cache_tbl = dns_log.load_table(text, dns_cache_ttl, now)
-        dns_cache_mt  = mt
-      end
+      local text = f:read("*a") or ""
+      dns_cache_tbl = dns_log.load_table(text, dns_cache_ttl, now)
       f:close()
     end
   end

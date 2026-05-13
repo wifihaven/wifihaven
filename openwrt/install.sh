@@ -161,6 +161,36 @@ uci set familydns.@familydns[0].router_id="$router_id"
 uci set familydns.@familydns[0].router_token="$router_token"
 uci commit familydns
 
+# Wire dnsmasq for familydns (#287):
+#   - confdir=/tmp/dnsmasq.d makes dnsmasq load /tmp/dnsmasq.d/familydns.conf
+#     (the agent's rendered profile-tag / NXDOMAIN / ipset config). Without
+#     this, dnsmasq only loads /tmp/dnsmasq.<section>.d/, which the agent
+#     doesn't know the name of.
+#   - logqueries=1 → --log-queries=extra, so dnsmasq emits the structured
+#     query+reply lines dns_log.lua parses.
+#   - logfacility=/tmp/familydns-dnsmasq.log routes the query log to a file
+#     instead of syslog AND triggers the dnsmasq init.d to bind-mount that
+#     file RW into dnsmasq's ujail (so the dnsmasq user can actually write
+#     it).
+dnsmasq_changed=0
+for opt_kv in \
+  "confdir=/tmp/dnsmasq.d" \
+  "logqueries=1" \
+  "logfacility=/tmp/familydns-dnsmasq.log"; do
+  opt=${opt_kv%%=*}
+  val=${opt_kv#*=}
+  cur=$(uci -q get "dhcp.@dnsmasq[0].$opt" || true)
+  if [ "$cur" != "$val" ]; then
+    uci set "dhcp.@dnsmasq[0].$opt=$val"
+    dnsmasq_changed=1
+  fi
+done
+if [ "$dnsmasq_changed" = 1 ]; then
+  uci commit dhcp
+  info "Restarting dnsmasq with familydns query-log + confdir wiring..."
+  /etc/init.d/dnsmasq restart
+fi
+
 # Idempotent uhttpd listener for the local block page on 127.0.0.1:8081.
 if uci show uhttpd 2>/dev/null | grep -q "listen_http='127.0.0.1:8081'"; then
   info "Block-page uhttpd listener already configured."
