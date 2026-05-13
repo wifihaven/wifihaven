@@ -11,10 +11,13 @@
 --     → list of { mac, dst_ip, bytes, packets }
 --     Input: JSON from `nft -j list counters table inet familydns`
 --
---   usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases])
+--   usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases [, lookup_hostname]])
 --     → report table ready for JSON encoding and POST /api/router/usage
---     nft_sets: { hostname → { ip → true } }  (maintained by render.update_shared + dnsmasq)
---     leases:   { mac → ip }  (optional; populates the ip field on each record)
+--     nft_sets:        { hostname → { ip → true } }  (maintained by render.update_shared + dnsmasq)
+--     leases:          { mac → ip }  (optional; populates the ip field on each record)
+--     lookup_hostname: fn(dst_ip) → string|nil  (optional; consulted before
+--                      falling back to "unknown" — same dnsmasq-query-log
+--                      cache the conntrack path uses, see #287)
 --
 --   usage.post(api_url, router_token, report, post_fn)
 --     → bool
@@ -87,9 +90,21 @@ function M.parse_nft_counters(json_str)
 end
 
 -- ---------------------------------------------------------------------------
--- hostname_for_ip(dst_ip, nft_sets) → string
+-- hostname_for_ip(dst_ip, nft_sets, lookup_hostname) → string
 -- ---------------------------------------------------------------------------
-local function hostname_for_ip(dst_ip, nft_sets)
+-- Resolution order, matching conntrack.handle_flow (#287):
+--   1. dnsmasq-query-log cache (lookup_hostname) — covers any LAN client that
+--      resolved through the router's dnsmasq.
+--   2. nft_sets — only populated for site_limits ipsets, but authoritative
+--      when present (it's the hostname dnsmasq's ipset= callback recorded
+--      at resolve time).
+--   3. "unknown" — used by the Sessions UI to group traffic with no
+--      attributable hostname (DoH/Apple Private Relay/direct-IP).
+local function hostname_for_ip(dst_ip, nft_sets, lookup_hostname)
+  if lookup_hostname then
+    local h = lookup_hostname(dst_ip)
+    if h then return h end
+  end
   for hostname, ips in pairs(nft_sets or {}) do
     if ips[dst_ip] then return hostname end
   end
@@ -97,15 +112,15 @@ local function hostname_for_ip(dst_ip, nft_sets)
 end
 
 -- ---------------------------------------------------------------------------
--- usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases])
+-- usage.build_report(counters, nft_sets, period_start, period_end, router_id [, leases [, lookup_hostname]])
 -- ---------------------------------------------------------------------------
 -- active_seconds heuristic (§9 architecture doc):
 --   Any counter with bytes > 0 in the 5-min bucket counts as the full period (300 s).
-function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases)
+function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname)
   local records = {}
 
   for _, c in ipairs(counters or {}) do
-    local hostname = hostname_for_ip(c.dst_ip, nft_sets)
+    local hostname = hostname_for_ip(c.dst_ip, nft_sets, lookup_hostname)
     local rec = {
       mac           = c.mac,
       hostname      = hostname,

@@ -124,6 +124,45 @@ describe("usage.build_report", function()
     assert.equal("unknown", r.records[1].hostname)
   end)
 
+  -- #287: nft_sets only carries hostnames for site_limits-tracked domains, so
+  -- without the dnsmasq-query-log lookup every traffic_reports row landed as
+  -- "unknown" and the Sessions UI rendered every flow as unknown traffic.
+  it("consults lookup_hostname (dns-cache) before falling back to 'unknown'", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "140.82.114.6", bytes = 100, packets = 3 },
+    }
+    local lookup = function(ip)
+      if ip == "140.82.114.6" then return "api.github.com" end
+      return nil
+    end
+    local r = usage.build_report(counters, {}, P_START, P_END, ROUTER, nil, lookup)
+    assert.equal("api.github.com", r.records[1].hostname)
+  end)
+
+  it("prefers lookup_hostname over nft_sets when both have an entry", function()
+    -- nft_sets reflects what dnsmasq's ipset= callback stored at resolve time
+    -- for site_limits domains. If the dns-cache has a hit too, we trust that
+    -- since it's the hostname the *client actually resolved*, not whatever
+    -- ipset bucket the IP happens to live in.
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 100, packets = 3 },
+    }
+    local sets = { ["site_limit.example"] = { ["1.2.3.4"] = true } }
+    local lookup = function(_) return "actual.example" end
+    local r = usage.build_report(counters, sets, P_START, P_END, ROUTER, nil, lookup)
+    assert.equal("actual.example", r.records[1].hostname)
+  end)
+
+  it("falls through to nft_sets when lookup_hostname misses", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 100, packets = 3 },
+    }
+    local sets = { ["youtube.com"] = { ["1.2.3.4"] = true } }
+    local lookup = function(_) return nil end
+    local r = usage.build_report(counters, sets, P_START, P_END, ROUTER, nil, lookup)
+    assert.equal("youtube.com", r.records[1].hostname)
+  end)
+
   it("sets activeSeconds = 300 (full period) for any counter with bytes > 0", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
     for _, rec in ipairs(r.records) do
