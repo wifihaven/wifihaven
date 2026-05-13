@@ -35,7 +35,7 @@ object RouterRoutes {
             etHash = PolicyService.hashToken(rr.enrollmentToken)
             router <- routerRepo
               .findByEnrollmentTokenHash(etHash)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(
                 ZIO
                   .fromOption(_)
@@ -45,21 +45,21 @@ object RouterRoutes {
             tokenHash   = PolicyService.hashToken(routerToken)
             _ <- routerRepo
               .completeEnrollment(router.id, tokenHash)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(RegisterRouterResponse(router.id, routerToken).toJson)
         },
       Method.GET / "api" / "router" / "policy"           ->
         handler { (req: Request) =>
           for {
             router <- routerAuth.authenticate(req)
-            snap   <- policy.snapshot.orElseFail(Response.internalServerError(""))
+            snap   <- policy.snapshot.mapError(ErrorMapper.dbErrorToResponse)
             ifNoneMatch = req
               .header(Header.IfNoneMatch)
               .map(_.renderedValue)
               .orElse(req.url.queryParam("since"))
             _ <- routerRepo
               .touch(router.id, Some(snap.etag))
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             notMod = ifNoneMatch.contains(snap.etag)
             _ <- ZIO.logDebug(
               s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
@@ -84,7 +84,7 @@ object RouterRoutes {
             cat  <- ZIO
               .succeed(file.stripSuffix(".rpz"))
               .filterOrFail(_ != file)(Response.notFound("expected .rpz suffix"))
-            out  <- policy.renderRpz(cat).orElseFail(Response.internalServerError(""))
+            out  <- policy.renderRpz(cat).mapError(ErrorMapper.dbErrorToResponse)
             resp <- ZIO
               .fromOption(out)
               .mapBoth(
@@ -118,16 +118,14 @@ object RouterRoutes {
               .mapError(e => Response.badRequest(e))
             result <- policy
               .decide(dreq.mac, dreq.hostname)
-              .orElseFail(
-                Response.internalServerError(""),
-              )
+              .mapError(ErrorMapper.dbErrorToResponse)
             _      <- ZIO
               .when(result.decision == "block") {
                 blockEventRepo
                   .insertBatch(
                     List(BlockEventInsert(Some(dreq.mac), dreq.hostname, result.reason)),
                   )
-                  .orElseFail(Response.internalServerError(""))
+                  .mapError(ErrorMapper.dbErrorToResponse)
               }
           } yield Response.json(result.toJson)
         },
@@ -165,14 +163,14 @@ object AdminRouterRoutes {
             etHash          = PolicyService.hashToken(enrollmentToken)
             id <- routerRepo
               .create(cr.name.trim, etHash)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(CreateRouterResponse(id, cr.name.trim, enrollmentToken).toJson)
         },
       Method.GET / "api" / "admin" / "routers"                   ->
         handler { (req: Request) =>
           for {
             _   <- requireAdmin(req, auth)
-            all <- routerRepo.listAll.orElseFail(Response.internalServerError(""))
+            all <- routerRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(all.map(toSummary).toJson)
         },
       Method.DELETE / "api" / "admin" / "routers" / string("id") ->
@@ -182,7 +180,7 @@ object AdminRouterRoutes {
             uid <- ZIO
               .attempt(UUID.fromString(id))
               .orElseFail(Response.badRequest("bad uuid"))
-            _   <- routerRepo.delete(uid).orElseFail(Response.internalServerError(""))
+            _   <- routerRepo.delete(uid).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
     )

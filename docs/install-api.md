@@ -244,9 +244,16 @@ curl -fsS http://localhost:8080/api/health
 ```
 
 If the DB is unreachable the endpoint returns 503 with
-`{"status":"error","db":"<error class>"}`. This is the same probe used by
-the container's own healthcheck and is safe to point uptime monitors and
-reverse-proxy health checks at.
+`{"status":"error","db":"<error class>"}` and a `Retry-After: 30` header.
+This is the same probe used by the container's own healthcheck and is safe
+to point uptime monitors and reverse-proxy health checks at.
+
+The same 503 shape (JSON body + `Retry-After: 30`) is returned by every
+DB-touching `/api/router/*` and admin route on a database blip — the
+OpenWRT agent treats a 503 like a transient connection failure and backs
+off, where a 5xx without `Retry-After` would be ambiguous. Bare 500
+responses are reserved for genuinely unexpected non-DB failures (#310,
+docs/resilience.md §3).
 
 You can also check the container healthcheck status directly:
 

@@ -21,7 +21,7 @@ object AuthRoutes {
       Method.POST / "api" / "auth" / "login"                 ->
         handler { (req: Request) =>
           for {
-            body <- req.body.asString.mapError(e => Response.internalServerError(e.getMessage))
+            body <- req.body.asString.orElseFail(Response.badRequest(""))
             lr   <- ZIO
               .fromEither(body.fromJson[LoginRequest])
               .mapError(e => Response.badRequest(e))
@@ -29,7 +29,8 @@ object AuthRoutes {
               .login(lr.username, lr.password)
               .mapError {
                 case AuthError.InvalidCredentials => Response.unauthorized("Invalid credentials")
-                case e                            => Response.internalServerError(e.toString)
+                case AuthError.Unexpected(_)      => ErrorMapper.dbUnavailable("Unexpected")
+                case _                            => ErrorMapper.dbUnavailable("AuthError")
               }
           } yield Response.json(resp.toJson)
         },
@@ -46,7 +47,8 @@ object AuthRoutes {
               .mapError {
                 case AuthError.InvalidCredentials =>
                   Response.unauthorized("Current password incorrect")
-                case e                            => Response.internalServerError(e.toString)
+                case AuthError.Unexpected(_)      => ErrorMapper.dbUnavailable("Unexpected")
+                case _                            => ErrorMapper.dbUnavailable("AuthError")
               }
           } yield Response.ok
         },
@@ -56,7 +58,7 @@ object AuthRoutes {
             claims <- requireAuth(req, auth)
             pids   <- userProfileRepo
               .listProfilesForUsername(claims.sub)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(MeResponse(claims.sub, claims.role, pids).toJson)
         },
       Method.POST / "api" / "users"                          ->
@@ -73,18 +75,18 @@ object AuthRoutes {
             hash <- auth.hashPassword(cur.password)
             id   <- userRepo
               .create(cur.username, hash, cur.role.toLowerCase)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _    <- userProfileRepo
               .setProfilesForUser(id, cur.profileIds)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":$id}""")
         },
       Method.GET / "api" / "users"                           ->
         handler { (req: Request) =>
           for {
             _        <- requireAdmin(req, auth)
-            users    <- userRepo.listAll.orElseFail(Response.internalServerError(""))
-            mappings <- userProfileRepo.listAllMappings.orElseFail(Response.internalServerError(""))
+            users    <- userRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            mappings <- userProfileRepo.listAllMappings.mapError(ErrorMapper.dbErrorToResponse)
             byUser    = mappings.groupBy(_._1).view.mapValues(_.map(_._2)).toMap
             summaries = users.map(u =>
               UserSummary(u.id, u.username, u.role, byUser.getOrElse(u.id, Nil)),
@@ -101,13 +103,13 @@ object AuthRoutes {
               .mapError(e => Response.badRequest(e))
             _    <- userProfileRepo
               .setProfilesForUser(id, r.profileIds)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.DELETE / "api" / "users" / long("id")           ->
         handler { (id: Long, req: Request) =>
           requireAdmin(req, auth) *>
-            userRepo.delete(id).orElseFail(Response.internalServerError("")) *>
+            userRepo.delete(id).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
     )
@@ -130,7 +132,7 @@ object ProfileRoutes {
         handler { (req: Request) =>
           for {
             claims      <- requireAuth(req, auth)
-            allProfiles <- profileRepo.listAll.orElseFail(Response.internalServerError(""))
+            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             details     <- ZIO
               .foreach(visible) { p =>
@@ -140,7 +142,7 @@ object ProfileRoutes {
                   stls   <- siteTimeLimitRepo.listForProfile(p.id)
                 } yield ProfileDetail(p, scheds, tl, stls)
               }
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(details.toJson)
         },
       Method.GET / "api" / "profiles" / long("id")            ->
@@ -150,13 +152,13 @@ object ProfileRoutes {
             _      <- requireProfileReadAccess(claims, id, userProfileRepo)
             p      <- profileRepo
               .findById(id)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-            scheds <- scheduleRepo.listForProfile(id).orElseFail(Response.internalServerError(""))
-            tl     <- timeLimitRepo.findForProfile(id).orElseFail(Response.internalServerError(""))
+            scheds <- scheduleRepo.listForProfile(id).mapError(ErrorMapper.dbErrorToResponse)
+            tl     <- timeLimitRepo.findForProfile(id).mapError(ErrorMapper.dbErrorToResponse)
             stls   <- siteTimeLimitRepo
               .listForProfile(id)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(ProfileDetail(p, scheds, tl, stls).toJson)
         },
       Method.POST / "api" / "profiles"                        ->
@@ -169,7 +171,7 @@ object ProfileRoutes {
               .mapError(e => Response.badRequest(e))
             id   <- profileRepo
               .create(upr.name, upr.blockedCategories)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _    <- profileRepo
               .update(
                 Profile(
@@ -181,16 +183,16 @@ object ProfileRoutes {
                   upr.paused,
                 ),
               )
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _    <- scheduleRepo
               .replaceForProfile(id, upr.schedules)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _    <- ZIO
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _    <- siteTimeLimitRepo
               .replaceForProfile(id, upr.siteTimeLimits)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":$id}""")
         },
       Method.PUT / "api" / "profiles" / long("id")            ->
@@ -204,7 +206,7 @@ object ProfileRoutes {
               .mapError(e => Response.badRequest(e))
             p      <- profileRepo
               .findById(id)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
             _      <- profileRepo
               .update(
@@ -216,23 +218,23 @@ object ProfileRoutes {
                   paused = upr.paused,
                 ),
               )
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _      <- scheduleRepo
               .replaceForProfile(id, upr.schedules)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             _      <- (upr.timeLimit match {
               case Some(mins) => timeLimitRepo.upsert(id, mins)
               case None       => timeLimitRepo.delete(id)
-            }).orElseFail(Response.internalServerError(""))
+            }).mapError(ErrorMapper.dbErrorToResponse)
             _      <- siteTimeLimitRepo
               .replaceForProfile(id, upr.siteTimeLimits)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.DELETE / "api" / "profiles" / long("id")         ->
         handler { (id: Long, req: Request) =>
           requireAdmin(req, auth) *>
-            profileRepo.delete(id).orElseFail(Response.internalServerError("")) *>
+            profileRepo.delete(id).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
       Method.GET / "api" / "profiles" / long("id") / "users"  ->
@@ -241,8 +243,8 @@ object ProfileRoutes {
             _     <- requireAdmin(req, auth)
             uids  <- userProfileRepo
               .listUsersForProfile(id)
-              .orElseFail(Response.internalServerError(""))
-            users <- userRepo.listAll.orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
+            users <- userRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             byId      = users.map(u => u.id -> u).toMap
             summaries = uids.flatMap(byId.get).map { u =>
               UserSummary(u.id, u.username, u.role, List(id))
@@ -259,7 +261,7 @@ object ProfileRoutes {
               .mapError(e => Response.badRequest(e))
             _    <- userProfileRepo
               .setUsersForProfile(id, r.userIds)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.POST / "api" / "profiles" / long("id") / "pause" ->
@@ -269,10 +271,10 @@ object ProfileRoutes {
             _      <- requireProfileAccess(claims, id, userProfileRepo)
             p      <- profileRepo
               .findById(id)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("")))
             _      <-
-              profileRepo.setPaused(id, !p.paused).orElseFail(Response.internalServerError(""))
+              profileRepo.setPaused(id, !p.paused).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"paused":${!p.paused}}""")
         },
     )
@@ -291,7 +293,7 @@ object DeviceRoutes {
         handler { (req: Request) =>
           for {
             claims  <- requireAuth(req, auth)
-            all     <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
+            all     <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visible <- filterDevices(claims, all, userProfileRepo)
           } yield Response.json(visible.toJson)
         },
@@ -307,7 +309,7 @@ object DeviceRoutes {
             mac = normalizeMac(udr.mac)
             id <- deviceRepo
               .upsert(mac, udr.name, udr.profileId, "")
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":$id}""")
         },
       Method.DELETE / "api" / "devices" / string("mac") ->
@@ -317,10 +319,10 @@ object DeviceRoutes {
             normalized = normalizeMac(mac)
             existing <- deviceRepo
               .findByMac(normalized)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-            _        <- deviceRepo.delete(normalized).orElseFail(Response.internalServerError(""))
+            _        <- deviceRepo.delete(normalized).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
     )
@@ -348,8 +350,8 @@ object TimeRoutes {
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            allProfiles <- profileRepo.listAll.orElseFail(Response.internalServerError(""))
-            allDevices  <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
+            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
@@ -364,7 +366,7 @@ object TimeRoutes {
                   extRepo,
                 )
               }
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(statuses.toJson)
         },
       Method.GET / "api" / "time" / "status" / string("mac")         ->
@@ -376,7 +378,7 @@ object TimeRoutes {
             date    = LocalDate.parse(dateStr)
             device <- deviceRepo
               .findByMac(normalizeMac(mac))
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
             status <- buildDeviceTimeStatus(
@@ -388,7 +390,7 @@ object TimeRoutes {
               trafficRepo,
               extRepo,
             )
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
         },
       Method.POST / "api" / "time" / "extend"                        ->
@@ -403,7 +405,7 @@ object TimeRoutes {
             today  <- clock.today
             id     <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":$id,"grantedMinutes":${ger.extraMinutes}}""")
         },
       Method.GET / "api" / "time" / "extensions" / long("profileId") ->
@@ -414,7 +416,7 @@ object TimeRoutes {
             date   <- clock.today
             exts   <- extRepo
               .listForProfile(profileId, date)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(exts.toJson)
         },
     )
@@ -544,7 +546,7 @@ object LogRoutes {
               limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(200),
               offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
             )
-            logs    <- connRepo.query(filter).orElseFail(Response.internalServerError(""))
+            logs    <- connRepo.query(filter).mapError(ErrorMapper.dbErrorToResponse)
             visible <- filterLogs(claims, logs, userProfileRepo)
           } yield Response.json(visible.toJson)
         },
@@ -553,7 +555,7 @@ object LogRoutes {
           requireAdmin(req, auth) *>
             connRepo.stats
               .map(s => Response.json(s.toJson))
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
         },
     )
 }
@@ -572,12 +574,12 @@ object BlocklistRoutes {
                   cs.map((c, n) => s"""{"category":"$c","count":$n}""").mkString("[", ",", "]"),
                 ),
               )
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
         },
       Method.POST / "api" / "blocklists" / string("category") / "clear" ->
         handler { (cat: String, req: Request) =>
           requireAdmin(req, auth) *>
-            blRepo.clearCategory(cat).orElseFail(Response.internalServerError("")) *>
+            blRepo.clearCategory(cat).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
     )
@@ -642,7 +644,7 @@ def visibleProfiles(
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .orElseFail(Response.internalServerError(""))
+      .mapError(ErrorMapper.dbErrorToResponse)
       .map(pids => all.filter(p => pids.contains(p.id)))
 
 def filterDevices(
@@ -654,7 +656,7 @@ def filterDevices(
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .orElseFail(Response.internalServerError(""))
+      .mapError(ErrorMapper.dbErrorToResponse)
       .map(pids => all.filter(d => d.profileId.exists(pids.contains)))
 
 def filterLogs(
@@ -666,7 +668,7 @@ def filterLogs(
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .orElseFail(Response.internalServerError(""))
+      .mapError(ErrorMapper.dbErrorToResponse)
       .map(pids => all.filter(l => l.profileId.exists(pids.contains)))
 
 /** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
@@ -679,7 +681,7 @@ def requireProfileReadAccess(
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .orElseFail(Response.internalServerError(""))
+      .mapError(ErrorMapper.dbErrorToResponse)
       .flatMap { pids =>
         if pids.contains(profileId) then ZIO.succeed(())
         else ZIO.fail(Response.forbidden("Not authorized for this profile"))
@@ -707,7 +709,7 @@ def requireProfileAccess(
   else
     upRepo
       .listProfilesForUsername(claims.sub)
-      .orElseFail(Response.internalServerError(""))
+      .mapError(ErrorMapper.dbErrorToResponse)
       .flatMap { pids =>
         if pids.contains(profileId) then ZIO.succeed(())
         else ZIO.fail(Response.forbidden("Not authorized for this profile"))

@@ -43,9 +43,9 @@ object DashboardNowRoutes {
           for {
             claims      <- requireAuth(req, auth)
             now         <- clock.instant
-            allDevices  <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
+            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
-            allProfiles <- profileRepo.listAll.orElseFail(Response.internalServerError(""))
+            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visibleProf <- visibleProfiles(claims, allProfiles, userProfileRepo)
             visibleMacs = visibleDevs.map(_.mac)
             // Both inputs in parallel.
@@ -62,8 +62,8 @@ object DashboardNowRoutes {
                 ),
               )
               .fork
-            lastSeen  <- lastSeenF.join.orElseFail(Response.internalServerError(""))
-            rows      <- rowsF.join.orElseFail(Response.internalServerError(""))
+            lastSeen  <- lastSeenF.join.mapError(ErrorMapper.dbErrorToResponse)
+            rows      <- rowsF.join.mapError(ErrorMapper.dbErrorToResponse)
             response = buildResponse(
               now = now,
               profiles = visibleProf,

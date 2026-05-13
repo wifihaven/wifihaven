@@ -38,7 +38,7 @@ object DebugRoutes {
           guardLoopback(req, "/api/debug/devices") {
             deviceRepo.listAll
               .mapBoth(
-                t => Response.internalServerError(t.getMessage),
+                ErrorMapper.dbErrorToResponse,
                 xs => Response.json(xs.toJson),
               )
           }
@@ -53,7 +53,7 @@ object DebugRoutes {
             connEventRepo
               .recent(limit)
               .mapBoth(
-                t => Response.internalServerError(t.getMessage),
+                ErrorMapper.dbErrorToResponse,
                 xs => Response.json(xs.toJson),
               )
           }
@@ -64,7 +64,7 @@ object DebugRoutes {
               today <- clock.today
               snap  <- timeUsageRepo
                 .snapshotAll(today)
-                .mapError(t => Response.internalServerError(t.getMessage))
+                .mapError(ErrorMapper.dbErrorToResponse)
             } yield Response.json(
               snap
                 .map { case ((mac, domain), mins) =>
