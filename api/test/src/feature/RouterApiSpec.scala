@@ -14,7 +14,7 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
-import java.time.LocalDate
+import java.time.{Instant, LocalDate, ZoneOffset}
 import java.util.UUID
 
 object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
@@ -36,16 +36,39 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
 
   private def makePolicyService =
     for {
-      pr    <- ZIO.service[ProfileRepo]
-      sr    <- ZIO.service[ScheduleRepo]
-      tlr   <- ZIO.service[TimeLimitRepo]
-      stlr  <- ZIO.service[SiteTimeLimitRepo]
-      dr    <- ZIO.service[DeviceRepo]
-      blr   <- ZIO.service[BlocklistRepo]
-      ur    <- ZIO.service[TimeUsageRepo]
-      er    <- ZIO.service[TimeExtensionRepo]
-      clock <- ZIO.service[Clock]
-    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clock)): PolicyService
+      pr     <- ZIO.service[ProfileRepo]
+      sr     <- ZIO.service[ScheduleRepo]
+      tlr    <- ZIO.service[TimeLimitRepo]
+      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      dr     <- ZIO.service[DeviceRepo]
+      blr    <- ZIO.service[BlocklistRepo]
+      trRepo <- ZIO.service[TrafficReportRepo]
+      er     <- ZIO.service[TimeExtensionRepo]
+      clock  <- ZIO.service[Clock]
+    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, trRepo, er, clock)): PolicyService
+
+  /**
+   * Seed `minutes/5` non-overlapping 5-min traffic_reports buckets, starting `bucketOffset` past
+   * midnight UTC on `date`. Returns the next free bucket index for chaining.
+   */
+  private def seedTraffic(
+      routerId: UUID,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      minutes: Int,
+      bucketOffset: Int = 0,
+  ): ZIO[TrafficReportRepo, Throwable, Int] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val buckets = minutes / 5
+      val today0  = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until buckets).map { i =>
+        val start = today0.plusSeconds((bucketOffset + i) * 300L)
+        val end   = start.plusSeconds(300)
+        TrafficReportInsert(routerId, mac, None, hostname, date, start, end, 300, 0L, 0L)
+      }.toList
+      tr.insertBatch(inserts).as(bucketOffset + buckets)
+    }
 
   /** Seed a router row with a known plain enrollment token, return (id, raw token). */
   private def seedRouter(name: String): ZIO[RouterRepo, Throwable, (UUID, String)] =
@@ -158,44 +181,33 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       "policy snapshot composition: devices, profiles, schedules, site_limits, blocklists, time_used",
     ) {
       for {
-        _       <- cleanDb
-        pr      <- ZIO.service[ProfileRepo]
-        sr      <- ZIO.service[ScheduleRepo]
-        tlr     <- ZIO.service[TimeLimitRepo]
-        stlr    <- ZIO.service[SiteTimeLimitRepo]
-        dr      <- ZIO.service[DeviceRepo]
-        blr     <- ZIO.service[BlocklistRepo]
-        ur      <- ZIO.service[TimeUsageRepo]
-        rr      <- ZIO.service[RouterRepo]
-        kid     <- TestLayers.seedKidsProfile(pr, sr)
-        _       <- tlr.upsert(kid, 120)
-        _       <- stlr.replaceForProfile(
+        _         <- cleanDb
+        pr        <- ZIO.service[ProfileRepo]
+        sr        <- ZIO.service[ScheduleRepo]
+        tlr       <- ZIO.service[TimeLimitRepo]
+        stlr      <- ZIO.service[SiteTimeLimitRepo]
+        dr        <- ZIO.service[DeviceRepo]
+        blr       <- ZIO.service[BlocklistRepo]
+        rr        <- ZIO.service[RouterRepo]
+        kid       <- TestLayers.seedKidsProfile(pr, sr)
+        _         <- tlr.upsert(kid, 120)
+        _         <- stlr.replaceForProfile(
           kid,
           List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")), // default exemptFromDaily=true
         )
-        adult   <- TestLayers.seedAdultsProfile(pr)
-        _       <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _       <- TestLayers.seedDevice(dr, "11:22:33:44:55:66", "parent-phone", adult)
-        _       <- ur.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "youtube.com",
-          LocalDate.of(2025, 1, 6),
-          12L * 60L,
-          0L,
-          0L,
-        )
-        _       <- ur.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "cnn.com",
-          LocalDate.of(2025, 1, 6),
-          47L * 60L,
-          0L,
-          0L,
-        )
-        _       <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
-        ber     <- ZIO.service[BlockEventRepo]
-        (_, et) <- seedRouter("gw")
-        ps      <- makePolicyService
+        adult     <- TestLayers.seedAdultsProfile(pr)
+        _         <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        _         <- TestLayers.seedDevice(dr, "11:22:33:44:55:66", "parent-phone", adult)
+        (rid, et) <- seedRouter("gw")
+        kidMac = "aa:bb:cc:11:22:33"
+        today  = LocalDate.of(2025, 1, 6)
+        // Multiples of 5 — traffic_reports buckets are 5-min wide so we don't lose minutes to
+        // integer rounding when projecting back to "expected" minutes.
+        off1 <- seedTraffic(rid, kidMac, "youtube.com", today, 15)
+        _    <- seedTraffic(rid, kidMac, "cnn.com", today, 45, off1)
+        _    <- blr.insertBatch(List(("doubleclick.net", "ads"), ("ads.example.com", "ads")))
+        ber  <- ZIO.service[BlockEventRepo]
+        ps   <- makePolicyService
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
@@ -215,8 +227,8 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(kp.dailyMinutes.contains(120)) &&
         assertTrue(kp.schedules.exists(_.blockFrom == "21:00")) &&
         assertTrue(kp.siteLimits.exists(sl => sl.domain == "youtube.com" && sl.exemptFromDaily)) &&
-        assertTrue(kp.timeUsedToday.totalMinutes == 47) && // cnn.com only; exempt youtube excluded
-        assertTrue(kp.timeUsedToday.byDomain.get("youtube.com").contains(12)) &&
+        assertTrue(kp.timeUsedToday.totalMinutes == 45) && // cnn.com only; exempt youtube excluded
+        assertTrue(kp.timeUsedToday.byDomain.get("youtube.com").contains(15)) &&
         assertTrue(snap.blocklists.contains("ads")) &&
         assertTrue(snap.blocklists("ads").url == "/api/blocklists/ads.rpz")
     },

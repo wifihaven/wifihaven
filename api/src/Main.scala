@@ -78,7 +78,7 @@ object Main extends ZIOAppDefault {
         deviceRepo,
         tlRepo,
         stlRepo,
-        usageRepo,
+        trafficRepo,
         extRepo,
         profileRepo,
         upRepo,

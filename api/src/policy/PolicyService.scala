@@ -1,6 +1,7 @@
 package familydns.api.policy
 
 import familydns.api.db.*
+import familydns.api.presence.Presence
 import familydns.shared.*
 import zio.{Clock as _, *}
 
@@ -20,7 +21,7 @@ class PolicyServiceLive(
     siteTimeLimitRepo: SiteTimeLimitRepo,
     deviceRepo: DeviceRepo,
     blocklistRepo: BlocklistRepo,
-    usageRepo: TimeUsageRepo,
+    trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
     clock: Clock,
 ) extends PolicyService {
@@ -34,7 +35,10 @@ class PolicyServiceLive(
       scheds   <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
       tlims    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlims   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      usages   <- usageRepo.snapshotAll(today)
+      // Presence rows are bucket-deduped downstream so a device active on
+      // multiple hostnames in the same 5-min window only counts once toward
+      // total screen time (see Presence). Per-site sub-caps stay independent.
+      presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
       exts     <- extRepo.snapshotAllByProfile(today)
       cats     <- blocklistRepo.listCategories
       schedMap = scheds.toMap
@@ -51,20 +55,20 @@ class PolicyServiceLive(
           .getOrElse(p.id, Nil)
           .map(s => PolicySiteLimit(s.domainPattern, s.dailyMinutes, s.label, s.exemptFromDaily))
         val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
-        val byDomain   = stlMap
-          .getOrElse(p.id, Nil)
-          .foldLeft(Map.empty[String, Int]) { (acc, stl) =>
-            val mins =
-              devicesIn.iterator.map(d => usages.getOrElse((d.mac, stl.domainPattern), 0)).sum
-            if mins == 0 then acc else acc.updated(stl.domainPattern, mins)
-          }
+        val deviceMacs = devicesIn.map(_.mac).toSet
+        val pPresence  = presence.filter(r => deviceMacs.contains(r.mac))
+        val patterns   = stlMap.getOrElse(p.id, Nil).map(_.domainPattern)
+        val perPat     = Presence.patternMinutesByMac(pPresence, patterns)
+        val byDomain   = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
+          val mins = devicesIn.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
+          if mins == 0 then acc else acc.updated(pat, mins)
+        }
         // Only exempt site domains are excluded from the daily total.
         // Included sites (exemptFromDaily=false) count against the daily cap.
-        val exemptDoms =
-          stlMap.getOrElse(p.id, Nil).filter(_.exemptFromDaily).map(_.domainPattern).toSet
-        val totalMins  = usages.iterator.collect {
-          case ((mac, dom), m) if devicesIn.exists(_.mac == mac) && !exemptDoms.contains(dom) => m
-        }.sum
+        val exemptPats =
+          stlMap.getOrElse(p.id, Nil).filter(_.exemptFromDaily).map(_.domainPattern)
+        val perMacTot  = Presence.totalMinutesByMac(pPresence, exemptPats)
+        val totalMins  = devicesIn.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
         val extMins    = exts.getOrElse(p.id, 0)
         PolicyProfile(
           id = p.id,
@@ -268,7 +272,7 @@ private case class SnapshotCore(
 object PolicyService {
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo &
-      TimeUsageRepo & TimeExtensionRepo & Clock,
+      TrafficReportRepo & TimeExtensionRepo & Clock,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _))

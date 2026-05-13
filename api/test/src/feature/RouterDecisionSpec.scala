@@ -12,7 +12,7 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
-import java.time.{Instant, LocalDate, LocalDateTime}
+import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
 import java.util.UUID
 
 object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
@@ -26,19 +26,43 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
 
   private def makePsAt(dt: LocalDateTime) =
     for {
-      pr   <- ZIO.service[ProfileRepo]
-      sr   <- ZIO.service[ScheduleRepo]
-      tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
-      dr   <- ZIO.service[DeviceRepo]
-      blr  <- ZIO.service[BlocklistRepo]
-      ur   <- ZIO.service[TimeUsageRepo]
-      er   <- ZIO.service[TimeExtensionRepo]
-      ref  <- Ref.make(dt)
+      pr     <- ZIO.service[ProfileRepo]
+      sr     <- ZIO.service[ScheduleRepo]
+      tlr    <- ZIO.service[TimeLimitRepo]
+      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      dr     <- ZIO.service[DeviceRepo]
+      blr    <- ZIO.service[BlocklistRepo]
+      trRepo <- ZIO.service[TrafficReportRepo]
+      er     <- ZIO.service[TimeExtensionRepo]
+      ref    <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
-    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, ur, er, clk)): PolicyService
+    } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, trRepo, er, clk)): PolicyService
 
   private def makePsDefault = makePsAt(TestClock.schoolDayAfternoon)
+
+  /** Seed a bare router row for FK-satisfying traffic_reports inserts. */
+  private def seedRouterRow: ZIO[RouterRepo, Throwable, UUID] =
+    ZIO.serviceWithZIO[RouterRepo](_.create("gw-seed", "ENROLL_HASH_SEED"))
+
+  /** Seed `minutes/5` non-overlapping 5-min traffic_reports buckets. */
+  private def seedTraffic(
+      routerId: UUID,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      minutes: Int,
+      bucketOffset: Int = 0,
+  ): ZIO[TrafficReportRepo, Throwable, Int] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val buckets = minutes / 5
+      val today0  = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until buckets).map { i =>
+        val start = today0.plusSeconds((bucketOffset + i) * 300L)
+        val end   = start.plusSeconds(300)
+        TrafficReportInsert(routerId, mac, None, hostname, date, start, end, 300, 0L, 0L)
+      }.toList
+      tr.insertBatch(inserts).as(bucketOffset + buckets)
+    }
 
   /** Enroll a new router and return its bearer token. */
   private def seedAndEnrollRouter(
@@ -226,19 +250,12 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         dr  <- ZIO.service[DeviceRepo]
         sr  <- ZIO.service[ScheduleRepo]
         tlr <- ZIO.service[TimeLimitRepo]
-        ur  <- ZIO.service[TimeUsageRepo]
         ber <- ZIO.service[BlockEventRepo]
         kid <- TestLayers.seedKidsProfile(pr, sr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _   <- ur.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "cnn.com",
-          LocalDate.of(2025, 1, 6),
-          121L * 60L,
-          0L,
-          0L,
-        )
+        rid <- seedRouterRow
+        _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 125)
         ps  <- makePsDefault // schoolDayAfternoon: 14:00, no schedule active
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok    <- seedAndEnrollRouter(rr, routes)
@@ -260,20 +277,13 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         dr  <- ZIO.service[DeviceRepo]
         sr  <- ZIO.service[ScheduleRepo]
         tlr <- ZIO.service[TimeLimitRepo]
-        ur  <- ZIO.service[TimeUsageRepo]
         er  <- ZIO.service[TimeExtensionRepo]
         ber <- ZIO.service[BlockEventRepo]
         kid <- TestLayers.seedKidsProfile(pr, sr)
         _   <- tlr.upsert(kid, 120)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _   <- ur.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "cnn.com",
-          LocalDate.of(2025, 1, 6),
-          121L * 60L,
-          0L,
-          0L,
-        )
+        rid <- seedRouterRow
+        _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 125)
         _   <- er.grantForProfile(kid, LocalDate.of(2025, 1, 6), 30, "admin", None)
         ps  <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -400,7 +410,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         sr   <- ZIO.service[ScheduleRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         stlr <- ZIO.service[SiteTimeLimitRepo]
-        ur   <- ZIO.service[TimeUsageRepo]
         ber  <- ZIO.service[BlockEventRepo]
         kid  <- TestLayers.seedKidsProfile(pr, sr)
         _    <- tlr.upsert(kid, 120)
@@ -409,14 +418,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           List(SiteTimeLimitRequest("youtube.com", 200, "YouTube", exemptFromDaily = false)),
         )
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _    <- ur.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "youtube.com",
-          LocalDate.of(2025, 1, 6),
-          121L * 60L,
-          0L,
-          0L,
-        )
+        rid  <- seedRouterRow
+        _    <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
         ps   <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok  <- seedAndEnrollRouter(rr, routes)
@@ -439,7 +442,6 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         sr   <- ZIO.service[ScheduleRepo]
         tlr  <- ZIO.service[TimeLimitRepo]
         stlr <- ZIO.service[SiteTimeLimitRepo]
-        ur   <- ZIO.service[TimeUsageRepo]
         ber  <- ZIO.service[BlockEventRepo]
         kid  <- TestLayers.seedKidsProfile(pr, sr)
         _    <- tlr.upsert(kid, 120)
@@ -451,14 +453,8 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           ),
         )
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        _    <- ur.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "youtube.com",
-          LocalDate.of(2025, 1, 6),
-          121L * 60L,
-          0L,
-          0L,
-        )
+        rid  <- seedRouterRow
+        _    <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
         ps   <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok  <- seedAndEnrollRouter(rr, routes)

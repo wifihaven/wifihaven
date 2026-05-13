@@ -334,7 +334,7 @@ object TimeRoutes {
       deviceRepo: DeviceRepo,
       timeLimitRepo: TimeLimitRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
-      usageRepo: TimeUsageRepo,
+      trafficRepo: TrafficReportRepo,
       extRepo: TimeExtensionRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
@@ -360,7 +360,7 @@ object TimeRoutes {
                   date,
                   timeLimitRepo,
                   siteTimeLimitRepo,
-                  usageRepo,
+                  trafficRepo,
                   extRepo,
                 )
               }
@@ -385,7 +385,7 @@ object TimeRoutes {
               profileRepo,
               timeLimitRepo,
               siteTimeLimitRepo,
-              usageRepo,
+              trafficRepo,
               extRepo,
             )
               .orElseFail(Response.internalServerError(""))
@@ -425,28 +425,26 @@ object TimeRoutes {
       date: LocalDate,
       tlRepo: TimeLimitRepo,
       stlRepo: SiteTimeLimitRepo,
-      usageRepo: TimeUsageRepo,
+      trafficRepo: TrafficReportRepo,
       extRepo: TimeExtensionRepo,
   ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
     for {
-      tl      <- tlRepo.findForProfile(profile.id)
-      stls    <- stlRepo.listForProfile(profile.id)
-      usages  <- usageRepo.listForDeviceMacs(macs, date)
-      extMins <- extRepo.getProfileTotalExtension(profile.id, date)
+      tl       <- tlRepo.findForProfile(profile.id)
+      stls     <- stlRepo.listForProfile(profile.id)
+      presence <- trafficRepo.listPresenceRows(macs, date)
+      extMins  <- extRepo.getProfileTotalExtension(profile.id, date)
       // Only exempt site domains are excluded from the daily total.
       // Included sites (exemptFromDaily=false) count against the daily cap.
-      exemptDoms      = stls.filter(_.exemptFromDaily).map(_.domainPattern).toSet
-      totalUsed       = usages
-        .filterNot(u => exemptDoms.exists(p => matchesPattern(u.domain, p)))
-        .map(_.minutesUsed)
-        .sum
+      exemptPats      = stls.filter(_.exemptFromDaily).map(_.domainPattern)
+      perMacTotal     = familydns.api.presence.Presence
+        .totalMinutesByMac(presence, exemptPats)
+      perMacPat       = familydns.api.presence.Presence
+        .patternMinutesByMac(presence, stls.map(_.domainPattern))
+      totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
       remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
       siteUsage       = stls.map { stl =>
-        val used = usages
-          .filter(u => matchesPattern(u.domain, stl.domainPattern))
-          .map(_.minutesUsed)
-          .sum
+        val used = devices.iterator.map(d => perMacPat.getOrElse((d.mac, stl.domainPattern), 0)).sum
         SiteUsage(
           stl.label,
           stl.domainPattern,
@@ -456,8 +454,7 @@ object TimeRoutes {
         )
       }
       deviceSummaries = devices.map { d =>
-        val dUsed = usages.filter(_.deviceMac == d.mac).map(_.minutesUsed).sum
-        DeviceUsageSummary(d.mac, d.name, dUsed)
+        DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
     } yield ProfileTimeStatus(
       profile.id,
@@ -478,32 +475,29 @@ object TimeRoutes {
       profileRepo: ProfileRepo,
       tlRepo: TimeLimitRepo,
       stlRepo: SiteTimeLimitRepo,
-      usageRepo: TimeUsageRepo,
+      trafficRepo: TrafficReportRepo,
       extRepo: TimeExtensionRepo,
   ): Task[DeviceTimeStatus] = {
     val pid = device.profileId
     for {
-      tl      <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
-      stls    <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
-      usages  <- usageRepo.listForDevice(device.mac, date)
-      extMins <- pid.fold(ZIO.succeed(0))(extRepo.getProfileTotalExtension(_, date))
-      profile <- pid.fold(ZIO.succeed("No profile"))(p =>
+      tl       <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
+      stls     <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
+      presence <- trafficRepo.listPresenceRows(List(device.mac), date)
+      extMins  <- pid.fold(ZIO.succeed(0))(extRepo.getProfileTotalExtension(_, date))
+      profile  <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
       // Only exempt site domains are excluded from the daily total.
       // Included sites (exemptFromDaily=false) count against the daily cap.
-      totalUsed = usages
-        .filterNot(u =>
-          stls.exists(s => s.exemptFromDaily && matchesPattern(u.domain, s.domainPattern)),
-        )
-        .map(_.minutesUsed)
-        .sum
-      remaining = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
-      siteUsage = stls.map { stl =>
-        val used = usages
-          .filter(u => matchesPattern(u.domain, stl.domainPattern))
-          .map(_.minutesUsed)
-          .sum
+      exemptPats = stls.filter(_.exemptFromDaily).map(_.domainPattern)
+      totalUsed  = familydns.api.presence.Presence
+        .totalMinutesByMac(presence, exemptPats)
+        .getOrElse(device.mac, 0)
+      perPat     = familydns.api.presence.Presence
+        .patternMinutesByMac(presence, stls.map(_.domainPattern))
+      remaining  = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
+      siteUsage  = stls.map { stl =>
+        val used = perPat.getOrElse((device.mac, stl.domainPattern), 0)
         SiteUsage(
           stl.label,
           stl.domainPattern,
@@ -526,9 +520,6 @@ object TimeRoutes {
     )
   }
 
-  private def matchesPattern(domain: String, pattern: String): Boolean =
-    if pattern.startsWith("*.") then domain.endsWith(pattern.drop(1)) || domain == pattern.drop(2)
-    else domain == pattern || domain.endsWith(s".$pattern")
 }
 
 // ── Query log routes ───────────────────────────────────────────────────────
