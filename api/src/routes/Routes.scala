@@ -181,6 +181,8 @@ object ProfileRoutes {
                   upr.extraBlocked,
                   upr.extraAllowed,
                   upr.paused,
+                  // #311: missing failureMode → Closed (fail-safe).
+                  upr.failureMode.getOrElse(FailureMode.Closed),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -216,6 +218,9 @@ object ProfileRoutes {
                   extraBlocked = upr.extraBlocked,
                   extraAllowed = upr.extraAllowed,
                   paused = upr.paused,
+                  // #311: if the caller omits failureMode, preserve the
+                  // existing value rather than resetting to Closed.
+                  failureMode = upr.failureMode.getOrElse(p.failureMode),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)

@@ -82,6 +82,7 @@ class PolicyServiceLive(
           siteLimits = pSiteLims,
           timeUsedToday = PolicyTimeUsedToday(totalMins, byDomain),
           extensionsTodayMinutes = extMins,
+          failureMode = p.failureMode,
         )
       }
       val pDevices      = devices.map(d => PolicyDevice(d.mac, d.profileId, d.name))
@@ -301,7 +302,8 @@ object PolicyService {
       .sortBy(_.mac)
       .foreach(d => parts += s"dev:${d.mac}|${d.profileId.getOrElse("-")}|${d.name}")
     core.profiles.sortBy(_.id).foreach { p =>
-      parts += s"p:${p.id}|${p.name}|${p.paused}|${p.dailyMinutes.getOrElse(-1)}|${p.extensionsTodayMinutes}"
+      parts += s"p:${p.id}|${p.name}|${p.paused}|${p.dailyMinutes
+          .getOrElse(-1)}|${p.extensionsTodayMinutes}|fm:${FailureMode.asString(p.failureMode)}"
       parts += s"  bc:${p.blockedCategories.sorted.mkString(",")}"
       parts += s"  eb:${p.extraBlocked.sorted.mkString(",")}"
       parts += s"  ea:${p.extraAllowed.sorted.mkString(",")}"

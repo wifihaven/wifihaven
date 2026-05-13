@@ -153,6 +153,120 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(stls.head.label == "YouTube") &&
           assertTrue(stls.head.dailyMinutes == 45)
       },
+      test("failureMode defaults to Closed when omitted from create request (#311 fail-safe)") {
+        for {
+          _               <- cleanDb
+          profileRepo     <- ZIO.service[ProfileRepo]
+          schedRepo       <- ZIO.service[ScheduleRepo]
+          tlRepo          <- ZIO.service[TimeLimitRepo]
+          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          auth            <- makeAuth
+          token           <- auth.login("admin", "changeme").map(_.token)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          userRepoSvc     <- ZIO.service[UserRepo]
+          routes = ProfileRoutes.routes(
+            auth,
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            userProfileRepo,
+            userRepoSvc,
+          )
+          // Send create body with no failureMode field at all.
+          body   =
+            """{"name":"Defaulted","blockedCategories":[],"extraBlocked":[],"extraAllowed":[],"paused":false,"schedules":[],"timeLimit":null,"siteTimeLimits":[]}"""
+          req    = Request
+            .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json))
+          _        <- routes.runZIO(req)
+          profiles <- profileRepo.listAll
+          found = profiles.find(_.name == "Defaulted").get
+        } yield assertTrue(found.failureMode == FailureMode.Closed)
+      },
+      test("failureMode=Open in create request persists Open (#311 admin override)") {
+        for {
+          _               <- cleanDb
+          profileRepo     <- ZIO.service[ProfileRepo]
+          schedRepo       <- ZIO.service[ScheduleRepo]
+          tlRepo          <- ZIO.service[TimeLimitRepo]
+          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          auth            <- makeAuth
+          token           <- auth.login("admin", "changeme").map(_.token)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          userRepoSvc     <- ZIO.service[UserRepo]
+          routes = ProfileRoutes.routes(
+            auth,
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            userProfileRepo,
+            userRepoSvc,
+          )
+          body   = UpsertProfileRequest(
+            name = "AdultsOpen",
+            blockedCategories = Nil,
+            extraBlocked = Nil,
+            extraAllowed = Nil,
+            paused = false,
+            schedules = Nil,
+            timeLimit = None,
+            siteTimeLimits = Nil,
+            failureMode = Some(FailureMode.Open),
+          ).toJson
+          req    = Request
+            .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json))
+          _        <- routes.runZIO(req)
+          profiles <- profileRepo.listAll
+          found = profiles.find(_.name == "AdultsOpen").get
+        } yield assertTrue(found.failureMode == FailureMode.Open)
+      },
+      test("PUT /api/profiles/:id updates failureMode") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token)
+          profiles0   <- profileRepo.listAll
+          kidsId = profiles0.find(_.name == "Kids").get.id
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          userRepoSvc     <- ZIO.service[UserRepo]
+          routes = ProfileRoutes.routes(
+            auth,
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            userProfileRepo,
+            userRepoSvc,
+          )
+          body   = UpsertProfileRequest(
+            name = "Kids",
+            blockedCategories = Nil,
+            extraBlocked = Nil,
+            extraAllowed = Nil,
+            paused = false,
+            schedules = Nil,
+            timeLimit = None,
+            siteTimeLimits = Nil,
+            failureMode = Some(FailureMode.Open),
+          ).toJson
+          req    = Request
+            .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json))
+          resp    <- routes.runZIO(req)
+          updated <- profileRepo.findById(kidsId)
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(updated.exists(_.failureMode == FailureMode.Open))
+      },
       test("child user cannot create profiles") {
         for {
           _               <- cleanDb
