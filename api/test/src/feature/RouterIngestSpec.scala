@@ -177,6 +177,34 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(yt == ((60L, 100L, 50L))) &&
         assertTrue(gg == ((30L, 200L, 10L)))
     },
+    test(
+      "usage: multiple records with same (mac, hostname) in one POST count seconds_used once",
+    ) {
+      // The agent emits one record per (mac, dst_ip) — many dst_ips can map
+      // to the same hostname (especially the "unknown" bucket before nft_set
+      // resolution), and activeSeconds is the bucket duration, not a sum.
+      // The combined (mac, hostname) row should advance by one bucket of
+      // seconds, but bytes should sum across the per-flow records.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        recs = List(
+          UsageRecord(knownMac, None, "unknown", 300L, 100L, 50L),
+          UsageRecord(knownMac, None, "unknown", 300L, 200L, 10L),
+          UsageRecord(knownMac, None, "unknown", 300L, 50L, 0L),
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, recs).toJson
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        sb   <- tu.getSecondsAndBytes(knownMac, "unknown", testDate)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(sb == ((300L, 350L, 60L)))
+    },
     test("usage: seconds add across distinct periods for same (mac, hostname)") {
       for {
         _        <- cleanDb
