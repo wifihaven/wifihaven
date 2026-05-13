@@ -40,7 +40,7 @@ The script prompts for:
 |---|---|
 | API server URL | e.g. `https://api.example.com` (no trailing slash needed; the script trims it). |
 | Enrollment token | The `et_…` value from the admin UI. Single-use; invalidated on success. |
-| LAN prefix | Auto-detected from `network.lan.ipaddr` (last octet stripped). Must end with a dot. |
+| LAN prefix | Auto-detected from `network.lan.ipaddr` (last octet stripped); must end with a dot. The agent uses this literal-string prefix to decide which side of each connection is on the LAN when attributing flows to a device — accept the default unless your LAN isn't a /24 starting at .1. A wrong value silently mis-attributes every flow. For unattended provisioning, skip this script and use the manual `uci` path in §M3. |
 
 The router's display name comes from whatever you typed in the admin UI
 when you generated the enrollment token — the agent does not collect it.
