@@ -1,10 +1,18 @@
 -- render.lua — generates dnsmasq and nftables config from a policy snapshot
 --
+-- Snapshot field naming: the API serializes PolicySnapshot/PolicyProfile/
+-- PolicyDevice via zio-json deriveCodec, which keeps the Scala case-class
+-- field names verbatim (camelCase) — see shared/src/Models.scala. This module
+-- reads those keys (profileId, extraBlocked, siteLimits, dailyMinutes,
+-- timeUsedToday.totalMinutes, extensionsTodayMinutes) directly. If the API's
+-- JSON casing ever changes, change it here too (and update render_spec.lua).
+--
 -- Public API:
 --   render.dnsmasq(snapshot)  → string  (/tmp/dnsmasq.d/familydns.conf content)
 --   render.nft(snapshot)      → string  (/tmp/nftables.d/familydns.nft content)
---   render.update_shared(snapshot, nft_sets, blocked_ips, blocked_reason)
---     Seeds the shared tables that conntrack.lua uses for hostname attribution.
+--   render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
+--     Seeds the shared tables that conntrack.lua uses for hostname attribution
+--     and for labeling per-MAC blocked flows (pause / time-exhausted).
 --
 -- Counter naming convention (used by usage.lua):
 --   ct_<mac_underscored>__<dst_ip_underscored>
@@ -36,21 +44,21 @@ function M.dnsmasq(snapshot)
   -- check (#287).
 
   -- MAC → profile tag so dnsmasq can apply per-profile rules.
-  -- Devices auto-created from first_seen_mac events have profile_id=nil
+  -- Devices auto-created from first_seen_mac events have profileId=nil
   -- until an admin assigns them; skip them (no policy to apply yet).
   emit("# device MAC → profile tag")
   for _, dev in ipairs(snapshot.devices or {}) do
-    if dev.profile_id then
-      emit(string.format("dhcp-host=%s,set:profile%d", dev.mac, dev.profile_id))
+    if dev.profileId then
+      emit(string.format("dhcp-host=%s,set:profile%d", dev.mac, dev.profileId))
     end
   end
   emit("")
 
-  -- extra_blocked → NXDOMAIN; deduplicate domains that appear in multiple profiles
-  emit("# extra_blocked → NXDOMAIN")
+  -- extraBlocked → NXDOMAIN; deduplicate domains that appear in multiple profiles
+  emit("# extraBlocked → NXDOMAIN")
   local seen_blocked = {}
   for _, prof in ipairs(snapshot.profiles or {}) do
-    for _, domain in ipairs(prof.extra_blocked or {}) do
+    for _, domain in ipairs(prof.extraBlocked or {}) do
       if not seen_blocked[domain] then
         seen_blocked[domain] = true
         emit("address=/" .. domain .. "/#")
@@ -59,10 +67,10 @@ function M.dnsmasq(snapshot)
   end
   emit("")
 
-  -- site_limits → ipset= so dnsmasq populates nftables sets with resolved IPs
-  emit("# site_limits → nftables ipset population for usage accounting")
+  -- siteLimits → ipset= so dnsmasq populates nftables sets with resolved IPs
+  emit("# siteLimits → nftables ipset population for usage accounting")
   for _, prof in ipairs(snapshot.profiles or {}) do
-    for _, sl in ipairs(prof.site_limits or {}) do
+    for _, sl in ipairs(prof.siteLimits or {}) do
       local set_name = string.format("profile%d_%s", prof.id, sanitize(sl.domain))
       emit(string.format("ipset=/%s/%s", sl.domain, set_name))
     end
@@ -86,11 +94,11 @@ function M.nft(snapshot)
   emit("table inet familydns {")
   emit("")
 
-  -- Build profile_id → [macs] index. Skip unassigned devices (profile_id=nil);
+  -- Build profileId → [macs] index. Skip unassigned devices (profileId=nil);
   -- they have no profile to be matched against in the nft sets.
   local profile_macs = {}
   for _, dev in ipairs(snapshot.devices or {}) do
-    local pid = dev.profile_id
+    local pid = dev.profileId
     if pid then
       if not profile_macs[pid] then profile_macs[pid] = {} end
       profile_macs[pid][#profile_macs[pid] + 1] = dev.mac
@@ -109,9 +117,9 @@ function M.nft(snapshot)
     emit("")
   end
 
-  -- Per-domain IP sets for site_limits (dynamic: populated by dnsmasq --ipset= at query time)
+  -- Per-domain IP sets for siteLimits (dynamic: populated by dnsmasq --ipset= at query time)
   for _, prof in ipairs(snapshot.profiles or {}) do
-    for _, sl in ipairs(prof.site_limits or {}) do
+    for _, sl in ipairs(prof.siteLimits or {}) do
       local set_name = string.format("profile%d_%s", prof.id, sanitize(sl.domain))
       ind(string.format("set %s {", set_name))
       ind2("type ipv4_addr")
@@ -149,10 +157,10 @@ function M.nft(snapshot)
 
     if prof.paused then
       block_reason = "paused"
-    elseif (prof.daily_minutes or 0) > 0 then
-      local used       = (prof.time_used_today and prof.time_used_today.total_minutes) or 0
-      local extensions = prof.extensions_today_minutes or 0
-      local remaining  = prof.daily_minutes + extensions - used
+    elseif (prof.dailyMinutes or 0) > 0 then
+      local used       = (prof.timeUsedToday and prof.timeUsedToday.totalMinutes) or 0
+      local extensions = prof.extensionsTodayMinutes or 0
+      local remaining  = prof.dailyMinutes + extensions - used
       if remaining <= 0 then
         block_reason = "time_limit"
       end
@@ -160,9 +168,11 @@ function M.nft(snapshot)
 
     if block_reason then
       ind2(string.format("# profile %d (%s): %s", prof.id, prof.name, block_reason))
-      -- DNAT HTTP/80 to block page before the drop so browsers get a response
-      ind2(string.format(
-        "ether saddr @profile%d_macs tcp dport 80 dnat to 127.0.0.1:8081", prof.id))
+      -- Drop all forwarded traffic from devices on this profile. DNAT to a
+      -- block page would be nicer UX but needs a separate nat-type chain
+      -- (DNAT is not supported in filter chains), and the bare `dnat to`
+      -- form rejected `nft -f` entirely (#297) — so until we wire up a
+      -- prerouting nat chain, we just drop.
       ind2(string.format("ether saddr @profile%d_macs drop", prof.id))
       emit("")
     end
@@ -177,17 +187,60 @@ function M.nft(snapshot)
 end
 
 -- ---------------------------------------------------------------------------
--- render.update_shared(snapshot, nft_sets, blocked_ips, blocked_reason)
+-- render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
 -- ---------------------------------------------------------------------------
--- Seeds nft_sets with empty tables for each site_limits domain so that
+-- Seeds nft_sets with empty tables for each siteLimits domain so that
 -- conntrack.lua can attribute hostnames from the moment the agent starts.
 -- Actual IPs are populated at runtime by dnsmasq --ipset= callbacks.
-function M.update_shared(snapshot, nft_sets, _blocked_ips, _blocked_reason)
+--
+-- Also rebuilds blocked_macs / blocked_reason from the current snapshot so
+-- conntrack.lua can label connection_attempt events as blocked when the
+-- device's profile is paused or has exhausted its daily time (#297). nft
+-- already drops these flows at the forward hook, but the conntrack -E -e NEW
+-- watcher still sees the SYN_SENT entry and needs an independent signal to
+-- classify it correctly — labeling purely by destination IP misses pause
+-- (every IP is blocked) and time-limit (same).
+--
+-- Both tables are mutated in place (shared refs held by conntrack.lua); we
+-- clear stale entries first so a profile that un-pauses stops marking flows
+-- as blocked on the next poll.
+function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
   for _, prof in ipairs(snapshot.profiles or {}) do
-    for _, sl in ipairs(prof.site_limits or {}) do
+    for _, sl in ipairs(prof.siteLimits or {}) do
       if not nft_sets[sl.domain] then
         nft_sets[sl.domain] = {}
       end
+    end
+  end
+
+  if blocked_macs then
+    for k in pairs(blocked_macs) do blocked_macs[k] = nil end
+  end
+  if blocked_reason then
+    for k in pairs(blocked_reason) do blocked_reason[k] = nil end
+  end
+
+  local profile_block = {}
+  for _, prof in ipairs(snapshot.profiles or {}) do
+    local reason
+    if prof.paused then
+      reason = "paused"
+    elseif (prof.dailyMinutes or 0) > 0 then
+      local used = (prof.timeUsedToday and prof.timeUsedToday.totalMinutes) or 0
+      local ext  = prof.extensionsTodayMinutes or 0
+      if used >= prof.dailyMinutes + ext then
+        reason = "time_limit"
+      end
+    end
+    if reason then profile_block[prof.id] = reason end
+  end
+
+  for _, dev in ipairs(snapshot.devices or {}) do
+    local pid    = dev.profileId
+    local reason = pid and profile_block[pid] or nil
+    if reason then
+      if blocked_macs   then blocked_macs[dev.mac]   = true end
+      if blocked_reason then blocked_reason[dev.mac] = reason end
     end
   end
 end

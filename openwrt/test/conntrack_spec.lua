@@ -238,7 +238,7 @@ describe("handle_flow", function()
     local base = {
       arp_table      = { [SRC_IP] = MAC },
       nft_sets       = {},
-      blocked_ips    = {},
+      blocked_macs   = {},
       blocked_reason = {},
       reported_macs  = {},
       leases         = {},
@@ -386,6 +386,33 @@ describe("handle_flow", function()
     })
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
     assert.equal("legacy.example", b.events[2].hostname)
+  end)
+
+  -- #297: connection_attempt events for paused/time-exhausted profiles must
+  -- be labeled blocked. nftables drops the flow, but conntrack -E -e NEW
+  -- still observes the SYN_SENT entry — without a MAC-based block table the
+  -- classifier defaulted to allowed=true and the admin UI showed "permitted".
+  it("labels connection_attempt as blocked when the MAC is in blocked_macs", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "paused" },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal(false,                ev.allowed)
+    assert.equal("paused",             ev.reason)
+  end)
+
+  it("labels connection_attempt as allowed when blocked_macs is empty", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({ reported_macs = { [MAC] = true } })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal(true,                 ev.allowed)
   end)
 
   it("does NOT emit dhcp_lease while the pending MAC's lease still has no hostname", function()

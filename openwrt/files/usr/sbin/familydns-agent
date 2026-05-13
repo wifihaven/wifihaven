@@ -53,8 +53,8 @@ end
 -- ── Shared state (render.lua writes; conntrack.lua reads) ─────────────────────
 
 local nft_sets     = {}   -- { hostname -> { ip -> true } }
-local blocked_ips  = {}   -- { ip -> true }
-local blocked_reason = {} -- { ip -> reason_string }
+local blocked_macs   = {} -- { mac -> true }          (paused / time-exhausted)
+local blocked_reason = {} -- { mac -> reason_string }
 
 -- ── HTTP helpers (curl, available on all OpenWrt builds) ──────────────────────
 
@@ -178,7 +178,7 @@ do
   local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
   if snap then
     policy.apply(snap, write_file, run_cmd, log)
-    render.update_shared(snap, nft_sets, blocked_ips, blocked_reason)
+    render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
     current_etag = etag
     log.info("startup: applied initial policy etag=%s", tostring(etag))
   else
@@ -225,7 +225,7 @@ conntrack.watch({
   router_token    = router_token,
   nft_sets        = nft_sets,
   lookup_hostname = lookup_hostname,
-  blocked_ips     = blocked_ips,
+  blocked_macs    = blocked_macs,
   blocked_reason  = blocked_reason,
   lan_prefix      = lan_prefix,
   max_batch       = max_batch,
@@ -244,7 +244,7 @@ conntrack.watch({
       local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
       if snap then
         policy.apply(snap, write_file, run_cmd, log)
-        render.update_shared(snap, nft_sets, blocked_ips, blocked_reason)
+        render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
         current_etag = etag
         log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
       elseif etag then
