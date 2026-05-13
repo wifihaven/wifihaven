@@ -1,5 +1,5 @@
 import type {
-  CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardStats, Device,
+  CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
   DeviceTimeStatus, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, QueryLog,
   RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension, UpsertDeviceRequest,
   UpsertProfileRequest, GrantExtensionRequest, User,
@@ -122,6 +122,11 @@ export const api = {
       return req<QueryLog[]>('GET', `/logs?${qs}`)
     },
     stats: () => req<DashboardStats>('GET', '/stats'),
+  },
+
+  // ── Dashboard "now" ────────────────────────────────────────────────────
+  dashboard: {
+    now: () => req<DashboardNow>('GET', '/dashboard/now'),
   },
 
   // ── Sessions ───────────────────────────────────────────────────────────

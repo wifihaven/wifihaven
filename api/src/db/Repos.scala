@@ -248,6 +248,12 @@ trait ConnectionEventRepo {
   def query(f: LogFilter): Task[List[QueryLog]]
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
+
+  /**
+   * Latest `ts` per mac for events strictly newer than `since`. Used by the "now" dashboard to
+   * detect devices that produced at least one connection attempt in the recent window.
+   */
+  def lastSeenByMacSince(since: Instant): Task[Map[String, Instant]]
 }
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
@@ -894,6 +900,16 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .map(DomainCount.apply)
       .to[List]
       .transact(xa)
+
+  def lastSeenByMacSince(since: Instant): Task[Map[String, Instant]] =
+    sql"""SELECT mac, MAX(ts)
+          FROM connection_events
+          WHERE mac IS NOT NULL AND ts > $since
+          GROUP BY mac"""
+      .query[(String, Instant)]
+      .to[List]
+      .transact(xa)
+      .map(_.toMap)
 }
 
 object Repos {

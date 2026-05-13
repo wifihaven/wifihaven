@@ -223,6 +223,37 @@ case class ProfileDetail(
     siteTimeLimits: List[SiteTimeLimit],
 ) derives JsonCodec
 
+// ── Dashboard "Now" ────────────────────────────────────────────────────────
+
+case class DashboardNowHost(hostname: String, activeSeconds: Long) derives JsonCodec
+
+case class DashboardNowCurrentSession(
+    hostname: String,
+    startedAt: String,
+    durationSeconds: Long,
+) derives JsonCodec
+
+case class DashboardNowDevice(
+    id: Long,
+    name: String,
+    mac: String,
+    lastSeenSeconds: Long,
+    topHosts: List[DashboardNowHost],
+    currentSession: Option[DashboardNowCurrentSession],
+) derives JsonCodec
+
+case class DashboardNowProfile(
+    id: Long,
+    name: String,
+    paused: Boolean,
+    activeDevices: List[DashboardNowDevice],
+) derives JsonCodec
+
+case class DashboardNow(
+    asOf: String,
+    profiles: List[DashboardNowProfile],
+) derives JsonCodec
+
 case class CachedProfile(
     profile: Profile,
     schedules: List[Schedule],

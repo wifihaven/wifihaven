@@ -94,6 +94,38 @@ export interface DashboardStats {
   perDevice: DeviceStats[]
 }
 
+export interface DashboardNowHost {
+  hostname: string
+  activeSeconds: number
+}
+
+export interface DashboardNowCurrentSession {
+  hostname: string
+  startedAt: string
+  durationSeconds: number
+}
+
+export interface DashboardNowDevice {
+  id: number
+  name: string
+  mac: string
+  lastSeenSeconds: number
+  topHosts: DashboardNowHost[]
+  currentSession: DashboardNowCurrentSession | null
+}
+
+export interface DashboardNowProfile {
+  id: number
+  name: string
+  paused: boolean
+  activeDevices: DashboardNowDevice[]
+}
+
+export interface DashboardNow {
+  asOf: string
+  profiles: DashboardNowProfile[]
+}
+
 export interface DomainCount {
   domain: string
   count: number
