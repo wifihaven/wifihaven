@@ -271,7 +271,8 @@ conntrack.watch({
           local ok, counters = pcall(usage.parse_nft_counters, json_str)
           if ok and counters then
             local report = usage.build_report(
-              counters, nft_sets, period_start, period_end, router_id)
+              counters, nft_sets, period_start, period_end, router_id,
+              nil, lookup_hostname)
             log.debug("usage timer: %d counter(s), %d record(s) prepared",
                       #counters, report.records and #report.records or 0)
             local posted = usage.post(api_url, router_token, report, http_post, log)
