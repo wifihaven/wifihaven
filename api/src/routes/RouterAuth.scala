@@ -44,7 +44,7 @@ class RouterAuthLive(repo: RouterRepo) extends RouterAuth {
       .flatMap { tok =>
         repo
           .findByTokenHash(RouterAuth.sha256Hex(tok))
-          .orElseFail(Response.internalServerError(""))
+          .mapError(ErrorMapper.dbErrorToResponse)
           .flatMap(
             ZIO.fromOption(_).orElseFail(Response.unauthorized("Invalid router token")),
           )

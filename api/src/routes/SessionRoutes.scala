@@ -47,7 +47,7 @@ object SessionRoutes {
               .max(1)
               .min(MaxLimit)
             cursor = qp.queryParam("cursor")
-            allDevices  <- deviceRepo.listAll.orElseFail(Response.internalServerError(""))
+            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
             // Build the macs filter from the intersection of the device, profile,
             // and mac query params with the user's visibility scope.
@@ -61,10 +61,10 @@ object SessionRoutes {
             )
             rows <- trafficRepo
               .listSessionRows(filter)
-              .orElseFail(Response.internalServerError(""))
+              .mapError(ErrorMapper.dbErrorToResponse)
             stitched     = Sessions.stitch(rows)
             devicesByMac = visibleDevs.map(d => d.mac -> d).toMap
-            profiles <- profileRepo.listAll.orElseFail(Response.internalServerError(""))
+            profiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             profilesById = profiles.map(p => p.id -> p).toMap
             enriched     = stitched.map { s =>
               val dev = devicesByMac.get(s.mac)
