@@ -19,6 +19,7 @@ local conntrack = require("familydns.conntrack")
 local render   = require("familydns.render")
 local dns_log  = require("familydns.dns_log")
 local log      = require("familydns.log")
+local clock    = require("familydns.clock")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -224,6 +225,13 @@ do
   end
 end
 
+-- Wall-clock anchor for usage report periodStart. Updated each time the usage
+-- timer fires; kept on os.time() because the API expects RFC3339 UTC, not a
+-- monotonic value. The "should this timer fire?" decision is monotonic
+-- (last_usage_run, below); the "what time range does this report cover?"
+-- decision is wall-clock (this).
+local last_usage_wall_ts = os.time()
+
 do
   log.debug("startup: initial policy fetch")
   local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
@@ -238,9 +246,12 @@ do
   else
     log.warn("startup: initial policy fetch returned no snapshot (will retry on timer)")
   end
-  last_policy_run        = os.time()
-  last_usage_run         = os.time()
-  last_activity_sample   = os.time()
+  -- Scheduler timers use the monotonic clock so backward wall-clock jumps
+  -- (NTP correction, DST, deliberate manipulation) can't stall polling — #336.
+  local mono = clock.monotonic_seconds()
+  last_policy_run        = mono
+  last_usage_run         = mono
+  last_activity_sample   = mono
 end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
@@ -275,13 +286,16 @@ local dns_cache_tbl  = {}
 local dns_cache_load = 0
 
 local function lookup_hostname(dst_ip)
-  local now = os.time()
-  if (now - dns_cache_load) >= 1 then
-    dns_cache_load = now
+  -- Monotonic for the "has 1s elapsed?" gate (#336); wall-clock for the
+  -- dns_log freshness check, which compares against wall-clock TTLs stored
+  -- alongside each cached entry.
+  local mono = clock.monotonic_seconds()
+  if (mono - dns_cache_load) >= 1 then
+    dns_cache_load = mono
     local f = io.open(dns_cache_path, "r")
     if f then
       local text = f:read("*a") or ""
-      dns_cache_tbl = dns_log.load_table(text, dns_cache_ttl, now)
+      dns_cache_tbl = dns_log.load_table(text, dns_cache_ttl, os.time())
       f:close()
     end
   end
@@ -305,35 +319,39 @@ conntrack.watch({
   -- Called on every conntrack line (after event processing).
   -- Drives the policy and usage timers co-operatively.
   on_tick = function()
-    local now = os.time()
+    -- `mono` drives scheduling math (#336: immune to wall-clock jumps).
+    -- `wall` is only used where the API or operator needs UTC (RFC3339
+    -- timestamps, mark_poll_success for human-readable poll_age display).
+    local mono = clock.monotonic_seconds()
+    local wall = os.time()
 
     -- Policy timer
-    if (now - last_policy_run) >= policy_int then
-      last_policy_run = now
+    if (mono - last_policy_run) >= policy_int then
+      last_policy_run = mono
       local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
       if snap then
         if policy.apply(snap, write_file, run_cmd, log) then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
           current_etag = etag
-          policy.mark_poll_success(now)
+          policy.mark_poll_success(wall)
           policy.save_snapshot(snap, write_file, rename_file, log)
           log.debug("policy timer: applied snapshot etag=%s", tostring(etag))
         end
       elseif etag then
         current_etag = etag  -- 304: just update etag
-        policy.mark_poll_success(now)  -- 304 still counts as a successful poll
+        policy.mark_poll_success(wall)  -- 304 still counts as a successful poll
         log.debug("policy timer: 304 not modified etag=%s poll_age=%ds",
-                  tostring(etag), policy.poll_age_seconds(now))
+                  tostring(etag), policy.poll_age_seconds(wall))
       else
-        log.debug("policy timer: fetch failed poll_age=%ds", policy.poll_age_seconds(now))
+        log.debug("policy timer: fetch failed poll_age=%ds", policy.poll_age_seconds(wall))
       end
     end
 
     -- Activity sampler (#295): every 60 s, snapshot counters and feed them
     -- to the tracker so end-of-bucket activeSeconds reflects real per-minute
     -- usage rather than collapsing to {0, 300}.
-    if (now - last_activity_sample) >= activity_sample_int then
-      last_activity_sample = now
+    if (mono - last_activity_sample) >= activity_sample_int then
+      last_activity_sample = mono
       local counters = read_nft_counters()
       if counters then
         usage.tracker_sample(activity_tracker, counters)
@@ -341,10 +359,12 @@ conntrack.watch({
     end
 
     -- Usage timer
-    if (now - last_usage_run) >= usage_int then
-      local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", now)
-      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", last_usage_run)
-      last_usage_run = now
+    if (mono - last_usage_run) >= usage_int then
+      -- periodStart/periodEnd are wall-clock RFC3339: the API expects UTC.
+      local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
+      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", last_usage_wall_ts)
+      last_usage_run     = mono
+      last_usage_wall_ts = wall
 
       -- Per-(mac,ip) counters live as element counters on the dynamic set
       -- `mac_ip_tracking` (see render.lua). After a successful POST we
@@ -354,14 +374,16 @@ conntrack.watch({
         -- Final per-minute sample at flush so set elements that appeared
         -- after the last 60s tick still get an active minute counted.
         usage.tracker_sample(activity_tracker, counters)
-        last_activity_sample = now
+        last_activity_sample = mono
         local report = usage.build_report(
           counters, nft_sets, period_start, period_end, router_id,
           nil, lookup_hostname, activity_tracker, policy.clock_skew())
         log.debug("usage timer: %d counter(s), %d record(s) prepared",
                   #counters, report.records and #report.records or 0)
+        -- Retry queue's next_attempt_at math runs on the monotonic clock so
+        -- a backward wall-clock jump can't freeze the drain (#336).
         local posted = usage.post_with_retry(
-          api_url, router_token, report, http_post, usage_queue, now, nil, log)
+          api_url, router_token, report, http_post, usage_queue, mono, nil, log)
         -- Reset counters and tracker regardless of post outcome: the report
         -- is now owned by the retry queue (or already sent), so leaving the
         -- nft counters intact would double-count on the next bucket.
@@ -374,9 +396,9 @@ conntrack.watch({
       end
     end
 
-    -- Drain any retry-queued buckets whose backoff has elapsed.
+    -- Drain any retry-queued buckets whose backoff has elapsed (monotonic now).
     if #usage_queue.buckets > 0 then
-      usage.drain(api_url, router_token, usage_queue, http_post, now, nil, log)
+      usage.drain(api_url, router_token, usage_queue, http_post, mono, nil, log)
     end
   end,
 })

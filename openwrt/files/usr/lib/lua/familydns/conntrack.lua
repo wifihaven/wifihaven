@@ -173,9 +173,17 @@ end
 --
 -- flush_fn(events) is called with the list of accumulated events.
 -- ---------------------------------------------------------------------------
-function M.new_batcher(max_size, flush_interval_sec, flush_fn)
+-- now_fn is optional; defaults to a monotonic-clock source so interval-based
+-- flushes survive wall-clock jumps (#336). Tests inject a fake to drive time
+-- deterministically.
+function M.new_batcher(max_size, flush_interval_sec, flush_fn, now_fn)
+  now_fn = now_fn or function()
+    local ok, clock = pcall(require, "familydns.clock")
+    if ok then return clock.monotonic_seconds() end
+    return os.time()
+  end
   local buf          = {}
-  local last_flush   = os.time()
+  local last_flush   = now_fn()
 
   local self = {}
 
@@ -194,7 +202,7 @@ function M.new_batcher(max_size, flush_interval_sec, flush_fn)
   end
 
   function self.tick(now)
-    now = now or os.time()
+    now = now or now_fn()
     if (now - last_flush) >= flush_interval_sec then
       last_flush = now
       self.flush()

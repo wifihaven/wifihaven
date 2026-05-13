@@ -276,7 +276,14 @@ end
 
 function M.poll_age_seconds(now)
   if not M.last_successful_poll_ts then return math.huge end
-  return now - M.last_successful_poll_ts
+  -- Both args are wall-clock (os.time()). A backward wall-clock jump (NTP
+  -- correction, DST, manual change) can momentarily make `now` smaller than
+  -- the stored timestamp; clamp to 0 so callers don't see a negative age
+  -- (defensive bandage for #336). The scheduler proper runs on a monotonic
+  -- clock and is not affected.
+  local age = now - M.last_successful_poll_ts
+  if age < 0 then return 0 end
+  return age
 end
 
 -- Test-only: reset module-level poll state between specs.
