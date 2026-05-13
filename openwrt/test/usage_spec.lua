@@ -1,27 +1,31 @@
 -- Tests for openwrt/files/usr/lib/lua/familydns/usage.lua
 -- Run with: cd openwrt && busted test/usage_spec.lua
 --
--- Counter name convention (produced by render.lua, consumed here):
---   ct_<mac_underscored>__<dst_ip_underscored>
---   e.g.  aa:bb:cc:11:22:33  +  1.2.3.4  →  ct_aa_bb_cc_11_22_33__1_2_3_4
--- Separator between MAC and IP is double-underscore (__) to avoid ambiguity
--- with the single-underscore replacements inside each field.
+-- Input shape: `nft -j list set inet familydns mac_ip_tracking`.
+-- The `mac_ip_tracking` dynamic set is declared in render.lua with
+-- `flags dynamic,timeout` + `counter`, so each set element carries its own
+-- counter and the JSON layout is:
+--   nftables[*].set.elem[*].elem.{val.concat:[<mac>,<ip>], counter:{packets,bytes}}
 
 local usage = require("usage")
 
--- Sample `nft -j list counters table inet familydns` output
 local NFT_JSON = [[{
   "nftables": [
-    { "metainfo": { "version": "1.0.2", "json_schema_version": 1 } },
-    { "counter": {
-        "family": "inet", "table": "familydns",
-        "name": "ct_aa_bb_cc_11_22_33__1_2_3_4",
-        "packets": 100, "bytes": 50000
-    }},
-    { "counter": {
-        "family": "inet", "table": "familydns",
-        "name": "ct_de_ad_be_ef_00_01__8_8_8_8",
-        "packets": 20, "bytes": 1024
+    { "metainfo": { "version": "1.1.6", "json_schema_version": 1 } },
+    { "set": {
+        "family": "inet", "table": "familydns", "name": "mac_ip_tracking",
+        "type": ["ether_addr", "ipv4_addr"],
+        "flags": ["timeout", "dynamic"],
+        "elem": [
+          { "elem": {
+              "val": { "concat": ["aa:bb:cc:11:22:33", "1.2.3.4"] },
+              "expires": 21000,
+              "counter": { "packets": 100, "bytes": 50000 } } },
+          { "elem": {
+              "val": { "concat": ["de:ad:be:ef:00:01", "8.8.8.8"] },
+              "expires": 21000,
+              "counter": { "packets": 20, "bytes": 1024 } } }
+        ]
     }}
   ]
 }]]
@@ -30,12 +34,12 @@ local NFT_JSON = [[{
 
 describe("usage.parse_nft_counters", function()
 
-  it("returns one entry per counter object (skips metainfo)", function()
+  it("returns one entry per set element (skips metainfo)", function()
     local counters = usage.parse_nft_counters(NFT_JSON)
     assert.equal(2, #counters)
   end)
 
-  it("extracts bytes and packets from each entry", function()
+  it("extracts bytes and packets from each element counter", function()
     local counters = usage.parse_nft_counters(NFT_JSON)
     local by_mac = {}
     for _, c in ipairs(counters) do by_mac[c.mac] = c end
@@ -44,7 +48,7 @@ describe("usage.parse_nft_counters", function()
     assert.equal(1024,  by_mac["de:ad:be:ef:00:01"].bytes)
   end)
 
-  it("decodes counter name back to mac and dst_ip", function()
+  it("extracts mac and dst_ip from the val.concat tuple", function()
     local counters = usage.parse_nft_counters(NFT_JSON)
     local by_mac = {}
     for _, c in ipairs(counters) do by_mac[c.mac] = c end
@@ -54,22 +58,25 @@ describe("usage.parse_nft_counters", function()
     assert.equal("8.8.8.8",           by_mac["de:ad:be:ef:00:01"].dst_ip)
   end)
 
-  it("returns empty list when JSON contains no counter objects", function()
-    local empty = '{"nftables":[{"metainfo":{"version":"1.0.2"}}]}'
+  it("returns empty list when the set has no elements", function()
+    local empty = [[{"nftables":[
+      {"metainfo":{"version":"1.1.6"}},
+      {"set":{"name":"mac_ip_tracking"}}
+    ]}]]
     assert.equal(0, #usage.parse_nft_counters(empty))
   end)
 
-  it("skips counters whose names do not match the ct_ convention", function()
-    local foreign = [[{"nftables":[
-      {"counter":{"family":"inet","table":"familydns","name":"unrelated","packets":1,"bytes":10}}
-    ]}]]
-    assert.equal(0, #usage.parse_nft_counters(foreign))
+  it("returns empty list when no set entry is present", function()
+    local empty = '{"nftables":[{"metainfo":{"version":"1.1.6"}}]}'
+    assert.equal(0, #usage.parse_nft_counters(empty))
   end)
 
   it("handles a multi-octet IP like 192.168.100.200 correctly", function()
     local json_str = [[{"nftables":[
-      {"counter":{"family":"inet","table":"familydns",
-       "name":"ct_aa_bb_cc_11_22_33__192_168_100_200","packets":5,"bytes":999}}
+      {"set":{"name":"mac_ip_tracking","elem":[
+        {"elem":{"val":{"concat":["aa:bb:cc:11:22:33","192.168.100.200"]},
+                 "counter":{"packets":5,"bytes":999}}}
+      ]}}
     ]}]]
     local counters = usage.parse_nft_counters(json_str)
     assert.equal(1, #counters)
