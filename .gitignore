@@ -48,3 +48,8 @@ pgdata/
 
 # Mill 1.x temp files (mktemp pattern)
 mill.??????
+
+# VM e2e harness scratch
+.e2e-vm-venv/
+.e2e-vm-artifacts/
+scripts/e2e/**/__pycache__/
