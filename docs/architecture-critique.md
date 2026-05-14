@@ -2,601 +2,570 @@
 
 Status: **review draft.** Tracks [#368](https://github.com/sameerparekh/familydns/issues/368).
 
-This is a hostile-critic review of the system architecture, written after the
-cluster of foundation-level fixes that produced #350 (snapshot shape), #321
-(dead failover render branch), #297 (broken DNAT chain), #135 (silent column
-rename), and #249 (first-seen race). Each was a bug; the cluster suggests
-structural patterns worth naming explicitly before the rename + going-live
-cliff locks the current shape in.
+This is a hostile-critic review of the **design record** — `docs/architecture.md`,
+`docs/resilience.md`, `AGENTS.md`'s two truths, and the wire contracts in
+`shared/src/Models.scala`. The earlier draft of this document critiqued the
+*code state* (snapshot shape, render output, CI gaps); on review those were
+migration debt being tracked under #354 and the canonical-model rollout. They
+are not architectural findings.
 
-The deliverable is this document plus the sub-issues filed against it. The
-sub-issues are the actionable output; this document is the durable record of
-*why* those issues exist.
+What survives are eleven concerns with the **design record itself** — claims
+the architecture asserts but doesn't defend, tradeoffs it accepts without
+naming the alternative, lifecycle edges it doesn't draw, and internal drift
+between the docs and the wire types.
 
-Scope notes:
+The deliverable is this document plus eleven sub-issues. Each finding has a
+concrete design response — agreed in the #368 thread.
 
-- Security has its own audit ([#369](https://github.com/sameerparekh/familydns/issues/369)).
-  Where a finding has both structural and security dimensions, this doc owns
-  the structural framing and flags the overlap.
-- This is a critique, not a redesign. Where a fix is concrete and bounded
-  (a sub-issue worth filing), it is named. Where it is "the architecture
-  should be different," it is named *and a concrete savings is required* —
-  no vapor alternatives.
+Out of scope: security has its own audit ([#369](https://github.com/sameerparekh/familydns/issues/369)).
+Where a finding has both structural and security framing, this doc owns the
+structural side and cross-references #369.
 
 ---
 
-## Executive summary — top findings ranked by payoff:cost
+## Executive summary — top 5 architectural findings
 
-1. **The snapshot is still a hybrid of decision-inputs and decision-outputs**
-   ([§3](#3-snapshot-contract-post-354)). The canonical model in
-   `docs/architecture.md` §0.2 says the snapshot ships `BlockRules`; the
-   wire shape still ships `schedules`, `dailyMinutes`, `siteLimits`,
-   `timeUsedToday`, `extensionsTodayMinutes`, plus a parallel `blockedMacs`
-   list that re-encodes the *output* of evaluating those inputs. The agent
-   has all the inputs it would need to disagree with the API. Today it
-   doesn't (it reads only `blockedMacs`), but nothing structural stops a
-   future contributor from "fixing" something by evaluating those inputs.
-   This is the root of #305, #302, and #354. **Payoff: high. Cost: bounded
-   (collapse fields server-side, ship one minimal snapshot).** Sub-issue
-   filed.
+1. **MAC-as-identity is load-bearing but undefended.** Every per-device
+   decision keys on MAC. MAC randomization (iOS Private Address, etc.) is
+   not named anywhere in the architecture. The model has no "unmanaged
+   MAC" state and no design for what happens when a fresh MAC appears.
+   **Response:** explicit `unmanagedMacPolicy` in the snapshot, an
+   "unmanaged" admin-UI page with per-MAC enroll/block/allow actions,
+   and push notification when a new MAC appears (web now, mobile later).
+   Sub-issue: [#374](https://github.com/sameerparekh/familydns/issues/374) (rewritten).
 
-2. **Generated rulesets are not validated against the target tool in CI**
-   ([§5](#5-failure-modes-and-rendering-pipeline)). `render_spec.lua`
-   asserts the string content of the generated nft file; no test runs
-   `nft -c -f` against it on an OpenWRT-compatible nftables version. #297
-   (DNAT-in-filter), #287 (duplicate dnsmasq keyword), and the
-   "render branch exists but never fires" class (#321/#331) all share this
-   property: passing unit tests, broken production ruleset. **Payoff: high.
-   Cost: low (one CI job that runs `nft -c` and `dnsmasq --test-config`
-   against rendered fixtures).** Sub-issue filed.
+2. **The wire contract has no schema-evolution policy.** §0.2 and §6.2
+   define field names; nothing says how versions evolve, no `snapshotVersion`,
+   no capability negotiation. As written, the architecture reads as "one
+   version forever." This blocks every future migration that has to ride
+   alongside older agents/APIs in the field (auto-update is not instant).
+   **Response:** define a capability set on both ends; snapshot carries
+   `snapshotVersion` + `serverCapabilities`; agent advertises
+   `agentCapabilities` on enrollment and policy GET; API serves the highest
+   shape both ends understand. Sub-issue: [#376](https://github.com/sameerparekh/familydns/issues/376) (rewritten).
 
-3. **State machines are implicit and scattered**
-   ([§4](#4-state-management)). Device lifecycle (first_seen → DHCP-named
-   → admin-named) and agent-side failover (cached → in_failover_render →
-   recovered) are both encoded across multiple route handlers / modules
-   with no single owner. #249 (first_seen_mac race), #321 (failover never
-   triggered), and #331 (failover render branch dead) all derive from this.
-   **Payoff: medium-high. Cost: medium (refactor each into an explicit
-   state object with a single transition surface).** Sub-issue filed for
-   the device-state case.
+3. **`FailureMode` is internally inconsistent across the design record.**
+   `architecture.md` §0.2 specifies `BlockAll | AllowAll | LastKnownGood`.
+   `resilience.md` §4 and `Models.scala` use `Open | Closed`. The
+   canonical record contradicts itself. **Response:** align on three
+   modes — `BlockAll`, `AllowAll`, `LastKnownGood` — semantically
+   distinct, named consistently across architecture, resilience, and
+   the wire type. `Open`/`Closed` is a two-bit collapse of three states
+   and loses the LastKnownGood case. Sub-issue filed (see table).
 
-4. **Tests assert shape, not behavior**
-   ([§10](#10-maintenance--evolution)). `policy_spec.lua` asserts the
-   parsed snapshot keys; `RouterApiSpec` asserts the JSON shape; nothing
-   end-to-end asserts that a policy edit in the API actually produces a
-   blocked packet on a real router. The contract between the API and the
-   agent is tested twice (once per side) and never together. **Payoff:
-   high. Cost: medium (a docker-compose-driven e2e harness that posts a
-   policy, polls, applies, and sends a probe packet).** Sub-issue filed.
+4. **Cross-platform portability is asserted, not proven.** §3 commits
+   to OpenWRT + OpnSense both implementing the same wire contract,
+   each rendering the snapshot to platform primitives. nft `ether saddr
+   @set` is a clean primitive on Linux; pf's MAC matching in the
+   forward path on FreeBSD is not the same shape. The architecture
+   maps "Packet filter | nftables | pf / pfctl" in a table without
+   demonstrating that `BlockRules` semantics translate. This will
+   surprise the OpnSense agent author at design time; better to surface
+   the constraint now and either prove portability or scope the model
+   to "Linux-class platforms." Sub-issue filed (see table).
 
-5. **MAC-randomization bypass: unassigned devices have no enforcement
-   surface.** A device whose MAC is not in any profile is not in
-   `profile_macs`, not in `blocked_macs`, and the post-boot ruleset
-   neither drops nor counts its forwarded traffic. The boot default-deny
-   skeleton (#308) only covers the gap between boot and first apply.
-   After the first apply, a kid who flips iOS Private Address gets a
-   fresh MAC that hits an empty-rule policy. **Payoff: very high
-   (load-bearing for the entire product claim). Cost: low (add an
-   unmanaged-MAC drop chain).** Coordinated with #369 — the security
-   audit has the same finding under a different framing; structural fix
-   belongs here. Sub-issue filed.
+5. **Agent responsibilities are under-specified in §3.2.** Architecture
+   says "implement HTTP calls + platform-specific rendering." Real
+   contract collected from resilience.md: flash-cache snapshot for boot
+   recovery, retry queue with exponential backoff for usage, retry
+   queue with cap-and-drop for events, monotonic-clock scheduler,
+   smoke-probe post-reload, failover state machine, clock-skew
+   measurement, boot default-deny skeleton, atomic apply, version
+   handshake. Every OpnSense-agent contributor will hit each as a
+   surprise. Sub-issue filed (see table).
 
-The remaining ten audit areas surface no further must-fix findings of
-this severity. They are documented below for traceability so readers
-know they were visited.
+The other six findings (HTTPS block UX, `blockIpOnly` binary, one-etag
+two-rate-classes, failover threshold ownership, router-deletion
+lifecycle, hostname as unconstrained string) follow.
 
 ---
 
-## 1. The canonical model — does it hold up?
+## 1. MAC-as-identity is undefended
 
-The model in `docs/architecture.md` §0.2 ("Two truths: DNS never enforces;
-agent is a dumb applier") is a strong frame and the doc work in #350 /
-#367 canonicalized it well. The frame holds. The problem is not the model;
-the problem is that **the wire format and the agent code haven't migrated
-to it.** Both deviations are called out inline in the doc and tracked, but
-the migration has been pending across several iterations:
+§0.2 specifies per-MAC enforcement. Every nft rule keys on `ether saddr`.
+Every device row is a MAC. Every snapshot decision is per-MAC. This is the
+load-bearing identity axiom of the entire enforcement model.
 
-- `extraBlocked` is rendered as `address=/host/#` (DNS-layer block) in
-  `render.lua:64`. The canonical model rejects DNS-layer enforcement.
-- `blocklistIds` / categories: render.lua doesn't fetch RPZ files at all;
-  the agent has no category-enforcement code path. `PolicyService.decide`
-  uses categories only on the legacy `/api/router/decision` endpoint.
-- `blockIpOnly` does not exist.
+The architecture is silent on:
 
-Concrete failure scenario: a parent toggles a new blocklist on; the API
-serves the updated snapshot; the agent ignores `blocklistIds`; the parent
-sees no enforcement; they assume the product is broken. This has been
-"known deviation" status for >6 months.
+- **MAC randomization.** iOS Private Address generates a fresh MAC per SSID.
+  Android does the same. Linux `macchanger` is trivial. A fresh MAC has no
+  profile, no entry in `blocked_macs`, no rule that touches it.
+- **The "unmanaged MAC" state.** The design model has two device states
+  (in-profile, in-blocked-set). There is no third state for "MAC seen,
+  not assigned." The boot default-deny skeleton (#308) covers only the
+  boot window; after the first apply, the new ruleset has no fallthrough.
 
-**Finding:** "canonical model" + "known deviations" is a sustainable
-posture only when the deviations close. They aren't closing. Either:
-(a) execute the migration, or (b) downgrade the deviations from "tracked
-follow-up" to "alternate enforcement plane" and update the model to match
-reality. The current half-way state — model says nft, code does dnsmasq,
-docs admit it but call it a follow-up — is the worst of both.
+### Design response
 
-**Suggested response:** Close the gap one field at a time. Each migration
-is small (rewrite render.lua's emission for one field, add nft rules,
-update render_spec). The discipline is "no new deviations" — if a new
-field lands in the snapshot, it lands on the canonical plane (nft) or
-it doesn't land. Sub-issue filed.
+- Snapshot carries `unmanagedMacPolicy: { policy: "block" | "allow", blockPage: bool }`,
+  default `block`.
+- Render emits a fallthrough chain matching any forwarded MAC not in any
+  per-profile set, applying the unmanaged policy.
+- API tracks "first seen, not assigned" MACs as a first-class entity,
+  exposes them at `/api/admin/unmanaged-macs`.
+- Admin UI grows a "Unmanaged" page listing them with per-MAC actions
+  (assign to profile, block permanently, allow-passthrough).
+- Web admin UI push notification (websocket / SSE) fires when a new
+  unmanaged MAC appears. Mobile app push notification later when the
+  app exists.
+
+This is the right answer to MAC randomization in a parental-controls
+product: you can't prevent it, but you CAN make the resulting unmanaged
+MAC a loud, surfaced event rather than a silent bypass.
+
+Sub-issue: [#374](https://github.com/sameerparekh/familydns/issues/374).
 
 ---
 
-## 2. API / router split — is "dumb applier" actually achievable?
+## 2. HTTPS block-page UX has no architectural answer
 
-The split as written is sound: render → nft, no per-flow round-trip,
-worst-case staleness one poll interval. The forces that push logic to
-the router are not currently dominant: latency budget is generous
-(60s poll), scale is small (one router per household), offline ops have
-a clear failure-mode story (§4 of resilience.md, modulo #321).
+§7.6 commits to nft DNAT on TCP/80 to the local block page. HTTPS times out
+silently. The architecture accepts this with one sentence: "blocked HTTPS
+times out (no MITM without a CA install — same behavior as commercial
+parental-control boxes)."
 
-The bigger structural concern is the **opposite direction**: the
-PolicyService is *more* than a dumb projection of DB rows. It evaluates
-schedules against wall-clock-now, projects daily-limit exhaustion
-against accumulated usage, runs blocklist membership lookups. This is
-correct — it has to live somewhere — but it means every snapshot fetch
-is a heavyweight computation that walks the full device/profile/usage
-graph. `PolicyService.snapshot` ([api/src/policy/PolicyService.scala:29](api/src/policy/PolicyService.scala:29))
-runs `ZIO.foreach(profiles)` three times sequentially over the profile
-list. At household scale (≤10 profiles) this is fine; the architecture
-should record that this is the assumed scale ([§7](#7-scaling-assumptions)).
+As the web HTTPSifies, "your block is invisible" degrades by year. A child
+who hits a blocked site over HTTPS sees the browser's generic "this site
+can't be reached" — they have no idea their parent's filter is what blocked
+it. That UX gap encourages exactly the wrong learning ("the wifi is broken,
+let me find a way around it") rather than the right one ("this is blocked,
+ask a parent").
 
-**Finding:** the "dumb applier" frame describes the agent side well but
-under-specifies the API side. `PolicyService.snapshot` is the system's
-hottest path — every router GET /api/router/policy fires it — and it has
-no caching layer. At one router per household with 60s polls, raw cost
-is trivial; with 100 households on one API host, every minute starts with
-100 serial DB walks. **Suggested response:** an ETag-keyed in-memory
-snapshot cache (compute once per content-hash; serve 304s and 200s from
-the cache; invalidate on any profile / device / time_usage write).
+### Design response
+
+DNAT HTTPS/443 from blocked MACs to the local block-page server presenting
+its own self-signed cert. The browser shows a cert warning; the user clicks
+through; they land on the block page. The trade is:
+
+- **What we gain:** the block reason is reachable on HTTPS. The user gets
+  an explanation, not a hang.
+- **What we accept:** users see a cert warning before reaching the block
+  page. This is *worse* than the HTTP block-page UX, but *better* than the
+  HTTPS timeout UX. The TLS warning is acceptable because the block page
+  is intentionally a non-standard interception; the warning is the truth.
+- **What we do NOT do:** install a CA on managed devices (rejected:
+  invasive, not commodity, requires per-device setup, escalates the trust
+  model). The cert warning is the design.
+
 Sub-issue filed.
 
-**Counter-pressure noted:** the router DOES still hold decision logic
-that contradicts "dumb applier" — `failover_transition` in
-[policy.lua:379](openwrt/files/usr/lib/lua/familydns/policy.lua:379)
-decides when to enter / leave failover, `usage.lua` decides
-`activeSeconds` granularity at flush time. These are not policy
-decisions in the parental-controls sense, but they ARE state-machine
-decisions that mean the agent is not purely declarative. This is
-acceptable, but the architecture doc should name them so future
-contributors don't mistake them for "logic that should move to the API."
+---
+
+## 3. `blockIpOnly` is a binary defense
+
+§0.2 specifies `blockIpOnly`: drop forwarded traffic to any IP we did not
+resolve for this MAC. The strict form has no allowlist carve-out. As
+written:
+
+- **On:** drops legitimate CDN / push-notification / hardcoded-IP traffic
+  that bypassed the local resolver. Many apps break.
+- **Off:** DoH / hardcoded-IP bypasses the entire model.
+
+There's no middle setting designed.
+
+### Design response
+
+`blockIpOnly` should drop IPs *unless* the destination IP is in the union
+of `(ipset(host) for host in extraAllowed)`. The `extraAllowed` carve-out
+already exists at the per-host level; extending it to apply to IPs
+resolved-for-that-host gives the parent a tool: "allow `firebase.com` and
+also any IP that resolved to a `firebase.com` for any MAC."
+
+This narrows the binary into a designed third state: "drop IPs that aren't
+allowlisted or weren't resolved-for-this-MAC." The defense against DoH is
+preserved (DoH-resolved IPs to non-allowlisted hosts are still dropped)
+while sparing common-case CDN traffic.
+
+Sub-issue filed.
 
 ---
 
-## 3. Snapshot contract (post-#354)
+## 4. Wire contract has no schema-evolution policy
 
-**This is the highest-payoff finding.** The canonical shape from
-`docs/architecture.md` §0.2 is `Map[MacAddress, DevicePolicy]` with
-`BlockRules` carrying only resolved booleans. The actual wire shape
-([shared/src/Models.scala:488](shared/src/Models.scala:488)) is:
+The architecture defines field names but not how they evolve. There is no:
+
+- `snapshotVersion` field.
+- API capability set advertised to the agent.
+- Agent capability set advertised to the API.
+- Documented policy for "API ships field X, agent doesn't know it" — does
+  the agent ignore it (forward-compat), reject the snapshot (strict), or
+  apply a partial enforcement (degraded)?
+
+Auto-update is not instant; even after #279 lands fully, agents and APIs
+will run mismatched versions in the field for hours-to-days during rollouts.
+
+### Design response
+
+Add capability negotiation to the wire contract:
+
+- Snapshot carries `snapshotVersion: Int` (start at 1; bump on
+  breaking-shape change).
+- Snapshot carries `serverCapabilities: Set[String]` listing optional
+  features the server can produce (e.g. `"failover-threshold-in-snapshot"`,
+  `"unmanaged-mac-policy"`).
+- Agent advertises `agentCapabilities: Set[String]` on enrollment AND on
+  every `GET /api/router/policy` (header or query param).
+- API serves the snapshot shape negotiated by the intersection.
+- Documented policy: agent must ignore unknown top-level fields
+  (forward-compat) but must refuse a snapshot whose `snapshotVersion`
+  exceeds its known version (no silent partial enforcement).
+
+The capability set lets new features land server-side without breaking
+older agents — the canonical example is shipping #370 (canonical-shape
+collapse) safely while old agents still poll.
+
+Sub-issue: [#376](https://github.com/sameerparekh/familydns/issues/376) (rewritten).
+
+---
+
+## 5. `FailureMode` mismatch across the design record
+
+| Source | Variants |
+|---|---|
+| `architecture.md` §0.2 | `BlockAll`, `AllowAll`, `LastKnownGood` |
+| `resilience.md` §4 | `closed`, `open` (~= BlockAll, AllowAll w/ cached snapshot riding) |
+| `Models.scala` `FailureMode` | `Open`, `Closed` |
+| Wire format (JSON) | `"open"`, `"closed"` |
+
+This is the design record contradicting itself. `Open`/`Closed` is a
+collapse of three semantic modes into two; `LastKnownGood` is meaningfully
+distinct from `AllowAll` (one keeps the cached snapshot enforcing exactly
+as last seen; the other drops all restrictions). The current Lua agent
+treats `Open` as roughly `LastKnownGood` ("keep enforcing the cached
+snapshot exactly as-is") — i.e. the code chose one interpretation while
+the doc shipped both.
+
+### Design response
+
+Align on three modes, named consistently across architecture.md,
+resilience.md, Models.scala, and the wire format:
+
+- `BlockAll` — drop all forwarded traffic for this profile's devices when
+  failed-poll-age > threshold. Wire form: `"block-all"`.
+- `AllowAll` — pass forwarded traffic with no enforcement when failed-poll
+  threshold exceeded. Wire form: `"allow-all"`.
+- `LastKnownGood` — keep enforcing the cached snapshot exactly as-is when
+  failed-poll threshold exceeded. Wire form: `"last-known-good"`.
+
+Default for child profiles: `BlockAll`. Default for adult/admin: `LastKnownGood`.
+(The current `Open` collapses the adult use case into `AllowAll`, losing
+the cached-snapshot defense — `LastKnownGood` is a better default for
+adults.)
+
+Sub-issue filed.
+
+---
+
+## 6. Failover threshold is architecturally unowned
+
+`resilience.md` §4 specifies a 5-minute threshold for the API-unreachable
+failover transition. It is a magic number with no design home:
+
+- Is it API-side configuration?
+- Is it agent-side configuration?
+- Is it per-profile?
+- Is it negotiated?
+
+Currently it's a hard-coded constant in `policy.lua`'s `failover_transition`
+([policy.lua:386](openwrt/files/usr/lib/lua/familydns/policy.lua:386)) AND
+in `render.lua`'s `poll_age > 300` check
+([render.lua:230](openwrt/files/usr/lib/lua/familydns/render.lua:230)). To
+change the threshold, the agent has to be re-released and re-installed —
+which is exactly when you'd want to change it (incident response).
+
+### Design response
+
+The failover threshold is managed by the API server, shipped in the
+snapshot:
+
+- `PolicySnapshot.failoverThresholdSeconds: Int` (default 300).
+- Optionally per-profile if there's a use case; start with one
+  household-wide value.
+- Agent reads from snapshot; falls back to a built-in default (300s) if
+  absent (forward-compat with older API).
+
+Operational benefit: in an incident, the operator can raise the threshold
+to 30 minutes without re-flashing routers.
+
+Sub-issue filed.
+
+---
+
+## 7. Cross-platform portability is asserted, not proven
+
+§3 commits to OpenWRT + OpnSense both implementing the same wire contract.
+The "Platform divergence" table maps primitives:
+
+| Concern | OpenWRT | OpnSense |
+|---|---|---|
+| Packet filter | nftables | pf / pfctl |
+| Per-MAC | `ether saddr @set` | (pf MAC matching) |
+| Traffic accounting | nftables counters | pflog / pf tables |
+| Hostname attribution | dnsmasq `--ipset=` | Unbound query log |
+
+What the architecture **doesn't** show:
+
+- pf on FreeBSD is primarily L3+ in the forward path. `ether saddr`
+  matching exists but is constrained and not as ergonomic as nft's
+  `@set`-of-MACs. Whether `BlockRules` semantics translate cleanly to pf
+  is not demonstrated.
+- Unbound's query log gives `(client IP, qname)`. Correlating client IP →
+  MAC via DHCP lease is documented in §8.2, but the canonical-model
+  promise of "per-MAC hostname attribution" is one indirection further on
+  OpnSense than on OpenWRT. That indirection's failure modes (DHCP lease
+  race vs. DNS query) aren't covered in resilience.md.
+- nft can flush+load atomically with one `nft -f`; pf has `pfctl -T
+  replace` per-table but no equivalent atomic multi-table swap. Atomic
+  apply is a load-bearing invariant in the OpenWRT design; the OpnSense
+  story is unspecified.
+
+### Design response
+
+Before #94 (OpnSense agent) starts, produce a focused design doc that:
+
+- Sketches the pf ruleset shape rendered from `BlockRules`.
+- Proves (with a small bench config) that per-MAC matching at scale (~50
+  devices) is performant on pf.
+- Documents how Unbound + DHCP lease correlation produces the same
+  `(mac, hostname)` attribution shape as dnsmasq.
+- Names the atomic-apply story on pf.
+- Either confirms the wire contract is portable as-is, or identifies the
+  subset of `BlockRules` that doesn't translate (and proposes either
+  shrinking the wire contract OR scoping the architecture to "Linux-class
+  router platforms").
+
+Sub-issue filed.
+
+---
+
+## 8. §3.2 understates agent responsibilities
+
+Architecture says an agent implements "HTTP calls + platform-specific
+rendering." Real list (collected from resilience.md, the OpenWRT agent
+code, and recent fix PRs):
+
+- One-shot enrollment + bearer-token persistence
+- Periodic policy poll with ETag
+- Atomic render → apply (dnsmasq + nft)
+- Flash-cache snapshot for boot recovery (#309)
+- Boot-time default-deny skeleton (#308)
+- Smoke-probe post-reload to verify external tool actually applied (#328)
+- Usage POST every 5min, with exponential-backoff retry queue (#309)
+- Events POST with cap-and-drop retry queue (#330)
+- Monotonic-clock scheduler immune to wall-clock jumps (#336)
+- Failover state machine with poll-age tracking (#311 / #321 / #331)
+- Clock-skew measurement against API `Date` header (#312)
+- Hostname attribution sidecar (dnsmasq query-log tail; #259)
+- DHCP-script hook for lease events
+- Conntrack watcher for per-flow events
+- Capability advertisement on enrollment + each poll (per §4 above)
+
+Every item above surfaced as a separate fix; an OpnSense agent contributor
+will rediscover each as a separate surprise.
+
+### Design response
+
+Add a new section to `docs/architecture.md` ("Agent responsibilities,
+fully specified") listing all of these as the contract every agent must
+implement, with one paragraph each pointing at the originating concern.
+The "agent author only needs to implement HTTP calls" framing in §3.2 is
+misleading and should be removed.
+
+Sub-issue filed.
+
+---
+
+## 9. One ETag covers two rate-classes of state
+
+The snapshot conflates two kinds of change:
+
+- **Slow:** profile config, device→profile assignment, blocklist URLs,
+  failover policy. Changes on admin action; can be hours-to-days between
+  changes.
+- **Fast:** schedule-window edges, time-limit exhaustion, pause. Changes
+  continuously against wall-clock; every minute past 18:00 invalidates
+  the etag of every household with an 18:00 schedule.
+
+Both flow through one snapshot, one etag, one 60s poll. Consequences:
+
+- Schedule-edge thundering herd: at 18:00 every router with a 6PM
+  bedtime polls and gets a new snapshot containing identical
+  device/profile data plus a flipped `blocked` flag for the affected
+  MAC. The slow-state half is re-shipped on every fast-state change.
+- A user's "block X now" admin action propagates at poll-interval
+  latency (worst-case 60s). For an angry-parent UX this is borderline.
+- Liveness signal (admin UI showing router status) is poll-bound.
+
+### Design response
+
+**Accept and document the tradeoff.** The simplicity benefit of one
+snapshot / one etag / one cadence is real, and at household scale the
+thundering-herd cost is irrelevant. Add a "Design tradeoffs accepted"
+section to `docs/architecture.md` naming this explicitly:
+
+> The wire contract conflates slow-changing config state and
+> fast-changing wall-clock-derived state into one snapshot. Worst-case
+> admin-action propagation latency is one poll interval (60s). Schedule
+> edges cause etag churn at the edge time across all affected routers.
+> We accept this in exchange for protocol simplicity. If
+> sub-poll-interval blocking ever becomes a product requirement, a
+> server-push channel (websocket/SSE) will be added as an additive,
+> non-breaking change.
+
+This isn't a sub-issue against the design — it's a doc-edit recording
+the deliberate tradeoff so future contributors don't waste time
+re-deriving it. Sub-issue filed for the doc edit.
+
+---
+
+## 10. No design for router-record deletion
+
+Architecture covers enrollment + ongoing poll. It doesn't cover deletion:
+
+- An admin deletes a router record via `DELETE /api/admin/routers/:id`.
+- The agent is still running on the router with a valid (now-orphaned)
+  bearer token.
+- What does the API return on the agent's next poll? 401? 410? 404?
+- What does the agent do? Keep enforcing the cached snapshot? Wipe and
+  default-deny? Stop and allow-all?
+
+Currently undefined.
+
+### Design response
+
+On router-record deletion:
+
+- API marks the token revoked.
+- Subsequent `/api/router/*` calls from that token return **410 Gone**
+  (semantically: "you used to exist, you do not anymore").
+- Agent on 410: log loudly, stop enforcing, flush the nft ruleset back
+  to allow-all (no default-deny — the user explicitly disowned this
+  router; the LAN should keep working).
+- Agent stops the daemon (exit non-zero so procd doesn't auto-restart).
+- A re-enrollment requires a fresh enrollment token from a new admin
+  action.
+
+Rationale for allow-all (not default-deny on disownment): the admin's
+action of deleting the router signals "this router is no longer mine";
+keeping the LAN locked down after that is hostile. The LAN reverts to
+"no familydns enforcement" — same as if the package were uninstalled.
+
+Sub-issue filed.
+
+---
+
+## 11. `hostname` is an unconstrained string in the wire contract
+
+Architecture treats `hostname` as text. `usage.records[*].hostname`,
+`events.dns_query.qname`, `time_usage.domain`, the block-reason
+`category:<host>` — all are typed `string` in the wire and in the schema.
+
+But §7.2 establishes a fallback: when dns-tail can't attribute an IP to
+a hostname (direct-IP traffic, DoH-resolved domain, sidecar race), the
+agent falls back to **the IP literal in the hostname field**. So
+`time_usage` rows can have `hostname = "192.0.2.1"`. Site-limits assume
+domain-pattern matching; matching `*.example.com` against `192.0.2.1`
+is just a miss. Presence reports show "192.0.2.1" as a top-host.
+
+The architecture never names "what's the type of hostname, really?"
+
+### Design response
+
+Promote `hostname` to a union type at the wire contract level:
 
 ```scala
-case class PolicySnapshot(
-  etag: String, generatedAt: String,
-  defaultProfileId: Option[Long],
-  devices: List[PolicyDevice],
-  profiles: List[PolicyProfile],     // ← carries full decision inputs
-  blockedMacs: List[BlockedMac],     // ← carries the OUTPUT of evaluating those inputs
-  blocklists: Map[String, PolicyBlocklist],
-)
-
-case class PolicyProfile(
-  ..., paused: Boolean,
-  blockedCategories: List[String],   // raw inputs the agent should not consult
-  extraBlocked: List[String],
-  extraAllowed: List[String],
-  schedules: List[PolicySchedule],   // ← wall-clock raw schedule windows
-  dailyMinutes: Option[Int],          // ← raw daily limit
-  siteLimits: List[PolicySiteLimit],  // ← raw site limits
-  timeUsedToday: PolicyTimeUsedToday, // ← raw accumulated usage
-  extensionsTodayMinutes: Int,        // ← raw extension grants
-  failureMode: FailureMode,
-)
+sealed trait HostId
+object HostId:
+  case class FQDN(name: String) extends HostId      // "youtube.com"
+  case class IPv4(addr: String) extends HostId      // "192.0.2.1"
+  case class IPv6(addr: String) extends HostId      // "2001:db8::1"
 ```
 
-The agent reads `blockedMacs` and (for site-limit ipset wiring)
-`siteLimits`. Everything else in `PolicyProfile` is dead from the
-agent's perspective. Concretely:
+Wire form: `{"type": "fqdn", "value": "youtube.com"}` or shorthand string
++ heuristic parse on the receive side (TBD which).
 
-- `paused`, `dailyMinutes`, `extensionsTodayMinutes`, `timeUsedToday`,
-  `schedules` exist only so that, if `blockedMacs` is wrong, the
-  agent has the raw materials to compute it. That's a fragile design:
-  it presumes the agent SHOULDN'T trust the API while shipping it
-  everything it would need to disagree.
+Downstream consequences (each is a small follow-up, not architectural):
 
-- The current code doesn't disagree. But the agent's `policy_spec` has
-  to fake-populate all those fields to test rendering, the render output
-  has to thread them through the JSON consume, and any future "let's add
-  schedule prediction in the UI" feature has to figure out which side
-  evaluates.
+- `time_usage` schema gains a `host_type` column.
+- Site-limit pattern matching skips non-FQDN rows.
+- Presence reports group IP-typed rows under a "direct-IP traffic" bucket.
+- Admin UI renders IPv4/IPv6 hosts distinguishably from named hosts.
 
-The structural property that would have prevented #305 (schedule active
-but agent doesn't see it), #302 (decision-input fields with no consumer),
-and #354 (whole shape mismatched the model): **the wire type is a
-computed shape, not a field-copy of DB rows.** Today the wire type is a
-near-direct projection of the DB rows; `blockedMacs` was bolted on as a
-correction.
-
-**Suggested response:** migrate the snapshot to the canonical
-`Map[MacAddress, DevicePolicy]` shape from architecture.md §0.2 in one
-go, deleting the redundant fields. Risk is manageable: the agent only
-reads `blockedMacs`, `devices`, `siteLimits` (for ipset names), and
-`extraBlocked` (for `address=/`). The first two collapse cleanly; the
-last two are part of the canonical model and stay.
-
-**Concrete savings:** ~80 lines of dead fields in
-`PolicyService.snapshot`, ~120 lines of fixture-stuffing in
-`policy_spec.lua`, ~40 lines of dead JSON parse code in `render.lua`.
-And the snapshot becomes self-describing: an outside reader can
-understand what enforcement decisions were made by reading the
-snapshot alone. Sub-issue filed.
-
----
-
-## 4. State management — seams between Postgres, flash, tmpfs
-
-The current seams are largely correct but **implicit**, which is the
-recurring failure mode.
-
-**Postgres ↔ snapshot:** `PolicyService.snapshot` is the documented
-boundary. The hybrid shape (§3) blurs the line — DB rows leak into
-the wire payload — but the conceptual boundary is sound.
-
-**Snapshot ↔ flash cache:** `/etc/familydns/policy.json` is written
-after every successful apply ([policy.lua:293](openwrt/files/usr/lib/lua/familydns/policy.lua:293)).
-The cache is read at boot before any network call ([familydns-agent:222](openwrt/files/usr/sbin/familydns-agent:222)).
-This is the right shape. One concern: the cached JSON has no version
-field. If the API ever changes the wire shape (and it will — see §3),
-a cached old-shape snapshot will be applied at boot by a new agent
-that can't parse it correctly. **Suggested response:** add a
-`snapshotVersion` field to the wire shape; agents refuse to apply a
-cached snapshot whose version they don't recognize, falling through
-to the boot default-deny + first poll. Sub-issue filed.
-
-**Tmpfs buckets:** the design call in resilience.md §1 ("usage is
-best-effort; sudden power loss forfeits the current bucket window") is
-sound. Don't second-guess it.
-
-**Device lifecycle state:** this is the genuine structural problem.
-A device row can be in one of:
-- nonexistent
-- created by `first_seen_mac` event with placeholder name
-- created by `dhcp_lease` event with hostname
-- renamed by admin
-- both first_seen and dhcp arrive in unpredictable order
-
-The transitions are scattered across `applyDhcpOrFirstSeen`
-([RouterIngestRoutes.scala:235](api/src/routes/RouterIngestRoutes.scala:235)),
-`renameIfAutoGenerated`, `upsertUnknown`, and `touchLastSeen` — four
-DeviceRepo methods, each handling a corner. #249 fixed *one* race
-(first_seen-before-dhcp) by adding `renameIfAutoGenerated`. The pattern
-of "another race, another rename method" is not bounded.
-
-**Suggested response:** consolidate device ingestion to a single repo
-method `ingestDeviceObservation(mac, ip?, hostname?, ts, source)` that
-applies the merge rule once, with the precedence ordering explicit
-(real DHCP hostname beats auto-generated placeholder beats nothing).
 Sub-issue filed.
-
-**Failover state on the agent:** `in_failover_render` is a single
-boolean ([familydns-agent:206](openwrt/files/usr/sbin/familydns-agent:206)),
-`last_snapshot` is a global, `M.last_successful_poll_ts` lives in the
-policy module. Three pieces of state that move together. Acceptable
-for now (the bug-prone interactions are mostly worked through after
-#331), but worth a refactor when the next bug surfaces. Don't file
-yet.
-
----
-
-## 5. Failure modes and rendering pipeline
-
-`docs/resilience.md` covers 5 scenarios well. The gaps that matter are
-**not in the scenarios it lists** but in scenarios it didn't:
-
-- **Agent crash mid-render.** Between writing
-  `/tmp/dnsmasq.d/familydns.conf` and writing
-  `/tmp/nftables.d/familydns.nft` ([policy.lua:240](openwrt/files/usr/lib/lua/familydns/policy.lua:240)),
-  what happens if the agent SIGKILLs? Half the config is updated;
-  the next start picks up cached snapshot and re-renders, which
-  resolves it — but during the window between crash and restart,
-  dnsmasq sees new directives and nft sees old. **Severity: low**
-  (window is <100ms, render is idempotent, restart re-applies). No
-  action; documented gap.
-
-- **Two simultaneous admin writes to the same profile.** The API
-  has no optimistic locking on `profiles`; two admins in two browser
-  tabs hitting "save" produce last-write-wins. For parental controls
-  this is mostly fine, but a "I just unblocked YouTube" / "I just
-  blocked YouTube" race produces a confusing final state. **Severity:
-  low; cost: low (`If-Match: ETag` on profile updates).** Sub-issue
-  worth filing if cheap; otherwise documented gap. File it.
-
-- **Generated ruleset is invalid for the target nft version.** This
-  is the #297 / #287 pattern. The rendered file is parsed by nft at
-  apply time; if it fails to parse, the OLD ruleset stays in effect
-  (good) but no surface signals the silent failure. The #328 smoke
-  probe addressed one variant of this (verify dnsmasq actually
-  reloaded a blocked-domain) but only for the dnsmasq side; nft has
-  no equivalent. **Severity: high; cost: low.** Two complementary
-  fixes:
-  - **CI:** add `nft -c -f <rendered>` against an OpenWRT-pinned
-    nftables version, fed by the fixture suite.
-  - **Runtime:** capture `nft -f` stderr; if non-empty, log loudly
-    and (optionally) leave a flag file for the agent to surface on
-    next poll. Today the call is fire-and-forget via `os.execute`.
-  Sub-issue filed.
-
-- **Two policy fetches racing across reload.** If a poll fires at
-  T=0 with etag E1 and the apply takes 500ms, and at T=60 the next
-  poll fires while apply-of-E2 is in progress — what happens? The
-  loop is co-operatively scheduled inside `on_tick`, so this can't
-  actually happen. Documented gap, no action.
-
-The recurring pattern across these: **external-tool calls are fire-
-and-forget.** dnsmasq restart, nft apply, conntrack POST. The #328
-smoke probe is the first instance of "verify after acting." That
-pattern should generalize: any call out to an external system should
-have a post-condition check. Sub-issue filed.
-
----
-
-## 6. Concurrency — admin actions, schedule edges, multi-router
-
-Most admin-action races are benign (parental controls product, not
-financial). Three are worth naming:
-
-- **Profile edit ↔ schedule tick.** An admin edits a schedule at
-  18:00:00 right as the API's `computeBlockedMacs` is firing for
-  the 18:00 schedule window. The transaction is single-row, so the
-  outcome is deterministic per-call; the only oddity is the etag
-  changes twice. Documented gap, no action.
-
-- **Multi-router per household (#136).** The schema allows multiple
-  routers; the snapshot is identical per-router; if two routers
-  enforce the same policy on overlapping LANs, there's no coordination
-  needed because each only sees its own MACs. But: usage POSTs from
-  two routers can both attribute the same MAC's traffic for the same
-  bucket window (the MAC roams between LAN segments). The current
-  idempotency key is `(routerId, periodStart, mac, hostname)` — both
-  POSTs succeed because routerId differs, and the API double-counts.
-  **Severity: medium (only matters if #136 actually ships).** Sub-
-  issue documented as a #136 follow-up; don't block now.
-
-- **Daily-limit-exhaustion edge.** `PolicyService.snapshot` reads
-  `time_usage` at the moment of the call; the usage POST that
-  crossed the threshold may have committed 100ms ago or 100ms from
-  now. The agent's next poll picks up the new `blockedMacs`. Worst-
-  case overshoot: ~5 minutes (usage POST cadence) + 60s (policy
-  poll). Documented in architecture.md §7.5. No action.
-
----
-
-## 7. Scaling assumptions
-
-**The architecture has no explicit scale targets.** This is fine while
-the product is for one household, but the rename + going-live
-discussion implies multi-household deployments. Numbers worth pinning
-down NOW so future contributors don't trip them:
-
-| Dimension | Assumed value | Where it breaks |
-|---|---|---|
-| Profiles per household | ≤10 | Snapshot ETag computation walks all profiles serially; #305 blockedMacs evaluation similar. |
-| Devices per router | ≤50 | nft `set blocked_macs` is fine; `dhcp-host=` directives bloat dnsmasq config linearly; UCI lookups in agent startup. |
-| Site limits per profile | ≤20 | Each emits one nft `set` and one `ipset=` directive; agent does linear scans in `update_shared`. |
-| Blocklists per profile | ≤5 | Agent doesn't fetch them today; once #blocklist-application lands, each is a per-poll cached fetch. |
-| Households per API host | UNDEFINED | Every router poll triggers a full snapshot recomputation. |
-| Usage POST rate | 1 per router per 5min | DB write is per-record; ON CONFLICT DO NOTHING is cheap. |
-| Event POST rate | up to 50 events per 10s flush per router | Single linear insert batch. |
-
-**Suggested response:** add a "Scaling assumptions" section to
-architecture.md naming the numbers. The point is not to prove the
-system can scale further, but to make the assumption visible so the
-next architectural pressure (per-conn websocket push, multi-tenant
-deployment) gets evaluated against an explicit baseline. Sub-issue
-filed.
-
----
-
-## 8. External dependencies
-
-The hard couplings:
-
-- **dnsmasq:** used for DHCP, DNS, query log, and (today) NXDOMAIN
-  enforcement of `extraBlocked`. The canonical model wants the
-  NXDOMAIN role removed; if that migration completes, dnsmasq is
-  reduced to "DHCP + DNS forwarder + query log." At that point the
-  question is: **could we drop dnsmasq and use Unbound + odhcpd**, with
-  the bonus of not having to deal with conf-dir-vs-SIGHUP semantics
-  (#328)? Probably yes, but: dnsmasq + OpenWRT is the path that every
-  OpenWRT user is already on. **No action.** The future ipv6 / per-MAC
-  resolver decisions might revisit.
-
-- **nftables:** the enforcement plane. Tight coupling intentional. The
-  pain points (DNAT-in-filter #297, atomic load) are nftables-specific
-  but well-understood. No change recommended; just ensure CI catches
-  them ([§5](#5-failure-modes-and-rendering-pipeline)).
-
-- **conntrack:** the agent's per-flow event source. Couples to the
-  kernel module + `conntrack -E` CLI. No structural concern.
-
-- **OpenWRT procd:** packaged with assumptions about init scripts,
-  UCI, and OpenWRT-specific tooling (`uci`, `logger`). Acceptable.
-
-- **opkg:** auto-update pulls from GitHub releases. Security audit
-  surface (#369). No structural concern.
-
-- **Postgres:** the only persistence layer. The API isn't trying to
-  be portable; tight coupling intentional. Migration tooling (Flyway)
-  is appropriate.
-
-- **Docker / docker-compose:** the deploy unit. No structural concern.
-
-**No findings; documented for traceability.**
-
----
-
-## 9. Threat model (light — overlap with #369 noted)
-
-One pass, not a security audit. The question is whether the
-architecture has structural defenses or relies on layers not yet built.
-
-The kid-on-LAN threat is the load-bearing one. The architecture's
-answer is: "DNS doesn't enforce; nft forward-drop is the only thing
-that matters; therefore DoH and DNS bypass are irrelevant."
-
-That answer holds **only if every connection from a kid device is
-matched by a per-MAC drop rule that fires.** Three structural concerns:
-
-1. **MAC randomization bypass** (already in the executive summary).
-   iOS Private Address, Android randomized MAC, Linux `macchanger`.
-   Today: a fresh MAC has no profile → no entry in `blocked_macs` →
-   no entry in `profile_macs` → forward chain doesn't drop it.
-   The boot default-deny skeleton handles only the boot window. After
-   that, unmanaged MACs flow freely. **Sub-issue filed.** Coordinate
-   with #369 — this finding belongs structurally here (the architecture
-   doesn't *have* a "default policy for unmanaged MAC"), security-wise
-   there ([#369]).
-
-2. **Compromised managed device pivots to API.** If malware on a kid's
-   laptop discovers `router_token` from the agent's `/etc/config/familydns`,
-   it can spoof router calls to the API. The API trusts a router token
-   completely. **Severity: medium for a parental-controls product;
-   relies on filesystem permissions on the router.** Owned by #369.
-
-3. **DNS-tail cache poisoning.** `familydns-dns-tail` reads
-   `/tmp/familydns-dnsmasq.log` and trusts every reply line to update
-   the IP→hostname cache. A device that runs its own resolver (DoH /
-   direct IP / DNS-over-TCP to 1.1.1.1) doesn't show up in this log,
-   so its hostname attribution falls back to IP literal. That's
-   correct behavior. But a device that *can write to that log file*
-   (impossible if the agent runs as root with normal FS perms; defense
-   in depth nonetheless) could poison the cache. Owned by #369.
-
-The architecture's structural defenses are: nft as the only
-enforcement plane, per-MAC rules, snapshot-derived rather than
-agent-evaluated. These are sound. The MAC-randomization gap is a
-**structural** miss: the design does not name "unmanaged MAC" as a
-state and so the renderer has no rule for it.
-
----
-
-## 10. Maintenance + evolution — adding a new feature
-
-Walk-through: imagine adding "block YouTube Shorts specifically (not
-the rest of YouTube)" — a hypothetical new feature with no incumbent
-implementation.
-
-Steps required today:
-
-1. Add a column to `profiles` or a new table (migration).
-2. Wire it into `Profile` / `UpsertProfileRequest` in `shared/Models.scala`.
-3. Wire it into `ProfileRepo.update` and `findById`.
-4. Wire it into `PolicyService.snapshot` to add a field to `PolicyProfile`
-   OR (better) compute its effect into `blockedMacs` / `extraBlocked`.
-5. Update `policy_spec.lua` fixtures.
-6. Possibly update `render.lua` if the field needs rendering.
-7. Update `render_spec.lua` fixtures.
-8. Update admin UI form.
-9. Document in architecture.md if it's a new concept.
-
-Steps 5 and 7 are the load-bearing pain. The fixture files are hand-
-maintained; they go stale silently. The #302 / #305 patterns are
-both "field landed in API, render side didn't notice."
-
-**Suggested response:** generate the agent-side fixture from the API.
-Concretely: a CI step that runs the API in test mode, POSTs a known
-admin payload, GETs the snapshot, and saves it to `openwrt/test/fixtures/`.
-The render tests load that. Mismatches between API and agent now
-break CI deterministically. Sub-issue filed.
-
-**Pattern observation:** every recent feature has touched
-`shared/Models.scala`, `PolicyService.scala`, `policy.lua`, `render.lua`,
-and `render_spec.lua`. The Scala side is one strongly-typed source of
-truth; the Lua side is a hand-maintained shadow. Either generate Lua
-parsing/types from Scala (overkill) or generate fixtures (sufficient).
 
 ---
 
 ## Systemic patterns
 
-The findings above cluster around four root patterns:
+The eleven findings cluster into four design-record-level patterns:
 
-### Pattern A: shape-driven instead of value-driven wire types
+### Pattern A: load-bearing axioms named but not defended
 
-The snapshot wire format is a near-direct projection of database rows.
-Computed shapes (BlockRules from §0.2) are bolted on as corrections
-when the projection isn't enough (`blockedMacs` is the most recent
-example). The fix is to invert: design the wire shape from the
-**agent's enforcement needs**, then make the API project DB rows down
-into that shape. Bugs caused by this pattern: #305, #302, #354.
+The architecture asserts a property (MAC-is-identity, hostname-is-text,
+nft-is-the-only-enforcement-plane) and builds on it without surfacing
+what happens when the assumption breaks. Findings: §1 (MAC randomization),
+§11 (hostname-as-IP fallback).
 
-### Pattern B: external-tool reload without verification
+### Pattern B: tradeoffs accepted without naming the alternative
 
-dnsmasq SIGHUP doesn't reload conf-dir (#328). nft `-f` silently keeps
-the old ruleset on parse error (#297). Conntrack POSTs are best-effort
-(#330, partly fixed). The system has no convention for "call out,
-verify the call had its intended effect." #328 added the first such
-verification (smoke probe for sinkholed domain). It should generalize.
+The design has chosen something (HTTPS-hangs over HTTPS-warning-page,
+binary blockIpOnly, one snapshot for two rate-classes) but the design
+record doesn't show the alternative was considered. Findings: §2 (HTTPS
+block), §3 (blockIpOnly), §9 (one ETag).
 
-### Pattern C: implicit state machines
+### Pattern C: lifecycle edges undesigned
 
-Device lifecycle (#249). Agent failover state (#321, #331).
-Snapshot-vs-cached-vs-default-deny (#308, #309). Each was solved by
-adding one more flag or one more repo method. The transitions are
-correct but unrostered; the next race (DHCP-rename-after-admin-rename,
-say) requires another flag.
+Enrollment and ongoing poll are covered; the edges around them are not.
+Findings: §4 (schema evolution), §6 (failover threshold ownership), §7
+(cross-platform translation), §10 (router-record deletion).
 
-### Pattern D: tests assert structure, not behavior
+### Pattern D: internal drift within the design record
 
-`render_spec` validates the string of the generated nft file; nothing
-runs nft on it. `policy_spec` validates the snapshot parse; nothing
-applies it. `RouterApiSpec` validates the JSON wire; nothing on the
-other end consumes it. Bugs caused: #297 (DNAT in inet), #287
-(duplicate keyword), #321 (render branch never reached), #305
-(schedule field unused). The fix is a small end-to-end suite that
-posts → polls → renders → validates with `nft -c`, not necessarily
-full e2e with traffic.
+The canonical record contradicts itself, or under-specifies what an
+implementer must produce. Findings: §5 (FailureMode mismatch), §8 (agent
+responsibilities understated).
 
 ---
 
-## What this audit visited and found OK
+## What this audit visited and found OK at the architecture level
 
-Audit areas from issue #368 with **no concern worth filing**, recorded
-so coverage is reviewable:
+Recorded for traceability:
 
-- **§2 force-pressures on the API/router split:** the split holds
-  for the assumed scale; no forces currently pushing back on it.
-- **§4 tmpfs buckets / power-loss correctness:** design call is sound;
-  do not revisit.
-- **§5 NTP / clock skew handling:** the post-#312 design (skew
-  reported, banner shown, enforcement continues) is balanced.
-- **§5 DB blip (503 vs 500):** resolved in resilience.md §3 work.
-- **§6 admin-action races on independent fields:** parental-controls
-  product, last-write-wins acceptable.
-- **§6 race between policy edits and policy polls:** etag flips
-  naturally; no structural concern.
-- **§7 usage POST scale:** current cadence (every 5 min per router)
-  fits the assumed scale.
-- **§8 each external dependency considered:** no swap-out savings
-  judged worth the migration cost today.
-- **§8 procd / OpenWRT init coupling:** acceptable; intentional.
-- **§10 schema migration tooling (Flyway):** appropriate.
+- **§0.1 "DNS is never the enforcement plane."** Sound axiom; well-defended
+  with concrete rejection reasons (DoH, hardcoded-IP, per-MAC granularity,
+  block-page UX). No concern.
+- **§0.2 split between `MacBlockReason` and per-flow `BlockReason`.** The
+  type-system enforcement (router can't emit a Mac-level reason in a
+  per-flow event) is a clean design.
+- **§2 topology assumptions** (one API, one router per household, HTTP for
+  router endpoints, bearer tokens). All sound for the current scope.
+- **§5 worst-case staleness = one poll interval.** Acceptable for the
+  product; documented in §5.
+- **`resilience.md` §1–3, §5** (power loss boot-deny, API restart with
+  cached snapshot, DB blip 503, clock-skew measurement). All sound; the
+  fragile parts were the implementation gaps, now mostly closed.
+- **§6 wire contract endpoints** (`register`, `policy`, `usage`,
+  `events`, `decision`, `/blocked`). Endpoint set is sound; the only
+  evolution concern is captured under §4 above.
+- **§9 schema.** Platform-neutral; appropriate.
+- **§10 rollout sequence.** Sound. The deletion of `dns/` and `traffic/`
+  modules in #71/#125 was the right call.
 
 ---
 
 ## Sub-issues filed
 
-| # | Title | Section |
+| # | Title | Finding |
 |---|-------|---------|
-| [#370](https://github.com/sameerparekh/familydns/issues/370) | snapshot: collapse decision-inputs server-side; ship canonical BlockRules shape | §3 |
-| [#371](https://github.com/sameerparekh/familydns/issues/371) | render: validate generated nft + dnsmasq config against target tool in CI | §5 |
-| [#372](https://github.com/sameerparekh/familydns/issues/372) | device-ingest: consolidate first_seen / dhcp / rename into single repo method | §4 |
-| [#373](https://github.com/sameerparekh/familydns/issues/373) | e2e: end-to-end policy round-trip from admin POST to nft rule | §10 |
-| [#374](https://github.com/sameerparekh/familydns/issues/374) | enforcement: default-drop rule for unmanaged-MAC bypass | §9 |
-| [#375](https://github.com/sameerparekh/familydns/issues/375) | API: ETag-keyed in-memory snapshot cache to avoid per-poll recompute | §2 |
-| [#376](https://github.com/sameerparekh/familydns/issues/376) | snapshot: add snapshotVersion field; agents refuse unknown versions | §4 |
-| [#377](https://github.com/sameerparekh/familydns/issues/377) | render: capture nft / dnsmasq stderr; surface apply failures | §5 |
-| [#378](https://github.com/sameerparekh/familydns/issues/378) | API: optimistic locking (If-Match: ETag) on profile updates | §5 |
-| [#379](https://github.com/sameerparekh/familydns/issues/379) | docs: pin scaling assumptions in architecture.md | §7 |
-| [#380](https://github.com/sameerparekh/familydns/issues/380) | tests: generate Lua render fixtures from a live API run | §10 |
+| [#374](https://github.com/sameerparekh/familydns/issues/374) | unmanaged-mac: alerting, default-block flag, admin UI page, push notification | §1 |
+| [#383](https://github.com/sameerparekh/familydns/issues/383) | block-page: serve HTTPS variant with self-signed cert | §2 |
+| [#384](https://github.com/sameerparekh/familydns/issues/384) | blockIpOnly: allow IPs that resolved-for-this-MAC to extraAllowed hosts | §3 |
+| [#376](https://github.com/sameerparekh/familydns/issues/376) | wire-contract: schema versioning + capability negotiation | §4 |
+| [#385](https://github.com/sameerparekh/familydns/issues/385) | FailureMode: align design record on three modes (BlockAll / AllowAll / LastKnownGood) | §5 |
+| [#386](https://github.com/sameerparekh/familydns/issues/386) | snapshot: failover threshold owned by API, shipped in snapshot | §6 |
+| [#387](https://github.com/sameerparekh/familydns/issues/387) | OpnSense agent: design doc proving wire-contract portability before #94 | §7 |
+| [#388](https://github.com/sameerparekh/familydns/issues/388) | docs: fully specify agent responsibilities in architecture.md §3.2 | §8 |
+| [#389](https://github.com/sameerparekh/familydns/issues/389) | docs: document the one-ETag two-rate-classes tradeoff | §9 |
+| [#390](https://github.com/sameerparekh/familydns/issues/390) | router-deletion: 410 Gone + agent stops + allow-all | §10 |
+| [#391](https://github.com/sameerparekh/familydns/issues/391) | wire-contract: hostname becomes union of FQDN \| IPv4 \| IPv6 | §11 |
