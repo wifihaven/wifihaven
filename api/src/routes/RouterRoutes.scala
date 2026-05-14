@@ -25,7 +25,7 @@ object RouterRoutes {
       blockEventRepo: BlockEventRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.POST / "api" / "router" / "register"        ->
+      Method.POST / "api" / "router" / "register"      ->
         handler { (req: Request) =>
           for {
             body <- req.body.asString.orElseFail(Response.badRequest(""))
@@ -48,7 +48,7 @@ object RouterRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(RegisterRouterResponse(router.id, routerToken).toJson)
         },
-      Method.GET / "api" / "router" / "policy"           ->
+      Method.GET / "api" / "router" / "policy"         ->
         handler { (req: Request) =>
           for {
             router <- routerAuth.authenticate(req)
@@ -77,18 +77,15 @@ object RouterRoutes {
                   .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))
           } yield resp
         },
-      Method.GET / "api" / "blocklists" / string("file") ->
-        handler { (file: String, req: Request) =>
+      Method.GET / "api" / "blocklists" / string("id") ->
+        handler { (id: String, req: Request) =>
           for {
             _    <- routerAuth.authenticate(req)
-            cat  <- ZIO
-              .succeed(file.stripSuffix(".rpz"))
-              .filterOrFail(_ != file)(Response.notFound("expected .rpz suffix"))
-            out  <- policy.renderRpz(cat).mapError(ErrorMapper.dbErrorToResponse)
+            out  <- policy.renderBlocklist(id).mapError(ErrorMapper.dbErrorToResponse)
             resp <- ZIO
               .fromOption(out)
               .mapBoth(
-                _ => Response.notFound(s"unknown category: $cat"),
+                _ => Response.notFound(s"unknown blocklist: $id"),
                 { case (etag, body) =>
                   val ifNone = req.header(Header.IfNoneMatch).map(_.renderedValue)
                   if ifNone.contains(etag) then
@@ -99,7 +96,7 @@ object RouterRoutes {
                     Response(
                       status = Status.Ok,
                       headers = Headers(
-                        Header.ContentType(MediaType("text", "dns")),
+                        Header.ContentType(MediaType("text", "plain")),
                         Header.ETag.Strong(stripQuotes(etag)),
                       ),
                       body = Body.fromString(body),
@@ -108,7 +105,7 @@ object RouterRoutes {
               )
           } yield resp
         },
-      Method.POST / "api" / "router" / "decision"        ->
+      Method.POST / "api" / "router" / "decision"      ->
         handler { (req: Request) =>
           for {
             router <- routerAuth.authenticate(req)

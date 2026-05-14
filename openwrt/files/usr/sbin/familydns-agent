@@ -12,14 +12,15 @@
 --   render.lua     — dnsmasq conf + nft fragment generator
 --   usage.lua      — nftables counter scraper + usage reporter
 
-local uci      = require("uci")
-local policy   = require("familydns.policy")
-local usage    = require("familydns.usage")
-local conntrack = require("familydns.conntrack")
-local render   = require("familydns.render")
-local dns_log  = require("familydns.dns_log")
-local log      = require("familydns.log")
-local clock    = require("familydns.clock")
+local uci        = require("uci")
+local policy     = require("familydns.policy")
+local blocklists = require("familydns.blocklists")
+local usage      = require("familydns.usage")
+local conntrack  = require("familydns.conntrack")
+local render     = require("familydns.render")
+local dns_log    = require("familydns.dns_log")
+local log        = require("familydns.log")
+local clock      = require("familydns.clock")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -341,7 +342,18 @@ conntrack.watch({
       local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
       local fetch_ok
       if snap then
-        -- 200: apply with no failover opts. If we were in failover, this
+        -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
+        local bl_result = blocklists.fetch_and_cache(
+          snap, http_get, nil, "/etc/familydns/blocklists")
+        if #bl_result.errors > 0 then
+          for _, e in ipairs(bl_result.errors) do
+            log.warn("blocklist fetch: %s", tostring(e))
+          end
+        end
+        blocklists.gc(snap, nil, "/etc/familydns/blocklists")
+        snap._blocklist_hosts = blocklists.load_cached(snap, nil, "/etc/familydns/blocklists")
+
+        -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
         -- just need to clear the flag below.
         if policy.apply(snap, write_file, run_cmd, log) then

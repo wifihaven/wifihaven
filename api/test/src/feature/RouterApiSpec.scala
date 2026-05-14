@@ -229,8 +229,8 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(snap.profiles.contains(adult)) &&
         assertTrue(!kp.rules.blocked) &&
         assertTrue(kp.rules.blockReason.isEmpty) &&
-        assertTrue(snap.blocklists.contains("ads")) &&
-        assertTrue(snap.blocklists("ads").url == "/api/blocklists/ads.rpz")
+        assertTrue(snap.blocklists.contains(BlocklistId("ads"))) &&
+        assertTrue(snap.blocklists(BlocklistId("ads")).url == "/api/blocklists/ads")
     },
     test("etag deterministic across calls; If-None-Match → 304; mutation → fresh etag") {
       for {
@@ -272,7 +272,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(r3.status == Status.Ok) &&
         assertTrue(s1.etag != s3.etag)
     },
-    test("RPZ blocklist: 200 with formatted body, 401 unauth, 404 unknown") {
+    test("blocklist (plain-text): 200 with version comment + hosts, 401 unauth, 404 unknown") {
       for {
         _       <- cleanDb
         rr      <- ZIO.service[RouterRepo]
@@ -285,24 +285,26 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
         reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
-        noAuth  <- routes.runZIO(Request.get(URL.decode("/api/blocklists/ads.rpz").toOption.get))
+        noAuth  <- routes.runZIO(Request.get(URL.decode("/api/blocklists/ads").toOption.get))
         ok      <- routes.runZIO(
           Request
-            .get(URL.decode("/api/blocklists/ads.rpz").toOption.get)
+            .get(URL.decode("/api/blocklists/ads").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken)),
         )
         okBody  <- ok.body.asString
         nf      <- routes.runZIO(
           Request
-            .get(URL.decode("/api/blocklists/nonsense.rpz").toOption.get)
+            .get(URL.decode("/api/blocklists/nonsense").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken)),
         )
       } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(ok.status == Status.Ok) &&
-        assertTrue(okBody.contains("$ORIGIN ads.rpz.")) &&
-        assertTrue(okBody.contains("doubleclick.net CNAME .")) &&
-        assertTrue(okBody.contains("ads.example.com CNAME .")) &&
-        assertTrue(ok.header(Header.ContentType).exists(_.renderedValue.startsWith("text/dns"))) &&
+        assertTrue(okBody.startsWith("# version: ")) &&
+        assertTrue(okBody.contains("doubleclick.net\n")) &&
+        assertTrue(okBody.contains("ads.example.com\n")) &&
+        assertTrue(
+          ok.header(Header.ContentType).exists(_.renderedValue.startsWith("text/plain")),
+        ) &&
         assertTrue(ok.header(Header.ETag).isDefined) &&
         assertTrue(nf.status == Status.NotFound)
     },
@@ -377,6 +379,182 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(out.enrollmentToken.startsWith("et_")) &&
         assertTrue(row.tokenHash.isEmpty) &&
         assertTrue(row.enrollmentTokenHash.contains(PolicyService.hashToken(out.enrollmentToken)))
+    },
+    // ── #352: plain-text blocklist endpoint replaces RPZ ──────────────────────
+    test(
+      "blocklist endpoint: 200 text/plain with version comment + sorted hosts; ETag content-derived; 304 on repeat",
+    ) {
+      for {
+        _       <- cleanDb
+        rr      <- ZIO.service[RouterRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        ps      <- makePolicyService
+        _       <- blr.insertBatch(
+          List(
+            ("adserver.example.com", "test_ads"),
+            ("doubleclick.net", "test_ads"),
+            ("googleadservices.com", "test_ads"),
+          ),
+        )
+        ber     <- ZIO.service[BlockEventRepo]
+        (_, et) <- seedRouter("gw-bl")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        ok      <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/blocklists/test_ads").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+        body    <- ok.body.asString
+        etag1 = ok.header(Header.ETag).map(_.renderedValue)
+        notMod <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/blocklists/test_ads").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken))
+            .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk(etag1.get))),
+        )
+      } yield assertTrue(ok.status == Status.Ok) &&
+        assertTrue(
+          ok.header(Header.ContentType).exists(_.renderedValue.startsWith("text/plain")),
+        ) &&
+        assertTrue(body.startsWith("# version: ")) &&
+        assertTrue(body.contains("adserver.example.com\n")) &&
+        assertTrue(body.contains("doubleclick.net\n")) &&
+        assertTrue(body.contains("googleadservices.com\n")) &&
+        // Hosts are sorted ascending — adserver < doubleclick < googleadservices
+        assertTrue(body.indexOf("adserver.example.com") < body.indexOf("doubleclick.net")) &&
+        assertTrue(body.indexOf("doubleclick.net") < body.indexOf("googleadservices.com")) &&
+        assertTrue(etag1.isDefined) &&
+        // ETag must be content-derived only (no date substring like "2026-")
+        assertTrue(!etag1.get.matches(".*\\d{4}-\\d{2}-\\d{2}.*")) &&
+        assertTrue(notMod.status == Status.NotModified)
+    },
+    test("blocklist endpoint: 401 without auth; 404 for unknown id") {
+      for {
+        _       <- cleanDb
+        rr      <- ZIO.service[RouterRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        ps      <- makePolicyService
+        _       <- blr.insertBatch(List(("doubleclick.net", "test_ads")))
+        ber     <- ZIO.service[BlockEventRepo]
+        (_, et) <- seedRouter("gw-bl2")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp   <- doRegister(routes, et)
+        regBody   <- regResp.body.asString
+        reg       <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        noAuth    <- routes.runZIO(
+          Request.get(URL.decode("/api/blocklists/test_ads").toOption.get),
+        )
+        wrongAuth <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/blocklists/test_ads").toOption.get)
+            .addHeader(Header.Authorization.Bearer("rt_wrong")),
+        )
+        notFound  <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/blocklists/unknown_id").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+      } yield assertTrue(noAuth.status == Status.Unauthorized) &&
+        assertTrue(wrongAuth.status == Status.Unauthorized) &&
+        assertTrue(notFound.status == Status.NotFound)
+    },
+    test("old .rpz path returns 404 (route entirely removed)") {
+      for {
+        _       <- cleanDb
+        rr      <- ZIO.service[RouterRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        ps      <- makePolicyService
+        _       <- blr.insertBatch(List(("doubleclick.net", "test_ads")))
+        ber     <- ZIO.service[BlockEventRepo]
+        (_, et) <- seedRouter("gw-bl3")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        rpzResp <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/blocklists/test_ads.rpz").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+      } yield assertTrue(rpzResp.status == Status.NotFound)
+    },
+    test(
+      "snapshot: blocklists map keyed by id; url uses /api/blocklists/<id> (no .rpz); version is SHA prefix not date",
+    ) {
+      for {
+        _       <- cleanDb
+        rr      <- ZIO.service[RouterRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        ps      <- makePolicyService
+        _       <- blr.insertBatch(
+          List(
+            ("doubleclick.net", "test_ads"),
+            ("googleadservices.com", "test_ads"),
+            ("tiktok.com", "test_social"),
+          ),
+        )
+        ber     <- ZIO.service[BlockEventRepo]
+        (_, et) <- seedRouter("gw-bl4")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        resp    <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+        body    <- resp.body.asString
+        snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
+      } yield assertTrue(snap.blocklists.contains(BlocklistId("test_ads"))) &&
+        assertTrue(snap.blocklists.contains(BlocklistId("test_social"))) &&
+        assertTrue(snap.blocklists(BlocklistId("test_ads")).url == "/api/blocklists/test_ads") &&
+        assertTrue(!snap.blocklists(BlocklistId("test_ads")).url.contains(".rpz")) &&
+        // version is a hex SHA prefix, not a date like "2026-05-14"
+        assertTrue(
+          !snap.blocklists(BlocklistId("test_ads")).version.matches("\\d{4}-\\d{2}-\\d{2}"),
+        )
+    },
+    test(
+      "snapshot ETag: does not change when only today changes; changes when blocklist content changes",
+    ) {
+      for {
+        _       <- cleanDb
+        pr      <- ZIO.service[ProfileRepo]
+        sr      <- ZIO.service[ScheduleRepo]
+        rr      <- ZIO.service[RouterRepo]
+        blr     <- ZIO.service[BlocklistRepo]
+        ber     <- ZIO.service[BlockEventRepo]
+        _       <- TestLayers.seedKidsProfile(pr, sr)
+        _       <- blr.insertBatch(List(("doubleclick.net", "test_ads")))
+        ps      <- makePolicyService
+        (_, et) <- seedRouter("gw-etag")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        r1      <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+        b1      <- r1.body.asString
+        s1      <- ZIO.fromEither(b1.fromJson[PolicySnapshot])
+        // Adding new domain should change the ETag (content changes)
+        _       <- blr.insertBatch(List(("ads.example.com", "test_ads")))
+        r2      <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+        )
+        b2      <- r2.body.asString
+        s2      <- ZIO.fromEither(b2.fromJson[PolicySnapshot])
+      } yield assertTrue(r1.status == Status.Ok) &&
+        assertTrue(r2.status == Status.Ok) &&
+        assertTrue(s1.etag != s2.etag)
     },
   ) @@ TestAspect.sequential
 }

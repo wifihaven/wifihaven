@@ -470,14 +470,27 @@ case class RouterDecisionResponse(
 // `DevicePolicy.rules` exists for future per-device overrides; PolicyService
 // currently always emits `None` there (no UI to set it).
 
-case class PolicyBlocklist(version: String, url: String) derives JsonCodec
+opaque type BlocklistId = String
+object BlocklistId {
+  def apply(s: String): BlocklistId             = s
+  extension (id: BlocklistId) def value: String = id
+  given JsonEncoder[BlocklistId]                = JsonEncoder.string.contramap(_.value)
+  given JsonDecoder[BlocklistId]                = JsonDecoder.string.map(apply)
+  given JsonCodec[BlocklistId]                  =
+    JsonCodec(summon[JsonEncoder[BlocklistId]], summon[JsonDecoder[BlocklistId]])
+  given Ordering[BlocklistId] = Ordering.by[BlocklistId, String](_.value)(using Ordering.String)
+  given JsonFieldEncoder[BlocklistId] = JsonFieldEncoder.string.contramap(_.value)
+  given JsonFieldDecoder[BlocklistId] = JsonFieldDecoder.string.map(apply)
+}
+
+case class Blocklist(version: String, url: String) derives JsonCodec
 
 case class BlockRules(
     blocked: Boolean,
     blockReason: Option[MacBlockReason],
     extraBlocked: List[String],
     extraAllowed: List[String],
-    blocklistIds: List[String],
+    blocklistIds: List[BlocklistId],
     blockIpOnly: Boolean,
 ) derives JsonCodec
 
@@ -487,7 +500,7 @@ object BlockRules {
     blockReason = None,
     extraBlocked = Nil,
     extraAllowed = Nil,
-    blocklistIds = Nil,
+    blocklistIds = List.empty[BlocklistId],
     blockIpOnly = false,
   )
 }
@@ -509,7 +522,7 @@ case class PolicySnapshot(
     generatedAt: String,
     devices: Map[String, DevicePolicy],
     profiles: Map[Long, ProfilePolicy],
-    blocklists: Map[String, PolicyBlocklist],
+    blocklists: Map[BlocklistId, Blocklist],
 ) derives JsonCodec
 
 // ── Block reasons (snapshot + router-emitted) ─────────────────────────────
