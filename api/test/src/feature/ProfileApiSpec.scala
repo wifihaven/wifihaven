@@ -154,7 +154,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(stls.head.label == "YouTube") &&
           assertTrue(stls.head.dailyMinutes == 45)
       },
-      test("failureMode defaults to Closed when omitted from create request (#311 fail-safe)") {
+      test("failureMode defaults to LastKnownGood when omitted from create request (#385)") {
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
@@ -184,9 +184,9 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           _        <- routes.runZIO(req)
           profiles <- profileRepo.listAll
           found = profiles.find(_.name == "Defaulted").get
-        } yield assertTrue(found.failureMode == FailureMode.Closed)
+        } yield assertTrue(found.failureMode == FailureMode.LastKnownGood)
       },
-      test("failureMode=Open in create request persists Open (#311 admin override)") {
+      test("failureMode=AllowAll in create request persists AllowAll (#385 admin override)") {
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
@@ -207,7 +207,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             userRepoSvc,
           )
           body   = UpsertProfileRequest(
-            name = "AdultsOpen",
+            name = "AdultsAllowAll",
             blockedCategories = Nil,
             extraBlocked = Nil,
             extraAllowed = Nil,
@@ -215,7 +215,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             schedules = Nil,
             timeLimit = None,
             siteTimeLimits = Nil,
-            failureMode = Some(FailureMode.Open),
+            failureMode = Some(FailureMode.AllowAll),
           ).toJson
           req    = Request
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
@@ -223,8 +223,8 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             .addHeader(Header.ContentType(MediaType.application.json))
           _        <- routes.runZIO(req)
           profiles <- profileRepo.listAll
-          found = profiles.find(_.name == "AdultsOpen").get
-        } yield assertTrue(found.failureMode == FailureMode.Open)
+          found = profiles.find(_.name == "AdultsAllowAll").get
+        } yield assertTrue(found.failureMode == FailureMode.AllowAll)
       },
       test("PUT /api/profiles/:id updates failureMode") {
         for {
@@ -257,7 +257,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             schedules = Nil,
             timeLimit = None,
             siteTimeLimits = Nil,
-            failureMode = Some(FailureMode.Open),
+            failureMode = Some(FailureMode.AllowAll),
           ).toJson
           req    = Request
             .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
@@ -266,7 +266,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           resp    <- routes.runZIO(req)
           updated <- profileRepo.findById(kidsId)
         } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(updated.exists(_.failureMode == FailureMode.Open))
+          assertTrue(updated.exists(_.failureMode == FailureMode.AllowAll))
       },
       test("child user cannot create profiles") {
         for {

@@ -176,10 +176,30 @@ end
 -- ---------------------------------------------------------------------------
 -- opts (optional table):
 --   poll_age_seconds  number — seconds since the last successful policy poll.
---                              When > 300, devices whose profile's
---                              failureMode == "closed" get an additional
---                              failover drop rule. failureMode == "open"
---                              profiles are unaffected.
+--                              When > 300, the per-profile failureMode
+--                              decides what happens (#385):
+--                                "block-all"       → emit an additional drop
+--                                                    rule for the profile's
+--                                                    devices (fail-safe).
+--                                "allow-all"       → suppress this profile's
+--                                                    devices from
+--                                                    @blocked_macs and from
+--                                                    every per-(MAC, host)
+--                                                    and per-(MAC,
+--                                                    blocklistId) drop, and
+--                                                    from the DNAT chain.
+--                                                    Cached enforcement is
+--                                                    erased for these MACs.
+--                                "last-known-good" → no change. The profile's
+--                                                    cached snapshot rules
+--                                                    keep enforcing exactly
+--                                                    as-is (this is the
+--                                                    behaviour the original
+--                                                    binary "open" had).
+--                              Below the 5-minute threshold all profiles
+--                              behave as LastKnownGood — the cached
+--                              snapshot stands and no failover transition
+--                              has happened yet.
 function M.nft(snapshot, opts)
   local out = {}
   local function emit(s)  out[#out + 1] = s  end
@@ -206,6 +226,31 @@ function M.nft(snapshot, opts)
     if pid then
       if not profile_macs[pid] then profile_macs[pid] = {} end
       profile_macs[pid][#profile_macs[pid] + 1] = mac
+    end
+  end
+
+  -- #385: during failover (>5 min API-unreachable), an AllowAll profile's
+  -- devices must NOT receive any drop rule — not the @blocked_macs
+  -- entry, not the per-(MAC, host) eb_ drops, not the per-(MAC,
+  -- blocklistId) bl_ drops, and not the block-page DNAT. The cached
+  -- snapshot is intentionally discarded for these MACs (cf. LastKnownGood,
+  -- where the cached snapshot keeps enforcing). Compute the suppress set
+  -- once so every subsequent rule-emission step can filter cheaply.
+  local poll_age = opts and opts.poll_age_seconds
+  local in_failover = poll_age and poll_age > 300
+  local allowall_macs = {}
+  if in_failover then
+    local allowall_pids = {}
+    for pidStr, prof in pairs(snapshot.profiles or {}) do
+      if prof.failureMode == "allow-all" then
+        local pid = tonumber(pidStr)
+        if pid then allowall_pids[pid] = true end
+      end
+    end
+    for mac, dev in pairs(snapshot.devices or {}) do
+      if dev.profileId and allowall_pids[dev.profileId] then
+        allowall_macs[mac] = true
+      end
     end
   end
 
@@ -244,7 +289,7 @@ function M.nft(snapshot, opts)
   local blocked_macs_list = {}
   for mac, dev in sorted_devices(snapshot.devices) do
     local r = effective_rules(dev, snapshot.profiles)
-    if r and r.blocked then
+    if r and r.blocked and not allowall_macs[mac] then
       blocked_macs_list[#blocked_macs_list + 1] = mac
     end
   end
@@ -277,10 +322,12 @@ function M.nft(snapshot, opts)
   -- device override applies only to that one MAC.
   local eb_pairs = {}
   for mac, dev in sorted_devices(snapshot.devices) do
-    local r = effective_rules(dev, snapshot.profiles)
-    if r and type(r.extraBlocked) == "table" then
-      for _, host in ipairs(r.extraBlocked) do
-        eb_pairs[#eb_pairs + 1] = { mac = mac, host = host }
+    if not allowall_macs[mac] then
+      local r = effective_rules(dev, snapshot.profiles)
+      if r and type(r.extraBlocked) == "table" then
+        for _, host in ipairs(r.extraBlocked) do
+          eb_pairs[#eb_pairs + 1] = { mac = mac, host = host }
+        end
       end
     end
   end
@@ -303,11 +350,13 @@ function M.nft(snapshot, opts)
   -- emit a drop rule. Ids absent from snapshot.blocklists are silently skipped.
   local bl_pairs = {}
   for mac, dev in sorted_devices(snapshot.devices) do
-    local r = effective_rules(dev, snapshot.profiles)
-    if r and type(r.blocklistIds) == "table" then
-      for _, id in ipairs(r.blocklistIds) do
-        if (snapshot.blocklists or {})[id] then
-          bl_pairs[#bl_pairs + 1] = { mac = mac, id = id }
+    if not allowall_macs[mac] then
+      local r = effective_rules(dev, snapshot.profiles)
+      if r and type(r.blocklistIds) == "table" then
+        for _, id in ipairs(r.blocklistIds) do
+          if (snapshot.blocklists or {})[id] then
+            bl_pairs[#bl_pairs + 1] = { mac = mac, id = id }
+          end
         end
       end
     end
@@ -353,21 +402,28 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
-  -- #311 / #354: API-unreachable failover. failureMode is now per-profile
-  -- (carried on ProfilePolicy). Collect MACs of devices whose profile's
-  -- failureMode == "closed".
-  local poll_age = opts and opts.poll_age_seconds
-  if poll_age and poll_age > 300 then
-    local closed_pids = {}
+  -- #385: API-unreachable failover. failureMode is per-profile (carried on
+  -- ProfilePolicy) with three variants — see the opts.poll_age_seconds
+  -- doc at the top of M.nft for the per-mode behaviour. This block only
+  -- handles BlockAll: collect MACs of devices whose profile's failureMode
+  -- is "block-all" and emit a drop chain for them. AllowAll is enforced
+  -- by SUPPRESSION earlier in this function (allowall_macs gates the
+  -- @blocked_macs / eb_pairs / bl_pairs lists, so AllowAll devices reach
+  -- this point with zero drop rules attributed to them — exactly what
+  -- "pass forwarded traffic with no enforcement" means). LastKnownGood
+  -- is the no-op default: the cached snapshot's rules keep enforcing
+  -- exactly as-is.
+  if in_failover then
+    local blockall_pids = {}
     for pidStr, prof in pairs(snapshot.profiles or {}) do
-      if prof.failureMode == "closed" then
+      if prof.failureMode == "block-all" then
         local pid = tonumber(pidStr)
-        if pid then closed_pids[pid] = true end
+        if pid then blockall_pids[pid] = true end
       end
     end
     local failover_macs = {}
     for mac, dev in sorted_devices(snapshot.devices) do
-      if dev.profileId and closed_pids[dev.profileId] then
+      if dev.profileId and blockall_pids[dev.profileId] then
         failover_macs[#failover_macs + 1] = mac
       end
     end

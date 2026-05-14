@@ -11,10 +11,10 @@ import zio.json.*
 import zio.test.*
 
 /**
- * #311: PolicySnapshot must carry the per-profile failureMode so the agent can pick the right
- * failover behaviour after 5 minutes of API unreachability. Closed → drop all forwarded traffic for
- * the profile's devices; Open → keep enforcing the cached snapshot exactly as-is. Without this
- * field on the wire, "fail closed for children, fail open for adults" can't be honoured.
+ * #385: PolicySnapshot must carry the per-profile failureMode so the agent can pick the right
+ * failover behaviour after 5 minutes of API unreachability. Three modes: BlockAll → drop all
+ * forwarded traffic; AllowAll → pass everything; LastKnownGood → keep enforcing the cached snapshot
+ * exactly as-is.
  */
 object PolicySnapshotFailureModeSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
@@ -26,7 +26,7 @@ object PolicySnapshotFailureModeSpec
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
-  def spec = suite("PolicySnapshot — failureMode (#311)")(
+  def spec = suite("PolicySnapshot — failureMode (#385)")(
     test("snapshot carries each profile's failureMode value") {
       for {
         _      <- cleanDb
@@ -44,15 +44,19 @@ object PolicySnapshotFailureModeSpec
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
         // Force the two seeded profiles into known modes.
-        _ <- pr.update(profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.Closed))
-        _ <- pr.update(profiles0.find(_.name == "Adults").get.copy(failureMode = FailureMode.Open))
+        _    <- pr.update(
+          profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
+        )
+        _    <- pr.update(
+          profiles0.find(_.name == "Adults").get.copy(failureMode = FailureMode.LastKnownGood),
+        )
         snap <- svc.snapshot
         kids   = snap.profiles(kidsId)
         adults = snap.profiles(adultsId)
-      } yield assertTrue(kids.failureMode == FailureMode.Closed) &&
-        assertTrue(adults.failureMode == FailureMode.Open)
+      } yield assertTrue(kids.failureMode == FailureMode.BlockAll) &&
+        assertTrue(adults.failureMode == FailureMode.LastKnownGood)
     },
-    test("failureMode serializes as lowercase \"open\" / \"closed\" on the wire") {
+    test("failureMode serializes as lower-kebab on the wire (#385)") {
       // The lua agent reads snapshot.failureMode as a plain string; pin the
       // exact wire spelling so render.lua's comparisons don't drift.
       for {
@@ -68,12 +72,16 @@ object PolicySnapshotFailureModeSpec
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, trRepo, er, clock)
         profiles0 <- pr.listAll
-        _ <- pr.update(profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.Closed))
-        _ <- pr.update(profiles0.find(_.name == "Adults").get.copy(failureMode = FailureMode.Open))
-        snap <- svc.snapshot
+        _         <- pr.update(
+          profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
+        )
+        _         <- pr.update(
+          profiles0.find(_.name == "Adults").get.copy(failureMode = FailureMode.LastKnownGood),
+        )
+        snap      <- svc.snapshot
         json = snap.toJson
-      } yield assertTrue(json.contains("\"failureMode\":\"closed\"")) &&
-        assertTrue(json.contains("\"failureMode\":\"open\""))
+      } yield assertTrue(json.contains("\"failureMode\":\"block-all\"")) &&
+        assertTrue(json.contains("\"failureMode\":\"last-known-good\""))
     },
     test("ETag flips when a profile's failureMode changes") {
       for {
@@ -89,10 +97,14 @@ object PolicySnapshotFailureModeSpec
         clock  <- ZIO.service[Clock]
         svc = PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, trRepo, er, clock)
         profiles0 <- pr.listAll
-        _ <- pr.update(profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.Closed))
-        snap1 <- svc.snapshot
-        _ <- pr.update(profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.Open))
-        snap2 <- svc.snapshot
+        _         <- pr.update(
+          profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.BlockAll),
+        )
+        snap1     <- svc.snapshot
+        _         <- pr.update(
+          profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.LastKnownGood),
+        )
+        snap2     <- svc.snapshot
       } yield assertTrue(snap1.etag != snap2.etag)
     },
   ) @@ TestAspect.sequential

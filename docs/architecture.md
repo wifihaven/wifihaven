@@ -72,7 +72,10 @@ case class ProfilePolicy(
     rules: BlockRules,
     failureMode: FailureMode,                  // per-profile: what the router does
                                                //   for THIS profile's devices if it can't
-                                               //   reach the API for >5min
+                                               //   reach the API for >5min. See
+                                               //   docs/resilience.md §4 for the
+                                               //   per-mode behaviour and the
+                                               //   defaulting policy.
 )
 
 case class BlockRules(
@@ -397,7 +400,7 @@ Modified` if the client's ETag still matches.
         "blocklistIds": ["ads", "adult"],
         "blockIpOnly": true
       },
-      "failureMode": "closed"
+      "failureMode": "block-all"
     }
   },
   "blocklists": {

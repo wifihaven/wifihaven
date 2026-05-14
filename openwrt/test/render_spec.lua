@@ -28,7 +28,7 @@ local function snap_one()
           blocklistIds = { "ads", "adult" },
           blockIpOnly  = false,
         },
-        failureMode = "closed",
+        failureMode = "block-all",
       },
     },
     blocklists = {},
@@ -79,7 +79,7 @@ describe("render.dnsmasq", function()
         blocked = false, blockReason = nil,
         extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
       },
-      failureMode = "open",
+      failureMode = "last-known-good",
     }
     local conf = render.dnsmasq(s)
     assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3", 1, true))
@@ -96,7 +96,7 @@ describe("render.dnsmasq", function()
         extraBlocked = { "tiktok.com" }, extraAllowed = {}, blocklistIds = {},
         blockIpOnly = false,
       },
-      failureMode = "open",
+      failureMode = "last-known-good",
     }
     local conf = render.dnsmasq(s)
     local _, count = conf:gsub("ipset=/tiktok%.com/eb_tiktok_com", "")
@@ -113,7 +113,7 @@ describe("render.dnsmasq", function()
         extraBlocked = { "ghosthost.example" }, extraAllowed = {}, blocklistIds = {},
         blockIpOnly = false,
       },
-      failureMode = "open",
+      failureMode = "last-known-good",
     }
     local conf = render.dnsmasq(s)
     assert.is_nil(conf:find("ipset=/ghosthost.example/", 1, true))
@@ -316,7 +316,7 @@ describe("render.nft extraBlocked enforcement", function()
         blocked = false, blockReason = nil,
         extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
       },
-      failureMode = "open",
+      failureMode = "last-known-good",
     }
     local nft = render.nft(s)
     -- Kids MAC still has the drop.
@@ -337,7 +337,7 @@ describe("render.nft extraBlocked enforcement", function()
         extraBlocked = { "tiktok.com" }, extraAllowed = {}, blocklistIds = {},
         blockIpOnly = false,
       },
-      failureMode = "closed",
+      failureMode = "block-all",
     }
     local nft = render.nft(s)
     local _, set_count = nft:gsub("set eb_tiktok_com {", "")
@@ -549,7 +549,7 @@ describe("render.update_shared", function()
         blocked = true, blockReason = "TimeLimit",
         extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
       },
-      failureMode = "closed",
+      failureMode = "block-all",
     }
     local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
     render.update_shared(s, nft_sets, blocked_macs, blocked_reason)
@@ -617,7 +617,7 @@ describe("render blocklist enforcement (#352)", function()
             blocklistIds = { "test_ads" },
             blockIpOnly  = false,
           },
-          failureMode = "closed",
+          failureMode = "block-all",
         },
         ["1"] = {
           name = "adults",
@@ -629,7 +629,7 @@ describe("render blocklist enforcement (#352)", function()
             blocklistIds = {},
             blockIpOnly  = false,
           },
-          failureMode = "open",
+          failureMode = "last-known-good",
         },
       },
       blocklists = {

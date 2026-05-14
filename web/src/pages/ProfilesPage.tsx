@@ -31,8 +31,11 @@ function emptyForm(): FormState {
     timeLimit: '',
     schedules: [],
     siteTimeLimits: [],
-    // #311: safe default for a brand-new profile is fail-closed.
-    failureMode: 'closed',
+    // #385: safe default for a brand-new profile is LastKnownGood
+    // (matches the DB column default). The editor calls out the
+    // BlockAll-for-kids recommendation in copy; admins still have to
+    // pick BlockAll explicitly when creating a child profile.
+    failureMode: 'last-known-good',
   }
 }
 
@@ -523,9 +526,10 @@ function ProfileEditor({
           Paused — blocks all internet traffic for devices on this profile.
         </label>
 
-        {/* #311: per-profile failover when the router can't reach the API.
-            Radio (not checkbox) because the concept isn't boolean-friendly
-            without context — both options need their own copy. */}
+        {/* #385: per-profile failover when the router can't reach the API.
+            Three modes (BlockAll / AllowAll / LastKnownGood) — the
+            previous binary closed/open collapsed two semantically distinct
+            behaviours into one. */}
         <div>
           <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
             Failure mode
@@ -535,16 +539,16 @@ function ProfileEditor({
               <input
                 type="radio"
                 name="failureMode"
-                data-testid="profile-failure-mode-closed"
-                checked={form.failureMode === 'closed'}
-                onChange={() => setForm(f => ({ ...f, failureMode: 'closed' }))}
+                data-testid="profile-failure-mode-block-all"
+                checked={form.failureMode === 'block-all'}
+                onChange={() => setForm(f => ({ ...f, failureMode: 'block-all' }))}
                 className="mt-1 w-4 h-4 accent-emerald-500"
               />
               <span>
-                <span className="font-medium text-white">Fail closed</span>
+                <span className="font-medium text-white">Block all traffic</span>
                 <span className="text-gray-500"> (recommended for children)</span>
                 <span className="block text-xs text-gray-400 mt-0.5">
-                  when the router can't reach the API for 5 minutes, block all internet traffic for this profile.
+                  when the router can't reach the API for 5 minutes, drop all forwarded traffic for this profile's devices. The block page still loads.
                 </span>
               </span>
             </label>
@@ -552,16 +556,33 @@ function ProfileEditor({
               <input
                 type="radio"
                 name="failureMode"
-                data-testid="profile-failure-mode-open"
-                checked={form.failureMode === 'open'}
-                onChange={() => setForm(f => ({ ...f, failureMode: 'open' }))}
+                data-testid="profile-failure-mode-last-known-good"
+                checked={form.failureMode === 'last-known-good'}
+                onChange={() => setForm(f => ({ ...f, failureMode: 'last-known-good' }))}
                 className="mt-1 w-4 h-4 accent-emerald-500"
               />
               <span>
-                <span className="font-medium text-white">Fail open</span>
-                <span className="text-gray-500"> (recommended for adults)</span>
+                <span className="font-medium text-white">Last-known rules</span>
+                <span className="text-gray-500"> (recommended for adults — default)</span>
                 <span className="block text-xs text-gray-400 mt-0.5">
-                  when the router can't reach the API, keep enforcing the last-known rules; never auto-block.
+                  when the router can't reach the API, keep enforcing the cached snapshot exactly — categorical blocks, schedules, and time limits all still apply.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="radio"
+                name="failureMode"
+                data-testid="profile-failure-mode-allow-all"
+                checked={form.failureMode === 'allow-all'}
+                onChange={() => setForm(f => ({ ...f, failureMode: 'allow-all' }))}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span>
+                <span className="font-medium text-white">Allow all traffic</span>
+                <span className="text-gray-500"> (only for trusted profiles)</span>
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  when the router can't reach the API, clear every block for this profile's devices. The cached categorical / schedule rules stop applying.
                 </span>
               </span>
             </label>

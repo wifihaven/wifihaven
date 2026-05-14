@@ -23,8 +23,9 @@
 --                                   sinkhole-shaped answer means dnsmasq
 --                                   is still applying a stale rendering
 --                                   (failed restart) and triggers a WARN.
---       opts.poll_age_seconds → forwarded to render.nft for the #311 / #331
---                                 failover branch.
+--       opts.poll_age_seconds → forwarded to render.nft for the #385
+--                                 failover branch (three modes: block-all,
+--                                 allow-all, last-known-good).
 
 local M = {}
 

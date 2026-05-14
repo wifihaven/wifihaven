@@ -33,23 +33,34 @@ object UserRole {
   )
 }
 
-// #311: per-profile failover behaviour when the agent loses contact with the
-// API for >5 min. Closed = drop all forwarded traffic for the profile's
-// devices (fail-safe for kids); Open = keep enforcing the cached snapshot
-// exactly as-is (avoids locking adults out during ISP blips).
+// #385: per-profile failover behaviour when the agent loses contact with the
+// API for >5 min. Three modes (replacing the original binary Open/Closed
+// from #311, which collapsed AllowAll and LastKnownGood into one):
+//   BlockAll      — drop all forwarded traffic for the profile's devices
+//                   (fail-safe; recommended default for child profiles).
+//   AllowAll      — pass forwarded traffic with no enforcement; clears all
+//                   per-MAC drop rules for the profile (only sensible for
+//                   trusted profiles where the cached-snapshot defence is
+//                   not worth the lockout risk).
+//   LastKnownGood — keep enforcing the cached snapshot exactly as-is
+//                   (recommended default for adult/admin profiles —
+//                   preserves existing category/extra/schedule rules
+//                   without auto-blocking everything).
 enum FailureMode {
-  case Open, Closed
+  case BlockAll, AllowAll, LastKnownGood
 }
 
 object FailureMode {
   def asString(m: FailureMode): String      = m match {
-    case Open   => "open"
-    case Closed => "closed"
+    case BlockAll      => "block-all"
+    case AllowAll      => "allow-all"
+    case LastKnownGood => "last-known-good"
   }
   def parse(s: String): Option[FailureMode] = s.toLowerCase match {
-    case "open"   => Some(Open)
-    case "closed" => Some(Closed)
-    case _        => None
+    case "block-all"       => Some(BlockAll)
+    case "allow-all"       => Some(AllowAll)
+    case "last-known-good" => Some(LastKnownGood)
+    case _                 => None
   }
   given JsonCodec[FailureMode]              = JsonCodec[String].transformOrFail(
     s => parse(s).toRight(s"unknown failureMode: $s"),
@@ -64,7 +75,7 @@ case class Profile(
     extraBlocked: List[Hostname],
     extraAllowed: List[Hostname],
     paused: Boolean,
-    failureMode: FailureMode = FailureMode.Closed,
+    failureMode: FailureMode = FailureMode.LastKnownGood,
 ) derives JsonCodec
 
 case class Schedule(

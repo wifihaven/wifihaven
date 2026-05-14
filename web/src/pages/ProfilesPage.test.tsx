@@ -42,7 +42,7 @@ const kidsProfile: ProfileDetail = {
     extraBlocked: ['bad.com', 'evil.com'],
     extraAllowed: ['school.com'],
     paused: false,
-    failureMode: 'closed',
+    failureMode: 'block-all',
   },
   schedules: [
     { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], blockFrom: '21:00', blockUntil: '07:00' },
@@ -61,7 +61,7 @@ const adultsProfile: ProfileDetail = {
     extraBlocked: [],
     extraAllowed: [],
     paused: true,
-    failureMode: 'open',
+    failureMode: 'last-known-good',
   },
   schedules: [],
   timeLimit: null,
@@ -206,8 +206,10 @@ describe('ProfilesPage — create', () => {
       siteTimeLimits: [
         { label: 'YouTube', domainPattern: 'youtube.com', dailyMinutes: 30, exemptFromDaily: true },
       ],
-      // #311: form default for a brand-new profile is Closed (safe default).
-      failureMode: 'closed',
+      // #385: form default for a brand-new profile is LastKnownGood
+      // (matches DB column default; UI copy steers admins towards BlockAll
+      // for child profiles).
+      failureMode: 'last-known-good',
     })
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
   })
@@ -246,8 +248,8 @@ describe('ProfilesPage — edit', () => {
       siteTimeLimits: [
         { domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },
       ],
-      // #311: edit preserves the existing failureMode unless changed.
-      failureMode: 'closed',
+      // #385: edit preserves the existing failureMode unless changed.
+      failureMode: 'block-all',
     })
   })
 })
@@ -327,60 +329,77 @@ describe('ProfilesPage — linked users section', () => {
   })
 })
 
-describe('ProfilesPage — #311 failureMode', () => {
-  it('edit form pre-fills failureMode from the profile (Closed for Kids)', async () => {
+describe('ProfilesPage — #385 failureMode (three modes)', () => {
+  it('edit form pre-fills failureMode from the profile (BlockAll for Kids)', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    const closed = screen.getByTestId('profile-failure-mode-closed') as HTMLInputElement
-    const open   = screen.getByTestId('profile-failure-mode-open')   as HTMLInputElement
-    expect(closed.checked).toBe(true)
-    expect(open.checked).toBe(false)
+    const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
+    const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
+    const allowAll      = screen.getByTestId('profile-failure-mode-allow-all')       as HTMLInputElement
+    expect(blockAll.checked).toBe(true)
+    expect(lastKnownGood.checked).toBe(false)
+    expect(allowAll.checked).toBe(false)
   })
 
-  it('edit form pre-fills failureMode from the profile (Open for Adults)', async () => {
+  it('edit form pre-fills failureMode from the profile (LastKnownGood for Adults)', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
     const adultsCard = await screen.findByTestId('profile-card-2')
     await user.click(within(adultsCard).getByRole('button', { name: /^Edit$/ }))
-    const closed = screen.getByTestId('profile-failure-mode-closed') as HTMLInputElement
-    const open   = screen.getByTestId('profile-failure-mode-open')   as HTMLInputElement
-    expect(open.checked).toBe(true)
-    expect(closed.checked).toBe(false)
+    const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
+    const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
+    expect(lastKnownGood.checked).toBe(true)
+    expect(blockAll.checked).toBe(false)
   })
 
-  it('toggling failureMode and saving sends the new value', async () => {
+  it('selecting AllowAll and saving sends the new value', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    await user.click(screen.getByTestId('profile-failure-mode-open'))
+    await user.click(screen.getByTestId('profile-failure-mode-allow-all'))
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
     await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
     const call = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[1].failureMode).toBe('open')
+    expect(call[1].failureMode).toBe('allow-all')
   })
 
-  it('new profile form defaults to Closed (safe default)', async () => {
+  it('selecting LastKnownGood and saving sends the new value', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-failure-mode-last-known-good'))
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
+    const call = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[1].failureMode).toBe('last-known-good')
+  })
+
+  it('new profile form defaults to LastKnownGood (column default)', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
-    const closed = screen.getByTestId('profile-failure-mode-closed') as HTMLInputElement
-    expect(closed.checked).toBe(true)
+    const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
+    expect(lastKnownGood.checked).toBe(true)
   })
 
-  it('renders explanatory copy for each mode (not a bare checkbox)', async () => {
+  it('renders explanatory copy for each of the three modes', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     expect(
-      screen.getByText(/when the router can't reach the API for 5 minutes, block all internet traffic/i),
+      screen.getByText(/drop all forwarded traffic for this profile's devices/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/keep enforcing the last-known rules; never auto-block/i),
+      screen.getByText(/keep enforcing the cached snapshot exactly/i),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/clear every block for this profile's devices/i),
     ).toBeInTheDocument()
   })
 })
