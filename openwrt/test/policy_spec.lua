@@ -440,92 +440,99 @@ describe("policy.apply", function()
     }, warns, infos
   end
 
-  it("invokes dns_check_fn with a blocked domain after the restart (#328)", function()
+  it("invokes dns_check_fn with an extraBlocked host after the restart (#328 / #351)", function()
     local probed
     policy.apply(decode_smoke(),
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      { dns_check_fn = function(domain) probed = domain; return "0.0.0.0" end })
+      { dns_check_fn = function(domain) probed = domain; return "93.184.216.34" end })
     assert.equal("badsite.example.com", probed)
   end)
 
-  it("logs a warning when dns_check_fn returns a non-sinkhole result (#328)", function()
+  -- Post-#351 semantics inversion (Truth 1): DNS is NOT the enforcement
+  -- plane. Blocked hosts must resolve to a real IP — a sinkhole-shaped
+  -- answer means dnsmasq is still applying a stale `address=/.../#`
+  -- config, which is the failure we now want to catch.
+
+  it("logs a warning when dns_check_fn returns a sinkhole IP (post-#351)", function()
     local stub_log, warns = capture_log()
     policy.apply(decode_smoke(),
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      { dns_check_fn = function(_domain) return "93.184.216.34" end })
+      { dns_check_fn = function(_domain) return "0.0.0.0" end })
     local matched = false
     for _, w in ipairs(warns) do
-      if w:find("smoke", 1, true) and w:find("93.184.216.34", 1, true) then
+      if w:find("smoke", 1, true) and w:find("0.0.0.0", 1, true) then
         matched = true
       end
     end
     assert.is_true(matched,
-      "expected a smoke-check warning mentioning the non-sinkhole IP; got: " ..
+      "expected a smoke-check warning mentioning the sinkhole IP; got: " ..
       table.concat(warns, " | "))
   end)
 
-  it("does NOT warn when dns_check_fn returns 0.0.0.0 (sinkhole)", function()
-    local stub_log, warns = capture_log()
-    policy.apply(decode_smoke(),
-      function(_p, _c) return true, nil end,
-      function(_cmd) return 0 end,
-      stub_log,
-      { dns_check_fn = function(_d) return "0.0.0.0" end })
-    for _, w in ipairs(warns) do
-      assert.is_nil(w:find("smoke", 1, true),
-        "unexpected smoke-check warning: " .. w)
-    end
-  end)
-
-  it("does NOT warn when dns_check_fn returns empty (NXDOMAIN)", function()
+  it("logs a warning when dns_check_fn returns empty (NXDOMAIN — stale or upstream-broken)", function()
     local stub_log, warns = capture_log()
     policy.apply(decode_smoke(),
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
       { dns_check_fn = function(_d) return "" end })
+    local matched = false
     for _, w in ipairs(warns) do
-      assert.is_nil(w:find("smoke", 1, true))
+      if w:find("smoke", 1, true) then matched = true end
+    end
+    assert.is_true(matched)
+  end)
+
+  it("does NOT warn when dns_check_fn returns a real upstream IP (post-#351)", function()
+    local stub_log, warns = capture_log()
+    policy.apply(decode_smoke(),
+      function(_p, _c) return true, nil end,
+      function(_cmd) return 0 end,
+      stub_log,
+      { dns_check_fn = function(_d) return "93.184.216.34" end })
+    for _, w in ipairs(warns) do
+      assert.is_nil(w:find("smoke", 1, true),
+        "unexpected smoke-check warning: " .. w)
     end
   end)
 
-  it("does NOT warn when dns_check_fn returns nil", function()
+  it("logs a warning when dns_check_fn returns nil (no answer at all)", function()
     local stub_log, warns = capture_log()
     policy.apply(decode_smoke(),
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
       { dns_check_fn = function(_d) return nil end })
+    local matched = false
     for _, w in ipairs(warns) do
-      assert.is_nil(w:find("smoke", 1, true))
+      if w:find("smoke", 1, true) then matched = true end
     end
+    assert.is_true(matched)
   end)
 
-  it("skips dns_check_fn when the snapshot has no extraBlocked entries (#328)", function()
+  it("skips dns_check_fn when the snapshot has no extraBlocked entries", function()
     local called = false
-    -- Build a snapshot whose profile has empty extraBlocked, so render emits
-    -- no address=/.../# lines and the smoke probe path is skipped.
-    local snap = decode_snap()
+    local snap = decode_smoke()
     snap.profiles["3"].rules.extraBlocked = {}
     policy.apply(snap,
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      { dns_check_fn = function(_d) called = true; return "0.0.0.0" end })
+      { dns_check_fn = function(_d) called = true; return "93.184.216.34" end })
     assert.is_false(called,
-      "dns_check_fn should not be called when no address=/.../# lines were rendered")
+      "dns_check_fn should not be called when there is no extraBlocked host to probe")
   end)
 
-  it("still returns true when dns_check_fn reports a non-sinkhole result (#328)", function()
+  it("still returns true when dns_check_fn reports a sinkhole result (post-#351 — propagation is a separate concern)", function()
     local ok = policy.apply(decode_smoke(),
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      { dns_check_fn = function(_d) return "93.184.216.34" end })
+      { dns_check_fn = function(_d) return "0.0.0.0" end })
     assert.is_true(ok,
       "smoke-check failure must not fail the apply — propagation is a separate concern")
   end)

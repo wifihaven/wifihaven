@@ -13,11 +13,16 @@
 --     opts (optional table)   → bag of options. Recognised keys:
 --       opts.dns_check_fn(domain) → string|nil — result of resolving `domain`
 --                                   via the router's own resolver, used by
---                                   the #328 smoke probe to detect a dnsmasq
---                                   restart that silently no-op'd. Nil/empty/
---                                   "0.0.0.0"/"::" mean sinkholed (OK);
---                                   anything else triggers a WARN. Defaults
---                                   to a `dig @127.0.0.1` shell call.
+--                                   the #328 smoke probe. After #351 DNS no
+--                                   longer sinkholes blocked hosts (Truth 1:
+--                                   blocking is at the connection layer); the
+--                                   probe now confirms that dnsmasq is
+--                                   answering at all, by checking that an
+--                                   extraBlocked host resolves to a real IP
+--                                   (NOT 0.0.0.0 / :: / NXDOMAIN). A
+--                                   sinkhole-shaped answer means dnsmasq
+--                                   is still applying a stale rendering
+--                                   (failed restart) and triggers a WARN.
 --       opts.poll_age_seconds → forwarded to render.nft for the #311 / #331
 --                                 failover branch.
 
@@ -198,11 +203,15 @@ end
 -- write_fn(path, content) must return (truthy, nil) on success or (nil, err_string).
 -- reload_fn(cmd) is called with a shell command string; return value is ignored.
 --
--- opts is an optional table. opts.dns_check_fn (#328): when the rendered
--- dnsmasq.conf contains at least one `address=/<domain>/#` line, we probe
--- the first such domain via the router's own resolver after the dnsmasq
--- restart and WARN if it doesn't look sinkholed (detects the silent no-op
--- when dnsmasq fails to restart, or when conf-dir wasn't actually re-read).
+-- opts is an optional table. opts.dns_check_fn (#328 / #351): when the
+-- rendered dnsmasq.conf contains at least one `ipset=/<host>/eb_...` line
+-- (i.e. there is something to enforce), we probe one of those hosts via
+-- the router's own resolver after the dnsmasq restart. Post-#351 DNS is
+-- NOT the enforcement plane — blocked hosts must resolve to a real IP, so
+-- the probe inverts the old semantics: a sinkhole-shaped answer
+-- (`0.0.0.0`, `::`, empty / NXDOMAIN) means dnsmasq is still running a
+-- stale config that has DNS-layer blocks in it, which is the failure mode
+-- we want to catch.
 -- opts.poll_age_seconds (#331): forwarded to render.nft so the agent's
 -- failover-edge re-render can request the closed-mode drop chain.
 
@@ -218,23 +227,34 @@ local function default_dns_check(domain)
   return out
 end
 
-local SINKHOLE_RESULTS = {
+-- Sinkhole-shaped DNS answers. Post-#351 these are *failures* (DNS must
+-- resolve normally — blocking happens at the connection layer), but we
+-- still need to recognise the shape to detect a dnsmasq that's running a
+-- stale, sinkhole-containing config.
+local BLOCKED_RESULTS = {
   ["0.0.0.0"] = true,
   ["::"]      = true,
   ["::0"]     = true,
 }
 
-local function looks_sinkholed(result)
+-- True when the DNS answer indicates the resolver is *blocking* at the
+-- DNS layer (sinkhole IP) or returning no answer at all (NXDOMAIN /
+-- SERVFAIL / timeout → empty first line from `dig +short`). Both shapes
+-- mean we are NOT getting a real upstream answer, which post-#351 is a
+-- regression — dnsmasq should resolve every host normally and let nft
+-- handle blocking.
+local function is_blocked_at_connection(result)
   if result == nil or result == "" then return true end
-  return SINKHOLE_RESULTS[result] == true
+  return BLOCKED_RESULTS[result] == true
 end
 
--- Extract the first `address=/<domain>/#` line from the rendered dnsmasq
--- content. Returns nil if there are no such lines (e.g. no extraBlocked
--- entries in any profile).
-local function first_blocked_domain(dnsmasq_content)
-  return dnsmasq_content:match("\naddress=/([^/\n]+)/#")
-      or dnsmasq_content:match("^address=/([^/\n]+)/#")
+-- Extract the first extraBlocked host from the rendered dnsmasq content by
+-- looking for an `ipset=/<host>/eb_...` directive (the per-host set name
+-- prefix is the agent's canonical marker for #351 enforcement). Returns
+-- nil if there are no extraBlocked hosts active.
+local function first_extrablocked_host(dnsmasq_content)
+  return dnsmasq_content:match("\nipset=/([^/\n]+)/eb_")
+      or dnsmasq_content:match("^ipset=/([^/\n]+)/eb_")
 end
 
 function M.apply(snapshot, write_fn, reload_fn, log, opts)
@@ -266,15 +286,20 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- prior runtime table in one transaction, then installs the new ruleset.
   reload_fn("nft -f /tmp/nftables.d/familydns.nft")
 
-  -- #328 smoke probe. Skip cleanly when there's nothing to probe.
-  local probe_domain = first_blocked_domain(dnsmasq_content)
+  -- #328 / #351 smoke probe. Skip cleanly when there's no extraBlocked
+  -- host to probe. Post-#351 expectation: dnsmasq must resolve the host
+  -- to a *real* upstream IP (DNS is not the enforcement plane). A
+  -- sinkhole-shaped or empty answer means dnsmasq is still serving a
+  -- stale config that contains DNS-layer blocks — the failure we are
+  -- watching for.
+  local probe_domain = first_extrablocked_host(dnsmasq_content)
   if probe_domain then
     local check = opts.dns_check_fn or default_dns_check
     local result = check(probe_domain)
-    if not looks_sinkholed(result) then
+    if is_blocked_at_connection(result) then
       log.warn(
-        "policy.apply: smoke check failed; dnsmasq may not have restarted — " ..
-        "got %q for %s (expected sinkhole)",
+        "policy.apply: smoke check failed; dnsmasq may be serving a stale " ..
+        "config — got %q for %s (expected a real upstream IP)",
         tostring(result), probe_domain)
     end
   end
