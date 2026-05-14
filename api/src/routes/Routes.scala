@@ -3,6 +3,7 @@ package familydns.api.routes
 import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.shared.*
+import familydns.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -59,7 +60,13 @@ object AuthRoutes {
             pids   <- userProfileRepo
               .listProfilesForUsername(claims.sub)
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(MeResponse(claims.sub, claims.role, pids).toJson)
+          } yield Response.json(
+            MeResponse(
+              claims.sub,
+              UserRole.parse(claims.role).getOrElse(UserRole.Child),
+              pids,
+            ).toJson,
+          )
         },
       Method.POST / "api" / "users"                          ->
         handler { (req: Request) =>
@@ -69,12 +76,9 @@ object AuthRoutes {
             cur  <- ZIO
               .fromEither(body.fromJson[CreateUserRequest])
               .mapError(e => Response.badRequest(e))
-            _    <- ZIO
-              .fail(Response.badRequest("invalid role"))
-              .when(UserRole.parse(cur.role).isEmpty)
             hash <- auth.hashPassword(cur.password)
             id   <- userRepo
-              .create(cur.username, hash, cur.role.toLowerCase)
+              .create(cur.username, hash, UserRole.asString(cur.role))
               .mapError(ErrorMapper.dbErrorToResponse)
             _    <- userProfileRepo
               .setProfilesForUser(id, cur.profileIds)
@@ -102,14 +106,14 @@ object AuthRoutes {
               .fromEither(body.fromJson[SetUserProfilesRequest])
               .mapError(e => Response.badRequest(e))
             _    <- userProfileRepo
-              .setProfilesForUser(id, r.profileIds)
+              .setProfilesForUser(UserId(id), r.profileIds)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.DELETE / "api" / "users" / long("id")           ->
         handler { (id: Long, req: Request) =>
           requireAdmin(req, auth) *>
-            userRepo.delete(id).mapError(ErrorMapper.dbErrorToResponse) *>
+            userRepo.delete(UserId(id)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
     )
@@ -147,17 +151,18 @@ object ProfileRoutes {
         },
       Method.GET / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
           for {
             claims <- requireAuth(req, auth)
-            _      <- requireProfileReadAccess(claims, id, userProfileRepo)
+            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
             p      <- profileRepo
-              .findById(id)
+              .findById(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-            scheds <- scheduleRepo.listForProfile(id).mapError(ErrorMapper.dbErrorToResponse)
-            tl     <- timeLimitRepo.findForProfile(id).mapError(ErrorMapper.dbErrorToResponse)
+            scheds <- scheduleRepo.listForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
+            tl     <- timeLimitRepo.findForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
             stls   <- siteTimeLimitRepo
-              .listForProfile(id)
+              .listForProfile(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(ProfileDetail(p, scheds, tl, stls).toJson)
         },
@@ -195,19 +200,20 @@ object ProfileRoutes {
             _    <- siteTimeLimitRepo
               .replaceForProfile(id, upr.siteTimeLimits)
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(s"""{"id":$id}""")
+          } yield Response.json(s"""{"id":${id.value}}""")
         },
       Method.PUT / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
           for {
             claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, id, userProfileRepo)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             upr    <- ZIO
               .fromEither(body.fromJson[UpsertProfileRequest])
               .mapError(e => Response.badRequest(e))
             p      <- profileRepo
-              .findById(id)
+              .findById(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
             _      <- profileRepo
@@ -225,39 +231,41 @@ object ProfileRoutes {
               )
               .mapError(ErrorMapper.dbErrorToResponse)
             _      <- scheduleRepo
-              .replaceForProfile(id, upr.schedules)
+              .replaceForProfile(pid, upr.schedules)
               .mapError(ErrorMapper.dbErrorToResponse)
             _      <- (upr.timeLimit match {
-              case Some(mins) => timeLimitRepo.upsert(id, mins)
-              case None       => timeLimitRepo.delete(id)
+              case Some(mins) => timeLimitRepo.upsert(pid, mins)
+              case None       => timeLimitRepo.delete(pid)
             }).mapError(ErrorMapper.dbErrorToResponse)
             _      <- siteTimeLimitRepo
-              .replaceForProfile(id, upr.siteTimeLimits)
+              .replaceForProfile(pid, upr.siteTimeLimits)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.DELETE / "api" / "profiles" / long("id")         ->
         handler { (id: Long, req: Request) =>
           requireAdmin(req, auth) *>
-            profileRepo.delete(id).mapError(ErrorMapper.dbErrorToResponse) *>
+            profileRepo.delete(ProfileId(id)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
       Method.GET / "api" / "profiles" / long("id") / "users"  ->
         handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
           for {
             _     <- requireAdmin(req, auth)
             uids  <- userProfileRepo
-              .listUsersForProfile(id)
+              .listUsersForProfile(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
             users <- userRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             byId      = users.map(u => u.id -> u).toMap
             summaries = uids.flatMap(byId.get).map { u =>
-              UserSummary(u.id, u.username, u.role, List(id))
+              UserSummary(u.id, u.username, u.role, List(pid))
             }
           } yield Response.json(summaries.toJson)
         },
       Method.PUT / "api" / "profiles" / long("id") / "users"  ->
         handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
           for {
             _    <- requireAdmin(req, auth)
             body <- req.body.asString.orElseFail(Response.badRequest(""))
@@ -265,21 +273,22 @@ object ProfileRoutes {
               .fromEither(body.fromJson[SetProfileUsersRequest])
               .mapError(e => Response.badRequest(e))
             _    <- userProfileRepo
-              .setUsersForProfile(id, r.userIds)
+              .setUsersForProfile(pid, r.userIds)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.POST / "api" / "profiles" / long("id") / "pause" ->
         handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
           for {
             claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, id, userProfileRepo)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo)
             p      <- profileRepo
-              .findById(id)
+              .findById(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("")))
             _      <-
-              profileRepo.setPaused(id, !p.paused).mapError(ErrorMapper.dbErrorToResponse)
+              profileRepo.setPaused(pid, !p.paused).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"paused":${!p.paused}}""")
         },
     )
@@ -311,17 +320,17 @@ object DeviceRoutes {
               .fromEither(body.fromJson[UpsertDeviceRequest])
               .mapError(e => Response.badRequest(e))
             _      <- requireProfileAccess(claims, udr.profileId, userProfileRepo)
-            mac = normalizeMac(udr.mac)
+            mac = MacAddress.unsafe(normalizeMac(udr.mac.value))
             id <- deviceRepo
               .upsert(mac, udr.name, udr.profileId, "")
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(s"""{"id":$id}""")
+          } yield Response.json(s"""{"id":${id.value}}""")
         },
       Method.DELETE / "api" / "devices" / string("mac") ->
         handler { (mac: String, req: Request) =>
           for {
             claims <- requireWriter(req, auth)
-            normalized = normalizeMac(mac)
+            normalized = MacAddress.unsafe(normalizeMac(mac))
             existing <- deviceRepo
               .findByMac(normalized)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -382,7 +391,7 @@ object TimeRoutes {
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
             device <- deviceRepo
-              .findByMac(normalizeMac(mac))
+              .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
@@ -411,16 +420,17 @@ object TimeRoutes {
             id     <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(s"""{"id":$id,"grantedMinutes":${ger.extraMinutes}}""")
+          } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
         },
       Method.GET / "api" / "time" / "extensions" / long("profileId") ->
         handler { (profileId: Long, req: Request) =>
+          val pid = ProfileId(profileId)
           for {
             claims <- requireAuth(req, auth)
-            _      <- requireProfileAccess(claims, profileId, userProfileRepo)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo)
             date   <- clock.today
             exts   <- extRepo
-              .listForProfile(profileId, date)
+              .listForProfile(pid, date)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(exts.toJson)
         },
@@ -584,7 +594,7 @@ object BlocklistRoutes {
       Method.POST / "api" / "blocklists" / string("category") / "clear" ->
         handler { (cat: String, req: Request) =>
           requireAdmin(req, auth) *>
-            blRepo.clearCategory(cat).mapError(ErrorMapper.dbErrorToResponse) *>
+            blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
     )
@@ -679,7 +689,7 @@ def filterLogs(
 /** Allow read access if admin or adult (full visibility); child must be linked to the profile. */
 def requireProfileReadAccess(
     claims: JwtClaims,
-    profileId: Long,
+    profileId: ProfileId,
     upRepo: UserProfileRepo,
 ): IO[Response, Unit] =
   if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(())
@@ -694,7 +704,7 @@ def requireProfileReadAccess(
 
 def requireProfileReadAccess(
     claims: JwtClaims,
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     upRepo: UserProfileRepo,
 ): IO[Response, Unit] =
   profileId match {
@@ -707,7 +717,7 @@ def requireProfileReadAccess(
 /** Allow write access if admin or adult linked to the profile. Child is always denied. */
 def requireProfileAccess(
     claims: JwtClaims,
-    profileId: Long,
+    profileId: ProfileId,
     upRepo: UserProfileRepo,
 ): IO[Response, Unit] =
   if claims.role == "admin" then ZIO.succeed(())
@@ -722,7 +732,7 @@ def requireProfileAccess(
 
 def requireProfileAccess(
     claims: JwtClaims,
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     upRepo: UserProfileRepo,
 ): IO[Response, Unit] =
   profileId match {

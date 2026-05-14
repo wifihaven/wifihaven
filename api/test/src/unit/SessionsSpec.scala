@@ -1,6 +1,7 @@
 package familydns.api.unit
 
 import familydns.api.sessions.*
+import familydns.shared.types.*
 import zio.test.*
 
 import java.time.{Instant, LocalDate, ZoneOffset}
@@ -10,17 +11,17 @@ object SessionsSpec extends ZIOSpecDefault {
 
   // Reference midnight for date construction — every test row's `date` is computed
   // from periodStart in UTC, mirroring what RouterIngestRoutes does on insert.
-  private val r1: UUID = UUID.fromString("00000000-0000-0000-0000-000000000001")
-  private val r2: UUID = UUID.fromString("00000000-0000-0000-0000-000000000002")
-  private val mac1     = "aa:bb:cc:dd:ee:01"
-  private val mac2     = "aa:bb:cc:dd:ee:02"
-  private val youtube  = "youtube.com"
-  private val tiktok   = "tiktok.com"
+  private val r1: RouterId = RouterId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+  private val r2: RouterId = RouterId(UUID.fromString("00000000-0000-0000-0000-000000000002"))
+  private val mac1         = MacAddress.unsafe("aa:bb:cc:dd:ee:01")
+  private val mac2         = MacAddress.unsafe("aa:bb:cc:dd:ee:02")
+  private val youtube      = Hostname.unsafe("youtube.com")
+  private val tiktok       = Hostname.unsafe("tiktok.com")
 
   private def row(
-      routerId: UUID,
-      mac: String,
-      host: String,
+      routerId: RouterId,
+      mac: MacAddress,
+      host: Hostname,
       startSec: Long,
       activeSeconds: Int = 300,
       periodLen: Long = 300,

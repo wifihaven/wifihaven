@@ -5,19 +5,20 @@ import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Schedule
+import familydns.api.db.TypeMeta.given
 import zio.*
 import zio.interop.catz.*
 import java.time.{Instant, LocalDate}
-import java.util.UUID
 
 given Meta[List[String]] = Meta[Array[String]].imap(_.toList)(_.toArray)
 
 case class DbUser(
-    id: Long,
+    id: UserId,
     username: String,
     passwordHash: String,
-    role: String,
+    role: UserRole,
     createdAt: Instant,
 )
 case class LogFilter(
@@ -31,7 +32,7 @@ case class LogFilter(
 )
 
 case class SessionFilter(
-    macs: Option[List[String]] = None, // None = no MAC restriction; Some(Nil) = match nothing
+    macs: Option[List[MacAddress]] = None, // None = no MAC restriction; Some(Nil) = match nothing
     host: Option[String] = None,
     since: Option[Instant] = None,
     until: Option[Instant] = None,
@@ -39,88 +40,93 @@ case class SessionFilter(
 
 trait UserRepo {
   def findByUsername(u: String): Task[Option[DbUser]]
-  def findById(id: Long): Task[Option[DbUser]]
-  def create(u: String, h: String, r: String): Task[Long]
-  def updatePassword(id: Long, h: String): Task[Unit]
+  def findById(id: UserId): Task[Option[DbUser]]
+  def create(u: String, h: String, r: String): Task[UserId]
+  def updatePassword(id: UserId, h: String): Task[Unit]
   def listAll: Task[List[DbUser]]
-  def delete(id: Long): Task[Unit]
+  def delete(id: UserId): Task[Unit]
 }
 
 trait UserProfileRepo {
-  def listProfilesForUser(userId: Long): Task[List[Long]]
-  def listProfilesForUsername(username: String): Task[List[Long]]
-  def listUsersForProfile(profileId: Long): Task[List[Long]]
-  def listAllMappings: Task[List[(Long, Long)]] // (userId, profileId)
-  def setProfilesForUser(userId: Long, profileIds: List[Long]): Task[Unit]
-  def setUsersForProfile(profileId: Long, userIds: List[Long]): Task[Unit]
-  def addLink(userId: Long, profileId: Long): Task[Unit]
-  def removeLink(userId: Long, profileId: Long): Task[Unit]
-  def hasAccess(userId: Long, profileId: Long): Task[Boolean]
+  def listProfilesForUser(userId: UserId): Task[List[ProfileId]]
+  def listProfilesForUsername(username: String): Task[List[ProfileId]]
+  def listUsersForProfile(profileId: ProfileId): Task[List[UserId]]
+  def listAllMappings: Task[List[(UserId, ProfileId)]] // (userId, profileId)
+  def setProfilesForUser(userId: UserId, profileIds: List[ProfileId]): Task[Unit]
+  def setUsersForProfile(profileId: ProfileId, userIds: List[UserId]): Task[Unit]
+  def addLink(userId: UserId, profileId: ProfileId): Task[Unit]
+  def removeLink(userId: UserId, profileId: ProfileId): Task[Unit]
+  def hasAccess(userId: UserId, profileId: ProfileId): Task[Boolean]
 }
 
 trait ProfileRepo {
   def listAll: Task[List[Profile]]
-  def findById(id: Long): Task[Option[Profile]]
-  def create(name: String, cats: List[String]): Task[Long]
+  def findById(id: ProfileId): Task[Option[Profile]]
+  def create(name: String, cats: List[BlocklistId]): Task[ProfileId]
   def update(p: Profile): Task[Unit]
-  def delete(id: Long): Task[Unit]
-  def setPaused(id: Long, paused: Boolean): Task[Unit]
+  def delete(id: ProfileId): Task[Unit]
+  def setPaused(id: ProfileId, paused: Boolean): Task[Unit]
 }
 
 trait ScheduleRepo {
   def listAll: Task[List[Schedule]]
-  def listForProfile(pid: Long): Task[List[Schedule]]
-  def replaceForProfile(pid: Long, scheds: List[ScheduleRequest]): Task[Unit]
+  def listForProfile(pid: ProfileId): Task[List[Schedule]]
+  def replaceForProfile(pid: ProfileId, scheds: List[ScheduleRequest]): Task[Unit]
 }
 
 trait TimeLimitRepo {
-  def findForProfile(pid: Long): Task[Option[TimeLimit]]
-  def upsert(pid: Long, mins: Int): Task[Unit]
-  def delete(pid: Long): Task[Unit]
+  def findForProfile(pid: ProfileId): Task[Option[TimeLimit]]
+  def upsert(pid: ProfileId, mins: Int): Task[Unit]
+  def delete(pid: ProfileId): Task[Unit]
   def listAll: Task[List[TimeLimit]]
 }
 
 trait SiteTimeLimitRepo {
-  def listForProfile(pid: Long): Task[List[SiteTimeLimit]]
+  def listForProfile(pid: ProfileId): Task[List[SiteTimeLimit]]
   def listAll: Task[List[SiteTimeLimit]]
-  def replaceForProfile(pid: Long, limits: List[SiteTimeLimitRequest]): Task[Unit]
+  def replaceForProfile(pid: ProfileId, limits: List[SiteTimeLimitRequest]): Task[Unit]
 }
 
 trait DeviceRepo {
   def listAll: Task[List[Device]]
-  def findByMac(mac: String): Task[Option[Device]]
-  def upsert(mac: String, name: String, pid: Long, ip: String): Task[Long]
-  def updateLastSeen(mac: String, ip: String): Task[Unit]
+  def findByMac(mac: MacAddress): Task[Option[Device]]
+  def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String): Task[DeviceId]
+  def updateLastSeen(mac: MacAddress, ip: String): Task[Unit]
 
   /**
    * Update last_seen_ip/at only if the device row exists. Used by router ingest where we don't want
    * to create rows here (events does that).
    */
-  def touchLastSeen(mac: String, ip: Option[String], at: Instant): Task[Int]
+  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant): Task[Int]
 
   /**
    * Insert a row for a previously unknown device with NULL profile_id, or refresh last_seen_ip/at
    * on an existing row. Used by /api/router/events.
    */
-  def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant): Task[Long]
+  def upsertUnknown(
+      mac: MacAddress,
+      name: String,
+      ip: Option[IpAddress],
+      at: Instant,
+  ): Task[DeviceId]
 
   /**
    * Rename a device only if its current name is an auto-generated placeholder ("unknown" or
    * "device-XXXXXX"). Used by router ingest to upgrade names once a later DHCP lease carries a real
    * hostname (#249). Returns the number of rows updated (0 if the name was admin-curated).
    */
-  def renameIfAutoGenerated(mac: String, newName: String): Task[Int]
-  def updateProfile(mac: String, pid: Long): Task[Unit]
-  def delete(mac: String): Task[Unit]
+  def renameIfAutoGenerated(mac: MacAddress, newName: String): Task[Int]
+  def updateProfile(mac: MacAddress, pid: ProfileId): Task[Unit]
+  def delete(mac: MacAddress): Task[Unit]
 }
 
 trait BlocklistRepo {
   def insertBatch(domains: List[(String, String)]): Task[Int]
-  def clearCategory(cat: String): Task[Unit]
-  def listCategories: Task[List[String]]
-  def countByCategory: Task[List[(String, Int)]]
-  def loadCategory(cat: String): Task[Set[String]]
-  def loadAll: Task[Map[String, Set[String]]]
+  def clearCategory(cat: BlocklistId): Task[Unit]
+  def listCategories: Task[List[BlocklistId]]
+  def countByCategory: Task[List[(BlocklistId, Int)]]
+  def loadCategory(cat: BlocklistId): Task[Set[Hostname]]
+  def loadAll: Task[Map[BlocklistId, Set[Hostname]]]
 }
 
 trait TimeUsageRepo {
@@ -130,8 +136,8 @@ trait TimeUsageRepo {
    * is responsible for idempotency at the request level (traffic_reports unique key).
    */
   def incrementSecondsAndBytes(
-      mac: String,
-      domain: String,
+      mac: MacAddress,
+      domain: Hostname,
       date: LocalDate,
       seconds: Long,
       bytesIn: Long,
@@ -139,42 +145,48 @@ trait TimeUsageRepo {
   ): Task[Unit]
 
   /** Read seconds_used for a (mac, domain, date) row. Returns 0 if no row. */
-  def getSecondsUsed(mac: String, domain: String, date: LocalDate): Task[Long]
+  def getSecondsUsed(mac: MacAddress, domain: Hostname, date: LocalDate): Task[Long]
 
   /** Read (seconds_used, bytes_in, bytes_out) for a (mac, domain, date) row. */
   def getSecondsAndBytes(
-      mac: String,
-      domain: String,
+      mac: MacAddress,
+      domain: Hostname,
       date: LocalDate,
   ): Task[(Long, Long, Long)]
-  def listForDevice(mac: String, date: LocalDate): Task[List[TimeUsage]]
-  def listForDeviceMacs(macs: List[String], date: LocalDate): Task[List[TimeUsage]]
-  def snapshotAll(date: LocalDate): Task[Map[(String, String), Int]]
+  def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeUsage]]
+  def listForDeviceMacs(macs: List[MacAddress], date: LocalDate): Task[List[TimeUsage]]
+  def snapshotAll(date: LocalDate): Task[Map[(MacAddress, String), Int]]
 }
 
 trait TimeExtensionRepo {
-  def getTotalExtension(mac: String, date: LocalDate): Task[Int]
-  def grant(mac: String, date: LocalDate, mins: Int, by: String, note: Option[String]): Task[Long]
-  def listForDevice(mac: String, date: LocalDate): Task[List[TimeExtension]]
-  def snapshotAll(date: LocalDate): Task[Map[String, Int]]
-  // Profile-level extension methods (V5+)
-  def grantForProfile(
-      profileId: Long,
+  def getTotalExtension(mac: MacAddress, date: LocalDate): Task[Int]
+  def grant(
+      mac: MacAddress,
       date: LocalDate,
       mins: Int,
       by: String,
       note: Option[String],
-  ): Task[Long]
-  def getProfileTotalExtension(profileId: Long, date: LocalDate): Task[Int]
-  def listForProfile(profileId: Long, date: LocalDate): Task[List[TimeExtension]]
-  def snapshotAllByProfile(date: LocalDate): Task[Map[Long, Int]]
+  ): Task[TimeExtensionId]
+  def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeExtension]]
+  def snapshotAll(date: LocalDate): Task[Map[MacAddress, Int]]
+  // Profile-level extension methods (V5+)
+  def grantForProfile(
+      profileId: ProfileId,
+      date: LocalDate,
+      mins: Int,
+      by: String,
+      note: Option[String],
+  ): Task[TimeExtensionId]
+  def getProfileTotalExtension(profileId: ProfileId, date: LocalDate): Task[Int]
+  def listForProfile(profileId: ProfileId, date: LocalDate): Task[List[TimeExtension]]
+  def snapshotAllByProfile(date: LocalDate): Task[Map[ProfileId, Int]]
 }
 
 case class TrafficReportInsert(
-    routerId: UUID,
-    mac: String,
-    ip: Option[String],
-    hostname: String,
+    routerId: RouterId,
+    mac: MacAddress,
+    ip: Option[IpAddress],
+    hostname: Hostname,
     date: LocalDate,
     periodStart: Instant,
     periodEnd: Instant,
@@ -184,16 +196,16 @@ case class TrafficReportInsert(
 )
 
 case class BlockEventInsert(
-    mac: Option[String],
-    hostname: String,
+    mac: Option[MacAddress],
+    hostname: Hostname,
     reason: String,
 )
 
 case class ConnectionEventInsert(
-    routerId: UUID,
-    mac: Option[String],
-    hostname: String,
-    destIp: Option[String],
+    routerId: RouterId,
+    mac: Option[MacAddress],
+    hostname: Hostname,
+    destIp: Option[IpAddress],
     allowed: Boolean,
     reason: String,
     ts: Instant,
@@ -201,12 +213,12 @@ case class ConnectionEventInsert(
 
 trait RouterRepo {
   def listAll: Task[List[Router]]
-  def findById(id: UUID): Task[Option[Router]]
-  def findByEnrollmentTokenHash(h: String): Task[Option[Router]]
-  def findByTokenHash(h: String): Task[Option[Router]]
-  def create(name: String, enrollmentTokenHash: String): Task[UUID]
-  def completeEnrollment(id: UUID, tokenHash: String): Task[Unit]
-  def touch(id: UUID, etag: Option[String]): Task[Unit]
+  def findById(id: RouterId): Task[Option[Router]]
+  def findByEnrollmentTokenHash(h: Sha256Hex): Task[Option[Router]]
+  def findByTokenHash(h: Sha256Hex): Task[Option[Router]]
+  def create(name: String, enrollmentTokenHash: Sha256Hex): Task[RouterId]
+  def completeEnrollment(id: RouterId, tokenHash: Sha256Hex): Task[Unit]
+  def touch(id: RouterId, etag: Option[ETag]): Task[Unit]
 
   /**
    * Persist the most recent router-vs-API clock drift reported on a /api/router/usage POST (#312).
@@ -214,15 +226,15 @@ trait RouterRepo {
    * callers skip it for older agents so the column is not wiped to NULL on a forward-compat
    * downgrade.
    */
-  def recordSkew(id: UUID, skewSeconds: Long): Task[Unit]
+  def recordSkew(id: RouterId, skewSeconds: Long): Task[Unit]
 
-  def delete(id: UUID): Task[Unit]
+  def delete(id: RouterId): Task[Unit]
 }
 
 trait TrafficReportRepo {
   def insertBatch(reports: List[TrafficReportInsert]): Task[Int]
-  def listForDevice(mac: String, date: LocalDate): Task[List[TrafficReport]]
-  def listForRouter(routerId: UUID, limit: Int): Task[List[TrafficReport]]
+  def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TrafficReport]]
+  def listForRouter(routerId: RouterId, limit: Int): Task[List[TrafficReport]]
 
   /**
    * Rows fit for session stitching: returned ordered by (router_id, mac, hostname, date,
@@ -238,7 +250,7 @@ trait TrafficReportRepo {
    * bucket don't inflate total screen time.
    */
   def listPresenceRows(
-      macs: List[String],
+      macs: List[MacAddress],
       date: LocalDate,
   ): Task[List[familydns.api.presence.PresenceRow]]
 }
@@ -246,14 +258,14 @@ trait TrafficReportRepo {
 trait BlockEventRepo {
   def insertBatch(events: List[BlockEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[BlockEvent]]
-  def listForMac(mac: String, limit: Int): Task[List[BlockEvent]]
+  def listForMac(mac: MacAddress, limit: Int): Task[List[BlockEvent]]
 }
 
 trait ConnectionEventRepo {
   def insertBatch(events: List[ConnectionEventInsert]): Task[Int]
   def recent(limit: Int): Task[List[ConnectionEvent]]
-  def listForMac(mac: String, limit: Int): Task[List[ConnectionEvent]]
-  def listForRouter(routerId: UUID, limit: Int): Task[List[ConnectionEvent]]
+  def listForMac(mac: MacAddress, limit: Int): Task[List[ConnectionEvent]]
+  def listForRouter(routerId: RouterId, limit: Int): Task[List[ConnectionEvent]]
   def query(f: LogFilter): Task[List[QueryLog]]
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
@@ -262,81 +274,81 @@ trait ConnectionEventRepo {
    * Latest `ts` per mac for events strictly newer than `since`. Used by the "now" dashboard to
    * detect devices that produced at least one connection attempt in the recent window.
    */
-  def lastSeenByMacSince(since: Instant): Task[Map[String, Instant]]
+  def lastSeenByMacSince(since: Instant): Task[Map[MacAddress, Instant]]
 }
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   def findByUsername(u: String)               =
     sql"SELECT id,username,password_hash,role,created_at FROM users WHERE username=$u"
-      .query[(Long, String, String, String, Instant)]
+      .query[(UserId, String, String, UserRole, Instant)]
       .map(DbUser.apply)
       .option
       .transact(xa)
-  def findById(id: Long)                      =
+  def findById(id: UserId)                    =
     sql"SELECT id,username,password_hash,role,created_at FROM users WHERE id=$id"
-      .query[(Long, String, String, String, Instant)]
+      .query[(UserId, String, String, UserRole, Instant)]
       .map(DbUser.apply)
       .option
       .transact(xa)
   def create(u: String, h: String, r: String) =
     sql"INSERT INTO users(username,password_hash,role) VALUES($u,$h,$r) RETURNING id"
-      .query[Long]
+      .query[UserId]
       .unique
       .transact(xa)
-  def updatePassword(id: Long, h: String)     =
+  def updatePassword(id: UserId, h: String)   =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
   def listAll = sql"SELECT id,username,password_hash,role,created_at FROM users ORDER BY id"
-    .query[(Long, String, String, String, Instant)]
+    .query[(UserId, String, String, UserRole, Instant)]
     .map(DbUser.apply)
     .to[List]
     .transact(xa)
-  def delete(id: Long) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
+  def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
 }
 
 class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
-  def listProfilesForUser(userId: Long)                     =
+  def listProfilesForUser(userId: UserId)                          =
     sql"SELECT profile_id FROM user_profiles WHERE user_id=$userId ORDER BY profile_id"
-      .query[Long]
+      .query[ProfileId]
       .to[List]
       .transact(xa)
-  def listProfilesForUsername(u: String)                    =
+  def listProfilesForUsername(u: String)                           =
     sql"SELECT up.profile_id FROM user_profiles up JOIN users us ON us.id=up.user_id WHERE us.username=$u ORDER BY up.profile_id"
-      .query[Long]
+      .query[ProfileId]
       .to[List]
       .transact(xa)
-  def listUsersForProfile(profileId: Long)                  =
+  def listUsersForProfile(profileId: ProfileId)                    =
     sql"SELECT user_id FROM user_profiles WHERE profile_id=$profileId ORDER BY user_id"
-      .query[Long]
+      .query[UserId]
       .to[List]
       .transact(xa)
-  def listAllMappings                                       =
+  def listAllMappings                                              =
     sql"SELECT user_id, profile_id FROM user_profiles"
-      .query[(Long, Long)]
+      .query[(UserId, ProfileId)]
       .to[List]
       .transact(xa)
-  def setProfilesForUser(userId: Long, pids: List[Long])    = {
+  def setProfilesForUser(userId: UserId, pids: List[ProfileId])    = {
     val del = sql"DELETE FROM user_profiles WHERE user_id=$userId".update.run
     val ins = pids.distinct.map(pid =>
       sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($userId,$pid) ON CONFLICT DO NOTHING".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
   }
-  def setUsersForProfile(profileId: Long, uids: List[Long]) = {
+  def setUsersForProfile(profileId: ProfileId, uids: List[UserId]) = {
     val del = sql"DELETE FROM user_profiles WHERE profile_id=$profileId".update.run
     val ins = uids.distinct.map(uid =>
       sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($uid,$profileId) ON CONFLICT DO NOTHING".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
   }
-  def addLink(userId: Long, pid: Long)                      =
+  def addLink(userId: UserId, pid: ProfileId)                      =
     sql"INSERT INTO user_profiles(user_id,profile_id) VALUES($userId,$pid) ON CONFLICT DO NOTHING".update.run
       .transact(xa)
       .unit
-  def removeLink(userId: Long, pid: Long)                   =
+  def removeLink(userId: UserId, pid: ProfileId)                   =
     sql"DELETE FROM user_profiles WHERE user_id=$userId AND profile_id=$pid".update.run
       .transact(xa)
       .unit
-  def hasAccess(userId: Long, pid: Long)                    =
+  def hasAccess(userId: UserId, pid: ProfileId)                    =
     sql"SELECT 1 FROM user_profiles WHERE user_id=$userId AND profile_id=$pid"
       .query[Int]
       .option
@@ -345,67 +357,65 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
 }
 
 class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
-  private type R = (Long, String, List[String], List[String], List[String], Boolean, String)
-  private def toP(r: R)                        = Profile(
+  private type R = (ProfileId, String, List[String], List[String], List[String], Boolean, String)
+  private def toP(r: R)                             = Profile(
     r._1,
     r._2,
-    r._3,
-    r._4,
-    r._5,
+    r._3.map(BlocklistId.unsafe),
+    r._4.map(Hostname.unsafe),
+    r._5.map(Hostname.unsafe),
     r._6,
-    // Column has a CHECK constraint of ('open','closed'); fall back to Closed if
-    // somehow violated — fail-safe matches the migration default.
     FailureMode.parse(r._7).getOrElse(FailureMode.Closed),
   )
-  def listAll                                  =
+  def listAll                                       =
     sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles ORDER BY id"
       .query[R]
       .map(toP)
       .to[List]
       .transact(xa)
-  def findById(id: Long)                       =
+  def findById(id: ProfileId)                       =
     sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles WHERE id=$id"
       .query[R]
       .map(toP)
       .option
       .transact(xa)
-  def create(name: String, cats: List[String]) =
-    sql"INSERT INTO profiles(name,blocked_categories) VALUES($name,${cats.toArray}) RETURNING id"
-      .query[Long]
+  def create(name: String, cats: List[BlocklistId]) =
+    sql"INSERT INTO profiles(name,blocked_categories) VALUES($name,${cats.map(_.value).toArray}) RETURNING id"
+      .query[ProfileId]
       .unique
       .transact(xa)
-  def update(p: Profile)                       =
+  def update(p: Profile)                            =
     sql"""UPDATE profiles SET
             name=${p.name},
-            blocked_categories=${p.blockedCategories.toArray},
-            extra_blocked=${p.extraBlocked.toArray},
-            extra_allowed=${p.extraAllowed.toArray},
+            blocked_categories=${p.blockedCategories.map(_.value).toArray},
+            extra_blocked=${p.extraBlocked.map(_.value).toArray},
+            extra_allowed=${p.extraAllowed.map(_.value).toArray},
             paused=${p.paused},
             failure_mode=${FailureMode.asString(p.failureMode)}
           WHERE id=${p.id}""".update.run
       .transact(xa)
       .unit
-  def delete(id: Long) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit
-  def setPaused(id: Long, p: Boolean) =
+  def delete(id: ProfileId) = sql"DELETE FROM profiles WHERE id=$id".update.run.transact(xa).unit
+  def setPaused(id: ProfileId, p: Boolean) =
     sql"UPDATE profiles SET paused=$p WHERE id=$id".update.run.transact(xa).unit
 }
 
 class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
-  private type R = (Long, Long, String, List[String], String, String)
-  private def toS(r: R)         = Schedule(r._1, r._2, r._3, r._4, r._5, r._6)
-  def listAll                   =
+  private type R = (ScheduleId, ProfileId, String, List[String], String, String)
+  private def toS(r: R)              = Schedule(r._1, r._2, r._3, r._4, r._5, r._6)
+  def listAll                        =
     sql"SELECT id,profile_id,name,days,block_from,block_until FROM schedules ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
-  def listForProfile(pid: Long) =
+  def listForProfile(pid: ProfileId) =
     sql"SELECT id,profile_id,name,days,block_from,block_until FROM schedules WHERE profile_id=$pid ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
-  def replaceForProfile(pid: Long, ss: List[ScheduleRequest]) = {
+  def replaceForProfile(pid: ProfileId, ss: List[ScheduleRequest]) = {
     val del = sql"DELETE FROM schedules WHERE profile_id=$pid".update.run
     val ins = ss.map(s =>
       sql"INSERT INTO schedules(profile_id,name,days,block_from,block_until) VALUES($pid,${s.name},${s.days.toArray},${s.blockFrom},${s.blockUntil})".update.run,
@@ -415,41 +425,41 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
-  def findForProfile(pid: Long)    =
+  def findForProfile(pid: ProfileId)    =
     sql"SELECT id,profile_id,daily_minutes FROM time_limits WHERE profile_id=$pid"
-      .query[(Long, Long, Int)]
+      .query[(TimeLimitId, ProfileId, Int)]
       .map(TimeLimit.apply)
       .option
       .transact(xa)
-  def upsert(pid: Long, mins: Int) =
+  def upsert(pid: ProfileId, mins: Int) =
     sql"INSERT INTO time_limits(profile_id,daily_minutes) VALUES($pid,$mins) ON CONFLICT(profile_id) DO UPDATE SET daily_minutes=EXCLUDED.daily_minutes".update.run
       .transact(xa)
       .unit
-  def delete(pid: Long)            =
+  def delete(pid: ProfileId)            =
     sql"DELETE FROM time_limits WHERE profile_id=$pid".update.run.transact(xa).unit
-  def listAll                      = sql"SELECT id,profile_id,daily_minutes FROM time_limits"
-    .query[(Long, Long, Int)]
+  def listAll                           = sql"SELECT id,profile_id,daily_minutes FROM time_limits"
+    .query[(TimeLimitId, ProfileId, Int)]
     .map(TimeLimit.apply)
     .to[List]
     .transact(xa)
 }
 
 class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
-  private type R = (Long, Long, String, Int, String, Boolean)
-  private def toS(r: R)         = SiteTimeLimit(r._1, r._2, r._3, r._4, r._5, r._6)
-  def listForProfile(pid: Long) =
+  private type R = (SiteTimeLimitId, ProfileId, String, Int, String, Boolean)
+  private def toS(r: R)              = SiteTimeLimit(r._1, r._2, r._3, r._4, r._5, r._6)
+  def listForProfile(pid: ProfileId) =
     sql"SELECT id,profile_id,domain_pattern,daily_minutes,label,exempt_from_daily FROM site_time_limits WHERE profile_id=$pid ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
-  def listAll                   =
+  def listAll                        =
     sql"SELECT id,profile_id,domain_pattern,daily_minutes,label,exempt_from_daily FROM site_time_limits ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
-  def replaceForProfile(pid: Long, ls: List[SiteTimeLimitRequest]) = {
+  def replaceForProfile(pid: ProfileId, ls: List[SiteTimeLimitRequest]) = {
     val del = sql"DELETE FROM site_time_limits WHERE profile_id=$pid".update.run
     val ins = ls.map(l =>
       sql"INSERT INTO site_time_limits(profile_id,domain_pattern,daily_minutes,label,exempt_from_daily) VALUES($pid,${l.domainPattern},${l.dailyMinutes},${l.label},${l.exemptFromDaily})".update.run,
@@ -459,93 +469,94 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
 }
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
-  def listAll                                                                   =
+  def listAll                                                                          =
     sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
       .query[
         (
-            Long,
+            DeviceId,
+            MacAddress,
             String,
-            String,
-            Option[Long],
+            Option[ProfileId],
             Option[String],
-            Option[String],
+            Option[IpAddress],
             Option[String],
         ),
       ]
       .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
       .to[List]
       .transact(xa)
-  def findByMac(mac: String)                                                    =
+  def findByMac(mac: MacAddress)                                                       =
     sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
       .query[
         (
-            Long,
+            DeviceId,
+            MacAddress,
             String,
-            String,
-            Option[Long],
+            Option[ProfileId],
             Option[String],
-            Option[String],
+            Option[IpAddress],
             Option[String],
         ),
       ]
       .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
       .option
       .transact(xa)
-  def upsert(mac: String, name: String, pid: Long, ip: String)                  =
+  def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String)                =
     sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
-      .query[Long]
+      .query[DeviceId]
       .unique
       .transact(xa)
-  def updateLastSeen(mac: String, ip: String)                                   =
+  def updateLastSeen(mac: MacAddress, ip: String)                                      =
     sql"UPDATE devices SET last_seen_ip=$ip,last_seen_at=NOW() WHERE mac=$mac".update.run
       .transact(xa)
       .unit
-  def touchLastSeen(mac: String, ip: Option[String], at: Instant)               =
+  def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               =
     sql"UPDATE devices SET last_seen_ip=COALESCE($ip,last_seen_ip),last_seen_at=$at WHERE mac=$mac".update.run
       .transact(xa)
-  def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant) =
+  def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) =
     sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
           VALUES($mac,$name,NULL,$ip,$at)
           ON CONFLICT(mac) DO UPDATE
           SET last_seen_ip=COALESCE(EXCLUDED.last_seen_ip,devices.last_seen_ip),
               last_seen_at=EXCLUDED.last_seen_at
           RETURNING id"""
-      .query[Long]
+      .query[DeviceId]
       .unique
       .transact(xa)
-  def renameIfAutoGenerated(mac: String, newName: String)                       = {
+  def renameIfAutoGenerated(mac: MacAddress, newName: String)                          = {
     val autoNamePattern = "^device-[0-9a-fA-F]+$"
     sql"""UPDATE devices SET name=$newName
           WHERE mac=$mac AND (name='unknown' OR name ~ $autoNamePattern)""".update.run
       .transact(xa)
   }
-  def updateProfile(mac: String, pid: Long)                                     =
+  def updateProfile(mac: MacAddress, pid: ProfileId)                                   =
     sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
-  def delete(mac: String) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
+  def delete(mac: MacAddress) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
 }
 
 class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
   def insertBatch(ds: List[(String, String)]) = Update[(String, String)](
     "INSERT INTO blocklist_domains(domain,category) VALUES(?,?) ON CONFLICT DO NOTHING",
   ).updateMany(ds).transact(xa)
-  def clearCategory(cat: String)              =
-    sql"DELETE FROM blocklist_domains WHERE category=$cat".update.run.transact(xa).unit
+  def clearCategory(cat: BlocklistId)         =
+    sql"DELETE FROM blocklist_domains WHERE category=${cat.value}".update.run.transact(xa).unit
   def listCategories  = sql"SELECT DISTINCT category FROM blocklist_domains ORDER BY category"
-    .query[String]
+    .query[BlocklistId]
     .to[List]
     .transact(xa)
   def countByCategory =
     sql"SELECT category,COUNT(*)::INT FROM blocklist_domains GROUP BY category ORDER BY category"
-      .query[(String, Int)]
+      .query[(BlocklistId, Int)]
       .to[List]
       .transact(xa)
-  def loadCategory(cat: String) = sql"SELECT domain FROM blocklist_domains WHERE category=$cat"
-    .query[String]
-    .to[List]
-    .transact(xa)
-    .map(_.toSet)
-  def loadAll                   = sql"SELECT category,domain FROM blocklist_domains"
-    .query[(String, String)]
+  def loadCategory(cat: BlocklistId) =
+    sql"SELECT domain FROM blocklist_domains WHERE category=${cat.value}"
+      .query[Hostname]
+      .to[List]
+      .transact(xa)
+      .map(_.toSet)
+  def loadAll                        = sql"SELECT category,domain FROM blocklist_domains"
+    .query[(BlocklistId, Hostname)]
     .to[List]
     .transact(xa)
     .map(_.groupBy(_._1).map((k, vs) => k -> vs.map(_._2).toSet))
@@ -553,8 +564,8 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
 
 class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
   def incrementSecondsAndBytes(
-      mac: String,
-      dom: String,
+      mac: MacAddress,
+      dom: Hostname,
       d: LocalDate,
       seconds: Long,
       bytesIn: Long,
@@ -569,84 +580,106 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
               last_seen_at=NOW()""".update.run
       .transact(xa)
       .unit
-  def getSecondsUsed(mac: String, dom: String, d: LocalDate): Task[Long]                   =
+  def getSecondsUsed(mac: MacAddress, dom: Hostname, d: LocalDate): Task[Long]                   =
     sql"SELECT COALESCE(seconds_used,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
       .query[Long]
       .option
       .transact(xa)
       .map(_.getOrElse(0L))
-  def getSecondsAndBytes(mac: String, dom: String, d: LocalDate): Task[(Long, Long, Long)] =
+  def getSecondsAndBytes(mac: MacAddress, dom: Hostname, d: LocalDate): Task[(Long, Long, Long)] =
     sql"SELECT COALESCE(seconds_used,0),COALESCE(bytes_in,0),COALESCE(bytes_out,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
       .query[(Long, Long, Long)]
       .option
       .transact(xa)
       .map(_.getOrElse((0L, 0L, 0L)))
-  def listForDevice(mac: String, d: LocalDate)                                             =
+  def listForDevice(mac: MacAddress, d: LocalDate)                                               =
     sql"SELECT id,device_mac,domain,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY seconds_used DESC"
-      .query[(Long, String, String, String, Int, String)]
+      .query[(TimeUsageId, MacAddress, String, String, Int, String)]
       .map(TimeUsage.apply)
       .to[List]
       .transact(xa)
-  def listForDeviceMacs(macs: List[String], d: LocalDate)                                  =
+  def listForDeviceMacs(macs: List[MacAddress], d: LocalDate)                                    =
     if macs.isEmpty then ZIO.succeed(Nil)
     else {
-      val arr = macs.toArray
+      val arr = macs.map(_.value).toArray
       sql"SELECT id,device_mac,domain,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,seconds_used DESC"
-        .query[(Long, String, String, String, Int, String)]
+        .query[(TimeUsageId, MacAddress, String, String, Int, String)]
         .map(TimeUsage.apply)
         .to[List]
         .transact(xa)
     }
-  def snapshotAll(d: LocalDate)                                                            =
+  def snapshotAll(d: LocalDate)                                                                  =
     sql"SELECT device_mac,domain,(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
-      .query[(String, String, Int)]
+      .query[(MacAddress, String, Int)]
       .to[List]
       .transact(xa)
       .map(_.map((m, dom, mins) => (m, dom) -> mins).toMap)
 }
 
 class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
-  def getTotalExtension(mac: String, d: LocalDate)                                          =
+  def getTotalExtension(mac: MacAddress, d: LocalDate)                                           =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE device_mac=$mac AND date=$d"
       .query[Int]
       .unique
       .transact(xa)
-  def grant(mac: String, d: LocalDate, mins: Int, by: String, note: Option[String])         =
+  def grant(mac: MacAddress, d: LocalDate, mins: Int, by: String, note: Option[String])          =
     sql"INSERT INTO time_extensions(device_mac,date,extra_minutes,granted_by,note) VALUES($mac,$d,$mins,$by,$note) RETURNING id"
-      .query[Long]
+      .query[TimeExtensionId]
       .unique
       .transact(xa)
-  def listForDevice(mac: String, d: LocalDate)                                              =
+  def listForDevice(mac: MacAddress, d: LocalDate)                                               =
     sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE device_mac=$mac AND date=$d ORDER BY created_at"
-      .query[(Long, Option[Long], Option[String], String, Int, String, Option[String], String)]
+      .query[
+        (
+            TimeExtensionId,
+            Option[ProfileId],
+            Option[MacAddress],
+            String,
+            Int,
+            String,
+            Option[String],
+            String,
+        ),
+      ]
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAll(d: LocalDate)                                                             =
+  def snapshotAll(d: LocalDate)                                                                  =
     sql"SELECT device_mac,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND device_mac IS NOT NULL GROUP BY device_mac"
-      .query[(String, Int)]
+      .query[(MacAddress, Int)]
       .to[List]
       .transact(xa)
       .map(_.toMap)
-  def grantForProfile(pid: Long, d: LocalDate, mins: Int, by: String, note: Option[String]) =
+  def grantForProfile(pid: ProfileId, d: LocalDate, mins: Int, by: String, note: Option[String]) =
     sql"INSERT INTO time_extensions(profile_id,date,extra_minutes,granted_by,note) VALUES($pid,$d,$mins,$by,$note) RETURNING id"
-      .query[Long]
+      .query[TimeExtensionId]
       .unique
       .transact(xa)
-  def getProfileTotalExtension(pid: Long, d: LocalDate)                                     =
+  def getProfileTotalExtension(pid: ProfileId, d: LocalDate)                                     =
     sql"SELECT COALESCE(SUM(extra_minutes),0)::INT FROM time_extensions WHERE profile_id=$pid AND date=$d"
       .query[Int]
       .unique
       .transact(xa)
-  def listForProfile(pid: Long, d: LocalDate)                                               =
+  def listForProfile(pid: ProfileId, d: LocalDate)                                               =
     sql"SELECT id,profile_id,device_mac,date::TEXT,extra_minutes,granted_by,note,created_at::TEXT FROM time_extensions WHERE profile_id=$pid AND date=$d ORDER BY created_at"
-      .query[(Long, Option[Long], Option[String], String, Int, String, Option[String], String)]
+      .query[
+        (
+            TimeExtensionId,
+            Option[ProfileId],
+            Option[MacAddress],
+            String,
+            Int,
+            String,
+            Option[String],
+            String,
+        ),
+      ]
       .map(TimeExtension.apply)
       .to[List]
       .transact(xa)
-  def snapshotAllByProfile(d: LocalDate)                                                    =
+  def snapshotAllByProfile(d: LocalDate)                                                         =
     sql"SELECT profile_id,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND profile_id IS NOT NULL GROUP BY profile_id"
-      .query[(Long, Int)]
+      .query[(ProfileId, Int)]
       .to[List]
       .transact(xa)
       .map(_.toMap)
@@ -655,16 +688,16 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
 class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
   private type R =
     (
-        UUID,
+        RouterId,
         String,
-        Option[String],
-        Option[String],
+        Option[Sha256Hex],
+        Option[Sha256Hex],
         Option[Instant],
-        Option[String],
+        Option[ETag],
         Instant,
         Option[Int],
     )
-  private def toR(r: R)                                 =
+  private def toR(r: R)                                      =
     Router(
       r._1,
       r._2,
@@ -675,83 +708,95 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._7.toString,
       r._8.map(_.toLong),
     )
-  private val cols                                      =
+  private val cols                                           =
     fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,last_clock_skew_seconds"
-  def listAll                                           =
+  def listAll                                                =
     (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
       .map(toR)
       .to[List]
       .transact(xa)
-  def findById(id: UUID)                                =
+  def findById(id: RouterId)                                 =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE id=$id")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def findByEnrollmentTokenHash(h: String)              =
+  def findByEnrollmentTokenHash(h: Sha256Hex)                =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE enrollment_token_hash=$h")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def findByTokenHash(h: String)                        =
+  def findByTokenHash(h: Sha256Hex)                          =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def create(name: String, enrollmentTokenHash: String) =
+  def create(name: String, enrollmentTokenHash: Sha256Hex)   =
     sql"INSERT INTO routers(name,enrollment_token_hash) VALUES($name,$enrollmentTokenHash) RETURNING id"
-      .query[UUID]
+      .query[RouterId]
       .unique
       .transact(xa)
-  def completeEnrollment(id: UUID, tokenHash: String)   =
+  def completeEnrollment(id: RouterId, tokenHash: Sha256Hex) =
     sql"UPDATE routers SET token_hash=$tokenHash, enrollment_token_hash=NULL, last_seen_at=NOW() WHERE id=$id".update.run
       .transact(xa)
       .unit
-  def touch(id: UUID, etag: Option[String])             =
+  def touch(id: RouterId, etag: Option[ETag])                =
     sql"UPDATE routers SET last_seen_at=NOW(), last_etag=COALESCE($etag,last_etag) WHERE id=$id".update.run
       .transact(xa)
       .unit
-  def recordSkew(id: UUID, skewSeconds: Long)           = {
+  def recordSkew(id: RouterId, skewSeconds: Long)            = {
     val s = skewSeconds.toInt
     sql"UPDATE routers SET last_clock_skew_seconds=$s WHERE id=$id".update.run
       .transact(xa)
       .unit
   }
-  def delete(id: UUID)                                  =
+  def delete(id: RouterId)                                   =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
 }
 
 class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   private type R =
-    (Long, UUID, String, Option[String], String, String, String, String, Int, Long, Long)
+    (
+        TrafficReportId,
+        RouterId,
+        MacAddress,
+        Option[IpAddress],
+        Hostname,
+        String,
+        String,
+        String,
+        Int,
+        Long,
+        Long,
+    )
   private def toT(r: R)                               =
     TrafficReport(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8, r._9, r._10, r._11)
   def insertBatch(reports: List[TrafficReportInsert]) =
     Update[TrafficReportInsert](
       "INSERT INTO traffic_reports(router_id,mac,ip,hostname,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,hostname) DO NOTHING",
     ).updateMany(reports).transact(xa)
-  def listForDevice(mac: String, date: LocalDate)     =
+  def listForDevice(mac: MacAddress, date: LocalDate) =
     sql"SELECT id,router_id,mac,ip,hostname,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE mac=$mac AND date=$date ORDER BY period_start"
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
-  def listForRouter(routerId: UUID, limit: Int)       =
+  def listForRouter(routerId: RouterId, limit: Int)   =
     sql"SELECT id,router_id,mac,ip,hostname,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE router_id=$routerId ORDER BY period_start DESC LIMIT $limit"
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
 
-  def listPresenceRows(macs: List[String], date: LocalDate) = {
-    type Row = (String, Instant, String, Int)
+  def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
+    type Row = (MacAddress, Instant, Hostname, Int)
     macs match {
       case Nil => ZIO.succeed(List.empty[familydns.api.presence.PresenceRow])
       case ms  =>
-        val nel = cats.data.NonEmptyList.fromListUnsafe(ms)
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         val q   = fr"""SELECT mac, period_start, hostname, active_seconds
                        FROM traffic_reports
                        WHERE date = $date AND """ ++ Fragments.in(fr"mac", nel)
@@ -763,7 +808,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   }
 
   def listSessionRows(f: SessionFilter) = {
-    type Row = (UUID, String, String, LocalDate, Instant, Instant, Int, Long, Long)
+    type Row = (RouterId, MacAddress, Hostname, LocalDate, Instant, Instant, Int, Long, Long)
     val base    = fr"""SELECT router_id, mac, hostname, date, period_start, period_end,
                               active_seconds, bytes_in, bytes_out
                        FROM traffic_reports
@@ -772,7 +817,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       case None      => fr""
       case Some(Nil) => fr"AND FALSE"
       case Some(ms)  =>
-        val nel = cats.data.NonEmptyList.fromListUnsafe(ms)
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         fr"AND " ++ Fragments.in(fr"mac", nel)
     }
     val byHost  = f.host.fold(fr"")(h => fr"AND hostname ILIKE ${s"%$h%"}")
@@ -801,7 +846,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 }
 
 class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
-  private type R = (Long, Option[String], String, String, String)
+  private type R = (BlockEventId, Option[MacAddress], Hostname, String, String)
   private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
   def insertBatch(events: List[BlockEventInsert]) =
     Update[BlockEventInsert](
@@ -813,7 +858,7 @@ class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
       .map(toB)
       .to[List]
       .transact(xa)
-  def listForMac(mac: String, limit: Int)         =
+  def listForMac(mac: MacAddress, limit: Int)     =
     sql"SELECT id,mac,hostname,reason,ts::TEXT FROM block_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toB)
@@ -823,7 +868,16 @@ class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
 
 class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo {
   private type R =
-    (Long, UUID, Option[String], String, Option[String], Boolean, String, String)
+    (
+        ConnectionEventId,
+        RouterId,
+        Option[MacAddress],
+        Hostname,
+        Option[IpAddress],
+        Boolean,
+        String,
+        String,
+    )
   private def toC(r: R) =
     ConnectionEvent(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
 
@@ -839,14 +893,14 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .to[List]
       .transact(xa)
 
-  def listForMac(mac: String, limit: Int) =
+  def listForMac(mac: MacAddress, limit: Int) =
     sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
 
-  def listForRouter(routerId: UUID, limit: Int) =
+  def listForRouter(routerId: RouterId, limit: Int) =
     sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
@@ -874,10 +928,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       fr"ORDER BY ce.ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
       .query[
         (
-            Long,
+            QueryLogId,
+            Option[MacAddress],
             Option[String],
-            Option[String],
-            Option[Long],
+            Option[ProfileId],
             Option[String],
             String,
             Int,
@@ -920,16 +974,17 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         .map(DomainCount.apply)
         .to[List]
         .transact(xa)
-      dev <- sql"""SELECT COALESCE(ce.mac,'unknown'),
-                          COALESCE(d.name, ce.mac, 'unknown'),
+      dev <- sql"""SELECT ce.mac::TEXT,
+                          COALESCE(d.name, ce.mac),
                           COUNT(*)::INT,
                           SUM(CASE WHEN NOT ce.allowed THEN 1 ELSE 0 END)::INT
                    FROM connection_events ce
                    LEFT JOIN devices d ON d.mac = ce.mac
                    WHERE ce.ts > NOW()-INTERVAL '24 hours'
+                     AND ce.mac IS NOT NULL
                    GROUP BY ce.mac, d.name
                    ORDER BY COUNT(*) DESC LIMIT 20"""
-        .query[(String, String, Int, Int)]
+        .query[(MacAddress, String, Int, Int)]
         .map(DeviceStats.apply)
         .to[List]
         .transact(xa)
@@ -945,12 +1000,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .to[List]
       .transact(xa)
 
-  def lastSeenByMacSince(since: Instant): Task[Map[String, Instant]] =
+  def lastSeenByMacSince(since: Instant): Task[Map[MacAddress, Instant]] =
     sql"""SELECT mac, MAX(ts)
           FROM connection_events
           WHERE mac IS NOT NULL AND ts > $since
           GROUP BY mac"""
-      .query[(String, Instant)]
+      .query[(MacAddress, Instant)]
       .to[List]
       .transact(xa)
       .map(_.toMap)

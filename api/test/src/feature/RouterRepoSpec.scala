@@ -2,6 +2,7 @@ package familydns.api.feature
 
 import familydns.api.db.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import doobie.Transactor
@@ -24,11 +25,11 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _        <- cleanDb
           repo     <- ZIO.service[RouterRepo]
-          id       <- repo.create("home-router", "ENROLL_HASH_1")
+          id       <- repo.create("home-router", Sha256Hex.unsafe("a" * 64))
           row      <- repo.findById(id)
-          byEnroll <- repo.findByEnrollmentTokenHash("ENROLL_HASH_1")
+          byEnroll <- repo.findByEnrollmentTokenHash(Sha256Hex.unsafe("a" * 64))
         } yield assertTrue(row.exists(_.name == "home-router")) &&
-          assertTrue(row.exists(_.enrollmentTokenHash.contains("ENROLL_HASH_1"))) &&
+          assertTrue(row.exists(_.enrollmentTokenHash.contains(Sha256Hex.unsafe("a" * 64)))) &&
           assertTrue(row.exists(_.tokenHash.isEmpty)) &&
           assertTrue(row.exists(_.lastSeenAt.isEmpty)) &&
           assertTrue(byEnroll.exists(_.id == id))
@@ -39,13 +40,13 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _        <- cleanDb
           repo     <- ZIO.service[RouterRepo]
-          id       <- repo.create("r1", "ENROLL_HASH_2")
-          _        <- repo.completeEnrollment(id, "TOKEN_HASH_2")
+          id       <- repo.create("r1", Sha256Hex.unsafe("c" * 64))
+          _        <- repo.completeEnrollment(id, Sha256Hex.unsafe("d" * 64))
           row      <- repo.findById(id)
-          byEnroll <- repo.findByEnrollmentTokenHash("ENROLL_HASH_2")
-          byTok    <- repo.findByTokenHash("TOKEN_HASH_2")
+          byEnroll <- repo.findByEnrollmentTokenHash(Sha256Hex.unsafe("c" * 64))
+          byTok    <- repo.findByTokenHash(Sha256Hex.unsafe("d" * 64))
         } yield assertTrue(row.exists(_.enrollmentTokenHash.isEmpty)) &&
-          assertTrue(row.exists(_.tokenHash.contains("TOKEN_HASH_2"))) &&
+          assertTrue(row.exists(_.tokenHash.contains(Sha256Hex.unsafe("d" * 64)))) &&
           assertTrue(row.exists(_.lastSeenAt.isDefined)) &&
           assertTrue(byEnroll.isEmpty) &&
           assertTrue(byTok.exists(_.id == id))
@@ -54,14 +55,14 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _    <- cleanDb
           repo <- ZIO.service[RouterRepo]
-          id   <- repo.create("r1", "EH")
-          _    <- repo.completeEnrollment(id, "TH")
-          _    <- repo.touch(id, Some("etag-A"))
+          id   <- repo.create("r1", Sha256Hex.unsafe("e" * 64))
+          _    <- repo.completeEnrollment(id, Sha256Hex.unsafe("f" * 64))
+          _    <- repo.touch(id, Some(ETag.unsafe("\"etag-A\"")))
           a    <- repo.findById(id)
           _    <- repo.touch(id, None) // last_etag must remain "etag-A"
           b    <- repo.findById(id)
-        } yield assertTrue(a.flatMap(_.lastEtag).contains("etag-A")) &&
-          assertTrue(b.flatMap(_.lastEtag).contains("etag-A")) &&
+        } yield assertTrue(a.flatMap(_.lastEtag).contains(ETag.unsafe("\"etag-A\""))) &&
+          assertTrue(b.flatMap(_.lastEtag).contains(ETag.unsafe("\"etag-A\""))) &&
           assertTrue(b.flatMap(_.lastSeenAt).isDefined)
       },
       test("delete removes the row and cascades to traffic_reports") {
@@ -69,16 +70,16 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
-          id    <- rRepo.create("r1", "EH")
+          id    <- rRepo.create("r1", Sha256Hex.unsafe("g" * 64))
           start = Instant.parse("2026-05-02T14:00:00Z")
           end   = Instant.parse("2026-05-02T14:05:00Z")
           _   <- tRepo.insertBatch(
             List(
               TrafficReportInsert(
                 id,
-                "aa:bb:cc:dd:ee:ff",
-                Some("192.168.1.10"),
-                "youtube.com",
+                MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
+                Some(IpAddress.unsafe("192.168.1.10")),
+                Hostname.unsafe("youtube.com"),
                 LocalDate.of(2026, 5, 2),
                 start,
                 end,
@@ -97,8 +98,8 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _    <- cleanDb
           repo <- ZIO.service[RouterRepo]
-          a    <- repo.create("a", "h1")
-          b    <- repo.create("b", "h2")
+          a    <- repo.create("a", Sha256Hex.unsafe("h" * 64))
+          b    <- repo.create("b", Sha256Hex.unsafe("i" * 64))
           all  <- repo.listAll
         } yield assertTrue(all.map(_.id) == List(a, b))
       },
@@ -109,14 +110,14 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
-          rid   <- rRepo.create("r1", "EH")
+          rid   <- rRepo.create("r1", Sha256Hex.unsafe("j" * 64))
           start = Instant.parse("2026-05-02T14:00:00Z")
           end   = Instant.parse("2026-05-02T14:05:00Z")
           rec   = TrafficReportInsert(
             rid,
-            "aa:bb:cc:11:22:33",
-            Some("192.168.1.42"),
-            "youtube.com",
+            MacAddress.unsafe("aa:bb:cc:11:22:33"),
+            Some(IpAddress.unsafe("192.168.1.42")),
+            Hostname.unsafe("youtube.com"),
             LocalDate.of(2026, 5, 2),
             start,
             end,
@@ -134,16 +135,16 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
-          rid   <- rRepo.create("r1", "EH")
+          rid   <- rRepo.create("r1", Sha256Hex.unsafe("k" * 64))
           start = Instant.parse("2026-05-02T14:00:00Z")
           end   = Instant.parse("2026-05-02T14:05:00Z")
-          mac   = "aa:bb:cc:11:22:33"
+          mac   = MacAddress.unsafe("aa:bb:cc:11:22:33")
           batch = List(
             TrafficReportInsert(
               rid,
               mac,
               None,
-              "youtube.com",
+              Hostname.unsafe("youtube.com"),
               LocalDate.of(2026, 5, 2),
               start,
               end,
@@ -155,7 +156,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               rid,
               mac,
               None,
-              "google.com",
+              Hostname.unsafe("google.com"),
               LocalDate.of(2026, 5, 2),
               start,
               end,
@@ -167,24 +168,29 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           n    <- tRepo.insertBatch(batch)
           rows <- tRepo.listForDevice(mac, LocalDate.of(2026, 5, 2))
         } yield assertTrue(n == 2) && assertTrue(rows.size == 2) &&
-          assertTrue(rows.map(_.hostname).toSet == Set("youtube.com", "google.com"))
+          assertTrue(
+            rows.map(_.hostname).toSet == Set(
+              Hostname.unsafe("youtube.com"),
+              Hostname.unsafe("google.com"),
+            ),
+          )
       },
       test("listForDevice filters by mac and date") {
         for {
           _     <- cleanDb
           rRepo <- ZIO.service[RouterRepo]
           tRepo <- ZIO.service[TrafficReportRepo]
-          rid   <- rRepo.create("r1", "EH")
-          mac1 = "aa:bb:cc:11:22:33"
-          mac2 = "aa:bb:cc:99:99:99"
+          rid   <- rRepo.create("r1", Sha256Hex.unsafe("l" * 64))
+          mac1 = MacAddress.unsafe("aa:bb:cc:11:22:33")
+          mac2 = MacAddress.unsafe("aa:bb:cc:99:99:99")
           d1   = LocalDate.of(2026, 5, 2)
           d2   = LocalDate.of(2026, 5, 3)
-          mk   = (mac: String, d: LocalDate, h: String) =>
+          mk   = (mac: MacAddress, d: LocalDate, h: String) =>
             TrafficReportInsert(
               rid,
               mac,
               None,
-              h,
+              Hostname.unsafe(h),
               d,
               d.atTime(14, 0).toInstant(java.time.ZoneOffset.UTC),
               d.atTime(14, 5).toInstant(java.time.ZoneOffset.UTC),
@@ -200,7 +206,9 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ),
           )
           rows <- tRepo.listForDevice(mac1, d1)
-        } yield assertTrue(rows.size == 1) && assertTrue(rows.head.hostname == "a.com")
+        } yield assertTrue(rows.size == 1) && assertTrue(
+          rows.head.hostname == Hostname.unsafe("a.com"),
+        )
       },
     ),
     suite("BlockEventRepo")(
@@ -210,13 +218,17 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           repo <- ZIO.service[BlockEventRepo]
           n    <- repo.insertBatch(
             List(
-              BlockEventInsert(Some("aa:bb:cc:00:00:01"), "ads.example.com", "category:ads"),
               BlockEventInsert(
-                Some("aa:bb:cc:00:00:02"),
-                "casino.example.com",
+                Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+                Hostname.unsafe("ads.example.com"),
+                "category:ads",
+              ),
+              BlockEventInsert(
+                Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+                Hostname.unsafe("casino.example.com"),
                 "category:gambling",
               ),
-              BlockEventInsert(None, "unknown.example.com", "category:adult"),
+              BlockEventInsert(None, Hostname.unsafe("unknown.example.com"), "category:adult"),
             ),
           )
           rows <- repo.recent(10)
@@ -227,18 +239,24 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _    <- cleanDb
           repo <- ZIO.service[BlockEventRepo]
-          mac = "aa:bb:cc:00:00:01"
+          mac = MacAddress.unsafe("aa:bb:cc:00:00:01")
           _    <- repo.insertBatch(
             List(
-              BlockEventInsert(Some(mac), "a.com", "r1"),
-              BlockEventInsert(Some("aa:bb:cc:00:00:99"), "b.com", "r1"),
-              BlockEventInsert(Some(mac), "c.com", "r2"),
+              BlockEventInsert(Some(mac), Hostname.unsafe("a.com"), "r1"),
+              BlockEventInsert(
+                Some(MacAddress.unsafe("aa:bb:cc:00:00:99")),
+                Hostname.unsafe("b.com"),
+                "r1",
+              ),
+              BlockEventInsert(Some(mac), Hostname.unsafe("c.com"), "r2"),
             ),
           )
           rows <- repo.listForMac(mac, 10)
         } yield assertTrue(rows.size == 2) &&
           assertTrue(rows.forall(_.mac.contains(mac))) &&
-          assertTrue(rows.map(_.hostname).toSet == Set("a.com", "c.com"))
+          assertTrue(
+            rows.map(_.hostname).toSet == Set(Hostname.unsafe("a.com"), Hostname.unsafe("c.com")),
+          )
       },
     ),
     suite("time_usage byte columns")(
@@ -250,11 +268,11 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           _  <- cleanDb
           tu <- ZIO.service[TimeUsageRepo]
           xa <- ZIO.service[doobie.Transactor[Task]]
-          mac = "aa:bb:cc:dd:ee:01"
+          mac = MacAddress.unsafe("aa:bb:cc:dd:ee:01")
           d   = LocalDate.of(2026, 5, 2)
-          _   <- tu.incrementSecondsAndBytes(mac, "youtube.com", d, 5L * 60L, 0L, 0L)
+          _ <- tu.incrementSecondsAndBytes(mac, Hostname.unsafe("youtube.com"), d, 5L * 60L, 0L, 0L)
           row <-
-            sql"SELECT bytes_in, bytes_out FROM time_usage WHERE device_mac=$mac AND domain='youtube.com' AND date=$d"
+            sql"SELECT bytes_in, bytes_out FROM time_usage WHERE device_mac=${mac.value} AND domain='youtube.com' AND date=$d"
               .query[(Long, Long)]
               .unique
               .transact(xa)

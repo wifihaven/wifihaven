@@ -6,6 +6,7 @@ import familydns.api.db.*
 import familydns.api.policy.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -52,7 +53,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
    * midnight UTC on `date`. Returns the next free bucket index for chaining.
    */
   private def seedTraffic(
-      routerId: UUID,
+      routerId: RouterId,
       mac: String,
       hostname: String,
       date: LocalDate,
@@ -65,21 +66,32 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       val inserts = (0 until buckets).map { i =>
         val start = today0.plusSeconds((bucketOffset + i) * 300L)
         val end   = start.plusSeconds(300)
-        TrafficReportInsert(routerId, mac, None, hostname, date, start, end, 300, 0L, 0L)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          Hostname.unsafe(hostname),
+          date,
+          start,
+          end,
+          300,
+          0L,
+          0L,
+        )
       }.toList
       tr.insertBatch(inserts).as(bucketOffset + buckets)
     }
 
   /** Seed a router row with a known plain enrollment token, return (id, raw token). */
-  private def seedRouter(name: String): ZIO[RouterRepo, Throwable, (UUID, String)] =
+  private def seedRouter(name: String): ZIO[RouterRepo, Throwable, (RouterId, EnrollmentToken)] =
     for {
       rr <- ZIO.service[RouterRepo]
-      token = "et_" + UUID.randomUUID().toString.replace("-", "")
-      hash  = PolicyService.hashToken(token)
+      et   = EnrollmentToken.unsafe("et_" + UUID.randomUUID().toString.replace("-", ""))
+      hash = PolicyService.hashToken(et.value)
       id <- rr.create(name, hash)
-    } yield (id, token)
+    } yield (id, et)
 
-  private def doRegister(routes: Routes[Any, Response], et: String): Task[Response] =
+  private def doRegister(routes: Routes[Any, Response], et: EnrollmentToken): Task[Response] =
     routes.runZIO(
       Request.post(
         URL.decode("/api/router/register").toOption.get,
@@ -101,9 +113,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         row  <- rr.findById(id).map(_.get)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(out.routerId == id) &&
-        assertTrue(out.routerToken.startsWith("rt_")) &&
+        assertTrue(out.routerToken.value.startsWith("rt_")) &&
         assertTrue(row.enrollmentTokenHash.isEmpty) &&
-        assertTrue(row.tokenHash.contains(PolicyService.hashToken(out.routerToken))) &&
+        assertTrue(row.tokenHash.contains(PolicyService.hashToken(out.routerToken.value))) &&
         assertTrue(row.name == "home-gw")
     },
     test("admin-created name survives enrollment end-to-end") {
@@ -121,7 +133,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
               URL.decode("/api/admin/routers").toOption.get,
               Body.fromString(CreateRouterRequest("kitchen-gw").toJson),
             )
-            .addHeader(Header.Authorization.Bearer(adminLogin.token)),
+            .addHeader(Header.Authorization.Bearer(adminLogin.token.value)),
         )
         createBody <- createResp.body.asString
         created    <- ZIO.fromEither(createBody.fromJson[CreateRouterResponse])
@@ -132,7 +144,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       } yield assertTrue(createResp.status == Status.Ok) &&
         assertTrue(regResp.status == Status.Ok) &&
         assertTrue(reg.routerId == created.routerId) &&
-        assertTrue(reg.routerToken.startsWith("rt_")) &&
+        assertTrue(reg.routerToken.value.startsWith("rt_")) &&
         assertTrue(row.name == "kitchen-gw")
     },
     test("enrollment token is single-use: second register returns 401") {
@@ -169,13 +181,13 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         ok      <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         row     <- rr.findById(reg.routerId).map(_.get)
       } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(wrong.status == Status.Unauthorized) &&
         assertTrue(ok.status == Status.Ok) &&
-        assertTrue(row.lastEtag.exists(_.startsWith("\"sha256:")))
+        assertTrue(row.lastEtag.exists(_.value.startsWith("\"sha256:")))
     },
     test(
       "policy snapshot composition: devices, profiles, schedules, site_limits, blocklists, time_used",
@@ -215,7 +227,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         resp    <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         body    <- resp.body.asString
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
@@ -229,8 +241,8 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(snap.profiles.contains(adult)) &&
         assertTrue(!kp.rules.blocked) &&
         assertTrue(kp.rules.blockReason.isEmpty) &&
-        assertTrue(snap.blocklists.contains(BlocklistId("ads"))) &&
-        assertTrue(snap.blocklists(BlocklistId("ads")).url == "/api/blocklists/ads")
+        assertTrue(snap.blocklists.contains(BlocklistId.unsafe("ads"))) &&
+        assertTrue(snap.blocklists(BlocklistId.unsafe("ads")).url.value == "/api/blocklists/ads")
     },
     test("etag deterministic across calls; If-None-Match → 304; mutation → fresh etag") {
       for {
@@ -249,21 +261,21 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         r1      <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         b1      <- r1.body.asString
         s1      <- ZIO.fromEither(b1.fromJson[PolicySnapshot])
         r2      <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken))
-            .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk(s1.etag))),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
+            .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk(s1.etag.value))),
         )
         _       <- pr.setPaused(kid, true)
         r3      <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         b3      <- r3.body.asString
         s3      <- ZIO.fromEither(b3.fromJson[PolicySnapshot])
@@ -289,13 +301,13 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         ok      <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/ads").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         okBody  <- ok.body.asString
         nf      <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/nonsense").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
       } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(ok.status == Status.Ok) &&
@@ -318,9 +330,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         kid     <- TestLayers.seedKidsProfile(pr, sr)
         _       <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         _       <- dr.upsertUnknown(
-          "ff:ff:ff:aa:bb:cc",
+          MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
           "mystery",
-          Some("10.0.0.99"),
+          Some(IpAddress.unsafe("10.0.0.99")),
           java.time.Instant.now(),
         )
         ber     <- ZIO.service[BlockEventRepo]
@@ -333,12 +345,12 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         resp    <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         body    <- resp.body.asString
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
-        unknown = snap.devices.get("ff:ff:ff:aa:bb:cc")
-        known   = snap.devices.get("aa:bb:cc:11:22:33")
+        unknown = snap.devices.get(MacAddress.unsafe("ff:ff:ff:aa:bb:cc"))
+        known   = snap.devices.get(MacAddress.unsafe("aa:bb:cc:11:22:33"))
       } yield assertTrue(snap.devices.size == 2) &&
         assertTrue(unknown.isDefined) &&
         assertTrue(unknown.exists(_.profileId.isEmpty)) &&
@@ -361,7 +373,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
               URL.decode("/api/admin/routers").toOption.get,
               Body.fromString(CreateRouterRequest("home").toJson),
             )
-            .addHeader(Header.Authorization.Bearer(kidLogin.token)),
+            .addHeader(Header.Authorization.Bearer(kidLogin.token.value)),
         )
         ok       <- adminRoutes.runZIO(
           Request
@@ -369,16 +381,18 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
               URL.decode("/api/admin/routers").toOption.get,
               Body.fromString(CreateRouterRequest("home").toJson),
             )
-            .addHeader(Header.Authorization.Bearer(adminLogin.token)),
+            .addHeader(Header.Authorization.Bearer(adminLogin.token.value)),
         )
         okBody   <- ok.body.asString
         out      <- ZIO.fromEither(okBody.fromJson[CreateRouterResponse])
         row      <- rr.findById(out.routerId).map(_.get)
       } yield assertTrue(rejected.status == Status.Forbidden) &&
         assertTrue(ok.status == Status.Ok) &&
-        assertTrue(out.enrollmentToken.startsWith("et_")) &&
+        assertTrue(out.enrollmentToken.value.startsWith("et_")) &&
         assertTrue(row.tokenHash.isEmpty) &&
-        assertTrue(row.enrollmentTokenHash.contains(PolicyService.hashToken(out.enrollmentToken)))
+        assertTrue(
+          row.enrollmentTokenHash.contains(PolicyService.hashToken(out.enrollmentToken.value)),
+        )
     },
     // ── #352: plain-text blocklist endpoint replaces RPZ ──────────────────────
     test(
@@ -405,14 +419,14 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         ok      <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/test_ads").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         body    <- ok.body.asString
         etag1 = ok.header(Header.ETag).map(_.renderedValue)
         notMod <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/test_ads").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken))
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
             .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk(etag1.get))),
         )
       } yield assertTrue(ok.status == Status.Ok) &&
@@ -455,7 +469,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         notFound  <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/unknown_id").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
       } yield assertTrue(noAuth.status == Status.Unauthorized) &&
         assertTrue(wrongAuth.status == Status.Unauthorized) &&
@@ -477,7 +491,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         rpzResp <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/test_ads.rpz").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
       } yield assertTrue(rpzResp.status == Status.NotFound)
     },
@@ -505,17 +519,25 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         resp    <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         body    <- resp.body.asString
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
-      } yield assertTrue(snap.blocklists.contains(BlocklistId("test_ads"))) &&
-        assertTrue(snap.blocklists.contains(BlocklistId("test_social"))) &&
-        assertTrue(snap.blocklists(BlocklistId("test_ads")).url == "/api/blocklists/test_ads") &&
-        assertTrue(!snap.blocklists(BlocklistId("test_ads")).url.contains(".rpz")) &&
+      } yield assertTrue(snap.blocklists.contains(BlocklistId.unsafe("test_ads"))) &&
+        assertTrue(snap.blocklists.contains(BlocklistId.unsafe("test_social"))) &&
+        assertTrue(
+          snap.blocklists(BlocklistId.unsafe("test_ads")).url.value == "/api/blocklists/test_ads",
+        ) &&
+        assertTrue(
+          !snap.blocklists(BlocklistId.unsafe("test_ads")).url.value.contains(".rpz"),
+        ) &&
         // version is a hex SHA prefix, not a date like "2026-05-14"
         assertTrue(
-          !snap.blocklists(BlocklistId("test_ads")).version.matches("\\d{4}-\\d{2}-\\d{2}"),
+          !snap
+            .blocklists(BlocklistId.unsafe("test_ads"))
+            .version
+            .value
+            .matches("\\d{4}-\\d{2}-\\d{2}"),
         )
     },
     test(
@@ -539,7 +561,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         r1      <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         b1      <- r1.body.asString
         s1      <- ZIO.fromEither(b1.fromJson[PolicySnapshot])
@@ -548,7 +570,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         r2      <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
-            .addHeader(Header.Authorization.Bearer(reg.routerToken)),
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
         b2      <- r2.body.asString
         s2      <- ZIO.fromEither(b2.fromJson[PolicySnapshot])

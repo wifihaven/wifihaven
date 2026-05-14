@@ -3,6 +3,7 @@ package familydns.api.feature
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import zio.*
 import zio.http.*
 import zio.json.ast.Json
@@ -33,15 +34,15 @@ object DbFailureSpec extends ZIOSpecDefault {
     }
 
   /** RouterAuth stub: succeeds with a synthetic Router; never touches the DB. */
-  private def okAuth(routerId: UUID): RouterAuth =
+  private def okAuth(routerId: RouterId): RouterAuth =
     new RouterAuth {
       def authenticate(req: Request): IO[Response, Router] =
         ZIO.succeed(
           Router(
             id = routerId,
             name = "test",
-            enrollmentTokenHash = Some("hash"),
-            tokenHash = Some("hash"),
+            enrollmentTokenHash = Some(Sha256Hex.unsafe("a" * 64)),
+            tokenHash = Some(Sha256Hex.unsafe("b" * 64)),
             lastSeenAt = None,
             lastEtag = None,
             createdAt = "2026-05-13T00:00:00Z",
@@ -56,58 +57,58 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def throwing[A]: Task[A] = ZIO.fail(new SQLException(secretMsg))
 
   private def brokenRouterRepo: RouterRepo = new RouterRepo {
-    def listAll                                 = throwing
-    def findById(id: UUID)                      = throwing
-    def findByEnrollmentTokenHash(h: String)    = throwing
-    def findByTokenHash(h: String)              = throwing
-    def create(n: String, h: String)            = throwing
-    def completeEnrollment(id: UUID, h: String) = throwing
-    def touch(id: UUID, etag: Option[String])   = throwing
-    def recordSkew(id: UUID, skewSeconds: Long) = throwing
-    def delete(id: UUID)                        = throwing
+    def listAll                                        = throwing
+    def findById(id: RouterId)                         = throwing
+    def findByEnrollmentTokenHash(h: Sha256Hex)        = throwing
+    def findByTokenHash(h: Sha256Hex)                  = throwing
+    def create(n: String, h: Sha256Hex)                = throwing
+    def completeEnrollment(id: RouterId, h: Sha256Hex) = throwing
+    def touch(id: RouterId, etag: Option[ETag])        = throwing
+    def recordSkew(id: RouterId, skewSeconds: Long)    = throwing
+    def delete(id: RouterId)                           = throwing
   }
 
   private def brokenTrafficRepo: TrafficReportRepo = new TrafficReportRepo {
-    def insertBatch(rs: List[TrafficReportInsert])                   = throwing
-    def listForDevice(mac: String, d: java.time.LocalDate)           = throwing
-    def listForRouter(r: UUID, l: Int)                               = throwing
-    def listSessionRows(f: SessionFilter)                            = throwing
-    def listPresenceRows(macs: List[String], d: java.time.LocalDate) = throwing
+    def insertBatch(rs: List[TrafficReportInsert])                       = throwing
+    def listForDevice(mac: MacAddress, d: java.time.LocalDate)           = throwing
+    def listForRouter(r: RouterId, l: Int)                               = throwing
+    def listSessionRows(f: SessionFilter)                                = throwing
+    def listPresenceRows(macs: List[MacAddress], d: java.time.LocalDate) = throwing
   }
 
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {
     def incrementSecondsAndBytes(
-        mac: String,
-        domain: String,
+        mac: MacAddress,
+        domain: Hostname,
         date: java.time.LocalDate,
         s: Long,
         bi: Long,
         bo: Long,
     ) = throwing
-    def getSecondsUsed(mac: String, domain: String, date: java.time.LocalDate)     = throwing
-    def getSecondsAndBytes(mac: String, domain: String, date: java.time.LocalDate) = throwing
-    def listForDevice(mac: String, date: java.time.LocalDate)                      = throwing
-    def listForDeviceMacs(macs: List[String], date: java.time.LocalDate)           = throwing
-    def snapshotAll(date: java.time.LocalDate)                                     = throwing
+    def getSecondsUsed(mac: MacAddress, domain: Hostname, date: java.time.LocalDate)     = throwing
+    def getSecondsAndBytes(mac: MacAddress, domain: Hostname, date: java.time.LocalDate) = throwing
+    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                        = throwing
+    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)             = throwing
+    def snapshotAll(date: java.time.LocalDate)                                           = throwing
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
-    def listAll                                                                   = throwing
-    def findByMac(mac: String)                                                    = throwing
-    def upsert(mac: String, name: String, pid: Long, ip: String)                  = throwing
-    def updateLastSeen(mac: String, ip: String)                                   = throwing
-    def touchLastSeen(mac: String, ip: Option[String], at: Instant)               = throwing
-    def upsertUnknown(mac: String, name: String, ip: Option[String], at: Instant) = throwing
-    def renameIfAutoGenerated(mac: String, newName: String)                       = throwing
-    def updateProfile(mac: String, pid: Long)                                     = throwing
-    def delete(mac: String)                                                       = throwing
+    def listAll                                                                          = throwing
+    def findByMac(mac: MacAddress)                                                       = throwing
+    def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String)                = throwing
+    def updateLastSeen(mac: MacAddress, ip: String)                                      = throwing
+    def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               = throwing
+    def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) = throwing
+    def renameIfAutoGenerated(mac: MacAddress, newName: String)                          = throwing
+    def updateProfile(mac: MacAddress, pid: ProfileId)                                   = throwing
+    def delete(mac: MacAddress)                                                          = throwing
   }
 
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
     def insertBatch(es: List[ConnectionEventInsert]) = throwing
     def recent(l: Int)                               = throwing
-    def listForMac(mac: String, l: Int)              = throwing
-    def listForRouter(r: UUID, l: Int)               = throwing
+    def listForMac(mac: MacAddress, l: Int)          = throwing
+    def listForRouter(r: RouterId, l: Int)           = throwing
     def query(f: LogFilter)                          = throwing
     def stats                                        = throwing
     def topBlocked(h: Int, l: Int)                   = throwing
@@ -163,7 +164,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     },
     test("router endpoint returns 400 (not 503) on malformed body even when repos would throw") {
       // Auth succeeds; body is junk → must short-circuit to 400 before any DB call.
-      val auth   = okAuth(UUID.randomUUID())
+      val auth   = okAuth(RouterId(UUID.randomUUID()))
       val routes = RouterIngestRoutes.routes(
         auth,
         brokenRouterRepo,

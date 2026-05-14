@@ -5,6 +5,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -14,7 +15,6 @@ import zio.json.*
 import zio.test.*
 
 import java.time.{Instant, ZoneOffset}
-import java.util.UUID
 
 object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -31,16 +31,16 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
-  private def seedRouter(name: String = "home"): ZIO[RouterRepo, Throwable, UUID] =
+  private def seedRouter(name: String = "home"): ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo] { rRepo =>
       for {
-        id <- rRepo.create(name, "ENROLL_HASH")
-        _  <- rRepo.completeEnrollment(id, "TOKEN_HASH")
+        id <- rRepo.create(name, Sha256Hex.unsafe("a" * 64))
+        _  <- rRepo.completeEnrollment(id, Sha256Hex.unsafe("b" * 64))
       } yield id
     }
 
   private def insertReport(
-      routerId: UUID,
+      routerId: RouterId,
       mac: String,
       host: String,
       start: Instant,
@@ -52,29 +52,48 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       val date = start.atZone(ZoneOffset.UTC).toLocalDate
       tr.insertBatch(
         List(
-          TrafficReportInsert(routerId, mac, None, host, date, start, end, activeSeconds, 1, 1),
+          TrafficReportInsert(
+            routerId,
+            MacAddress.unsafe(mac),
+            None,
+            Hostname.unsafe(host),
+            date,
+            start,
+            end,
+            activeSeconds,
+            1,
+            1,
+          ),
         ),
       ).unit
     }
 
   private def insertConn(
-      routerId: UUID,
+      routerId: RouterId,
       mac: String,
       ts: Instant,
   ): ZIO[ConnectionEventRepo, Throwable, Unit] =
     ZIO.serviceWithZIO[ConnectionEventRepo] { cr =>
       cr.insertBatch(
         List(
-          ConnectionEventInsert(routerId, Some(mac), "example.com", None, true, "allow", ts),
+          ConnectionEventInsert(
+            routerId,
+            Some(MacAddress.unsafe(mac)),
+            Hostname.unsafe("example.com"),
+            None,
+            true,
+            "allow",
+            ts,
+          ),
         ),
       ).unit
     }
 
-  private def getJson(routes: Routes[Any, Response], path: String, token: String) =
+  private def getJson(routes: Routes[Any, Response], path: String, token: JwtToken) =
     routes.runZIO(
       Request
         .get(URL.decode(path).toOption.get)
-        .addHeader(Header.Authorization.Bearer(token)),
+        .addHeader(Header.Authorization.Bearer(token.value)),
     )
 
   private def buildRoutes(auth: AuthService) =
@@ -96,8 +115,9 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       pr.listAll.flatMap(ps => ZIO.foreachDiscard(ps)(p => pr.delete(p.id))),
     )
 
-  private val mac1 = "aa:bb:cc:dd:ee:01"
-  private val mac2 = "aa:bb:cc:dd:ee:02"
+  private val mac1  = "aa:bb:cc:dd:ee:01"
+  private val mac2  = "aa:bb:cc:dd:ee:02"
+  private val mac1T = MacAddress.unsafe(mac1)
 
   def spec = suite("Dashboard Now API")(
     test("empty DB → 200 with idle seeded profiles, no active devices") {
@@ -141,12 +161,12 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       } yield assertTrue(
         parsed.profiles.length == 1,
         prof.activeDevices.length == 1,
-        dev.mac == mac1,
+        dev.mac == mac1T,
         dev.name == "iPad",
         dev.lastSeenSeconds <= 60L,
-        dev.topHosts.headOption.exists(_.hostname == "youtube.com"),
+        dev.topHosts.headOption.exists(_.hostname == Hostname.unsafe("youtube.com")),
         dev.topHosts.head.activeSeconds == 1800L,
-        dev.currentSession.exists(_.hostname == "youtube.com"),
+        dev.currentSession.exists(_.hostname == Hostname.unsafe("youtube.com")),
         dev.currentSession.get.durationSeconds == 1800L,
       )
     },
@@ -192,7 +212,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev  = prof.activeDevices.head
       } yield assertTrue(
         prof.activeDevices.length == 1,
-        dev.mac == mac1,
+        dev.mac == mac1T,
         dev.lastSeenSeconds <= 90L,
       )
     },
@@ -325,7 +345,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         parsed.profiles.length == 1,
         parsed.profiles.head.id == kids,
         parsed.profiles.head.activeDevices.length == 1,
-        parsed.profiles.head.activeDevices.head.mac == mac1,
+        parsed.profiles.head.activeDevices.head.mac == mac1T,
       )
     },
     test("unauthenticated → 401") {

@@ -68,7 +68,7 @@ object DebugRoutes {
             } yield Response.json(
               snap
                 .map { case ((mac, domain), mins) =>
-                  TimeUsageRow(mac, domain, today.toString, mins)
+                  TimeUsageRow(mac.value, domain, today.toString, mins)
                 }
                 .toList
                 .toJson,

@@ -5,6 +5,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -42,26 +43,28 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
         body   = UpsertDeviceRequest(
-          mac = "aa:bb:cc:dd:ee:ff",
+          mac = MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
           name = "iPad",
           profileId = kidsId,
         ).toJson
         putReq = Request
           .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
-          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.Authorization.Bearer(token.value))
           .addHeader(Header.ContentType(MediaType.application.json))
         putResp <- routes.runZIO(putReq)
         getReq = Request
           .get(URL.decode("/api/devices").toOption.get)
-          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.Authorization.Bearer(token.value))
         getResp <- routes.runZIO(getReq)
         body2   <- getResp.body.asString
         devices <- ZIO.fromEither(body2.fromJson[List[Device]])
       } yield assertTrue(putResp.status == Status.Ok) &&
-        assertTrue(devices.exists(_.mac == "aa:bb:cc:dd:ee:ff")) &&
+        assertTrue(devices.exists(_.mac == MacAddress.unsafe("aa:bb:cc:dd:ee:ff"))) &&
         assertTrue(devices.exists(_.name == "iPad")) &&
         assertTrue(
-          devices.find(_.mac == "aa:bb:cc:dd:ee:ff").exists(_.profileName.contains("Kids")),
+          devices
+            .find(_.mac == MacAddress.unsafe("aa:bb:cc:dd:ee:ff"))
+            .exists(_.profileName.contains("Kids")),
         ) &&
         assertTrue(!body2.contains("\"location\""))
     },
@@ -76,13 +79,13 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         kidsId = profiles.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
-        body   = UpsertDeviceRequest("AA-BB-CC-DD-EE-FF", "Laptop", kidsId).toJson
-        req    = Request
+        body = UpsertDeviceRequest(MacAddress.unsafe("aa:bb:cc:dd:ee:ff"), "Laptop", kidsId).toJson
+        req  = Request
           .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
-          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.Authorization.Bearer(token.value))
           .addHeader(Header.ContentType(MediaType.application.json))
         _      <- routes.runZIO(req)
-        device <- deviceRepo.findByMac("aa:bb:cc:dd:ee:ff")
+        device <- deviceRepo.findByMac(MacAddress.unsafe("aa:bb:cc:dd:ee:ff"))
       } yield assertTrue(device.isDefined)
     },
     test("delete device") {
@@ -95,14 +98,14 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "11:22:33:44:55:66"
-        _               <- deviceRepo.upsert(mac, "OldDevice", kidsId, "192.168.1.50")
+        _ <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldDevice", kidsId, "192.168.1.50")
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
         delReq = Request
           .delete(URL.decode(s"/api/devices/$mac").toOption.get)
-          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.Authorization.Bearer(token.value))
         delResp <- routes.runZIO(delReq)
-        after   <- deviceRepo.findByMac(mac)
+        after   <- deviceRepo.findByMac(MacAddress.unsafe(mac))
       } yield assertTrue(delResp.status == Status.Ok) &&
         assertTrue(after.isEmpty)
     },
@@ -114,10 +117,10 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "cc:dd:ee:ff:00:11"
-        _      <- deviceRepo.upsert(mac, "Laptop", kidsId, "192.168.1.5")
-        _      <- deviceRepo.updateLastSeen(mac, "192.168.1.99")
-        device <- deviceRepo.findByMac(mac)
-      } yield assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.99"))) &&
+        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Laptop", kidsId, "192.168.1.5")
+        _      <- deviceRepo.updateLastSeen(MacAddress.unsafe(mac), "192.168.1.99")
+        device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
+      } yield assertTrue(device.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.99")))) &&
         assertTrue(device.exists(_.profileId.contains(kidsId)))
     },
     test("upsert re-assigns device to a different profile and updates name") {
@@ -132,14 +135,14 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         adultsId = profiles.find(_.name == "Adults").get.id
         mac      = "aa:bb:cc:00:00:01"
         // First insert: assigned to Kids, router later sets last_seen_ip.
-        _      <- deviceRepo.upsert(mac, "Phone", kidsId, "")
-        _      <- deviceRepo.updateLastSeen(mac, "192.168.1.10")
+        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Phone", kidsId, "")
+        _      <- deviceRepo.updateLastSeen(MacAddress.unsafe(mac), "192.168.1.10")
         // Re-assign to Adults and rename — last_seen_ip must survive unchanged.
-        _      <- deviceRepo.upsert(mac, "Tablet", adultsId, "")
-        device <- deviceRepo.findByMac(mac)
+        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Tablet", adultsId, "")
+        device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
       } yield assertTrue(device.exists(_.profileId.contains(adultsId))) &&
         assertTrue(device.exists(_.name == "Tablet")) &&
-        assertTrue(device.exists(_.lastSeenIp.contains("192.168.1.10")))
+        assertTrue(device.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.10"))))
     },
   ) @@ TestAspect.sequential
 }

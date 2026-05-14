@@ -1,21 +1,22 @@
 package familydns.api.unit
 
 import familydns.api.presence.{Presence, PresenceRow}
+import familydns.shared.types.*
 import zio.test.*
 
 import java.time.Instant
 
 object PresenceSpec extends ZIOSpecDefault {
 
-  private val mac1 = "aa:bb:cc:dd:ee:01"
-  private val mac2 = "aa:bb:cc:dd:ee:02"
+  private val mac1 = MacAddress.unsafe("aa:bb:cc:dd:ee:01")
+  private val mac2 = MacAddress.unsafe("aa:bb:cc:dd:ee:02")
 
   /** Bucket index → Instant; arbitrary epoch base since the values are opaque to Presence. */
   private val base               = Instant.parse("2026-05-13T00:00:00Z")
   private def b(i: Int): Instant = base.plusSeconds(i * 300L)
 
-  private def row(mac: String, bucket: Int, host: String, secs: Int = 300) =
-    PresenceRow(mac, b(bucket), host, secs)
+  private def row(mac: MacAddress, bucket: Int, host: String, secs: Int = 300) =
+    PresenceRow(mac, b(bucket), Hostname.unsafe(host), secs)
 
   def spec = suite("Presence")(
     suite("totalMinutesByMac")(
@@ -60,7 +61,7 @@ object PresenceSpec extends ZIOSpecDefault {
       test("exempt pattern matches exact host as well as subdomains") {
         val rows = List(row(mac1, 0, "youtube.com"))
         assertTrue(
-          Presence.totalMinutesByMac(rows, List("*.youtube.com")) == Map.empty[String, Int],
+          Presence.totalMinutesByMac(rows, List("*.youtube.com")) == Map.empty[MacAddress, Int],
         )
       },
       test("uses max active_seconds in the bucket as duration") {

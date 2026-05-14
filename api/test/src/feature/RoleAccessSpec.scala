@@ -5,6 +5,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -42,8 +43,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       auth: AuthService,
       username: String,
       role: String,
-      profileIds: List[Long],
-  ): Task[Long] =
+      profileIds: List[ProfileId],
+  ): Task[UserId] =
     for {
       hash <- auth.hashPassword("pass")
       id   <- userRepo.create(username, hash, role)
@@ -64,7 +65,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
-        token <- auth.login("alice", "pass").map(_.token)
+        token <- auth.login("alice", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -98,7 +99,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
-        token <- auth.login("alice", "pass").map(_.token)
+        token <- auth.login("alice", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -127,7 +128,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
-        token <- auth.login("alice", "pass").map(_.token)
+        token <- auth.login("alice", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -166,7 +167,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           "adult",
           List(kidsId, adultsId),
         )
-        token <- auth.login("mom", "pass").map(_.token)
+        token <- auth.login("mom", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -178,7 +179,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         )
         body   = UpsertProfileRequest(
           "Kids Renamed",
-          List("adult"),
+          List(BlocklistId.unsafe("adult")),
           Nil,
           Nil,
           false,
@@ -205,11 +206,11 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
-        otherId     <- profileRepo.create("Strangers", List("gambling"))
+        otherId     <- profileRepo.create("Strangers", List(BlocklistId.unsafe("gambling")))
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
-        token <- auth.login("mom", "pass").map(_.token)
+        token <- auth.login("mom", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -247,7 +248,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
         _           <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
-        token       <- auth.login("mom", "pass").map(_.token)
+        token       <- auth.login("mom", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -272,7 +273,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         _        <- createUser(userRepo, upRepo, auth, "mom", "adult", Nil)
-        token    <- auth.login("mom", "pass").map(_.token)
+        token    <- auth.login("mom", "pass").map(_.token.value)
         routes = AuthRoutes.routes(auth, userRepo, upRepo)
         req    = Request
           .get(URL.decode("/api/users").toOption.get)
@@ -294,7 +295,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId = profiles.find(_.name == "Kids").get.id
         // create a child user with no links yet
         childId    <- createUser(userRepo, upRepo, auth, "alice", "child", Nil)
-        adminToken <- auth.login("admin", "changeme").map(_.token)
+        adminToken <- auth.login("admin", "changeme").map(_.token.value)
         authRoutes = AuthRoutes.routes(auth, userRepo, upRepo)
         setBody    = SetUserProfilesRequest(List(kidsId)).toJson
         setReq     = Request
@@ -306,7 +307,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .addHeader(Header.ContentType(MediaType.application.json))
         setResp    <- authRoutes.runZIO(setReq)
         // alice should now see the Kids profile
-        aliceToken <- auth.login("alice", "pass").map(_.token)
+        aliceToken <- auth.login("alice", "pass").map(_.token.value)
         profRoutes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -336,7 +337,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
-        token <- auth.login("alice", "pass").map(_.token)
+        token <- auth.login("alice", "pass").map(_.token.value)
         routes = AuthRoutes.routes(auth, userRepo, upRepo)
         req    = Request
           .get(URL.decode("/api/me").toOption.get)
@@ -346,7 +347,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         me   <- ZIO.fromEither(body.fromJson[MeResponse])
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(me.username == "alice") &&
-        assertTrue(me.role == "child") &&
+        assertTrue(me.role == UserRole.Child) &&
         assertTrue(me.profileIds == List(kidsId))
     },
     test("device list scoped to user's profiles for non-admin") {
@@ -360,10 +361,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
-        _     <- deviceRepo.upsert("aa:bb:cc:00:00:01", "kid-tablet", kidsId, "")
-        _     <- deviceRepo.upsert("aa:bb:cc:00:00:02", "dad-laptop", adultsId, "")
-        _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
-        token <- auth.login("alice", "pass").map(_.token)
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:01"), "kid-tablet", kidsId, "")
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:02"), "dad-laptop", adultsId, "")
+        _ <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
+        token <- auth.login("alice", "pass").map(_.token.value)
         routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
         req    = Request
           .get(URL.decode("/api/devices").toOption.get)
@@ -388,7 +389,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
-        token <- auth.login("mom", "pass").map(_.token)
+        token <- auth.login("mom", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -421,7 +422,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
         _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
-        token <- auth.login("mom", "pass").map(_.token)
+        token <- auth.login("mom", "pass").map(_.token.value)
         routes = ProfileRoutes.routes(
           auth,
           profileRepo,
@@ -448,10 +449,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
-        _     <- deviceRepo.upsert("aa:bb:cc:00:00:01", "kid-tablet", kidsId, "")
-        _     <- deviceRepo.upsert("aa:bb:cc:00:00:02", "dad-laptop", adultsId, "")
-        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
-        token <- auth.login("mom", "pass").map(_.token)
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:01"), "kid-tablet", kidsId, "")
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:02"), "dad-laptop", adultsId, "")
+        _ <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token.value)
         routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
         req    = Request
           .get(URL.decode("/api/devices").toOption.get)
@@ -473,14 +474,14 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         auth        <- makeAuth
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
-        routerId <- routerRepo.create("home", "ENROLL_HASH")
-        _        <- routerRepo.completeEnrollment(routerId, "TOKEN_HASH")
+        routerId <- routerRepo.create("home", Sha256Hex.unsafe("p" * 64))
+        _        <- routerRepo.completeEnrollment(routerId, Sha256Hex.unsafe("q" * 64))
         _        <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:00:00:01"),
-              "youtube.com",
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              Hostname.unsafe("youtube.com"),
               None,
               true,
               "allowed",
@@ -488,8 +489,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ),
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:00:00:02"),
-              "nytimes.com",
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+              Hostname.unsafe("nytimes.com"),
               None,
               true,
               "allowed",
@@ -498,7 +499,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           ),
         )
         _        <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
-        token    <- auth.login("mom", "pass").map(_.token)
+        token    <- auth.login("mom", "pass").map(_.token.value)
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         req    = Request
           .get(URL.decode("/api/logs").toOption.get)
