@@ -5,6 +5,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -48,7 +49,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           auth            <- makeAuth
           userRepo        <- ZIO.service[UserRepo]
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           userRepoSvc     <- ZIO.service[UserRepo]
           routes = ProfileRoutes.routes(
@@ -103,7 +104,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo          <- ZIO.service[TimeLimitRepo]
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           userRepoSvc     <- ZIO.service[UserRepo]
           routes = ProfileRoutes.routes(
@@ -117,9 +118,9 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
           body   = UpsertProfileRequest(
             name = "Teenager",
-            blockedCategories = List("adult", "gambling"),
-            extraBlocked = List("tiktok.com"),
-            extraAllowed = List("khanacademy.org"),
+            blockedCategories = List(BlocklistId.unsafe("adult"), BlocklistId.unsafe("gambling")),
+            extraBlocked = List(Hostname.unsafe("tiktok.com")),
+            extraAllowed = List(Hostname.unsafe("khanacademy.org")),
             paused = false,
             schedules = List(
               ScheduleRequest("Bedtime", List("mon", "tue", "wed", "thu", "fri"), "22:00", "08:00"),
@@ -143,9 +144,9 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tl       <- tlRepo.findForProfile(teen.id)
           stls     <- stlRepo.listForProfile(teen.id)
         } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(teen.blockedCategories.contains("adult")) &&
-          assertTrue(teen.extraBlocked.contains("tiktok.com")) &&
-          assertTrue(teen.extraAllowed.contains("khanacademy.org")) &&
+          assertTrue(teen.blockedCategories.contains(BlocklistId.unsafe("adult"))) &&
+          assertTrue(teen.extraBlocked.contains(Hostname.unsafe("tiktok.com"))) &&
+          assertTrue(teen.extraAllowed.contains(Hostname.unsafe("khanacademy.org"))) &&
           assertTrue(scheds.length == 1) &&
           assertTrue(scheds.head.blockFrom == "22:00") &&
           assertTrue(tl.exists(_.dailyMinutes == 180)) &&
@@ -161,7 +162,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo          <- ZIO.service[TimeLimitRepo]
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           userRepoSvc     <- ZIO.service[UserRepo]
           routes = ProfileRoutes.routes(
@@ -193,7 +194,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo          <- ZIO.service[TimeLimitRepo]
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           userRepoSvc     <- ZIO.service[UserRepo]
           routes = ProfileRoutes.routes(
@@ -233,7 +234,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo      <- ZIO.service[TimeLimitRepo]
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           profiles0   <- profileRepo.listAll
           kidsId = profiles0.find(_.name == "Kids").get.id
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -278,7 +279,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           auth            <- makeAuth
           hash            <- auth.hashPassword("readpass")
           _               <- userRepo.create("reader", hash, "child")
-          token           <- auth.login("reader", "readpass").map(_.token)
+          token           <- auth.login("reader", "readpass").map(_.token.value)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           userRepoSvc     <- ZIO.service[UserRepo]
           routes = ProfileRoutes.routes(
@@ -307,7 +308,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo      <- ZIO.service[TimeLimitRepo]
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           // Get the Kids profile id
           profiles    <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
@@ -324,9 +325,9 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
           body   = UpsertProfileRequest(
             name = "Kids Updated",
-            blockedCategories = List("adult"),
+            blockedCategories = List(BlocklistId.unsafe("adult")),
             extraBlocked = Nil,
-            extraAllowed = List("pbs.org"),
+            extraAllowed = List(Hostname.unsafe("pbs.org")),
             paused = false,
             schedules = List(
               ScheduleRequest("Bedtime", List("mon", "tue", "wed", "thu", "fri"), "20:00", "07:00"),
@@ -347,7 +348,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           scheds  <- schedRepo.listForProfile(kidsId)
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(updated.exists(_.name == "Kids Updated")) &&
-          assertTrue(updated.exists(_.extraAllowed.contains("pbs.org"))) &&
+          assertTrue(updated.exists(_.extraAllowed.contains(Hostname.unsafe("pbs.org")))) &&
           assertTrue(tl.exists(_.dailyMinutes == 120)) &&
           assertTrue(scheds.exists(_.blockFrom == "20:00"))
       },
@@ -361,7 +362,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           tlRepo      <- ZIO.service[TimeLimitRepo]
           stlRepo     <- ZIO.service[SiteTimeLimitRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           profiles    <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -402,7 +403,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           userRepo        <- ZIO.service[UserRepo]
           userProfileRepo <- ZIO.service[UserProfileRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           hash            <- auth.hashPassword("pw")
           aliceId         <- userRepo.create("alice", hash, "child")
           bobId           <- userRepo.create("bob", hash, "adult")
@@ -443,7 +444,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           userRepo        <- ZIO.service[UserRepo]
           userProfileRepo <- ZIO.service[UserProfileRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           hash            <- auth.hashPassword("pw")
           aliceId         <- userRepo.create("alice", hash, "child")
           profiles        <- profileRepo.listAll
@@ -482,7 +483,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           auth            <- makeAuth
           hash            <- auth.hashPassword("pw")
           _               <- userRepo.create("adult1", hash, "adult")
-          token           <- auth.login("adult1", "pw").map(_.token)
+          token           <- auth.login("adult1", "pw").map(_.token.value)
           profiles        <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
           routes = ProfileRoutes.routes(

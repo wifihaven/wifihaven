@@ -3,6 +3,7 @@ package familydns.api.feature
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
@@ -93,13 +94,13 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         rRepo  <- ZIO.service[RouterRepo]
         cRepo  <- ZIO.service[ConnectionEventRepo]
         routes <- buildRoutes(enabled = true)
-        rid    <- rRepo.create("debug-test", "X")
+        rid    <- rRepo.create("debug-test", Sha256Hex.unsafe("d" * 64))
         evs = (1 to 5).toList.map(i =>
           ConnectionEventInsert(
             rid,
-            Some(s"aa:bb:cc:dd:ee:0$i"),
-            s"site$i.example",
-            Some(s"10.0.0.$i"),
+            Some(MacAddress.unsafe(s"aa:bb:cc:dd:ee:0$i")),
+            Hostname.unsafe(s"site$i.example"),
+            Some(IpAddress.unsafe(s"10.0.0.$i")),
             true,
             "allow",
             java.time.Instant.parse("2026-05-11T12:00:00Z"),
@@ -119,8 +120,8 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         routes <- buildRoutes(enabled = true)
         today = java.time.LocalDate.of(2026, 5, 11)
         _    <- tuRepo.incrementSecondsAndBytes(
-          "aa:bb:cc:11:22:33",
-          "youtube.com",
+          MacAddress.unsafe("aa:bb:cc:11:22:33"),
+          Hostname.unsafe("youtube.com"),
           today,
           120L,
           0L,

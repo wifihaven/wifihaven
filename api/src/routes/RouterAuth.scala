@@ -2,6 +2,7 @@ package familydns.api.routes
 
 import familydns.api.db.RouterRepo
 import familydns.shared.Router
+import familydns.shared.types.*
 import zio.*
 import zio.http.*
 
@@ -43,7 +44,7 @@ class RouterAuthLive(repo: RouterRepo) extends RouterAuth {
       .orElseFail(Response.unauthorized("Missing router token"))
       .flatMap { tok =>
         repo
-          .findByTokenHash(RouterAuth.sha256Hex(tok))
+          .findByTokenHash(Sha256Hex.unsafe(RouterAuth.sha256Hex(tok)))
           .mapError(ErrorMapper.dbErrorToResponse)
           .flatMap(
             ZIO.fromOption(_).orElseFail(Response.unauthorized("Invalid router token")),

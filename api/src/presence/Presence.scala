@@ -1,12 +1,18 @@
 package familydns.api.presence
 
+import familydns.shared.types.*
 import java.time.Instant
 
 /**
  * One bucket-hostname tuple from traffic_reports, used to compute presence-based minutes (one count
  * per (mac, period_start), regardless of how many hostnames the device touched in that window).
  */
-case class PresenceRow(mac: String, periodStart: Instant, hostname: String, activeSeconds: Int)
+case class PresenceRow(
+    mac: MacAddress,
+    periodStart: Instant,
+    hostname: Hostname,
+    activeSeconds: Int,
+)
 
 /**
  * Bucket-deduplicated minute accounting from `traffic_reports`.
@@ -44,8 +50,8 @@ object Presence {
   def totalMinutesByMac(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
-  ): Map[String, Int] = {
-    def isExempt(h: String) = exemptPatterns.exists(p => matchesPattern(h, p))
+  ): Map[MacAddress, Int] = {
+    def isExempt(h: Hostname) = exemptPatterns.exists(p => matchesPattern(h.value, p))
     rows
       .groupBy(r => (r.mac, r.periodStart))
       .toList
@@ -68,13 +74,13 @@ object Presence {
   def patternMinutesByMac(
       rows: List[PresenceRow],
       patterns: List[String],
-  ): Map[(String, String), Int] = {
+  ): Map[(MacAddress, String), Int] = {
     val buckets = rows.groupBy(r => (r.mac, r.periodStart)).toList
-    val accum   = scala.collection.mutable.Map.empty[(String, String), Long]
+    val accum   = scala.collection.mutable.Map.empty[(MacAddress, String), Long]
     for {
       pat                <- patterns
       ((mac, _), bucket) <- buckets
-      if bucket.exists(r => matchesPattern(r.hostname, pat))
+      if bucket.exists(r => matchesPattern(r.hostname.value, pat))
     } accum.updateWith((mac, pat))(prev => Some(prev.getOrElse(0L) + bucketSeconds(bucket)))
     accum.view.mapValues(s => (s / 60).toInt).toMap
   }

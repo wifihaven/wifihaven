@@ -2,6 +2,7 @@ package familydns.testinfra
 
 import doobie.Transactor
 import familydns.api.db.*
+import familydns.shared.types.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import org.flywaydb.core.Flyway
 import zio.*
@@ -101,9 +102,16 @@ object TestLayers {
     Clock.TestClock.make(dt)
 
   /** Seed helpers */
-  def seedKidsProfile(profileRepo: ProfileRepo, scheduleRepo: ScheduleRepo): Task[Long] =
+  def seedKidsProfile(profileRepo: ProfileRepo, scheduleRepo: ScheduleRepo): Task[ProfileId] =
     for {
-      id <- profileRepo.create("Kids", List("adult", "gambling", "social_media"))
+      id <- profileRepo.create(
+        "Kids",
+        List(
+          BlocklistId.unsafe("adult"),
+          BlocklistId.unsafe("gambling"),
+          BlocklistId.unsafe("social_media"),
+        ),
+      )
       _  <- scheduleRepo.replaceForProfile(
         id,
         List(
@@ -117,14 +125,14 @@ object TestLayers {
       )
     } yield id
 
-  def seedAdultsProfile(profileRepo: ProfileRepo): Task[Long] =
+  def seedAdultsProfile(profileRepo: ProfileRepo): Task[ProfileId] =
     profileRepo.create("Adults", List.empty)
 
   def seedDevice(
       deviceRepo: DeviceRepo,
       mac: String,
       name: String,
-      profileId: Long,
-  ): Task[Long] =
-    deviceRepo.upsert(mac, name, profileId, "192.168.1.100")
+      profileId: ProfileId,
+  ): Task[DeviceId] =
+    deviceRepo.upsert(MacAddress.unsafe(mac), name, profileId, "192.168.1.100")
 }

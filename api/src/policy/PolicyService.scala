@@ -3,6 +3,7 @@ package familydns.api.policy
 import familydns.api.db.*
 import familydns.api.presence.Presence
 import familydns.shared.{Schedule as DbSchedule, *}
+import familydns.shared.types.*
 import zio.{Clock as _, *}
 
 import java.security.MessageDigest
@@ -10,7 +11,7 @@ import java.time.{DayOfWeek, LocalDate, LocalTime, OffsetDateTime, ZoneOffset}
 
 trait PolicyService {
   def snapshot: Task[PolicySnapshot]
-  def renderBlocklist(id: String): Task[Option[(String, String)]]
+  def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
 }
 
@@ -65,7 +66,7 @@ class PolicyServiceLive(
       val devsByProfile =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
 
-      val profilePolicies: Map[Long, ProfilePolicy] = profiles.iterator.map { p =>
+      val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
         val pSched     = schedMap.getOrElse(p.id, Nil)
         val pSiteLims  = stlMap.getOrElse(p.id, Nil)
         val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
@@ -96,16 +97,15 @@ class PolicyServiceLive(
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
       }.toMap
 
-      val devicePolicies: Map[String, DevicePolicy] = devices.iterator.map { d =>
+      val devicePolicies: Map[MacAddress, DevicePolicy] = devices.iterator.map { d =>
         d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = None)
       }.toMap
 
       val catDomainsMap                            = catDomains.toMap
       val pBlocklists: Map[BlocklistId, Blocklist] = cats.map { c =>
-        val bid     = BlocklistId(c)
-        val domains = catDomainsMap.getOrElse(c, Seq.empty)
-        val version = PolicyService.blocklistContentVersion(domains)
-        bid -> Blocklist(version = version, url = s"/api/blocklists/$c")
+        val domains = catDomainsMap.getOrElse(c, Set.empty[Hostname]).map(_.value)
+        val version = BlocklistVersion.unsafe(PolicyService.blocklistContentVersion(domains))
+        c -> Blocklist(version = version, url = BlocklistUrl.unsafe(s"/api/blocklists/${c.value}"))
       }.toMap
 
       val core = SnapshotCore(devicePolicies, profilePolicies, pBlocklists)
@@ -119,19 +119,19 @@ class PolicyServiceLive(
       )
     }
 
-  def renderBlocklist(id: String): Task[Option[(String, String)]] =
+  def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]] =
     for {
       domains <- blocklistRepo.loadCategory(id)
     } yield
       if domains.isEmpty then None
       else {
-        val sorted  = domains.toList.sorted
+        val sorted  = domains.toList.map(_.value).sorted
         val version = PolicyService.blocklistContentVersion(sorted)
         val sb      = new StringBuilder
         sb.append(s"# version: $version\n")
         sorted.foreach(d => sb.append(s"$d\n"))
         val body    = sb.toString
-        val etag    = s"\"${PolicyService.sha256Hex(body).take(16)}\""
+        val etag    = ETag.unsafe(s"\"${PolicyService.sha256Hex(body).take(16)}\"")
         Some((etag, body))
       }
 
@@ -145,9 +145,10 @@ class PolicyServiceLive(
     for {
       today  <- clock.today
       now    <- clock.now
-      device <- deviceRepo.listAll.map(_.find(_.mac.equalsIgnoreCase(mac)))
+      device <- deviceRepo.listAll.map(_.find(_.mac.value.equalsIgnoreCase(mac)))
       result <- device.flatMap(_.profileId) match {
-        case None      => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
+        case None      =>
+          ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
         case Some(pid) =>
           for {
             pOpt   <- profileRepo.findById(pid)
@@ -160,18 +161,24 @@ class PolicyServiceLive(
             pres <- trafficRepo.listPresenceRows(devs.map(_.mac), today)
             exts <- extRepo.snapshotAllByProfile(today).map(_.getOrElse(pid, 0))
             res  <- pOpt match {
-              case None    => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
+              case None    =>
+                ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
               case Some(p) =>
                 val h = hostname.toLowerCase.stripSuffix(".")
-                if p.paused then ZIO.succeed(RouterDecisionResponse("block", "paused", None))
+                if p.paused then
+                  ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, "paused", None))
                 else
                   scheduleBlock(scheds, now.toLocalTime, today) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
                       if matchesAny(h, p.extraAllowed) then
-                        ZIO.succeed(RouterDecisionResponse("allow", "extra_allowed", None))
+                        ZIO.succeed(
+                          RouterDecisionResponse(ConnectionDecision.Allow, "extra_allowed", None),
+                        )
                       else if matchesAny(h, p.extraBlocked) then
-                        ZIO.succeed(RouterDecisionResponse("block", "extra_blocked", None))
+                        ZIO.succeed(
+                          RouterDecisionResponse(ConnectionDecision.Block, "extra_blocked", None),
+                        )
                       else {
                         val pPres      = pres.filter(r => macs.contains(r.mac))
                         val patterns   = stlims.map(_.domainPattern)
@@ -197,9 +204,13 @@ class PolicyServiceLive(
                           case None    =>
                             categoryBlock(p.blockedCategories, h).map {
                               case Some(cat) =>
-                                RouterDecisionResponse("block", s"category:$cat", None)
+                                RouterDecisionResponse(
+                                  ConnectionDecision.Block,
+                                  s"category:${cat.value}",
+                                  None,
+                                )
                               case None      =>
-                                RouterDecisionResponse("allow", "allowed", None)
+                                RouterDecisionResponse(ConnectionDecision.Allow, "allowed", None)
                             }
                         }
                       }
@@ -231,7 +242,7 @@ class PolicyServiceLive(
       val expiresAt   =
         if isOvernight && !nowTime.isBefore(from) then utcString(today.plusDays(1), until)
         else utcString(today, until)
-      RouterDecisionResponse("block", "schedule", Some(expiresAt))
+      RouterDecisionResponse(ConnectionDecision.Block, "schedule", Some(expiresAt))
     }
   }
 
@@ -250,7 +261,13 @@ class PolicyServiceLive(
       minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes
     }
     siteLimitHit
-      .map(sl => RouterDecisionResponse("block", s"site_time_limit:${sl.label}", Some(midnight)))
+      .map(sl =>
+        RouterDecisionResponse(
+          ConnectionDecision.Block,
+          s"site_time_limit:${sl.label}",
+          Some(midnight),
+        ),
+      )
       .orElse {
         val isExemptSite = siteLimits.exists { sl =>
           sl.exemptFromDaily && matchesDomainPattern(hostname, sl.domainPattern)
@@ -259,25 +276,25 @@ class PolicyServiceLive(
         else
           dailyMinutes.flatMap { limit =>
             Option.when(totalMinutesUsed >= limit + extensionsMinutes)(
-              RouterDecisionResponse("block", "time_limit", Some(midnight)),
+              RouterDecisionResponse(ConnectionDecision.Block, "time_limit", Some(midnight)),
             )
           }
       }
   }
 
   private def categoryBlock(
-      cats: List[String],
+      cats: List[BlocklistId],
       hostname: String,
-  ): Task[Option[String]] =
+  ): Task[Option[BlocklistId]] =
     blocklistRepo.loadAll.map { allLists =>
       cats.find { cat =>
         val list = allLists.getOrElse(cat, Set.empty)
-        matchesDomainOrParent(hostname, list)
+        matchesDomainOrParent(hostname, list.map(_.value))
       }
     }
 
-  private def matchesAny(domain: String, patterns: List[String]): Boolean =
-    patterns.exists(p => matchesDomainPattern(domain, p))
+  private def matchesAny(domain: String, patterns: List[Hostname]): Boolean =
+    patterns.exists(p => matchesDomainPattern(domain, p.value))
 
   private def matchesDomainPattern(domain: String, pattern: String): Boolean =
     if pattern.startsWith("*.") then {
@@ -312,8 +329,8 @@ class PolicyServiceLive(
 }
 
 private case class SnapshotCore(
-    devices: Map[String, DevicePolicy],
-    profiles: Map[Long, ProfilePolicy],
+    devices: Map[MacAddress, DevicePolicy],
+    profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
 )
 
@@ -336,29 +353,30 @@ object PolicyService {
     md.digest(s.getBytes("UTF-8")).map("%02x".format(_)).mkString
   }
 
-  def hashToken(raw: String): String = sha256Hex(raw)
+  def hashToken(raw: String): Sha256Hex = Sha256Hex.unsafe(sha256Hex(raw))
 
   /** Deterministic ETag over snapshot logical content. */
-  private[policy] def computeEtag(core: SnapshotCore): String = {
+  private[policy] def computeEtag(core: SnapshotCore): ETag = {
     val parts = scala.collection.mutable.ArrayBuffer.empty[String]
-    core.devices.toList.sortBy(_._1).foreach { case (mac, d) =>
+    core.devices.toList.sortBy(_._1.value).foreach { case (mac, d) =>
       val ruleSig = d.rules.fold("-")(blockRulesSig)
-      parts += s"dev:$mac|${d.profileId.getOrElse("-")}|${d.name}|$ruleSig"
+      parts += s"dev:${mac.value}|${d.profileId.map(_.value).getOrElse("-")}|${d.name}|$ruleSig"
     }
-    core.profiles.toList.sortBy(_._1).foreach { case (pid, pp) =>
-      parts += s"p:$pid|${pp.name}|fm:${FailureMode.asString(pp.failureMode)}|${blockRulesSig(pp.rules)}"
+    core.profiles.toList.sortBy(_._1.value).foreach { case (pid, pp) =>
+      parts += s"p:${pid.value}|${pp.name}|fm:${FailureMode
+          .asString(pp.failureMode)}|${blockRulesSig(pp.rules)}"
     }
     core.blocklists.toList
       .sortBy(_._1.value)
-      .foreach((k, v) => parts += s"bl:${k.value}=${v.version}")
-    "\"sha256:" + sha256Hex(parts.mkString("\n")) + "\""
+      .foreach((k, v) => parts += s"bl:${k.value}=${v.version.value}")
+    ETag.unsafe("\"sha256:" + sha256Hex(parts.mkString("\n")) + "\"")
   }
 
   private def blockRulesSig(r: BlockRules): String = {
     val reason = r.blockReason.map(MacBlockReason.asString).getOrElse("-")
-    val eb     = r.extraBlocked.sorted.mkString(",")
-    val ea     = r.extraAllowed.sorted.mkString(",")
-    val bl     = r.blocklistIds.sorted.map(_.value).mkString(",")
+    val eb     = r.extraBlocked.map(_.value).sorted.mkString(",")
+    val ea     = r.extraAllowed.map(_.value).sorted.mkString(",")
+    val bl     = r.blocklistIds.map(_.value).sorted.mkString(",")
     s"b=${r.blocked}|r=$reason|eb=$eb|ea=$ea|bl=$bl|ip=${r.blockIpOnly}"
   }
 
@@ -375,9 +393,14 @@ object PolicyService {
     val p = in.profile
 
     // Per-site limits exhausted today → host appears in extraBlocked too.
-    val siteLimitExtraBlocked: List[String] = in.siteLimits.collect {
+    // domainPattern is a glob string, not a Hostname — we keep it as-is in the
+    // extraBlocked list so the router agent can match it. We do NOT wrap with
+    // Hostname here because glob patterns like *.youtube.com are not hostnames.
+    // Instead, we pass them as raw strings and convert via Hostname.unsafe for
+    // the typed list (the router treats these as patterns, so validation is relaxed).
+    val siteLimitExtraBlocked: List[Hostname] = in.siteLimits.collect {
       case sl if in.minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes =>
-        sl.domainPattern
+        Hostname.unsafe(sl.domainPattern)
     }
 
     val (blocked, reason) =
@@ -397,7 +420,7 @@ object PolicyService {
       blockReason = reason,
       extraBlocked = (p.extraBlocked ++ siteLimitExtraBlocked).distinct,
       extraAllowed = p.extraAllowed,
-      blocklistIds = p.blockedCategories.map(BlocklistId(_)),
+      blocklistIds = p.blockedCategories,
       blockIpOnly = false, // #353: not yet a profile field; future surface
     )
   }

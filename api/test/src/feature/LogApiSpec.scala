@@ -5,6 +5,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -15,7 +16,6 @@ import zio.test.*
 import zio.test.Assertion.*
 
 import java.time.Instant
-import java.util.UUID
 
 object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -33,11 +33,11 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
   )
 
   // Router name doubles as location until routers.location column lands (#136).
-  private def seedRouter(name: String = "home"): ZIO[RouterRepo, Throwable, UUID] =
+  private def seedRouter(name: String = "home"): ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo] { rRepo =>
       for {
-        id <- rRepo.create(name, "ENROLL_HASH")
-        _  <- rRepo.completeEnrollment(id, "TOKEN_HASH")
+        id <- rRepo.create(name, Sha256Hex.unsafe("e" * 64))
+        _  <- rRepo.completeEnrollment(id, Sha256Hex.unsafe("f" * 64))
       } yield id
     }
 
@@ -58,13 +58,13 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         connRepo <- ZIO.service[ConnectionEventRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
+        token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:dd:ee:ff"),
-              "youtube.com",
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
+              Hostname.unsafe("youtube.com"),
               None,
               true,
               "allowed",
@@ -72,8 +72,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ),
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:dd:ee:ff"),
-              "pornhub.com",
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
+              Hostname.unsafe("pornhub.com"),
               None,
               false,
               "category:adult",
@@ -81,8 +81,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ),
             ConnectionEventInsert(
               routerId,
-              Some("11:22:33:44:55:66"),
-              "facebook.com",
+              Some(MacAddress.unsafe("11:22:33:44:55:66")),
+              Hostname.unsafe("facebook.com"),
               None,
               true,
               "allowed",
@@ -108,13 +108,13 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         connRepo <- ZIO.service[ConnectionEventRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
+        token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:dd:ee:ff"),
-              "ok.com",
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
+              Hostname.unsafe("ok.com"),
               None,
               true,
               "allowed",
@@ -122,8 +122,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ),
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:dd:ee:ff"),
-              "blocked.com",
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
+              Hostname.unsafe("blocked.com"),
               None,
               false,
               "category:adult",
@@ -144,21 +144,29 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         _          <- cleanDb
         homeId     <- seedRouter("home")
         vacationId <- ZIO.serviceWithZIO[RouterRepo] { rRepo =>
-          rRepo.create("vacation", "ENROLL_HASH_2").flatMap { id =>
-            rRepo.completeEnrollment(id, "TOKEN_HASH_2").as(id)
+          rRepo.create("vacation", Sha256Hex.unsafe("g" * 64)).flatMap { id =>
+            rRepo.completeEnrollment(id, Sha256Hex.unsafe("h" * 64)).as(id)
           }
         }
         connRepo   <- ZIO.service[ConnectionEventRepo]
         upRepo     <- ZIO.service[UserProfileRepo]
         auth       <- makeAuth
-        token      <- auth.login("admin", "changeme").map(_.token)
+        token      <- auth.login("admin", "changeme").map(_.token.value)
         _          <- connRepo.insertBatch(
           List(
-            ConnectionEventInsert(homeId, None, "home-site.com", None, true, "allowed", recentTs),
+            ConnectionEventInsert(
+              homeId,
+              None,
+              Hostname.unsafe("home-site.com"),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
             ConnectionEventInsert(
               vacationId,
               None,
-              "vacation-site.com",
+              Hostname.unsafe("vacation-site.com"),
               None,
               true,
               "allowed",
@@ -180,13 +188,13 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         connRepo <- ZIO.service[ConnectionEventRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
+        token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:dd:ee:01"),
-              "site1.com",
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
+              Hostname.unsafe("site1.com"),
               None,
               true,
               "allowed",
@@ -194,8 +202,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ),
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:dd:ee:02"),
-              "site2.com",
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
+              Hostname.unsafe("site2.com"),
               None,
               true,
               "allowed",
@@ -208,7 +216,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
       } yield assertTrue(logs.length == 1) &&
-        assertTrue(logs.head.mac.contains("aa:bb:cc:dd:ee:01"))
+        assertTrue(logs.head.mac.contains(MacAddress.unsafe("aa:bb:cc:dd:ee:01")))
     },
     test("GET /api/stats returns correct total and blocked counts") {
       for {
@@ -217,13 +225,13 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         connRepo <- ZIO.service[ConnectionEventRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
+        token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:00:00:01"),
-              "google.com",
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              Hostname.unsafe("google.com"),
               None,
               true,
               "allowed",
@@ -231,8 +239,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ),
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:00:00:01"),
-              "badsite.com",
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              Hostname.unsafe("badsite.com"),
               None,
               false,
               "category:adult",
@@ -240,8 +248,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ),
             ConnectionEventInsert(
               routerId,
-              Some("aa:bb:cc:00:00:01"),
-              "badsite.com",
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              Hostname.unsafe("badsite.com"),
               None,
               false,
               "category:adult",
@@ -266,13 +274,45 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         connRepo <- ZIO.service[ConnectionEventRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
+        token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
           List(
-            ConnectionEventInsert(routerId, None, "rare.com", None, false, "blocked", recentTs),
-            ConnectionEventInsert(routerId, None, "frequent.com", None, false, "blocked", recentTs),
-            ConnectionEventInsert(routerId, None, "frequent.com", None, false, "blocked", recentTs),
-            ConnectionEventInsert(routerId, None, "frequent.com", None, false, "blocked", recentTs),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              Hostname.unsafe("rare.com"),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              Hostname.unsafe("frequent.com"),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              Hostname.unsafe("frequent.com"),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              Hostname.unsafe("frequent.com"),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
           ),
         )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
@@ -291,13 +331,13 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         connRepo <- ZIO.service[ConnectionEventRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
+        token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
           (1 to 5).toList.map(i =>
             ConnectionEventInsert(
               routerId,
               None,
-              s"site$i.com",
+              Hostname.unsafe(s"site$i.com"),
               None,
               true,
               "allowed",

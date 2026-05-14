@@ -4,6 +4,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.sessions.{SessionRow, Sessions}
 import familydns.shared.*
+import familydns.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -80,13 +81,13 @@ object DashboardNowRoutes {
       now: Instant,
       profiles: List[Profile],
       devices: List[Device],
-      lastSeen: Map[String, Instant],
+      lastSeen: Map[MacAddress, Instant],
       rows: List[SessionRow],
   ): DashboardNow = {
-    val trafficCutoff                         = now.minus(TrafficActiveWindow)
-    val sessionCutoff                         = now.minus(SessionTolerance)
-    val rowsByMac                             = rows.groupBy(_.mac)
-    val latestTrafficTs: Map[String, Instant] =
+    val trafficCutoff                             = now.minus(TrafficActiveWindow)
+    val sessionCutoff                             = now.minus(SessionTolerance)
+    val rowsByMac                                 = rows.groupBy(_.mac)
+    val latestTrafficTs: Map[MacAddress, Instant] =
       rowsByMac.view
         .mapValues(rs => rs.map(_.periodEnd).max)
         .toMap
@@ -130,7 +131,7 @@ object DashboardNowRoutes {
       .view
       .mapValues(rs => rs.map(_.activeSeconds.toLong).sum)
       .toList
-      .sortBy { case (h, s) => (-s, h) }
+      .sortBy { case (h, s) => (-s, h.value) }
       .take(TopHostsLimit)
       .map { case (h, s) => DashboardNowHost(h, s) }
 

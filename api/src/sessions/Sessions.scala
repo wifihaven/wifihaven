@@ -1,9 +1,9 @@
 package familydns.api.sessions
 
 import familydns.shared.Session
+import familydns.shared.types.*
 
 import java.time.{Instant, LocalDate}
-import java.util.UUID
 
 /**
  * Raw input to the stitching algorithm — one row per 5-min traffic_reports period. The repo emits
@@ -11,9 +11,9 @@ import java.util.UUID
  * `stitch` does not rely on that.
  */
 case class SessionRow(
-    routerId: UUID,
-    mac: String,
-    hostname: String,
+    routerId: RouterId,
+    mac: MacAddress,
+    hostname: Hostname,
     date: LocalDate,
     periodStart: Instant,
     periodEnd: Instant,
@@ -66,9 +66,9 @@ object Sessions {
   }
 
   private case class Acc(
-      routerId: UUID,
-      mac: String,
-      hostname: String,
+      routerId: RouterId,
+      mac: MacAddress,
+      hostname: Hostname,
       date: LocalDate,
       periodStart: Instant,
       periodEnd: Instant,

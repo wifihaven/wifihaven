@@ -3,6 +3,7 @@ package familydns.api.feature
 import familydns.api.db.*
 import familydns.api.policy.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -10,7 +11,6 @@ import zio.{Clock as _, *}
 import zio.test.*
 
 import java.time.{LocalDate, LocalDateTime, ZoneOffset}
-import java.util.UUID
 
 /**
  * #305 (re-shaped by #354): the API precomputes which MACs should be currently blocked (pause /
@@ -30,7 +30,7 @@ object PolicySnapshotBlockedMacsSpec
     snap.devices.toList.sortBy(_._1).flatMap { case (mac, dev) =>
       val rules = dev.rules.orElse(dev.profileId.flatMap(snap.profiles.get).map(_.rules))
       rules.filter(_.blocked).map { r =>
-        mac -> r.blockReason.map(MacBlockReason.asString).getOrElse("")
+        mac.value -> r.blockReason.map(MacBlockReason.asString).getOrElse("")
       }
     }
 
@@ -55,11 +55,11 @@ object PolicySnapshotBlockedMacsSpec
       clk = new Clock.TestClock(ref)
     } yield (new PolicyServiceLive(pr, sr, tlr, stlr, dr, blr, trRepo, er, clk)): PolicyService
 
-  private def seedRouterRow: ZIO[RouterRepo, Throwable, UUID] =
-    ZIO.serviceWithZIO[RouterRepo](_.create("gw-seed", "ENROLL_HASH"))
+  private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
+    ZIO.serviceWithZIO[RouterRepo](_.create("gw-seed", Sha256Hex.unsafe("o" * 64)))
 
   private def seedTraffic(
-      routerId: UUID,
+      routerId: RouterId,
       mac: String,
       hostname: String,
       date: LocalDate,
@@ -71,7 +71,18 @@ object PolicySnapshotBlockedMacsSpec
       val inserts = (0 until buckets).map { i =>
         val start = today0.plusSeconds(i * 300L)
         val end   = start.plusSeconds(300)
-        TrafficReportInsert(routerId, mac, None, hostname, date, start, end, 300, 0L, 0L)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          Hostname.unsafe(hostname),
+          date,
+          start,
+          end,
+          300,
+          0L,
+          0L,
+        )
       }.toList
       tr.insertBatch(inserts).unit
     }
@@ -186,9 +197,9 @@ object PolicySnapshotBlockedMacsSpec
         kid  <- TestLayers.seedKidsProfile(pr, sr)
         _    <- pr.setPaused(kid, true)
         _    <- dr.upsertUnknown(
-          "ff:ff:ff:aa:bb:cc",
+          MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
           "mystery",
-          Some("10.0.0.99"),
+          Some(IpAddress.unsafe("10.0.0.99")),
           java.time.Instant.now(),
         )
         ps   <- makePsAt(TestClock.bedtime)

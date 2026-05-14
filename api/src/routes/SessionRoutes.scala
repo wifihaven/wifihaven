@@ -4,6 +4,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.sessions.Sessions
 import familydns.shared.*
+import familydns.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -51,7 +52,7 @@ object SessionRoutes {
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
             // Build the macs filter from the intersection of the device, profile,
             // and mac query params with the user's visibility scope.
-            macs           = computeMacs(macParam, deviceIdP, profileIdP, visibleDevs)
+            macs = computeMacs(macParam, deviceIdP, profileIdP.map(ProfileId(_)), visibleDevs)
             effectiveSince = since.orElse(Some(Instant.now().minusSeconds(hours.toLong * 3600L)))
             filter         = SessionFilter(
               macs = Some(macs),
@@ -97,12 +98,12 @@ object SessionRoutes {
   private def computeMacs(
       macParam: Option[String],
       deviceId: Option[Long],
-      profileId: Option[Long],
+      profileId: Option[ProfileId],
       visibleDevs: List[Device],
-  ): List[String] = {
+  ): List[MacAddress] = {
     var devs = visibleDevs
-    macParam.foreach(m => devs = devs.filter(_.mac == m))
-    deviceId.foreach(id => devs = devs.filter(_.id == id))
+    macParam.foreach(m => devs = devs.filter(_.mac.value == m))
+    deviceId.foreach(id => devs = devs.filter(_.id.value == id))
     profileId.foreach(pid => devs = devs.filter(_.profileId.contains(pid)))
     devs.map(_.mac).distinct
   }
@@ -123,7 +124,7 @@ object SessionRoutes {
           case start :: cm :: ch :: Nil =>
             sessions.dropWhile { s =>
               val tieGte =
-                (s.mac.compareTo(cm), s.hostname.compareTo(ch)) match {
+                (s.mac.value.compareTo(cm), s.hostname.value.compareTo(ch)) match {
                   case (m, _) if m > 0 => true
                   case (0, h)          => h >= 0
                   case _               => false
@@ -137,7 +138,7 @@ object SessionRoutes {
     val next        =
       if afterCursor.lengthCompare(limit) > 0 then {
         val last = page.last
-        Some(s"${last.startedAt}|${last.mac}|${last.hostname}")
+        Some(s"${last.startedAt}|${last.mac.value}|${last.hostname.value}")
       } else None
     SessionPage(sessions = page, nextCursor = next)
   }

@@ -6,6 +6,7 @@ import familydns.api.db.*
 import familydns.api.policy.PolicyServiceLive
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -16,7 +17,6 @@ import zio.test.*
 import zio.test.Assertion.*
 
 import java.time.{LocalDate, ZoneOffset}
-import java.util.UUID
 
 object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -37,11 +37,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
 
   // Seed a router row so traffic_reports FK passes. A single enrollment is enough — tests don't
   // care about router identity, just that the inserts succeed.
-  private def seedRouter: ZIO[RouterRepo, Throwable, UUID] =
+  private def seedRouter: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo] { rr =>
       for {
-        id <- rr.create("test-router", "ENROLL_HASH")
-        _  <- rr.completeEnrollment(id, "TOKEN_HASH")
+        id <- rr.create("test-router", Sha256Hex.unsafe("t" * 64))
+        _  <- rr.completeEnrollment(id, Sha256Hex.unsafe("u" * 64))
       } yield id
     }
 
@@ -57,7 +57,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
    * distinct bucket ranges.
    */
   private def seedTraffic(
-      routerId: UUID,
+      routerId: RouterId,
       mac: String,
       hostname: String,
       date: LocalDate,
@@ -70,7 +70,18 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
       val inserts = (0 until buckets).map { i =>
         val start = today0.plusSeconds((bucketOffset + i) * 300L)
         val end   = start.plusSeconds(300)
-        TrafficReportInsert(routerId, mac, None, hostname, date, start, end, 300, 0L, 0L)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          Hostname.unsafe(hostname),
+          date,
+          start,
+          end,
+          300,
+          0L,
+          0L,
+        )
       }.toList
       tr.insertBatch(inserts).as(bucketOffset + buckets)
     }
@@ -88,7 +99,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _               <- tlRepo.upsert(kidsId, 120)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
@@ -128,7 +139,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
@@ -169,7 +180,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- stlRepo.replaceForProfile(
@@ -223,7 +234,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- stlRepo.replaceForProfile(
@@ -278,7 +289,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
@@ -325,7 +336,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _               <- tlRepo.upsert(kidsId, 60)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
@@ -368,7 +379,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           auth            <- makeAuth
           hash            <- auth.hashPassword("pass")
           _               <- userRepo.create("kidview", hash, "child")
-          token           <- auth.login("kidview", "pass").map(_.token)
+          token           <- auth.login("kidview", "pass").map(_.token.value)
           kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -402,7 +413,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
           auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token)
+          token           <- auth.login("admin", "changeme").map(_.token.value)
           kidsId          <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _               <- tlRepo.upsert(kidsId, 60)
           _               <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
@@ -453,7 +464,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:01", "iPad", kidsId)
@@ -494,7 +505,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"
@@ -529,8 +540,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         } yield assertTrue(kids.usedMins == 75) &&      // both devices summed
           assertTrue(kids.dailyLimitMins.contains(60)) &&
           assertTrue(kids.remainingMins.contains(0)) && // clamped to 0, not negative
-          assertTrue(kids.devices.find(_.deviceMac == mac1).get.usedMins == 40) &&
-          assertTrue(kids.devices.find(_.deviceMac == mac2).get.usedMins == 35)
+          assertTrue(
+            kids.devices.find(_.deviceMac == MacAddress.unsafe(mac1)).get.usedMins == 40,
+          ) &&
+          assertTrue(kids.devices.find(_.deviceMac == MacAddress.unsafe(mac2)).get.usedMins == 35)
       },
       test("per-app site usage aggregated across all profile devices") {
         for {
@@ -543,7 +556,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
           _           <- stlRepo.replaceForProfile(
@@ -596,7 +609,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           trafficRepo <- ZIO.service[TrafficReportRepo]
           extRepo     <- ZIO.service[TimeExtensionRepo]
           auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token)
+          token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 60)
           mac1 = "aa:bb:cc:dd:ee:01"

@@ -5,6 +5,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.shared.Clock.TestClock
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
@@ -35,8 +36,8 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         _      <- cleanDb
         auth   <- makeAuth
         result <- auth.login("admin", "changeme")
-      } yield assertTrue(result.token.nonEmpty) &&
-        assertTrue(result.role == "admin") &&
+      } yield assertTrue(result.token.value.nonEmpty) &&
+        assertTrue(result.role == UserRole.Admin) &&
         assertTrue(result.username == "admin")
     },
     test("wrong password returns InvalidCredentials") {
@@ -58,7 +59,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         _      <- cleanDb
         auth   <- makeAuth
         resp   <- auth.login("admin", "changeme")
-        claims <- auth.verify(resp.token)
+        claims <- auth.verify(resp.token.value)
       } yield assertTrue(claims.sub == "admin") &&
         assertTrue(claims.role == "admin")
     },
@@ -70,8 +71,8 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         hash     <- auth.hashPassword("childpass")
         _        <- userRepo.create("child1", hash, "child")
         resp     <- auth.login("child1", "childpass")
-        claims   <- auth.verify(resp.token)
-      } yield assertTrue(resp.role == "child") &&
+        claims   <- auth.verify(resp.token.value)
+      } yield assertTrue(resp.role == UserRole.Child) &&
         assertTrue(claims.role == "child")
     },
     test("child token fails requireAdmin check") {
@@ -82,7 +83,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         hash     <- auth.hashPassword("pass")
         _        <- userRepo.create("viewer", hash, "child")
         resp     <- auth.login("viewer", "pass")
-        result   <- auth.requireAdmin(resp.token).exit
+        result   <- auth.requireAdmin(resp.token.value).exit
       } yield assertTrue(result.isFailure)
     },
     test("change password works and old password no longer valid") {
@@ -110,8 +111,8 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         respBody <- resp.body.asString
         lr       <- ZIO.fromEither(respBody.fromJson[LoginResponse])
       } yield assertTrue(resp.status == Status.Ok) &&
-        assertTrue(lr.token.nonEmpty) &&
-        assertTrue(lr.role == "admin")
+        assertTrue(lr.token.value.nonEmpty) &&
+        assertTrue(lr.role == UserRole.Admin)
     },
   ) @@ TestAspect.sequential
 }

@@ -4,6 +4,7 @@ import familydns.api.auth.*
 import familydns.api.db.*
 import familydns.api.policy.*
 import familydns.shared.*
+import familydns.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -32,7 +33,7 @@ object RouterRoutes {
             rr   <- ZIO
               .fromEither(body.fromJson[RegisterRouterRequest])
               .mapError(e => Response.badRequest(e))
-            etHash = PolicyService.hashToken(rr.enrollmentToken)
+            etHash = PolicyService.hashToken(rr.enrollmentToken.value)
             router <- routerRepo
               .findByEnrollmentTokenHash(etHash)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -41,8 +42,8 @@ object RouterRoutes {
                   .fromOption(_)
                   .orElseFail(Response.unauthorized("invalid enrollment token")),
               )
-            routerToken = newToken("rt_")
-            tokenHash   = PolicyService.hashToken(routerToken)
+            routerToken = RouterToken.unsafe(newToken("rt_"))
+            tokenHash   = PolicyService.hashToken(routerToken.value)
             _ <- routerRepo
               .completeEnrollment(router.id, tokenHash)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -60,44 +61,50 @@ object RouterRoutes {
             _ <- routerRepo
               .touch(router.id, Some(snap.etag))
               .mapError(ErrorMapper.dbErrorToResponse)
-            notMod = ifNoneMatch.contains(snap.etag)
+            notMod = ifNoneMatch.contains(snap.etag.value)
             _ <- ZIO.logDebug(
               s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
-                s"etagOut=${snap.etag} notModified=$notMod devices=${snap.devices.size} " +
+                s"etagOut=${snap.etag.value} notModified=$notMod devices=${snap.devices.size} " +
                 s"profiles=${snap.profiles.size}",
             )
             resp =
               if notMod then
                 Response
                   .status(Status.NotModified)
-                  .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))
+                  .addHeader(Header.ETag.Strong(stripQuotes(snap.etag.value)))
               else
                 Response
                   .json(snap.toJson)
-                  .addHeader(Header.ETag.Strong(stripQuotes(snap.etag)))
+                  .addHeader(Header.ETag.Strong(stripQuotes(snap.etag.value)))
           } yield resp
         },
       Method.GET / "api" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
           for {
             _    <- routerAuth.authenticate(req)
-            out  <- policy.renderBlocklist(id).mapError(ErrorMapper.dbErrorToResponse)
+            // Treat malformed slugs (e.g. legacy ".rpz" suffix) the same as
+            // "no such blocklist" — 404, not 400. They were a route on a prior
+            // version of the API and external callers may still probe them.
+            bid  <- ZIO
+              .fromEither(BlocklistId.parse(id))
+              .orElseFail(Response.notFound(s"unknown blocklist: $id"))
+            out  <- policy.renderBlocklist(bid).mapError(ErrorMapper.dbErrorToResponse)
             resp <- ZIO
               .fromOption(out)
               .mapBoth(
                 _ => Response.notFound(s"unknown blocklist: $id"),
                 { case (etag, body) =>
                   val ifNone = req.header(Header.IfNoneMatch).map(_.renderedValue)
-                  if ifNone.contains(etag) then
+                  if ifNone.contains(etag.value) then
                     Response
                       .status(Status.NotModified)
-                      .addHeader(Header.ETag.Strong(stripQuotes(etag)))
+                      .addHeader(Header.ETag.Strong(stripQuotes(etag.value)))
                   else
                     Response(
                       status = Status.Ok,
                       headers = Headers(
                         Header.ContentType(MediaType("text", "plain")),
-                        Header.ETag.Strong(stripQuotes(etag)),
+                        Header.ETag.Strong(stripQuotes(etag.value)),
                       ),
                       body = Body.fromString(body),
                     )
@@ -114,10 +121,10 @@ object RouterRoutes {
               .fromEither(body.fromJson[RouterDecisionRequest])
               .mapError(e => Response.badRequest(e))
             result <- policy
-              .decide(dreq.mac, dreq.hostname)
+              .decide(dreq.mac.value, dreq.hostname.value)
               .mapError(ErrorMapper.dbErrorToResponse)
             _      <- ZIO
-              .when(result.decision == "block") {
+              .when(result.decision == ConnectionDecision.Block) {
                 blockEventRepo
                   .insertBatch(
                     List(BlockEventInsert(Some(dreq.mac), dreq.hostname, result.reason)),
@@ -156,8 +163,8 @@ object AdminRouterRoutes {
             _    <- ZIO
               .fail(Response.badRequest("name required"))
               .when(cr.name.trim.isEmpty)
-            enrollmentToken = newEnrollmentToken()
-            etHash          = PolicyService.hashToken(enrollmentToken)
+            enrollmentToken = EnrollmentToken.unsafe(newEnrollmentToken())
+            etHash          = PolicyService.hashToken(enrollmentToken.value)
             id <- routerRepo
               .create(cr.name.trim, etHash)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -175,7 +182,7 @@ object AdminRouterRoutes {
           for {
             _   <- requireAdmin(req, auth)
             uid <- ZIO
-              .attempt(UUID.fromString(id))
+              .attempt(RouterId(UUID.fromString(id)))
               .orElseFail(Response.badRequest("bad uuid"))
             _   <- routerRepo.delete(uid).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok

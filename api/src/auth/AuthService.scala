@@ -4,6 +4,7 @@ import at.favre.lib.crypto.bcrypt.BCrypt
 import familydns.api.JwtConfig
 import familydns.api.db.*
 import familydns.shared.*
+import familydns.shared.types.*
 import pdi.jwt.*
 import pdi.jwt.algorithms.JwtHmacAlgorithm
 import zio.{Clock as _, *}
@@ -61,7 +62,7 @@ class AuthServiceLive(
       _     <- ZIO.fail(AuthError.InvalidCredentials).when(!valid)
       now   <- clock.instant.map(_.getEpochSecond)
       claim = JwtClaim(
-        content = s"""{"role":"${user.role}"}""",
+        content = s"""{"role":"${UserRole.asString(user.role)}"}""",
         subject = Some(user.username),
         issuedAt = Some(now),
         expiration = Some(now + jwtConfig.expiryHours * 3600L),
@@ -69,7 +70,7 @@ class AuthServiceLive(
       token <- ZIO
         .attempt(JwtZIOJson.encode(claim, secret, algo))
         .mapError(e => AuthError.Unexpected(e.getMessage))
-    } yield LoginResponse(token, user.role, user.username)
+    } yield LoginResponse(JwtToken.unsafe(token), user.role, user.username)
 
   // We delegate expiration/not-before checks to our injected Clock (see below).
   private val jwtOpts = JwtOptions(expiration = false, notBefore = false)

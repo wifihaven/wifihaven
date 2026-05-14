@@ -1,5 +1,6 @@
 package familydns.shared
 
+import familydns.shared.types.*
 import zio.json.*
 
 import java.util.UUID
@@ -10,19 +11,32 @@ given JsonCodec[UUID] =
     _.toString,
   )
 
-enum UserRole derives JsonCodec {
+enum UserRole {
   case Admin, Adult, Child
+}
+
+object UserRole {
+  def parse(s: String): Option[UserRole] = s.toLowerCase match {
+    case "admin" => Some(Admin)
+    case "adult" => Some(Adult)
+    case "child" => Some(Child)
+    case _       => None
+  }
+  def asString(r: UserRole): String      = r match {
+    case Admin => "admin"
+    case Adult => "adult"
+    case Child => "child"
+  }
+  given JsonCodec[UserRole]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown role: $s"),
+    asString,
+  )
 }
 
 // #311: per-profile failover behaviour when the agent loses contact with the
 // API for >5 min. Closed = drop all forwarded traffic for the profile's
 // devices (fail-safe for kids); Open = keep enforcing the cached snapshot
 // exactly as-is (avoids locking adults out during ISP blips).
-//
-// Wire format is lowercase "open" / "closed" so the lua agent can read the
-// JSON field directly. The default in DB and in UpsertProfileRequest is
-// Closed — the pessimistic choice. The web UI's "new profile" form likewise
-// defaults to Closed; admins can override to Open per profile.
 enum FailureMode {
   case Open, Closed
 }
@@ -43,33 +57,19 @@ object FailureMode {
   )
 }
 
-object UserRole {
-  def parse(s: String): Option[UserRole] = s.toLowerCase match {
-    case "admin" => Some(Admin)
-    case "adult" => Some(Adult)
-    case "child" => Some(Child)
-    case _       => None
-  }
-  def asString(r: UserRole): String      = r match {
-    case Admin => "admin"
-    case Adult => "adult"
-    case Child => "child"
-  }
-}
-
 case class Profile(
-    id: Long,
+    id: ProfileId,
     name: String,
-    blockedCategories: List[String],
-    extraBlocked: List[String],
-    extraAllowed: List[String],
+    blockedCategories: List[BlocklistId],
+    extraBlocked: List[Hostname],
+    extraAllowed: List[Hostname],
     paused: Boolean,
     failureMode: FailureMode = FailureMode.Closed,
 ) derives JsonCodec
 
 case class Schedule(
-    id: Long,
-    profileId: Long,
+    id: ScheduleId,
+    profileId: ProfileId,
     name: String,
     days: List[String],
     blockFrom: String,
@@ -77,14 +77,14 @@ case class Schedule(
 ) derives JsonCodec
 
 case class TimeLimit(
-    id: Long,
-    profileId: Long,
+    id: TimeLimitId,
+    profileId: ProfileId,
     dailyMinutes: Int,
 ) derives JsonCodec
 
 case class SiteTimeLimit(
-    id: Long,
-    profileId: Long,
+    id: SiteTimeLimitId,
+    profileId: ProfileId,
     domainPattern: String,
     dailyMinutes: Int,
     label: String,
@@ -92,8 +92,8 @@ case class SiteTimeLimit(
 ) derives JsonCodec
 
 case class TimeUsage(
-    id: Long,
-    deviceMac: String,
+    id: TimeUsageId,
+    deviceMac: MacAddress,
     domain: String,
     date: String,
     minutesUsed: Int,
@@ -101,9 +101,9 @@ case class TimeUsage(
 ) derives JsonCodec
 
 case class TimeExtension(
-    id: Long,
-    profileId: Option[Long],
-    deviceMac: Option[String],
+    id: TimeExtensionId,
+    profileId: Option[ProfileId],
+    deviceMac: Option[MacAddress],
     date: String,
     extraMinutes: Int,
     grantedBy: String,
@@ -112,20 +112,20 @@ case class TimeExtension(
 ) derives JsonCodec
 
 case class Device(
-    id: Long,
-    mac: String,
+    id: DeviceId,
+    mac: MacAddress,
     name: String,
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     profileName: Option[String],
-    lastSeenIp: Option[String],
+    lastSeenIp: Option[IpAddress],
     lastSeenAt: Option[String],
 ) derives JsonCodec
 
 case class QueryLog(
-    id: Long,
-    mac: Option[String],
+    id: QueryLogId,
+    mac: Option[MacAddress],
     deviceName: Option[String],
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     profileName: Option[String],
     domain: String,
     qtype: Int,
@@ -136,38 +136,37 @@ case class QueryLog(
 ) derives JsonCodec
 
 case class LoginRequest(username: String, password: String) derives JsonCodec
-case class LoginResponse(token: String, role: String, username: String) derives JsonCodec
+case class LoginResponse(token: JwtToken, role: UserRole, username: String) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
 case class CreateUserRequest(
     username: String,
     password: String,
-    role: String,
-    profileIds: List[Long] = Nil,
+    role: UserRole,
+    profileIds: List[ProfileId] = Nil,
 ) derives JsonCodec
 case class UserSummary(
-    id: Long,
+    id: UserId,
     username: String,
-    role: String,
-    profileIds: List[Long],
+    role: UserRole,
+    profileIds: List[ProfileId],
 ) derives JsonCodec
 case class MeResponse(
     username: String,
-    role: String,
-    profileIds: List[Long],
+    role: UserRole,
+    profileIds: List[ProfileId],
 ) derives JsonCodec
-case class SetUserProfilesRequest(profileIds: List[Long]) derives JsonCodec
-case class SetProfileUsersRequest(userIds: List[Long]) derives JsonCodec
+case class SetUserProfilesRequest(profileIds: List[ProfileId]) derives JsonCodec
+case class SetProfileUsersRequest(userIds: List[UserId]) derives JsonCodec
 
 case class UpsertProfileRequest(
     name: String,
-    blockedCategories: List[String],
-    extraBlocked: List[String],
-    extraAllowed: List[String],
+    blockedCategories: List[BlocklistId],
+    extraBlocked: List[Hostname],
+    extraAllowed: List[Hostname],
     paused: Boolean,
     schedules: List[ScheduleRequest],
     timeLimit: Option[Int],
     siteTimeLimits: List[SiteTimeLimitRequest],
-    // #311: optional on the wire; server defaults to Closed when omitted.
     failureMode: Option[FailureMode] = None,
 ) derives JsonCodec
 
@@ -186,13 +185,13 @@ case class SiteTimeLimitRequest(
 ) derives JsonCodec
 
 case class UpsertDeviceRequest(
-    mac: String,
+    mac: MacAddress,
     name: String,
-    profileId: Long,
+    profileId: ProfileId,
 ) derives JsonCodec
 
 case class GrantExtensionRequest(
-    profileId: Long,
+    profileId: ProfileId,
     extraMinutes: Int,
     note: Option[String],
 ) derives JsonCodec
@@ -207,7 +206,8 @@ case class DashboardStats(
 ) derives JsonCodec
 
 case class DomainCount(domain: String, count: Int) derives JsonCodec
-case class DeviceStats(mac: String, deviceName: String, total: Int, blocked: Int) derives JsonCodec
+case class DeviceStats(mac: MacAddress, deviceName: String, total: Int, blocked: Int)
+    derives JsonCodec
 
 case class SiteUsage(
     label: String,
@@ -218,11 +218,11 @@ case class SiteUsage(
 ) derives JsonCodec
 
 case class DeviceTimeStatus(
-    deviceMac: String,
+    deviceMac: MacAddress,
     deviceName: String,
     date: String,
     profileName: String,
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     dailyLimitMins: Option[Int],
     usedMins: Int,
     extensionMins: Int,
@@ -231,13 +231,13 @@ case class DeviceTimeStatus(
 ) derives JsonCodec
 
 case class DeviceUsageSummary(
-    deviceMac: String,
+    deviceMac: MacAddress,
     deviceName: String,
     usedMins: Int,
 ) derives JsonCodec
 
 case class ProfileTimeStatus(
-    profileId: Long,
+    profileId: ProfileId,
     profileName: String,
     date: String,
     dailyLimitMins: Option[Int],
@@ -257,25 +257,25 @@ case class ProfileDetail(
 
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
-case class DashboardNowHost(hostname: String, activeSeconds: Long) derives JsonCodec
+case class DashboardNowHost(hostname: Hostname, activeSeconds: Long) derives JsonCodec
 
 case class DashboardNowCurrentSession(
-    hostname: String,
+    hostname: Hostname,
     startedAt: String,
     durationSeconds: Long,
 ) derives JsonCodec
 
 case class DashboardNowDevice(
-    id: Long,
+    id: DeviceId,
     name: String,
-    mac: String,
+    mac: MacAddress,
     lastSeenSeconds: Long,
     topHosts: List[DashboardNowHost],
     currentSession: Option[DashboardNowCurrentSession],
 ) derives JsonCodec
 
 case class DashboardNowProfile(
-    id: Long,
+    id: ProfileId,
     name: String,
     paused: Boolean,
     activeDevices: List[DashboardNowDevice],
@@ -294,8 +294,8 @@ case class CachedProfile(
 )
 
 case class DnsCache(
-    deviceProfiles: Map[String, CachedProfile],
-    blocklists: Map[String, Set[String]],
+    deviceProfiles: Map[MacAddress, CachedProfile],
+    blocklists: Map[BlocklistId, Set[Hostname]],
     defaultProfile: Option[CachedProfile],
 )
 
@@ -314,22 +314,22 @@ object TimeUsageSnapshot {
 }
 
 case class Router(
-    id: UUID,
+    id: RouterId,
     name: String,
-    enrollmentTokenHash: Option[String],
-    tokenHash: Option[String],
+    enrollmentTokenHash: Option[Sha256Hex],
+    tokenHash: Option[Sha256Hex],
     lastSeenAt: Option[String],
-    lastEtag: Option[String],
+    lastEtag: Option[ETag],
     createdAt: String,
     lastClockSkewSeconds: Option[Long] = None,
 ) derives JsonCodec
 
 case class TrafficReport(
-    id: Long,
-    routerId: UUID,
-    mac: String,
-    ip: Option[String],
-    hostname: String,
+    id: TrafficReportId,
+    routerId: RouterId,
+    mac: MacAddress,
+    ip: Option[IpAddress],
+    hostname: Hostname,
     date: String,
     periodStart: String,
     periodEnd: String,
@@ -339,12 +339,12 @@ case class TrafficReport(
 ) derives JsonCodec
 
 case class Session(
-    mac: String,
+    mac: MacAddress,
     deviceName: Option[String],
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     profileName: Option[String],
-    hostname: String,
-    routerId: UUID,
+    hostname: Hostname,
+    routerId: RouterId,
     date: String,
     startedAt: String,
     endedAt: String,
@@ -360,35 +360,35 @@ case class SessionPage(
 ) derives JsonCodec
 
 case class BlockEvent(
-    id: Long,
-    mac: Option[String],
-    hostname: String,
+    id: BlockEventId,
+    mac: Option[MacAddress],
+    hostname: Hostname,
     reason: String,
     ts: String,
 ) derives JsonCodec
 
 case class ConnectionEvent(
-    id: Long,
-    routerId: UUID,
-    mac: Option[String],
-    hostname: String,
-    destIp: Option[String],
+    id: ConnectionEventId,
+    routerId: RouterId,
+    mac: Option[MacAddress],
+    hostname: Hostname,
+    destIp: Option[IpAddress],
     allowed: Boolean,
     reason: String,
     ts: String,
 ) derives JsonCodec
 
 case class UsageRecord(
-    mac: String,
-    ip: Option[String],
-    hostname: String,
+    mac: MacAddress,
+    ip: Option[IpAddress],
+    hostname: Hostname,
     activeSeconds: Long,
     bytesIn: Long,
     bytesOut: Long,
 ) derives JsonCodec
 
 case class UsageReport(
-    routerId: UUID,
+    routerId: RouterId,
     periodStart: String,
     periodEnd: String,
     records: List[UsageRecord],
@@ -403,17 +403,17 @@ case class UsageReport(
  */
 case class RouterEvent(
     `type`: String,
-    mac: Option[String] = None,
-    ip: Option[String] = None,
-    hostname: Option[String] = None,
-    destIp: Option[String] = None,
+    mac: Option[MacAddress] = None,
+    ip: Option[IpAddress] = None,
+    hostname: Option[Hostname] = None,
+    destIp: Option[IpAddress] = None,
     allowed: Option[Boolean] = None,
     reason: Option[String] = None,
     ts: String,
 ) derives JsonCodec
 
 case class RouterEventsRequest(
-    routerId: UUID,
+    routerId: RouterId,
     events: List[RouterEvent],
 ) derives JsonCodec
 
@@ -421,75 +421,52 @@ case class RouterEventsRequest(
 
 case class CreateRouterRequest(name: String) derives JsonCodec
 case class CreateRouterResponse(
-    routerId: UUID,
+    routerId: RouterId,
     name: String,
-    enrollmentToken: String,
+    enrollmentToken: EnrollmentToken,
 ) derives JsonCodec
 
 case class RouterSummary(
-    id: UUID,
+    id: RouterId,
     name: String,
     enrolled: Boolean,
     lastSeenAt: Option[String],
-    lastEtag: Option[String],
+    lastEtag: Option[ETag],
     createdAt: String,
     lastClockSkewSeconds: Option[Long] = None,
 ) derives JsonCodec
 
 case class RegisterRouterRequest(
-    enrollmentToken: String,
+    enrollmentToken: EnrollmentToken,
     platformVersion: Option[String] = None,
     agentVersion: Option[String] = None,
 ) derives JsonCodec
 
 case class RegisterRouterResponse(
-    routerId: UUID,
-    routerToken: String,
+    routerId: RouterId,
+    routerToken: RouterToken,
 ) derives JsonCodec
 
-case class RouterDecisionRequest(mac: String, hostname: String) derives JsonCodec
+case class RouterDecisionRequest(mac: MacAddress, hostname: Hostname) derives JsonCodec
 case class RouterDecisionResponse(
-    decision: String,
+    decision: ConnectionDecision,
     reason: String,
     expiresAt: Option[String],
 ) derives JsonCodec
 
 // ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────
 //
-// The snapshot is what the router agent consumes. It carries collapsed
-// per-profile/per-device enforcement state — schedules, time limits, pause,
-// site limits, and category membership have all been evaluated server-side
-// in PolicyService and reflected here as `BlockRules`. The agent never
-// re-evaluates them.
-//
-// Diverges from architecture.md §0.2 in one place: `failureMode` is still
-// per-profile (carried in ProfilePolicy) rather than top-level. The DB
-// has it as a per-profile column and we want to keep it that way until
-// there's a reason to consolidate.
-//
-// `DevicePolicy.rules` exists for future per-device overrides; PolicyService
-// currently always emits `None` there (no UI to set it).
+// Diverges from architecture.md §0.2 in one place: `failureMode` is per-profile
+// (carried in ProfilePolicy) rather than top-level. The DB has it as a
+// per-profile column and we keep it that way until there's a reason to consolidate.
 
-opaque type BlocklistId = String
-object BlocklistId {
-  def apply(s: String): BlocklistId             = s
-  extension (id: BlocklistId) def value: String = id
-  given JsonEncoder[BlocklistId]                = JsonEncoder.string.contramap(_.value)
-  given JsonDecoder[BlocklistId]                = JsonDecoder.string.map(apply)
-  given JsonCodec[BlocklistId]                  =
-    JsonCodec(summon[JsonEncoder[BlocklistId]], summon[JsonDecoder[BlocklistId]])
-  given Ordering[BlocklistId] = Ordering.by[BlocklistId, String](_.value)(using Ordering.String)
-  given JsonFieldEncoder[BlocklistId] = JsonFieldEncoder.string.contramap(_.value)
-  given JsonFieldDecoder[BlocklistId] = JsonFieldDecoder.string.map(apply)
-}
-
-case class Blocklist(version: String, url: String) derives JsonCodec
+case class Blocklist(version: BlocklistVersion, url: BlocklistUrl) derives JsonCodec
 
 case class BlockRules(
     blocked: Boolean,
     blockReason: Option[MacBlockReason],
-    extraBlocked: List[String],
-    extraAllowed: List[String],
+    extraBlocked: List[Hostname],
+    extraAllowed: List[Hostname],
     blocklistIds: List[BlocklistId],
     blockIpOnly: Boolean,
 ) derives JsonCodec
@@ -506,7 +483,7 @@ object BlockRules {
 }
 
 case class DevicePolicy(
-    profileId: Option[Long],
+    profileId: Option[ProfileId],
     name: String,
     rules: Option[BlockRules],
 ) derives JsonCodec
@@ -518,10 +495,10 @@ case class ProfilePolicy(
 ) derives JsonCodec
 
 case class PolicySnapshot(
-    etag: String,
+    etag: ETag,
     generatedAt: String,
-    devices: Map[String, DevicePolicy],
-    profiles: Map[Long, ProfilePolicy],
+    devices: Map[MacAddress, DevicePolicy],
+    profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
 ) derives JsonCodec
 
@@ -530,10 +507,9 @@ case class PolicySnapshot(
 // MacBlockReason is the subset that can appear in a snapshot — the API
 // pre-evaluates the policy and emits one of these in BlockRules.blockReason.
 // The other BlockReason variants are emitted by the router agent at
-// packet-drop time (for connection_events / the /blocked page) and never
-// appear in the snapshot. The split is type-enforced: BlockRules.blockReason
-// is typed Option[MacBlockReason], so a router-only reason cannot leak into
-// the snapshot field.
+// packet-drop time and never appear in the snapshot. The split is
+// type-enforced: BlockRules.blockReason is typed Option[MacBlockReason], so a
+// router-only reason cannot leak into the snapshot field.
 
 sealed trait BlockReason
 
@@ -565,7 +541,7 @@ object MacBlockReason {
 }
 
 object BlockReason {
-  case class Host(host: String)                   extends BlockReason
-  case class Category(host: String, list: String) extends BlockReason
-  case class IpOnly(dstIp: String)                extends BlockReason
+  case class Host(host: Hostname)                        extends BlockReason
+  case class Category(host: Hostname, list: BlocklistId) extends BlockReason
+  case class IpOnly(dstIp: IpAddress)                    extends BlockReason
 }

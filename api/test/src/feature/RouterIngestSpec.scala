@@ -4,6 +4,7 @@ import familydns.api.db.*
 import familydns.api.policy.*
 import familydns.api.routes.*
 import familydns.shared.*
+import familydns.shared.types.*
 import familydns.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
@@ -40,11 +41,11 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
-  private def seedRouter(rRepo: RouterRepo): Task[(UUID, String)] = {
+  private def seedRouter(rRepo: RouterRepo): Task[(RouterId, String)] = {
     val token = "ROUTER_TOKEN_PLAIN"
-    val hash  = RouterAuth.sha256Hex(token)
+    val hash  = Sha256Hex.unsafe(RouterAuth.sha256Hex(token))
     for {
-      id <- rRepo.create("test-router", "ENROLL_HASH")
+      id <- rRepo.create("test-router", Sha256Hex.unsafe("m" * 64))
       _  <- rRepo.completeEnrollment(id, hash)
     } yield (id, token)
   }
@@ -95,8 +96,8 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
 
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
     for {
-      pid <- profileRepo.create("Kids", List("adult"))
-      _   <- dRepo.upsert(knownMac, "kid-ipad", pid, "192.168.1.10")
+      pid <- profileRepo.create("Kids", List(BlocklistId.unsafe("adult")))
+      _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", pid, "192.168.1.10")
     } yield ()
 
   def spec = suite("Router ingest /api/router/*")(
@@ -105,7 +106,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         _      <- cleanDb
         routes <- buildRoutes
-        body = UsageReport(UUID.randomUUID(), periodStart.toString, periodEnd.toString, Nil).toJson
+        body = UsageReport(
+          RouterId(UUID.randomUUID()),
+          periodStart.toString,
+          periodEnd.toString,
+          Nil,
+        ).toJson
         resp <- post(routes, "/api/router/usage", body, None)
       } yield assertTrue(resp.status == Status.Unauthorized)
     },
@@ -113,7 +119,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         _      <- cleanDb
         routes <- buildRoutes
-        body = UsageReport(UUID.randomUUID(), periodStart.toString, periodEnd.toString, Nil).toJson
+        body = UsageReport(
+          RouterId(UUID.randomUUID()),
+          periodStart.toString,
+          periodEnd.toString,
+          Nil,
+        ).toJson
         resp <- post(routes, "/api/router/usage", body, Some("not-a-real-token"))
       } yield assertTrue(resp.status == Status.Unauthorized)
     },
@@ -142,11 +153,22 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         routes   <- buildRoutes
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
-        rec  = UsageRecord(knownMac, Some("192.168.1.10"), "youtube.com", 240L, 1000L, 500L)
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.10")),
+          Hostname.unsafe("youtube.com"),
+          240L,
+          1000L,
+          500L,
+        )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         r1   <- post(routes, "/api/router/usage", body, Some(tk))
         r2   <- post(routes, "/api/router/usage", body, Some(tk))
-        sb   <- tu.getSecondsAndBytes(knownMac, "youtube.com", testDate)
+        sb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          Hostname.unsafe("youtube.com"),
+          testDate,
+        )
         rows <- tRepo.listForRouter(id, 100)
       } yield assertTrue(r1.status == Status.Ok) &&
         assertTrue(r2.status == Status.Ok) &&
@@ -166,13 +188,35 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
         recs = List(
-          UsageRecord(knownMac, None, "youtube.com", 60L, 100L, 50L),
-          UsageRecord(knownMac, None, "google.com", 30L, 200L, 10L),
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            Hostname.unsafe("youtube.com"),
+            60L,
+            100L,
+            50L,
+          ),
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            Hostname.unsafe("google.com"),
+            30L,
+            200L,
+            10L,
+          ),
         )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, recs).toJson
         resp <- post(routes, "/api/router/usage", body, Some(tk))
-        yt   <- tu.getSecondsAndBytes(knownMac, "youtube.com", testDate)
-        gg   <- tu.getSecondsAndBytes(knownMac, "google.com", testDate)
+        yt   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          Hostname.unsafe("youtube.com"),
+          testDate,
+        )
+        gg   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          Hostname.unsafe("google.com"),
+          testDate,
+        )
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(yt == ((60L, 100L, 50L))) &&
         assertTrue(gg == ((30L, 200L, 10L)))
@@ -195,13 +239,31 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
         recs = List(
-          UsageRecord(knownMac, None, "unknown", 300L, 100L, 50L),
-          UsageRecord(knownMac, None, "unknown", 300L, 200L, 10L),
-          UsageRecord(knownMac, None, "unknown", 300L, 50L, 0L),
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            Hostname.unsafe("unknown"),
+            300L,
+            100L,
+            50L,
+          ),
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            Hostname.unsafe("unknown"),
+            300L,
+            200L,
+            10L,
+          ),
+          UsageRecord(MacAddress.unsafe(knownMac), None, Hostname.unsafe("unknown"), 300L, 50L, 0L),
         )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, recs).toJson
         resp <- post(routes, "/api/router/usage", body, Some(tk))
-        sb   <- tu.getSecondsAndBytes(knownMac, "unknown", testDate)
+        sb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          Hostname.unsafe("unknown"),
+          testDate,
+        )
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(sb == ((300L, 350L, 60L)))
     },
@@ -215,12 +277,23 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         routes   <- buildRoutes
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
-        rec = UsageRecord(knownMac, None, "youtube.com", 120L, 1L, 1L)
+        rec = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          None,
+          Hostname.unsafe("youtube.com"),
+          120L,
+          1L,
+          1L,
+        )
         b1  = UsageReport(id, "2026-05-07T14:00:00Z", "2026-05-07T14:05:00Z", List(rec)).toJson
         b2  = UsageReport(id, "2026-05-07T14:05:00Z", "2026-05-07T14:10:00Z", List(rec)).toJson
         _  <- post(routes, "/api/router/usage", b1, Some(tk))
         _  <- post(routes, "/api/router/usage", b2, Some(tk))
-        sb <- tu.getSecondsAndBytes(knownMac, "youtube.com", testDate)
+        sb <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          Hostname.unsafe("youtube.com"),
+          testDate,
+        )
       } yield assertTrue(sb == ((240L, 2L, 2L)))
     },
     test("usage: known mac last_seen_at is set to period_end and last_seen_ip to record.ip") {
@@ -232,11 +305,18 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         routes   <- buildRoutes
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
-        rec  = UsageRecord(knownMac, Some("192.168.1.42"), "youtube.com", 60L, 1L, 1L)
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.42")),
+          Hostname.unsafe("youtube.com"),
+          60L,
+          1L,
+          1L,
+        )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         _ <- post(routes, "/api/router/usage", body, Some(tk))
-        d <- dRepo.findByMac(knownMac)
-      } yield assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42"))) &&
+        d <- dRepo.findByMac(MacAddress.unsafe(knownMac))
+      } yield assertTrue(d.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.42")))) &&
         assertTrue(d.flatMap(_.lastSeenAt).map(SeenParser.toInstant).contains(periodEnd))
     },
     test("usage: unknown mac in records does NOT create a device row (events does that)") {
@@ -246,10 +326,17 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         dRepo    <- ZIO.service[DeviceRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
-        rec  = UsageRecord(unknownMac, Some("192.168.1.99"), "ads.example.com", 10L, 1L, 1L)
+        rec  = UsageRecord(
+          MacAddress.unsafe(unknownMac),
+          Some(IpAddress.unsafe("192.168.1.99")),
+          Hostname.unsafe("ads.example.com"),
+          10L,
+          1L,
+          1L,
+        )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         resp <- post(routes, "/api/router/usage", body, Some(tk))
-        d    <- dRepo.findByMac(unknownMac)
+        d    <- dRepo.findByMac(MacAddress.unsafe(unknownMac))
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(d.isEmpty)
     },
 
@@ -264,18 +351,18 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         evs  = List(
           RouterEvent(
             "connection_attempt",
-            mac = Some(knownMac),
-            hostname = Some("youtube.com"),
-            destIp = Some("1.2.3.4"),
+            mac = Some(MacAddress.unsafe(knownMac)),
+            hostname = Some(Hostname.unsafe("youtube.com")),
+            destIp = Some(IpAddress.unsafe("1.2.3.4")),
             allowed = Some(false),
             reason = Some("category:adult"),
             ts = "2026-05-07T14:01:00Z",
           ),
           RouterEvent(
             "connection_attempt",
-            mac = Some(knownMac),
-            hostname = Some("khanacademy.org"),
-            destIp = Some("5.6.7.8"),
+            mac = Some(MacAddress.unsafe(knownMac)),
+            hostname = Some(Hostname.unsafe("khanacademy.org")),
+            destIp = Some(IpAddress.unsafe("5.6.7.8")),
             allowed = Some(true),
             reason = Some("allow"),
             ts = "2026-05-07T14:01:01Z",
@@ -286,8 +373,8 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.size == 2) &&
-        assertTrue(rows.exists(r => r.hostname == "youtube.com" && !r.allowed)) &&
-        assertTrue(rows.exists(r => r.hostname == "khanacademy.org" && r.allowed))
+        assertTrue(rows.exists(r => r.hostname == Hostname.unsafe("youtube.com") && !r.allowed)) &&
+        assertTrue(rows.exists(r => r.hostname == Hostname.unsafe("khanacademy.org") && r.allowed))
     },
     test("events: dhcp_lease for known mac updates devices.last_seen_*") {
       for {
@@ -300,15 +387,15 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         (id, tk) <- seedRouter(rRepo)
         ev   = RouterEvent(
           "dhcp_lease",
-          mac = Some(knownMac),
-          ip = Some("192.168.1.77"),
-          hostname = Some("kid-ipad"),
+          mac = Some(MacAddress.unsafe(knownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.77")),
+          hostname = Some(Hostname.unsafe("kid-ipad")),
           ts = "2026-05-07T14:01:13Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
-        d <- dRepo.findByMac(knownMac)
-      } yield assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.77"))) &&
+        d <- dRepo.findByMac(MacAddress.unsafe(knownMac))
+      } yield assertTrue(d.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.77")))) &&
         assertTrue(
           d.flatMap(_.lastSeenAt)
             .map(SeenParser.toInstant)
@@ -324,17 +411,17 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         (id, tk) <- seedRouter(rRepo)
         ev   = RouterEvent(
           "dhcp_lease",
-          mac = Some(unknownMac),
-          ip = Some("192.168.1.55"),
-          hostname = Some("mystery-laptop"),
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.55")),
+          hostname = Some(Hostname.unsafe("mystery-laptop")),
           ts = "2026-05-07T14:02:00Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
-        d <- dRepo.findByMac(unknownMac)
+        d <- dRepo.findByMac(MacAddress.unsafe(unknownMac))
       } yield assertTrue(d.exists(_.name == "mystery-laptop")) &&
         assertTrue(d.exists(_.profileId.isEmpty)) &&
-        assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.55")))
+        assertTrue(d.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.55"))))
     },
     test("events: dhcp_lease for the same unknown mac twice is idempotent (no duplicate row)") {
       for {
@@ -345,16 +432,16 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         (id, tk) <- seedRouter(rRepo)
         ev   = RouterEvent(
           "dhcp_lease",
-          mac = Some(unknownMac),
-          ip = Some("192.168.1.55"),
-          hostname = Some("mystery-laptop"),
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.55")),
+          hostname = Some(Hostname.unsafe("mystery-laptop")),
           ts = "2026-05-07T14:02:00Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _   <- post(routes, "/api/router/events", body, Some(tk))
         _   <- post(routes, "/api/router/events", body, Some(tk))
         all <- dRepo.listAll
-      } yield assertTrue(all.count(_.mac == unknownMac) == 1)
+      } yield assertTrue(all.count(_.mac == MacAddress.unsafe(unknownMac)) == 1)
     },
     // ── ingest → policy round-trip (pins #135 fix) ───────────────────────────
     test("usage→policy: 90 active_seconds is reflected as timeUsedToday >= dailyMinutes") {
@@ -375,13 +462,20 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         pid      <- pRepo.create("Kids", List.empty)
         _        <- tlr.upsert(pid, 1)
         // 2. Device assigned to that profile
-        _        <- dRepo.upsert(knownMac, "kid-ipad", pid, "192.168.1.10")
+        _        <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", pid, "192.168.1.10")
         // 3. Router (RouterAuth.sha256Hex == PolicyService.hashToken, so the
         //    same bearer authenticates against both ingest and policy routes).
         (id, tk) <- seedRouter(rRepo)
         policy = RouterRoutes.routes(rRepo, ps, RouterAuthLive(rRepo), ber)
         // 4. POST /api/router/usage with 90 active seconds
-        rec    = UsageRecord(knownMac, Some("192.168.1.42"), "youtube.com", 90L, 0L, 0L)
+        rec    = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.42")),
+          Hostname.unsafe("youtube.com"),
+          90L,
+          0L,
+          0L,
+        )
         body   = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         ingestResp <- post(ingest, "/api/router/usage", body, Some(tk))
         // 5. GET /api/router/policy
@@ -394,7 +488,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         snap       <- ZIO.fromEither(polBody.fromJson[PolicySnapshot])
         kp = snap.profiles(pid)
         // 6. Verify last_seen_ip update
-        d <- dRepo.findByMac(knownMac)
+        d <- dRepo.findByMac(MacAddress.unsafe(knownMac))
       } yield assertTrue(ingestResp.status == Status.Ok) &&
         assertTrue(polResp.status == Status.Ok) &&
         // #354: dailyMinutes / timeUsedToday no longer ship on the wire —
@@ -402,7 +496,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         // active time against a 1-minute limit, the profile is blocked.
         assertTrue(kp.rules.blocked) &&
         assertTrue(kp.rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
-        assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42")))
+        assertTrue(d.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.42"))))
     },
     test("events: accepts the raw JSON shape the OpenWRT Lua agent emits (regression for #215)") {
       // Verbatim payload shape produced by openwrt/files/usr/lib/lua/familydns/conntrack.lua
@@ -427,7 +521,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.size == 1) &&
-        assertTrue(rows.exists(r => r.hostname == "youtube.com" && !r.allowed))
+        assertTrue(rows.exists(r => r.hostname == Hostname.unsafe("youtube.com") && !r.allowed))
     },
     test("events: first_seen_mac creates an unknown-device row when missing") {
       for {
@@ -438,17 +532,17 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         (id, tk) <- seedRouter(rRepo)
         ev   = RouterEvent(
           "first_seen_mac",
-          mac = Some("aa:bb:cc:dd:ee:01"),
-          ip = Some("192.168.1.61"),
+          mac = Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
+          ip = Some(IpAddress.unsafe("192.168.1.61")),
           hostname = None,
           ts = "2026-05-07T14:03:00Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
-        d <- dRepo.findByMac("aa:bb:cc:dd:ee:01")
+        d <- dRepo.findByMac(MacAddress.unsafe("aa:bb:cc:dd:ee:01"))
       } yield assertTrue(d.isDefined) &&
         assertTrue(d.exists(_.profileId.isEmpty)) &&
-        assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.61"))) &&
+        assertTrue(d.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.61")))) &&
         // #249: when no hostname is provided we now generate a disambiguable
         // placeholder name from the MAC instead of the literal string "unknown".
         assertTrue(d.exists(_.name == "device-ddee01"))
@@ -464,17 +558,22 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         (id, tk) <- seedRouter(rRepo)
         // Pre-existing row with the legacy "unknown" name (e.g. created before
         // the device-XXYYZZ change shipped).
-        _        <- dRepo.upsertUnknown(unknownMac, "unknown", Some("192.168.1.55"), periodStart)
+        _        <- dRepo.upsertUnknown(
+          MacAddress.unsafe(unknownMac),
+          "unknown",
+          Some(IpAddress.unsafe("192.168.1.55")),
+          periodStart,
+        )
         ev   = RouterEvent(
           "dhcp_lease",
-          mac = Some(unknownMac),
-          ip = Some("192.168.1.55"),
-          hostname = Some("kid-phone"),
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.55")),
+          hostname = Some(Hostname.unsafe("kid-phone")),
           ts = "2026-05-07T14:02:30Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
-        d <- dRepo.findByMac(unknownMac)
+        d <- dRepo.findByMac(MacAddress.unsafe(unknownMac))
       } yield assertTrue(d.exists(_.name == "kid-phone"))
     },
     test("events: dhcp_lease renames a device whose name matches device-XXYYZZ") {
@@ -484,17 +583,22 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         dRepo    <- ZIO.service[DeviceRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
-        _ <- dRepo.upsertUnknown(unknownMac, "device-999999", Some("192.168.1.55"), periodStart)
+        _        <- dRepo.upsertUnknown(
+          MacAddress.unsafe(unknownMac),
+          "device-999999",
+          Some(IpAddress.unsafe("192.168.1.55")),
+          periodStart,
+        )
         ev   = RouterEvent(
           "dhcp_lease",
-          mac = Some(unknownMac),
-          ip = Some("192.168.1.55"),
-          hostname = Some("kid-phone"),
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.55")),
+          hostname = Some(Hostname.unsafe("kid-phone")),
           ts = "2026-05-07T14:02:30Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
-        d <- dRepo.findByMac(unknownMac)
+        d <- dRepo.findByMac(MacAddress.unsafe(unknownMac))
       } yield assertTrue(d.exists(_.name == "kid-phone"))
     },
     // ── #312: clock skew is reported via usage POST and persisted per router ─
@@ -584,14 +688,14 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         // the curated name the admin chose in the UI.
         ev   = RouterEvent(
           "dhcp_lease",
-          mac = Some(knownMac),
-          ip = Some("192.168.1.10"),
-          hostname = Some("android-1234"),
+          mac = Some(MacAddress.unsafe(knownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.10")),
+          hostname = Some(Hostname.unsafe("android-1234")),
           ts = "2026-05-07T14:02:30Z",
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _ <- post(routes, "/api/router/events", body, Some(tk))
-        d <- dRepo.findByMac(knownMac)
+        d <- dRepo.findByMac(MacAddress.unsafe(knownMac))
       } yield assertTrue(d.exists(_.name == "kid-ipad"))
     },
   ) @@ TestAspect.sequential
