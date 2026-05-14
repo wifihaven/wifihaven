@@ -586,3 +586,194 @@ describe("render.update_shared", function()
   end)
 
 end)
+
+-- ── blocklist enforcement (#352) ─────────────────────────────────────────────
+--
+-- Category blocklists are enforced at the connection layer (not DNS) via
+-- nftables ipsets. dnsmasq populates bl_<id> ipsets at resolve time via
+-- ipset= directives; per-(MAC, blocklistId) drop rules gate on those sets.
+
+describe("render blocklist enforcement (#352)", function()
+
+  -- Snapshot with one blocklist and two profiles:
+  --   profile 3 (kids) has blocklistIds = {"test_ads"}
+  --   profile 1 (adults) has blocklistIds = {}
+  local function snap_bl()
+    return {
+      etag        = "sha256:abc123",
+      generatedAt = "2026-05-14T14:00:00Z",
+      devices = {
+        ["aa:bb:cc:11:22:33"] = { profileId = 3, name = "kid-ipad",    rules = nil },
+        ["de:ad:be:ef:00:01"] = { profileId = 1, name = "parent-phone", rules = nil },
+      },
+      profiles = {
+        ["3"] = {
+          name = "kids",
+          rules = {
+            blocked      = false,
+            blockReason  = nil,
+            extraBlocked = {},
+            extraAllowed = {},
+            blocklistIds = { "test_ads" },
+            blockIpOnly  = false,
+          },
+          failureMode = "closed",
+        },
+        ["1"] = {
+          name = "adults",
+          rules = {
+            blocked      = false,
+            blockReason  = nil,
+            extraBlocked = {},
+            extraAllowed = {},
+            blocklistIds = {},
+            blockIpOnly  = false,
+          },
+          failureMode = "open",
+        },
+      },
+      blocklists = {
+        test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" },
+      },
+      _blocklist_hosts = {
+        test_ads = { "adserver.example.com", "doubleclick.net" },
+      },
+    }
+  end
+
+  -- ── nft set declarations ─────────────────────────────────────────────────
+
+  it("declares set bl_<id> with type ipv4_addr + dynamic,timeout for each id in blocklists", function()
+    local nft  = render.nft(snap_bl())
+    local pos  = nft:find("set bl_test_ads", 1, true)
+    assert.truthy(pos, "expected 'set bl_test_ads' in nft output")
+    local blk  = nft:sub(pos, pos + 200)
+    assert.truthy(blk:find("type ipv4_addr", 1, true))
+    assert.truthy(blk:find("flags dynamic,timeout", 1, true))
+    assert.truthy(blk:find("timeout 1h", 1, true))
+  end)
+
+  it("emits set declaration even when no device references the blocklist id", function()
+    -- Profile 1 (adults) has no blocklistIds, but the set must still be
+    -- declared because dnsmasq ipset= callbacks need the set to exist.
+    local s = snap_bl()
+    -- Remove kid device so only adults (who don't reference test_ads) remain.
+    s.devices = { ["de:ad:be:ef:00:01"] = { profileId = 1, name = "parent-phone", rules = nil } }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("set bl_test_ads", 1, true),
+      "set must be declared even when no profile references it")
+  end)
+
+  it("declares exactly one set per id (no duplicates) when multiple MACs share the id", function()
+    local s  = snap_bl()
+    -- Add a second kid device under same profile.
+    s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
+    local nft = render.nft(s)
+    local _, cnt = nft:gsub("set bl_test_ads {", "")
+    assert.equal(1, cnt, "set declaration must appear exactly once")
+  end)
+
+  -- ── dnsmasq ipset= directives ────────────────────────────────────────────
+
+  it("emits ipset=/<host>/bl_<id> for each host in snapshot._blocklist_hosts[id]", function()
+    local conf = render.dnsmasq(snap_bl())
+    assert.truthy(conf:find("ipset=/adserver.example.com/bl_test_ads", 1, true))
+    assert.truthy(conf:find("ipset=/doubleclick.net/bl_test_ads", 1, true))
+  end)
+
+  it("deduplicates ipset= lines when the same host appears in two blocklists (edge case)", function()
+    local s = snap_bl()
+    s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
+    s._blocklist_hosts["test_social"] = { "doubleclick.net", "facebook.com" }
+    local conf = render.dnsmasq(s)
+    -- doubleclick.net must appear for test_ads AND test_social
+    -- but should only appear once per set name combination.
+    assert.truthy(conf:find("ipset=/doubleclick.net/bl_test_ads",    1, true))
+    assert.truthy(conf:find("ipset=/doubleclick.net/bl_test_social", 1, true))
+  end)
+
+  it("emits no ipset= lines when _blocklist_hosts is absent or empty", function()
+    local s = snap_bl()
+    s._blocklist_hosts = nil
+    local conf = render.dnsmasq(s)
+    assert.is_nil(conf:find("bl_test_ads", 1, true))
+  end)
+
+  -- ── nft drop rules ───────────────────────────────────────────────────────
+
+  it("emits 'ether saddr <mac> ip daddr @bl_<id> drop' for each (mac, blocklistId) pair", function()
+    local nft = render.nft(snap_bl())
+    -- Only kid mac references test_ads; parent does not.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads drop", 1, true))
+  end)
+
+  it("does NOT emit drop for MACs whose profile has blocklistIds = {}", function()
+    local nft = render.nft(snap_bl())
+    assert.is_nil(nft:find(
+      "ether saddr de:ad:be:ef:00:01 ip daddr @bl_test_ads drop", 1, true),
+      "adults MAC must not get a bl_test_ads drop rule")
+  end)
+
+  it("two MACs sharing the same blocklistId produce ONE set, TWO MAC-scoped drops", function()
+    local s = snap_bl()
+    s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
+    local nft = render.nft(s)
+    local _, set_count = nft:gsub("set bl_test_ads {", "")
+    assert.equal(1, set_count, "exactly one set declaration")
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads drop", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr 11:22:33:44:55:66 ip daddr @bl_test_ads drop", 1, true))
+  end)
+
+  it("blocklistId referenced by profile but absent from snapshot.blocklists → silently skipped", function()
+    local s = snap_bl()
+    -- Profile references "missing_id" which is not in snapshot.blocklists.
+    s.profiles["3"].rules.blocklistIds = { "test_ads", "missing_id" }
+    -- No entry for missing_id in blocklists.
+    local ok, nft = pcall(render.nft, s)
+    assert.is_true(ok, "render must not error on missing blocklistId")
+    -- No set or drop for missing_id.
+    assert.is_nil(nft:find("bl_missing_id", 1, true))
+  end)
+
+  it("emits no bl_ sets or drop rules when snapshot.blocklists is empty", function()
+    local s = snap_one()  -- snap_one has blocklists = {}
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("set bl_", 1, true))
+    assert.is_nil(nft:find("@bl_", 1, true))
+  end)
+
+  -- ── DNAT HTTP/80 for blocklist hits (mirrors #351 extraBlocked pattern) ──
+
+  it("DNATs HTTP/80 from a MAC to the block page when daddr ∈ bl_<id>", function()
+    local nft = render.nft(snap_bl())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  it("emits the nat chain when only blocklist rules apply (no MAC-wide block, no extraBlocked)", function()
+    local nft = render.nft(snap_bl())
+    assert.truthy(nft:find("chain familydns_block_nat", 1, true))
+    assert.truthy(nft:find("type nat hook prerouting priority dstnat", 1, true))
+  end)
+
+  it("does NOT emit DNAT for adults MAC (adults have no blocklistIds)", function()
+    local nft = render.nft(snap_bl())
+    assert.is_nil(nft:find(
+      "ether saddr de:ad:be:ef:00:01 ip daddr @bl_test_ads tcp dport 80", 1, true))
+  end)
+
+  it("sanitizes id containing dots/dashes in set name", function()
+    local s = snap_bl()
+    s.blocklists["test.cat-1"] = { version = "v1", url = "http://api/api/blocklists/test.cat-1" }
+    s._blocklist_hosts["test.cat-1"] = { "badhost.com" }
+    s.profiles["3"].rules.blocklistIds = { "test_ads", "test.cat-1" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("set bl_test_cat_1", 1, true),
+      "dots and dashes in id must be sanitized to underscores")
+  end)
+
+end)

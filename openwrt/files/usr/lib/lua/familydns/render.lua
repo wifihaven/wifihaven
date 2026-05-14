@@ -66,6 +66,13 @@ local function sorted_devices(devices)
   end
 end
 
+local function sorted_keys(tbl)
+  local keys = {}
+  for k, _ in pairs(tbl or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+  return keys
+end
+
 local function sorted_profiles(profiles)
   local keys = {}
   for pid, _ in pairs(profiles or {}) do keys[#keys + 1] = pid end
@@ -97,11 +104,19 @@ local function effective_extra_blocked_hosts(snapshot)
   return hosts
 end
 
--- nft set name for an extraBlocked host. `eb_` prefix scopes against future
--- categorical blocklists (#352 will use `bl_`). Dots and dashes are replaced
--- with underscores by sanitize() to keep within the nftables name charset.
+-- nft set name for an extraBlocked host. `eb_` prefix scopes against
+-- categorical blocklists (#352 uses `bl_`).
 local function eb_set_name(host)
   return "eb_" .. sanitize(host)
+end
+
+-- nft set name for a blocklist id (#352). Replaces dots, colons, and
+-- hyphens with underscores (nftables set names allow only [a-zA-Z0-9_]).
+local function bl_sanitize(id)
+  return (id:gsub("[%.%:%-%s]", "_"))
+end
+local function bl_set_name(id)
+  return "bl_" .. bl_sanitize(id)
 end
 
 -- ---------------------------------------------------------------------------
@@ -135,6 +150,23 @@ function M.dnsmasq(snapshot)
     emit(string.format("ipset=/%s/%s", host, eb_set_name(host)))
   end
   emit("")
+
+  -- #352: category blocklists — populate bl_<id> ipsets at DNS resolve time.
+  -- snapshot._blocklist_hosts = { [id] = {host1, host2, ...} } is populated
+  -- by the agent before calling render (so tests can inject without filesystem).
+  local bl_hosts = snapshot._blocklist_hosts or {}
+  local bl_ids   = sorted_keys(snapshot.blocklists or {})
+  if #bl_ids > 0 then
+    emit("# blocklist ipsets → resolved at DNS time (#352)")
+    for _, id in ipairs(bl_ids) do
+      local hosts = bl_hosts[id] or {}
+      local set_name = bl_set_name(id)
+      for _, host in ipairs(hosts) do
+        emit(string.format("ipset=/%s/%s", host, set_name))
+      end
+    end
+    emit("")
+  end
 
   return table.concat(out, "\n")
 end
@@ -253,6 +285,34 @@ function M.nft(snapshot, opts)
     end
   end
 
+  -- #352: per-blocklist ipsets. Declared for every id in snapshot.blocklists
+  -- regardless of whether any device references the id, so the dnsmasq
+  -- ipset= callbacks have a set to populate. Dynamic + 1h timeout.
+  local bl_ids = sorted_keys(snapshot.blocklists or {})
+  for _, id in ipairs(bl_ids) do
+    ind(string.format("set %s {", bl_set_name(id)))
+    ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+  end
+
+  -- #352: per-(MAC, blocklistId) drop pairs. For each device, for each
+  -- blocklistId in its effective rules, if the id is in snapshot.blocklists,
+  -- emit a drop rule. Ids absent from snapshot.blocklists are silently skipped.
+  local bl_pairs = {}
+  for mac, dev in sorted_devices(snapshot.devices) do
+    local r = effective_rules(dev, snapshot.profiles)
+    if r and type(r.blocklistIds) == "table" then
+      for _, id in ipairs(r.blocklistIds) do
+        if (snapshot.blocklists or {})[id] then
+          bl_pairs[#bl_pairs + 1] = { mac = mac, id = id }
+        end
+      end
+    end
+  end
+
   ind("chain familydns_block {")
   ind2("type filter hook forward priority 0; policy accept;")
   if #blocked_macs_list > 0 then
@@ -262,15 +322,18 @@ function M.nft(snapshot, opts)
     ind2(string.format("ether saddr %s ip daddr @%s drop",
                        p.mac, eb_set_name(p.host)))
   end
+  for _, p in ipairs(bl_pairs) do
+    ind2(string.format("ether saddr %s ip daddr @%s drop",
+                       p.mac, bl_set_name(p.id)))
+  end
   ind("}")
   emit("")
 
-  -- Block-page DNAT chain (#303 + #351): redirect HTTP/80 to the local
-  -- uhttpd block page so users see *why* a connection failed. Two
-  -- triggers: MAC-wide block (whole device blocked — pause / time limit /
-  -- schedule), and per-(MAC, host) extraBlocked. We emit the chain if
-  -- either applies so the dnat rules have a hook to live in.
-  if #blocked_macs_list > 0 or #eb_pairs > 0 then
+  -- Block-page DNAT chain (#303 + #351 + #352): redirect HTTP/80 to the local
+  -- uhttpd block page so users see *why* a connection failed. Three
+  -- triggers: MAC-wide block, per-(MAC, host) extraBlocked, per-(MAC, blocklistId).
+  -- We emit the chain if any applies.
+  if #blocked_macs_list > 0 or #eb_pairs > 0 or #bl_pairs > 0 then
     ind("chain familydns_block_nat {")
     ind2("type nat hook prerouting priority dstnat; policy accept;")
     if #blocked_macs_list > 0 then
@@ -280,6 +343,11 @@ function M.nft(snapshot, opts)
       ind2(string.format(
         "ether saddr %s ip daddr @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
         p.mac, eb_set_name(p.host)))
+    end
+    for _, p in ipairs(bl_pairs) do
+      ind2(string.format(
+        "ether saddr %s ip daddr @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        p.mac, bl_set_name(p.id)))
     end
     ind("}")
     emit("")

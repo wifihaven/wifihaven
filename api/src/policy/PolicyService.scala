@@ -10,7 +10,7 @@ import java.time.{DayOfWeek, LocalDate, LocalTime, OffsetDateTime, ZoneOffset}
 
 trait PolicyService {
   def snapshot: Task[PolicySnapshot]
-  def renderRpz(category: String): Task[Option[(String, String)]]
+  def renderBlocklist(id: String): Task[Option[(String, String)]]
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
 }
 
@@ -57,6 +57,7 @@ class PolicyServiceLive(
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
       exts     <- extRepo.snapshotAllByProfile(today)
       cats     <- blocklistRepo.listCategories
+      catDomains <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
       schedMap = scheds.toMap
       tlMap    = tlims.toMap
       stlMap   = stlims.toMap
@@ -99,8 +100,12 @@ class PolicyServiceLive(
         d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = None)
       }.toMap
 
-      val pBlocklists: Map[String, PolicyBlocklist] = cats.map { c =>
-        c -> PolicyBlocklist(version = today.toString, url = s"/api/blocklists/$c.rpz")
+      val catDomainsMap                            = catDomains.toMap
+      val pBlocklists: Map[BlocklistId, Blocklist] = cats.map { c =>
+        val bid     = BlocklistId(c)
+        val domains = catDomainsMap.getOrElse(c, Seq.empty)
+        val version = PolicyService.blocklistContentVersion(domains)
+        bid -> Blocklist(version = version, url = s"/api/blocklists/$c")
       }.toMap
 
       val core = SnapshotCore(devicePolicies, profilePolicies, pBlocklists)
@@ -114,23 +119,19 @@ class PolicyServiceLive(
       )
     }
 
-  def renderRpz(category: String): Task[Option[(String, String)]] =
+  def renderBlocklist(id: String): Task[Option[(String, String)]] =
     for {
-      today   <- clock.today
-      domains <- blocklistRepo.loadCategory(category)
+      domains <- blocklistRepo.loadCategory(id)
     } yield
       if domains.isEmpty then None
       else {
-        val origin = s"$category.rpz."
-        val serial = today.toString.replace("-", "")
-        val sb     = new StringBuilder
-        sb.append(s"$$ORIGIN $origin\n")
-        sb.append("$TTL 300\n")
-        sb.append(s"@ SOA localhost. admin.localhost. $serial 3600 600 86400 60\n")
-        sb.append("@ NS localhost.\n")
-        domains.toList.sorted.foreach(d => sb.append(s"$d CNAME .\n"))
-        val body   = sb.toString
-        val etag   = s"\"${PolicyService.sha256Hex(body).take(16)}-$serial\""
+        val sorted  = domains.toList.sorted
+        val version = PolicyService.blocklistContentVersion(sorted)
+        val sb      = new StringBuilder
+        sb.append(s"# version: $version\n")
+        sorted.foreach(d => sb.append(s"$d\n"))
+        val body    = sb.toString
+        val etag    = s"\"${PolicyService.sha256Hex(body).take(16)}\""
         Some((etag, body))
       }
 
@@ -313,7 +314,7 @@ class PolicyServiceLive(
 private case class SnapshotCore(
     devices: Map[String, DevicePolicy],
     profiles: Map[Long, ProfilePolicy],
-    blocklists: Map[String, PolicyBlocklist],
+    blocklists: Map[BlocklistId, Blocklist],
 )
 
 object PolicyService {
@@ -323,6 +324,12 @@ object PolicyService {
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _))
+
+  /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
+  def blocklistContentVersion(domains: Iterable[String]): String = {
+    val body = domains.toList.sorted.mkString("\n")
+    sha256Hex(body).take(16)
+  }
 
   def sha256Hex(s: String): String = {
     val md = MessageDigest.getInstance("SHA-256")
@@ -341,7 +348,9 @@ object PolicyService {
     core.profiles.toList.sortBy(_._1).foreach { case (pid, pp) =>
       parts += s"p:$pid|${pp.name}|fm:${FailureMode.asString(pp.failureMode)}|${blockRulesSig(pp.rules)}"
     }
-    core.blocklists.toList.sortBy(_._1).foreach((k, v) => parts += s"bl:$k=${v.version}")
+    core.blocklists.toList
+      .sortBy(_._1.value)
+      .foreach((k, v) => parts += s"bl:${k.value}=${v.version}")
     "\"sha256:" + sha256Hex(parts.mkString("\n")) + "\""
   }
 
@@ -349,7 +358,7 @@ object PolicyService {
     val reason = r.blockReason.map(MacBlockReason.asString).getOrElse("-")
     val eb     = r.extraBlocked.sorted.mkString(",")
     val ea     = r.extraAllowed.sorted.mkString(",")
-    val bl     = r.blocklistIds.sorted.mkString(",")
+    val bl     = r.blocklistIds.sorted.map(_.value).mkString(",")
     s"b=${r.blocked}|r=$reason|eb=$eb|ea=$ea|bl=$bl|ip=${r.blockIpOnly}"
   }
 
@@ -388,7 +397,7 @@ object PolicyService {
       blockReason = reason,
       extraBlocked = (p.extraBlocked ++ siteLimitExtraBlocked).distinct,
       extraAllowed = p.extraAllowed,
-      blocklistIds = p.blockedCategories,
+      blocklistIds = p.blockedCategories.map(BlocklistId(_)),
       blockIpOnly = false, // #353: not yet a profile field; future surface
     )
   }

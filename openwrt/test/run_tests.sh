@@ -15,6 +15,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;./test/s
          test/usage_spec.lua \
          test/clock_spec.lua \
          test/failover_spec.lua \
+         test/blocklists_spec.lua \
          "$@"
 
 echo ""
