@@ -57,14 +57,22 @@ case class PolicySnapshot(
     etag: ETag,
     generatedAt: Instant,
     devices: Map[MacAddress, DevicePolicy],
-    profiles: Map[ProfileId, BlockRules],     // wire-dedup only; not consulted at enforcement
+    profiles: Map[ProfileId, ProfilePolicy],   // wire-dedup only; not consulted at enforcement
     blocklists: Map[BlocklistId, Blocklist],
-    failureMode: FailureMode,                  // what the router does if it can't reach the API
 )
 
 case class DevicePolicy(
     profileId: Option[ProfileId],
+    name: String,
     rules: Option[BlockRules],                 // if Some, replaces profile rules entirely
+)
+
+case class ProfilePolicy(
+    name: String,
+    rules: BlockRules,
+    failureMode: FailureMode,                  // per-profile: what the router does
+                                               //   for THIS profile's devices if it can't
+                                               //   reach the API for >5min
 )
 
 case class BlockRules(
@@ -116,9 +124,9 @@ object FailureMode:
 Resolution step (the only place profiles touch enforcement):
 
 ```scala
-def effective(d: DevicePolicy, profiles: Map[ProfileId, BlockRules]): BlockRules =
+def effective(d: DevicePolicy, profiles: Map[ProfileId, ProfilePolicy]): BlockRules =
   d.rules
-    .orElse(d.profileId.flatMap(profiles.get))
+    .orElse(d.profileId.flatMap(profiles.get).map(_.rules))
     .getOrElse(BlockRules.allowAll)
 ```
 
@@ -143,17 +151,16 @@ for usage attribution (§7.2). It is **never** the enforcement plane.
 > not the canonical design):
 >
 > - `extraBlocked` is enforced via `address=/host/#` in `render.lua` and is
->   global rather than per-MAC. Should migrate to per-MAC nft ipset drop.
+>   global rather than per-MAC. Should migrate to per-MAC nft ipset drop
+>   (#351).
 > - `blocklistIds` / category blocking is not applied on the router at all.
 >   `render.lua` and `familydns-agent` do not fetch RPZ files or render
 >   category rules. `PolicyService.decide` uses categories only on the
->   fallback `POST /api/router/decision` endpoint.
-> - `blockIpOnly` does not exist yet.
-> - The current `PolicySnapshot` (§6.2) still carries per-profile
->   `schedules`, `dailyMinutes`, `timeUsedToday`, `extensionsTodayMinutes`,
->   `siteLimits`, `failureMode`, and `blockedCategories`. Per the model
->   above, those should collapse server-side into `blocked` / `extraBlocked`
->   / `blocklistIds`.
+>   fallback `POST /api/router/decision` endpoint (#352).
+> - `blockIpOnly` is carried in the snapshot but not yet enforced (#353).
+> - `failureMode` lives on each `ProfilePolicy` rather than at the snapshot
+>   top level — the DB column is per-profile and we keep it that way until
+>   there's a reason to consolidate.
 
 ## 1. Why this exists
 
@@ -354,20 +361,21 @@ The enrollment token is single-use; the API marks it consumed on success.
 Polled every ~60 s. Returns the full enforcement snapshot, or `304 Not
 Modified` if the client's ETag still matches.
 
-**Target response 200** (matches §0.2):
+**Response 200** (matches §0.2, as of #354):
 
 ```json
 {
   "etag": "sha256:abc123...",
   "generatedAt": "2026-05-02T14:00:00Z",
-  "failureMode": "LastKnownGood",
   "devices": {
     "aa:bb:cc:11:22:33": {
-      "profileId": "kids",
+      "profileId": 3,
+      "name": "kid-ipad",
       "rules": null
     },
     "aa:bb:cc:44:55:66": {
-      "profileId": "kids",
+      "profileId": 3,
+      "name": "kid-phone",
       "rules": {
         "blocked": true,
         "blockReason": "TimeLimit",
@@ -379,18 +387,22 @@ Modified` if the client's ETag still matches.
     }
   },
   "profiles": {
-    "kids": {
-      "blocked": false,
-      "blockReason": null,
-      "extraBlocked": ["tiktok.com"],
-      "extraAllowed": ["khanacademy.org"],
-      "blocklistIds": ["ads", "adult"],
-      "blockIpOnly": true
+    "3": {
+      "name": "kids",
+      "rules": {
+        "blocked": false,
+        "blockReason": null,
+        "extraBlocked": ["tiktok.com"],
+        "extraAllowed": ["khanacademy.org"],
+        "blocklistIds": ["ads", "adult"],
+        "blockIpOnly": true
+      },
+      "failureMode": "closed"
     }
   },
   "blocklists": {
-    "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads.json" },
-    "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult.json" }
+    "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads.rpz" },
+    "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult.rpz" }
   }
 }
 ```
@@ -411,15 +423,17 @@ Notes:
   happened server-side in `PolicyService` and is reflected in
   `blocked` / `blockReason` / `extraBlocked` / `blocklistIds`.
 
-> **Current implementation deviates from this shape.** The live snapshot
-> still ships `defaultProfileId` at the top level; per-profile `paused`,
-> `blockedCategories`, `schedules`, `dailyMinutes`, `siteLimits`,
-> `timeUsedToday`, `extensionsTodayMinutes`, `failureMode`; a separate
-> top-level `blockedMacs` list; and uses `List` for `devices` / `profiles`
-> rather than `Map`. Migration to the target shape above is tracked
-> alongside #350 — see the follow-up issue list there. New code should
-> read against the target shape and tolerate the legacy fields during
-> migration.
+> **Implementation status (post-#354).** The snapshot wire format now
+> matches the target shape above. Server-side evaluation of pause /
+> schedule / time-limit collapses into per-profile `BlockRules.blocked`;
+> the agent never sees raw schedules or daily-minute counters. Three
+> consumer fixes are still in flight to fully realise §0.2 enforcement:
+> #351 (per-MAC nft drop for `extraBlocked` replacing the legacy
+> `address=/host/#` NXDOMAIN), #352 (per-blocklist ipset drop for
+> `blocklistIds`), and #353 (`blockIpOnly` enforcement). Until they land
+> the agent still uses dnsmasq NXDOMAIN for `extraBlocked` and ignores
+> `blocklistIds` / `blockIpOnly` — but the snapshot ships them, so each
+> consumer fix can light up cleanly.
 
 ### 6.3 `GET /api/blocklists/<category>.rpz`
 

@@ -13,13 +13,26 @@ import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 import java.util.UUID
 
 /**
- * #305: the API precomputes which MACs should be currently blocked (pause / daily time limit /
- * active schedule window) so the OpenWRT agent can enforce dumbly. These tests pin the contract the
- * agent depends on: [[PolicySnapshot.blockedMacs]] contains the right MACs with the right reason,
- * with precedence pause > time_limit > schedule.
+ * #305 (re-shaped by #354): the API precomputes which MACs should be currently blocked (pause /
+ * daily time limit / active schedule window) so the OpenWRT agent can enforce dumbly. Post-#354 the
+ * blocked state lives on each device's effective BlockRules (resolved from the profile or a
+ * per-device override). These tests pin the agent-visible contract: the right MACs come out blocked
+ * with the right reason, with precedence Paused > TimeLimit > Schedule.
  */
 object PolicySnapshotBlockedMacsSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
+
+  /**
+   * Test helper: collect (mac, reasonString) pairs for every device whose effective
+   * BlockRules.blocked == true. Sorted by mac for stable assertion.
+   */
+  private def blockedMacs(snap: PolicySnapshot): List[(String, String)] =
+    snap.devices.toList.sortBy(_._1).flatMap { case (mac, dev) =>
+      val rules = dev.rules.orElse(dev.profileId.flatMap(snap.profiles.get).map(_.rules))
+      rules.filter(_.blocked).map { r =>
+        mac -> r.blockReason.map(MacBlockReason.asString).getOrElse("")
+      }
+    }
 
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
@@ -63,8 +76,8 @@ object PolicySnapshotBlockedMacsSpec
       tr.insertBatch(inserts).unit
     }
 
-  def spec = suite("policy snapshot — blockedMacs (#305)")(
-    test("schoolDayAfternoon with no pause/time/schedule → blockedMacs is empty") {
+  def spec = suite("policy snapshot — blocked MACs (#305 / #354)")(
+    test("schoolDayAfternoon with no pause/time/schedule → no devices blocked") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -74,9 +87,9 @@ object PolicySnapshotBlockedMacsSpec
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.schoolDayAfternoon)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs.isEmpty)
+      } yield assertTrue(blockedMacs(snap).isEmpty)
     },
-    test("paused profile → blockedMacs lists its devices with reason=paused") {
+    test("paused profile → both its devices blocked with reason=Paused") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -88,13 +101,14 @@ object PolicySnapshotBlockedMacsSpec
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:44", "kid-phone", kid)
         ps   <- makePsAt(TestClock.schoolDayAfternoon)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs.size == 2) &&
-        assertTrue(snap.blockedMacs.forall(_.reason == "paused")) &&
-        assertTrue(
-          snap.blockedMacs.map(_.mac).toSet == Set("aa:bb:cc:11:22:33", "aa:bb:cc:11:22:44"),
-        )
+      } yield assertTrue(
+        blockedMacs(snap) == List(
+          "aa:bb:cc:11:22:33" -> "Paused",
+          "aa:bb:cc:11:22:44" -> "Paused",
+        ),
+      )
     },
-    test("active schedule window (bedtime 21:30) → reason=schedule") {
+    test("active schedule window (bedtime 21:30) → reason=Schedule") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -104,9 +118,9 @@ object PolicySnapshotBlockedMacsSpec
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs == List(BlockedMac("aa:bb:cc:11:22:33", "schedule")))
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "Schedule"))
     },
-    test("overnight schedule, early-morning tail (06:00) → reason=schedule (yesterday's window)") {
+    test("overnight schedule, early-morning tail (06:00) → reason=Schedule (yesterday's window)") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -116,9 +130,9 @@ object PolicySnapshotBlockedMacsSpec
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.earlyMorning)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs == List(BlockedMac("aa:bb:cc:11:22:33", "schedule")))
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "Schedule"))
     },
-    test("daily time limit exhausted → reason=time_limit") {
+    test("daily time limit exhausted → reason=TimeLimit") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -132,9 +146,9 @@ object PolicySnapshotBlockedMacsSpec
         _    <- seedTraffic(rid, "aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 125)
         ps   <- makePsAt(TestClock.schoolDayAfternoon)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs == List(BlockedMac("aa:bb:cc:11:22:33", "time_limit")))
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "TimeLimit"))
     },
-    test("paused beats schedule: both true → reason=paused") {
+    test("paused beats schedule: both true → reason=Paused") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -145,9 +159,9 @@ object PolicySnapshotBlockedMacsSpec
         _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs == List(BlockedMac("aa:bb:cc:11:22:33", "paused")))
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "Paused"))
     },
-    test("time_limit beats schedule: both true → reason=time_limit") {
+    test("schedule beats time_limit: both true → reason=Schedule (#354 precedence)") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -161,7 +175,7 @@ object PolicySnapshotBlockedMacsSpec
         _    <- seedTraffic(rid, "aa:bb:cc:11:22:33", "cnn.com", LocalDate.of(2025, 1, 6), 125)
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs == List(BlockedMac("aa:bb:cc:11:22:33", "time_limit")))
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "Schedule"))
     },
     test("unassigned device (profileId=null) is never blocked") {
       for {
@@ -179,7 +193,7 @@ object PolicySnapshotBlockedMacsSpec
         )
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
-      } yield assertTrue(snap.blockedMacs.isEmpty)
+      } yield assertTrue(blockedMacs(snap) == Nil)
     },
     test("etag flips when wall clock crosses a schedule edge, even with no DB change") {
       for {
@@ -189,12 +203,12 @@ object PolicySnapshotBlockedMacsSpec
         dr       <- ZIO.service[DeviceRepo]
         kid      <- TestLayers.seedKidsProfile(pr, sr)
         _        <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        psBefore <- makePsAt(TestClock.schoolDayAfternoon) // 14:00 — not blocked
-        psAfter  <- makePsAt(TestClock.bedtime)            // 21:30 — schedule active
+        psBefore <- makePsAt(TestClock.schoolDayAfternoon)
+        psAfter  <- makePsAt(TestClock.bedtime)
         before   <- psBefore.snapshot
         after    <- psAfter.snapshot
-      } yield assertTrue(before.blockedMacs.isEmpty) &&
-        assertTrue(after.blockedMacs.nonEmpty) &&
+      } yield assertTrue(blockedMacs(before).isEmpty) &&
+        assertTrue(blockedMacs(after).nonEmpty) &&
         assertTrue(before.etag != after.etag)
     },
   ) @@ TestAspect.sequential

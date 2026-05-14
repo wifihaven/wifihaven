@@ -47,8 +47,8 @@ object PolicySnapshotFailureModeSpec
         _ <- pr.update(profiles0.find(_.name == "Kids").get.copy(failureMode = FailureMode.Closed))
         _ <- pr.update(profiles0.find(_.name == "Adults").get.copy(failureMode = FailureMode.Open))
         snap <- svc.snapshot
-        kids   = snap.profiles.find(_.id == kidsId).get
-        adults = snap.profiles.find(_.id == adultsId).get
+        kids   = snap.profiles(kidsId)
+        adults = snap.profiles(adultsId)
       } yield assertTrue(kids.failureMode == FailureMode.Closed) &&
         assertTrue(adults.failureMode == FailureMode.Open)
     },

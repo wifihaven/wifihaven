@@ -2,7 +2,7 @@ package familydns.api.policy
 
 import familydns.api.db.*
 import familydns.api.presence.Presence
-import familydns.shared.*
+import familydns.shared.{Schedule as DbSchedule, *}
 import zio.{Clock as _, *}
 
 import java.security.MessageDigest
@@ -13,6 +13,25 @@ trait PolicyService {
   def renderRpz(category: String): Task[Option[(String, String)]]
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
 }
+
+/**
+ * Inputs needed to evaluate a single profile's effective BlockRules. Pulled from the per-profile
+ * repos by `snapshot` and fed into the pure `computeBlockRules` function below.
+ */
+private[policy] case class ProfileInputs(
+    profile: Profile,
+    schedules: List[DbSchedule],
+    dailyMinutes: Option[Int],
+    siteLimits: List[SiteTimeLimit],
+    /**
+     * total active minutes today summed across all devices in the profile, excluding minutes spent
+     * on exempt site-limited domains.
+     */
+    totalMinutesUsed: Int,
+    /** active minutes per site-limit domain, summed across all devices in the profile. */
+    minutesByDomain: Map[String, Int],
+    extensionsMinutes: Int,
+)
 
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
@@ -35,9 +54,6 @@ class PolicyServiceLive(
       scheds   <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
       tlims    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlims   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      // Presence rows are bucket-deduped downstream so a device active on
-      // multiple hostnames in the same 5-min window only counts once toward
-      // total screen time (see Presence). Per-site sub-caps stay independent.
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
       exts     <- extRepo.snapshotAllByProfile(today)
       cats     <- blocklistRepo.listCategories
@@ -47,64 +63,53 @@ class PolicyServiceLive(
     } yield {
       val devsByProfile =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-      val pProfiles     = profiles.map { p =>
-        val pSched     = schedMap
-          .getOrElse(p.id, Nil)
-          .map(s => PolicySchedule(s.days, s.blockFrom, s.blockUntil))
-        val pSiteLims  = stlMap
-          .getOrElse(p.id, Nil)
-          .map(s => PolicySiteLimit(s.domainPattern, s.dailyMinutes, s.label, s.exemptFromDaily))
+
+      val profilePolicies: Map[Long, ProfilePolicy] = profiles.iterator.map { p =>
+        val pSched     = schedMap.getOrElse(p.id, Nil)
+        val pSiteLims  = stlMap.getOrElse(p.id, Nil)
         val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
         val deviceMacs = devicesIn.map(_.mac).toSet
         val pPresence  = presence.filter(r => deviceMacs.contains(r.mac))
-        val patterns   = stlMap.getOrElse(p.id, Nil).map(_.domainPattern)
+        val patterns   = pSiteLims.map(_.domainPattern)
         val perPat     = Presence.patternMinutesByMac(pPresence, patterns)
         val byDomain   = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
           val mins = devicesIn.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
           if mins == 0 then acc else acc.updated(pat, mins)
         }
-        // Only exempt site domains are excluded from the daily total.
-        // Included sites (exemptFromDaily=false) count against the daily cap.
-        val exemptPats =
-          stlMap.getOrElse(p.id, Nil).filter(_.exemptFromDaily).map(_.domainPattern)
+        val exemptPats = pSiteLims.filter(_.exemptFromDaily).map(_.domainPattern)
         val perMacTot  = Presence.totalMinutesByMac(pPresence, exemptPats)
         val totalMins  = devicesIn.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
         val extMins    = exts.getOrElse(p.id, 0)
-        PolicyProfile(
-          id = p.id,
-          name = p.name,
-          paused = p.paused,
-          blockedCategories = p.blockedCategories,
-          extraBlocked = p.extraBlocked,
-          extraAllowed = p.extraAllowed,
+
+        val inputs = ProfileInputs(
+          profile = p,
           schedules = pSched,
           dailyMinutes = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
           siteLimits = pSiteLims,
-          timeUsedToday = PolicyTimeUsedToday(totalMins, byDomain),
-          extensionsTodayMinutes = extMins,
-          failureMode = p.failureMode,
+          totalMinutesUsed = totalMins,
+          minutesByDomain = byDomain,
+          extensionsMinutes = extMins,
         )
-      }
-      val pDevices      = devices.map(d => PolicyDevice(d.mac, d.profileId, d.name))
-      val pBlocklists   = cats.map { c =>
+        val rules  = PolicyService.computeBlockRules(inputs, now.toLocalTime, today)
+
+        p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
+      }.toMap
+
+      val devicePolicies: Map[String, DevicePolicy] = devices.iterator.map { d =>
+        d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = None)
+      }.toMap
+
+      val pBlocklists: Map[String, PolicyBlocklist] = cats.map { c =>
         c -> PolicyBlocklist(version = today.toString, url = s"/api/blocklists/$c.rpz")
       }.toMap
-      val defaultId     = profiles.map(_.id).minOption
-      // #305: precompute the set of MACs that should be blocked right now from
-      // pause / daily time limit / active schedule window. The OpenWRT agent
-      // used to derive this itself but never implemented schedule windows;
-      // doing it server-side keeps the router-side enforcement dumb.
-      val blockedMacs   =
-        PolicyService.computeBlockedMacs(pProfiles, pDevices, now.toLocalTime, today)
-      val core          = SnapshotCore(defaultId, pDevices, pProfiles, blockedMacs, pBlocklists)
-      val etag          = PolicyService.computeEtag(core)
+
+      val core = SnapshotCore(devicePolicies, profilePolicies, pBlocklists)
+      val etag = PolicyService.computeEtag(core)
       PolicySnapshot(
         etag = etag,
         generatedAt = now.toString,
-        defaultProfileId = defaultId,
-        devices = pDevices,
-        profiles = pProfiles,
-        blockedMacs = blockedMacs,
+        devices = devicePolicies,
+        profiles = profilePolicies,
         blocklists = pBlocklists,
       )
     }
@@ -129,95 +134,130 @@ class PolicyServiceLive(
         Some((etag, body))
       }
 
+  /**
+   * Per-host fallback decision. Reads DB rows directly rather than going through the snapshot,
+   * since the snapshot's collapsed BlockRules no longer carries the raw schedule / site-limit /
+   * category state needed to make a per-host decision. Precedence: paused > schedule > extraAllowed
+   * > extraBlocked > site_time_limit > time_limit > category > allow.
+   */
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
     for {
-      snap  <- snapshot
-      now   <- clock.now
-      today <- clock.today
-      device  = snap.devices.find(_.mac.equalsIgnoreCase(mac))
-      profile = device.flatMap(d => d.profileId.flatMap(pid => snap.profiles.find(_.id == pid)))
-      result <- profile match {
-        case None    => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
-        case Some(p) =>
-          val h = hostname.toLowerCase.stripSuffix(".")
-          if p.paused then ZIO.succeed(RouterDecisionResponse("block", "paused", None))
-          else
-            scheduleBlock(p.schedules, now.toLocalTime, today).flatMap {
-              case Some(r) => ZIO.succeed(r)
-              case None    =>
-                if matchesAny(h, p.extraAllowed) then
-                  ZIO.succeed(RouterDecisionResponse("allow", "extra_allowed", None))
-                else if matchesAny(h, p.extraBlocked) then
-                  ZIO.succeed(RouterDecisionResponse("block", "extra_blocked", None))
+      today  <- clock.today
+      now    <- clock.now
+      device <- deviceRepo.listAll.map(_.find(_.mac.equalsIgnoreCase(mac)))
+      result <- device.flatMap(_.profileId) match {
+        case None      => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
+        case Some(pid) =>
+          for {
+            pOpt   <- profileRepo.findById(pid)
+            scheds <- scheduleRepo.listForProfile(pid)
+            tl     <- timeLimitRepo.findForProfile(pid)
+            stlims <- siteTimeLimitRepo.listForProfile(pid)
+            // Reuse the same per-profile usage calc used by snapshot, scoped to this profile.
+            devs   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(pid)))
+            macs = devs.map(_.mac).toSet
+            pres <- trafficRepo.listPresenceRows(devs.map(_.mac), today)
+            exts <- extRepo.snapshotAllByProfile(today).map(_.getOrElse(pid, 0))
+            res  <- pOpt match {
+              case None    => ZIO.succeed(RouterDecisionResponse("allow", "no_profile", None))
+              case Some(p) =>
+                val h = hostname.toLowerCase.stripSuffix(".")
+                if p.paused then ZIO.succeed(RouterDecisionResponse("block", "paused", None))
                 else
-                  timeLimitBlock(p, h, today) match {
+                  scheduleBlock(scheds, now.toLocalTime, today) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
-                      categoryBlock(p.blockedCategories, h).map {
-                        case Some(cat) => RouterDecisionResponse("block", s"category:$cat", None)
-                        case None      => RouterDecisionResponse("allow", "allowed", None)
+                      if matchesAny(h, p.extraAllowed) then
+                        ZIO.succeed(RouterDecisionResponse("allow", "extra_allowed", None))
+                      else if matchesAny(h, p.extraBlocked) then
+                        ZIO.succeed(RouterDecisionResponse("block", "extra_blocked", None))
+                      else {
+                        val pPres      = pres.filter(r => macs.contains(r.mac))
+                        val patterns   = stlims.map(_.domainPattern)
+                        val perPat     = Presence.patternMinutesByMac(pPres, patterns)
+                        val byDomain   = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
+                          val mins = devs.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
+                          if mins == 0 then acc else acc.updated(pat, mins)
+                        }
+                        val exemptPats =
+                          stlims.filter(_.exemptFromDaily).map(_.domainPattern)
+                        val perMacTot  = Presence.totalMinutesByMac(pPres, exemptPats)
+                        val totalMins  = devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
+                        timeLimitBlockFromDb(
+                          h,
+                          today,
+                          tl.map(_.dailyMinutes),
+                          stlims,
+                          byDomain,
+                          totalMins,
+                          exts,
+                        ) match {
+                          case Some(r) => ZIO.succeed(r)
+                          case None    =>
+                            categoryBlock(p.blockedCategories, h).map {
+                              case Some(cat) =>
+                                RouterDecisionResponse("block", s"category:$cat", None)
+                              case None      =>
+                                RouterDecisionResponse("allow", "allowed", None)
+                            }
+                        }
                       }
                   }
             }
+          } yield res
       }
     } yield result
 
   private def scheduleBlock(
-      schedules: List[PolicySchedule],
+      schedules: List[DbSchedule],
       nowTime: LocalTime,
       today: LocalDate,
-  ): Task[Option[RouterDecisionResponse]] = {
+  ): Option[RouterDecisionResponse] = {
     val todayName = dayName(today)
     val prevName  = dayName(today.minusDays(1))
     val active    = schedules.find { s =>
       val from  = parseTime(s.blockFrom)
       val until = parseTime(s.blockUntil)
       if from.isAfter(until) then
-        // Overnight: active if today is in days AND (now >= from OR now < until)
         (s.days.contains(todayName) && !nowTime.isBefore(from)) ||
         (s.days.contains(prevName) && nowTime.isBefore(until))
       else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
     }
-    ZIO.succeed(active.map { s =>
+    active.map { s =>
       val from        = parseTime(s.blockFrom)
       val until       = parseTime(s.blockUntil)
       val isOvernight = from.isAfter(until)
       val expiresAt   =
-        if isOvernight && !nowTime.isBefore(from) then
-          // Started today, ends tomorrow
-          utcString(today.plusDays(1), until)
-        else
-          // Ends today (same-day schedule, or overnight tail)
-          utcString(today, until)
+        if isOvernight && !nowTime.isBefore(from) then utcString(today.plusDays(1), until)
+        else utcString(today, until)
       RouterDecisionResponse("block", "schedule", Some(expiresAt))
-    })
+    }
   }
 
-  private def timeLimitBlock(
-      p: PolicyProfile,
+  private def timeLimitBlockFromDb(
       hostname: String,
       today: LocalDate,
+      dailyMinutes: Option[Int],
+      siteLimits: List[SiteTimeLimit],
+      minutesByDomain: Map[String, Int],
+      totalMinutesUsed: Int,
+      extensionsMinutes: Int,
   ): Option[RouterDecisionResponse] = {
     val midnight     = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
-    // Check per-site sub-cap first (applies to both exempt and included sites)
-    val siteLimitHit = p.siteLimits.find { sl =>
-      matchesDomainPattern(hostname, sl.domain) &&
-      p.timeUsedToday.byDomain.getOrElse(sl.domain, 0) >= sl.minutes
+    val siteLimitHit = siteLimits.find { sl =>
+      matchesDomainPattern(hostname, sl.domainPattern) &&
+      minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes
     }
     siteLimitHit
       .map(sl => RouterDecisionResponse("block", s"site_time_limit:${sl.label}", Some(midnight)))
       .orElse {
-        // Daily total cap: skip entirely if this hostname belongs to an exempt site limit.
-        // Included sites (exemptFromDaily=false) already appear in totalMinutes via the
-        // snapshot calculation, so the check below naturally applies to them.
-        val isExemptSite =
-          p.siteLimits.exists(sl => sl.exemptFromDaily && matchesDomainPattern(hostname, sl.domain))
+        val isExemptSite = siteLimits.exists { sl =>
+          sl.exemptFromDaily && matchesDomainPattern(hostname, sl.domainPattern)
+        }
         if isExemptSite then None
         else
-          p.dailyMinutes.flatMap { limit =>
-            val used = p.timeUsedToday.totalMinutes
-            val ext  = p.extensionsTodayMinutes
-            Option.when(used >= limit + ext)(
+          dailyMinutes.flatMap { limit =>
+            Option.when(totalMinutesUsed >= limit + extensionsMinutes)(
               RouterDecisionResponse("block", "time_limit", Some(midnight)),
             )
           }
@@ -271,10 +311,8 @@ class PolicyServiceLive(
 }
 
 private case class SnapshotCore(
-    defaultProfileId: Option[Long],
-    devices: List[PolicyDevice],
-    profiles: List[PolicyProfile],
-    blockedMacs: List[BlockedMac],
+    devices: Map[String, DevicePolicy],
+    profiles: Map[Long, ProfilePolicy],
     blocklists: Map[String, PolicyBlocklist],
 )
 
@@ -291,97 +329,99 @@ object PolicyService {
     md.digest(s.getBytes("UTF-8")).map("%02x".format(_)).mkString
   }
 
-  /** Hex SHA-256 of a router/enrollment token, used as the storage key. */
   def hashToken(raw: String): String = sha256Hex(raw)
 
   /** Deterministic ETag over snapshot logical content. */
   private[policy] def computeEtag(core: SnapshotCore): String = {
     val parts = scala.collection.mutable.ArrayBuffer.empty[String]
-    parts += s"d=${core.defaultProfileId.getOrElse("-")}"
-    core.devices
-      .sortBy(_.mac)
-      .foreach(d => parts += s"dev:${d.mac}|${d.profileId.getOrElse("-")}|${d.name}")
-    core.profiles.sortBy(_.id).foreach { p =>
-      parts += s"p:${p.id}|${p.name}|${p.paused}|${p.dailyMinutes
-          .getOrElse(-1)}|${p.extensionsTodayMinutes}|fm:${FailureMode.asString(p.failureMode)}"
-      parts += s"  bc:${p.blockedCategories.sorted.mkString(",")}"
-      parts += s"  eb:${p.extraBlocked.sorted.mkString(",")}"
-      parts += s"  ea:${p.extraAllowed.sorted.mkString(",")}"
-      p.schedules.sortBy(s => (s.blockFrom, s.blockUntil)).foreach { s =>
-        parts += s"  s:${s.days.mkString(",")}|${s.blockFrom}|${s.blockUntil}"
-      }
-      p.siteLimits.sortBy(_.domain).foreach { sl =>
-        parts += s"  sl:${sl.domain}|${sl.minutes}|${sl.label}|${sl.exemptFromDaily}"
-      }
-      parts += s"  u:${p.timeUsedToday.totalMinutes}"
-      p.timeUsedToday.byDomain.toList.sortBy(_._1).foreach((k, v) => parts += s"    ud:$k=$v")
+    core.devices.toList.sortBy(_._1).foreach { case (mac, d) =>
+      val ruleSig = d.rules.fold("-")(blockRulesSig)
+      parts += s"dev:$mac|${d.profileId.getOrElse("-")}|${d.name}|$ruleSig"
     }
-    // #305: blockedMacs participates in the etag so an unchanged-row policy
-    // still flips the etag when the wall clock crosses a schedule window edge.
-    core.blockedMacs.sortBy(_.mac).foreach(b => parts += s"bm:${b.mac}|${b.reason}")
+    core.profiles.toList.sortBy(_._1).foreach { case (pid, pp) =>
+      parts += s"p:$pid|${pp.name}|fm:${FailureMode.asString(pp.failureMode)}|${blockRulesSig(pp.rules)}"
+    }
     core.blocklists.toList.sortBy(_._1).foreach((k, v) => parts += s"bl:$k=${v.version}")
     "\"sha256:" + sha256Hex(parts.mkString("\n")) + "\""
   }
 
+  private def blockRulesSig(r: BlockRules): String = {
+    val reason = r.blockReason.map(MacBlockReason.asString).getOrElse("-")
+    val eb     = r.extraBlocked.sorted.mkString(",")
+    val ea     = r.extraAllowed.sorted.mkString(",")
+    val bl     = r.blocklistIds.sorted.mkString(",")
+    s"b=${r.blocked}|r=$reason|eb=$eb|ea=$ea|bl=$bl|ip=${r.blockIpOnly}"
+  }
+
   /**
-   * #305: compute the currently-blocked MACs from pause / daily time limit / active schedule
-   * window. Precedence is pause > time_limit > schedule — matches the legacy /api/router/decision
-   * ordering in [[PolicyServiceLive.decide]].
+   * #354: pure function that collapses a profile's raw inputs into the effective BlockRules served
+   * in the snapshot. Precedence for `blockReason` when multiple block conditions hold: Paused >
+   * Schedule > TimeLimit.
    */
-  private[policy] def computeBlockedMacs(
-      profiles: List[PolicyProfile],
-      devices: List[PolicyDevice],
-      nowTime: java.time.LocalTime,
-      today: java.time.LocalDate,
-  ): List[BlockedMac] = {
-    val todayName                                  = today.getDayOfWeek match {
-      case java.time.DayOfWeek.MONDAY    => "mon"
-      case java.time.DayOfWeek.TUESDAY   => "tue"
-      case java.time.DayOfWeek.WEDNESDAY => "wed"
-      case java.time.DayOfWeek.THURSDAY  => "thu"
-      case java.time.DayOfWeek.FRIDAY    => "fri"
-      case java.time.DayOfWeek.SATURDAY  => "sat"
-      case java.time.DayOfWeek.SUNDAY    => "sun"
+  private[policy] def computeBlockRules(
+      in: ProfileInputs,
+      nowTime: LocalTime,
+      today: LocalDate,
+  ): BlockRules = {
+    val p = in.profile
+
+    // Per-site limits exhausted today → host appears in extraBlocked too.
+    val siteLimitExtraBlocked: List[String] = in.siteLimits.collect {
+      case sl if in.minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes =>
+        sl.domainPattern
     }
-    val prevName                                   = today.minusDays(1).getDayOfWeek match {
-      case java.time.DayOfWeek.MONDAY    => "mon"
-      case java.time.DayOfWeek.TUESDAY   => "tue"
-      case java.time.DayOfWeek.WEDNESDAY => "wed"
-      case java.time.DayOfWeek.THURSDAY  => "thu"
-      case java.time.DayOfWeek.FRIDAY    => "fri"
-      case java.time.DayOfWeek.SATURDAY  => "sat"
-      case java.time.DayOfWeek.SUNDAY    => "sun"
-    }
-    def parseTime(s: String): java.time.LocalTime  = {
-      val Array(h, m) = s.split(':')
-      java.time.LocalTime.of(h.toInt, m.toInt)
-    }
-    def scheduleActive(s: PolicySchedule): Boolean = {
-      val from  = parseTime(s.blockFrom)
-      val until = parseTime(s.blockUntil)
+
+    val (blocked, reason) =
+      if p.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
+      else if scheduleActiveNow(in.schedules, nowTime, today) then
+        (true, Some(MacBlockReason.Schedule: MacBlockReason))
+      else
+        in.dailyMinutes match {
+          case Some(limit) if in.totalMinutesUsed >= limit + in.extensionsMinutes =>
+            (true, Some(MacBlockReason.TimeLimit: MacBlockReason))
+          case _                                                                  =>
+            (false, None)
+        }
+
+    BlockRules(
+      blocked = blocked,
+      blockReason = reason,
+      extraBlocked = (p.extraBlocked ++ siteLimitExtraBlocked).distinct,
+      extraAllowed = p.extraAllowed,
+      blocklistIds = p.blockedCategories,
+      blockIpOnly = false, // #353: not yet a profile field; future surface
+    )
+  }
+
+  private def scheduleActiveNow(
+      schedules: List[DbSchedule],
+      nowTime: LocalTime,
+      today: LocalDate,
+  ): Boolean = {
+    val todayName = dowShort(today.getDayOfWeek)
+    val prevName  = dowShort(today.minusDays(1).getDayOfWeek)
+    schedules.exists { s =>
+      val from  = parseHm(s.blockFrom)
+      val until = parseHm(s.blockUntil)
       if from.isAfter(until) then
         (s.days.contains(todayName) && !nowTime.isBefore(from)) ||
         (s.days.contains(prevName) && nowTime.isBefore(until))
       else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
     }
-    val byProfile                                  = profiles.iterator.map { p =>
-      val reason =
-        if p.paused then Some("paused")
-        else
-          p.dailyMinutes match {
-            case Some(limit) if p.timeUsedToday.totalMinutes >= limit + p.extensionsTodayMinutes =>
-              Some("time_limit")
-            case _                                                                               =>
-              if p.schedules.exists(scheduleActive) then Some("schedule") else None
-          }
-      p.id -> reason
-    }.toMap
+  }
 
-    devices.flatMap { d =>
-      for {
-        pid    <- d.profileId
-        reason <- byProfile.getOrElse(pid, None)
-      } yield BlockedMac(d.mac, reason)
-    }
+  private def parseHm(s: String): LocalTime = {
+    val Array(h, m) = s.split(':')
+    LocalTime.of(h.toInt, m.toInt)
+  }
+
+  private def dowShort(d: DayOfWeek): String = d match {
+    case DayOfWeek.MONDAY    => "mon"
+    case DayOfWeek.TUESDAY   => "tue"
+    case DayOfWeek.WEDNESDAY => "wed"
+    case DayOfWeek.THURSDAY  => "thu"
+    case DayOfWeek.FRIDAY    => "fri"
+    case DayOfWeek.SATURDAY  => "sat"
+    case DayOfWeek.SUNDAY    => "sun"
   }
 }
