@@ -70,7 +70,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           routerId,
           MacAddress.unsafe(mac),
           None,
-          Hostname.unsafe(hostname),
+          HostId.Fqdn(Hostname.unsafe(hostname)),
           date,
           start,
           end,

@@ -67,8 +67,8 @@ object DebugRoutes {
                 .mapError(ErrorMapper.dbErrorToResponse)
             } yield Response.json(
               snap
-                .map { case ((mac, domain), mins) =>
-                  TimeUsageRow(mac.value, domain, today.toString, mins)
+                .map { case ((mac, host), mins) =>
+                  TimeUsageRow(mac.value, host.value, today.toString, mins)
                 }
                 .toList
                 .toJson,
@@ -77,7 +77,7 @@ object DebugRoutes {
         },
       )
 
-  private case class TimeUsageRow(mac: String, domain: String, date: String, minutesUsed: Int)
+  private case class TimeUsageRow(mac: String, host: String, date: String, minutesUsed: Int)
       derives JsonCodec
 
   /**

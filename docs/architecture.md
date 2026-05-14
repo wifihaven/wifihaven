@@ -446,8 +446,8 @@ refetches when the version changes.
 
 ### 6.4 `POST /api/router/usage`
 
-Sent every 5 minutes. Idempotent on `(routerId, periodStart, mac, hostname)`
-so retries are safe.
+Sent every 5 minutes. Idempotent on
+`(routerId, periodStart, mac, host.type, host.value)` so retries are safe.
 
 **Request**
 
@@ -460,18 +460,32 @@ so retries are safe.
     {
       "mac": "aa:bb:cc:11:22:33",
       "ip":  "192.168.1.42",
-      "hostname": "youtube.com",
+      "host": { "type": "fqdn", "value": "youtube.com" },
       "activeSeconds": 240,
       "bytesIn":  38123412,
       "bytesOut": 921000
+    },
+    {
+      "mac": "aa:bb:cc:11:22:33",
+      "ip":  "192.168.1.42",
+      "host": { "type": "ipv4", "value": "1.2.3.4" },
+      "activeSeconds": 60,
+      "bytesIn":  120000,
+      "bytesOut": 4000
     }
   ]
 }
 ```
 
-`hostname` is the forward-lookup hostname the DNS server resolved for the
-client — not a reverse-DNS lookup of the destination IP (see §7.2 and §8.2
-for why per-platform).
+`host` is a tagged union (`HostId`, #391): `{ "type": "fqdn", ... }` when
+the agent has a forward-DNS attribution for the flow,
+`{ "type": "ipv4" | "ipv6", ... }` when it doesn't (direct-IP traffic, DoH-
+resolved domain, Apple Private Relay, or any other case where the dnsmasq
+attribution sidecar lost the race). IP-typed rows are stored alongside FQDN
+rows but are systematically excluded from FQDN pattern matching (site-limit
+patterns like `*.example.com`) — an IP literal can never match a hostname
+pattern, so counting it against one would be a silent correctness bug. See
+§7.2 and §8.2 for the platform-specific attribution path.
 
 **Response 200**: empty body.
 
@@ -492,10 +506,12 @@ unknown-device list and feed device autodetection.
     { "type": "dhcp_lease",
       "mac": "aa:bb:cc:11:22:33", "ip": "192.168.1.42",
       "hostname": "kid-ipad", "ts": "2026-05-02T14:01:13Z" },
-    { "type": "dns_query",
+    { "type": "connection_attempt",
       "mac": "aa:bb:cc:11:22:33",
-      "qname": "youtube.com", "qtype": "A",
-      "blocked": false, "ts": "2026-05-02T14:01:14Z" }
+      "host":    { "type": "fqdn", "value": "youtube.com" },
+      "destIp":  "142.250.65.78",
+      "allowed": true, "reason": "allow",
+      "ts": "2026-05-02T14:01:14Z" }
   ]
 }
 ```
@@ -506,7 +522,10 @@ unknown-device list and feed device autodetection.
 
 ### 6.6 `POST /api/router/decision`  *(optional fallback, pending #70)*
 
-For hostnames not in the most recent snapshot.
+For hostnames not in the most recent snapshot. This endpoint is FQDN-only
+by design — the agent only consults it at DNS resolution time, so the
+client identity here is always a resolved hostname, never an IP literal.
+(The IP-routed path uses nftables enforcement, not a per-flow API call.)
 
 **Request**: `{ "mac": "aa:bb:...", "hostname": "..." }`
 
@@ -570,8 +589,11 @@ handful of site-limit domains.
 
 Connection attempts whose destination IP isn't in the dns-tail cache (e.g.
 direct-IP traffic, DoH-resolved domains, agent restart racing a flow) fall
-back to the IP literal in the `hostname` field. The UI shows that IP
-verbatim.
+back to the IP literal as an `ipv4`-tagged or `ipv6`-tagged `HostId`
+(§6.4, #391). The agent emits `{ "type": "ipv4", "value": "<dst_ip>" }`
+rather than smuggling an IP into a hostname field, so the type system
+prevents accidental pattern matches against `*.example.com` and the admin
+UI can render direct-IP rows distinguishably from named hosts.
 
 ### 7.3 Package layout
 

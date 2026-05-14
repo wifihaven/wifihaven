@@ -156,7 +156,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rec  = UsageRecord(
           MacAddress.unsafe(knownMac),
           Some(IpAddress.unsafe("192.168.1.10")),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           240L,
           1000L,
           500L,
@@ -166,7 +166,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         r2   <- post(routes, "/api/router/usage", body, Some(tk))
         sb   <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           testDate,
         )
         rows <- tRepo.listForRouter(id, 100)
@@ -191,7 +191,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           UsageRecord(
             MacAddress.unsafe(knownMac),
             None,
-            Hostname.unsafe("youtube.com"),
+            HostId.Fqdn(Hostname.unsafe("youtube.com")),
             60L,
             100L,
             50L,
@@ -199,7 +199,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           UsageRecord(
             MacAddress.unsafe(knownMac),
             None,
-            Hostname.unsafe("google.com"),
+            HostId.Fqdn(Hostname.unsafe("google.com")),
             30L,
             200L,
             10L,
@@ -209,12 +209,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         resp <- post(routes, "/api/router/usage", body, Some(tk))
         yt   <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           testDate,
         )
         gg   <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
-          Hostname.unsafe("google.com"),
+          HostId.Fqdn(Hostname.unsafe("google.com")),
           testDate,
         )
       } yield assertTrue(resp.status == Status.Ok) &&
@@ -242,7 +242,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           UsageRecord(
             MacAddress.unsafe(knownMac),
             None,
-            Hostname.unsafe("unknown"),
+            HostId.Fqdn(Hostname.unsafe("unknown")),
             300L,
             100L,
             50L,
@@ -250,18 +250,25 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           UsageRecord(
             MacAddress.unsafe(knownMac),
             None,
-            Hostname.unsafe("unknown"),
+            HostId.Fqdn(Hostname.unsafe("unknown")),
             300L,
             200L,
             10L,
           ),
-          UsageRecord(MacAddress.unsafe(knownMac), None, Hostname.unsafe("unknown"), 300L, 50L, 0L),
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.Fqdn(Hostname.unsafe("unknown")),
+            300L,
+            50L,
+            0L,
+          ),
         )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, recs).toJson
         resp <- post(routes, "/api/router/usage", body, Some(tk))
         sb   <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
-          Hostname.unsafe("unknown"),
+          HostId.Fqdn(Hostname.unsafe("unknown")),
           testDate,
         )
       } yield assertTrue(resp.status == Status.Ok) &&
@@ -280,7 +287,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rec = UsageRecord(
           MacAddress.unsafe(knownMac),
           None,
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           120L,
           1L,
           1L,
@@ -291,7 +298,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _  <- post(routes, "/api/router/usage", b2, Some(tk))
         sb <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           testDate,
         )
       } yield assertTrue(sb == ((240L, 2L, 2L)))
@@ -308,7 +315,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rec  = UsageRecord(
           MacAddress.unsafe(knownMac),
           Some(IpAddress.unsafe("192.168.1.42")),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           60L,
           1L,
           1L,
@@ -329,7 +336,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rec  = UsageRecord(
           MacAddress.unsafe(unknownMac),
           Some(IpAddress.unsafe("192.168.1.99")),
-          Hostname.unsafe("ads.example.com"),
+          HostId.Fqdn(Hostname.unsafe("ads.example.com")),
           10L,
           1L,
           1L,
@@ -352,7 +359,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           RouterEvent(
             "connection_attempt",
             mac = Some(MacAddress.unsafe(knownMac)),
-            hostname = Some(Hostname.unsafe("youtube.com")),
+            host = Some(HostId.Fqdn(Hostname.unsafe("youtube.com"))),
             destIp = Some(IpAddress.unsafe("1.2.3.4")),
             allowed = Some(false),
             reason = Some("category:adult"),
@@ -361,7 +368,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           RouterEvent(
             "connection_attempt",
             mac = Some(MacAddress.unsafe(knownMac)),
-            hostname = Some(Hostname.unsafe("khanacademy.org")),
+            host = Some(HostId.Fqdn(Hostname.unsafe("khanacademy.org"))),
             destIp = Some(IpAddress.unsafe("5.6.7.8")),
             allowed = Some(true),
             reason = Some("allow"),
@@ -373,8 +380,12 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.size == 2) &&
-        assertTrue(rows.exists(r => r.hostname == Hostname.unsafe("youtube.com") && !r.allowed)) &&
-        assertTrue(rows.exists(r => r.hostname == Hostname.unsafe("khanacademy.org") && r.allowed))
+        assertTrue(
+          rows.exists(r => r.host == HostId.Fqdn(Hostname.unsafe("youtube.com")) && !r.allowed),
+        ) &&
+        assertTrue(
+          rows.exists(r => r.host == HostId.Fqdn(Hostname.unsafe("khanacademy.org")) && r.allowed),
+        )
     },
     test("events: dhcp_lease for known mac updates devices.last_seen_*") {
       for {
@@ -471,7 +482,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rec    = UsageRecord(
           MacAddress.unsafe(knownMac),
           Some(IpAddress.unsafe("192.168.1.42")),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           90L,
           0L,
           0L,
@@ -512,7 +523,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rawBody = s"""{
           "routerId":"$id",
           "events":[
-            {"type":"connection_attempt","mac":"$knownMac","hostname":"youtube.com",
+            {"type":"connection_attempt","mac":"$knownMac","host":{"type":"fqdn","value":"youtube.com"},
              "destIp":"1.2.3.4","allowed":false,"reason":"category:adult",
              "ts":"2026-05-07T14:01:14Z"}
           ]
@@ -521,7 +532,9 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.size == 1) &&
-        assertTrue(rows.exists(r => r.hostname == Hostname.unsafe("youtube.com") && !r.allowed))
+        assertTrue(
+          rows.exists(r => r.host == HostId.Fqdn(Hostname.unsafe("youtube.com")) && !r.allowed),
+        )
     },
     test("events: first_seen_mac creates an unknown-device row when missing") {
       for {

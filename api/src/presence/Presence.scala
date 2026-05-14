@@ -4,13 +4,13 @@ import familydns.shared.types.*
 import java.time.Instant
 
 /**
- * One bucket-hostname tuple from traffic_reports, used to compute presence-based minutes (one count
- * per (mac, period_start), regardless of how many hostnames the device touched in that window).
+ * One bucket-host tuple from traffic_reports, used to compute presence-based minutes (one count per
+ * (mac, period_start), regardless of how many hosts the device touched in that window).
  */
 case class PresenceRow(
     mac: MacAddress,
     periodStart: Instant,
-    hostname: Hostname,
+    host: HostId,
     activeSeconds: Int,
 )
 
@@ -44,19 +44,21 @@ object Presence {
 
   /**
    * Per-mac total minutes for the day, counting each 5-min bucket once. A bucket counts iff at
-   * least one hostname in the bucket is NOT in `exemptPatterns` — i.e. the device was active on
-   * something that bears on the daily cap.
+   * least one host in the bucket is NOT in `exemptPatterns` — i.e. the device was active on
+   * something that bears on the daily cap. IP-literal hosts are never exempt (patterns only match
+   * FQDNs).
    */
   def totalMinutesByMac(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
   ): Map[MacAddress, Int] = {
-    def isExempt(h: Hostname) = exemptPatterns.exists(p => matchesPattern(h.value, p))
+    def isExempt(h: HostId) =
+      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
     rows
       .groupBy(r => (r.mac, r.periodStart))
       .toList
       .collect {
-        case ((mac, _), bucket) if bucket.exists(r => !isExempt(r.hostname)) =>
+        case ((mac, _), bucket) if bucket.exists(r => !isExempt(r.host)) =>
           mac -> bucketSeconds(bucket)
       }
       .groupMapReduce(_._1)(_._2)(_ + _)
@@ -66,10 +68,10 @@ object Presence {
   }
 
   /**
-   * Per-(mac, pattern) minutes, counting each bucket once per device per pattern when any hostname
-   * in the bucket matches the pattern. Two hostnames that both match the same pattern in one bucket
-   * still only contribute 5 minutes; the same hostname matching two patterns contributes 5 minutes
-   * to each (per-pattern caps are independent).
+   * Per-(mac, pattern) minutes, counting each bucket once per device per pattern when any host in
+   * the bucket matches the pattern. Two hosts that both match the same pattern in one bucket still
+   * only contribute 5 minutes; the same host matching two patterns contributes 5 minutes to each
+   * (per-pattern caps are independent). IP-literal hosts never match patterns.
    */
   def patternMinutesByMac(
       rows: List[PresenceRow],
@@ -80,7 +82,7 @@ object Presence {
     for {
       pat                <- patterns
       ((mac, _), bucket) <- buckets
-      if bucket.exists(r => matchesPattern(r.hostname.value, pat))
+      if bucket.exists(r => r.host.asFqdn.exists(fqdn => matchesPattern(fqdn.value, pat)))
     } accum.updateWith((mac, pat))(prev => Some(prev.getOrElse(0L) + bucketSeconds(bucket)))
     accum.view.mapValues(s => (s / 60).toInt).toMap
   }

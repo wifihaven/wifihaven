@@ -16,7 +16,10 @@ object PresenceSpec extends ZIOSpecDefault {
   private def b(i: Int): Instant = base.plusSeconds(i * 300L)
 
   private def row(mac: MacAddress, bucket: Int, host: String, secs: Int = 300) =
-    PresenceRow(mac, b(bucket), Hostname.unsafe(host), secs)
+    PresenceRow(mac, b(bucket), HostId.Fqdn(Hostname.unsafe(host)), secs)
+
+  private def ipRow(mac: MacAddress, bucket: Int, ip: String, secs: Int = 300) =
+    PresenceRow(mac, b(bucket), HostId.IPv4(IpAddress.unsafe(ip)), secs)
 
   def spec = suite("Presence")(
     suite("totalMinutesByMac")(
@@ -100,6 +103,49 @@ object PresenceSpec extends ZIOSpecDefault {
         val rows = List(row(mac1, 0, "google.com"))
         assertTrue(
           Presence.patternMinutesByMac(rows, List("*.youtube.com")) == Map.empty,
+        )
+      },
+      test("IPv4-literal rows never match an FQDN pattern (#391 regression)") {
+        // Before the HostId refactor, an unattributed flow landed in
+        // traffic_reports with hostname=\"192.0.2.1\". A naive substring or
+        // suffix matcher couldn't match `*.example.com`, but the dead row
+        // still polluted top-host views and \"unknown\" rollups silently
+        // discarded the bucket from per-site accounting in surprising ways.
+        // The fix is at the type level: IP-typed rows are filtered out of
+        // pattern matching entirely (via `host.asFqdn`).
+        val rows = List(
+          ipRow(mac1, 0, "192.0.2.1"),
+          ipRow(mac1, 1, "192.0.2.1"),
+        )
+        assertTrue(
+          Presence.patternMinutesByMac(rows, List("*.example.com")) == Map.empty,
+        ) &&
+        // A blanket * pattern would have matched in the old string world;
+        // it must not match IP-typed rows either.
+        assertTrue(
+          Presence.patternMinutesByMac(rows, List("*")) == Map.empty,
+        )
+      },
+      test("mixed bucket of FQDN + IP only counts the FQDN side of the pattern") {
+        // Same 5-min bucket: device hits youtube.com AND a direct-IP server.
+        // The bucket counts once for *.youtube.com, period — the IP doesn't
+        // double-count toward any FQDN pattern.
+        val rows = List(
+          row(mac1, 0, "m.youtube.com"),
+          ipRow(mac1, 0, "192.0.2.1"),
+        )
+        assertTrue(
+          Presence.patternMinutesByMac(rows, List("*.youtube.com")) ==
+            Map((mac1, "*.youtube.com") -> 5),
+        )
+      },
+      test("IP-typed hosts are never exempt from the daily total (#391)") {
+        // Exemption patterns are FQDN-shaped (e.g. *.youtube.com). An IP
+        // literal can't be exempted by a hostname pattern, so a bucket of
+        // pure direct-IP traffic always counts toward the daily total.
+        val rows = List(ipRow(mac1, 0, "192.0.2.1"))
+        assertTrue(
+          Presence.totalMinutesByMac(rows, List("*")) == Map(mac1 -> 5),
         )
       },
     ),

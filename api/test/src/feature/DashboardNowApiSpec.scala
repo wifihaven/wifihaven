@@ -56,7 +56,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
             routerId,
             MacAddress.unsafe(mac),
             None,
-            Hostname.unsafe(host),
+            HostId.Fqdn(Hostname.unsafe(host)),
             date,
             start,
             end,
@@ -79,7 +79,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
           ConnectionEventInsert(
             routerId,
             Some(MacAddress.unsafe(mac)),
-            Hostname.unsafe("example.com"),
+            HostId.Fqdn(Hostname.unsafe("example.com")),
             None,
             true,
             "allow",
@@ -164,9 +164,9 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev.mac == mac1T,
         dev.name == "iPad",
         dev.lastSeenSeconds <= 60L,
-        dev.topHosts.headOption.exists(_.hostname == Hostname.unsafe("youtube.com")),
+        dev.topHosts.headOption.exists(_.host == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
         dev.topHosts.head.activeSeconds == 1800L,
-        dev.currentSession.exists(_.hostname == Hostname.unsafe("youtube.com")),
+        dev.currentSession.exists(_.host == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
         dev.currentSession.get.durationSeconds == 1800L,
       )
     },
@@ -265,7 +265,11 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev = parsed.profiles.find(_.id == kid).get.activeDevices.head
       } yield assertTrue(
         dev.topHosts.length == 3,
-        dev.topHosts.map(_.hostname) == List("youtube.com", "tiktok.com", "reddit.com"),
+        dev.topHosts.map(_.host) == List(
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          HostId.Fqdn(Hostname.unsafe("tiktok.com")),
+          HostId.Fqdn(Hostname.unsafe("reddit.com")),
+        ),
         dev.topHosts.head.activeSeconds == 360L,
       )
     },

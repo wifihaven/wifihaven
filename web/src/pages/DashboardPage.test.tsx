@@ -23,8 +23,8 @@ const stats: DashboardStats = {
   totalHour: 78,
   blockedHour: 9,
   topBlocked: [
-    { domain: 'evil.com', count: 42 },
-    { domain: 'ads.example', count: 17 },
+    { host: { type: 'fqdn', value: 'evil.com' }, count: 42 },
+    { host: { type: 'fqdn', value: 'ads.example' }, count: 17 },
   ],
   perDevice: [
     { mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", total: 500, blocked: 20 },
@@ -34,7 +34,7 @@ const stats: DashboardStats = {
 const recent: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
-  domain: 'example.com', qtype: 1, blocked: false, reason: '',
+  host: { type: 'fqdn', value: 'example.com' }, qtype: 1, blocked: false, reason: '',
   location: 'home', ts: '2026-05-07T10:15:30Z',
 }
 
@@ -54,11 +54,11 @@ const liveNow: DashboardNow = {
           mac: 'aa:bb:cc:dd:ee:01',
           lastSeenSeconds: 30,
           topHosts: [
-            { hostname: 'youtube.com', activeSeconds: 840 },
-            { hostname: 'tiktok.com', activeSeconds: 120 },
+            { host: { type: 'fqdn', value: 'youtube.com' }, activeSeconds: 840 },
+            { host: { type: 'fqdn', value: 'tiktok.com' }, activeSeconds: 120 },
           ],
           currentSession: {
-            hostname: 'youtube.com',
+            host: { type: 'fqdn', value: 'youtube.com' },
             startedAt: '2026-05-13T09:46:00Z',
             durationSeconds: 840,
           },

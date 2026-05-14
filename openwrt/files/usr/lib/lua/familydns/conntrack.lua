@@ -138,12 +138,24 @@ end
 -- build_event(opts) -> table
 --
 -- opts: { mac, hostname, dest_ip, allowed, reason, ts }
--- hostname nil → falls back to dest_ip.
--- reason nil → "allow" when allowed=true, "blocked" when false.
 -- Returns a Lua table ready for JSON encoding.
+--
+-- Per #391, the emitted `host` is a tagged union (HostId): an FQDN when the
+-- agent has DNS attribution for the flow, otherwise an IPv4 or IPv6 literal
+-- tagged by address family. This replaces the old bare `hostname` field that
+-- silently put IP literals where a hostname was expected, breaking site-limit
+-- pattern matching and polluting the admin UI.
+--
+-- reason nil → "allow" when allowed=true, "blocked" when false.
 -- ---------------------------------------------------------------------------
 function M.build_event(opts)
-  local hostname = opts.hostname or opts.dest_ip
+  local host
+  if opts.hostname then
+    host = { type = "fqdn", value = opts.hostname }
+  else
+    local kind = (opts.dest_ip and opts.dest_ip:find(":", 1, true)) and "ipv6" or "ipv4"
+    host = { type = kind, value = opts.dest_ip }
+  end
   local reason
   if opts.reason then
     reason = opts.reason
@@ -155,7 +167,7 @@ function M.build_event(opts)
   return {
     ["type"]    = "connection_attempt",
     mac         = opts.mac,
-    hostname    = hostname,
+    host        = host,
     destIp      = opts.dest_ip,
     allowed     = opts.allowed,
     reason      = reason,

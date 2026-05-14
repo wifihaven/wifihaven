@@ -132,30 +132,30 @@ trait BlocklistRepo {
 trait TimeUsageRepo {
 
   /**
-   * Increment seconds + byte counters for (mac, domain, date). Repeats are *additive* — the caller
-   * is responsible for idempotency at the request level (traffic_reports unique key).
+   * Increment seconds + byte counters for (mac, host, date). Repeats are *additive* — the caller is
+   * responsible for idempotency at the request level (traffic_reports unique key).
    */
   def incrementSecondsAndBytes(
       mac: MacAddress,
-      domain: Hostname,
+      host: HostId,
       date: LocalDate,
       seconds: Long,
       bytesIn: Long,
       bytesOut: Long,
   ): Task[Unit]
 
-  /** Read seconds_used for a (mac, domain, date) row. Returns 0 if no row. */
-  def getSecondsUsed(mac: MacAddress, domain: Hostname, date: LocalDate): Task[Long]
+  /** Read seconds_used for a (mac, host, date) row. Returns 0 if no row. */
+  def getSecondsUsed(mac: MacAddress, host: HostId, date: LocalDate): Task[Long]
 
-  /** Read (seconds_used, bytes_in, bytes_out) for a (mac, domain, date) row. */
+  /** Read (seconds_used, bytes_in, bytes_out) for a (mac, host, date) row. */
   def getSecondsAndBytes(
       mac: MacAddress,
-      domain: Hostname,
+      host: HostId,
       date: LocalDate,
   ): Task[(Long, Long, Long)]
   def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeUsage]]
   def listForDeviceMacs(macs: List[MacAddress], date: LocalDate): Task[List[TimeUsage]]
-  def snapshotAll(date: LocalDate): Task[Map[(MacAddress, String), Int]]
+  def snapshotAll(date: LocalDate): Task[Map[(MacAddress, HostId), Int]]
 }
 
 trait TimeExtensionRepo {
@@ -186,7 +186,7 @@ case class TrafficReportInsert(
     routerId: RouterId,
     mac: MacAddress,
     ip: Option[IpAddress],
-    hostname: Hostname,
+    host: HostId,
     date: LocalDate,
     periodStart: Instant,
     periodEnd: Instant,
@@ -197,14 +197,14 @@ case class TrafficReportInsert(
 
 case class BlockEventInsert(
     mac: Option[MacAddress],
-    hostname: Hostname,
+    host: HostId,
     reason: String,
 )
 
 case class ConnectionEventInsert(
     routerId: RouterId,
     mac: Option[MacAddress],
-    hostname: Hostname,
+    host: HostId,
     destIp: Option[IpAddress],
     allowed: Boolean,
     reason: String,
@@ -565,55 +565,55 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
 class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
   def incrementSecondsAndBytes(
       mac: MacAddress,
-      dom: Hostname,
+      host: HostId,
       d: LocalDate,
       seconds: Long,
       bytesIn: Long,
       bytesOut: Long,
   ): Task[Unit] =
-    sql"""INSERT INTO time_usage(device_mac,domain,date,seconds_used,bytes_in,bytes_out,last_seen_at)
-          VALUES($mac,$dom,$d,$seconds,$bytesIn,$bytesOut,NOW())
-          ON CONFLICT(device_mac,domain,date) DO UPDATE
+    sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,bytes_in,bytes_out,last_seen_at)
+          VALUES($mac,${host.kind},${host.value},$d,$seconds,$bytesIn,$bytesOut,NOW())
+          ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE
           SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used,
               bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in,
               bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out,
               last_seen_at=NOW()""".update.run
       .transact(xa)
       .unit
-  def getSecondsUsed(mac: MacAddress, dom: Hostname, d: LocalDate): Task[Long]                   =
-    sql"SELECT COALESCE(seconds_used,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
+  def getSecondsUsed(mac: MacAddress, host: HostId, d: LocalDate): Task[Long]                   =
+    sql"SELECT COALESCE(seconds_used,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
       .query[Long]
       .option
       .transact(xa)
       .map(_.getOrElse(0L))
-  def getSecondsAndBytes(mac: MacAddress, dom: Hostname, d: LocalDate): Task[(Long, Long, Long)] =
-    sql"SELECT COALESCE(seconds_used,0),COALESCE(bytes_in,0),COALESCE(bytes_out,0) FROM time_usage WHERE device_mac=$mac AND domain=$dom AND date=$d"
+  def getSecondsAndBytes(mac: MacAddress, host: HostId, d: LocalDate): Task[(Long, Long, Long)] =
+    sql"SELECT COALESCE(seconds_used,0),COALESCE(bytes_in,0),COALESCE(bytes_out,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
       .query[(Long, Long, Long)]
       .option
       .transact(xa)
       .map(_.getOrElse((0L, 0L, 0L)))
-  def listForDevice(mac: MacAddress, d: LocalDate)                                               =
-    sql"SELECT id,device_mac,domain,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY seconds_used DESC"
-      .query[(TimeUsageId, MacAddress, String, String, Int, String)]
+  def listForDevice(mac: MacAddress, d: LocalDate)                                              =
+    sql"SELECT id,device_mac,host_type,host_value,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY seconds_used DESC"
+      .query[(TimeUsageId, MacAddress, HostId, String, Int, String)]
       .map(TimeUsage.apply)
       .to[List]
       .transact(xa)
-  def listForDeviceMacs(macs: List[MacAddress], d: LocalDate)                                    =
+  def listForDeviceMacs(macs: List[MacAddress], d: LocalDate)                                   =
     if macs.isEmpty then ZIO.succeed(Nil)
     else {
       val arr = macs.map(_.value).toArray
-      sql"SELECT id,device_mac,domain,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,seconds_used DESC"
-        .query[(TimeUsageId, MacAddress, String, String, Int, String)]
+      sql"SELECT id,device_mac,host_type,host_value,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,seconds_used DESC"
+        .query[(TimeUsageId, MacAddress, HostId, String, Int, String)]
         .map(TimeUsage.apply)
         .to[List]
         .transact(xa)
     }
-  def snapshotAll(d: LocalDate)                                                                  =
-    sql"SELECT device_mac,domain,(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
-      .query[(MacAddress, String, Int)]
+  def snapshotAll(d: LocalDate)                                                                 =
+    sql"SELECT device_mac,host_type,host_value,(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
+      .query[(MacAddress, HostId, Int)]
       .to[List]
       .transact(xa)
-      .map(_.map((m, dom, mins) => (m, dom) -> mins).toMap)
+      .map(_.map((m, host, mins) => (m, host) -> mins).toMap)
 }
 
 class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
@@ -764,7 +764,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         RouterId,
         MacAddress,
         Option[IpAddress],
-        Hostname,
+        HostId,
         String,
         String,
         String,
@@ -776,28 +776,28 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     TrafficReport(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8, r._9, r._10, r._11)
   def insertBatch(reports: List[TrafficReportInsert]) =
     Update[TrafficReportInsert](
-      "INSERT INTO traffic_reports(router_id,mac,ip,hostname,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,hostname) DO NOTHING",
+      "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
     ).updateMany(reports).transact(xa)
   def listForDevice(mac: MacAddress, date: LocalDate) =
-    sql"SELECT id,router_id,mac,ip,hostname,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE mac=$mac AND date=$date ORDER BY period_start"
+    sql"SELECT id,router_id,mac,ip,host_type,host_value,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE mac=$mac AND date=$date ORDER BY period_start"
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
   def listForRouter(routerId: RouterId, limit: Int)   =
-    sql"SELECT id,router_id,mac,ip,hostname,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE router_id=$routerId ORDER BY period_start DESC LIMIT $limit"
+    sql"SELECT id,router_id,mac,ip,host_type,host_value,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE router_id=$routerId ORDER BY period_start DESC LIMIT $limit"
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
 
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
-    type Row = (MacAddress, Instant, Hostname, Int)
+    type Row = (MacAddress, Instant, HostId, Int)
     macs match {
       case Nil => ZIO.succeed(List.empty[familydns.api.presence.PresenceRow])
       case ms  =>
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
-        val q   = fr"""SELECT mac, period_start, hostname, active_seconds
+        val q   = fr"""SELECT mac, period_start, host_type, host_value, active_seconds
                        FROM traffic_reports
                        WHERE date = $date AND """ ++ Fragments.in(fr"mac", nel)
         q.query[Row]
@@ -808,8 +808,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   }
 
   def listSessionRows(f: SessionFilter) = {
-    type Row = (RouterId, MacAddress, Hostname, LocalDate, Instant, Instant, Int, Long, Long)
-    val base    = fr"""SELECT router_id, mac, hostname, date, period_start, period_end,
+    type Row = (RouterId, MacAddress, HostId, LocalDate, Instant, Instant, Int, Long, Long)
+    val base    = fr"""SELECT router_id, mac, host_type, host_value, date, period_start, period_end,
                               active_seconds, bytes_in, bytes_out
                        FROM traffic_reports
                        WHERE 1=1"""
@@ -820,18 +820,18 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         fr"AND " ++ Fragments.in(fr"mac", nel)
     }
-    val byHost  = f.host.fold(fr"")(h => fr"AND hostname ILIKE ${s"%$h%"}")
+    val byHost  = f.host.fold(fr"")(h => fr"AND host_value ILIKE ${s"%$h%"}")
     val bySince = f.since.fold(fr"")(s => fr"AND period_end > $s")
     val byUntil = f.until.fold(fr"")(u => fr"AND period_start < $u")
     val sql_    = base ++ byMacs ++ byHost ++ bySince ++ byUntil ++
-      fr"ORDER BY router_id, mac, hostname, date, period_start"
+      fr"ORDER BY router_id, mac, host_type, host_value, date, period_start"
     sql_
       .query[Row]
       .map { r =>
         familydns.api.sessions.SessionRow(
           routerId = r._1,
           mac = r._2,
-          hostname = r._3,
+          host = r._3,
           date = r._4,
           periodStart = r._5,
           periodEnd = r._6,
@@ -846,20 +846,20 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 }
 
 class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
-  private type R = (BlockEventId, Option[MacAddress], Hostname, String, String)
+  private type R = (BlockEventId, Option[MacAddress], HostId, String, String)
   private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
   def insertBatch(events: List[BlockEventInsert]) =
     Update[BlockEventInsert](
-      "INSERT INTO block_events(mac,hostname,reason) VALUES(?,?,?)",
+      "INSERT INTO block_events(mac,host_type,host_value,reason) VALUES(?,?,?,?)",
     ).updateMany(events).transact(xa)
   def recent(limit: Int)                          =
-    sql"SELECT id,mac,hostname,reason,ts::TEXT FROM block_events ORDER BY ts DESC LIMIT $limit"
+    sql"SELECT id,mac,host_type,host_value,reason,ts::TEXT FROM block_events ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toB)
       .to[List]
       .transact(xa)
   def listForMac(mac: MacAddress, limit: Int)     =
-    sql"SELECT id,mac,hostname,reason,ts::TEXT FROM block_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
+    sql"SELECT id,mac,host_type,host_value,reason,ts::TEXT FROM block_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toB)
       .to[List]
@@ -872,7 +872,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         ConnectionEventId,
         RouterId,
         Option[MacAddress],
-        Hostname,
+        HostId,
         Option[IpAddress],
         Boolean,
         String,
@@ -883,25 +883,25 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
 
   def insertBatch(events: List[ConnectionEventInsert]) =
     Update[ConnectionEventInsert](
-      "INSERT INTO connection_events(router_id,mac,hostname,dest_ip,allowed,reason,ts) VALUES(?,?,?,?,?,?,?)",
+      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts) VALUES(?,?,?,?,?,?,?,?)",
     ).updateMany(events).transact(xa)
 
   def recent(limit: Int) =
-    sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events ORDER BY ts DESC LIMIT $limit"
+    sql"SELECT id,router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts::TEXT FROM connection_events ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
 
   def listForMac(mac: MacAddress, limit: Int) =
-    sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
+    sql"SELECT id,router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
 
   def listForRouter(routerId: RouterId, limit: Int) =
-    sql"SELECT id,router_id,mac,hostname,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit"
+    sql"SELECT id,router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit"
       .query[R]
       .map(toC)
       .to[List]
@@ -913,7 +913,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // location is sourced from routers.name until routers.location lands (#136)
     val base  =
       fr"""SELECT ce.id, ce.mac, d.name, d.profile_id, p.name,
-                  ce.hostname, 1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
+                  ce.host_type, ce.host_value, 1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac    = ce.mac
            LEFT JOIN profiles p ON p.id     = d.profile_id
@@ -922,7 +922,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
     val byMac = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
     val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
-    val byDom = f.domain.fold(fr"")(d => fr"AND ce.hostname ILIKE ${s"%$d%"}")
+    val byDom = f.domain.fold(fr"")(d => fr"AND ce.host_value ILIKE ${s"%$d%"}")
     val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
     (base ++ since ++ byMac ++ byBl ++ byDom ++ byLoc ++
       fr"ORDER BY ce.ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
@@ -933,7 +933,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             Option[String],
             Option[ProfileId],
             Option[String],
-            String,
+            HostId,
             Int,
             Boolean,
             String,
@@ -966,11 +966,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           .query[Int]
           .unique
           .transact(xa)
-      top <- sql"""SELECT hostname, COUNT(*)::INT
+      top <- sql"""SELECT host_type, host_value, COUNT(*)::INT
                    FROM connection_events
                    WHERE NOT allowed AND ts > NOW()-INTERVAL '24 hours'
-                   GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT 10"""
-        .query[(String, Int)]
+                   GROUP BY host_type, host_value ORDER BY COUNT(*) DESC LIMIT 10"""
+        .query[(HostId, Int)]
         .map(DomainCount.apply)
         .to[List]
         .transact(xa)
@@ -991,11 +991,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     } yield DashboardStats(tt, bt, th, bh, top, dev)
 
   def topBlocked(hours: Int, lim: Int) =
-    sql"""SELECT hostname, COUNT(*)::INT
+    sql"""SELECT host_type, host_value, COUNT(*)::INT
           FROM connection_events
           WHERE NOT allowed AND ts > NOW() - make_interval(hours => $hours)
-          GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT $lim"""
-      .query[(String, Int)]
+          GROUP BY host_type, host_value ORDER BY COUNT(*) DESC LIMIT $lim"""
+      .query[(HostId, Int)]
       .map(DomainCount.apply)
       .to[List]
       .transact(xa)

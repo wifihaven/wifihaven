@@ -79,7 +79,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
                 id,
                 MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
                 Some(IpAddress.unsafe("192.168.1.10")),
-                Hostname.unsafe("youtube.com"),
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
                 LocalDate.of(2026, 5, 2),
                 start,
                 end,
@@ -117,7 +117,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             rid,
             MacAddress.unsafe("aa:bb:cc:11:22:33"),
             Some(IpAddress.unsafe("192.168.1.42")),
-            Hostname.unsafe("youtube.com"),
+            HostId.Fqdn(Hostname.unsafe("youtube.com")),
             LocalDate.of(2026, 5, 2),
             start,
             end,
@@ -144,7 +144,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               rid,
               mac,
               None,
-              Hostname.unsafe("youtube.com"),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
               LocalDate.of(2026, 5, 2),
               start,
               end,
@@ -156,7 +156,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               rid,
               mac,
               None,
-              Hostname.unsafe("google.com"),
+              HostId.Fqdn(Hostname.unsafe("google.com")),
               LocalDate.of(2026, 5, 2),
               start,
               end,
@@ -169,9 +169,9 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           rows <- tRepo.listForDevice(mac, LocalDate.of(2026, 5, 2))
         } yield assertTrue(n == 2) && assertTrue(rows.size == 2) &&
           assertTrue(
-            rows.map(_.hostname).toSet == Set(
-              Hostname.unsafe("youtube.com"),
-              Hostname.unsafe("google.com"),
+            rows.map(_.host).toSet == Set(
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              HostId.Fqdn(Hostname.unsafe("google.com")),
             ),
           )
       },
@@ -190,7 +190,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               rid,
               mac,
               None,
-              Hostname.unsafe(h),
+              HostId.Fqdn(Hostname.unsafe(h)),
               d,
               d.atTime(14, 0).toInstant(java.time.ZoneOffset.UTC),
               d.atTime(14, 5).toInstant(java.time.ZoneOffset.UTC),
@@ -207,7 +207,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
           rows <- tRepo.listForDevice(mac1, d1)
         } yield assertTrue(rows.size == 1) && assertTrue(
-          rows.head.hostname == Hostname.unsafe("a.com"),
+          rows.head.host == HostId.Fqdn(Hostname.unsafe("a.com")),
         )
       },
     ),
@@ -220,15 +220,19 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             List(
               BlockEventInsert(
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
-                Hostname.unsafe("ads.example.com"),
+                HostId.Fqdn(Hostname.unsafe("ads.example.com")),
                 "category:ads",
               ),
               BlockEventInsert(
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
-                Hostname.unsafe("casino.example.com"),
+                HostId.Fqdn(Hostname.unsafe("casino.example.com")),
                 "category:gambling",
               ),
-              BlockEventInsert(None, Hostname.unsafe("unknown.example.com"), "category:adult"),
+              BlockEventInsert(
+                None,
+                HostId.Fqdn(Hostname.unsafe("unknown.example.com")),
+                "category:adult",
+              ),
             ),
           )
           rows <- repo.recent(10)
@@ -242,20 +246,23 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           mac = MacAddress.unsafe("aa:bb:cc:00:00:01")
           _    <- repo.insertBatch(
             List(
-              BlockEventInsert(Some(mac), Hostname.unsafe("a.com"), "r1"),
+              BlockEventInsert(Some(mac), HostId.Fqdn(Hostname.unsafe("a.com")), "r1"),
               BlockEventInsert(
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:99")),
-                Hostname.unsafe("b.com"),
+                HostId.Fqdn(Hostname.unsafe("b.com")),
                 "r1",
               ),
-              BlockEventInsert(Some(mac), Hostname.unsafe("c.com"), "r2"),
+              BlockEventInsert(Some(mac), HostId.Fqdn(Hostname.unsafe("c.com")), "r2"),
             ),
           )
           rows <- repo.listForMac(mac, 10)
         } yield assertTrue(rows.size == 2) &&
           assertTrue(rows.forall(_.mac.contains(mac))) &&
           assertTrue(
-            rows.map(_.hostname).toSet == Set(Hostname.unsafe("a.com"), Hostname.unsafe("c.com")),
+            rows.map(_.host).toSet == Set(
+              HostId.Fqdn(Hostname.unsafe("a.com")),
+              HostId.Fqdn(Hostname.unsafe("c.com")),
+            ),
           )
       },
     ),
@@ -270,9 +277,16 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           xa <- ZIO.service[doobie.Transactor[Task]]
           mac = MacAddress.unsafe("aa:bb:cc:dd:ee:01")
           d   = LocalDate.of(2026, 5, 2)
-          _ <- tu.incrementSecondsAndBytes(mac, Hostname.unsafe("youtube.com"), d, 5L * 60L, 0L, 0L)
+          _   <- tu.incrementSecondsAndBytes(
+            mac,
+            HostId.Fqdn(Hostname.unsafe("youtube.com")),
+            d,
+            5L * 60L,
+            0L,
+            0L,
+          )
           row <-
-            sql"SELECT bytes_in, bytes_out FROM time_usage WHERE device_mac=${mac.value} AND domain='youtube.com' AND date=$d"
+            sql"SELECT bytes_in, bytes_out FROM time_usage WHERE device_mac=${mac.value} AND host_type='fqdn' AND host_value='youtube.com' AND date=$d"
               .query[(Long, Long)]
               .unique
               .transact(xa)

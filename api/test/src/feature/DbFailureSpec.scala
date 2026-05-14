@@ -79,17 +79,17 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {
     def incrementSecondsAndBytes(
         mac: MacAddress,
-        domain: Hostname,
+        host: HostId,
         date: java.time.LocalDate,
         s: Long,
         bi: Long,
         bo: Long,
     ) = throwing
-    def getSecondsUsed(mac: MacAddress, domain: Hostname, date: java.time.LocalDate)     = throwing
-    def getSecondsAndBytes(mac: MacAddress, domain: Hostname, date: java.time.LocalDate) = throwing
-    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                        = throwing
-    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)             = throwing
-    def snapshotAll(date: java.time.LocalDate)                                           = throwing
+    def getSecondsUsed(mac: MacAddress, host: HostId, date: java.time.LocalDate)     = throwing
+    def getSecondsAndBytes(mac: MacAddress, host: HostId, date: java.time.LocalDate) = throwing
+    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                    = throwing
+    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)         = throwing
+    def snapshotAll(date: java.time.LocalDate)                                       = throwing
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {

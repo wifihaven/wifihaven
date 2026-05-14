@@ -7,13 +7,13 @@ import java.time.{Instant, LocalDate}
 
 /**
  * Raw input to the stitching algorithm — one row per 5-min traffic_reports period. The repo emits
- * these already grouped by `(routerId, mac, hostname, date)` and ordered by `periodStart`, but
- * `stitch` does not rely on that.
+ * these already grouped by `(routerId, mac, host, date)` and ordered by `periodStart`, but `stitch`
+ * does not rely on that.
  */
 case class SessionRow(
     routerId: RouterId,
     mac: MacAddress,
-    hostname: Hostname,
+    host: HostId,
     date: LocalDate,
     periodStart: Instant,
     periodEnd: Instant,
@@ -42,7 +42,7 @@ object Sessions {
 
   /** Strict-contiguity stitch. See class-level doc. Output sorted by `startedAt` desc. */
   def stitch(rows: Seq[SessionRow]): List[Session] = {
-    val grouped  = rows.groupBy(r => (r.routerId, r.mac, r.hostname, r.date))
+    val grouped  = rows.groupBy(r => (r.routerId, r.mac, r.host, r.date))
     val sessions = grouped.toList.flatMap { case (_, grp) =>
       stitchGroup(grp.sortBy(_.periodStart))
     }
@@ -68,7 +68,7 @@ object Sessions {
   private case class Acc(
       routerId: RouterId,
       mac: MacAddress,
-      hostname: Hostname,
+      host: HostId,
       date: LocalDate,
       periodStart: Instant,
       periodEnd: Instant,
@@ -89,7 +89,7 @@ object Sessions {
       deviceName = None,
       profileId = None,
       profileName = None,
-      hostname = hostname,
+      host = host,
       routerId = routerId,
       date = date.toString,
       startedAt = periodStart.toString,
@@ -104,7 +104,7 @@ object Sessions {
     def from(r: SessionRow): Acc = Acc(
       routerId = r.routerId,
       mac = r.mac,
-      hostname = r.hostname,
+      host = r.host,
       date = r.date,
       periodStart = r.periodStart,
       periodEnd = r.periodEnd,

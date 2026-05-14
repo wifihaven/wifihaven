@@ -64,14 +64,16 @@ describe("build_event", function()
     })
     assert.equal("connection_attempt", ev["type"])
     assert.equal("aa:bb:cc:11:22:33", ev.mac)
-    assert.equal("youtube.com",        ev.hostname)
+    -- #391: host is now a tagged union, not a bare hostname field
+    assert.equal("fqdn",        ev.host.type)
+    assert.equal("youtube.com", ev.host.value)
     assert.equal("1.2.3.4",            ev.destIp)
     assert.equal(false,                ev.allowed)
     assert.equal("category:adult",     ev.reason)
     assert.equal("2026-05-07T14:01:14Z", ev.ts)
   end)
 
-  it("uses dest_ip as hostname fallback when hostname is nil", function()
+  it("uses dest_ip as host fallback (type='ipv4') when hostname is nil", function()
     local ev = conntrack.build_event({
       mac      = "aa:bb:cc:11:22:33",
       hostname = nil,
@@ -80,8 +82,36 @@ describe("build_event", function()
       reason   = nil,
       ts       = "2026-05-07T14:01:14Z",
     })
-    assert.equal("9.9.9.9", ev.hostname)
+    -- #391: no "unknown" sentinel — IP literal tagged by address family
+    assert.equal("ipv4",    ev.host.type)
+    assert.equal("9.9.9.9", ev.host.value)
     assert.equal("allow",   ev.reason)
+  end)
+
+  it("uses dest_ip as host fallback (type='ipv4') for an IPv4 address", function()
+    local ev = conntrack.build_event({
+      mac      = "aa:bb:cc:11:22:33",
+      hostname = nil,
+      dest_ip  = "192.0.2.5",
+      allowed  = true,
+      reason   = nil,
+      ts       = "2026-05-07T14:01:14Z",
+    })
+    assert.equal("ipv4",      ev.host.type)
+    assert.equal("192.0.2.5", ev.host.value)
+  end)
+
+  it("uses dest_ip as host fallback (type='ipv6') for an IPv6 address", function()
+    local ev = conntrack.build_event({
+      mac      = "aa:bb:cc:11:22:33",
+      hostname = nil,
+      dest_ip  = "fe80::1",
+      allowed  = true,
+      reason   = nil,
+      ts       = "2026-05-07T14:01:14Z",
+    })
+    assert.equal("ipv6",   ev.host.type)
+    assert.equal("fe80::1", ev.host.value)
   end)
 
   it("JSON-encodes the event with correct field names", function()
@@ -94,7 +124,9 @@ describe("build_event", function()
     local encoded = json.encode(ev)
     local decoded = json.decode(encoded)
     assert.equal("connection_attempt", decoded["type"])
-    assert.equal("example.com",        decoded.hostname)
+    -- #391: host is a tagged union
+    assert.equal("fqdn",        decoded.host.type)
+    assert.equal("example.com", decoded.host.value)
     assert.equal("1.1.1.1",            decoded.destIp)    -- camelCase to match server schema
     assert.is_boolean(decoded.allowed)
   end)
@@ -370,10 +402,11 @@ describe("handle_flow", function()
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
 
     -- connection_attempt event (index 2, after first_seen_mac) should carry
-    -- the looked-up hostname, not the dst_ip fallback.
+    -- the looked-up hostname as a tagged-union host field (#391).
     assert.equal("connection_attempt", b.events[2]["type"])
-    assert.equal("youtube.com",        b.events[2].hostname)
-    assert.equal(DST_IP,               b.events[2].destIp)
+    assert.equal("fqdn",        b.events[2].host.type)
+    assert.equal("youtube.com", b.events[2].host.value)
+    assert.equal(DST_IP,        b.events[2].destIp)
     assert.same({ DST_IP }, lookups)
   end)
 
@@ -385,7 +418,8 @@ describe("handle_flow", function()
       lookup_hostname = function(_ip) return nil end,
     })
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
-    assert.equal("legacy.example", b.events[2].hostname)
+    assert.equal("fqdn",           b.events[2].host.type)
+    assert.equal("legacy.example", b.events[2].host.value)
   end)
 
   -- #297: connection_attempt events for paused/time-exhausted profiles must

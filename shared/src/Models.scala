@@ -105,7 +105,7 @@ case class SiteTimeLimit(
 case class TimeUsage(
     id: TimeUsageId,
     deviceMac: MacAddress,
-    domain: String,
+    host: HostId,
     date: String,
     minutesUsed: Int,
     lastSeenAt: String,
@@ -138,7 +138,7 @@ case class QueryLog(
     deviceName: Option[String],
     profileId: Option[ProfileId],
     profileName: Option[String],
-    domain: String,
+    host: HostId,
     qtype: Int,
     blocked: Boolean,
     reason: String,
@@ -216,7 +216,7 @@ case class DashboardStats(
     perDevice: List[DeviceStats],
 ) derives JsonCodec
 
-case class DomainCount(domain: String, count: Int) derives JsonCodec
+case class DomainCount(host: HostId, count: Int) derives JsonCodec
 case class DeviceStats(mac: MacAddress, deviceName: String, total: Int, blocked: Int)
     derives JsonCodec
 
@@ -268,10 +268,10 @@ case class ProfileDetail(
 
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
-case class DashboardNowHost(hostname: Hostname, activeSeconds: Long) derives JsonCodec
+case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec
 
 case class DashboardNowCurrentSession(
-    hostname: Hostname,
+    host: HostId,
     startedAt: String,
     durationSeconds: Long,
 ) derives JsonCodec
@@ -340,7 +340,7 @@ case class TrafficReport(
     routerId: RouterId,
     mac: MacAddress,
     ip: Option[IpAddress],
-    hostname: Hostname,
+    host: HostId,
     date: String,
     periodStart: String,
     periodEnd: String,
@@ -354,7 +354,7 @@ case class Session(
     deviceName: Option[String],
     profileId: Option[ProfileId],
     profileName: Option[String],
-    hostname: Hostname,
+    host: HostId,
     routerId: RouterId,
     date: String,
     startedAt: String,
@@ -373,7 +373,7 @@ case class SessionPage(
 case class BlockEvent(
     id: BlockEventId,
     mac: Option[MacAddress],
-    hostname: Hostname,
+    host: HostId,
     reason: String,
     ts: String,
 ) derives JsonCodec
@@ -382,7 +382,7 @@ case class ConnectionEvent(
     id: ConnectionEventId,
     routerId: RouterId,
     mac: Option[MacAddress],
-    hostname: Hostname,
+    host: HostId,
     destIp: Option[IpAddress],
     allowed: Boolean,
     reason: String,
@@ -392,7 +392,7 @@ case class ConnectionEvent(
 case class UsageRecord(
     mac: MacAddress,
     ip: Option[IpAddress],
-    hostname: Hostname,
+    host: HostId,
     activeSeconds: Long,
     bytesIn: Long,
     bytesOut: Long,
@@ -408,15 +408,20 @@ case class UsageReport(
 
 /**
  * Router event payload. `type` discriminates:
- *   - "connection_attempt": (mac, hostname, destIp, allowed, reason, ts)
- *   - "dhcp_lease": (mac, ip, hostname, ts)
- *   - "first_seen_mac": (mac, ip, hostname, ts)
+ *   - "connection_attempt": (mac, host, destIp, allowed, reason, ts)
+ *   - "dhcp_lease": (mac, ip, hostname, ts) — `hostname` here is the DHCP-advertised name, which by
+ *     construction is an FQDN-shaped label (or absent).
+ *   - "first_seen_mac": (mac, ip, hostname, ts) — same.
+ *
+ * The split is deliberate: `host` (the *contacted* identity) can be either an FQDN or an IP literal
+ * per §391; `hostname` (the *device's own* DHCP name) is always a label or absent.
  */
 case class RouterEvent(
     `type`: String,
     mac: Option[MacAddress] = None,
     ip: Option[IpAddress] = None,
     hostname: Option[Hostname] = None,
+    host: Option[HostId] = None,
     destIp: Option[IpAddress] = None,
     allowed: Option[Boolean] = None,
     reason: Option[String] = None,
