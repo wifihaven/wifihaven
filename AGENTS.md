@@ -2,9 +2,83 @@
 
 This file provides context for AI coding agents (Claude, Copilot, Cursor, etc.) working on this codebase.
 
+## Architectural model — read this before working on anything
+
+These two truths are the canonical architecture. Code or docs that contradict
+them are bugs — fix or flag, do not propagate.
+
+**1. DNS is never the enforcement plane.** DNS always resolves. Blocking
+happens at the connection layer via nftables forward-drop on the gateway
+router. The block page is reached via HTTP DNAT for port 80, **not** via
+DNS sinkhole / NXDOMAIN / RPZ. dnsmasq is still used on the router for
+hostname attribution (forward-lookup ipset population so nftables can match
+on `(mac, dst ip ∈ resolved-hosts-for-this-mac)`), but it is not the
+enforcer.
+
+**2. The router agent is a dumb applier.** The API server ships a policy
+snapshot in which every decision is already pre-computed. After a one-time
+resolution step, the enforcement pipeline sees a `Map[MacAddress, BlockRules]`
+where `BlockRules` is:
+
+- `blocked: Boolean` — drop all forwarded traffic from this MAC. Covers
+  paused profile, out-of-schedule, daily-limit exceeded, manual block, and
+  any other "block right now" reason — **all evaluated server-side and
+  collapsed into this flag**. The router does not look at schedules, daily
+  minutes, or time-used-today.
+- `blockReason: Option[MacBlockReason]` — for block-page text only. Not
+  used for enforcement. `MacBlockReason` is a `sealed trait extends
+  BlockReason` whose cases are `Paused`, `Schedule`, `TimeLimit`, `Manual`
+  — the only reasons a whole-MAC block can come from `PolicyService`. Per-
+  flow drop reasons (host-block, category-block, ip-only-block) are emitted
+  by the router at drop time and never appear in the snapshot; they live
+  on `BlockReason` but not `MacBlockReason`, so the type system prevents
+  them from being assigned here.
+- `extraBlocked: List[Hostname]` — hosts blocked for this MAC. Enforced
+  via nftables drop on `(mac, dst ip ∈ ipset(host))`, where the ipset is
+  populated by dnsmasq's `--ipset=` callback at resolution time.
+- `extraAllowed: List[Hostname]` — hosts allowed for this MAC, including
+  as a carve-out when `blocked = true`.
+- `blocklistIds: List[BlocklistId]` — category lists that apply to this
+  MAC. Enforced via nftables ipset drop, **not** via RPZ or any DNS-layer
+  mechanism. The agent fetches each blocklist by URL (cached by version)
+  and resolves member hosts into a per-blocklist ipset on a periodic
+  cadence.
+- `blockIpOnly: Boolean` — drop forwarded traffic whose destination IP
+  was not resolved via our local DNS for this MAC. No allowlist carve-out:
+  if we cannot attribute the destination IP to a hostname, we cannot
+  evaluate the allowlist against it. Used to prevent DoH / hard-coded-IP
+  bypass.
+
+Profiles exist in the snapshot only as a wire-level dedup aid:
+`profiles: Map[ProfileId, BlockRules]`. Each device carries an optional
+`profileId` and an optional per-device `rules` override; the override, if
+present, **replaces** the profile rules entirely (it is not a merge). The
+agent resolves device → effective rules once at apply time, then enforcement
+is purely per-MAC. **The enforcement pipeline never sees profiles.**
+
+New policy concepts (a new schedule type, a new failover behaviour, a new
+category model) land in the API server's `PolicyService` and present to
+the router as one of the fields above. **Do not add decision logic — schedule
+evaluation, time accounting, category lookup, role-based defaults — to the
+router agent.**
+
+See [`docs/architecture.md`](docs/architecture.md) for the full snapshot
+shape, wire JSON examples, and the enforcement model.
+
+> **Implementation deviations as of May 2026.** Some code does not yet match
+> the model above; these are tracked follow-ups, not the canonical design:
+> `extraBlocked` is currently enforced via dnsmasq NXDOMAIN
+> (`address=/host/#`) and is global rather than per-MAC; category blocklists
+> are not yet applied on the router at all; `blockIpOnly` does not exist
+> yet; the snapshot still carries per-profile `schedules`, `dailyMinutes`,
+> `timeUsedToday`, `siteLimits`, `failureMode`, and `blockedCategories`
+> that should collapse into `blocked` / `extraBlocked` / `blocklistIds`
+> server-side. Treat the model above as the target. If you are working
+> in this area, link the relevant follow-up issue.
+
 ## What this project is
 
-FamilyDNS is a self-hosted parental control DNS server with per-device filtering, time limits, and a web dashboard. It runs on a Linux home server (Ubuntu) and replaces commercial products like Gryphon or TP-Link HomeShield.
+FamilyDNS is a self-hosted, network-level parental-control system with per-device filtering, time limits, and a web dashboard. The API runs on a Linux home server (Ubuntu) and replaces commercial products like Gryphon or TP-Link HomeShield; the enforcement agent runs on the gateway router (OpenWRT or OPNsense).
 
 ## Architecture
 
@@ -18,10 +92,10 @@ familydns/
 ```
 
 One JVM process runs in production:
-1. `api` — REST API on :8080, serves the React SPA, handles auth (JWT), owns the DB
+1. `api` — REST API on :8080, serves the React SPA, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives)
 
-DNS enforcement and per-device usage tracking run on the gateway router, not on the API host:
-- **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites dnsmasq/nftables rules; reports usage via `/api/router/events` and `/api/router/usage`
+Connection-level enforcement and per-device usage tracking run on the gateway router, not on the API host (see the "Architectural model" callout at the top of this file for why):
+- **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage via `/api/router/events` and `/api/router/usage`
 - **OPNsense** — the `opnsense/` Python agent tails pflog and posts connection events
 
 Key API surface (under `/api/router/*` and `/api/blocklists/*`):
@@ -44,16 +118,29 @@ Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - **QueryLog** — every DNS query logged with device, profile, blocked status, reason.
 - **Location** — `home` or `vacation`. Stored on devices and logs. Both locations share profiles/devices but query logs are tagged so you can filter by house.
 
-## DNS blocking priority order
+## Policy decision pipeline (server-side, in `PolicyService`)
 
-1. Profile paused → block all
-2. Schedule active (bedtime etc.) → block all
-3. Domain in extra_allowed → allow (overrides everything below)
-4. Domain in extra_blocked → block
-5. Daily time limit reached (from TimeUsage) → block with reason `time_limit`
-6. Site-specific time limit reached for this domain → block with reason `site_time_limit`
-7. Domain in blocklist category → block with reason `category:X`
-8. Default → allow, forward to upstream CleanBrowsing DNS
+These steps happen **on the API server** when computing the snapshot — not on
+the router. They collapse into the per-MAC `BlockRules` fields described in
+the "Architectural model" callout above.
+
+Order matters because earlier conditions short-circuit:
+
+1. Profile paused → `blocked = true`, reason `Paused`
+2. Schedule active for current time → `blocked = true`, reason `Schedule`
+3. Daily time limit reached (`time_used_today >= daily_minutes + extensions_today`) → `blocked = true`, reason `TimeLimit`
+4. Per-site time limit reached for some domain → that domain added to `extraBlocked` for this MAC
+5. Manual admin block → `blocked = true`, reason `Manual`
+6. Profile / device `extraBlocked` hostnames → `extraBlocked` for this MAC
+7. Profile / device `extraAllowed` hostnames → `extraAllowed` for this MAC (carves out blocks above)
+8. Profile / device assigned categories → `blocklistIds` for this MAC
+9. `blockIpOnly` flag for the profile / device → set as-is
+
+The router never re-evaluates any of this. It receives the resolved
+`BlockRules` and applies them mechanically.
+
+(DNS resolution itself is never blocked by FamilyDNS. dnsmasq forwards
+upstream as normal; the enforcement plane is nftables on the resolved IPs.)
 
 ## Tech stack decisions
 

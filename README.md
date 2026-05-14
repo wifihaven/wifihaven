@@ -1,9 +1,9 @@
 # FamilyDNS
 
-A self-hosted parental-control DNS server with a web UI. Block categories of
-sites, set per-profile schedules ("no internet after 9pm"), enforce daily and
-per-site time limits, log queries, and grant temporary extensions — all on
-your own hardware, no third-party DNS provider.
+A self-hosted, network-level parental-control system with a web UI. Block
+categories of sites, set per-profile schedules ("no internet after 9pm"),
+enforce daily and per-site time limits, log queries, and grant temporary
+extensions — all on your own hardware, no third-party DNS provider.
 
 ```
                  +-------------------+    +-----------+
@@ -16,19 +16,34 @@ HTTP / web ────▶ |  familydns-api    | ─▶ |  Postgres |
              (openwrt/ agent)  (opnsense/ agent)
 ```
 
-Enforcement (DNS blocking, per-device usage tracking) runs on the gateway
-router. The router agent pulls a policy snapshot from the API and reports
-connection events back. See [`docs/architecture-openwrt.md`](docs/architecture-openwrt.md).
+## Enforcement model
+
+DNS always resolves. We do **not** block by failing DNS resolution; blocking
+happens at the connection layer (nftables forward-drop on the gateway router).
+The block page is reached via HTTP DNAT on port 80, **not** via DNS sinkhole
+or NXDOMAIN. dnsmasq is still used on the router for hostname attribution
+(forward-lookup ipset population), but it is not the enforcement plane.
+
+All policy decisions — schedules, daily / per-site time limits, pause state,
+category membership, failover behaviour — live on the **API server**. The
+router agent pulls a policy snapshot every ~60 s and is a **dumb applier**:
+it never reasons about schedules, profiles, or categories at enforcement
+time. New policy concepts land in the API and present to the router as one
+of a small fixed set of fields (`blocked`, `extraBlocked`, `extraAllowed`,
+`blocklistIds`, `blockIpOnly`).
+
+See [`docs/architecture.md`](docs/architecture.md) for the snapshot contract
+and the full enforcement model.
 
 ## Components
 
-| Module      | What it does                                             | Runtime |
-| ----------- | -------------------------------------------------------- | ------- |
-| `api`       | REST + JWT auth, profiles, devices, policy snapshots     | runnable (Main) |
-| `shared`    | Common models, clock                                     | library |
-| `web`       | React + Vite admin UI                                    | static bundle (`web/dist`) |
-| `openwrt/`  | Lua agent: policy pull, dnsmasq/nft enforcement, usage   | OpenWRT ipk |
-| `opnsense/` | Python agent: pflog tail, connection_attempt events      | OPNsense plugin |
+| Module      | What it does                                              | Runtime |
+| ----------- | --------------------------------------------------------- | ------- |
+| `api`       | REST + JWT auth, profiles, devices, policy snapshots      | runnable (Main) |
+| `shared`    | Common models, clock                                      | library |
+| `web`       | React + Vite admin UI                                     | static bundle (`web/dist`) |
+| `openwrt/`  | Lua agent: policy pull, nft enforcement, hostname attribution, usage | OpenWRT ipk |
+| `opnsense/` | Python agent: pflog tail, connection_attempt events       | OPNsense plugin |
 
 ## Quick install
 
