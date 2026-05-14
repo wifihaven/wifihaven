@@ -150,9 +150,9 @@ for usage attribution (§7.2). It is **never** the enforcement plane.
 > **Known deviations from this model as of May 2026** (tracked follow-ups,
 > not the canonical design):
 >
-> - `extraBlocked` is enforced via `address=/host/#` in `render.lua` and is
->   global rather than per-MAC. Should migrate to per-MAC nft ipset drop
->   (#351).
+> - `extraBlocked` is IPv4-only — dnsmasq populates the `eb_<host>` set on
+>   A records, but AAAA replies are not captured into a parallel `eb6_<host>`
+>   v6 set, so a blocked host that resolves over v6 escapes the drop (#392).
 > - `blocklistIds` / category blocking is not applied on the router at all.
 >   `render.lua` and `familydns-agent` do not fetch RPZ files or render
 >   category rules. `PolicyService.decide` uses categories only on the

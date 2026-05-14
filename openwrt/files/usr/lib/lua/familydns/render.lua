@@ -38,7 +38,11 @@ local function effective_rules(dev, profiles)
   -- sentinel; luci.jsonc uses nil). Only treat a real table as an override.
   if type(dev.rules) == "table" then return dev.rules end
   if dev.profileId == nil then return nil end
-  local key = tostring(dev.profileId)
+  -- cjson decodes JSON integers as Lua *floats*, so a profileId of 3
+  -- arrives as 3.0 and `tostring(3.0)` yields "3.0" on Lua 5.3+, missing
+  -- the profiles["3"] key. Use %d formatting to coerce to an integer
+  -- decimal representation that matches the JSON-object key shape.
+  local key = string.format("%d", dev.profileId)
   local prof = profiles and profiles[key]
   if type(prof) ~= "table" then return nil end
   if type(prof.rules) ~= "table" then return nil end
@@ -75,6 +79,31 @@ local function sorted_profiles(profiles)
   end
 end
 
+-- Build the set of hosts that appear in any device's *effective* extraBlocked
+-- list. Hosts only referenced by a profile that has no assigned device are
+-- skipped — no point populating an ipset that nothing will drop on. Returns
+-- a sorted unique list of hostnames.
+local function effective_extra_blocked_hosts(snapshot)
+  local seen = {}
+  for _, dev in pairs(snapshot.devices or {}) do
+    local r = effective_rules(dev, snapshot.profiles)
+    if r and type(r.extraBlocked) == "table" then
+      for _, host in ipairs(r.extraBlocked) do seen[host] = true end
+    end
+  end
+  local hosts = {}
+  for h in pairs(seen) do hosts[#hosts + 1] = h end
+  table.sort(hosts)
+  return hosts
+end
+
+-- nft set name for an extraBlocked host. `eb_` prefix scopes against future
+-- categorical blocklists (#352 will use `bl_`). Dots and dashes are replaced
+-- with underscores by sanitize() to keep within the nftables name charset.
+local function eb_set_name(host)
+  return "eb_" .. sanitize(host)
+end
+
 -- ---------------------------------------------------------------------------
 -- render.dnsmasq(snapshot) → string
 -- ---------------------------------------------------------------------------
@@ -96,25 +125,14 @@ function M.dnsmasq(snapshot)
   end
   emit("")
 
-  -- extraBlocked → NXDOMAIN (legacy enforcement, to be replaced by per-MAC
-  -- nft ipset drop in #351). Collect unique hosts across all profiles and
-  -- any device-override rules.
-  emit("# extraBlocked → NXDOMAIN (TODO #351: per-MAC nft drop)")
-  local seen_blocked = {}
-  local function collect_extra_blocked(rules)
-    if type(rules) ~= "table" then return end
-    for _, domain in ipairs(rules.extraBlocked or {}) do
-      if not seen_blocked[domain] then
-        seen_blocked[domain] = true
-        emit("address=/" .. domain .. "/#")
-      end
-    end
-  end
-  for _, prof in sorted_profiles(snapshot.profiles) do
-    collect_extra_blocked(prof.rules)
-  end
-  for _, dev in sorted_devices(snapshot.devices) do
-    collect_extra_blocked(dev.rules)
+  -- #351: extraBlocked is enforced at the connection layer (per-MAC nft
+  -- drop), not via DNS sinkhole. dnsmasq's only role here is to populate
+  -- an nftables ipset with the resolved IPs of each blocked host, so the
+  -- forward-hook drop can match by `ip daddr ∈ @eb_<host>`. DNS still
+  -- resolves the host normally — see docs/architecture.md §0.1 (Truth 1).
+  emit("# extraBlocked → per-host ipset populated at resolve time (#351)")
+  for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
+    emit(string.format("ipset=/%s/%s", host, eb_set_name(host)))
   end
   emit("")
 
@@ -207,20 +225,62 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
+  -- #351: per-host ipsets for extraBlocked. Each set is populated at DNS
+  -- resolve time by dnsmasq `ipset=/host/eb_<host>` (rendered by dnsmasq()
+  -- above). Dynamic + 1h timeout so resolved entries age out and we don't
+  -- leak shared-CDN IPs to other hosts indefinitely.
+  local eb_hosts = effective_extra_blocked_hosts(snapshot)
+  for _, host in ipairs(eb_hosts) do
+    ind(string.format("set %s {", eb_set_name(host)))
+    ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+  end
+
+  -- #351: per-(MAC, host) drop pairs. We build the cross-product from each
+  -- device's *effective* extraBlocked list (device override > profile rules),
+  -- so a profile's extraBlocked applies only to MACs in that profile and a
+  -- device override applies only to that one MAC.
+  local eb_pairs = {}
+  for mac, dev in sorted_devices(snapshot.devices) do
+    local r = effective_rules(dev, snapshot.profiles)
+    if r and type(r.extraBlocked) == "table" then
+      for _, host in ipairs(r.extraBlocked) do
+        eb_pairs[#eb_pairs + 1] = { mac = mac, host = host }
+      end
+    end
+  end
+
   ind("chain familydns_block {")
   ind2("type filter hook forward priority 0; policy accept;")
   if #blocked_macs_list > 0 then
     ind2("ether saddr @blocked_macs drop")
   end
+  for _, p in ipairs(eb_pairs) do
+    ind2(string.format("ether saddr %s ip daddr @%s drop",
+                       p.mac, eb_set_name(p.host)))
+  end
   ind("}")
   emit("")
 
-  -- Block-page DNAT chain (#303): redirect HTTP/80 from blocked devices to
-  -- the local uhttpd block page.
-  if #blocked_macs_list > 0 then
+  -- Block-page DNAT chain (#303 + #351): redirect HTTP/80 to the local
+  -- uhttpd block page so users see *why* a connection failed. Two
+  -- triggers: MAC-wide block (whole device blocked — pause / time limit /
+  -- schedule), and per-(MAC, host) extraBlocked. We emit the chain if
+  -- either applies so the dnat rules have a hook to live in.
+  if #blocked_macs_list > 0 or #eb_pairs > 0 then
     ind("chain familydns_block_nat {")
     ind2("type nat hook prerouting priority dstnat; policy accept;")
-    ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
+    if #blocked_macs_list > 0 then
+      ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
+    end
+    for _, p in ipairs(eb_pairs) do
+      ind2(string.format(
+        "ether saddr %s ip daddr @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        p.mac, eb_set_name(p.host)))
+    end
     ind("}")
     emit("")
   end
