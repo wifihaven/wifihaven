@@ -1,9 +1,13 @@
 # familydns OpenWrt package
 
 OpenWrt agent for FamilyDNS. Supports both **OpenWRT 23.05.x** (opkg / `.ipk`)
-and **OpenWRT 24.10+ / SNAPSHOT** (apk / `.apk`). Enforces per-device DNS
-filtering via dnsmasq + nftables, accounts traffic per `(mac, hostname)`, and
-streams connection events to the FamilyDNS API.
+and **OpenWRT 24.10+ / SNAPSHOT** (apk / `.apk`). Enforces per-device
+connection-level filtering via **nftables** (forward-drop keyed on MAC +
+destination ipset), accounts traffic per `(mac, hostname)`, and streams
+connection events to the FamilyDNS API. dnsmasq on the router resolves DNS
+normally — it is **not** the enforcement plane; it is used for hostname
+attribution (`--ipset=` callbacks). See
+[`../docs/architecture.md` §0](../docs/architecture.md#0-enforcement-model).
 
 Each release attaches both a `.ipk` and a `.apk` built from the same
 `openwrt/files/` tree; the one-line installer auto-detects the router's
@@ -345,9 +349,11 @@ CI runs Lua tests automatically in the `lua-tests` job in
 - `meta nftrace` requires a matching `nftrace` rule on every chain and
   produces verbose output that is harder to parse safely.
 
-Hostname attribution uses the `nft_sets` table populated by `render.lua`
-from dnsmasq `--ipset=` callbacks. Reverse DNS is intentionally avoided
-because CDN PTR records do not reflect what the user resolved.
+Hostname attribution uses the forward-lookup cache populated by the
+`familydns-dns-tail` sidecar from the dnsmasq query log, with the
+`--ipset=` callback path as a fallback for the site-limit ipsets. Reverse
+DNS is intentionally avoided because CDN PTR records do not reflect what
+the user resolved. See [`../docs/architecture.md` §7.2](../docs/architecture.md).
 
 Both allowed and blocked flows are reported so the admin UI shows a
 complete connection timeline, not just block events.
@@ -355,5 +361,6 @@ complete connection timeline, not just block events.
 ## Architecture reference
 
 See [`docs/architecture.md`](../docs/architecture.md) for the full design —
-especially §7 (OpenWRT agent design), §7.2 (hostname attribution via dnsmasq
-`--ipset=`), and §7.6 (block-page redirect flow).
+especially §0 (enforcement model: DNS never blocks, router is a dumb applier),
+§7 (OpenWRT agent design), §7.2 (forward-lookup hostname attribution via
+dns-tail), and §7.6 (block-page redirect flow).

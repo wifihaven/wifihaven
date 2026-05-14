@@ -5,8 +5,11 @@ router. The recommended path is the one-shot install script; the manual
 steps below it exist for debugging and for environments where running a
 piped shell script is not acceptable.
 
-The agent enforces per-device DNS filtering, accounts traffic per
-`(mac, hostname)`, and streams connection events to the FamilyDNS API.
+The agent enforces per-device connection-level filtering (nftables forward-drop
+keyed on MAC + destination ipset), accounts traffic per `(mac, hostname)`, and
+streams connection events to the FamilyDNS API. dnsmasq on the router resolves
+DNS normally — it is not the enforcement plane (see
+[`architecture.md` §0](architecture.md#0-enforcement-model)).
 
 ## 1. Prerequisites
 

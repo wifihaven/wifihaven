@@ -5,6 +5,156 @@ Status: **partially implemented.**
 - §5.6 pending (#70).
 - OpenWRT agent (#72) and OpnSense agent (#94) pending.
 
+> **Read this first.** The "Enforcement model" section below is the canonical
+> architecture. Some current code deviates from it (called out inline and in
+> follow-up issues); the model is the target. If you are writing a new
+> feature, follow the model.
+
+## 0. Enforcement model
+
+Two truths govern everything that follows.
+
+### 0.1 DNS is never the enforcement plane
+
+DNS always resolves. Blocking happens at the **connection layer** via
+nftables forward-drop on the gateway router. The block page is reached via
+HTTP DNAT on port 80, **not** via DNS sinkhole, NXDOMAIN, or RPZ.
+
+dnsmasq is still used on the router, but only for **hostname attribution**:
+it populates per-host nftables ipsets via `--ipset=` callbacks at resolution
+time, so nftables can match destination IPs back to the hostname the device
+asked for. dnsmasq does not return a fake answer for any blocked host — the
+host resolves normally, the device opens a TCP connection, and nftables
+either drops the SYN (blocked) or DNATs HTTP/80 to the local block page.
+
+We rejected DNS-based blocking (sinkhole / RPZ / NXDOMAIN) because:
+
+- DoH / DoT bypasses any DNS-layer block trivially.
+- Hard-coded-IP traffic is invisible to a DNS-layer block.
+- DNS-layer blocks are usually global, not per-MAC, so a single profile's
+  blocklist leaks to other devices.
+- The block-page UX is poor when the device gets NXDOMAIN instead of a
+  real HTTP response.
+
+The `blockIpOnly` flag (see §0.2) is what closes the DoH / hard-coded-IP
+hole: forwarded traffic to an IP we did not resolve for this MAC is
+dropped.
+
+### 0.2 The router agent is a dumb applier
+
+The API server's `PolicyService` evaluates every policy concept — schedules,
+daily and per-site time limits, pause state, category membership, manual
+blocks, role-based defaults, failover behaviour — and bakes the result into
+a small fixed snapshot. The agent resolves device → effective rules once at
+apply time and then enforces purely per-MAC. **Profiles never appear in the
+enforcement pipeline.**
+
+Target snapshot shape (Scala 3, sealed-trait ADTs per [#114](https://github.com/sameerparekh/familydns/issues/114);
+typed names used here even though the current code is stringly):
+
+```scala
+case class PolicySnapshot(
+    etag: ETag,
+    generatedAt: Instant,
+    devices: Map[MacAddress, DevicePolicy],
+    profiles: Map[ProfileId, BlockRules],     // wire-dedup only; not consulted at enforcement
+    blocklists: Map[BlocklistId, Blocklist],
+    failureMode: FailureMode,                  // what the router does if it can't reach the API
+)
+
+case class DevicePolicy(
+    profileId: Option[ProfileId],
+    rules: Option[BlockRules],                 // if Some, replaces profile rules entirely
+)
+
+case class BlockRules(
+    blocked: Boolean,                          // drop all forwarded traffic from this MAC
+    blockReason: Option[MacBlockReason],       // for block-page text only
+    extraBlocked: List[Hostname],
+    extraAllowed: List[Hostname],              // carves out blocks, incl. when blocked = true
+    blocklistIds: List[BlocklistId],
+    blockIpOnly: Boolean,                      // drop literal-IP traffic not resolved for this MAC
+)
+
+case class Blocklist(version: BlocklistVersion, url: Url)
+
+// BlockReason is the unified reason emitted for any drop, both in connection
+// events and on the block-page query string. It is split into two layers:
+//
+//  - MacBlockReason covers reasons a whole MAC is blocked. PolicyService can
+//    only emit these in BlockRules.blockReason — schedule / time-limit / etc.
+//    are server-side computations.
+//  - The remaining BlockReason variants describe per-flow drops decided by
+//    the router at packet time and are never present in the snapshot.
+//
+// The split is enforced by the type system: BlockRules.blockReason is typed
+// as Option[MacBlockReason], so a router-only reason cannot be assigned to
+// a snapshot field.
+sealed trait BlockReason
+
+sealed trait MacBlockReason extends BlockReason
+object MacBlockReason:
+  case object Paused    extends MacBlockReason
+  case object Schedule  extends MacBlockReason
+  case object TimeLimit extends MacBlockReason
+  case object Manual    extends MacBlockReason
+
+object BlockReason:
+  // Per-flow drop reasons — emitted by the router at connection-drop time
+  // for the events log and the /blocked query string.
+  case class Host(host: Hostname)                          extends BlockReason
+  case class Category(host: Hostname, list: BlocklistId)   extends BlockReason
+  case class IpOnly(dstIp: IpAddress)                      extends BlockReason
+
+sealed trait FailureMode
+object FailureMode:
+  case object BlockAll      extends FailureMode
+  case object AllowAll      extends FailureMode
+  case object LastKnownGood extends FailureMode
+```
+
+Resolution step (the only place profiles touch enforcement):
+
+```scala
+def effective(d: DevicePolicy, profiles: Map[ProfileId, BlockRules]): BlockRules =
+  d.rules
+    .orElse(d.profileId.flatMap(profiles.get))
+    .getOrElse(BlockRules.allowAll)
+```
+
+After this single deref, the agent works with a `Map[MacAddress, BlockRules]`
+and profiles are unreachable.
+
+Enforcement plane per field:
+
+| Field | Enforcement |
+|-------|-------------|
+| `blocked` | nftables: `ether saddr ∈ blocked_macs` → drop forwarded traffic; DNAT HTTP/80 to local block page |
+| `extraBlocked` | nftables: `(ether saddr == mac, ip daddr ∈ ipset(host))` → drop. Per-host ipset populated by dnsmasq `--ipset=` at resolution time. **No `address=/host/#` NXDOMAIN.** |
+| `extraAllowed` | nftables: explicit accept above the drop rules for this MAC |
+| `blocklistIds` | Agent fetches blocklist by URL (cached by version), resolves member hosts periodically, populates per-blocklist ipset. nftables: `(mac, ip daddr ∈ ipset(blocklist))` → drop. **No RPZ.** |
+| `blockIpOnly` | nftables: `(mac, ip daddr ∉ ⋃(per-host ipsets resolved for this MAC))` → drop. Strict — no allowlist carve-out, since we cannot attribute the IP to a hostname. |
+
+dnsmasq's role is exclusively: forward DNS upstream, populate per-host
+nftables ipsets via `--ipset=`, and write a query log that `dns-tail` reads
+for usage attribution (§7.2). It is **never** the enforcement plane.
+
+> **Known deviations from this model as of May 2026** (tracked follow-ups,
+> not the canonical design):
+>
+> - `extraBlocked` is enforced via `address=/host/#` in `render.lua` and is
+>   global rather than per-MAC. Should migrate to per-MAC nft ipset drop.
+> - `blocklistIds` / category blocking is not applied on the router at all.
+>   `render.lua` and `familydns-agent` do not fetch RPZ files or render
+>   category rules. `PolicyService.decide` uses categories only on the
+>   fallback `POST /api/router/decision` endpoint.
+> - `blockIpOnly` does not exist yet.
+> - The current `PolicySnapshot` (§6.2) still carries per-profile
+>   `schedules`, `dailyMinutes`, `timeUsedToday`, `extensionsTodayMinutes`,
+>   `siteLimits`, `failureMode`, and `blockedCategories`. Per the model
+>   above, those should collapse server-side into `blocked` / `extraBlocked`
+>   / `blocklistIds`.
+
 ## 1. Why this exists
 
 The original architecture ran a DNS server and a pcap-based traffic monitor on
@@ -89,7 +239,7 @@ Every router agent must:
 | DNS server | dnsmasq | Unbound |
 | Packet filter | nftables | pf / pfctl |
 | Traffic accounting | nftables counters | pflog / pf tables |
-| Per-MAC DNS tagging | dnsmasq `dhcp-host` + `address=` | Unbound `local-data` per-client views |
+| Per-MAC hostname attribution | dnsmasq `dhcp-host` tag + `--ipset=` callback | Unbound query log correlated to DHCP lease |
 | Event sourcing | dnsmasq query log + `--dhcp-script` | Unbound query log + ISC dhcpd / Kea lease file |
 | Package system | opkg / OpenWRT SDK | FreeBSD pkg / OPNsense plugin system |
 | Config format | UCI | OPNsense XML API or conf files |
@@ -131,21 +281,31 @@ Every router agent must:
 
 ## 5. Decision model: policy snapshot, not per-flow round-trips
 
-The router does **not** round-trip to the API on every connection. Instead:
+The router does **not** round-trip to the API on every connection, and it
+does **not** make policy decisions locally. The split is:
 
-1. Every ~60 s the agent pulls a **policy snapshot** containing everything
-   needed to make decisions locally: device→profile assignments, blocked
-   categories, schedules, time limits, `time_used_today`, paused state.
-2. The agent renders that snapshot into DNS + packet-filter config and
-   reloads them atomically.
-3. Per-flow decisions happen in-kernel or in the DNS server — no API
-   call per request.
-4. `POST /api/router/decision` exists as a **fallback** for hostnames not in
-   the snapshot, and is optional for v1.
+1. Every ~60 s the agent pulls a **policy snapshot** in which `PolicyService`
+   on the API server has already evaluated every schedule, time limit, pause
+   state, and category for every device and **collapsed the result into the
+   per-MAC `BlockRules` shape from §0.2**. The snapshot contains target
+   state, not raw policy inputs.
+2. The agent resolves device → `BlockRules` (a single profile-or-override
+   lookup per device) and renders into nftables rules + a dnsmasq fragment
+   used only for hostname attribution / ipset population. Both reload
+   atomically.
+3. Per-flow decisions happen in the kernel against nftables sets — no API
+   call per request, no policy logic in the agent.
+4. `POST /api/router/decision` exists as a **fallback** for the legacy
+   server-side decision path, and is optional for v1.
 
 Worst-case staleness is one poll interval (~60 s). That is acceptable for
-parental-control use cases; an instant-block requirement can be met later by a
-server-push channel (websocket, SSE) if needed.
+parental-control use cases; an instant-block requirement can be met later by
+a server-push channel (websocket, SSE) if needed.
+
+The architectural invariant: **every new policy concept lands in
+`PolicyService` and presents to the agent as one of the existing fields in
+`BlockRules`**. Adding decision logic to the agent (schedule evaluation,
+time accounting, category lookup, role-based defaults) is a bug.
 
 ## 6. Router HTTP API
 
@@ -194,53 +354,72 @@ The enrollment token is single-use; the API marks it consumed on success.
 Polled every ~60 s. Returns the full enforcement snapshot, or `304 Not
 Modified` if the client's ETag still matches.
 
-**Response 200**
+**Target response 200** (matches §0.2):
 
 ```json
 {
   "etag": "sha256:abc123...",
   "generatedAt": "2026-05-02T14:00:00Z",
-  "defaultProfileId": 1,
-  "devices": [
-    { "mac": "aa:bb:cc:11:22:33", "profileId": 3, "name": "kid-ipad" }
-  ],
-  "profiles": [
-    {
-      "id": 3,
-      "name": "kids",
-      "paused": false,
-      "blockedCategories": ["ads", "adult"],
+  "failureMode": "LastKnownGood",
+  "devices": {
+    "aa:bb:cc:11:22:33": {
+      "profileId": "kids",
+      "rules": null
+    },
+    "aa:bb:cc:44:55:66": {
+      "profileId": "kids",
+      "rules": {
+        "blocked": true,
+        "blockReason": "TimeLimit",
+        "extraBlocked": [],
+        "extraAllowed": ["khanacademy.org"],
+        "blocklistIds": ["ads", "adult"],
+        "blockIpOnly": true
+      }
+    }
+  },
+  "profiles": {
+    "kids": {
+      "blocked": false,
+      "blockReason": null,
       "extraBlocked": ["tiktok.com"],
       "extraAllowed": ["khanacademy.org"],
-      "schedules": [
-        { "days": ["MON","TUE","WED","THU","FRI"],
-          "blockFrom": "21:00", "blockUntil": "07:00" }
-      ],
-      "dailyMinutes": 120,
-      "siteLimits": [
-        { "domain": "youtube.com", "minutes": 30, "label": "YouTube" }
-      ],
-      "timeUsedToday": {
-        "totalMinutes": 47,
-        "byDomain": { "youtube.com": 12 }
-      },
-      "extensionsTodayMinutes": 15
+      "blocklistIds": ["ads", "adult"],
+      "blockIpOnly": true
     }
-  ],
+  },
   "blocklists": {
-    "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads.rpz" },
-    "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult.rpz" }
+    "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads.json" },
+    "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult.json" }
   }
 }
 ```
 
-**Response 304** when `If-None-Match: <etag>` (or `?since=<etag>`) matches the
-current snapshot. Body is empty.
+**Response 304** when `If-None-Match: <etag>` (or `?since=<etag>`) matches
+the current snapshot. Body is empty.
 
 ETag is computed deterministically over snapshot content.
 
-`timeUsedToday.totalMinutes` excludes domains covered by `siteLimits` — the
-agent enforces both limits independently.
+Notes:
+
+- The first device above takes its rules from the `"kids"` profile.
+- The second device overrides the profile entirely — its `rules` are used
+  verbatim. The override replaces; it does not merge with the profile.
+- The router resolves each device into a single `BlockRules` once and then
+  enforces purely per-MAC. Profiles are not consulted further.
+- All schedule / time-limit / pause / category evaluation has already
+  happened server-side in `PolicyService` and is reflected in
+  `blocked` / `blockReason` / `extraBlocked` / `blocklistIds`.
+
+> **Current implementation deviates from this shape.** The live snapshot
+> still ships `defaultProfileId` at the top level; per-profile `paused`,
+> `blockedCategories`, `schedules`, `dailyMinutes`, `siteLimits`,
+> `timeUsedToday`, `extensionsTodayMinutes`, `failureMode`; a separate
+> top-level `blockedMacs` list; and uses `List` for `devices` / `profiles`
+> rather than `Map`. Migration to the target shape above is tracked
+> alongside #350 — see the follow-up issue list there. New code should
+> read against the target shape and tolerate the legacy fields during
+> migration.
 
 ### 6.3 `GET /api/blocklists/<category>.rpz`
 
@@ -329,14 +508,20 @@ guidance, not part of the wire contract.
 
 ### 7.1 Capabilities used
 
-- **Per-MAC nftables sets** — `ether saddr @profile3_macs` matches packets
-  from any MAC in the named set. One set per profile.
-- **Per-domain IP sets via dnsmasq `--ipset=`** — dnsmasq populates named
-  nftables sets with the IPs a hostname resolves to; nftables matches destination
-  IP against the set.
-- **Per-MAC dnsmasq tagging** — `dhcp-host=...,set:profileN` applies different
-  `address=` / `server=` rules per MAC tag so blocked domains return NXDOMAIN
-  for kids' devices and resolve normally for parents'.
+- **Per-MAC nftables sets** — `ether saddr @blocked_macs` matches packets
+  from any MAC in the named set. Used to express `blocked = true` from the
+  resolved `BlockRules` (§0.2) and to scope per-MAC drop / accept chains.
+- **Per-(MAC, host) IP sets via dnsmasq `--ipset=`** — dnsmasq populates
+  named nftables sets with the IPs a hostname resolves to *for a given
+  client*. nftables matches destination IP against the set, scoped by
+  source MAC. This is how `extraBlocked` / `extraAllowed` / `blocklistIds`
+  are enforced without DNS-layer blocking: the host resolves normally, but
+  the forward rule for that MAC drops the resulting flow.
+- **Per-MAC dnsmasq tagging** — `dhcp-host=...,set:mac<N>` applies a
+  per-MAC tag so `--ipset=` callbacks can populate the right per-MAC ipset
+  for hostname attribution. Dnsmasq tags are **not** used for `address=` /
+  `server=` differentiation — there is no per-tag NXDOMAIN. dnsmasq always
+  resolves normally; enforcement happens in nftables.
 - **nftables counter objects** keyed on `ether saddr . ip daddr` for per-MAC,
   per-IP byte counts.
 - **dnsmasq query log** (`--log-queries=extra`, written to a private file at
@@ -402,9 +587,16 @@ openwrt/
 
 ### 7.5 Time-limit enforcement
 
-The snapshot includes `timeUsedToday.totalMinutes` and `dailyMinutes`. The agent
-computes `remaining = limit - used + extensions` and, when `≤ 0`, drops all
-egress for that profile's MAC set until the next poll (~60 s worst-case bonus).
+`PolicyService` on the API server tracks `time_used_today`, daily limits,
+extensions, and per-site limits. When a daily limit is exhausted, the API
+emits the affected MAC with `blocked = true, blockReason = TimeLimit` in
+the next snapshot. When a per-site limit is exhausted, the relevant host
+is added to that MAC's `extraBlocked`. **The agent does no time arithmetic.**
+
+Per-MAC usage is reported to the API every 5 minutes via
+`POST /api/router/usage` (§6.4); the API accumulates and decides. Worst-case
+overshoot is one usage-report interval (~5 min) plus one policy-poll interval
+(~60 s).
 
 ### 7.6 Block-page redirect
 
