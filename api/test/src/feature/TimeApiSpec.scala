@@ -622,9 +622,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             clock,
           )
           snapshot <- policyService.snapshot
-          kidsPolicy = snapshot.profiles.find(_.id == kidsId).get
-        } yield assertTrue(kidsPolicy.dailyMinutes.contains(60)) &&
-          assertTrue(kidsPolicy.timeUsedToday.totalMinutes == 55) // 30 + 25 across both devices
+          kidsPolicy = snapshot.profiles(kidsId)
+          // #354: snapshot no longer carries dailyMinutes / timeUsedToday.
+          // 55 minutes of presence against a 60-minute cap leaves the
+          // profile unblocked; we just assert the cap hasn't been hit.
+        } yield assertTrue(!kidsPolicy.rules.blocked) &&
+          assertTrue(kidsPolicy.rules.blockReason.isEmpty)
       },
     ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential

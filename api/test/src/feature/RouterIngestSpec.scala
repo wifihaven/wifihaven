@@ -392,14 +392,16 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
         polBody    <- polResp.body.asString
         snap       <- ZIO.fromEither(polBody.fromJson[PolicySnapshot])
-        kp = snap.profiles.find(_.id == pid).get
+        kp = snap.profiles(pid)
         // 6. Verify last_seen_ip update
         d <- dRepo.findByMac(knownMac)
       } yield assertTrue(ingestResp.status == Status.Ok) &&
         assertTrue(polResp.status == Status.Ok) &&
-        assertTrue(kp.dailyMinutes.contains(1)) &&
-        assertTrue(kp.timeUsedToday.totalMinutes >= 1) &&
-        assertTrue(kp.timeUsedToday.totalMinutes >= kp.dailyMinutes.get) &&
+        // #354: dailyMinutes / timeUsedToday no longer ship on the wire —
+        // their effect is collapsed into BlockRules.blocked. With 90s of
+        // active time against a 1-minute limit, the profile is blocked.
+        assertTrue(kp.rules.blocked) &&
+        assertTrue(kp.rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
         assertTrue(d.exists(_.lastSeenIp.contains("192.168.1.42")))
     },
     test("events: accepts the raw JSON shape the OpenWRT Lua agent emits (regression for #215)") {

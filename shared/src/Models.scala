@@ -454,43 +454,105 @@ case class RouterDecisionResponse(
     expiresAt: Option[String],
 ) derives JsonCodec
 
-case class PolicyDevice(mac: String, profileId: Option[Long], name: String) derives JsonCodec
-case class PolicySchedule(days: List[String], blockFrom: String, blockUntil: String)
-    derives JsonCodec
-case class PolicySiteLimit(
-    domain: String,
-    minutes: Int,
-    label: String,
-    exemptFromDaily: Boolean = true,
-) derives JsonCodec
-case class PolicyTimeUsedToday(totalMinutes: Int, byDomain: Map[String, Int]) derives JsonCodec
-case class PolicyProfile(
-    id: Long,
-    name: String,
-    paused: Boolean,
-    blockedCategories: List[String],
+// ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────
+//
+// The snapshot is what the router agent consumes. It carries collapsed
+// per-profile/per-device enforcement state — schedules, time limits, pause,
+// site limits, and category membership have all been evaluated server-side
+// in PolicyService and reflected here as `BlockRules`. The agent never
+// re-evaluates them.
+//
+// Diverges from architecture.md §0.2 in one place: `failureMode` is still
+// per-profile (carried in ProfilePolicy) rather than top-level. The DB
+// has it as a per-profile column and we want to keep it that way until
+// there's a reason to consolidate.
+//
+// `DevicePolicy.rules` exists for future per-device overrides; PolicyService
+// currently always emits `None` there (no UI to set it).
+
+case class PolicyBlocklist(version: String, url: String) derives JsonCodec
+
+case class BlockRules(
+    blocked: Boolean,
+    blockReason: Option[MacBlockReason],
     extraBlocked: List[String],
     extraAllowed: List[String],
-    schedules: List[PolicySchedule],
-    dailyMinutes: Option[Int],
-    siteLimits: List[PolicySiteLimit],
-    timeUsedToday: PolicyTimeUsedToday,
-    extensionsTodayMinutes: Int,
-    // #311: failover mode for the OpenWRT agent when the API is unreachable
-    // for >5 minutes. See FailureMode at the top of this file.
-    failureMode: FailureMode = FailureMode.Closed,
+    blocklistIds: List[String],
+    blockIpOnly: Boolean,
 ) derives JsonCodec
-case class PolicyBlocklist(version: String, url: String) derives JsonCodec
-// Reason is one of: "paused", "time_limit", "schedule" (precedence in that order).
-// The API computes this list against the current wall clock; the OpenWRT agent
-// just enforces it (drop forwarded traffic from these MACs). See #305.
-case class BlockedMac(mac: String, reason: String) derives JsonCodec
+
+object BlockRules {
+  val allowAll: BlockRules = BlockRules(
+    blocked = false,
+    blockReason = None,
+    extraBlocked = Nil,
+    extraAllowed = Nil,
+    blocklistIds = Nil,
+    blockIpOnly = false,
+  )
+}
+
+case class DevicePolicy(
+    profileId: Option[Long],
+    name: String,
+    rules: Option[BlockRules],
+) derives JsonCodec
+
+case class ProfilePolicy(
+    name: String,
+    rules: BlockRules,
+    failureMode: FailureMode,
+) derives JsonCodec
+
 case class PolicySnapshot(
     etag: String,
     generatedAt: String,
-    defaultProfileId: Option[Long],
-    devices: List[PolicyDevice],
-    profiles: List[PolicyProfile],
-    blockedMacs: List[BlockedMac],
+    devices: Map[String, DevicePolicy],
+    profiles: Map[Long, ProfilePolicy],
     blocklists: Map[String, PolicyBlocklist],
 ) derives JsonCodec
+
+// ── Block reasons (snapshot + router-emitted) ─────────────────────────────
+//
+// MacBlockReason is the subset that can appear in a snapshot — the API
+// pre-evaluates the policy and emits one of these in BlockRules.blockReason.
+// The other BlockReason variants are emitted by the router agent at
+// packet-drop time (for connection_events / the /blocked page) and never
+// appear in the snapshot. The split is type-enforced: BlockRules.blockReason
+// is typed Option[MacBlockReason], so a router-only reason cannot leak into
+// the snapshot field.
+
+sealed trait BlockReason
+
+sealed trait MacBlockReason extends BlockReason
+object MacBlockReason {
+  case object Paused    extends MacBlockReason
+  case object Schedule  extends MacBlockReason
+  case object TimeLimit extends MacBlockReason
+  case object Manual    extends MacBlockReason
+
+  def asString(r: MacBlockReason): String      = r match {
+    case Paused    => "Paused"
+    case Schedule  => "Schedule"
+    case TimeLimit => "TimeLimit"
+    case Manual    => "Manual"
+  }
+  def parse(s: String): Option[MacBlockReason] = s match {
+    case "Paused"    => Some(Paused)
+    case "Schedule"  => Some(Schedule)
+    case "TimeLimit" => Some(TimeLimit)
+    case "Manual"    => Some(Manual)
+    case _           => None
+  }
+
+  given JsonCodec[MacBlockReason] = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown blockReason: $s"),
+    asString,
+  )
+}
+
+object BlockReason {
+  case class Host(host: String)                   extends BlockReason
+  case class Category(host: String, list: String) extends BlockReason
+  case class IpOnly(dstIp: String)                extends BlockReason
+}

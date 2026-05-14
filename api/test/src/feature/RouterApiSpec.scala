@@ -219,16 +219,16 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         )
         body    <- resp.body.asString
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
-        kp = snap.profiles.find(_.id == kid).get
+        kp = snap.profiles(kid)
+        // #354: snapshot no longer carries raw schedules / dailyMinutes /
+        // timeUsedToday — those collapse server-side into BlockRules.blocked.
+        // Here neither limit is exceeded yet and bedtime hasn't hit, so the
+        // kids profile is not blocked.
       } yield assertTrue(snap.devices.size == 2) &&
-        assertTrue(snap.profiles.exists(_.id == kid)) &&
-        assertTrue(snap.profiles.exists(_.id == adult)) &&
-        assertTrue(snap.defaultProfileId.exists(id => snap.profiles.exists(_.id == id))) &&
-        assertTrue(kp.dailyMinutes.contains(120)) &&
-        assertTrue(kp.schedules.exists(_.blockFrom == "21:00")) &&
-        assertTrue(kp.siteLimits.exists(sl => sl.domain == "youtube.com" && sl.exemptFromDaily)) &&
-        assertTrue(kp.timeUsedToday.totalMinutes == 45) && // cnn.com only; exempt youtube excluded
-        assertTrue(kp.timeUsedToday.byDomain.get("youtube.com").contains(15)) &&
+        assertTrue(snap.profiles.contains(kid)) &&
+        assertTrue(snap.profiles.contains(adult)) &&
+        assertTrue(!kp.rules.blocked) &&
+        assertTrue(kp.rules.blockReason.isEmpty) &&
         assertTrue(snap.blocklists.contains("ads")) &&
         assertTrue(snap.blocklists("ads").url == "/api/blocklists/ads.rpz")
     },
@@ -335,8 +335,8 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         )
         body    <- resp.body.asString
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
-        unknown = snap.devices.find(_.mac == "ff:ff:ff:aa:bb:cc")
-        known   = snap.devices.find(_.mac == "aa:bb:cc:11:22:33")
+        unknown = snap.devices.get("ff:ff:ff:aa:bb:cc")
+        known   = snap.devices.get("aa:bb:cc:11:22:33")
       } yield assertTrue(snap.devices.size == 2) &&
         assertTrue(unknown.isDefined) &&
         assertTrue(unknown.exists(_.profileId.isEmpty)) &&

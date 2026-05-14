@@ -3,27 +3,30 @@
 
 local policy = require("policy")
 
--- Minimal valid snapshot JSON (§5.2 wire contract)
+-- Minimal valid snapshot JSON (§6.2 wire contract, post-#354 shape).
+-- devices/profiles are JSON objects (Maps) keyed by mac / stringified
+-- profileId. The agent never sees raw schedules / time-limits — they're
+-- collapsed into BlockRules.blocked server-side.
 local SNAPSHOT_JSON = [[{
   "etag": "sha256:abc123",
-  "generated_at": "2026-05-08T14:00:00Z",
-  "default_profile_id": 3,
-  "devices": [
-    { "mac": "aa:bb:cc:11:22:33", "profile_id": 3, "name": "kid-ipad" }
-  ],
-  "profiles": [
-    {
-      "id": 3, "name": "kids", "paused": false,
-      "blocked_categories": ["ads"],
-      "extra_blocked": ["tiktok.com"],
-      "extra_allowed": [],
-      "schedules": [],
-      "daily_minutes": 120,
-      "site_limits": [],
-      "time_used_today": { "total_minutes": 0, "by_domain": {} },
-      "extensions_today_minutes": 0
+  "generatedAt": "2026-05-08T14:00:00Z",
+  "devices": {
+    "aa:bb:cc:11:22:33": { "profileId": 3, "name": "kid-ipad", "rules": null }
+  },
+  "profiles": {
+    "3": {
+      "name": "kids",
+      "rules": {
+        "blocked": false,
+        "blockReason": null,
+        "extraBlocked": ["tiktok.com"],
+        "extraAllowed": [],
+        "blocklistIds": ["ads"],
+        "blockIpOnly": false
+      },
+      "failureMode": "closed"
     }
-  ],
+  },
   "blocklists": {}
 }]]
 
@@ -38,8 +41,8 @@ describe("policy.fetch", function()
     local snap, etag = policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
     assert.not_nil(snap)
     assert.equal("sha256:abc123", etag)
-    assert.equal(3,          snap.profiles[1].id)
-    assert.equal("kid-ipad", snap.devices[1].name)
+    assert.equal("kids",     snap.profiles["3"].name)
+    assert.equal("kid-ipad", snap.devices["aa:bb:cc:11:22:33"].name)
   end)
 
   it("returns nil snapshot (no rewrite needed) and unchanged etag on HTTP 304", function()
@@ -400,23 +403,26 @@ describe("policy.apply", function()
   end)
 
   -- ── #328 smoke check: confirm dnsmasq actually picked up the new policy ──
-  --
-  -- The snapshot uses camelCase keys (the API's wire format — render.lua reads
-  -- `extraBlocked` directly). The canonical SNAPSHOT_JSON above uses snake_case
-  -- for historical fetch-test reasons, so render() emits no address= lines from
-  -- it; we need a camelCase snapshot to exercise the smoke probe path.
+  -- A snapshot whose profile rules contain at least one extraBlocked entry,
+  -- so render.dnsmasq emits address=/.../# and the smoke probe path fires.
   local SMOKE_SNAPSHOT_JSON = [[{
     "etag": "sha256:smoke",
-    "devices": [{ "mac": "aa:bb:cc:11:22:33", "profileId": 3, "name": "k" }],
-    "profiles": [{
-      "id": 3, "name": "kids", "paused": false,
-      "extraBlocked": ["badsite.example.com"],
-      "extraAllowed": [], "schedules": [], "siteLimits": [],
-      "dailyMinutes": 120,
-      "timeUsedToday": { "totalMinutes": 0, "byDomain": {} },
-      "extensionsTodayMinutes": 0
-    }],
-    "blockedMacs": []
+    "generatedAt": "2026-05-08T14:00:00Z",
+    "devices": {
+      "aa:bb:cc:11:22:33": { "profileId": 3, "name": "k", "rules": null }
+    },
+    "profiles": {
+      "3": {
+        "name": "kids",
+        "rules": {
+          "blocked": false, "blockReason": null,
+          "extraBlocked": ["badsite.example.com"],
+          "extraAllowed": [], "blocklistIds": [], "blockIpOnly": false
+        },
+        "failureMode": "closed"
+      }
+    },
+    "blocklists": {}
   }]]
 
   local function decode_smoke()
@@ -501,9 +507,11 @@ describe("policy.apply", function()
 
   it("skips dns_check_fn when the snapshot has no extraBlocked entries (#328)", function()
     local called = false
-    -- Use the canonical SNAPSHOT_JSON: with snake_case keys render emits no
-    -- address= lines, so the probe path should not fire.
-    policy.apply(decode_snap(),
+    -- Build a snapshot whose profile has empty extraBlocked, so render emits
+    -- no address=/.../# lines and the smoke probe path is skipped.
+    local snap = decode_snap()
+    snap.profiles["3"].rules.extraBlocked = {}
+    policy.apply(snap,
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
@@ -528,18 +536,21 @@ describe("policy.apply", function()
   local function snap_with_closed_profile()
     return {
       etag = "sha256:test",
-      defaultProfileId = 1,
+      generatedAt = "2026-05-08T14:00:00Z",
       devices = {
-        { mac = "aa:aa:aa:00:00:01", profileId = 1, name = "kid-A" },
+        ["aa:aa:aa:00:00:01"] = { profileId = 1, name = "kid-A", rules = nil },
       },
       profiles = {
-        { id = 1, name = "kids", paused = false, failureMode = "closed",
-          blockedCategories = {}, extraBlocked = {}, extraAllowed = {},
-          schedules = {}, dailyMinutes = 0, siteLimits = {},
-          timeUsedToday = { totalMinutes = 0, byDomain = {} },
-          extensionsTodayMinutes = 0 },
+        ["1"] = {
+          name = "kids",
+          rules = {
+            blocked = false, blockReason = nil,
+            extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
+          },
+          failureMode = "closed",
+        },
       },
-      blockedMacs = {},
+      blocklists = {},
     }
   end
 
@@ -675,8 +686,8 @@ describe("policy.save_snapshot", function()
       function(_path, content) captured_content = content; return true, nil end,
       function(_from, _to) return true end)
     local decoded = json.decode(captured_content)
-    assert.equal(3, decoded.profiles[1].id)
-    assert.equal("kid-ipad", decoded.devices[1].name)
+    assert.equal("kids", decoded.profiles["3"].name)
+    assert.equal("kid-ipad", decoded.devices["aa:bb:cc:11:22:33"].name)
   end)
 
   it("returns false and does not rename when the write fails", function()
@@ -702,7 +713,7 @@ describe("policy.load_snapshot", function()
   it("returns the decoded snapshot when the read returns valid JSON", function()
     local snap = policy.load_snapshot(function(_path) return SNAPSHOT_JSON end)
     assert.not_nil(snap)
-    assert.equal(3, snap.profiles[1].id)
+    assert.equal("kids", snap.profiles["3"].name)
   end)
 
   it("reads from /etc/familydns/policy.json", function()

@@ -164,9 +164,15 @@ function M.fetch(api_url, router_token, etag, http_get_fn, log)
     if ok and snap_or_err then
       local snap = snap_or_err
       local new_etag = (snap.etag ~= nil) and snap.etag or etag
+      local function count_keys(t)
+        if type(t) ~= "table" then return 0 end
+        local n = 0
+        for _ in pairs(t) do n = n + 1 end
+        return n
+      end
       log.debug("policy.fetch: parsed snapshot devices=%d profiles=%d etag=%s",
-                snap.devices and #snap.devices or 0,
-                snap.profiles and #snap.profiles or 0,
+                count_keys(snap.devices),
+                count_keys(snap.profiles),
                 tostring(new_etag))
       return snap, new_etag
     end

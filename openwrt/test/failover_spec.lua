@@ -2,7 +2,7 @@
 --
 -- The agent passes opts.poll_age_seconds = (now - last_successful_poll_ts).
 -- When poll_age > 300, profiles with failureMode == "closed" get an additional
--- drop rule for ALL their devices' MACs (regardless of snapshot.blockedMacs).
+-- drop rule for ALL their devices' MACs (regardless of effective BlockRules).
 -- Profiles with failureMode == "open" keep enforcing the cached snapshot
 -- exactly as-is.
 --
@@ -12,33 +12,28 @@ local render = require("render")
 
 -- Two-profile snapshot: a Closed-failover "kids" profile (devices A, B) and
 -- an Open-failover "adults" profile (devices C, D).
+local function empty_rules()
+  return {
+    blocked = false, blockReason = nil,
+    extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
+  }
+end
+
 local function snap_two()
   return {
-    etag             = "sha256:f1",
-    defaultProfileId = 1,
+    etag        = "sha256:f1",
+    generatedAt = "2026-05-14T14:00:00Z",
     devices = {
-      { mac = "aa:aa:aa:00:00:01", profileId = 1, name = "kid-A" },
-      { mac = "aa:aa:aa:00:00:02", profileId = 1, name = "kid-B" },
-      { mac = "bb:bb:bb:00:00:03", profileId = 2, name = "adult-C" },
-      { mac = "bb:bb:bb:00:00:04", profileId = 2, name = "adult-D" },
+      ["aa:aa:aa:00:00:01"] = { profileId = 1, name = "kid-A", rules = nil },
+      ["aa:aa:aa:00:00:02"] = { profileId = 1, name = "kid-B", rules = nil },
+      ["bb:bb:bb:00:00:03"] = { profileId = 2, name = "adult-C", rules = nil },
+      ["bb:bb:bb:00:00:04"] = { profileId = 2, name = "adult-D", rules = nil },
     },
     profiles = {
-      {
-        id = 1, name = "kids", paused = false, failureMode = "closed",
-        blockedCategories = {}, extraBlocked = {}, extraAllowed = {},
-        schedules = {}, dailyMinutes = 0, siteLimits = {},
-        timeUsedToday = { totalMinutes = 0, byDomain = {} },
-        extensionsTodayMinutes = 0,
-      },
-      {
-        id = 2, name = "adults", paused = false, failureMode = "open",
-        blockedCategories = {}, extraBlocked = {}, extraAllowed = {},
-        schedules = {}, dailyMinutes = 0, siteLimits = {},
-        timeUsedToday = { totalMinutes = 0, byDomain = {} },
-        extensionsTodayMinutes = 0,
-      },
+      ["1"] = { name = "kids",   rules = empty_rules(), failureMode = "closed" },
+      ["2"] = { name = "adults", rules = empty_rules(), failureMode = "open"   },
     },
-    blockedMacs = {},
+    blocklists = {},
   }
 end
 
@@ -84,7 +79,7 @@ describe("render.nft — #311 failover", function()
     local s = snap_two()
     -- Strip the kids-profile devices; kids is still failureMode=closed.
     s.devices = {
-      { mac = "bb:bb:bb:00:00:03", profileId = 2, name = "adult-C" },
+      ["bb:bb:bb:00:00:03"] = { profileId = 2, name = "adult-C", rules = nil },
     }
     local nft = render.nft(s, { poll_age_seconds = 9999 })
     -- No drop rule against a hypothetical empty set.
