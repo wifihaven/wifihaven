@@ -70,16 +70,33 @@ def bring_up(
     # Inline override: rebind API host port + flip debug on.
     override_path = REPO_ROOT / ".e2e-vm-artifacts" / "docker-compose.override.yml"
     override_path.parent.mkdir(parents=True, exist_ok=True)
+    # !reset replaces (rather than merges) the base-file `ports` lists so a
+    # developer's existing stack on 8080/5433 doesn't clash with the e2e stack.
+    # Postgres is only reached by the api over the compose network — no need
+    # to expose it on the host.
     override_path.write_text(
         "services:\n"
+        "  postgres:\n"
+        "    ports: !reset []\n"
         "  api:\n"
-        f"    ports:\n      - \"127.0.0.1:{api_port}:8080\"\n"
+        "    ports: !override\n"
+        f"      - \"0.0.0.0:{api_port}:8080\"\n"
         "    environment:\n"
         "      FAMILYDNS_DEBUG: \"1\"\n"
-        # Bind on all interfaces inside the docker network so the router VM
-        # (reaching us via SLIRP host gateway 10.0.2.2) can hit the API too.
-        # docker compose already exposes ${api_port} on 0.0.0.0 of the host,
-        # which is what 10.0.2.2 maps to from the guest.
+        # The compose stack ships a `fake-router` service that posts 2 fake
+        # connection events per second under its own router_id. In e2e it
+        # drowns our real router's events out of any reasonable
+        # `/api/debug/events?limit=...` window, so disable it. Override the
+        # command to a long-running no-op and zero out its healthcheck.
+        "  fake-router:\n"
+        "    command: [\"sleep\", \"infinity\"]\n"
+        "    healthcheck: !override\n"
+        "      test: [\"CMD\", \"true\"]\n"
+        "      interval: 10s\n"
+        "      timeout: 2s\n"
+        "      retries: 1\n"
+        # Bind on 0.0.0.0 of the host so the router VM (reaching us via SLIRP
+        # host gateway 10.0.2.2) can hit the API too.
     )
 
     env = os.environ.copy()

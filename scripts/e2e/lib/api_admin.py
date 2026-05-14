@@ -77,6 +77,41 @@ class AdminAPI:
         # PUT requires the full nested shape; callers should fetch + merge.
         return self._request("PUT", f"/api/profiles/{profile_id}", body=fields)
 
+    def apply_profile_update(
+        self, profile_id: int, **changes: Any,
+    ) -> dict[str, Any]:
+        """GET the profile, fold in `changes`, and PUT the merged result.
+
+        Handles the fact that GET returns the profile in a nested shape
+        (`{profile: {...}, schedules: [...], timeLimit: {...} | null,
+        siteTimeLimits: [...]}`) while PUT requires a flat body and expects
+        `timeLimit` to be an integer minute-count, not the object the GET
+        returns. Callers should pass overrides as keyword args (e.g.
+        `extraBlocked=[...]`, `timeLimit=5`).
+        """
+        full = self.get_profile(profile_id)
+        prof = full.get("profile", full) if isinstance(full, dict) else {}
+        tl = full.get("timeLimit") if isinstance(full, dict) else None
+        time_limit_minutes: int | None
+        if isinstance(tl, dict):
+            time_limit_minutes = tl.get("dailyMinutes")
+        else:
+            time_limit_minutes = tl  # None or already an int
+        body: dict[str, Any] = {
+            "name": prof.get("name"),
+            "blockedCategories": prof.get("blockedCategories", []),
+            "extraBlocked": prof.get("extraBlocked", []),
+            "extraAllowed": prof.get("extraAllowed", []),
+            "paused": prof.get("paused", False),
+            "schedules": full.get("schedules", []) if isinstance(full, dict) else [],
+            "timeLimit": time_limit_minutes,
+            "siteTimeLimits":
+                full.get("siteTimeLimits", []) if isinstance(full, dict) else [],
+            "failureMode": prof.get("failureMode", "closed"),
+        }
+        body.update(changes)
+        return self._request("PUT", f"/api/profiles/{profile_id}", body=body)
+
     def get_profile(self, profile_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/profiles/{profile_id}")
 
@@ -87,9 +122,7 @@ class AdminAPI:
         self._request("DELETE", f"/api/profiles/{profile_id}")
 
     def set_profile_paused(self, profile_id: int, paused: bool) -> dict[str, Any]:
-        full = self.get_profile(profile_id)
-        prof = full.get("profile", full)
-        return self.update_profile(profile_id, **{**prof, "paused": paused})
+        return self.apply_profile_update(profile_id, paused=paused)
 
     # ── devices ───────────────────────────────────────────────────────────
 

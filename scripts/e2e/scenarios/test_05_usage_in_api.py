@@ -32,8 +32,14 @@ def test_usage_visible_in_logs_and_time_status(
     assert any((l.get("mac") or "").lower() == client.mac.lower() for l in logs), \
         f"no /api/logs entry for {client.mac}; got {len(logs)} entries"
 
-    # time_status should at minimum list the MAC; usedMins may be 0 if usage
-    # hasn't been ingested yet, so we don't assert on it.
+    # /api/time/status returns ProfileTimeStatus[] keyed by profile, each with
+    # a deviceSummaries: [{mac, name, minutesUsed}] list. The device shows up
+    # there as soon as it has a profile, even before usage is ingested.
     statuses = admin.time_status()
-    assert any((s.get("deviceMac") or "").lower() == client.mac.lower() for s in statuses), \
-        f"no /api/time/status row for {client.mac}"
+    summaries = [
+        d
+        for prof in statuses
+        for d in prof.get("deviceSummaries", [])
+    ]
+    assert any((d.get("mac") or "").lower() == client.mac.lower() for d in summaries), \
+        f"no /api/time/status entry for {client.mac}; got {len(summaries)} summaries"

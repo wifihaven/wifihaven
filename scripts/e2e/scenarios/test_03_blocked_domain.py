@@ -18,10 +18,7 @@ BLOCKED_HOST = "example.org"
 def test_blocked_domain_request_dropped(
     router, client, scratch_device, scratch_profile, admin, debug_api,
 ):
-    full = admin.get_profile(scratch_profile["id"])
-    prof = full["profile"]
-    prof["extraBlocked"] = [BLOCKED_HOST]
-    admin.update_profile(scratch_profile["id"], **prof)
+    admin.apply_profile_update(scratch_profile["id"], extraBlocked=[BLOCKED_HOST])
 
     wait_for_etag_change(admin, router.router_id, timeout_s=120)
 

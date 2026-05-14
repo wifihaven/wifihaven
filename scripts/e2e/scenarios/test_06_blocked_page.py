@@ -19,10 +19,7 @@ BLOCKED_HOST = "blocked-page-test.example.net"
 def test_blocked_request_returns_block_page(
     router, client, scratch_device, scratch_profile, admin,
 ):
-    full = admin.get_profile(scratch_profile["id"])
-    prof = full["profile"]
-    prof["extraBlocked"] = [BLOCKED_HOST]
-    admin.update_profile(scratch_profile["id"], **prof)
+    admin.apply_profile_update(scratch_profile["id"], extraBlocked=[BLOCKED_HOST])
     wait_for_etag_change(admin, router.router_id, timeout_s=120)
 
     # The agent may need a few seconds after applying the new policy before

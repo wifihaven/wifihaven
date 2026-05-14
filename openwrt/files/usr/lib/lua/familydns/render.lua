@@ -130,9 +130,13 @@ function M.dnsmasq(snapshot)
   -- an nftables ipset with the resolved IPs of each blocked host, so the
   -- forward-hook drop can match by `ip daddr ∈ @eb_<host>`. DNS still
   -- resolves the host normally — see docs/architecture.md §0.1 (Truth 1).
-  emit("# extraBlocked → per-host ipset populated at resolve time (#351)")
+  -- OpenWRT 23.05+ ships dnsmasq-full without HAVE_IPSET; the legacy
+  -- ipset framework was dropped in favour of native nftables sets, so we
+  -- emit `nftset=` and populate the per-host nft set in the `inet
+  -- familydns` table directly. Syntax: nftset=/<host>/4#<family>#<table>#<set>.
+  emit("# extraBlocked → per-host nftset populated at resolve time (#351)")
   for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
-    emit(string.format("ipset=/%s/%s", host, eb_set_name(host)))
+    emit(string.format("nftset=/%s/4#inet#familydns#%s", host, eb_set_name(host)))
   end
   emit("")
 

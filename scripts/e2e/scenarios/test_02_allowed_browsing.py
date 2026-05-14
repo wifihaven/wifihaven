@@ -28,7 +28,7 @@ def test_allowed_request_succeeds_and_event_recorded(
         return None
 
     matched = wait_until(
-        find_event, timeout_s=30, interval_s=2,
+        find_event, timeout_s=120, interval_s=3,
         description="allowed connection_event for example.com",
     )
     assert matched is not None

@@ -117,8 +117,11 @@ def router(router_session) -> EnrolledRouter:
     running, no profiles or devices touching this MAC yet.
     """
     router_restore(BASE_SNAPSHOT)
-    # Give the agent a tick to settle after the live restore.
-    time.sleep(1)
+    # Give the agent + dnsmasq + networking a chance to settle after the live
+    # restore. 1s is too short — curl from the client side raced and saw
+    # connection-refused on the first scenario after enrollment. 8s buys us a
+    # fully-converged state without slowing the suite materially.
+    time.sleep(8)
     return router_session
 
 

@@ -22,10 +22,7 @@ pytestmark = pytest.mark.daily_limit
 def test_daily_limit_blocks_after_quota(
     router, client, scratch_device, scratch_profile, admin, debug_api,
 ):
-    full = admin.get_profile(scratch_profile["id"])
-    prof = full["profile"]
-    prof["timeLimit"] = {"dailyMinutes": 1, "siteTimeLimits": []}
-    admin.update_profile(scratch_profile["id"], **prof)
+    admin.apply_profile_update(scratch_profile["id"], timeLimit=1)
     wait_for_etag_change(admin, router.router_id, timeout_s=120)
 
     # Generate ~90 seconds of traffic against an allowed host to exceed 1 min.
