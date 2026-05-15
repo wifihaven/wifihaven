@@ -205,8 +205,8 @@ end
 -- reload_fn(cmd) is called with a shell command string; return value is ignored.
 --
 -- opts is an optional table. opts.dns_check_fn (#328 / #351): when the
--- rendered dnsmasq.conf contains at least one `ipset=/<host>/eb_...` line
--- (i.e. there is something to enforce), we probe one of those hosts via
+-- rendered dnsmasq.conf contains at least one `nftset=/<host>/...#eb_...`
+-- line (i.e. there is something to enforce), we probe one of those hosts via
 -- the router's own resolver after the dnsmasq restart. Post-#351 DNS is
 -- NOT the enforcement plane — blocked hosts must resolve to a real IP, so
 -- the probe inverts the old semantics: a sinkhole-shaped answer
@@ -250,12 +250,13 @@ local function is_blocked_at_connection(result)
 end
 
 -- Extract the first extraBlocked host from the rendered dnsmasq content by
--- looking for an `ipset=/<host>/eb_...` directive (the per-host set name
--- prefix is the agent's canonical marker for #351 enforcement). Returns
+-- looking for an `nftset=/<host>/...#eb_...` directive (the per-host set
+-- name prefix is the agent's canonical marker for #351 enforcement; the
+-- nftset= form replaces legacy ipset= post-OpenWRT-23.05 per #392). Returns
 -- nil if there are no extraBlocked hosts active.
 local function first_extrablocked_host(dnsmasq_content)
-  return dnsmasq_content:match("\nipset=/([^/\n]+)/eb_")
-      or dnsmasq_content:match("^ipset=/([^/\n]+)/eb_")
+  return dnsmasq_content:match("\nnftset=/([^/\n]+)/[^\n]-#eb_")
+      or dnsmasq_content:match("^nftset=/([^/\n]+)/[^\n]-#eb_")
 end
 
 function M.apply(snapshot, write_fn, reload_fn, log, opts)
@@ -279,7 +280,7 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   log.debug("policy.apply: wrote dnsmasq=%dB nft=%dB; restarting",
             #dnsmasq_content, #nft_content)
   -- #328: must be `restart`, not `reload`. SIGHUP doesn't re-read conf-dir,
-  -- so `reload` leaves new address=/, dhcp-host=, and ipset= directives
+  -- so `reload` leaves new address=/, dhcp-host=, and nftset= directives
   -- silently inactive until something else restarts the service.
   reload_fn("/etc/init.d/dnsmasq restart")
   -- Single atomic `nft -f`. The rendered file's prelude removes both the

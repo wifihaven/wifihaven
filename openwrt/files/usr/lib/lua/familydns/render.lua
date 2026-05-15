@@ -104,19 +104,27 @@ local function effective_extra_blocked_hosts(snapshot)
   return hosts
 end
 
--- nft set name for an extraBlocked host. `eb_` prefix scopes against
--- categorical blocklists (#352 uses `bl_`).
+-- nft set names for an extraBlocked host. `eb_` is the v4 ipset; `eb6_` is
+-- the v6 sibling (#392) so a dual-stack or v6-only host can't escape the
+-- per-(MAC, host) drop via AAAA records. Same hash for both so they stay
+-- parallel in the config.
 local function eb_set_name(host)
   return "eb_" .. sanitize(host)
 end
+local function eb6_set_name(host)
+  return "eb6_" .. sanitize(host)
+end
 
--- nft set name for a blocklist id (#352). Replaces dots, colons, and
+-- nft set names for a blocklist id (#352, #392). Replaces dots, colons, and
 -- hyphens with underscores (nftables set names allow only [a-zA-Z0-9_]).
 local function bl_sanitize(id)
   return (id:gsub("[%.%:%-%s]", "_"))
 end
 local function bl_set_name(id)
   return "bl_" .. bl_sanitize(id)
+end
+local function bl6_set_name(id)
+  return "bl6_" .. bl_sanitize(id)
 end
 
 -- ---------------------------------------------------------------------------
@@ -142,31 +150,42 @@ function M.dnsmasq(snapshot)
 
   -- #351: extraBlocked is enforced at the connection layer (per-MAC nft
   -- drop), not via DNS sinkhole. dnsmasq's only role here is to populate
-  -- an nftables ipset with the resolved IPs of each blocked host, so the
+  -- an nftables set with the resolved IPs of each blocked host, so the
   -- forward-hook drop can match by `ip daddr ∈ @eb_<host>`. DNS still
   -- resolves the host normally — see docs/architecture.md §0.1 (Truth 1).
+  --
   -- OpenWRT 23.05+ ships dnsmasq-full without HAVE_IPSET; the legacy
   -- ipset framework was dropped in favour of native nftables sets, so we
   -- emit `nftset=` and populate the per-host nft set in the `inet
-  -- familydns` table directly. Syntax: nftset=/<host>/4#<family>#<table>#<set>.
-  emit("# extraBlocked → per-host nftset populated at resolve time (#351)")
+  -- familydns` table directly. Syntax:
+  --   nftset=/<host>/<af>#<family>#<table>#<set>[,<af>#...]
+  -- The `4#` / `6#` address-family prefix selects which dnsmasq response
+  -- type routes to which set (#392): A → v4 set, AAAA → v6 set. One
+  -- comma-joined directive per host keeps the config compact.
+  emit("# extraBlocked → per-host nftset populated at resolve time (#351, #392)")
   for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
-    emit(string.format("nftset=/%s/4#inet#familydns#%s", host, eb_set_name(host)))
+    emit(string.format(
+      "nftset=/%s/4#inet#familydns#%s,6#inet#familydns#%s",
+      host, eb_set_name(host), eb6_set_name(host)))
   end
   emit("")
 
-  -- #352: category blocklists — populate bl_<id> ipsets at DNS resolve time.
-  -- snapshot._blocklist_hosts = { [id] = {host1, host2, ...} } is populated
-  -- by the agent before calling render (so tests can inject without filesystem).
+  -- #352: category blocklists — populate bl_<id> / bl6_<id> sets at DNS
+  -- resolve time. snapshot._blocklist_hosts = { [id] = {host1, ...} } is
+  -- populated by the agent before calling render (so tests can inject
+  -- without filesystem). Same nftset= migration as eb_ above (#392).
   local bl_hosts = snapshot._blocklist_hosts or {}
   local bl_ids   = sorted_keys(snapshot.blocklists or {})
   if #bl_ids > 0 then
-    emit("# blocklist ipsets → resolved at DNS time (#352)")
+    emit("# blocklist nftsets → resolved at DNS time (#352, #392)")
     for _, id in ipairs(bl_ids) do
-      local hosts = bl_hosts[id] or {}
-      local set_name = bl_set_name(id)
+      local hosts   = bl_hosts[id] or {}
+      local set4    = bl_set_name(id)
+      local set6    = bl6_set_name(id)
       for _, host in ipairs(hosts) do
-        emit(string.format("ipset=/%s/%s", host, set_name))
+        emit(string.format(
+          "nftset=/%s/4#inet#familydns#%s,6#inet#familydns#%s",
+          host, set4, set6))
       end
     end
     emit("")
@@ -306,14 +325,20 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
-  -- #351: per-host ipsets for extraBlocked. Each set is populated at DNS
-  -- resolve time by dnsmasq `ipset=/host/eb_<host>` (rendered by dnsmasq()
-  -- above). Dynamic + 1h timeout so resolved entries age out and we don't
-  -- leak shared-CDN IPs to other hosts indefinitely.
+  -- #351/#392: per-host v4 + v6 sets for extraBlocked. Each set is populated
+  -- at DNS resolve time by dnsmasq nftset= (rendered by dnsmasq() above):
+  -- A records → eb_<host>, AAAA → eb6_<host>. Dynamic + 1h timeout so
+  -- resolved entries age out and we don't leak shared-CDN IPs indefinitely.
   local eb_hosts = effective_extra_blocked_hosts(snapshot)
   for _, host in ipairs(eb_hosts) do
     ind(string.format("set %s {", eb_set_name(host)))
     ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+    ind(string.format("set %s {", eb6_set_name(host)))
+    ind2("type ipv6_addr")
     ind2("flags dynamic,timeout")
     ind2("timeout 1h")
     ind("}")
@@ -347,6 +372,12 @@ function M.nft(snapshot, opts)
     ind2("timeout 1h")
     ind("}")
     emit("")
+    ind(string.format("set %s {", bl6_set_name(id)))
+    ind2("type ipv6_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
   end
 
   -- #352: per-(MAC, blocklistId) drop pairs. For each device, for each
@@ -371,13 +402,23 @@ function M.nft(snapshot, opts)
   if #blocked_macs_list > 0 then
     ind2("ether saddr @blocked_macs drop")
   end
+  -- v4 drops first, then v6 (#392). One ipset directive populates both sets
+  -- at DNS time; here we gate on whichever family the destination matched.
   for _, p in ipairs(eb_pairs) do
     ind2(string.format("ether saddr %s ip daddr @%s drop",
                        p.mac, eb_set_name(p.host)))
   end
+  for _, p in ipairs(eb_pairs) do
+    ind2(string.format("ether saddr %s ip6 daddr @%s drop",
+                       p.mac, eb6_set_name(p.host)))
+  end
   for _, p in ipairs(bl_pairs) do
     ind2(string.format("ether saddr %s ip daddr @%s drop",
                        p.mac, bl_set_name(p.id)))
+  end
+  for _, p in ipairs(bl_pairs) do
+    ind2(string.format("ether saddr %s ip6 daddr @%s drop",
+                       p.mac, bl6_set_name(p.id)))
   end
   ind("}")
   emit("")
