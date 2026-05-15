@@ -17,19 +17,27 @@
 -- the `drop` lines does not affect the outcome (only minor packet-path
 -- perf), so the predicate is the disjunction of all drop conditions.
 --
--- For a forwarded packet from MAC m to v4/v6 destination d:
+-- For a forwarded packet from MAC m to v4/v6 destination d, let
+--   ea_hit(m, d) ⇔ ∃ a ∈ extraAllowed(m). d ∈ @ea_<m>_a   (or @ea6_<m>_a v6).
+-- Then:
 --
 --   drop(m, d) ⇔
 --         m ∈ @blocked_macs
---      ∨  ∃ h ∈ extraBlocked(m). d ∈ @eb_h         (or @eb6_h for v6)
---      ∨  ∃ id ∈ blocklistIds(m). d ∈ @bl_id       (or @bl6_id for v6)
+--      ∨  ( ∃ h ∈ extraBlocked(m). d ∈ @eb_h ∧ ¬ea_hit(m, d) )
+--      ∨  ( ∃ id ∈ blocklistIds(m). d ∈ @bl_id ∧ ¬ea_hit(m, d) )
 --      ∨  blockIpOnly(m) ∧ d ∉ @resolved_<m>       (or @resolved6_<m> for v6)
 --      ∨  m ∈ @failover_drop                       (block-all failover only)
 --
--- allow := ¬drop. extraAllowed is currently not enforced at this layer
--- (#421 will add per-(MAC, host) ea_ exception sets); time-limit / schedule
--- / pause are collapsed server-side into rules.blocked + extraBlocked /
--- extraAllowed by the API, so the agent never sees a temporal field.
+-- allow := ¬drop. extraAllowed beats extraBlocked beats blocklists (#421):
+-- the eb_/bl_ drop rules carry one `ip daddr != @ea_<m>_<a>` clause per
+-- host in m's effective extraAllowed list, so a hit in any ea_ set
+-- suppresses the eb_/bl_ drops for that (mac, packet). blockIpOnly is
+-- intentionally NOT suppressed by ea sets — extraAllowed composes via
+-- the dnsmasq resolver populating resolved_<m> at A/AAAA time, so a
+-- resolved-allowed host already lands in resolved_<m>.
+-- Time-limit / schedule / pause are collapsed server-side into
+-- rules.blocked + extraBlocked / extraAllowed by the API, so the agent
+-- never sees a temporal field.
 --
 -- Layer split:
 --   API server  — pre-evaluates schedules, time limits, pauses; resolves
@@ -173,6 +181,47 @@ local function resolved_tag_name(mac)
   return "resolvetag_" .. sanitize(mac)
 end
 
+-- #421: per-(MAC, host) extraAllowed exception sets. ea_<sanmac>_<sanhost>
+-- holds the v4 resolved IPs of host a for the dhcp-tagged MAC m; ea6_ is the
+-- v6 sibling. The eb_/bl_ drop rules append `ip daddr != @ea_<m>_<a>` for
+-- each a ∈ extraAllowed(m), so a hit suppresses the drop. eatag_<sanmac>
+-- is the dhcp-host tag that scopes the dnsmasq nftset= populator to one MAC
+-- (separate from resolvetag_ so a device can opt into blockIpOnly without
+-- also having extraAllowed, and vice-versa).
+local function ea_set_name(mac, host)
+  return "ea_" .. sanitize(mac) .. "_" .. sanitize(host)
+end
+local function ea6_set_name(mac, host)
+  return "ea6_" .. sanitize(mac) .. "_" .. sanitize(host)
+end
+local function ea_tag_name(mac)
+  return "eatag_" .. sanitize(mac)
+end
+
+-- Per-MAC effective extraAllowed hosts. Returns { [mac] = {host, ...} } with
+-- hosts sorted + deduplicated; macs with no effective extraAllowed entries
+-- are absent from the map.
+local function effective_extra_allowed_by_mac(snapshot)
+  local result = {}
+  for mac, dev in pairs(snapshot.devices or {}) do
+    local r = effective_rules(dev, snapshot.profiles)
+    if r and type(r.extraAllowed) == "table" and #r.extraAllowed > 0 then
+      local seen = {}
+      local hosts = {}
+      for _, h in ipairs(r.extraAllowed) do
+        if not seen[h] then
+          seen[h] = true
+          hosts[#hosts + 1] = h
+        end
+      end
+      table.sort(hosts)
+      result[mac] = hosts
+    end
+  end
+  return result
+end
+M.effective_extra_allowed_by_mac = effective_extra_allowed_by_mac
+
 -- Sorted list of MACs with effective blockIpOnly=true. Used by both
 -- render.dnsmasq (to emit the per-MAC nftset populator) and render.nft
 -- (to declare sets + emit drops).
@@ -204,6 +253,10 @@ function M.dnsmasq(snapshot)
   local bio_macs = {}
   for _, m in ipairs(block_ip_only_macs(snapshot)) do bio_macs[m] = true end
 
+  -- #421: which MACs need a per-MAC eatag (have non-empty effective
+  -- extraAllowed). Same lookup-by-MAC pattern as bio_macs.
+  local ea_by_mac = effective_extra_allowed_by_mac(snapshot)
+
   -- MAC → profile tag so dnsmasq can apply per-profile tagged callbacks.
   -- Devices auto-created from first_seen_mac events have profileId=nil
   -- until an admin assigns them; skip them (no policy to apply yet).
@@ -211,15 +264,19 @@ function M.dnsmasq(snapshot)
   -- #353: blockIpOnly MACs get an additional `set:resolvetag_<sanmac>` tag
   -- on the same line so the tag-scoped `nftset=` populator below catches
   -- every A/AAAA answered to this client.
+  -- #421: MACs with extraAllowed get an additional `set:eatag_<sanmac>` tag
+  -- so the per-(MAC, host) ea_ populator below catches the right MAC.
   emit("# device MAC → profile tag")
   for mac, dev in sorted_devices(snapshot.devices) do
     if dev.profileId then
+      local tags = { string.format("set:profile%d", dev.profileId) }
       if bio_macs[mac] then
-        emit(string.format("dhcp-host=%s,set:profile%d,set:%s",
-                           mac, dev.profileId, resolved_tag_name(mac)))
-      else
-        emit(string.format("dhcp-host=%s,set:profile%d", mac, dev.profileId))
+        tags[#tags + 1] = "set:" .. resolved_tag_name(mac)
       end
+      if ea_by_mac[mac] then
+        tags[#tags + 1] = "set:" .. ea_tag_name(mac)
+      end
+      emit(string.format("dhcp-host=%s,%s", mac, table.concat(tags, ",")))
     end
   end
   emit("")
@@ -237,6 +294,28 @@ function M.dnsmasq(snapshot)
         resolved_tag_name(mac), resolved_set_name(mac), resolved6_set_name(mac)))
     end
     emit("")
+  end
+
+  -- #421: per-(MAC, host) extraAllowed nftset populators. Tag-scoped so
+  -- only the targeted MAC's DNS responses for host a land in ea_<m>_<a> /
+  -- ea6_<m>_<a>. The eb_/bl_ drop rules then carry `ip daddr != @ea_...`
+  -- clauses to suppress the drop when daddr is in any ea set for that MAC.
+  do
+    local ea_macs = {}
+    for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
+    table.sort(ea_macs)
+    if #ea_macs > 0 then
+      emit("# extraAllowed → per-(MAC, host) ea_ nftsets (#421)")
+      for _, mac in ipairs(ea_macs) do
+        for _, host in ipairs(ea_by_mac[mac]) do
+          emit(string.format(
+            "nftset=tag:%s,/%s/4#inet#familydns#%s,6#inet#familydns#%s",
+            ea_tag_name(mac), host,
+            ea_set_name(mac, host), ea6_set_name(mac, host)))
+        end
+      end
+      emit("")
+    end
   end
 
   -- #351: extraBlocked is enforced at the connection layer (per-MAC nft
@@ -436,6 +515,52 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
+  -- #421: per-(MAC, host) extraAllowed sets. One v4 + one v6 set per
+  -- (mac, host) pair that appears in some device's effective extraAllowed
+  -- list. Sets are declared even for allowall-suppressed MACs (the dnsmasq
+  -- populator still runs harmlessly; sets are cheap) — the drop/DNAT
+  -- suffixes below are what allowall actually suppresses, by virtue of
+  -- the eb_/bl_ rules themselves being suppressed for those MACs.
+  local ea_by_mac = effective_extra_allowed_by_mac(snapshot)
+  do
+    local ea_macs = {}
+    for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
+    table.sort(ea_macs)
+    for _, mac in ipairs(ea_macs) do
+      for _, host in ipairs(ea_by_mac[mac]) do
+        ind(string.format("set %s {", ea_set_name(mac, host)))
+        ind2("type ipv4_addr")
+        ind2("flags dynamic,timeout")
+        ind2("timeout 1h")
+        ind("}")
+        emit("")
+        ind(string.format("set %s {", ea6_set_name(mac, host)))
+        ind2("type ipv6_addr")
+        ind2("flags dynamic,timeout")
+        ind2("timeout 1h")
+        ind("}")
+        emit("")
+      end
+    end
+  end
+
+  -- #421: helper — emit the `ip daddr != @ea_<m>_<a>` exception suffix
+  -- to append to a (mac, family) drop / dnat predicate. Joins one clause
+  -- per a ∈ extraAllowed(m); returns "" if the MAC has no extraAllowed.
+  local function ea_suffix(mac, family)
+    local hosts = ea_by_mac[mac]
+    if not hosts or #hosts == 0 then return "" end
+    local parts = {}
+    for _, host in ipairs(hosts) do
+      if family == "ip6" then
+        parts[#parts + 1] = " ip6 daddr != @" .. ea6_set_name(mac, host)
+      else
+        parts[#parts + 1] = " ip daddr != @" .. ea_set_name(mac, host)
+      end
+    end
+    return table.concat(parts)
+  end
+
   -- #351: per-(MAC, host) drop pairs. We build the cross-product from each
   -- device's *effective* extraBlocked list (device override > profile rules),
   -- so a profile's extraBlocked applies only to MACs in that profile and a
@@ -522,21 +647,25 @@ function M.nft(snapshot, opts)
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
+  -- #421: each eb_/bl_ drop carries `ip daddr != @ea_<m>_<a>` exception
+  -- clauses (one per a ∈ extraAllowed(m)) so an allowed host's resolved
+  -- IPs suppress the drop. ea_suffix("") for MACs with no extraAllowed,
+  -- so behaviour for those is unchanged.
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s drop",
-                       p.mac, eb_set_name(p.host)))
+    ind2(string.format("ether saddr %s ip daddr @%s%s drop",
+                       p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip")))
   end
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s drop",
-                       p.mac, eb6_set_name(p.host)))
+    ind2(string.format("ether saddr %s ip6 daddr @%s%s drop",
+                       p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6")))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s drop",
-                       p.mac, bl_set_name(p.id)))
+    ind2(string.format("ether saddr %s ip daddr @%s%s drop",
+                       p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip")))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s drop",
-                       p.mac, bl6_set_name(p.id)))
+    ind2(string.format("ether saddr %s ip6 daddr @%s%s drop",
+                       p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6")))
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
@@ -565,13 +694,13 @@ function M.nft(snapshot, opts)
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
-        "ether saddr %s ip daddr @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-        p.mac, eb_set_name(p.host)))
+        "ether saddr %s ip daddr @%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip")))
     end
     for _, p in ipairs(bl_pairs) do
       ind2(string.format(
-        "ether saddr %s ip daddr @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-        p.mac, bl_set_name(p.id)))
+        "ether saddr %s ip daddr @%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip")))
     end
     -- #353: blockIpOnly v4 DNAT. Same predicate as the forward-chain drop;
     -- the DNAT fires *before* the drop (prerouting < forward), so the
@@ -589,13 +718,13 @@ function M.nft(snapshot, opts)
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
-        "ether saddr %s ip6 daddr @%s tcp dport 80 dnat ip6 to ::1:8081",
-        p.mac, eb6_set_name(p.host)))
+        "ether saddr %s ip6 daddr @%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6")))
     end
     for _, p in ipairs(bl_pairs) do
       ind2(string.format(
-        "ether saddr %s ip6 daddr @%s tcp dport 80 dnat ip6 to ::1:8081",
-        p.mac, bl6_set_name(p.id)))
+        "ether saddr %s ip6 daddr @%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6")))
     end
     -- #353 + #411: blockIpOnly v6 DNAT. `ip6 daddr != ::1` guards against
     -- self-redirect (the uhttpd listener at ::1 is "not in resolved set"

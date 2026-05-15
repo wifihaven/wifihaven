@@ -24,7 +24,7 @@ local function snap_one()
           blocked      = false,
           blockReason  = nil,
           extraBlocked = { "tiktok.com" },
-          extraAllowed = { "khanacademy.org" },
+          extraAllowed = {},
           blocklistIds = { "ads", "adult" },
           blockIpOnly  = false,
         },
@@ -72,9 +72,11 @@ describe("render.dnsmasq", function()
       1, true))
   end)
 
-  it("does NOT emit nftset= for extraAllowed hosts", function()
+  it("does NOT emit nftset= for extraAllowed hosts when extraAllowed is empty", function()
+    -- snap_one has extraAllowed = {} so no ea_ nftsets / eatag should appear.
     local conf = render.dnsmasq(snap_one())
-    assert.is_nil(conf:find("/khanacademy.org/", 1, true))
+    assert.is_nil(conf:find("eatag_", 1, true))
+    assert.is_nil(conf:find("#familydns#ea_", 1, true))
   end)
 
   it("handles multiple devices in different profiles", function()
@@ -1100,6 +1102,296 @@ describe("render blockIpOnly enforcement (#353)", function()
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
       1, true))
+  end)
+
+end)
+
+-- ── extraAllowed per-(MAC, host) exception (#421) ───────────────────────────
+--
+-- extraAllowed beats extraBlocked beats blocklists. Each eb_/bl_ drop rule
+-- for MAC m carries `ip daddr != @ea_<m>_<a>` clauses (one per a ∈
+-- extraAllowed(m)) so a hit in any ea_ set for that MAC suppresses the drop.
+-- Scoping is per-(MAC, host): a host can be allowed for MAC A and blocked
+-- for MAC B independently. blockIpOnly is NOT suppressed by ea sets — its
+-- composition is via DNS resolution landing the IP in resolved_<m>.
+
+describe("render extraAllowed enforcement (#421)", function()
+
+  -- Snapshot: kid (profile 3) has extraBlocked={"tiktok.com"} and
+  -- extraAllowed={"music.tiktok.com"} so the blocked-domain drop has an
+  -- in-tree carve-out. Adult (profile 1) has nothing.
+  local function snap_ea()
+    return {
+      etag        = "sha256:abc123",
+      generatedAt = "2026-05-15T14:00:00Z",
+      devices = {
+        ["aa:bb:cc:11:22:33"] = { profileId = 3, name = "kid-ipad",     rules = nil },
+        ["de:ad:be:ef:00:01"] = { profileId = 1, name = "parent-phone", rules = nil },
+      },
+      profiles = {
+        ["3"] = {
+          name = "kids",
+          rules = {
+            blocked      = false,
+            blockReason  = nil,
+            extraBlocked = { "tiktok.com" },
+            extraAllowed = { "music.tiktok.com" },
+            blocklistIds = { "test_ads" },
+            blockIpOnly  = false,
+          },
+          failureMode = "block-all",
+        },
+        ["1"] = {
+          name = "adults",
+          rules = {
+            blocked = false, blockReason = nil,
+            extraBlocked = { "tiktok.com" },
+            extraAllowed = {},
+            blocklistIds = {},
+            blockIpOnly  = false,
+          },
+          failureMode = "last-known-good",
+        },
+      },
+      blocklists = {
+        test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" },
+      },
+      _blocklist_hosts = { test_ads = { "adserver.example.com" } },
+    }
+  end
+
+  -- ── dnsmasq side ────────────────────────────────────────────────────────
+
+  it("appends set:eatag_<sanmac> to the dhcp-host line of a MAC with extraAllowed", function()
+    local conf = render.dnsmasq(snap_ea())
+    assert.truthy(conf:find(
+      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:eatag_aa_bb_cc_11_22_33",
+      1, true))
+  end)
+
+  it("does NOT append eatag_ to MACs with empty extraAllowed", function()
+    local conf = render.dnsmasq(snap_ea())
+    -- Adult MAC has extraAllowed={}; its line must be plain set:profile1.
+    assert.truthy(conf:find("dhcp-host=de:ad:be:ef:00:01,set:profile1\n", 1, true)
+               or conf:match("dhcp-host=de:ad:be:ef:00:01,set:profile1$"))
+    assert.is_nil(conf:find(
+      "dhcp-host=de:ad:be:ef:00:01,.-eatag_", 1, false))
+  end)
+
+  it("emits tag-scoped nftset= populator for the per-(MAC, host) ea_ / ea6_ sets", function()
+    local conf = render.dnsmasq(snap_ea())
+    assert.truthy(conf:find(
+      "nftset=tag:eatag_aa_bb_cc_11_22_33,/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com,6#inet#familydns#ea6_aa_bb_cc_11_22_33_music_tiktok_com",
+      1, true))
+  end)
+
+  it("emits one nftset= populator per (mac, host) when a MAC has multiple extraAllowed hosts", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=tag:eatag_aa_bb_cc_11_22_33,/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=tag:eatag_aa_bb_cc_11_22_33,/khanacademy.org/4#inet#familydns#ea_aa_bb_cc_11_22_33_khanacademy_org",
+      1, true))
+  end)
+
+  it("does NOT emit ea_ nftsets or eatag dhcp-host suffix when no device has extraAllowed", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.extraAllowed = {}
+    local conf = render.dnsmasq(s)
+    assert.is_nil(conf:find("eatag_", 1, true))
+    assert.is_nil(conf:find("#familydns#ea_", 1, true))
+  end)
+
+  it("device-override extraAllowed scopes the ea populator to that MAC only", function()
+    local s = snap_ea()
+    -- Profile flips OFF; sibling under same profile has no override.
+    s.profiles["3"].rules.extraAllowed = {}
+    s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
+    s.devices["aa:bb:cc:11:22:33"].rules = {
+      blocked = false, blockReason = nil,
+      extraBlocked = { "tiktok.com" }, extraAllowed = { "music.tiktok.com" },
+      blocklistIds = {}, blockIpOnly = false,
+    }
+    local conf = render.dnsmasq(s)
+    -- Override MAC gets eatag + populator.
+    assert.truthy(conf:find(
+      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:eatag_aa_bb_cc_11_22_33",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=tag:eatag_aa_bb_cc_11_22_33,/music.tiktok.com/", 1, true))
+    -- Sibling under same profile must NOT inherit.
+    assert.is_nil(conf:find("eatag_11_22_33_44_55_66", 1, true))
+  end)
+
+  -- ── nft side: set declarations ──────────────────────────────────────────
+
+  it("declares set ea_<sanmac>_<sanhost> (ipv4_addr, dynamic, 1h timeout)", function()
+    local nft = render.nft(snap_ea())
+    local pos = nft:find("set ea_aa_bb_cc_11_22_33_music_tiktok_com", 1, true)
+    assert.truthy(pos)
+    local blk = nft:sub(pos, pos + 200)
+    assert.truthy(blk:find("type ipv4_addr", 1, true))
+    assert.truthy(blk:find("flags dynamic,timeout", 1, true))
+    assert.truthy(blk:find("timeout 1h", 1, true))
+  end)
+
+  it("declares set ea6_<sanmac>_<sanhost> (ipv6_addr, dynamic, 1h timeout)", function()
+    local nft = render.nft(snap_ea())
+    local pos = nft:find("set ea6_aa_bb_cc_11_22_33_music_tiktok_com", 1, true)
+    assert.truthy(pos)
+    local blk = nft:sub(pos, pos + 200)
+    assert.truthy(blk:find("type ipv6_addr", 1, true))
+    assert.truthy(blk:find("flags dynamic,timeout", 1, true))
+    assert.truthy(blk:find("timeout 1h", 1, true))
+  end)
+
+  it("declares no ea_/ea6_ sets when no device has extraAllowed", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.extraAllowed = {}
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("set ea_", 1, true))
+    assert.is_nil(nft:find("set ea6_", 1, true))
+  end)
+
+  -- ── nft side: drop predicate gets `ip daddr != @ea_...` suffix ──────────
+
+  it("appends `ip daddr != @ea_<m>_<a>` to the eb_<host> drop for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
+  it("appends `ip6 daddr != @ea6_<m>_<a>` to the eb6_<host> drop for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
+  it("appends `ip daddr != @ea_<m>_<a>` to the bl_<id> drop for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
+  it("appends `ip6 daddr != @ea6_<m>_<a>` to the bl6_<id> drop for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
+  it("appends one `ip daddr != @ea_...` clause per extraAllowed host (multiple hosts)", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
+    local nft = render.nft(s)
+    -- Both clauses present in the same eb_ drop rule, in sorted order.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
+  -- Multi-MAC scoping: extraAllowed for MAC A must NOT carve out MAC B's drops.
+  it("does NOT append ea suffix to a different MAC's drop rule (per-MAC scoping)", function()
+    local nft = render.nft(snap_ea())
+    -- Adult MAC has the same eb_tiktok_com drop but extraAllowed={}, so no
+    -- ea_ suffix on its rule.
+    assert.truthy(nft:find(
+      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com drop", 1, true))
+    -- And specifically not carrying the kid's ea set.
+    assert.is_nil(nft:find(
+      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com",
+      1, true))
+  end)
+
+  it("leaves drops without ea suffix when MAC has empty extraAllowed", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.extraAllowed = {}
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com drop", 1, true))
+  end)
+
+  -- ── DNAT chain: same suffix applied ─────────────────────────────────────
+
+  it("appends `ip daddr != @ea_<m>_<a>` to the eb_<host> DNAT for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  it("appends `ip6 daddr != @ea6_<m>_<a>` to the eb6_<host> DNAT for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip6 to ::1:8081",
+      1, true))
+  end)
+
+  it("appends `ip daddr != @ea_<m>_<a>` to the bl_<id> DNAT for MAC m", function()
+    local nft = render.nft(snap_ea())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  -- ── blockIpOnly composition (#353): ea sets do NOT modify the bio drop ──
+  --
+  -- The issue's design: extraAllowed composes with blockIpOnly naturally —
+  -- a resolved-allowed host lands in resolved_<m> via the same DNS path,
+  -- so the `ip daddr != @resolved_<m>` predicate is already false for it.
+  -- No `!= @ea_...` clause needs to (or should) be added to the bio drop.
+
+  it("does NOT add ea exception clauses to the blockIpOnly drop rule (#353 composition)", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blockIpOnly = true
+    local nft = render.nft(s)
+    -- The bio drop is unchanged — no `!= @ea_...` clause appended.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
+      1, true))
+    -- And no spurious mixed rule like
+    -- "ip daddr != @resolved_... ip daddr != @ea_..." either.
+    assert.is_nil(nft:find(
+      "ip daddr != @resolved_aa_bb_cc_11_22_33 ip daddr != @ea_", 1, true))
+  end)
+
+  it("blockIpOnly + extraAllowed: eb_ drop still has the ea exception, bio drop does not", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blockIpOnly = true
+    local nft = render.nft(s)
+    -- eb drop has ea suffix:
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+    -- bio drop has no ea suffix:
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
+      1, true))
+  end)
+
+  -- ── failover allow-all suppression ──────────────────────────────────────
+  --
+  -- For an allow-all-failover MAC, the eb_/bl_ drops are suppressed
+  -- entirely (existing behaviour). The ea suffix becomes moot because
+  -- there's no drop to suffix. ea sets may still be declared (cheap,
+  -- harmless) and the dnsmasq populator still runs — mirrors the
+  -- bio_macs declaration policy.
+
+  it("suppresses eb_/bl_ drops (including their ea exception) under allow-all failover", function()
+    local s = snap_ea()
+    s.profiles["3"].failureMode = "allow-all"
+    local nft = render.nft(s, { poll_age_seconds = 301 })
+    -- No eb / bl drops at all for the kid MAC.
+    assert.is_nil(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com", 1, true))
+    assert.is_nil(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads", 1, true))
   end)
 
 end)
