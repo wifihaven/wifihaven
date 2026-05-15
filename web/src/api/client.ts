@@ -75,7 +75,6 @@ export const api = {
     update: (id: number, data: UpsertProfileRequest) =>
       req<void>('PUT', `/profiles/${id}`, data),
     delete: (id: number) => req<void>('DELETE', `/profiles/${id}`),
-    pause: (id: number) => req<{ paused: boolean }>('POST', `/profiles/${id}/pause`, {}),
     getUsers: (id: number) => req<User[]>('GET', `/profiles/${id}/users`),
     setUsers: (id: number, userIds: number[]) =>
       req<void>('PUT', `/profiles/${id}/users`, { userIds }),

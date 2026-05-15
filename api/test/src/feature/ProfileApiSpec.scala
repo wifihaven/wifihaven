@@ -353,8 +353,63 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(scheds.exists(_.blockFrom == "20:00"))
       },
     ),
-    suite("POST /api/profiles/:id/pause")(
-      test("toggles pause state") {
+    suite("PUT /api/profiles/:id pause is idempotent (#406)")(
+      // #406: the toggle endpoint POST /api/profiles/:id/pause was deleted
+      // because it was a read-then-write race (two near-simultaneous calls
+      // silently flip state twice). Callers must now set `paused` explicitly
+      // via the full PUT, which is idempotent by construction.
+      test("two consecutive PUT(paused=true) leave state at paused=true") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          profiles    <- profileRepo.listAll
+          kidsId = profiles.find(_.name == "Kids").get.id
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          userRepoSvc     <- ZIO.service[UserRepo]
+          routes = ProfileRoutes.routes(
+            auth,
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            userProfileRepo,
+            userRepoSvc,
+          )
+          mkReq  = (paused: Boolean) => {
+            val body = UpsertProfileRequest(
+              name = "Kids",
+              blockedCategories = Nil,
+              extraBlocked = Nil,
+              extraAllowed = Nil,
+              paused = paused,
+              schedules = Nil,
+              timeLimit = None,
+              siteTimeLimits = Nil,
+            ).toJson
+            Request
+              .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
+              .addHeader(Header.Authorization.Bearer(token))
+              .addHeader(Header.ContentType(MediaType.application.json))
+          }
+          resp1 <- routes.runZIO(mkReq(true))
+          after1 <- profileRepo.findById(kidsId)
+          resp2  <- routes.runZIO(mkReq(true))
+          after2 <- profileRepo.findById(kidsId)
+          resp3  <- routes.runZIO(mkReq(false))
+          after3 <- profileRepo.findById(kidsId)
+        } yield assertTrue(resp1.status == Status.Ok) &&
+          assertTrue(after1.exists(_.paused)) &&
+          assertTrue(resp2.status == Status.Ok) &&
+          assertTrue(after2.exists(_.paused)) &&
+          assertTrue(resp3.status == Status.Ok) &&
+          assertTrue(after3.exists(!_.paused))
+      },
+      test("legacy POST /api/profiles/:id/pause is removed (404)") {
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -377,19 +432,10 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             userRepoSvc,
           )
           req    = Request
-            .post(
-              URL.decode(s"/api/profiles/$kidsId/pause").toOption.get,
-              Body.empty,
-            )
+            .post(URL.decode(s"/api/profiles/$kidsId/pause").toOption.get, Body.empty)
             .addHeader(Header.Authorization.Bearer(token))
-          resp1       <- routes.runZIO(req)
-          afterPause  <- profileRepo.findById(kidsId)
-          resp2       <- routes.runZIO(req)
-          afterResume <- profileRepo.findById(kidsId)
-        } yield assertTrue(resp1.status == Status.Ok) &&
-          assertTrue(afterPause.exists(_.paused)) &&
-          assertTrue(resp2.status == Status.Ok) &&
-          assertTrue(afterResume.exists(!_.paused))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.NotFound)
       },
     ),
     suite("Profile ↔ user linking")(
