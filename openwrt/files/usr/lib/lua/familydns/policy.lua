@@ -386,6 +386,15 @@ function M.poll_age_seconds(now)
   return age
 end
 
+-- Format a poll_age value for log output. Returns "inf" for the cold-boot
+-- sentinel (math.huge from poll_age_seconds before any successful poll);
+-- otherwise "<seconds>s". string.format("%d", math.huge) does not substitute,
+-- so logging poll_age=%ds with a raw value would emit the literal "%ds inf".
+function M.format_poll_age(poll_age)
+  if poll_age == math.huge then return "inf" end
+  return string.format("%ds", poll_age)
+end
+
 -- Test-only: reset module-level poll state between specs.
 function M.reset_poll_state()
   M.last_successful_poll_ts = nil
