@@ -191,6 +191,9 @@ object ProfileRoutes {
                   // Role-aware defaulting is a UI concern — the server just
                   // persists whatever value the admin sent.
                   upr.failureMode.getOrElse(FailureMode.LastKnownGood),
+                  // #424: omitted blockIpOnly defaults to false on create
+                  // (matches the DB column default).
+                  upr.blockIpOnly.getOrElse(false),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -230,6 +233,9 @@ object ProfileRoutes {
                   // #385: if the caller omits failureMode, preserve the
                   // existing value rather than resetting to the column default.
                   failureMode = upr.failureMode.getOrElse(p.failureMode),
+                  // #424: if caller omits blockIpOnly, preserve the
+                  // existing value rather than clearing it.
+                  blockIpOnly = upr.blockIpOnly.getOrElse(p.blockIpOnly),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)

@@ -103,6 +103,7 @@ case class Profile(
     extraAllowed: List[Hostname],
     paused: Boolean,
     failureMode: FailureMode = FailureMode.LastKnownGood,
+    blockIpOnly: Boolean = false,
 ) derives JsonCodec
 
 case class Schedule(
@@ -207,6 +208,7 @@ case class UpsertProfileRequest(
     timeLimit: Option[Int],
     siteTimeLimits: List[SiteTimeLimitRequest],
     failureMode: Option[FailureMode] = None,
+    blockIpOnly: Option[Boolean] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(
