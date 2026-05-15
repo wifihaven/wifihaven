@@ -123,7 +123,13 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             extraAllowed = List(Hostname.unsafe("khanacademy.org")),
             paused = false,
             schedules = List(
-              ScheduleRequest("Bedtime", List("mon", "tue", "wed", "thu", "fri"), "22:00", "08:00"),
+              ScheduleRequest(
+                "Bedtime",
+                List("mon", "tue", "wed", "thu", "fri"),
+                java.time.LocalTime.of(22, 0),
+                java.time.LocalTime.of(8, 0),
+                java.time.ZoneId.of("UTC"),
+              ),
             ),
             timeLimit = Some(180),
             siteTimeLimits = List(
@@ -148,7 +154,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(teen.extraBlocked.contains(Hostname.unsafe("tiktok.com"))) &&
           assertTrue(teen.extraAllowed.contains(Hostname.unsafe("khanacademy.org"))) &&
           assertTrue(scheds.length == 1) &&
-          assertTrue(scheds.head.blockFrom == "22:00") &&
+          assertTrue(scheds.head.startLocal == java.time.LocalTime.of(22, 0)) &&
           assertTrue(tl.exists(_.dailyMinutes == 180)) &&
           assertTrue(stls.length == 1) &&
           assertTrue(stls.head.label == "YouTube") &&
@@ -330,7 +336,13 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             extraAllowed = List(Hostname.unsafe("pbs.org")),
             paused = false,
             schedules = List(
-              ScheduleRequest("Bedtime", List("mon", "tue", "wed", "thu", "fri"), "20:00", "07:00"),
+              ScheduleRequest(
+                "Bedtime",
+                List("mon", "tue", "wed", "thu", "fri"),
+                java.time.LocalTime.of(20, 0),
+                java.time.LocalTime.of(7, 0),
+                java.time.ZoneId.of("UTC"),
+              ),
             ),
             timeLimit = Some(120),
             siteTimeLimits = Nil,
@@ -350,7 +362,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(updated.exists(_.name == "Kids Updated")) &&
           assertTrue(updated.exists(_.extraAllowed.contains(Hostname.unsafe("pbs.org")))) &&
           assertTrue(tl.exists(_.dailyMinutes == 120)) &&
-          assertTrue(scheds.exists(_.blockFrom == "20:00"))
+          assertTrue(scheds.exists(_.startLocal == java.time.LocalTime.of(20, 0)))
       },
     ),
     suite("PUT /api/profiles/:id pause is idempotent (#406)")(

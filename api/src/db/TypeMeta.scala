@@ -5,6 +5,8 @@ import doobie.postgres.implicits.*
 import familydns.shared.{FailureMode, MacBlockReason, UserRole}
 import familydns.shared.types.*
 
+import java.time.ZoneId
+
 /**
  * Doobie `Meta` instances for opaque-type wrappers (#114). Each delegates to the underlying base
  * type's `Meta` — so the DB schema (text / bigint / uuid) is unchanged, only the in-Scala type
@@ -48,6 +50,11 @@ object TypeMeta {
   given Meta[Url]              = Meta[String].imap(Url.unsafe)(_.value)
   given Meta[BlocklistUrl]     = Meta[String].imap(BlocklistUrl.unsafe)(_.value)
   given Meta[JwtToken]         = Meta[String].imap(JwtToken.unsafe)(_.value)
+
+  // #334: schedules + household_settings persist IANA zone names as TEXT.
+  // ZoneId.of throws on unknown zones; presumed canonical because writes go
+  // through validated wire types that already construct ZoneId via .of.
+  given Meta[ZoneId] = Meta[String].imap(ZoneId.of)(_.getId)
 
   // ── Enums persisted as text columns ────────────────────────────────────
   given Meta[UserRole] = Meta[String].imap(s =>

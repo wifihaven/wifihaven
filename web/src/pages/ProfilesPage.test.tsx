@@ -21,6 +21,10 @@ vi.mock('@/api/client', () => ({
     users: {
       list: vi.fn(),
     },
+    household: {
+      get: vi.fn(),
+      update: vi.fn(),
+    },
   },
 }))
 
@@ -44,7 +48,7 @@ const kidsProfile: ProfileDetail = {
     failureMode: 'block-all',
   },
   schedules: [
-    { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], blockFrom: '21:00', blockUntil: '07:00' },
+    { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
   ],
   timeLimit: { id: 5, profileId: 1, dailyMinutes: 120 },
   siteTimeLimits: [
@@ -95,6 +99,11 @@ beforeEach(() => {
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
   ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
+  ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    dailyResetTime: '00:00',
+    dailyResetTz: 'America/Los_Angeles',
+  })
+  ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
 
 describe('ProfilesPage — list', () => {
@@ -219,7 +228,7 @@ describe('ProfilesPage — create', () => {
       paused: false,
       timeLimit: 90,
       schedules: [
-        { name: 'Bedtime', days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'], blockFrom: '21:00', blockUntil: '07:00' },
+        { name: 'Bedtime', days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'], startLocal: '21:00', endLocal: '07:00', tz: 'America/Los_Angeles' },
       ],
       siteTimeLimits: [
         { label: 'YouTube', domainPattern: 'youtube.com', dailyMinutes: 30, exemptFromDaily: true },
@@ -261,7 +270,7 @@ describe('ProfilesPage — edit', () => {
       paused: false,
       timeLimit: 120,
       schedules: [
-        { name: 'Bedtime', days: ['mon', 'tue'], blockFrom: '21:00', blockUntil: '07:00' },
+        { name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
       ],
       siteTimeLimits: [
         { domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },

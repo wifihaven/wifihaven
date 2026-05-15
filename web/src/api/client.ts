@@ -1,8 +1,9 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
-  DeviceTimeStatus, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, QueryLog,
-  RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension, UpsertDeviceRequest,
-  UpsertProfileRequest, GrantExtensionRequest, User,
+  DeviceTimeStatus, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus,
+  QueryLog, RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension,
+  UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  User,
 } from '@/types/api'
 
 const BASE = '/api'
@@ -78,6 +79,13 @@ export const api = {
     getUsers: (id: number) => req<User[]>('GET', `/profiles/${id}/users`),
     setUsers: (id: number, userIds: number[]) =>
       req<void>('PUT', `/profiles/${id}/users`, { userIds }),
+  },
+
+  // ── Household settings (#334) ──────────────────────────────────────────
+  household: {
+    get: () => req<HouseholdSettings>('GET', '/household/settings'),
+    update: (data: UpdateHouseholdSettingsRequest) =>
+      req<void>('PUT', '/household/settings', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────

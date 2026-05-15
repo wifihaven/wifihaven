@@ -79,13 +79,27 @@ object TestDatabase {
         } finally conn.close()
       }
       _  <- ZIO.attempt(runMigrations(pg))
+      // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can
+      // read household_settings during tests. Use UTC so DST doesn't perturb
+      // existing test expectations.
+      _  <- ZIO.attempt {
+        val conn = pg.getPostgresDatabase.getConnection
+        try {
+          conn
+            .createStatement()
+            .execute(
+              "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz) " +
+                "VALUES (1, '00:00', 'UTC') ON CONFLICT (id) DO NOTHING",
+            )
+        } finally conn.close()
+      }
     } yield ()
 
   /** All repo types bundled for convenience */
   type AllRepos =
-    UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo &
-      DeviceRepo & BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo &
-      TrafficReportRepo & BlockEventRepo & ConnectionEventRepo
+    UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo &
+      TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TimeUsageRepo &
+      TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo & ConnectionEventRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg
@@ -118,8 +132,9 @@ object TestLayers {
           familydns.shared.ScheduleRequest(
             "Bedtime",
             List("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
-            "21:00",
-            "07:00",
+            java.time.LocalTime.of(21, 0),
+            java.time.LocalTime.of(7, 0),
+            java.time.ZoneId.of("UTC"),
           ),
         ),
       )

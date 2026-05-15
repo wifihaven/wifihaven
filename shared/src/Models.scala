@@ -3,12 +3,39 @@ package familydns.shared
 import familydns.shared.types.*
 import zio.json.*
 
+import java.time.{LocalTime, ZoneId}
 import java.util.UUID
 
 given JsonCodec[UUID] =
   JsonCodec[String].transformOrFail(
     s => scala.util.Try(UUID.fromString(s)).toEither.left.map(_.getMessage),
     _.toString,
+  )
+
+// #334: schedules + daily-reset carry an IANA timezone. We serialize
+// LocalTime as "HH:mm" (24-hour, zero-padded) and ZoneId as the IANA name
+// (e.g. "America/Los_Angeles"). ZoneId.of validates the name; an unknown
+// zone fails at the wire boundary with a clear error.
+given JsonCodec[LocalTime] =
+  JsonCodec[String].transformOrFail(
+    s =>
+      scala.util
+        .Try(LocalTime.parse(s))
+        .toEither
+        .left
+        .map(e => s"invalid time '$s': ${e.getMessage}"),
+    t => "%02d:%02d".format(t.getHour, t.getMinute),
+  )
+
+given JsonCodec[ZoneId] =
+  JsonCodec[String].transformOrFail(
+    s =>
+      scala.util
+        .Try(ZoneId.of(s))
+        .toEither
+        .left
+        .map(e => s"invalid timezone '$s': ${e.getMessage}"),
+    _.getId,
   )
 
 enum UserRole {
@@ -83,8 +110,9 @@ case class Schedule(
     profileId: ProfileId,
     name: String,
     days: List[String],
-    blockFrom: String,
-    blockUntil: String,
+    startLocal: LocalTime,
+    endLocal: LocalTime,
+    tz: ZoneId,
 ) derives JsonCodec
 
 case class TimeLimit(
@@ -184,8 +212,19 @@ case class UpsertProfileRequest(
 case class ScheduleRequest(
     name: String,
     days: List[String],
-    blockFrom: String,
-    blockUntil: String,
+    startLocal: LocalTime,
+    endLocal: LocalTime,
+    tz: ZoneId,
+) derives JsonCodec
+
+case class HouseholdSettings(
+    dailyResetTime: LocalTime,
+    dailyResetTz: ZoneId,
+) derives JsonCodec
+
+case class UpdateHouseholdSettingsRequest(
+    dailyResetTime: LocalTime,
+    dailyResetTz: ZoneId,
 ) derives JsonCodec
 
 case class SiteTimeLimitRequest(
