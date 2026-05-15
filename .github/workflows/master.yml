@@ -106,12 +106,18 @@ jobs:
       - name: Run prod-stack smoke
         run: scripts/smoke-prod.sh
 
+  # VM-based e2e on the self-hosted KVM runner (#149, #433). Gates publish
+  # so we never push an image that fails the full router-VM scenarios.
+  vm-e2e:
+    name: VM e2e (self-hosted KVM)
+    uses: ./.github/workflows/e2e-vm.yml
+
   # ── 3. Publish API image (path-filtered) ──────────────────────────────────
   # NOTE: manual approval gate temporarily removed for live debugging of #228;
   # restore via #244 once the bug is fixed and we're back in normal cadence.
   publish-api:
     name: Publish Docker image to ghcr.io
-    needs: [changes, ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
+    needs: [changes, ci-tests, bootstrap-smoke, e2e, prod-stack-smoke, vm-e2e]
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
     permissions:
