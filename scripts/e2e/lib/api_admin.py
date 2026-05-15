@@ -124,6 +124,25 @@ class AdminAPI:
     def set_profile_paused(self, profile_id: int, paused: bool) -> dict[str, Any]:
         return self.apply_profile_update(profile_id, paused=paused)
 
+    def add_schedule(self, profile_id: int, schedule: dict[str, Any]) -> dict[str, Any]:
+        """Append a schedule to the profile via fold-and-PUT.
+
+        `schedule` is a dict in the shape the API expects (e.g. `{"daysOfWeek":
+        ["MON"], "startTime": "09:00", "endTime": "17:00", "timezone":
+        "America/Los_Angeles"}`). The server may assign an `id` on round-trip;
+        the returned profile reflects what was stored.
+        """
+        full = self.get_profile(profile_id)
+        existing = full.get("schedules", []) if isinstance(full, dict) else []
+        return self.apply_profile_update(profile_id, schedules=existing + [schedule])
+
+    def remove_schedule(self, profile_id: int, schedule_id: Any) -> dict[str, Any]:
+        """Drop the schedule with the given id; no-op if absent."""
+        full = self.get_profile(profile_id)
+        existing = full.get("schedules", []) if isinstance(full, dict) else []
+        kept = [s for s in existing if s.get("id") != schedule_id]
+        return self.apply_profile_update(profile_id, schedules=kept)
+
     # ── devices ───────────────────────────────────────────────────────────
 
     def upsert_device(self, *, mac: str, name: str, profile_id: int) -> dict[str, Any]:

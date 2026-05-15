@@ -39,6 +39,33 @@ class DebugAPI:
     def events_for_mac(self, mac: str, *, limit: int = 200) -> list[dict[str, Any]]:
         return [e for e in self.events(limit=limit) if (e.get("mac") or "").lower() == mac.lower()]
 
+    def events_for_mac_filtered(
+        self,
+        mac: str,
+        *,
+        hostname: str | None = None,
+        allowed: bool | None = None,
+        reason: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Filter `events_for_mac` by common predicates.
+
+        `hostname` is substring-matched (case-insensitive); `allowed` and
+        `reason` must be exact. All None-valued filters are ignored.
+        """
+        out = []
+        host_needle = hostname.lower() if hostname else None
+        for e in self.events_for_mac(mac, limit=limit):
+            if host_needle is not None:
+                if host_needle not in (e.get("hostname") or "").lower():
+                    continue
+            if allowed is not None and e.get("allowed") is not allowed:
+                continue
+            if reason is not None and e.get("reason") != reason:
+                continue
+            out.append(e)
+        return out
+
     def _get(self, path: str) -> Any:
         url = f"http://127.0.0.1:8080{path}"
         proc = subprocess.run(
