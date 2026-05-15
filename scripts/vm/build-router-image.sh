@@ -155,12 +155,22 @@ if ! timeout 5 docker info >/dev/null 2>&1; then
 fi
 
 echo "==> Running Image Builder in $IMAGEBUILDER_DOCKER_IMAGE"
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
 docker run --rm \
+    -e HOST_UID="$HOST_UID" \
+    -e HOST_GID="$HOST_GID" \
     -v "$IB_ROOT":/ib \
     -v "$STAGING_DIR":/staging:ro \
     -w /ib \
     "$IMAGEBUILDER_DOCKER_IMAGE" \
     bash -euxo pipefail -c '
+        # Cleanup trap: even on build failure, hand bin/ and build_dir/
+        # back to the invoking user so subsequent host-side `rm` and
+        # incremental rebuilds work without sudo. Without this, a single
+        # build leaves root-owned artifacts that block every later run.
+        trap "chown -R \"$HOST_UID:$HOST_GID\" /ib/bin /ib/build_dir 2>/dev/null || true" EXIT
+
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y --no-install-recommends \
@@ -202,9 +212,13 @@ docker run --rm \
         # agent renders into /tmp/dnsmasq.d/familydns.conf are accepted —
         # plain dnsmasq is built without HAVE_IPSET and rejects the config
         # at line 7 (#148 e2e).
+        # uhttpd hosts the local block page on 127.0.0.1:8081 (#303 / #351).
+        # render.lua DNATs blocked HTTP/80 traffic there; without uhttpd in
+        # the image, the DNAT lands on a dead port and curl times out
+        # instead of receiving the block page.
         make image \
             PROFILE=generic \
-            PACKAGES="familydns -dnsmasq dnsmasq-full" \
+            PACKAGES="familydns -dnsmasq dnsmasq-full uhttpd" \
             FILES=/staging
     '
 

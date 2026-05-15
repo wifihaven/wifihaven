@@ -14,7 +14,7 @@ import time
 import pytest
 
 from lib.traffic import http_get
-from lib.wait import wait_for_etag_change, wait_until
+from lib.wait import wait_for_etag_change, wait_for_next_poll, wait_until
 
 pytestmark = pytest.mark.daily_limit
 
@@ -23,7 +23,12 @@ def test_daily_limit_blocks_after_quota(
     router, client, scratch_device, scratch_profile, admin, debug_api,
 ):
     admin.apply_profile_update(scratch_profile["id"], timeLimit=1)
-    wait_for_etag_change(admin, router.router_id, timeout_s=120)
+    # Setting dailyMinutes when usage=0 doesn't alter the snapshot's
+    # BlockRules (computeBlockRules only emits a TimeLimit reason once
+    # totalMinutesUsed >= limit), so the etag does NOT bump here. Gate on a
+    # plain poll round-trip — that's enough to prove the agent has the new
+    # `dailyMinutes` value cached for its next usage-driven render.
+    wait_for_next_poll(admin, router.router_id, timeout_s=120)
 
     # Generate ~90 seconds of traffic against an allowed host to exceed 1 min.
     deadline = time.monotonic() + 90
