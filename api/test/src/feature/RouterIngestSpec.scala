@@ -387,6 +387,109 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           rows.exists(r => r.host == HostId.Fqdn(Hostname.unsafe("khanacademy.org")) && r.allowed),
         )
     },
+    // ── #338: connection_events idempotency on retry-queue replay ────────────
+    test("events: identical connection_attempt batch POSTed twice inserts once") {
+      val eid1 = UUID.randomUUID()
+      val eid2 = UUID.randomUUID()
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        evs  = List(
+          RouterEvent(
+            "connection_attempt",
+            mac = Some(MacAddress.unsafe(knownMac)),
+            host = Some(HostId.Fqdn(Hostname.unsafe("youtube.com"))),
+            destIp = Some(IpAddress.unsafe("1.2.3.4")),
+            allowed = Some(false),
+            reason = Some("blocked"),
+            ts = "2026-05-07T14:01:00Z",
+            eventId = Some(eid1),
+          ),
+          RouterEvent(
+            "connection_attempt",
+            mac = Some(MacAddress.unsafe(knownMac)),
+            host = Some(HostId.Fqdn(Hostname.unsafe("khanacademy.org"))),
+            destIp = Some(IpAddress.unsafe("5.6.7.8")),
+            allowed = Some(true),
+            reason = Some("allow"),
+            ts = "2026-05-07T14:01:01Z",
+            eventId = Some(eid2),
+          ),
+        )
+        body = RouterEventsRequest(id, evs).toJson
+        r1   <- post(routes, "/api/router/events", body, Some(tk))
+        r2   <- post(routes, "/api/router/events", body, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(r1.status == Status.Ok) &&
+        assertTrue(r2.status == Status.Ok) &&
+        assertTrue(rows.size == 2)
+    },
+    test("events: mixed batch (some seen, some new) inserts only the new ones") {
+      val eidOld                                    = UUID.randomUUID()
+      val eidNew                                    = UUID.randomUUID()
+      def mkEv(host: String, ts: String, eid: UUID) = RouterEvent(
+        "connection_attempt",
+        mac = Some(MacAddress.unsafe(knownMac)),
+        host = Some(HostId.Fqdn(Hostname.unsafe(host))),
+        destIp = Some(IpAddress.unsafe("1.2.3.4")),
+        allowed = Some(true),
+        reason = Some("allow"),
+        ts = ts,
+        eventId = Some(eid),
+      )
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        first  = RouterEventsRequest(
+          id,
+          List(mkEv("youtube.com", "2026-05-07T14:01:00Z", eidOld)),
+        ).toJson
+        second = RouterEventsRequest(
+          id,
+          List(
+            mkEv("youtube.com", "2026-05-07T14:01:00Z", eidOld), // duplicate
+            mkEv("khanacademy.org", "2026-05-07T14:01:01Z", eidNew),
+          ),
+        ).toJson
+        _ <- post(routes, "/api/router/events", first, Some(tk))
+        _    <- post(routes, "/api/router/events", second, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(rows.size == 2) &&
+        assertTrue(rows.exists(_.host == HostId.Fqdn(Hostname.unsafe("youtube.com")))) &&
+        assertTrue(rows.exists(_.host == HostId.Fqdn(Hostname.unsafe("khanacademy.org"))))
+    },
+    test("events: older agent without eventId inserts (server-side default UUID)") {
+      // Forward-compat: agents predating #338 omit eventId; the API must still
+      // accept the batch and insert via gen_random_uuid() DEFAULT. Same batch
+      // twice DOES duplicate in this fallback mode — there's no client key to
+      // dedup on — but the goal here is just "no rejection".
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.Fqdn(Hostname.unsafe("example.com"))),
+          destIp = Some(IpAddress.unsafe("9.9.9.9")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:01:00Z",
+          // eventId left as None (default) — older-agent path
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        r1   <- post(routes, "/api/router/events", body, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(r1.status == Status.Ok) && assertTrue(rows.size == 1)
+    },
     test("events: dhcp_lease for known mac updates devices.last_seen_*") {
       for {
         _        <- cleanDb

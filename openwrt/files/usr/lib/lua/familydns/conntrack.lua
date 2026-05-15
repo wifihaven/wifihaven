@@ -102,6 +102,29 @@ function M.parse_dhcp_leases(path)
 end
 
 -- ---------------------------------------------------------------------------
+-- gen_event_id() -> string | nil
+--
+-- Returns a fresh RFC 4122 UUID from the kernel's random pool. Used as the
+-- per-event idempotency key on connection_attempt events so retry-queue
+-- replays (#330) collapse on insert at the API rather than landing as
+-- duplicate rows (#338).
+--
+-- Returns nil if /proc/sys/kernel/random/uuid is unreadable; the API treats
+-- a missing eventId as "older agent" and generates one server-side, so a
+-- nil here degrades to the pre-#338 behavior (no dedup) rather than dropping
+-- the event.
+--
+-- Injectable via cfg.gen_event_id for tests.
+-- ---------------------------------------------------------------------------
+function M.gen_event_id()
+  local f = io.open("/proc/sys/kernel/random/uuid", "r")
+  if not f then return nil end
+  local id = f:read("*l")
+  f:close()
+  return id
+end
+
+-- ---------------------------------------------------------------------------
 -- build_first_seen_mac_event(opts) -> table
 --
 -- opts: { mac, ip, hostname, ts }
@@ -164,6 +187,8 @@ function M.build_event(opts)
   else
     reason = "blocked"
   end
+  -- #338: stamp an idempotency key now (in-memory; survives the in-call retry
+  -- and the longer #330 queue). Tests stub M.gen_event_id directly.
   return {
     ["type"]    = "connection_attempt",
     mac         = opts.mac,
@@ -172,6 +197,7 @@ function M.build_event(opts)
     allowed     = opts.allowed,
     reason      = reason,
     ts          = opts.ts,
+    eventId     = M.gen_event_id(),
   }
 end
 

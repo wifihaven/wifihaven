@@ -191,17 +191,27 @@ object RouterIngestRoutes {
           ts   <- scala.util.Try(Instant.parse(e.ts)).toEither.left.map(_.getMessage)
           allw <- e.allowed.toRight("connection_attempt missing allowed")
           rsn = e.reason.getOrElse(if allw then "allow" else "blocked")
-        } yield ConnectionEventInsert(routerId, e.mac, h, e.destIp, allw, rsn, ts)
+        } yield ConnectionEventInsert(routerId, e.mac, h, e.destIp, allw, rsn, ts, e.eventId)
     }
     for {
       // Surface JSON validation errors as 400.
       validated <- ZIO.foreach(connInserts)(e =>
         ZIO.fromEither(e).mapError(m => Response.badRequest(m)),
       )
-      _         <- connEventRepo
+      // #338: ON CONFLICT DO NOTHING on event_id dedups replays from the
+      // retry queue (#330). Insert returns count of new rows; the diff is
+      // duplicates collapsed on conflict.
+      inserted  <- connEventRepo
         .insertBatch(validated)
         .mapError(ErrorMapper.dbErrorToResponse)
         .when(validated.nonEmpty)
+        .map(_.getOrElse(0))
+      _         <- ZIO
+        .logInfo(
+          s"router events: router=$routerId dedup'd ${validated.size - inserted} of " +
+            s"${validated.size} connection_attempt events (replay)",
+        )
+        .when(inserted < validated.size)
       _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo))
     } yield ()
   }

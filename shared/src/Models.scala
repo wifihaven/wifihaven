@@ -424,6 +424,13 @@ case class RouterEvent(
     allowed: Option[Boolean] = None,
     reason: Option[String] = None,
     ts: String,
+    // #338: client-supplied idempotency key for connection_attempt events.
+    // Absent on dhcp_lease / first_seen_mac (those drive idempotent device
+    // upserts, no per-row dedup needed) and absent from agents predating the
+    // change — the API falls back to a server-generated UUID so older agents
+    // keep working (capability tag for #376's future registry:
+    // "event-idempotency-keys").
+    eventId: Option[UUID] = None,
 ) derives JsonCodec
 
 case class RouterEventsRequest(

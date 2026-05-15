@@ -209,6 +209,10 @@ case class ConnectionEventInsert(
     allowed: Boolean,
     reason: String,
     ts: Instant,
+    // #338: client-supplied idempotency key. None → SQL COALESCEs to
+    // gen_random_uuid() so older agents that don't ship an eventId keep
+    // inserting cleanly (one fresh UUID per replay, no dedup possible).
+    eventId: Option[java.util.UUID] = None,
 )
 
 trait RouterRepo {
@@ -865,9 +869,15 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   private def toC(r: R) =
     ConnectionEvent(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
 
+  // #338: idempotent insert. Client-supplied eventId is the dedup key for
+  // retry-queue replays (#330). NULL → server-generated via gen_random_uuid()
+  // (older agents pre-eventId support). ON CONFLICT DO NOTHING collapses
+  // replays; updateMany returns count of rows actually inserted.
   def insertBatch(events: List[ConnectionEventInsert]) =
     Update[ConnectionEventInsert](
-      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts) VALUES(?,?,?,?,?,?,?,?)",
+      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id) " +
+        "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid())) " +
+        "ON CONFLICT (event_id) DO NOTHING",
     ).updateMany(events).transact(xa)
 
   def recent(limit: Int) =
