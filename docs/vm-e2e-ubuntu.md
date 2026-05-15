@@ -17,7 +17,8 @@ sudo apt-get install -y \
     qemu-system-x86 qemu-utils \
     xorriso socat \
     binutils \
-    docker.io
+    docker.io \
+    python3-venv
 ```
 
 What each is for:
@@ -30,6 +31,7 @@ What each is for:
 | `socat`          | `client-down.sh` ACPI poweroff via QMP; `router-snapshot.sh`|
 | `binutils`       | `openwrt/build-ipk.sh` uses `ar` to assemble the .ipk       |
 | `docker.io`      | `build-router-image.sh` runs OpenWRT Image Builder in a container |
+| `python3-venv`   | `scripts/e2e-vm.sh` creates `.e2e-vm-venv/` via `python3 -m venv`  |
 
 ### `/dev/kvm` access
 

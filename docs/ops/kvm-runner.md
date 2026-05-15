@@ -25,7 +25,7 @@ provision ourselves.
   - One of `xorriso` (preferred) / `genisoimage` / `mkisofs`
   - `socat`, `openssl`, `curl`, `iproute2`
   - `docker.io` (or upstream Docker CE)
-  - `python3` ≥ 3.11 with `python3-venv`
+  - `python3` ≥ 3.11 **and** `python3-venv` (Ubuntu splits `ensurepip` into a separate package; `scripts/e2e-vm.sh` creates `.e2e-vm-venv/` per checkout and fails without it)
   - `binutils` (for `ar`, used by `openwrt/build-ipk.sh`)
 
 Use `docs/vm-e2e-ubuntu.md` as the per-host bootstrap checklist: it covers
