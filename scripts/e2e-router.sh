@@ -16,7 +16,10 @@ fail() { echo "  ✗ $*" >&2; exit 1; }
 step() { echo; echo "▶ $*"; }
 
 # python3 helper — used for timestamp arithmetic and JSON inspection.
-_py() { python3 -c "$1" 2>/dev/null; }
+# Do NOT suppress stderr: when a helper crashes the traceback is the only clue
+# we get in CI logs, and a silent empty result downstream looks identical to a
+# legitimate zero/empty value.
+_py() { python3 -c "$1"; }
 
 # ── Admin login ────────────────────────────────────────────────────────────
 step "Admin login"
@@ -91,9 +94,15 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' "${RAUTH[@]}" \
 [ "$CODE" = "304" ] || fail "expected 304 with same ETag, got $CODE"
 pass "304 on repeat ETag"
 
-# ── 3. Usage records increment time_usage + update last_seen_ip ───────────
-step "Usage ingest → timeUsedToday + last_seen_ip"
-# 90 active seconds = 1.5 min, which exceeds dailyMinutes=1.  Two birds, one batch.
+# ── 3. Usage ingest → last_seen_ip updates + blockReason=TimeLimit ───────
+#
+# #354 slimmed the policy snapshot: timeUsedToday / dailyMinutes / paused /
+# schedules are gone from the wire. The server collapses them into
+# BlockRules.blocked + blockReason ("TimeLimit" | "Paused" | "Schedule").
+# `profiles` is now a Map keyed by profile id, serialized as a JSON object
+# with stringified id keys (zio-json's JsonFieldEncoder[Long]).
+step "Usage ingest → last_seen_ip + blockReason=TimeLimit"
+# 90 active seconds = 1.5 min, exceeds dailyMinutes=1 → server should block.
 NOW=$(_py "from datetime import datetime,timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 FIVE_AGO=$(_py "from datetime import datetime,timezone,timedelta; print((datetime.now(timezone.utc)-timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 
@@ -116,16 +125,22 @@ curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
   -d "$USAGE_BODY" >/dev/null
 pass "usage posted (90 active seconds)"
 
-# Snapshot must now show timeUsedToday.totalMinutes > 0 for the profile.
+# Snapshot must now show the profile as blocked with reason=TimeLimit.
 curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap2.json"
-USED=$(_py "
+REASON=$(_py "
 import json
 snap = json.load(open('$TMP/snap2.json'))
-p = next((p for p in snap['profiles'] if p['id'] == $PID), None)
-print(p['timeUsedToday']['totalMinutes'] if p else -1)
+p = snap['profiles'].get('$PID')
+if p is None:
+    raise SystemExit('profile $PID missing from snapshot.profiles: ' + ','.join(snap['profiles'].keys()))
+r = p['rules']
+print(('blocked=' + str(r['blocked']) + ' reason=' + str(r.get('blockReason'))))
 ")
-[ "$USED" -gt 0 ] 2>/dev/null || fail "timeUsedToday.totalMinutes=$USED, expected >0"
-pass "timeUsedToday.totalMinutes=$USED"
+echo "  · $REASON"
+case "$REASON" in
+  "blocked=True reason=TimeLimit") pass "blockReason=TimeLimit after 90s usage" ;;
+  *) fail "expected blocked=True reason=TimeLimit, got: $REASON" ;;
+esac
 
 # Device last_seen_ip should be updated.
 curl -fsS "${AUTH[@]}" "$BASE/api/devices" >"$TMP/devices.json"
@@ -137,20 +152,6 @@ print((d or {}).get('lastSeenIp') or '')
 ")
 [ "$LAST_IP" = "192.168.1.20" ] || fail "expected lastSeenIp=192.168.1.20, got '$LAST_IP'"
 pass "last_seen_ip=192.168.1.20"
-
-# ── 4. Time-limit exceeded is visible in the policy snapshot ──────────────
-step "Time-limit exceeded in policy snapshot (90s active > 1 min limit)"
-EXCEEDED=$(_py "
-import sys, json
-snap = json.load(open('$TMP/snap2.json'))
-p = next((p for p in snap['profiles'] if p['id'] == $PID), None)
-if p is None: sys.exit(1)
-used  = p['timeUsedToday']['totalMinutes']
-daily = p.get('dailyMinutes') or 0
-print('yes' if daily > 0 and used >= daily else 'no')
-")
-[ "$EXCEEDED" = "yes" ] || fail "expected time limit exceeded (used=$USED, dailyMinutes=1)"
-pass "time_limit_exceeded (used=$USED >= dailyMinutes=1)"
 
 # ── 5. Events ingest ───────────────────────────────────────────────────────
 step "Events ingest (dhcp_lease + connection_attempt)"
@@ -182,25 +183,32 @@ curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
 pass "dhcp_lease + connection_attempt posted"
 
 # ── 6. Paused profile reflected immediately in snapshot ───────────────────
-step "Pause profile → paused:true in snapshot"
+#
+# Precedence is Paused > Schedule > TimeLimit (PolicyService.computeBlockRules),
+# so a paused profile reports reason=Paused even when other limits also apply.
+step "Pause profile → blockReason=Paused in snapshot"
 curl -fsS -X POST "$BASE/api/profiles/$PID/pause" "${AUTH[@]}" >/dev/null
 
 curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap3.json"
-IS_PAUSED=$(_py "
+PAUSED_REASON=$(_py "
 import json
 snap = json.load(open('$TMP/snap3.json'))
-p = next((p for p in snap['profiles'] if p['id'] == $PID), None)
-print('yes' if p and p.get('paused') else 'no')
+p = snap['profiles'].get('$PID')
+if p is None:
+    raise SystemExit('profile $PID missing from snapshot.profiles')
+print(p['rules'].get('blockReason'))
 ")
-[ "$IS_PAUSED" = "yes" ] || fail "expected paused=true in snapshot"
-pass "paused=true in policy snapshot"
+[ "$PAUSED_REASON" = "Paused" ] || fail "expected blockReason=Paused, got '$PAUSED_REASON'"
+pass "blockReason=Paused in policy snapshot"
 
-# Unpause so schedule test starts from a clean paused=false.
+# Unpause so the schedule check below sees reason=Schedule (not Paused, which would win).
 curl -fsS -X POST "$BASE/api/profiles/$PID/pause" "${AUTH[@]}" >/dev/null
 
-# ── 7. Active schedule visible in policy snapshot ─────────────────────────
-step "Add always-on schedule → visible in snapshot"
-# PUT the full profile with an all-days, all-hours schedule.
+# ── 7. Active schedule reflected in policy snapshot ───────────────────────
+step "Add always-on schedule → blockReason=Schedule in snapshot"
+# PUT the full profile with an all-days, all-hours schedule. The snapshot no
+# longer carries raw schedules; it just collapses an active schedule into
+# blockReason=Schedule.
 SCHED_BODY=$(cat <<EOF
 {
   "name": "e2e-router",
@@ -211,9 +219,10 @@ SCHED_BODY=$(cat <<EOF
   "schedules": [
     {
       "name": "always",
-      "days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
-      "blockFrom":  "00:00",
-      "blockUntil": "23:59"
+      "days": ["mon","tue","wed","thu","fri","sat","sun"],
+      "startLocal": "00:00",
+      "endLocal":   "23:59",
+      "tz":         "UTC"
     }
   ],
   "timeLimit": 1,
@@ -226,15 +235,22 @@ curl -fsS -X PUT "$BASE/api/profiles/$PID" "${AUTH[@]}" \
   -d "$SCHED_BODY" >/dev/null
 
 curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap4.json"
-SCHED_COUNT=$(_py "
+SCHED_REASON=$(_py "
 import json
 snap = json.load(open('$TMP/snap4.json'))
-p = next((p for p in snap['profiles'] if p['id'] == $PID), None)
-print(len(p.get('schedules', [])) if p else 0)
+p = snap['profiles'].get('$PID')
+if p is None:
+    raise SystemExit('profile $PID missing from snapshot.profiles')
+print(p['rules'].get('blockReason'))
 ")
-[ "$SCHED_COUNT" -ge 1 ] 2>/dev/null \
-  || fail "expected >=1 schedule in snapshot, got $SCHED_COUNT"
-pass "$SCHED_COUNT schedule(s) visible in snapshot"
+# Either Schedule (always-on schedule) or TimeLimit (90s usage from §3 still
+# in today's bucket). The snapshot's precedence is Schedule > TimeLimit, so we
+# expect Schedule — but if scheduling is for any reason inactive we still want
+# to assert *some* block, not silently regress.
+case "$SCHED_REASON" in
+  Schedule)  pass "blockReason=Schedule in snapshot" ;;
+  *)         fail "expected blockReason=Schedule, got '$SCHED_REASON'" ;;
+esac
 
 # ── 8. /blocked page renders 200 for each reason ─────────────────────────
 step "GET /blocked — SPA renders 200 for each block reason"
