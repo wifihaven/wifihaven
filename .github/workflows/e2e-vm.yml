@@ -23,7 +23,13 @@ jobs:
   e2e:
     name: VM e2e suite
     runs-on: [self-hosted, linux, kvm]
-    timeout-minutes: 30
+    # Observed scenario durations (run 25938660408): test_04_daily_limit
+    # alone ran 12m38s. With 9 scenarios averaging 3–5 min plus router-image
+    # build (cold-cache ~2m), 30m wasn't enough — the suite was cut off
+    # mid-test_pause. 60m gives headroom for one long scenario without
+    # masking real regressions; concurrency=e2e-vm keeps the queue
+    # serialized so a slow run doesn't pile up.
+    timeout-minutes: 60
 
     steps:
       # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
