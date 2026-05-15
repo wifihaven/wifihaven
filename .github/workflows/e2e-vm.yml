@@ -26,6 +26,22 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
+      # left root-owned files under scripts/vm/.cache/imagebuilder/ (older
+      # versions of the script only chowned bin/ and build_dir/ — see the
+      # broadened trap in this same change). actions/checkout@v4 cleans the
+      # workspace and fails with EACCES on those files. The runner has no
+      # NOPASSWD sudo (only /usr/sbin/ip per docs/ops/kvm-runner.md), so we
+      # use docker — which runs as root — to chown the cache back to the
+      # runner user before checkout. No-op on clean runners.
+      - name: Reclaim root-owned cache files (pre-checkout)
+        run: |
+          CACHE="${{ github.workspace }}/scripts/vm/.cache"
+          if [ -d "$CACHE" ]; then
+            docker run --rm -v "$CACHE":/c alpine \
+              chown -R "$(id -u):$(id -g)" /c || true
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Preflight (kvm/qemu/docker)
