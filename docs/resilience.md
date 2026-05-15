@@ -6,9 +6,11 @@ This document defines how familydns SHOULD behave under five failure scenarios.
 It is the durable design contract. Implementation may lag; gaps are filed as
 individual follow-up issues that reference #269.
 
-The decisions in §4 (per-profile three-mode failover; #385) and §5 (NTP-skew
-handling) are policy calls that need explicit operator sign-off before
-implementations land.
+The decision in §4 (per-profile three-mode failover; #385) is a policy
+call that needs explicit operator sign-off before implementation lands.
+§5 was previously a sign-off item too, but is now settled by design: the
+router carries no time-based logic (Truth 2 / #350), so clock skew on the
+router is not a familydns concern.
 
 ---
 
@@ -258,73 +260,21 @@ never a default — it must be picked deliberately.
 
 ## 5. Time skew / NTP
 
-### Intended behavior
-- **Router clock matters only for usage timestamps.** Schedule enforcement
-  is computed server-side (`PolicyService.scheduleBlock` bakes the current
-  in/out-of-window state into the snapshot) — the agent does not evaluate
-  `meta hour`/`meta day` rules. So router clock skew does NOT break
-  schedule-based blocking today.
-- **But the agent's clock IS used for usage period boundaries.** A router
-  with a 6-hour-skewed clock will attribute usage to the wrong day window,
-  breaking daily limits.
-- **Mitigation: clock-sanity check on poll.** Each policy poll response
-  includes the API's `Date` header. The agent compares `os.time()` to the
-  API time; if drift exceeds **60 seconds**, the agent:
-  1. Logs a warning ("router clock skew Xs vs API; usage may be misattributed").
-  2. Surfaces a banner on the admin UI for that router (via a new
-     `clockSkewSeconds` field reported in usage POSTs and rendered on the
-     router status page).
-  3. **Continues operating.** Some deployments genuinely have no NTP
-     (cellular failover, isolated networks); refusing to enforce is worse
-     than enforcing with skewed usage windows.
-- **API server clock IS authoritative for schedules.** Operators must run
-  NTP on the API host. This is documented as a deploy prerequisite.
-- **Future-proofing:** if schedules ever move to in-kernel `meta hour`
-  evaluation on the router (the original #305 design that was rejected),
-  this section needs revisiting — at that point, large clock skew SHOULD
-  cause the agent to refuse to enforce schedule-only rules and fall back
-  to "schedule treated as allow." Categorical blocks and pause still
-  enforce regardless.
+Router does not perform time-based decisions; API server's clock is
+authoritative. See #334 for API-side time handling.
 
-### Why
-The previous design assumed router clock drives schedule enforcement;
-the actual implementation puts that on the API side. So clock paranoia
-on the router is overkill today. But ignoring the issue is wrong —
-silent usage misattribution is exactly the kind of bug that erodes trust
-in daily limits. A loud-but-non-blocking warning is the right posture.
+All schedule windows, daily-limit rollovers, and schedule-day-of-week
+evaluations happen on the API server and are baked into the rendered
+`blockedMacs` set inside the policy snapshot before it ships to the
+agent (Truth 2 / #350). The agent applies the snapshot verbatim and
+never consults its own clock for enforcement, so router clock drift
+cannot misattribute usage or skip a schedule transition. Operators
+must keep NTP running on the **API host**; the router clock is
+incidental.
 
-### Implementation
-- `openwrt/files/usr/lib/lua/familydns/policy.lua`: captures API `Date`
-  header on each successful poll (200 and 304); parses RFC 1123 form;
-  exposes `policy.clock_skew()` returning signed seconds (positive =
-  router ahead). Logs a `WARN` line via `logger -t familydns` on each
-  poll when `|drift| > 60s`. Implemented in #321.
-- `openwrt/files/usr/lib/lua/familydns/usage.lua`: `build_report` takes
-  an optional `clock_skew_seconds` arg and adds it to the report body
-  as `clockSkewSeconds` when non-nil (the field is omitted when the
-  agent has never measured drift, so older API builds still parse the
-  payload).
-- `api/src/routes/RouterIngestRoutes.scala`: on every `/api/router/usage`
-  POST that carries `clockSkewSeconds`, calls `RouterRepo.recordSkew`
-  which UPDATEs `routers.last_clock_skew_seconds` (migration `V9`).
-  Older agents that don't ship the field leave the column at its
-  previous value so a forward-compat downgrade cannot silently clear
-  a stale-clock warning.
-- Admin UI router page: `RoutersPage` renders a yellow banner under
-  each router row when `|lastClockSkewSeconds| > 60`, naming the drift
-  in seconds and whether the router is ahead/behind. Banner is hidden
-  when skew is `null` (never measured) so brand-new enrolments don't
-  flag themselves while the first poll cycle is in flight.
-- `docs/install-api.md`: NTP / clock-sync added as a prerequisite for
-  the API host (the API clock is authoritative for schedule windows).
-- `docs/install-openwrt.md`: NTP verification step added for the router
-  side, covering cellular-failover and isolated-network installs.
-
-### How to verify
-- On a test router, `date -s '2020-01-01'`. Within one poll cycle, agent
-  log shows "clock skew" warning; admin UI shows banner; daily limits
-  continue to enforce (best-effort).
-- Reset clock; banner clears on next poll.
+The previous agent-side skew detector (Date-header capture,
+`clockSkewSeconds` on usage POSTs, admin UI banner) was removed in
+\#415 once #350 confirmed the router carries no time-based logic.
 
 ---
 
@@ -336,7 +286,7 @@ in daily limits. A loud-but-non-blocking warning is the right posture.
 | 2. API restart | No persisted policy cache (tmpfs only); usage POSTs have **no retry/backoff**; no 5-minute failover threshold. | **GAP** |
 | 3. DB blip | Health endpoint correct (503). All other routes return **bare 500 on DB failure**. JWT auth rides through correctly. | **GAP** |
 | 4. Internet outage | No `failureMode` field exists. Agent is **fail-open** on cold start with no cached policy; rules persist in tmpfs only. | **GAP** |
-| 5. Time skew | No NTP / clock-sync check. Schedules enforced server-side (clock skew doesn't break them today), but usage attribution silently drifts. | **GAP** |
+| 5. Time skew | Router does no time-based evaluation (Truth 2 / #350); API clock is authoritative. See #334 for API-side time handling. | **N/A (by design)** |
 
 All five scenarios have implementation gaps. Each is filed as its own
 follow-up issue referencing #269.

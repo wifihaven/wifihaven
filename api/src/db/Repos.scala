@@ -220,14 +220,6 @@ trait RouterRepo {
   def completeEnrollment(id: RouterId, tokenHash: Sha256Hex): Task[Unit]
   def touch(id: RouterId, etag: Option[ETag]): Task[Unit]
 
-  /**
-   * Persist the most recent router-vs-API clock drift reported on a /api/router/usage POST (#312).
-   * Positive means the router is ahead of the API. Called only when the agent included the field —
-   * callers skip it for older agents so the column is not wiped to NULL on a forward-compat
-   * downgrade.
-   */
-  def recordSkew(id: RouterId, skewSeconds: Long): Task[Unit]
-
   def delete(id: RouterId): Task[Unit]
 }
 
@@ -695,7 +687,6 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         Option[Instant],
         Option[ETag],
         Instant,
-        Option[Int],
     )
   private def toR(r: R)                                      =
     Router(
@@ -706,10 +697,9 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._5.map(_.toString),
       r._6,
       r._7.toString,
-      r._8.map(_.toLong),
     )
   private val cols                                           =
-    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,last_clock_skew_seconds"
+    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at"
   def listAll                                                =
     (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
@@ -747,12 +737,6 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
     sql"UPDATE routers SET last_seen_at=NOW(), last_etag=COALESCE($etag,last_etag) WHERE id=$id".update.run
       .transact(xa)
       .unit
-  def recordSkew(id: RouterId, skewSeconds: Long)            = {
-    val s = skewSeconds.toInt
-    sql"UPDATE routers SET last_clock_skew_seconds=$s WHERE id=$id".update.run
-      .transact(xa)
-      .unit
-  }
   def delete(id: RouterId)                                   =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
 }

@@ -69,10 +69,9 @@ structural side and cross-references #369.
    contract collected from resilience.md: flash-cache snapshot for boot
    recovery, retry queue with exponential backoff for usage, retry
    queue with cap-and-drop for events, monotonic-clock scheduler,
-   smoke-probe post-reload, failover state machine, clock-skew
-   measurement, boot default-deny skeleton, atomic apply, version
-   handshake. Every OpnSense-agent contributor will hit each as a
-   surprise. Sub-issue filed (see table).
+   smoke-probe post-reload, failover state machine, boot default-deny
+   skeleton, atomic apply, version handshake. Every OpnSense-agent
+   contributor will hit each as a surprise. Sub-issue filed (see table).
 
 The other six findings (HTTPS block UX, `blockIpOnly` binary, one-etag
 two-rate-classes, failover threshold ownership, router-deletion
@@ -355,7 +354,6 @@ code, and recent fix PRs):
 - Events POST with cap-and-drop retry queue (#330)
 - Monotonic-clock scheduler immune to wall-clock jumps (#336)
 - Failover state machine with poll-age tracking (#311 / #321 / #331)
-- Clock-skew measurement against API `Date` header (#312)
 - Hostname attribution sidecar (dnsmasq query-log tail; #259)
 - DHCP-script hook for lease events
 - Conntrack watcher for per-flow events
@@ -543,8 +541,8 @@ Recorded for traceability:
 - **§5 worst-case staleness = one poll interval.** Acceptable for the
   product; documented in §5.
 - **`resilience.md` §1–3, §5** (power loss boot-deny, API restart with
-  cached snapshot, DB blip 503, clock-skew measurement). All sound; the
-  fragile parts were the implementation gaps, now mostly closed.
+  cached snapshot, DB blip 503, router-time-independence). All sound;
+  the fragile parts were the implementation gaps, now mostly closed.
 - **§6 wire contract endpoints** (`register`, `policy`, `usage`,
   `events`, `decision`, `/blocked`). Endpoint set is sound; the only
   evolution concern is captured under §4 above.

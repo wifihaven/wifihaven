@@ -6,8 +6,8 @@
 --     never goes backward, so NTP corrections, DST shifts, or deliberate
 --     wall-clock manipulation cannot stall a timer (issue #336).
 --   * Use os.time() / os.date() for any "what is the wall-clock right now?"
---     need: RFC3339 timestamps in API payloads, clock-skew comparisons vs
---     the API's Date header (#312), and human-readable log timestamps.
+--     need: RFC3339 timestamps in API payloads and human-readable log
+--     timestamps.
 --
 -- The two time bases must not be mixed within a single diff: e.g. a
 -- `last_run` captured with monotonic_seconds() must only be compared
