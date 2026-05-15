@@ -48,6 +48,44 @@ The developer Mac and the API server share the upstream `192.168.10.0/24`
 network. The test router's WAN interface (`eth1`) lives on that same
 network at `192.168.10.42`. SSH to the test router uses that WAN address.
 
+### Pin the WAN address (static config)
+
+The test router's WAN must use a static address, not DHCP. With DHCP the
+upstream router can hand the test router a different lease across reboots
+(observed: `.42` → `.45` mid-debug), which breaks every saved SSH config,
+every reference to `192.168.10.42` in this document, and any tooling that
+points at the router by IP.
+
+Reserve `192.168.10.42` for the test router by configuring the upstream
+router to only hand out DHCP leases from a higher range (e.g. `.100`+),
+then configure the test router's WAN statically:
+
+```sh
+uci set network.wan.proto='static'
+uci set network.wan.ipaddr='192.168.10.42'
+uci set network.wan.netmask='255.255.255.0'
+uci set network.wan.gateway='192.168.10.1'
+uci set network.wan.dns='192.168.10.1'
+uci commit network
+/etc/init.d/network restart
+```
+
+Adjust `gateway` and `dns` to match your upstream router's LAN address.
+
+Verify after `network restart` (and again after a reboot, since the
+point of this section is reboot persistence):
+
+```sh
+uci show network.wan
+# expect proto='static', ipaddr='192.168.10.42', gateway set
+
+ip -4 addr show dev eth1 | grep inet
+# expect: inet 192.168.10.42/24 ... valid_lft forever
+```
+
+`valid_lft forever` is the tell that the address is statically bound and
+will not be replaced by a DHCP lease.
+
 ### Open WAN-side SSH
 
 These are the one-time setup commands on the test router. Run them while
