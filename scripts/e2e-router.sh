@@ -186,8 +186,17 @@ pass "dhcp_lease + connection_attempt posted"
 #
 # Precedence is Paused > Schedule > TimeLimit (PolicyService.computeBlockRules),
 # so a paused profile reports reason=Paused even when other limits also apply.
+# #406 removed POST /api/profiles/:id/pause (it toggled, which race-flipped under
+# concurrent calls). Callers now set `paused` explicitly via PUT /api/profiles/:id.
 step "Pause profile → blockReason=Paused in snapshot"
-curl -fsS -X POST "$BASE/api/profiles/$PID/pause" "${AUTH[@]}" >/dev/null
+pause_profile() {
+  local paused=$1
+  curl -fsS -X PUT "$BASE/api/profiles/$PID" "${AUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"name\":\"e2e-router\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":$paused,\"schedules\":[],\"timeLimit\":1,\"siteTimeLimits\":[]}" \
+    >/dev/null
+}
+pause_profile true
 
 curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap3.json"
 PAUSED_REASON=$(_py "
@@ -202,7 +211,7 @@ print(p['rules'].get('blockReason'))
 pass "blockReason=Paused in policy snapshot"
 
 # Unpause so the schedule check below sees reason=Schedule (not Paused, which would win).
-curl -fsS -X POST "$BASE/api/profiles/$PID/pause" "${AUTH[@]}" >/dev/null
+pause_profile false
 
 # ── 7. Active schedule reflected in policy snapshot ───────────────────────
 step "Add always-on schedule → blockReason=Schedule in snapshot"
