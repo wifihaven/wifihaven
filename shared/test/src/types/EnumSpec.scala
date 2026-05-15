@@ -35,11 +35,27 @@ object EnumSpec extends ZIOSpecDefault {
         assertTrue("\"maybe\"".fromJson[ConnectionDecision].isLeft)
       },
     ),
-    suite("FailureMode (existing — wire format preserved)")(
-      test("wire format unchanged") {
-        assertTrue((FailureMode.Open: FailureMode).toJson == "\"open\"") &&
-        assertTrue((FailureMode.Closed: FailureMode).toJson == "\"closed\"") &&
-        assertTrue("\"open\"".fromJson[FailureMode].contains(FailureMode.Open))
+    suite("FailureMode (#385 — three modes, lower-kebab wire)")(
+      test("encodes as lower-kebab") {
+        assertTrue((FailureMode.BlockAll: FailureMode).toJson == "\"block-all\"") &&
+        assertTrue((FailureMode.AllowAll: FailureMode).toJson == "\"allow-all\"") &&
+        assertTrue(
+          (FailureMode.LastKnownGood: FailureMode).toJson == "\"last-known-good\"",
+        )
+      },
+      test("decodes lower-kebab and is case-insensitive") {
+        assertTrue("\"block-all\"".fromJson[FailureMode].contains(FailureMode.BlockAll)) &&
+        assertTrue("\"Allow-All\"".fromJson[FailureMode].contains(FailureMode.AllowAll)) &&
+        assertTrue(
+          "\"LAST-KNOWN-GOOD\"".fromJson[FailureMode].contains(FailureMode.LastKnownGood),
+        )
+      },
+      test("rejects the legacy binary wire forms (#385 — no silent collapse)") {
+        // Old "open" / "closed" must NOT decode — a snapshot served from a
+        // pre-V12 build is a configuration mismatch, not silent data loss.
+        assertTrue("\"open\"".fromJson[FailureMode].isLeft) &&
+        assertTrue("\"closed\"".fromJson[FailureMode].isLeft) &&
+        assertTrue("\"unknown\"".fromJson[FailureMode].isLeft)
       },
     ),
   )

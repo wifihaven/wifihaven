@@ -1,6 +1,8 @@
 // Mirrors familydns.shared Models.scala
 
-export type FailureMode = 'open' | 'closed'
+// #385: three failover modes. Wire form is lower-kebab to match
+// shared/src/Models.scala FailureMode.asString.
+export type FailureMode = 'block-all' | 'allow-all' | 'last-known-good'
 
 export interface Profile {
   id: number

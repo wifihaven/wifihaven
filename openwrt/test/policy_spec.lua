@@ -24,7 +24,7 @@ local SNAPSHOT_JSON = [[{
         "blocklistIds": ["ads"],
         "blockIpOnly": false
       },
-      "failureMode": "closed"
+      "failureMode": "block-all"
     }
   },
   "blocklists": {}
@@ -419,7 +419,7 @@ describe("policy.apply", function()
           "extraBlocked": ["badsite.example.com"],
           "extraAllowed": [], "blocklistIds": [], "blockIpOnly": false
         },
-        "failureMode": "closed"
+        "failureMode": "block-all"
       }
     },
     "blocklists": {}
@@ -537,9 +537,9 @@ describe("policy.apply", function()
       "smoke-check failure must not fail the apply — propagation is a separate concern")
   end)
 
-  -- #331: opts pass-through. Use an inline snapshot with an explicit
-  -- failureMode="closed" profile so render.lua's failover branch (which
-  -- gates on `prof.failureMode == "closed"`) actually fires.
+  -- #331/#385: opts pass-through. Use an inline snapshot with an explicit
+  -- failureMode="block-all" profile so render.lua's failover branch (which
+  -- gates on `prof.failureMode == "block-all"`) actually fires.
   local function snap_with_closed_profile()
     return {
       etag = "sha256:test",
@@ -554,7 +554,7 @@ describe("policy.apply", function()
             blocked = false, blockReason = nil,
             extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
           },
-          failureMode = "closed",
+          failureMode = "block-all",
         },
       },
       blocklists = {},

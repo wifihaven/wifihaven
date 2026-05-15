@@ -365,7 +365,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     r._4.map(Hostname.unsafe),
     r._5.map(Hostname.unsafe),
     r._6,
-    FailureMode.parse(r._7).getOrElse(FailureMode.Closed),
+    FailureMode.parse(r._7).getOrElse(FailureMode.LastKnownGood),
   )
   def listAll                                       =
     sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles ORDER BY id"

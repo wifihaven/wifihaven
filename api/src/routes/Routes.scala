@@ -186,8 +186,11 @@ object ProfileRoutes {
                   upr.extraBlocked,
                   upr.extraAllowed,
                   upr.paused,
-                  // #311: missing failureMode → Closed (fail-safe).
-                  upr.failureMode.getOrElse(FailureMode.Closed),
+                  // #385: missing failureMode → LastKnownGood (preserves
+                  // cached-snapshot enforcement; matches DB column default).
+                  // Role-aware defaulting is a UI concern — the server just
+                  // persists whatever value the admin sent.
+                  upr.failureMode.getOrElse(FailureMode.LastKnownGood),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -224,8 +227,8 @@ object ProfileRoutes {
                   extraBlocked = upr.extraBlocked,
                   extraAllowed = upr.extraAllowed,
                   paused = upr.paused,
-                  // #311: if the caller omits failureMode, preserve the
-                  // existing value rather than resetting to Closed.
+                  // #385: if the caller omits failureMode, preserve the
+                  // existing value rather than resetting to the column default.
                   failureMode = upr.failureMode.getOrElse(p.failureMode),
                 ),
               )

@@ -6,8 +6,9 @@ This document defines how familydns SHOULD behave under five failure scenarios.
 It is the durable design contract. Implementation may lag; gaps are filed as
 individual follow-up issues that reference #269.
 
-The decisions in §4 (fail-closed for child profiles) and §5 (NTP-skew handling)
-are policy calls that need explicit operator sign-off before implementations land.
+The decisions in §4 (per-profile three-mode failover; #385) and §5 (NTP-skew
+handling) are policy calls that need explicit operator sign-off before
+implementations land.
 
 ---
 
@@ -159,55 +160,99 @@ client (the agent) without parsing error bodies.
   shorter than this; the cached snapshot is the correct enforcement
   posture during transient failures.
 - **After 5 minutes of consecutive failed polls**, the agent transitions
-  enforcement per **per-profile `failureMode`**:
-  - **`closed` (default for child profiles):** the profile's devices have
-    all forwarded traffic dropped, with the block page served for HTTP.
-    This is the same posture as "all categorical blocks active + paused."
-  - **`open` (default for adult / admin profiles):** the profile's devices
-    continue under the cached policy with no new restrictions. Existing
-    blocks (categorical, schedule) still apply because they're in the
-    cached snapshot; only the API-unreachable-specific transition is a
-    no-op.
+  enforcement per **per-profile `failureMode`**. Three modes (#385) —
+  named identically across architecture.md §0.2, this section,
+  `shared/src/Models.scala`, the wire JSON, and the DB column:
+  - **`BlockAll`** (wire `"block-all"`, recommended for child profiles):
+    the profile's devices have all forwarded traffic dropped, with the
+    block page served for HTTP. Same posture as "all categorical blocks
+    active + paused."
+  - **`LastKnownGood`** (wire `"last-known-good"`, default and
+    recommended for adult/admin profiles): the profile's devices
+    continue under the cached snapshot exactly as-is. Categorical
+    blocks, schedules, and per-MAC overrides all keep enforcing because
+    they live in the cached snapshot; only the
+    API-unreachable-specific transition is a no-op.
+  - **`AllowAll`** (wire `"allow-all"`, opt-in only): the profile's
+    devices are explicitly carved out of every drop rule — the
+    `@blocked_macs` membership, the per-`(MAC, host)` extraBlocked
+    drops, and the per-`(MAC, blocklistId)` category drops are all
+    suppressed for these MACs during failover, and the block-page DNAT
+    is suppressed too. Cached enforcement is intentionally erased for
+    these MACs; admins must pick this deliberately for trusted profiles
+    where lockout risk outweighs the cached-snapshot defence.
 - **On API return**, the agent applies the fresh snapshot and clears the
   failover state immediately. There is no hysteresis — recovery is instant.
 
 ### Why
-This is the **central parental-controls correctness decision.** Fail-open
-for kids means "yank the WAN cable" is a complete bypass — unacceptable.
-Fail-closed for adults means an ISP blip locks the household out of their
-own LAN — also unacceptable. Per-profile `failureMode` resolves the conflict.
+This is the **central parental-controls correctness decision.** A single
+"pass everything" mode for kids is a complete bypass — "yank the WAN
+cable" defeats the filter. A single "block everything" mode for adults
+locks the household out of their own LAN during ordinary ISP blips.
+Per-profile `failureMode` resolves the conflict.
+
+The original design (#311) shipped only two modes — `Open` and
+`Closed` — and that binary collapsed two semantically distinct
+behaviours: "pass everything with no enforcement" (AllowAll) and "keep
+the cached snapshot enforcing exactly" (LastKnownGood). The agent
+shipped one interpretation (`Open` = LastKnownGood); the doc shipped the
+other (`Open` = AllowAll). #385 separates them.
 
 The 5-minute threshold balances two costs:
-- Too short (< 1 min): every flaky cellular failover triggers a fail-closed
-  event, which kids will notice and learn to exploit (wait it out).
+- Too short (< 1 min): every flaky cellular failover triggers a
+  failover transition, which kids will notice and learn to exploit
+  (wait it out).
 - Too long (> 15 min): a determined kid who unplugs the WAN can browse
-  freely for that whole window. 5 minutes is short enough to be annoying
-  rather than useful.
+  freely for that whole window. 5 minutes is short enough to be
+  annoying rather than useful.
 
-Default `closed` for child role and `open` for adult/admin reflects the
-asymmetric blast radius: a false-closed for an adult is "my work Zoom
-dropped"; a false-open for a child is "they got around the filter."
+Defaults reflect the asymmetric blast radius. For a child profile,
+"BlockAll" trades a false-block (kid loses access during a real ISP
+blip) for the guarantee that "unplug the WAN" is not a bypass. For an
+adult profile, "LastKnownGood" is the conservative choice: the cached
+snapshot keeps enforcing whatever categorical blocks / schedules were
+already in place without taking the household offline. `AllowAll` is
+never a default — it must be picked deliberately.
 
 ### Implementation
-- `shared/src/Models.scala`: add `failureMode: FailureMode` to
-  `PolicyProfile` with `FailureMode = Open | Closed`. Default derived from
-  profile role.
-- `api/src/policy/PolicyService.scala`: include `failureMode` in the rendered
-  `PolicySnapshot`.
-- `openwrt/files/usr/sbin/familydns-agent`: track `last_successful_poll_ts`.
-  When `now - last > 300s`, render a "failover" nft variant — drop forwarded
-  traffic for devices whose profile is `closed`; pass-through for `open`.
-- Admin UI: add a "Failure mode" radio on the profile edit page with a
-  short explanation. Default value baked in by role on profile creation.
+- `shared/src/Models.scala`: `enum FailureMode { case BlockAll, AllowAll,
+  LastKnownGood }`. JSON codec emits lower-kebab wire forms.
+- `api/resources/db/migration/V12__failure_mode_three_modes.sql`:
+  migrate existing rows (`closed` → `block-all`, `open` →
+  `last-known-good`) and add a CHECK constraint pinning the new
+  vocabulary. Column default switches to `last-known-good`.
+- `api/src/routes/Routes.scala`: profile create / update preserves an
+  explicit `failureMode` from the request body; falls back to
+  `LastKnownGood` only when the field is absent (column default mirrors
+  this). Role-aware defaulting (child → BlockAll) is a UI concern —
+  the server does not infer a default from linked-user roles.
+- `api/src/policy/PolicyService.scala`: includes `failureMode` per
+  `ProfilePolicy` in the rendered `PolicySnapshot`. The ETag covers
+  this value so a mode change invalidates client caches.
+- `openwrt/files/usr/lib/lua/familydns/policy.lua`: tracks
+  `last_successful_poll_ts`; on `now - last > 300s`, renders nft with
+  `opts.poll_age_seconds`.
+- `openwrt/files/usr/lib/lua/familydns/render.lua`: branches by mode.
+  `BlockAll` emits a dedicated `failover_drop` set and drop chain.
+  `AllowAll` suppresses the profile's MACs from every drop list before
+  the `familydns_block` and `familydns_block_nat` chains are rendered.
+  `LastKnownGood` is the no-op default — nothing additional is
+  rendered, and the cached snapshot rules keep enforcing exactly.
+- Admin UI: three-option radio on the profile edit page (`ProfilesPage`)
+  with explanatory copy per mode.
 
 ### How to verify
 - Block the API at the router (firewall rule on the router itself
-  blocking egress to the API host). Wait 5 minutes. Confirm that a
-  child-profile device cannot reach the internet but the block page
-  loads; confirm an adult-profile device continues to work under cached
-  policy.
-- Restore API reachability; both profiles return to normal within one
-  poll cycle.
+  blocking egress to the API host). Wait 5 minutes. Confirm that:
+  - A `BlockAll` profile's device cannot reach the internet but the
+    block page loads;
+  - A `LastKnownGood` profile's device continues to work under cached
+    policy, including any categorical / schedule blocks that were
+    already in effect;
+  - An `AllowAll` profile's device passes traffic with no enforcement,
+    even if the cached snapshot has `extraBlocked` entries for it.
+- Restore API reachability; all three profiles return to normal within
+  one poll cycle.
 
 ---
 
