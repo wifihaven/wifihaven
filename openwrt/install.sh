@@ -203,29 +203,44 @@ if [ "$dnsmasq_changed" = 1 ]; then
   /etc/init.d/dnsmasq restart
 fi
 
-# Idempotent uhttpd listener for the local block page on 127.0.0.1:8081.
-# Document root is /www/familydns so that the nft DNAT (which lands at "/" —
-# the user's original HTTP request had Host: example.com, path /) serves
-# /www/familydns/index.html, not the LuCI redirect at /www/index.html (#303).
+# Idempotent uhttpd listener for the local block page on 127.0.0.1:8081 and
+# [::1]:8081 (#411 — v6 sibling so v6 HTTP requests to blocked hosts land on
+# the block page, not a connection error). Document root is /www/familydns so
+# the nft DNAT (which lands at "/" — the user's original HTTP request had
+# Host: example.com, path /) serves /www/familydns/index.html, not the LuCI
+# redirect at /www/index.html (#303).
 uhttpd_section=$(uci show uhttpd 2>/dev/null \
-  | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http='127\\.0\\.0\\.1:8081'\$/{print \$2; exit}")
+  | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http=.*'127\\.0\\.0\\.1:8081'/{print \$2; exit}")
+uhttpd_changed=0
 if [ -n "$uhttpd_section" ]; then
   current_home=$(uci -q get "uhttpd.${uhttpd_section}.home" || echo "")
-  if [ "$current_home" = "/www/familydns" ]; then
-    info "Block-page uhttpd listener already configured."
-  else
+  if [ "$current_home" != "/www/familydns" ]; then
     info "Updating block-page uhttpd home to /www/familydns..."
     uci set "uhttpd.${uhttpd_section}.home=/www/familydns"
-    uci commit uhttpd
-    /etc/init.d/uhttpd reload
+    uhttpd_changed=1
   fi
 else
   info "Configuring uhttpd block-page listener on 127.0.0.1:8081..."
   uhttpd_section=$(uci add uhttpd uhttpd)
-  uci set "uhttpd.${uhttpd_section}.listen_http=127.0.0.1:8081"
+  uci add_list "uhttpd.${uhttpd_section}.listen_http=127.0.0.1:8081"
   uci set "uhttpd.${uhttpd_section}.home=/www/familydns"
+  uhttpd_changed=1
+fi
+
+# Add v6 listener if absent. uhttpd treats listen_http as a list, so add_list
+# is safe to append; we just need to dedupe.
+if ! uci -q get "uhttpd.${uhttpd_section}.listen_http" \
+    | tr ' ' '\n' | grep -qx '\[::1\]:8081'; then
+  info "Adding v6 block-page uhttpd listener on [::1]:8081..."
+  uci add_list "uhttpd.${uhttpd_section}.listen_http=[::1]:8081"
+  uhttpd_changed=1
+fi
+
+if [ "$uhttpd_changed" = 1 ]; then
   uci commit uhttpd
   /etc/init.d/uhttpd reload
+else
+  info "Block-page uhttpd listener already configured (v4 + v6)."
 fi
 
 # #303: enable route_localnet on the LAN bridge so the nft prerouting DNAT

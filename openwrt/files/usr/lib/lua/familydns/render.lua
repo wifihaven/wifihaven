@@ -443,6 +443,22 @@ function M.nft(snapshot, opts)
         "ether saddr %s ip daddr @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
         p.mac, bl_set_name(p.id)))
     end
+    -- #411: v6 siblings. uhttpd also binds [::1]:8081 (see install.sh).
+    -- `ip6 daddr != ::1` guards against self-DNAT recursion if the block
+    -- page itself ever issues an outbound v6 request.
+    if #blocked_macs_list > 0 then
+      ind2("ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 dnat ip6 to ::1:8081")
+    end
+    for _, p in ipairs(eb_pairs) do
+      ind2(string.format(
+        "ether saddr %s ip6 daddr @%s tcp dport 80 dnat ip6 to ::1:8081",
+        p.mac, eb6_set_name(p.host)))
+    end
+    for _, p in ipairs(bl_pairs) do
+      ind2(string.format(
+        "ether saddr %s ip6 daddr @%s tcp dport 80 dnat ip6 to ::1:8081",
+        p.mac, bl6_set_name(p.id)))
+    end
     ind("}")
     emit("")
   end
