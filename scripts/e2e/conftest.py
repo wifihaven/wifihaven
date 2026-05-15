@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 import uuid
 
 import pytest
@@ -31,7 +30,12 @@ from lib.vm import (
     router_snapshot,
     router_up,
 )
-from lib.wait import wait_for_router_active
+from lib.wait import (
+    wait_for_client_dns,
+    wait_for_etag_change,
+    wait_for_router_active,
+    wait_for_router_slirp_ready,
+)
 
 log = logging.getLogger(__name__)
 
@@ -117,11 +121,13 @@ def router(router_session) -> EnrolledRouter:
     running, no profiles or devices touching this MAC yet.
     """
     router_restore(BASE_SNAPSHOT)
-    # Give the agent + dnsmasq + networking a chance to settle after the live
-    # restore. 1s is too short — curl from the client side raced and saw
-    # connection-refused on the first scenario after enrollment. 8s buys us a
-    # fully-converged state without slowing the suite materially.
-    time.sleep(8)
+    # `loadvm` restores guest memory but QEMU SLIRP's NAT/DHCP table is
+    # process-local and starts empty. Drive an HTTP probe from inside the
+    # router until the host API answers — that gates on the agent's own
+    # reachability path, which is what every scenario depends on. Without
+    # this, scenarios racing the agent's first post-restore poll see
+    # status 0 ("policy.fetch: unexpected status 0") and time out.
+    wait_for_router_slirp_ready(api_port=API_PORT, timeout_s=60)
     return router_session
 
 
@@ -146,7 +152,13 @@ def client_factory():
 @pytest.fixture()
 def client(client_factory) -> Client:
     """Default single-client fixture for scenarios that don't need multiple."""
-    return client_factory()
+    c = client_factory()
+    # The router-side `_wait_for_client_lan` gates on DHCP + a single
+    # `getent hosts` answer, but post-loadvm the upstream DNS path through
+    # SLIRP can flap (UDP NAT entries time out independently of TCP). Block
+    # here on a fresh `dig` so the test's first curl doesn't race.
+    wait_for_client_dns(c, timeout_s=30)
+    return c
 
 
 # ── ephemeral profile + device ───────────────────────────────────────────────
@@ -165,8 +177,23 @@ def scratch_profile(admin):
 
 
 @pytest.fixture()
-def scratch_device(admin, scratch_profile, client):
+def scratch_device(admin, scratch_profile, client, router_session):
     admin.upsert_device(mac=client.mac, name=f"e2e-dev-{client.name}", profile_id=scratch_profile["id"])
+    # The router boots with a default-deny boot.nft skeleton (#308) and the
+    # agent only knows about MACs that appear in the policy snapshot it last
+    # fetched. Without waiting for the agent to pick up this device, the
+    # very first packet from the new MAC is dropped and curl returns
+    # HTTPCODE:000 — the failure mode that masked scenarios 2/3/5/6.
+    # Without this gate, the very first packet from the new MAC is dropped
+    # (boot.nft default-deny + agent has no per-MAC accept rule yet). The
+    # device upsert above changes the snapshot's `devicePolicies` map, which
+    # bumps the policy etag — so wait_for_etag_change reliably gates on the
+    # agent having fetched + applied the snapshot that includes our MAC.
+    wait_for_etag_change(admin, router_session.router_id, timeout_s=180)
+    # PolicyApply restarts dnsmasq (#341). The first DNS query immediately
+    # after restart races and curl reports HTTPCODE:000. Re-gate the client
+    # on a fresh resolver answer before yielding to the scenario.
+    wait_for_client_dns(client, timeout_s=30)
     yield {"mac": client.mac, "profile_id": scratch_profile["id"]}
     try:
         admin.delete_device(client.mac)
@@ -200,6 +227,21 @@ def pytest_runtest_makereport(item, call):
                 sections.append(("api logs (tail)", stack.logs(service="api", tail=120)))
         except Exception as e:  # noqa: BLE001
             sections.append(("api logs", f"<unavailable: {e}>"))
+        try:
+            client_obj = item.funcargs.get("client")
+            debug = item.funcargs.get("debug_api")
+            if client_obj is not None and debug is not None:
+                evs = debug.events_for_mac(client_obj.mac)
+                lines = [f"events for mac {client_obj.mac} ({len(evs)} total):"]
+                for e in evs[-20:]:
+                    lines.append(
+                        f"  ts={e.get('ts')} allowed={e.get('allowed')} "
+                        f"reason={e.get('reason')!r} hostname={e.get('hostname')!r} "
+                        f"destIp={e.get('destIp')!r}"
+                    )
+                sections.append(("debug events", "\n".join(lines)))
+        except Exception as e:  # noqa: BLE001
+            sections.append(("debug events", f"<unavailable: {e}>"))
         for title, body in sections:
             rep.sections.append((title, body))
 
