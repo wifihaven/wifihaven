@@ -64,22 +64,33 @@ Cache locations (kept across runs, safe to delete to force a rebuild):
 
 ## Registering the runner with GitHub
 
+The runner installs under `~/actions-runner` in the runner user's home directory
+— no sudo needed for the install itself.
+
 1. Pick the runner user (non-root). It must be in the `kvm` and `docker`
-   groups. Create a working directory it owns, e.g. `/opt/actions-runner`.
+   groups and have the NOPASSWD `ip` rule from `docs/vm-e2e-ubuntu.md`.
+   The natural choice is whichever user you already bootstrapped the VM
+   harness with.
 
-2. Get a one-time registration token:
+2. Get a one-time registration token (from any machine with `gh` auth — the
+   token's only valid ~1 hour, so do this right before step 4):
    ```bash
-   gh api -X POST repos/sameerparekh/familydns/actions/runners/registration-token
+   gh api -X POST repos/sameerparekh/familydns/actions/runners/registration-token --jq .token
    ```
-   The response contains `token` (valid ~1 hour) and `expires_at`.
 
-3. Download and unpack the runner inside `/opt/actions-runner`. Use the
-   latest release listed on the repo's
-   `Settings → Actions → Runners → New self-hosted runner` page, or
-   `https://github.com/actions/runner/releases`.
-
-4. Configure with the labels the workflow expects:
+3. As the runner user, download and unpack the latest runner release. Check
+   <https://github.com/actions/runner/releases> for the current version.
    ```bash
+   mkdir -p ~/actions-runner && cd ~/actions-runner
+   RUNNER_VER=2.321.0    # ← update to current
+   curl -fsSL -o runner.tar.gz \
+     "https://github.com/actions/runner/releases/download/v${RUNNER_VER}/actions-runner-linux-x64-${RUNNER_VER}.tar.gz"
+   tar xzf runner.tar.gz && rm runner.tar.gz
+   ```
+
+4. Configure with the labels the workflow expects (paste the token from #2):
+   ```bash
+   cd ~/actions-runner
    ./config.sh \
      --url https://github.com/sameerparekh/familydns \
      --token <REGISTRATION_TOKEN> \
@@ -89,14 +100,26 @@ Cache locations (kept across runs, safe to delete to force a rebuild):
      --unattended
    ```
 
-5. Either run interactively to smoke-test:
+5. Smoke-test interactively before installing as a service:
    ```bash
    ./run.sh
    ```
-   …or install as a systemd service. A template lives at
-   [`scripts/ci/kvm-runner.service`](../../scripts/ci/kvm-runner.service);
-   copy it to `/etc/systemd/system/`, fill in the placeholders, then:
+   In another shell, dispatch the sanity workflow and watch it land:
    ```bash
+   gh workflow run e2e-kvm-sanity.yml -R sameerparekh/familydns
+   gh run watch -R sameerparekh/familydns
+   ```
+   Ctrl-C `./run.sh` once the workflow finishes.
+
+6. Install as a systemd service so the runner survives reboots. A template
+   lives at [`scripts/ci/kvm-runner.service`](../../scripts/ci/kvm-runner.service).
+   This is the only step that needs sudo:
+   ```bash
+   sudo cp scripts/ci/kvm-runner.service /etc/systemd/system/kvm-runner.service
+   sudo sed -i \
+     -e "s|<RUNNER_USER>|$USER|g" \
+     -e "s|<RUNNER_HOME>|$HOME/actions-runner|g" \
+     /etc/systemd/system/kvm-runner.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now kvm-runner.service
    journalctl -u kvm-runner -f
@@ -105,11 +128,31 @@ Cache locations (kept across runs, safe to delete to force a rebuild):
 6. Verify the runner appears under
    `Settings → Actions → Runners` with the `kvm` label and status `Idle`.
 
-7. Smoke-test via the sanity workflow:
-   ```bash
-   gh workflow run e2e-kvm-sanity.yml
-   gh run watch
-   ```
+## Runtime privileges
+
+At runtime, the runner needs **no sudo**. Setup-time sudo is limited to
+installing the systemd unit (step 6 above) — everything during job
+execution is unprivileged:
+
+| capability needed at runtime | how it's granted (one-time) |
+|---|---|
+| `/dev/kvm` read/write | runner user is in the `kvm` group |
+| docker socket | runner user is in the `docker` group |
+| attach taps to `fdns-lan0` | `cap_net_admin` on `qemu-bridge-helper` (`setcap`) + `/etc/qemu/bridge.conf` allowlists the bridge |
+| `ip link add/set …` for the LAN bridge | NOPASSWD sudo rule in `/etc/sudoers.d/familydns-vm`, scoped to `/usr/sbin/ip` only |
+| outbound HTTPS to GitHub | none (standard outbound) |
+
+All of these are part of the one-time host bootstrap in
+[`docs/vm-e2e-ubuntu.md`](../vm-e2e-ubuntu.md). If you've already developed
+the VM e2e harness on this host as a regular user, you're done.
+
+## Trust model
+
+The repo is public, but the workflow that uses this runner triggers only on
+`push: main` and `workflow_dispatch` — never on `pull_request`. A self-hosted
+runner is registered to a specific repo, so a fork pushing to *its* main
+does **not** reach our runner; the only way fork code can run on this box is
+if a maintainer merges it to upstream `main`. Trust gate = code review.
 
 ## Maintenance
 
