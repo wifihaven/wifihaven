@@ -64,7 +64,6 @@ object DbFailureSpec extends ZIOSpecDefault {
     def create(n: String, h: Sha256Hex)                = throwing
     def completeEnrollment(id: RouterId, h: Sha256Hex) = throwing
     def touch(id: RouterId, etag: Option[ETag])        = throwing
-    def recordSkew(id: RouterId, skewSeconds: Long)    = throwing
     def delete(id: RouterId)                           = throwing
   }
 

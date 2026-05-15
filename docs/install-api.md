@@ -128,9 +128,8 @@ and §8 (firewall).
   for `System clock synchronized: yes`. If you're running on a host
   without internet (rare for this stack, but e.g. an air-gapped network),
   point chrony at a local stratum-1 source before bringing the API up.
-  The OpenWRT agent measures drift on every poll and surfaces a banner
-  on the admin Routers page if `|skew| > 60s` — that warning will fire
-  for skewed routers but cannot detect skew on the API host itself.
+  Skew on the *router* clock has no effect — the agent makes no
+  time-based decisions (Truth 2 / #350).
 
 ---
 

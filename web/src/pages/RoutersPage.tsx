@@ -111,7 +111,6 @@ export function RoutersPage() {
                     className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
                   >Delete</button>
                 </div>
-                <ClockSkewBanner router={r} />
               </div>
             ))
         }
@@ -198,28 +197,6 @@ export function RoutersPage() {
           </button>
         </Modal>
       )}
-    </div>
-  )
-}
-
-// Surfaces router-vs-API clock drift (issue #312). The OpenWRT agent measures
-// drift via the `Date` header on every policy poll and ships it with each
-// /api/router/usage POST. We render the banner only for |skew| > 60s — small
-// drifts are noise. A null value means the agent has never reported, which
-// most often just means the first poll hasn't completed yet.
-function ClockSkewBanner({ router }: { router: RouterSummary }) {
-  const skew = router.lastClockSkewSeconds
-  if (skew == null) return null
-  if (Math.abs(skew) <= 60) return null
-  const direction = skew > 0 ? 'ahead of' : 'behind'
-  return (
-    <div
-      data-testid={`router-clock-skew-${router.id}`}
-      className="mx-5 mb-4 -mt-1 rounded-xl border border-yellow-500/30 bg-yellow-500/10 text-yellow-200 text-xs px-4 py-2"
-    >
-      Router clock is {Math.abs(skew)} seconds {direction} the server.
-      Daily limit windows may be inaccurate — ensure NTP is configured on
-      this router.
     </div>
   )
 }

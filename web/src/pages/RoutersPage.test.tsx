@@ -19,7 +19,6 @@ import { RoutersPage } from './RoutersPage'
 const existing: RouterSummary = {
   id: 'r1', name: 'home-gw', enrolled: false,
   lastSeenAt: null, lastEtag: null, createdAt: '2026-05-11T00:00:00Z',
-  lastClockSkewSeconds: null,
 }
 
 const createResp: CreateRouterResponse = {
@@ -97,47 +96,3 @@ describe('RoutersPage — copy to clipboard', () => {
   })
 })
 
-// ── #312: router clock-skew banner ────────────────────────────────────────
-describe('RoutersPage — clock skew banner', () => {
-  const skewed = (s: number | null): RouterSummary => ({
-    id: 'rs', name: 'skewed-gw', enrolled: true,
-    lastSeenAt: '2026-05-13T12:00:00Z', lastEtag: 'sha256:x',
-    createdAt: '2026-05-11T00:00:00Z', lastClockSkewSeconds: s,
-  })
-
-  it('shows a banner when |skew| > 60s with "ahead" for positive drift', async () => {
-    (api.routers.list as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue([skewed(180)])
-    render(<RoutersPage />)
-    await screen.findByText('skewed-gw')
-    const banner = await screen.findByTestId('router-clock-skew-rs')
-    expect(banner.textContent).toMatch(/180/)
-    expect(banner.textContent).toMatch(/ahead/i)
-  })
-
-  it('shows "behind" for negative drift', async () => {
-    (api.routers.list as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue([skewed(-180)])
-    render(<RoutersPage />)
-    await screen.findByText('skewed-gw')
-    const banner = await screen.findByTestId('router-clock-skew-rs')
-    expect(banner.textContent).toMatch(/180/)
-    expect(banner.textContent).toMatch(/behind/i)
-  })
-
-  it('does NOT show a banner when |skew| ≤ 60s', async () => {
-    (api.routers.list as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue([skewed(30)])
-    render(<RoutersPage />)
-    await screen.findByText('skewed-gw')
-    expect(screen.queryByTestId('router-clock-skew-rs')).toBeNull()
-  })
-
-  it('does NOT show a banner when skew is null (never measured)', async () => {
-    (api.routers.list as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue([skewed(null)])
-    render(<RoutersPage />)
-    await screen.findByText('skewed-gw')
-    expect(screen.queryByTestId('router-clock-skew-rs')).toBeNull()
-  })
-})
