@@ -165,11 +165,14 @@ docker run --rm \
     -w /ib \
     "$IMAGEBUILDER_DOCKER_IMAGE" \
     bash -euxo pipefail -c '
-        # Cleanup trap: even on build failure, hand bin/ and build_dir/
-        # back to the invoking user so subsequent host-side `rm` and
-        # incremental rebuilds work without sudo. Without this, a single
-        # build leaves root-owned artifacts that block every later run.
-        trap "chown -R \"$HOST_UID:$HOST_GID\" /ib/bin /ib/build_dir 2>/dev/null || true" EXIT
+        # Cleanup trap: even on build failure, hand the entire imagebuilder
+        # tree back to the invoking user. Image Builder writes to bin/,
+        # build_dir/, tmp/, dl/, staging_dir/ — anything left root-owned
+        # blocks subsequent host-side `rm` and (on CI) breaks the next
+        # actions/checkout cleanup with EACCES on stale .ipk / tmp/test.fs
+        # files. chown the whole tree to be future-proof against new IB
+        # output dirs.
+        trap "chown -R \"$HOST_UID:$HOST_GID\" /ib 2>/dev/null || true" EXIT
 
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
