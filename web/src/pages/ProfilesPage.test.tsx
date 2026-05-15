@@ -10,7 +10,6 @@ vi.mock('@/api/client', () => ({
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
-      pause: vi.fn(),
       setUsers: vi.fn(),
     },
     blocklists: {
@@ -93,7 +92,6 @@ beforeEach(() => {
   ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
-  ;(api.profiles.pause as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ paused: true })
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
   ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
@@ -119,13 +117,33 @@ describe('ProfilesPage — list', () => {
 })
 
 describe('ProfilesPage — pause / delete', () => {
-  it('clicking Pause/Resume calls api.profiles.pause and reloads', async () => {
+  // #406: pause is now an explicit PUT with the full profile + paused=!current.
+  // The previous POST /pause endpoint was a server-side toggle (race-prone).
+  it('clicking Pause calls api.profiles.update with paused=true and reloads', async () => {
     const user = userEvent.setup()
     render(<ProfilesPage />)
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /Pause/ }))
-    await waitFor(() => expect(api.profiles.pause).toHaveBeenCalledWith(1))
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ paused: true, name: 'Kids' }),
+      ),
+    )
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
+  })
+
+  it('clicking Resume calls api.profiles.update with paused=false', async () => {
+    const user = userEvent.setup()
+    render(<ProfilesPage />)
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await user.click(within(adultsCard).getByRole('button', { name: /Resume/ }))
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({ paused: false, name: 'Adults' }),
+      ),
+    )
   })
 
   it('confirms then calls api.profiles.delete', async () => {

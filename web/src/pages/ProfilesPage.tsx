@@ -142,8 +142,14 @@ export function ProfilesPage() {
     setError(null)
   }
 
-  async function togglePause(id: number) {
-    await api.profiles.pause(id)
+  async function togglePause(pd: ProfileDetail) {
+    // #406: setting `paused` explicitly via the full-profile PUT is
+    // idempotent under concurrent clicks. The old POST /pause endpoint was
+    // a server-side toggle that race-flipped under double-click / retry.
+    // #423 tracks adding PATCH so we don't have to send the whole profile.
+    const body = formToRequest(detailToForm(pd))
+    body.paused = !pd.profile.paused
+    await api.profiles.update(pd.profile.id, body)
     await reload()
   }
 
@@ -224,7 +230,7 @@ export function ProfilesPage() {
               </div>
               {isAdmin && (
                 <div className="flex flex-wrap gap-2 shrink-0">
-                  <button onClick={() => togglePause(pd.profile.id)}
+                  <button onClick={() => togglePause(pd)}
                     className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                       pd.profile.paused
                         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'

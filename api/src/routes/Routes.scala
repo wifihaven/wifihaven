@@ -132,7 +132,7 @@ object ProfileRoutes {
       userRepo: UserRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "profiles"                         ->
+      Method.GET / "api" / "profiles"                        ->
         handler { (req: Request) =>
           for {
             claims      <- requireAuth(req, auth)
@@ -149,7 +149,7 @@ object ProfileRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(details.toJson)
         },
-      Method.GET / "api" / "profiles" / long("id")            ->
+      Method.GET / "api" / "profiles" / long("id")           ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
@@ -166,7 +166,7 @@ object ProfileRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(ProfileDetail(p, scheds, tl, stls).toJson)
         },
-      Method.POST / "api" / "profiles"                        ->
+      Method.POST / "api" / "profiles"                       ->
         handler { (req: Request) =>
           for {
             _    <- requireAdmin(req, auth)
@@ -205,7 +205,7 @@ object ProfileRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":${id.value}}""")
         },
-      Method.PUT / "api" / "profiles" / long("id")            ->
+      Method.PUT / "api" / "profiles" / long("id")           ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
@@ -245,13 +245,13 @@ object ProfileRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
-      Method.DELETE / "api" / "profiles" / long("id")         ->
+      Method.DELETE / "api" / "profiles" / long("id")        ->
         handler { (id: Long, req: Request) =>
           requireAdmin(req, auth) *>
             profileRepo.delete(ProfileId(id)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
-      Method.GET / "api" / "profiles" / long("id") / "users"  ->
+      Method.GET / "api" / "profiles" / long("id") / "users" ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
@@ -266,7 +266,7 @@ object ProfileRoutes {
             }
           } yield Response.json(summaries.toJson)
         },
-      Method.PUT / "api" / "profiles" / long("id") / "users"  ->
+      Method.PUT / "api" / "profiles" / long("id") / "users" ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
@@ -280,20 +280,11 @@ object ProfileRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
-      Method.POST / "api" / "profiles" / long("id") / "pause" ->
-        handler { (id: Long, req: Request) =>
-          val pid = ProfileId(id)
-          for {
-            claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
-            p      <- profileRepo
-              .findById(pid)
-              .mapError(ErrorMapper.dbErrorToResponse)
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("")))
-            _      <-
-              profileRepo.setPaused(pid, !p.paused).mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(s"""{"paused":${!p.paused}}""")
-        },
+      // #406: POST /api/profiles/:id/pause used to toggle paused state by
+      // reading the row and writing !paused. That race-flips state under
+      // concurrent calls (two browser tabs, retry-after-blip). Callers now
+      // set `paused` explicitly via PUT /api/profiles/:id. See #423 for the
+      // follow-up to add PATCH for race-safe field-scoped updates.
     )
 }
 
