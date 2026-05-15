@@ -53,21 +53,28 @@ describe("render.dnsmasq", function()
     assert.is_nil(conf:find("address=/khanacademy.org/#", 1, true))
   end)
 
-  it("emits ipset=/host/eb_<sanitized-host> for each extraBlocked host that has an assigned device", function()
+  -- Post-#394 (e2e-vm): dnsmasq on OpenWRT 23.05+ uses native nftables sets
+  -- via `nftset=`, not the legacy `ipset=` framework. Syntax encodes the
+  -- address family (4# / 6#) so A → v4 set, AAAA → v6 set (#392).
+  it("emits combined v4+v6 nftset=/host/... for each extraBlocked host", function()
     local conf = render.dnsmasq(snap_one())
-    assert.truthy(conf:find("ipset=/tiktok.com/eb_tiktok_com", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/tiktok.com/4#inet#familydns#eb_tiktok_com,6#inet#familydns#eb6_tiktok_com",
+      1, true))
   end)
 
-  it("sanitises multi-label extraBlocked hosts in the ipset name", function()
+  it("sanitises multi-label extraBlocked hosts in both v4 and v6 set names", function()
     local s = snap_one()
     s.profiles["3"].rules.extraBlocked = { "cdn.example.co.uk" }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find("ipset=/cdn.example.co.uk/eb_cdn_example_co_uk", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/cdn.example.co.uk/4#inet#familydns#eb_cdn_example_co_uk,6#inet#familydns#eb6_cdn_example_co_uk",
+      1, true))
   end)
 
-  it("does NOT emit ipset= for extraAllowed hosts", function()
+  it("does NOT emit nftset= for extraAllowed hosts", function()
     local conf = render.dnsmasq(snap_one())
-    assert.is_nil(conf:find("ipset=/khanacademy.org/", 1, true))
+    assert.is_nil(conf:find("/khanacademy.org/", 1, true))
   end)
 
   it("handles multiple devices in different profiles", function()
@@ -86,7 +93,7 @@ describe("render.dnsmasq", function()
     assert.truthy(conf:find("dhcp-host=de:ad:be:ef:00:01,set:profile1", 1, true))
   end)
 
-  it("deduplicates extraBlocked ipset= lines across profiles", function()
+  it("deduplicates extraBlocked nftset= lines across profiles", function()
     local s = snap_one()
     s.devices["de:ad:be:ef:00:01"] = { profileId = 1, name = "parent-phone", rules = nil }
     s.profiles["1"] = {
@@ -99,11 +106,11 @@ describe("render.dnsmasq", function()
       failureMode = "last-known-good",
     }
     local conf = render.dnsmasq(s)
-    local _, count = conf:gsub("ipset=/tiktok%.com/eb_tiktok_com", "")
+    local _, count = conf:gsub("nftset=/tiktok%.com/", "")
     assert.equal(1, count)
   end)
 
-  it("skips ipset= emission when an extraBlocked host has no device referencing it", function()
+  it("skips nftset= emission when an extraBlocked host has no device referencing it", function()
     -- Profile with extraBlocked but no devices assigned → nothing to populate.
     local s = snap_one()
     s.profiles["7"] = {
@@ -116,10 +123,10 @@ describe("render.dnsmasq", function()
       failureMode = "last-known-good",
     }
     local conf = render.dnsmasq(s)
-    assert.is_nil(conf:find("ipset=/ghosthost.example/", 1, true))
+    assert.is_nil(conf:find("/ghosthost.example/", 1, true))
   end)
 
-  it("emits ipset= for device-override extraBlocked", function()
+  it("emits combined v4+v6 nftset= for device-override extraBlocked", function()
     local s = snap_one()
     s.devices["aa:bb:cc:11:22:33"].rules = {
       blocked = false, blockReason = nil,
@@ -127,7 +134,9 @@ describe("render.dnsmasq", function()
       extraAllowed = {}, blocklistIds = {}, blockIpOnly = false,
     }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find("ipset=/override.example/eb_override_example", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/override.example/4#inet#familydns#eb_override_example,6#inet#familydns#eb6_override_example",
+      1, true))
   end)
 
   it("returns a non-empty string", function()
@@ -300,10 +309,31 @@ describe("render.nft extraBlocked enforcement", function()
     assert.truthy(block:find("flags dynamic,timeout", 1, true))
   end)
 
+  -- #392: v6 sibling set must be declared alongside every eb_ set so the
+  -- nftset=/host/6#inet#familydns#eb6_<host> AAAA callback has somewhere
+  -- to populate.
+  it("declares set eb6_<host> with dynamic ipv6 elements + 1h timeout (#392)", function()
+    local nft = render.nft(snap_one())
+    local pos = nft:find("set eb6_tiktok_com", 1, true)
+    assert.truthy(pos)
+    local block = nft:sub(pos, pos + 200)
+    assert.truthy(block:find("type ipv6_addr", 1, true))
+    assert.truthy(block:find("flags dynamic,timeout", 1, true))
+    assert.truthy(block:find("timeout 1h", 1, true))
+  end)
+
   it("emits a drop rule `ether saddr <mac> ip daddr @eb_<host> drop` for each (mac, host) pair", function()
     local nft = render.nft(snap_one())
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com drop", 1, true))
+  end)
+
+  -- #392: v6 drop rule mirrors the v4 one. Without it a dual-stack host
+  -- whose AAAA resolves under a Kids profile slips through the v4 drop.
+  it("emits a v6 drop rule `ether saddr <mac> ip6 daddr @eb6_<host> drop` (#392)", function()
+    local nft = render.nft(snap_one())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com drop", 1, true))
   end)
 
   it("does NOT drop traffic from MACs in OTHER profiles (no global leakage — the bug #351 fixes)", function()
@@ -354,6 +384,8 @@ describe("render.nft extraBlocked enforcement", function()
     local nft = render.nft(s)
     assert.is_nil(nft:find("set eb_", 1, true))
     assert.is_nil(nft:find("@eb_", 1, true))
+    assert.is_nil(nft:find("set eb6_", 1, true))
+    assert.is_nil(nft:find("@eb6_", 1, true))
   end)
 
   it("does NOT emit any address=/.../# style DNS sinkhole regardless of extraBlocked", function()
@@ -470,6 +502,21 @@ describe("render.nft nat chain", function()
     s.profiles["3"].rules.extraBlocked = {}
     local nft = render.nft(s)
     assert.is_nil(nft:find("familydns_block_nat", 1, true))
+  end)
+
+  -- #392: v6 block-page DNAT is explicitly out of scope. uhttpd binds v4
+  -- only, so a v6 HTTP request to a blocked host drops at the filter chain
+  -- with no DNAT redirect (browser sees a connection error, not the block
+  -- page). Pin the absence so a future test-writer doesn't quietly add a
+  -- v6 DNAT line that points at a non-existent v6 listener.
+  it("does NOT emit ip6/dnat lines in the nat chain (v6 block page deferred, #392)", function()
+    local nft = render.nft(snap_one())
+    local pos = nft:find("chain familydns_block_nat", 1, true)
+    assert.truthy(pos)
+    local close = nft:find("\n%s*}", pos)
+    local body = nft:sub(pos, (close or #nft) - 1)
+    assert.is_nil(body:find("ip6 daddr", 1, true))
+    assert.is_nil(body:find("dnat ip6 to", 1, true))
   end)
 
 end)
@@ -653,6 +700,17 @@ describe("render blocklist enforcement (#352)", function()
     assert.truthy(blk:find("timeout 1h", 1, true))
   end)
 
+  -- #392: v6 sibling for category blocklists.
+  it("declares set bl6_<id> with type ipv6_addr + dynamic,timeout (#392)", function()
+    local nft  = render.nft(snap_bl())
+    local pos  = nft:find("set bl6_test_ads", 1, true)
+    assert.truthy(pos, "expected 'set bl6_test_ads' in nft output")
+    local blk  = nft:sub(pos, pos + 200)
+    assert.truthy(blk:find("type ipv6_addr", 1, true))
+    assert.truthy(blk:find("flags dynamic,timeout", 1, true))
+    assert.truthy(blk:find("timeout 1h", 1, true))
+  end)
+
   it("emits set declaration even when no device references the blocklist id", function()
     -- Profile 1 (adults) has no blocklistIds, but the set must still be
     -- declared because dnsmasq ipset= callbacks need the set to exist.
@@ -673,30 +731,37 @@ describe("render blocklist enforcement (#352)", function()
     assert.equal(1, cnt, "set declaration must appear exactly once")
   end)
 
-  -- ── dnsmasq ipset= directives ────────────────────────────────────────────
+  -- ── dnsmasq nftset= directives (post-#394 nftset/ipset migration) ───────
 
-  it("emits ipset=/<host>/bl_<id> for each host in snapshot._blocklist_hosts[id]", function()
+  it("emits combined v4+v6 nftset=/<host>/... for each host in _blocklist_hosts[id] (#392)", function()
     local conf = render.dnsmasq(snap_bl())
-    assert.truthy(conf:find("ipset=/adserver.example.com/bl_test_ads", 1, true))
-    assert.truthy(conf:find("ipset=/doubleclick.net/bl_test_ads", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/adserver.example.com/4#inet#familydns#bl_test_ads,6#inet#familydns#bl6_test_ads",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=/doubleclick.net/4#inet#familydns#bl_test_ads,6#inet#familydns#bl6_test_ads",
+      1, true))
   end)
 
-  it("deduplicates ipset= lines when the same host appears in two blocklists (edge case)", function()
+  it("emits one nftset= line per (host, id) when the same host appears in two blocklists", function()
     local s = snap_bl()
     s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
     s._blocklist_hosts["test_social"] = { "doubleclick.net", "facebook.com" }
     local conf = render.dnsmasq(s)
-    -- doubleclick.net must appear for test_ads AND test_social
-    -- but should only appear once per set name combination.
-    assert.truthy(conf:find("ipset=/doubleclick.net/bl_test_ads",    1, true))
-    assert.truthy(conf:find("ipset=/doubleclick.net/bl_test_social", 1, true))
+    assert.truthy(conf:find(
+      "nftset=/doubleclick.net/4#inet#familydns#bl_test_ads,6#inet#familydns#bl6_test_ads",
+      1, true))
+    assert.truthy(conf:find(
+      "nftset=/doubleclick.net/4#inet#familydns#bl_test_social,6#inet#familydns#bl6_test_social",
+      1, true))
   end)
 
-  it("emits no ipset= lines when _blocklist_hosts is absent or empty", function()
+  it("emits no nftset= lines when _blocklist_hosts is absent or empty", function()
     local s = snap_bl()
     s._blocklist_hosts = nil
     local conf = render.dnsmasq(s)
     assert.is_nil(conf:find("bl_test_ads", 1, true))
+    assert.is_nil(conf:find("bl6_test_ads", 1, true))
   end)
 
   -- ── nft drop rules ───────────────────────────────────────────────────────
@@ -706,6 +771,19 @@ describe("render blocklist enforcement (#352)", function()
     -- Only kid mac references test_ads; parent does not.
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads drop", 1, true))
+  end)
+
+  -- #392: v6 drop rule mirrors the v4 one for blocklists.
+  it("emits v6 drop 'ether saddr <mac> ip6 daddr @bl6_<id> drop' (#392)", function()
+    local nft = render.nft(snap_bl())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads drop", 1, true))
+  end)
+
+  it("does NOT emit v6 drop for MACs whose profile has no blocklistIds (#392)", function()
+    local nft = render.nft(snap_bl())
+    assert.is_nil(nft:find(
+      "ether saddr de:ad:be:ef:00:01 ip6 daddr @bl6_test_ads", 1, true))
   end)
 
   it("does NOT emit drop for MACs whose profile has blocklistIds = {}", function()
@@ -738,11 +816,13 @@ describe("render blocklist enforcement (#352)", function()
     assert.is_nil(nft:find("bl_missing_id", 1, true))
   end)
 
-  it("emits no bl_ sets or drop rules when snapshot.blocklists is empty", function()
+  it("emits no bl_ or bl6_ sets or drop rules when snapshot.blocklists is empty", function()
     local s = snap_one()  -- snap_one has blocklists = {}
     local nft = render.nft(s)
     assert.is_nil(nft:find("set bl_", 1, true))
     assert.is_nil(nft:find("@bl_", 1, true))
+    assert.is_nil(nft:find("set bl6_", 1, true))
+    assert.is_nil(nft:find("@bl6_", 1, true))
   end)
 
   -- ── DNAT HTTP/80 for blocklist hits (mirrors #351 extraBlocked pattern) ──
