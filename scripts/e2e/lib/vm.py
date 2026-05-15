@@ -119,6 +119,35 @@ def router_restore(name: str) -> Result:
     return run([_vm_script("router-restore.sh"), name], timeout=60)
 
 
+def router_nft_set(set_name: str, *, table: str = "fw4", family: str = "inet") -> list[str]:
+    """Return the elements of an nftables set on the router.
+
+    Used by the enforcement suites (#346) to assert MAC / IP membership in
+    sets like `blocked_macs` or per-MAC drop sets without depending on
+    log-line parsing. Returns an empty list if the set exists but is empty,
+    or if the set is absent.
+
+    Implementation detail: `nft -j list set ...` would be cleaner but isn't
+    always present on the OpenWRT image; we parse the human-readable form.
+    Elements appear after `elements = { ... }`, comma-separated.
+    """
+    res = router_ssh(
+        f"nft list set {family} {table} {set_name} 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    out = res.stdout or ""
+    if "elements" not in out:
+        return []
+    # Pull the brace-delimited element list.
+    start = out.find("elements")
+    brace = out.find("{", start)
+    end = out.find("}", brace)
+    if brace == -1 or end == -1:
+        return []
+    inner = out[brace + 1 : end]
+    return [tok.strip() for tok in inner.split(",") if tok.strip()]
+
+
 def router_ssh(cmd: str, *, timeout: float = 30, check: bool = True) -> Result:
     """Run a command on the router via the WAN-side hostfwd SSH port."""
     args = [

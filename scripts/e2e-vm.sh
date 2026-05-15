@@ -29,6 +29,7 @@ E2E_DIR="${REPO_ROOT}/scripts/e2e"
 VENV_DIR="${REPO_ROOT}/.e2e-vm-venv"
 
 ONLY=""
+SMOKE=0
 PYTEST_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +37,8 @@ while [[ $# -gt 0 ]]; do
       ONLY="$2"; shift 2 ;;
     --only=*)
       ONLY="${1#--only=}"; shift ;;
+    --smoke)
+      SMOKE=1; shift ;;
     --keep)
       export E2E_VM_KEEP=1 E2E_VM_KEEP_STACK=1; shift ;;
     --skip-vms)
@@ -65,10 +68,28 @@ case "${ONLY}" in
   usage)        MARK="usage" ;;
   blocked-page|blocked_page)
                 MARK="blocked_page" ;;
+  pause)        MARK="pause" ;;
+  extra-blocked|extra_blocked)
+                MARK="extra_blocked" ;;
+  schedule)     MARK="schedule" ;;
+  time-limit|time_limit)
+                MARK="time_limit" ;;
+  reassignment) MARK="reassignment" ;;
+  unknown-device|unknown_device)
+                MARK="unknown_device" ;;
   *) echo "unknown --only: ${ONLY}" >&2
-     echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page" >&2
+     echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page," >&2
+     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device" >&2
      exit 2 ;;
 esac
+
+if [[ "${SMOKE}" == "1" ]]; then
+  if [[ -n "${MARK}" ]]; then
+    MARK="${MARK} and smoke"
+  else
+    MARK="smoke"
+  fi
+fi
 
 # ── venv ─────────────────────────────────────────────────────────────────────
 
