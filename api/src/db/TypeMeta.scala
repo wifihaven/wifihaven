@@ -75,4 +75,22 @@ object TypeMeta {
     .imap(a => a.toList.map(BlocklistId.unsafe))(_.map(_.value).toArray)
   given hostnameListMeta: Meta[List[Hostname]]       = Meta[Array[String]]
     .imap(a => a.toList.map(Hostname.unsafe))(_.map(_.value).toArray)
+
+  // ── HostId: two-column composite (host_type, host_value) per #391 ──────
+  // Every table that holds a HostId stores it as a pair of TEXT columns; the
+  // discriminator lets us cleanly distinguish FQDN rows from IP-literal rows
+  // (e.g. so site-limit pattern matchers can skip the latter).
+  // Reads expect the SELECT list to emit (host_type, host_value) in order;
+  // writes expect the INSERT/UPDATE column list to be (host_type, host_value)
+  // in the same order. Any SQL touching HostId columns must respect that.
+  given Read[HostId]  = Read[(String, String)].map { case (kind, value) =>
+    kind match {
+      case "fqdn" => HostId.Fqdn(Hostname.unsafe(value))
+      case "ipv4" => HostId.IPv4(IpAddress.unsafe(value))
+      case "ipv6" => HostId.IPv6(IpAddress.unsafe(value))
+      case other  =>
+        throw new IllegalStateException(s"DB has unknown host_type: $other")
+    }
+  }
+  given Write[HostId] = Write[(String, String)].contramap(h => (h.kind, h.value))
 }

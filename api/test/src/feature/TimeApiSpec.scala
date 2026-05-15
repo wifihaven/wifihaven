@@ -74,7 +74,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           routerId,
           MacAddress.unsafe(mac),
           None,
-          Hostname.unsafe(hostname),
+          HostId.Fqdn(Hostname.unsafe(hostname)),
           date,
           start,
           end,

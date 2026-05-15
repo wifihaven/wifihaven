@@ -55,13 +55,30 @@ export interface Device {
   lastSeenAt: string | null
 }
 
+// Tagged-union host identifier (#391). Wire shape carried by every endpoint
+// that surfaces a "what host did the device contact" field. FQDN is a
+// resolved hostname; ipv4/ipv6 are raw IP literals emitted when DNS
+// attribution missed (DoH, Apple Private Relay, direct-IP).
+export type HostId =
+  | { type: 'fqdn'; value: string }
+  | { type: 'ipv4'; value: string }
+  | { type: 'ipv6'; value: string }
+
+export function hostDisplay(h: HostId): string {
+  return h.value
+}
+
+export function hostIsFqdn(h: HostId): boolean {
+  return h.type === 'fqdn'
+}
+
 export interface QueryLog {
   id: number
   mac: string | null
   deviceName: string | null
   profileId: number | null
   profileName: string | null
-  domain: string
+  host: HostId
   qtype: number
   blocked: boolean
   reason: string
@@ -74,7 +91,7 @@ export interface Session {
   deviceName: string | null
   profileId: number | null
   profileName: string | null
-  hostname: string
+  host: HostId
   routerId: string
   date: string
   startedAt: string
@@ -100,12 +117,12 @@ export interface DashboardStats {
 }
 
 export interface DashboardNowHost {
-  hostname: string
+  host: HostId
   activeSeconds: number
 }
 
 export interface DashboardNowCurrentSession {
-  hostname: string
+  host: HostId
   startedAt: string
   durationSeconds: number
 }
@@ -132,7 +149,7 @@ export interface DashboardNow {
 }
 
 export interface DomainCount {
-  domain: string
+  host: HostId
   count: number
 }
 

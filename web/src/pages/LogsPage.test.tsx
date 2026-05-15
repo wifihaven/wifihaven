@@ -22,7 +22,7 @@ const session1: Session = {
   deviceName: "Kid's iPad",
   profileId: 1,
   profileName: 'Kids',
-  hostname: 'youtube.com',
+  host: { type: 'fqdn', value: 'youtube.com' },
   routerId: 'r-1',
   date: '2026-05-12',
   startedAt: '2026-05-12T14:30:00Z',
@@ -37,7 +37,7 @@ const session2: Session = {
   deviceName: 'Phone',
   profileId: 1,
   profileName: 'Kids',
-  hostname: 'tiktok.com',
+  host: { type: 'fqdn', value: 'tiktok.com' },
   routerId: 'r-1',
   date: '2026-05-12',
   startedAt: '2026-05-12T13:00:00Z',
@@ -52,7 +52,7 @@ const page: SessionPage = { sessions: [session1, session2], nextCursor: null }
 const log1: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
-  domain: 'example.com', qtype: 1, blocked: false, reason: '',
+  host: { type: 'fqdn', value: 'example.com' }, qtype: 1, blocked: false, reason: '',
   location: 'home', ts: '2026-05-12T10:15:30Z',
 }
 

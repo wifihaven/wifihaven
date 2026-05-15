@@ -481,7 +481,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
-              Hostname.unsafe("youtube.com"),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
               None,
               true,
               "allowed",
@@ -490,7 +490,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
-              Hostname.unsafe("nytimes.com"),
+              HostId.Fqdn(Hostname.unsafe("nytimes.com")),
               None,
               true,
               "allowed",

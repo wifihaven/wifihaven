@@ -68,7 +68,7 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             routerId,
             MacAddress.unsafe(mac),
             None,
-            Hostname.unsafe(host),
+            HostId.Fqdn(Hostname.unsafe(host)),
             date,
             start,
             end,
@@ -108,7 +108,7 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         page.sessions.length == 1,
         page.sessions.head.durationSeconds == 540L,
         page.sessions.head.periodCount == 2,
-        page.sessions.head.hostname == Hostname.unsafe("youtube.com"),
+        page.sessions.head.host == HostId.Fqdn(Hostname.unsafe("youtube.com")),
         page.sessions.head.deviceName.contains("iPad"),
         page.sessions.head.profileName.contains("Kids"),
         page.sessions.head.profileId.contains(kid),
@@ -161,7 +161,7 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       } yield assertTrue(
         page.sessions.length == 1,
         page.sessions.head.mac == MacAddress.unsafe(mac1),
-        page.sessions.head.hostname == Hostname.unsafe("youtube.com"),
+        page.sessions.head.host == HostId.Fqdn(Hostname.unsafe("youtube.com")),
       )
     },
     test("GET /api/sessions?host=… case-insensitive substring") {
@@ -185,7 +185,7 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         page <- ZIO.fromEither(body.fromJson[SessionPage])
       } yield assertTrue(
         page.sessions.length == 2,
-        page.sessions.forall(_.hostname.value.toLowerCase.contains("youtube")),
+        page.sessions.forall(_.host.value.toLowerCase.contains("youtube")),
       )
     },
     test("GET /api/sessions?profileId=… filters via devices.profile_id") {

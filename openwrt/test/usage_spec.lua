@@ -111,30 +111,43 @@ describe("usage.build_report", function()
     assert.equal(P_END,   r.periodEnd)
   end)
 
-  it("produces one record per (mac, hostname) pair", function()
+  it("produces one record per (mac, host) pair", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
     assert.equal(2, #r.records)
   end)
 
   it("attributes bytes to the hostname the dst_ip resolved to (via nft_sets)", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
-    local by_hostname = {}
-    for _, rec in ipairs(r.records) do by_hostname[rec.hostname] = rec end
-    assert.equal("aa:bb:cc:11:22:33", by_hostname["youtube.com"].mac)
-    assert.equal(50000,               by_hostname["youtube.com"].bytesIn)
+    local by_host = {}
+    for _, rec in ipairs(r.records) do by_host[rec.host.value] = rec end
+    assert.equal("fqdn",             by_host["youtube.com"].host.type)
+    assert.equal("youtube.com",      by_host["youtube.com"].host.value)
+    assert.equal("aa:bb:cc:11:22:33", by_host["youtube.com"].mac)
+    assert.equal(50000,               by_host["youtube.com"].bytesIn)
   end)
 
-  it("falls back hostname to 'unknown' when dst_ip is not in any nft_set", function()
+  -- #391: the "unknown" sentinel is gone. When DNS attribution misses we emit
+  -- the dst_ip literal tagged as ipv4 or ipv6.
+  it("falls back to dst_ip with type='ipv4' when dst_ip is not in any nft_set", function()
     local unk = { { mac = "aa:bb:cc:11:22:33", dst_ip = "9.9.9.9", bytes = 100, packets = 3 } }
     local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER)
     assert.equal(1, #r.records)
-    assert.equal("unknown", r.records[1].hostname)
+    assert.equal("ipv4",   r.records[1].host.type)
+    assert.equal("9.9.9.9", r.records[1].host.value)
+  end)
+
+  it("falls back to dst_ip with type='ipv6' for an IPv6 dst_ip with no attribution", function()
+    local unk = { { mac = "aa:bb:cc:11:22:33", dst_ip = "2001:db8::1", bytes = 100, packets = 3 } }
+    local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER)
+    assert.equal(1, #r.records)
+    assert.equal("ipv6",       r.records[1].host.type)
+    assert.equal("2001:db8::1", r.records[1].host.value)
   end)
 
   -- #287: nft_sets only carries hostnames for site_limits-tracked domains, so
-  -- without the dnsmasq-query-log lookup every traffic_reports row landed as
-  -- "unknown" and the Sessions UI rendered every flow as unknown traffic.
-  it("consults lookup_hostname (dns-cache) before falling back to 'unknown'", function()
+  -- without the dnsmasq-query-log lookup every traffic_reports row landed with
+  -- just the IP and the Sessions UI rendered every flow as unknown traffic.
+  it("consults lookup_hostname (dns-cache) before falling back to IP", function()
     local counters = {
       { mac = "aa:bb:cc:11:22:33", dst_ip = "140.82.114.6", bytes = 100, packets = 3 },
     }
@@ -143,7 +156,8 @@ describe("usage.build_report", function()
       return nil
     end
     local r = usage.build_report(counters, {}, P_START, P_END, ROUTER, nil, lookup)
-    assert.equal("api.github.com", r.records[1].hostname)
+    assert.equal("fqdn",          r.records[1].host.type)
+    assert.equal("api.github.com", r.records[1].host.value)
   end)
 
   it("prefers lookup_hostname over nft_sets when both have an entry", function()
@@ -157,7 +171,8 @@ describe("usage.build_report", function()
     local sets = { ["site_limit.example"] = { ["1.2.3.4"] = true } }
     local lookup = function(_) return "actual.example" end
     local r = usage.build_report(counters, sets, P_START, P_END, ROUTER, nil, lookup)
-    assert.equal("actual.example", r.records[1].hostname)
+    assert.equal("fqdn",           r.records[1].host.type)
+    assert.equal("actual.example", r.records[1].host.value)
   end)
 
   it("falls through to nft_sets when lookup_hostname misses", function()
@@ -167,7 +182,8 @@ describe("usage.build_report", function()
     local sets = { ["youtube.com"] = { ["1.2.3.4"] = true } }
     local lookup = function(_) return nil end
     local r = usage.build_report(counters, sets, P_START, P_END, ROUTER, nil, lookup)
-    assert.equal("youtube.com", r.records[1].hostname)
+    assert.equal("fqdn",        r.records[1].host.type)
+    assert.equal("youtube.com", r.records[1].host.value)
   end)
 
   it("sets activeSeconds = 300 (full period) for any counter with bytes > 0 (legacy, no tracker)", function()
@@ -215,7 +231,9 @@ describe("usage.build_report", function()
     assert.not_nil(dec.records)
     local rec = dec.records[1]
     assert.not_nil(rec.mac)
-    assert.not_nil(rec.hostname)
+    assert.not_nil(rec.host)
+    assert.not_nil(rec.host.type)
+    assert.not_nil(rec.host.value)
     assert.not_nil(rec.activeSeconds)
     assert.not_nil(rec.bytesIn)
   end)
@@ -436,7 +454,7 @@ end)
 
 describe("usage.post", function()
 
-  local SAMPLE_REC = { mac="aa:bb:cc:11:22:33", hostname="x", activeSeconds=300, bytesIn=1, bytesOut=0 }
+  local SAMPLE_REC = { mac="aa:bb:cc:11:22:33", host={ type="fqdn", value="x" }, activeSeconds=300, bytesIn=1, bytesOut=0 }
   local function with_records()
     return { routerId = "r1", periodStart = "t0", periodEnd = "t1", records = { SAMPLE_REC } }
   end
@@ -493,7 +511,7 @@ end)
 
 describe("usage retry queue", function()
 
-  local SAMPLE_REC = { mac = "aa:bb:cc:11:22:33", hostname = "x",
+  local SAMPLE_REC = { mac = "aa:bb:cc:11:22:33", host = { type = "fqdn", value = "x" },
                        activeSeconds = 300, bytesIn = 1, bytesOut = 0 }
 
   local function report(period_start, period_end)

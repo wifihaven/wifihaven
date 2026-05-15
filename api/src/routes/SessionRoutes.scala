@@ -109,8 +109,9 @@ object SessionRoutes {
   }
 
   /**
-   * Cursor format: `startedAt|mac|hostname` (pipe-separated). The next page is everything strictly
-   * earlier than the cursor's `startedAt`, tiebroken by (mac, hostname) descending for stability.
+   * Cursor format: `startedAt|mac|host_type:host_value` (pipe-separated). The next page is
+   * everything strictly earlier than the cursor's `startedAt`, tiebroken by (mac, host.kind,
+   * host.value) descending for stability.
    */
   private def applyCursor(
       sessions: List[Session],
@@ -121,24 +122,31 @@ object SessionRoutes {
       case None    => sessions
       case Some(c) =>
         c.split('|').toList match {
-          case start :: cm :: ch :: Nil =>
+          case start :: cm :: ckv :: Nil =>
+            val chKind  = ckv.takeWhile(_ != ':')
+            val chValue = ckv.dropWhile(_ != ':').drop(1)
             sessions.dropWhile { s =>
               val tieGte =
-                (s.mac.value.compareTo(cm), s.hostname.value.compareTo(ch)) match {
-                  case (m, _) if m > 0 => true
-                  case (0, h)          => h >= 0
-                  case _               => false
+                (
+                  s.mac.value.compareTo(cm),
+                  s.host.kind.compareTo(chKind),
+                  s.host.value.compareTo(chValue),
+                ) match {
+                  case (m, _, _) if m > 0 => true
+                  case (0, k, _) if k > 0 => true
+                  case (0, 0, v)          => v >= 0
+                  case _                  => false
                 }
               s.startedAt > start || (s.startedAt == start && tieGte)
             }
-          case _                        => sessions
+          case _                         => sessions
         }
     }
     val page        = afterCursor.take(limit)
     val next        =
       if afterCursor.lengthCompare(limit) > 0 then {
         val last = page.last
-        Some(s"${last.startedAt}|${last.mac.value}|${last.hostname.value}")
+        Some(s"${last.startedAt}|${last.mac.value}|${last.host.kind}:${last.host.value}")
       } else None
     SessionPage(sessions = page, nextCursor = next)
   }

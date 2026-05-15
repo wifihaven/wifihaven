@@ -46,7 +46,7 @@ object RouterIngestRoutes {
             _      <- ZIO.foreachDiscard(rep.records)(r =>
               ZIO.logDebug(
                 s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
-                  s"host=${r.hostname} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
+                  s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
               ),
             )
             _ <- handleUsage(router.id, ps, pe, rep.records, trafficRepo, timeUsageRepo, deviceRepo)
@@ -86,7 +86,7 @@ object RouterIngestRoutes {
             _      <- ZIO.foreachDiscard(rep.events)(e =>
               ZIO.logDebug(
                 s"  event: type=${e.`type`} mac=${e.mac.getOrElse("-")} " +
-                  s"ip=${e.ip.getOrElse("-")} host=${e.hostname.getOrElse("-")} " +
+                  s"ip=${e.ip.getOrElse("-")} host=${e.host.map(_.value).orElse(e.hostname.map(_.value)).getOrElse("-")} " +
                   s"destIp=${e.destIp.getOrElse("-")} allowed=${e.allowed.map(_.toString).getOrElse("-")} " +
                   s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
               ),
@@ -116,7 +116,7 @@ object RouterIngestRoutes {
         routerId,
         r.mac,
         r.ip,
-        r.hostname,
+        r.host,
         date,
         periodStart,
         periodEnd,
@@ -162,7 +162,7 @@ object RouterIngestRoutes {
     // the max of activeSeconds, not the sum. Bytes still sum because they
     // count distinct flows.
     val grouped = records
-      .groupBy(r => (r.mac, r.hostname))
+      .groupBy(r => (r.mac, r.host))
       .view
       .mapValues { rs =>
         (
@@ -172,9 +172,9 @@ object RouterIngestRoutes {
         )
       }
       .toList
-    ZIO.foreachDiscard(grouped) { case ((mac, hostname), (secs, bIn, bOut)) =>
+    ZIO.foreachDiscard(grouped) { case ((mac, host), (secs, bIn, bOut)) =>
       timeUsageRepo
-        .incrementSecondsAndBytes(mac, hostname, date, secs, bIn, bOut)
+        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut)
         .mapError(ErrorMapper.dbErrorToResponse)
     } *>
       // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).
@@ -195,7 +195,7 @@ object RouterIngestRoutes {
     val connInserts = events.collect {
       case e if e.`type` == "connection_attempt" =>
         for {
-          h    <- e.hostname.toRight("connection_attempt missing hostname")
+          h    <- e.host.toRight("connection_attempt missing host")
           ts   <- scala.util.Try(Instant.parse(e.ts)).toEither.left.map(_.getMessage)
           allw <- e.allowed.toRight("connection_attempt missing allowed")
           rsn = e.reason.getOrElse(if allw then "allow" else "blocked")

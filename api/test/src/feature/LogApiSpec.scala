@@ -64,7 +64,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
-              Hostname.unsafe("youtube.com"),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
               None,
               true,
               "allowed",
@@ -73,7 +73,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
-              Hostname.unsafe("pornhub.com"),
+              HostId.Fqdn(Hostname.unsafe("pornhub.com")),
               None,
               false,
               "category:adult",
@@ -82,7 +82,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("11:22:33:44:55:66")),
-              Hostname.unsafe("facebook.com"),
+              HostId.Fqdn(Hostname.unsafe("facebook.com")),
               None,
               true,
               "allowed",
@@ -96,9 +96,9 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(logs.length == 3) &&
-        assertTrue(logs.exists(_.domain == "youtube.com")) &&
-        assertTrue(logs.exists(l => l.domain == "pornhub.com" && l.blocked)) &&
-        assertTrue(logs.exists(l => l.domain == "youtube.com" && !l.blocked)) &&
+        assertTrue(logs.exists(_.host.value == "youtube.com")) &&
+        assertTrue(logs.exists(l => l.host.value == "pornhub.com" && l.blocked)) &&
+        assertTrue(logs.exists(l => l.host.value == "youtube.com" && !l.blocked)) &&
         assertTrue(logs.forall(_.location.contains("home")))
     },
     test("GET /api/logs?blocked=true returns only blocked (allowed=false) events") {
@@ -114,7 +114,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
-              Hostname.unsafe("ok.com"),
+              HostId.Fqdn(Hostname.unsafe("ok.com")),
               None,
               true,
               "allowed",
@@ -123,7 +123,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
-              Hostname.unsafe("blocked.com"),
+              HostId.Fqdn(Hostname.unsafe("blocked.com")),
               None,
               false,
               "category:adult",
@@ -136,7 +136,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
       } yield assertTrue(logs.length == 1) &&
-        assertTrue(logs.head.domain == "blocked.com") &&
+        assertTrue(logs.head.host.value == "blocked.com") &&
         assertTrue(logs.head.blocked)
     },
     test("GET /api/logs?location= filters by router name") {
@@ -157,7 +157,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               homeId,
               None,
-              Hostname.unsafe("home-site.com"),
+              HostId.Fqdn(Hostname.unsafe("home-site.com")),
               None,
               true,
               "allowed",
@@ -166,7 +166,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               vacationId,
               None,
-              Hostname.unsafe("vacation-site.com"),
+              HostId.Fqdn(Hostname.unsafe("vacation-site.com")),
               None,
               true,
               "allowed",
@@ -179,7 +179,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         body <- resp.body.asString
         logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
       } yield assertTrue(logs.length == 1) &&
-        assertTrue(logs.head.domain == "home-site.com")
+        assertTrue(logs.head.host.value == "home-site.com")
     },
     test("GET /api/logs?mac=... filters to one device") {
       for {
@@ -194,7 +194,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
-              Hostname.unsafe("site1.com"),
+              HostId.Fqdn(Hostname.unsafe("site1.com")),
               None,
               true,
               "allowed",
@@ -203,7 +203,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
-              Hostname.unsafe("site2.com"),
+              HostId.Fqdn(Hostname.unsafe("site2.com")),
               None,
               true,
               "allowed",
@@ -231,7 +231,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
-              Hostname.unsafe("google.com"),
+              HostId.Fqdn(Hostname.unsafe("google.com")),
               None,
               true,
               "allowed",
@@ -240,7 +240,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
-              Hostname.unsafe("badsite.com"),
+              HostId.Fqdn(Hostname.unsafe("badsite.com")),
               None,
               false,
               "category:adult",
@@ -249,7 +249,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
-              Hostname.unsafe("badsite.com"),
+              HostId.Fqdn(Hostname.unsafe("badsite.com")),
               None,
               false,
               "category:adult",
@@ -264,8 +264,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(stats.totalToday == 3) &&
         assertTrue(stats.blockedToday == 2) &&
-        assertTrue(stats.topBlocked.exists(_.domain == "badsite.com")) &&
-        assertTrue(stats.topBlocked.find(_.domain == "badsite.com").exists(_.count == 2))
+        assertTrue(stats.topBlocked.exists(_.host.value == "badsite.com")) &&
+        assertTrue(stats.topBlocked.find(_.host.value == "badsite.com").exists(_.count == 2))
     },
     test("GET /api/stats topBlocked is sorted by frequency descending") {
       for {
@@ -280,7 +280,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               None,
-              Hostname.unsafe("rare.com"),
+              HostId.Fqdn(Hostname.unsafe("rare.com")),
               None,
               false,
               "blocked",
@@ -289,7 +289,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               None,
-              Hostname.unsafe("frequent.com"),
+              HostId.Fqdn(Hostname.unsafe("frequent.com")),
               None,
               false,
               "blocked",
@@ -298,7 +298,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               None,
-              Hostname.unsafe("frequent.com"),
+              HostId.Fqdn(Hostname.unsafe("frequent.com")),
               None,
               false,
               "blocked",
@@ -307,7 +307,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               None,
-              Hostname.unsafe("frequent.com"),
+              HostId.Fqdn(Hostname.unsafe("frequent.com")),
               None,
               false,
               "blocked",
@@ -320,9 +320,9 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         body  <- resp.body.asString
         stats <- ZIO.fromEither(body.fromJson[DashboardStats])
       } yield assertTrue(stats.topBlocked.nonEmpty) &&
-        assertTrue(stats.topBlocked.head.domain == "frequent.com") &&
+        assertTrue(stats.topBlocked.head.host.value == "frequent.com") &&
         assertTrue(stats.topBlocked.head.count == 3) &&
-        assertTrue(stats.topBlocked.exists(d => d.domain == "rare.com" && d.count == 1))
+        assertTrue(stats.topBlocked.exists(d => d.host.value == "rare.com" && d.count == 1))
     },
     test("GET /api/logs pagination respects limit and offset") {
       for {
@@ -337,7 +337,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             ConnectionEventInsert(
               routerId,
               None,
-              Hostname.unsafe(s"site$i.com"),
+              HostId.Fqdn(Hostname.unsafe(s"site$i.com")),
               None,
               true,
               "allowed",
@@ -358,7 +358,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       } yield assertTrue(page1.length == 2) &&
         assertTrue(page2.length == 2) &&
         assertTrue(page3.length == 1) &&
-        assertTrue(page1.map(_.domain) != page2.map(_.domain))
+        assertTrue(page1.map(_.host.value) != page2.map(_.host.value))
     },
   ) @@ TestAspect.sequential
 }

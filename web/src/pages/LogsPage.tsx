@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/api/client'
 import type { QueryLog, Session } from '@/types/api'
+import { HostCell } from '@/components/HostCell'
 
 type Tab = 'sessions' | 'raw'
 
@@ -100,13 +101,13 @@ function SessionsTab() {
                 </thead>
                 <tbody>
                   {sessions.map(s => (
-                    <tr key={`${s.mac}-${s.hostname}-${s.startedAt}`}
+                    <tr key={`${s.mac}-${s.host.type}:${s.host.value}-${s.startedAt}`}
                         className="border-b border-gray-800/50 hover:bg-gray-800/30"
                         data-testid="session-row">
                       <td className="px-4 py-2.5 text-gray-500">{fmtStarted(s.startedAt)}</td>
                       <td className="px-4 py-2.5 text-yellow-400">{s.deviceName ?? s.mac}</td>
                       <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell">{s.profileName ?? ''}</td>
-                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate">{s.hostname}</td>
+                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={s.host} /></td>
                       <td className="px-4 py-2.5 text-emerald-400">{fmtDuration(s.durationSeconds)}</td>
                       <td className="px-4 py-2.5 text-gray-600 hidden lg:table-cell">{fmtBytes(s.bytesIn + s.bytesOut)}</td>
                     </tr>
@@ -186,7 +187,7 @@ function RawEventsTab() {
                     <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                       <td className="px-4 py-2.5 text-gray-500">{fmtTime(l.ts)}</td>
                       <td className="px-4 py-2.5 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
-                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate">{l.domain}</td>
+                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={l.host} /></td>
                       <td className={`px-4 py-2.5 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
                         {l.blocked ? '✗ blocked' : '✓ ok'}
                       </td>

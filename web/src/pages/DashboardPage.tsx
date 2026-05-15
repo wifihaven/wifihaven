@@ -7,6 +7,7 @@ import type {
   DashboardStats,
   QueryLog,
 } from '@/types/api'
+import { HostCell } from '@/components/HostCell'
 
 const NOW_POLL_MS = 10_000
 
@@ -46,8 +47,8 @@ export function DashboardPage() {
               {stats.topBlocked.length === 0
                 ? <p className="text-gray-600 text-sm">No blocked queries yet</p>
                 : stats.topBlocked.map(d => (
-                    <div key={d.domain} className="flex justify-between items-center py-2 border-b border-gray-800 last:border-0">
-                      <span className="font-mono text-sm text-gray-300 truncate">{d.domain}</span>
+                    <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-gray-800 last:border-0">
+                      <span className="font-mono text-sm text-gray-300 truncate"><HostCell host={d.host} /></span>
                       <span className="text-red-400 font-mono text-sm ml-4 shrink-0">{d.count}</span>
                     </div>
                   ))
@@ -159,15 +160,15 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
       </div>
       {device.currentSession && (
         <p className="text-xs text-emerald-400 mt-1">
-          watching <span className="font-mono">{device.currentSession.hostname}</span>
+          watching <span className="font-mono"><HostCell host={device.currentSession.host} /></span>
           {' · '}{formatDuration(device.currentSession.durationSeconds)}
         </p>
       )}
       {device.topHosts.length > 0 && (
         <ul className="mt-2 space-y-0.5">
           {device.topHosts.map(h => (
-            <li key={h.hostname} className="flex justify-between text-xs text-gray-400">
-              <span className="font-mono truncate">{h.hostname}</span>
+            <li key={`${h.host.type}:${h.host.value}`} className="flex justify-between text-xs text-gray-400">
+              <span className="font-mono truncate"><HostCell host={h.host} /></span>
               <span className="text-gray-600 ml-2 shrink-0">{formatDuration(h.activeSeconds)}</span>
             </li>
           ))}
@@ -223,7 +224,7 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
           <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
             <td className="px-4 py-2 text-gray-500">{new Date(l.ts).toLocaleTimeString()}</td>
             <td className="px-4 py-2 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
-            <td className="px-4 py-2 text-gray-300 max-w-[200px] truncate">{l.domain}</td>
+            <td className="px-4 py-2 text-gray-300 max-w-[200px] truncate"><HostCell host={l.host} /></td>
             <td className={`px-4 py-2 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
               {l.blocked ? '✗ blocked' : '✓ ok'}
             </td>

@@ -108,25 +108,28 @@ function M.parse_nft_counters(json_str)
 end
 
 -- ---------------------------------------------------------------------------
--- hostname_for_ip(dst_ip, nft_sets, lookup_hostname) → string
+-- host_for_ip(dst_ip, nft_sets, lookup_hostname) → { type, value }
 -- ---------------------------------------------------------------------------
--- Resolution order, matching conntrack.handle_flow (#287):
+-- Returns a HostId-shaped table (#391) identifying the destination of this
+-- flow. Resolution order matches conntrack.handle_flow (#287):
 --   1. dnsmasq-query-log cache (lookup_hostname) — covers any LAN client that
---      resolved through the router's dnsmasq.
+--      resolved through the router's dnsmasq. Result is an FQDN.
 --   2. nft_sets — only populated for site_limits ipsets, but authoritative
---      when present (it's the hostname dnsmasq's ipset= callback recorded
---      at resolve time).
---   3. "unknown" — used by the Sessions UI to group traffic with no
---      attributable hostname (DoH/Apple Private Relay/direct-IP).
-local function hostname_for_ip(dst_ip, nft_sets, lookup_hostname)
+--      when present (it's the hostname dnsmasq's ipset= callback recorded at
+--      resolve time). Result is an FQDN.
+--   3. dst_ip literal — DoH / Apple Private Relay / direct-IP traffic where
+--      no DNS attribution exists. Tagged ipv4 or ipv6 based on the address
+--      form, so site-limit pattern matching (FQDN-only) cleanly skips these.
+local function host_for_ip(dst_ip, nft_sets, lookup_hostname)
   if lookup_hostname then
     local h = lookup_hostname(dst_ip)
-    if h then return h end
+    if h then return { type = "fqdn", value = h } end
   end
   for hostname, ips in pairs(nft_sets or {}) do
-    if ips[dst_ip] then return hostname end
+    if ips[dst_ip] then return { type = "fqdn", value = hostname } end
   end
-  return "unknown"
+  local kind = (dst_ip and dst_ip:find(":", 1, true)) and "ipv6" or "ipv4"
+  return { type = kind, value = dst_ip }
 end
 
 -- ---------------------------------------------------------------------------
@@ -192,7 +195,7 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
   local records = {}
 
   for _, c in ipairs(counters or {}) do
-    local hostname = hostname_for_ip(c.dst_ip, nft_sets, lookup_hostname)
+    local host = host_for_ip(c.dst_ip, nft_sets, lookup_hostname)
     local active_seconds
     if tracker then
       local minutes = tracker.active_minutes[tracker_key(c.mac, c.dst_ip)]
@@ -206,7 +209,7 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
     end
     local rec = {
       mac           = c.mac,
-      hostname      = hostname,
+      host          = host,
       activeSeconds = active_seconds,
       bytesIn       = c.bytes,
       bytesOut      = 0,   -- nftables ingress-only counters; egress tracked separately

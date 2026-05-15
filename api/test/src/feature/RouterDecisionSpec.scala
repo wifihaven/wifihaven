@@ -64,7 +64,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           routerId,
           MacAddress.unsafe(mac),
           None,
-          Hostname.unsafe(hostname),
+          HostId.Fqdn(Hostname.unsafe(hostname)),
           date,
           start,
           end,
@@ -217,7 +217,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           events.exists(e =>
             e.mac.contains(
               MacAddress.unsafe("aa:bb:cc:11:22:33"),
-            ) && e.hostname == Hostname.unsafe("example.com") && e.reason == "paused",
+            ) && e.host == HostId.Fqdn(Hostname.unsafe("example.com")) && e.reason == "paused",
           ),
         )
     },

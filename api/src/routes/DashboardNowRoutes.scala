@@ -127,7 +127,7 @@ object DashboardNowRoutes {
 
   def topHostsFromRows(rows: List[SessionRow]): List[DashboardNowHost] =
     rows
-      .groupBy(_.hostname)
+      .groupBy(_.host)
       .view
       .mapValues(rs => rs.map(_.activeSeconds.toLong).sum)
       .toList
@@ -150,7 +150,7 @@ object DashboardNowRoutes {
         .headOption
         .map { s =>
           DashboardNowCurrentSession(
-            hostname = s.hostname,
+            host = s.host,
             startedAt = s.startedAt,
             durationSeconds = s.durationSeconds,
           )

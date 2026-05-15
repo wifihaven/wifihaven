@@ -127,7 +127,11 @@ object RouterRoutes {
               .when(result.decision == ConnectionDecision.Block) {
                 blockEventRepo
                   .insertBatch(
-                    List(BlockEventInsert(Some(dreq.mac), dreq.hostname, result.reason)),
+                    // The decision endpoint is FQDN-only by design (DNS-time decision);
+                    // wrap the Hostname in HostId.Fqdn for the tagged-union insert (#391).
+                    List(
+                      BlockEventInsert(Some(dreq.mac), HostId.Fqdn(dreq.hostname), result.reason),
+                    ),
                   )
                   .mapError(ErrorMapper.dbErrorToResponse)
               }

@@ -15,13 +15,13 @@ object SessionsSpec extends ZIOSpecDefault {
   private val r2: RouterId = RouterId(UUID.fromString("00000000-0000-0000-0000-000000000002"))
   private val mac1         = MacAddress.unsafe("aa:bb:cc:dd:ee:01")
   private val mac2         = MacAddress.unsafe("aa:bb:cc:dd:ee:02")
-  private val youtube      = Hostname.unsafe("youtube.com")
-  private val tiktok       = Hostname.unsafe("tiktok.com")
+  private val youtube      = HostId.Fqdn(Hostname.unsafe("youtube.com"))
+  private val tiktok       = HostId.Fqdn(Hostname.unsafe("tiktok.com"))
 
   private def row(
       routerId: RouterId,
       mac: MacAddress,
-      host: Hostname,
+      host: HostId,
       startSec: Long,
       activeSeconds: Int = 300,
       periodLen: Long = 300,
@@ -33,7 +33,7 @@ object SessionsSpec extends ZIOSpecDefault {
     SessionRow(
       routerId = routerId,
       mac = mac,
-      hostname = host,
+      host = host,
       date = start.atZone(ZoneOffset.UTC).toLocalDate,
       periodStart = start,
       periodEnd = end,
@@ -62,7 +62,7 @@ object SessionsSpec extends ZIOSpecDefault {
         out.head.periodCount == 2,
         out.head.startedAt == Instant.ofEpochSecond(baseT).toString,
         out.head.endedAt == Instant.ofEpochSecond(baseT + 600).toString,
-        out.head.hostname == youtube,
+        out.head.host == youtube,
         out.head.mac == mac1,
       )
     },
@@ -98,8 +98,8 @@ object SessionsSpec extends ZIOSpecDefault {
       val out  = Sessions.stitch(rows)
       assertTrue(
         out.length == 2,
-        out.exists(s => s.mac == mac1 && s.hostname == youtube && s.durationSeconds == 600L),
-        out.exists(s => s.mac == mac2 && s.hostname == tiktok && s.durationSeconds == 200L),
+        out.exists(s => s.mac == mac1 && s.host == youtube && s.durationSeconds == 600L),
+        out.exists(s => s.mac == mac2 && s.host == tiktok && s.durationSeconds == 200L),
       )
     },
     test("two contiguous periods on different router_ids → two sessions") {

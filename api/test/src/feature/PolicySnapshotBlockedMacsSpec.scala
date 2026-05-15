@@ -75,7 +75,7 @@ object PolicySnapshotBlockedMacsSpec
           routerId,
           MacAddress.unsafe(mac),
           None,
-          Hostname.unsafe(hostname),
+          HostId.Fqdn(Hostname.unsafe(hostname)),
           date,
           start,
           end,

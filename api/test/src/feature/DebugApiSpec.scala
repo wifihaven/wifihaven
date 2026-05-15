@@ -99,7 +99,7 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           ConnectionEventInsert(
             rid,
             Some(MacAddress.unsafe(s"aa:bb:cc:dd:ee:0$i")),
-            Hostname.unsafe(s"site$i.example"),
+            HostId.Fqdn(Hostname.unsafe(s"site$i.example")),
             Some(IpAddress.unsafe(s"10.0.0.$i")),
             true,
             "allow",
@@ -121,7 +121,7 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         today = java.time.LocalDate.of(2026, 5, 11)
         _    <- tuRepo.incrementSecondsAndBytes(
           MacAddress.unsafe("aa:bb:cc:11:22:33"),
-          Hostname.unsafe("youtube.com"),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
           today,
           120L,
           0L,

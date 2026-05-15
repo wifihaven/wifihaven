@@ -296,6 +296,10 @@ class PolicyServiceLive(
   private def matchesAny(domain: String, patterns: List[Hostname]): Boolean =
     patterns.exists(p => matchesDomainPattern(domain, p.value))
 
+  // Pattern matching is FQDN-only by design (#391). The decision endpoint
+  // receives `RouterDecisionRequest.hostname: Hostname`, which the type system
+  // already constrains to FQDN-shape (Hostname.parse rejects IPv4 literals),
+  // so an IP literal can't even reach this matcher.
   private def matchesDomainPattern(domain: String, pattern: String): Boolean =
     if pattern.startsWith("*.") then {
       val suffix = pattern.drop(1)
