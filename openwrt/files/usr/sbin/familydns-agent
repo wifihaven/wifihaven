@@ -368,11 +368,12 @@ conntrack.watch({
       elseif etag then
         current_etag = etag  -- 304: just update etag
         policy.mark_poll_success(wall)  -- 304 still counts as a successful poll
-        log.debug("policy timer: 304 not modified etag=%s poll_age=%ds",
-                  tostring(etag), policy.poll_age_seconds(wall))
+        log.debug("policy timer: 304 not modified etag=%s poll_age=%s",
+                  tostring(etag), policy.format_poll_age(policy.poll_age_seconds(wall)))
         fetch_ok = true
       else
-        log.debug("policy timer: fetch failed poll_age=%ds", policy.poll_age_seconds(wall))
+        log.debug("policy timer: fetch failed poll_age=%s",
+                  policy.format_poll_age(policy.poll_age_seconds(wall)))
         fetch_ok = false
       end
 
@@ -393,8 +394,8 @@ conntrack.watch({
           -- effect and there's nothing useful we can render.
           if policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts) then
             if new_in_failover then
-              log.info("failover render: poll_age=%ds, applying failover chain for closed-mode profiles",
-                       poll_age)
+              log.info("failover render: poll_age=%s, applying failover chain for closed-mode profiles",
+                       policy.format_poll_age(poll_age))
             else
               log.info("failover lifted: applying fresh snapshot (poll_age=0)")
             end
@@ -408,8 +409,8 @@ conntrack.watch({
           -- Cold boot during API outage with no cached snapshot. Boot
           -- skeleton (#308) is still enforcing default-deny; nothing to
           -- render. Don't flip the flag so we keep retrying on each tick.
-          log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active, poll_age=%ds)",
-                   poll_age)
+          log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active, poll_age=%s)",
+                   policy.format_poll_age(poll_age))
           new_in_failover = in_failover_render
         end
         in_failover_render = new_in_failover

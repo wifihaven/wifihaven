@@ -782,3 +782,24 @@ describe("policy.mark_poll_success / poll_age_seconds", function()
   end)
 
 end)
+
+-- ── policy.format_poll_age (#410) ────────────────────────────────────────
+--
+-- string.format("%d", math.huge) leaves "%d" literal in the output (since
+-- math.huge isn't integer-coercible), producing malformed log lines like
+-- `poll_age=%ds inf` on a cold-boot agent. format_poll_age normalises both
+-- branches so callers can use %s.
+
+describe("policy.format_poll_age", function()
+
+  it("returns \"inf\" for the math.huge cold-boot sentinel", function()
+    assert.equal("inf", policy.format_poll_age(math.huge))
+  end)
+
+  it("formats finite seconds as \"<n>s\"", function()
+    assert.equal("0s",   policy.format_poll_age(0))
+    assert.equal("60s",  policy.format_poll_age(60))
+    assert.equal("301s", policy.format_poll_age(301))
+  end)
+
+end)
