@@ -368,6 +368,26 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ---
 
+## 7a. Host clock and timezone (#334)
+
+The API host should run an **NTP-synced UTC system clock**. Decision logic
+is `Instant`-based and per-row timezone-aware (see
+[`time-handling.md`](time-handling.md)) — the host's local timezone setting
+is not consulted for schedule or daily-reset evaluation.
+
+The host's local timezone *is* read once on first boot to seed the
+household's default daily-reset timezone (`household_settings.daily_reset_tz`).
+After that the operator can change it via the UI; the host tz is never
+re-read. So:
+
+- If you intend most schedules to be in your own home timezone, set the
+  host tz to that zone (`sudo timedatectl set-timezone America/Los_Angeles`)
+  *before* the first API boot.
+- If you forgot, no harm done — set the household's tz from the
+  **Profiles** page after install.
+
+---
+
 ## 8. Firewall
 
 The OpenWRT router agent must be able to reach the API. Open the path it

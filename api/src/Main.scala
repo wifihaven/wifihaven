@@ -30,6 +30,13 @@ object Main extends ZIOAppDefault {
         .when(cfg.debugEnabled)
       _      <- Database.runMigrations(cfg.db)
       _      <- ZIO.logInfo("Database migrations complete")
+      // #334: ensure household_settings has its single row, defaulting the
+      // daily-reset tz to the API server's local zone on first install. No-op
+      // on subsequent boots because of ON CONFLICT DO NOTHING.
+      hsRepo <- ZIO.service[HouseholdSettingsRepo]
+      tz = java.time.ZoneId.systemDefault()
+      _      <- hsRepo.ensureDefault(tz)
+      _      <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
       routes <- allRoutes
       _      <- Server
         .serve(routes)
@@ -53,6 +60,7 @@ object Main extends ZIOAppDefault {
       upRepo      <- ZIO.service[UserProfileRepo]
       profileRepo <- ZIO.service[ProfileRepo]
       schedRepo   <- ZIO.service[ScheduleRepo]
+      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       tlRepo      <- ZIO.service[TimeLimitRepo]
       stlRepo     <- ZIO.service[SiteTimeLimitRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
@@ -72,6 +80,7 @@ object Main extends ZIOAppDefault {
     } yield HealthRoutes.routes(dbHealthCheck) ++
       AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo, userRepo) ++
+      HouseholdSettingsRoutes.routes(auth, hsRepo) ++
       DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
       TimeRoutes.routes(
         auth,

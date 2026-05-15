@@ -622,10 +622,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _             <- seedTraffic(routerId, mac2, "roblox.com", today, 25)
           // Build policy snapshot directly via PolicyService
           blocklistRepo <- ZIO.service[BlocklistRepo]
+          hsRepo        <- ZIO.service[HouseholdSettingsRepo]
           clock         <- ZIO.service[Clock]
           policyService = PolicyServiceLive(
             profileRepo,
             schedRepo,
+            hsRepo,
             tlRepo,
             stlRepo,
             deviceRepo,

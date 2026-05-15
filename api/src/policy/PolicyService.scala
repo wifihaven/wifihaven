@@ -7,7 +7,7 @@ import familydns.shared.types.*
 import zio.{Clock as _, *}
 
 import java.security.MessageDigest
-import java.time.{DayOfWeek, LocalDate, LocalTime, OffsetDateTime, ZoneOffset}
+import java.time.{DayOfWeek, Instant}
 
 trait PolicyService {
   def snapshot: Task[PolicySnapshot]
@@ -37,6 +37,7 @@ private[policy] case class ProfileInputs(
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
     scheduleRepo: ScheduleRepo,
+    householdSettingsRepo: HouseholdSettingsRepo,
     timeLimitRepo: TimeLimitRepo,
     siteTimeLimitRepo: SiteTimeLimitRepo,
     deviceRepo: DeviceRepo,
@@ -48,8 +49,9 @@ class PolicyServiceLive(
 
   def snapshot: Task[PolicySnapshot] =
     for {
-      today    <- clock.today
-      now      <- clock.now
+      settings <- householdSettingsRepo.get
+      now      <- clock.instant
+      today = now.atZone(settings.dailyResetTz).toLocalDate
       profiles <- profileRepo.listAll
       devices  <- deviceRepo.listAll
       scheds   <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
@@ -92,7 +94,7 @@ class PolicyServiceLive(
           minutesByDomain = byDomain,
           extensionsMinutes = extMins,
         )
-        val rules  = PolicyService.computeBlockRules(inputs, now.toLocalTime, today)
+        val rules  = PolicyService.computeBlockRules(inputs, now)
 
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
       }.toMap
@@ -143,8 +145,9 @@ class PolicyServiceLive(
    */
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
     for {
-      today  <- clock.today
-      now    <- clock.now
+      settings <- householdSettingsRepo.get
+      now      <- clock.instant
+      today = now.atZone(settings.dailyResetTz).toLocalDate
       device <- deviceRepo.listAll.map(_.find(_.mac.value.equalsIgnoreCase(mac)))
       result <- device.flatMap(_.profileId) match {
         case None      =>
@@ -168,7 +171,7 @@ class PolicyServiceLive(
                 if p.paused then
                   ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, "paused", None))
                 else
-                  scheduleBlock(scheds, now.toLocalTime, today) match {
+                  scheduleBlock(scheds, now) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
                       if matchesAny(h, p.extraAllowed) then
@@ -193,7 +196,8 @@ class PolicyServiceLive(
                         val totalMins  = devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
                         timeLimitBlockFromDb(
                           h,
-                          today,
+                          now,
+                          settings,
                           tl.map(_.dailyMinutes),
                           stlims,
                           byDomain,
@@ -222,40 +226,30 @@ class PolicyServiceLive(
 
   private def scheduleBlock(
       schedules: List[DbSchedule],
-      nowTime: LocalTime,
-      today: LocalDate,
+      now: Instant,
   ): Option[RouterDecisionResponse] = {
-    val todayName = dayName(today)
-    val prevName  = dayName(today.minusDays(1))
-    val active    = schedules.find { s =>
-      val from  = parseTime(s.blockFrom)
-      val until = parseTime(s.blockUntil)
-      if from.isAfter(until) then
-        (s.days.contains(todayName) && !nowTime.isBefore(from)) ||
-        (s.days.contains(prevName) && nowTime.isBefore(until))
-      else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
-    }
-    active.map { s =>
-      val from        = parseTime(s.blockFrom)
-      val until       = parseTime(s.blockUntil)
-      val isOvernight = from.isAfter(until)
-      val expiresAt   =
-        if isOvernight && !nowTime.isBefore(from) then utcString(today.plusDays(1), until)
-        else utcString(today, until)
-      RouterDecisionResponse(ConnectionDecision.Block, "schedule", Some(expiresAt))
+    schedules.find(s => PolicyService.scheduleActiveAt(s, now)).map { s =>
+      // expiresAt for an active schedule = the next instant the window's `endLocal`
+      // occurs in the schedule's tz. For overnight windows where we're past startLocal
+      // it's tomorrow's endLocal; otherwise it's today's endLocal (which may be in the
+      // past for the "tail" of a previous day's overnight window — handled below).
+      val expiresAt = PolicyService.scheduleEndInstantAfter(s, now)
+      RouterDecisionResponse(ConnectionDecision.Block, "schedule", Some(expiresAt.toString))
     }
   }
 
   private def timeLimitBlockFromDb(
       hostname: String,
-      today: LocalDate,
+      now: Instant,
+      settings: HouseholdSettings,
       dailyMinutes: Option[Int],
       siteLimits: List[SiteTimeLimit],
       minutesByDomain: Map[String, Int],
       totalMinutesUsed: Int,
       extensionsMinutes: Int,
   ): Option[RouterDecisionResponse] = {
-    val midnight     = utcString(today.plusDays(1), LocalTime.MIDNIGHT)
+    // Time-limit blocks expire at the next household daily-reset Instant.
+    val resetAt      = PolicyService.nextDailyResetAfter(settings, now).toString
     val siteLimitHit = siteLimits.find { sl =>
       matchesDomainPattern(hostname, sl.domainPattern) &&
       minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes
@@ -265,7 +259,7 @@ class PolicyServiceLive(
         RouterDecisionResponse(
           ConnectionDecision.Block,
           s"site_time_limit:${sl.label}",
-          Some(midnight),
+          Some(resetAt),
         ),
       )
       .orElse {
@@ -276,7 +270,7 @@ class PolicyServiceLive(
         else
           dailyMinutes.flatMap { limit =>
             Option.when(totalMinutesUsed >= limit + extensionsMinutes)(
-              RouterDecisionResponse(ConnectionDecision.Block, "time_limit", Some(midnight)),
+              RouterDecisionResponse(ConnectionDecision.Block, "time_limit", Some(resetAt)),
             )
           }
       }
@@ -311,25 +305,6 @@ class PolicyServiceLive(
     (0 until parts.length - 1).exists(i => list.contains(parts.drop(i).mkString(".")))
   }
 
-  private def parseTime(s: String): LocalTime = {
-    val Array(h, m) = s.split(':')
-    LocalTime.of(h.toInt, m.toInt)
-  }
-
-  private val dayNames: Map[DayOfWeek, String] = Map(
-    DayOfWeek.MONDAY    -> "mon",
-    DayOfWeek.TUESDAY   -> "tue",
-    DayOfWeek.WEDNESDAY -> "wed",
-    DayOfWeek.THURSDAY  -> "thu",
-    DayOfWeek.FRIDAY    -> "fri",
-    DayOfWeek.SATURDAY  -> "sat",
-    DayOfWeek.SUNDAY    -> "sun",
-  )
-
-  private def dayName(d: LocalDate): String = dayNames(d.getDayOfWeek)
-
-  private def utcString(date: LocalDate, time: LocalTime): String =
-    OffsetDateTime.of(date, time, ZoneOffset.UTC).toInstant.toString
 }
 
 private case class SnapshotCore(
@@ -340,11 +315,11 @@ private case class SnapshotCore(
 
 object PolicyService {
   val layer: ZLayer[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo &
-      TrafficReportRepo & TimeExtensionRepo & Clock,
+    ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & SiteTimeLimitRepo &
+      DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & Clock,
     Nothing,
     PolicyService,
-  ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _, _))
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
   def blocklistContentVersion(domains: Iterable[String]): String = {
@@ -391,8 +366,7 @@ object PolicyService {
    */
   private[policy] def computeBlockRules(
       in: ProfileInputs,
-      nowTime: LocalTime,
-      today: LocalDate,
+      now: Instant,
   ): BlockRules = {
     val p = in.profile
 
@@ -409,7 +383,7 @@ object PolicyService {
 
     val (blocked, reason) =
       if p.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
-      else if scheduleActiveNow(in.schedules, nowTime, today) then
+      else if in.schedules.exists(s => scheduleActiveAt(s, now)) then
         (true, Some(MacBlockReason.Schedule: MacBlockReason))
       else
         in.dailyMinutes match {
@@ -429,26 +403,69 @@ object PolicyService {
     )
   }
 
-  private def scheduleActiveNow(
-      schedules: List[DbSchedule],
-      nowTime: LocalTime,
-      today: LocalDate,
-  ): Boolean = {
-    val todayName = dowShort(today.getDayOfWeek)
-    val prevName  = dowShort(today.minusDays(1).getDayOfWeek)
-    schedules.exists { s =>
-      val from  = parseHm(s.blockFrom)
-      val until = parseHm(s.blockUntil)
-      if from.isAfter(until) then
-        (s.days.contains(todayName) && !nowTime.isBefore(from)) ||
-        (s.days.contains(prevName) && nowTime.isBefore(until))
-      else s.days.contains(todayName) && !nowTime.isBefore(from) && nowTime.isBefore(until)
+  // ── #334: timezone-aware time math ────────────────────────────────────────
+  //
+  // Schedules + daily-reset carry an IANA zone with the data. All evaluation
+  // projects `Instant.now()` into that zone and compares wall-clock components.
+  // DST is handled transparently by ZonedDateTime: the same wall-clock time
+  // reliably resolves "9pm every day" regardless of standard/daylight time.
+
+  /**
+   * True iff `instant`, projected into `s.tz`, falls in the schedule's window. Same-day window:
+   * `[startLocal, endLocal)` on a day in `s.days`. Cross-midnight (overnight) window when
+   * `startLocal > endLocal`: `[startLocal, 24:00)` on a day in `s.days`, OR `[00:00, endLocal)` on
+   * the day *after* a day in `s.days` (the tail).
+   *
+   * `startLocal == endLocal` is treated as a never-active empty window.
+   */
+  def scheduleActiveAt(s: DbSchedule, instant: Instant): Boolean = {
+    if s.startLocal == s.endLocal then false
+    else {
+      val zdt         = instant.atZone(s.tz)
+      val today       = zdt.toLocalDate
+      val now         = zdt.toLocalTime
+      val isOvernight = s.startLocal.isAfter(s.endLocal)
+      if !isOvernight then
+        s.days.contains(dowShort(today.getDayOfWeek)) &&
+        !now.isBefore(s.startLocal) && now.isBefore(s.endLocal)
+      else {
+        val todayName = dowShort(today.getDayOfWeek)
+        val prevName  = dowShort(today.minusDays(1).getDayOfWeek)
+        (s.days.contains(todayName) && !now.isBefore(s.startLocal)) ||
+        (s.days.contains(prevName) && now.isBefore(s.endLocal))
+      }
     }
   }
 
-  private def parseHm(s: String): LocalTime = {
-    val Array(h, m) = s.split(':')
-    LocalTime.of(h.toInt, m.toInt)
+  /**
+   * The Instant at which the currently-active window for `s` ends. Caller must have established
+   * that `scheduleActiveAt(s, now)` is true.
+   */
+  def scheduleEndInstantAfter(s: DbSchedule, now: Instant): Instant = {
+    val zdt         = now.atZone(s.tz)
+    val today       = zdt.toLocalDate
+    val isOvernight = s.startLocal.isAfter(s.endLocal)
+    val endDate     =
+      if isOvernight && !zdt.toLocalTime.isBefore(s.startLocal) then today.plusDays(1)
+      else today
+    endDate.atTime(s.endLocal).atZone(s.tz).toInstant
+  }
+
+  /**
+   * The next Instant strictly after `now` at which the household's daily-reset wall-clock time
+   * occurs in its zone. Used to populate `expiresAt` on time-limit blocks served to the router.
+   */
+  def nextDailyResetAfter(settings: HouseholdSettings, now: Instant): Instant = {
+    val zdt       = now.atZone(settings.dailyResetTz)
+    val candidate =
+      zdt.toLocalDate.atTime(settings.dailyResetTime).atZone(settings.dailyResetTz).toInstant
+    if candidate.isAfter(now) then candidate
+    else
+      zdt.toLocalDate
+        .plusDays(1)
+        .atTime(settings.dailyResetTime)
+        .atZone(settings.dailyResetTz)
+        .toInstant
   }
 
   private def dowShort(d: DayOfWeek): String = d match {

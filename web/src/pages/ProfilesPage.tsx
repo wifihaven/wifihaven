@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type {
-  Device, FailureMode, ProfileDetail, ScheduleRequest, SiteTimeLimitRequest,
-  UpsertProfileRequest, User,
+  Device, FailureMode, HouseholdSettings, ProfileDetail, ScheduleRequest,
+  SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
+import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { PageLoader } from './DashboardPage'
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
@@ -48,7 +49,7 @@ function detailToForm(pd: ProfileDetail): FormState {
     paused: pd.profile.paused,
     timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
     schedules: pd.schedules.map(s => ({
-      name: s.name, days: s.days, blockFrom: s.blockFrom, blockUntil: s.blockUntil,
+      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
     })),
     siteTimeLimits: pd.siteTimeLimits.map(s => ({
       domainPattern: s.domainPattern,
@@ -89,6 +90,9 @@ export function ProfilesPage() {
   const [error, setError] = useState<string | null>(null)
   const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
   const [userPick, setUserPick] = useState<number[]>([])
+  const [household, setHousehold] = useState<HouseholdSettings | null>(null)
+  const [hsForm, setHsForm] = useState<HouseholdSettings | null>(null)
+  const [hsSaving, setHsSaving] = useState(false)
 
   const devicesByProfile = useMemo(() => {
     const m = new Map<number, Device[]>()
@@ -114,16 +118,33 @@ export function ProfilesPage() {
   }, [allUsers])
 
   async function reload() {
-    const [p, cats, devs, users] = await Promise.all([
+    const [p, cats, devs, users, hs] = await Promise.all([
       api.profiles.list(),
       api.blocklists.counts().catch(() => []),
       api.devices.list().catch(() => [] as Device[]),
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
+      api.household.get().catch(() => null),
     ])
     setProfiles(p)
     setCategories(cats.map(c => c.category))
     setDevices(devs)
     setAllUsers(users)
+    setHousehold(hs)
+    if (hs) setHsForm(hs)
+  }
+
+  async function saveHousehold() {
+    if (!hsForm) return
+    setHsSaving(true)
+    try {
+      await api.household.update({
+        dailyResetTime: hsForm.dailyResetTime,
+        dailyResetTz: hsForm.dailyResetTz,
+      })
+      setHousehold(hsForm)
+    } finally {
+      setHsSaving(false)
+    }
   }
 
   useEffect(() => {
@@ -218,6 +239,44 @@ export function ProfilesPage() {
         )}
       </div>
 
+      {isAdmin && hsForm && (
+        <div data-testid="household-settings-card"
+          className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-bold text-white">Household settings</h2>
+            <button
+              onClick={saveHousehold}
+              disabled={hsSaving || (household != null && household.dailyResetTime === hsForm.dailyResetTime && household.dailyResetTz === hsForm.dailyResetTz)}
+              data-testid="household-save"
+              className="text-xs bg-emerald-500/20 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-40">
+              {hsSaving ? 'Saving…' : 'Save settings'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-400">
+            The wall-clock time at which daily usage limits reset. Both the reset time and timezone
+            are stored together — the reset always fires at the configured local clock time, even
+            across DST.
+          </p>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Reset time</label>
+              <input type="time" value={hsForm.dailyResetTime}
+                onChange={e => setHsForm({ ...hsForm, dailyResetTime: e.target.value })}
+                data-testid="household-reset-time"
+                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
+            </div>
+            <div className="flex-1 min-w-[14rem]">
+              <label className="block text-xs text-gray-500 mb-1">Timezone</label>
+              <TimezonePicker
+                value={hsForm.dailyResetTz}
+                onChange={tz => setHsForm({ ...hsForm, dailyResetTz: tz })}
+                testId="household-reset-tz"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2">
         {profiles.map(pd => (
           <div key={pd.profile.id} data-testid={`profile-card-${pd.profile.id}`} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
@@ -294,7 +353,9 @@ export function ProfilesPage() {
                 {pd.schedules.map(s => (
                   <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
                     <span className="text-gray-300">{s.name}</span>
-                    <span className="text-yellow-400 font-mono text-xs">{s.blockFrom} → {s.blockUntil}</span>
+                    <span className="text-yellow-400 font-mono text-xs">
+                      {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
+                    </span>
                   </div>
                 ))}
               </div>
@@ -430,6 +491,7 @@ export function ProfilesPage() {
           error={error}
           onCancel={() => setEditingId(null)}
           onSave={save}
+          defaultTz={household?.dailyResetTz ?? browserTimezone()}
         />
       )}
     </div>
@@ -437,7 +499,7 @@ export function ProfilesPage() {
 }
 
 function ProfileEditor({
-  isNew, form, setForm, categories, saving, error, onCancel, onSave,
+  isNew, form, setForm, categories, saving, error, onCancel, onSave, defaultTz,
 }: {
   isNew: boolean
   form: FormState
@@ -447,6 +509,7 @@ function ProfileEditor({
   error: string | null
   onCancel: () => void
   onSave: () => void
+  defaultTz: string
 }) {
   function toggleCat(c: string) {
     setForm(f => ({
@@ -458,9 +521,14 @@ function ProfileEditor({
   }
 
   function addSchedule() {
+    // Default tz comes from the parent (household's daily-reset tz, or
+    // browser tz fallback). Most homes want all schedules in the same zone.
     setForm(f => ({
       ...f,
-      schedules: [...f.schedules, { name: 'Bedtime', days: [...DAYS], blockFrom: '21:00', blockUntil: '07:00' }],
+      schedules: [
+        ...f.schedules,
+        { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz },
+      ],
     }))
   }
 
@@ -670,14 +738,24 @@ function ProfileEditor({
                     className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 rounded-lg">Remove</button>
                 </div>
                 <div className="flex gap-2 items-center text-sm">
-                  <input type="time" value={s.blockFrom}
-                    onChange={e => updateSchedule(i, { blockFrom: e.target.value })}
+                  <input type="time" value={s.startLocal}
+                    onChange={e => updateSchedule(i, { startLocal: e.target.value })}
+                    data-testid={`schedule-${i}-start`}
                     className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white" />
                   <span className="text-gray-500">→</span>
-                  <input type="time" value={s.blockUntil}
-                    onChange={e => updateSchedule(i, { blockUntil: e.target.value })}
+                  <input type="time" value={s.endLocal}
+                    onChange={e => updateSchedule(i, { endLocal: e.target.value })}
+                    data-testid={`schedule-${i}-end`}
                     className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white" />
                 </div>
+                <div className="text-xs text-gray-400">
+                  Timezone (the same wall-clock window applies every day, even across DST)
+                </div>
+                <TimezonePicker
+                  value={s.tz}
+                  onChange={tz => updateSchedule(i, { tz })}
+                  testId={`schedule-${i}-tz`}
+                />
                 <div className="flex flex-wrap gap-1">
                   {DAYS.map(d => {
                     const on = s.days.includes(d)

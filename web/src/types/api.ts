@@ -19,8 +19,19 @@ export interface Schedule {
   profileId: number
   name: string
   days: string[]
-  blockFrom: string
-  blockUntil: string
+  startLocal: string  // "HH:mm" wall-clock time in `tz`
+  endLocal: string    // "HH:mm" wall-clock time in `tz`
+  tz: string          // IANA timezone, e.g. "America/Los_Angeles"
+}
+
+export interface HouseholdSettings {
+  dailyResetTime: string  // "HH:mm" wall-clock time in `dailyResetTz`
+  dailyResetTz: string    // IANA timezone
+}
+
+export interface UpdateHouseholdSettingsRequest {
+  dailyResetTime: string
+  dailyResetTz: string
 }
 
 export interface TimeLimit {
@@ -247,8 +258,9 @@ export interface SetUserProfilesRequest {
 export interface ScheduleRequest {
   name: string
   days: string[]
-  blockFrom: string
-  blockUntil: string
+  startLocal: string
+  endLocal: string
+  tz: string
 }
 
 export interface SiteTimeLimitRequest {

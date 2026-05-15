@@ -10,7 +10,7 @@ import familydns.shared.Schedule
 import familydns.api.db.TypeMeta.given
 import zio.*
 import zio.interop.catz.*
-import java.time.{Instant, LocalDate}
+import java.time.{Instant, LocalDate, LocalTime, ZoneId}
 
 given Meta[List[String]] = Meta[Array[String]].imap(_.toList)(_.toArray)
 
@@ -72,6 +72,14 @@ trait ScheduleRepo {
   def listAll: Task[List[Schedule]]
   def listForProfile(pid: ProfileId): Task[List[Schedule]]
   def replaceForProfile(pid: ProfileId, scheds: List[ScheduleRequest]): Task[Unit]
+}
+
+trait HouseholdSettingsRepo {
+  def get: Task[HouseholdSettings]
+  def update(s: HouseholdSettings): Task[Unit]
+
+  /** Insert the default row if missing, using `defaultZone` as the install-time tz. */
+  def ensureDefault(defaultZone: ZoneId): Task[Unit]
 }
 
 trait TimeLimitRepo {
@@ -397,16 +405,16 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
 }
 
 class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
-  private type R = (ScheduleId, ProfileId, String, List[String], String, String)
-  private def toS(r: R)              = Schedule(r._1, r._2, r._3, r._4, r._5, r._6)
+  private type R = (ScheduleId, ProfileId, String, List[String], LocalTime, LocalTime, ZoneId)
+  private def toS(r: R)              = Schedule(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
   def listAll                        =
-    sql"SELECT id,profile_id,name,days,block_from,block_until FROM schedules ORDER BY id"
+    sql"SELECT id,profile_id,name,days,start_local,end_local,tz FROM schedules ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
   def listForProfile(pid: ProfileId) =
-    sql"SELECT id,profile_id,name,days,block_from,block_until FROM schedules WHERE profile_id=$pid ORDER BY id"
+    sql"SELECT id,profile_id,name,days,start_local,end_local,tz FROM schedules WHERE profile_id=$pid ORDER BY id"
       .query[R]
       .map(toS)
       .to[List]
@@ -414,10 +422,31 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
   def replaceForProfile(pid: ProfileId, ss: List[ScheduleRequest]) = {
     val del = sql"DELETE FROM schedules WHERE profile_id=$pid".update.run
     val ins = ss.map(s =>
-      sql"INSERT INTO schedules(profile_id,name,days,block_from,block_until) VALUES($pid,${s.name},${s.days.toArray},${s.blockFrom},${s.blockUntil})".update.run,
+      sql"INSERT INTO schedules(profile_id,name,days,start_local,end_local,tz) VALUES($pid,${s.name},${s.days.toArray},${s.startLocal},${s.endLocal},${s.tz})".update.run,
     )
     (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
   }
+}
+
+class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
+  def get: Task[HouseholdSettings] =
+    sql"SELECT daily_reset_time, daily_reset_tz FROM household_settings WHERE id=1"
+      .query[(LocalTime, ZoneId)]
+      .unique
+      .map(HouseholdSettings.apply)
+      .transact(xa)
+
+  def update(s: HouseholdSettings): Task[Unit] =
+    sql"""UPDATE household_settings
+            SET daily_reset_time=${s.dailyResetTime},
+                daily_reset_tz=${s.dailyResetTz},
+                updated_at=NOW()
+          WHERE id=1""".update.run.transact(xa).unit
+
+  def ensureDefault(defaultZone: ZoneId): Task[Unit] =
+    sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz)
+          VALUES (1, '00:00', ${defaultZone})
+          ON CONFLICT (id) DO NOTHING""".update.run.transact(xa).unit
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
@@ -1006,20 +1035,21 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
 }
 
 object Repos {
-  val userRepo          = ZLayer.fromFunction(UserRepoLive(_))
-  val userProfileRepo   = ZLayer.fromFunction(UserProfileRepoLive(_))
-  val profileRepo       = ZLayer.fromFunction(ProfileRepoLive(_))
-  val scheduleRepo      = ZLayer.fromFunction(ScheduleRepoLive(_))
-  val timeLimitRepo     = ZLayer.fromFunction(TimeLimitRepoLive(_))
-  val siteTimeLimitRepo = ZLayer.fromFunction(SiteTimeLimitRepoLive(_))
-  val deviceRepo        = ZLayer.fromFunction(DeviceRepoLive(_))
-  val blocklistRepo     = ZLayer.fromFunction(BlocklistRepoLive(_))
-  val timeUsageRepo     = ZLayer.fromFunction(TimeUsageRepoLive(_))
-  val timeExtRepo       = ZLayer.fromFunction(TimeExtensionRepoLive(_))
-  val routerRepo        = ZLayer.fromFunction(RouterRepoLive(_))
-  val trafficReportRepo = ZLayer.fromFunction(TrafficReportRepoLive(_))
-  val blockEventRepo    = ZLayer.fromFunction(BlockEventRepoLive(_))
-  val connEventRepo     = ZLayer.fromFunction(ConnectionEventRepoLive(_))
-  val all               =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
+  val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
+  val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
+  val profileRepo           = ZLayer.fromFunction(ProfileRepoLive(_))
+  val scheduleRepo          = ZLayer.fromFunction(ScheduleRepoLive(_))
+  val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
+  val timeLimitRepo         = ZLayer.fromFunction(TimeLimitRepoLive(_))
+  val siteTimeLimitRepo     = ZLayer.fromFunction(SiteTimeLimitRepoLive(_))
+  val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_))
+  val blocklistRepo         = ZLayer.fromFunction(BlocklistRepoLive(_))
+  val timeUsageRepo         = ZLayer.fromFunction(TimeUsageRepoLive(_))
+  val timeExtRepo           = ZLayer.fromFunction(TimeExtensionRepoLive(_))
+  val routerRepo            = ZLayer.fromFunction(RouterRepoLive(_))
+  val trafficReportRepo     = ZLayer.fromFunction(TrafficReportRepoLive(_))
+  val blockEventRepo        = ZLayer.fromFunction(BlockEventRepoLive(_))
+  val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
+  val all                   =
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
 }

@@ -594,6 +594,37 @@ object BlocklistRoutes {
     )
 }
 
+// ── Household settings (#334) ──────────────────────────────────────────────
+
+object HouseholdSettingsRoutes {
+  def routes(
+      auth: AuthService,
+      repo: HouseholdSettingsRepo,
+  ): Routes[Any, Response] =
+    Routes(
+      Method.GET / "api" / "household" / "settings" ->
+        handler { (req: Request) =>
+          for {
+            _ <- requireAuth(req, auth)
+            s <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.json(s.toJson)
+        },
+      Method.PUT / "api" / "household" / "settings" ->
+        handler { (req: Request) =>
+          for {
+            _    <- requireAdmin(req, auth)
+            body <- req.body.asString.orElseFail(Response.badRequest(""))
+            upd  <- ZIO
+              .fromEither(body.fromJson[UpdateHouseholdSettingsRequest])
+              .mapError(e => Response.badRequest(e))
+            _    <- repo
+              .update(HouseholdSettings(upd.dailyResetTime, upd.dailyResetTz))
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+    )
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 private def bearerToken(req: Request): Option[String] =
