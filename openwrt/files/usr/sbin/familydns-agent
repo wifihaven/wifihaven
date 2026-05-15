@@ -199,8 +199,8 @@ end
 
 local current_etag        = nil
 -- #331: tracks the most recently applied snapshot so we can re-render with
--- failover opts when the API stays unreachable past the §4 5-minute window
--- (without a fresh fetch we have no other snapshot to render from).
+-- failover opts on the first failed poll (#422 — without a fresh fetch we
+-- have no other snapshot to render from).
 local last_snapshot       = nil
 -- #331: whether the last apply emitted the failover chain. Used to dedupe
 -- re-renders while we sit in failover and to detect the recovery edge so we
@@ -377,16 +377,17 @@ conntrack.watch({
         fetch_ok = false
       end
 
-      -- #331: failover transition. On the failure→failover edge we re-render
-      -- the cached snapshot with poll_age_seconds so render.lua emits the
-      -- failover_drop set + familydns_failover chain (#311). On the recovery
-      -- edge we re-render to clear those rules. A 200 already applied a
-      -- clean ruleset above, so we only need to flip the flag in that case;
-      -- a 304 needs an explicit re-apply to drop the failover chain.
+      -- #331/#422: failover transition. On the failure→failover edge we
+      -- re-render the cached snapshot with poll_failed=true so render.lua
+      -- emits the failover_drop set + familydns_failover chain (#311). On
+      -- the recovery edge we re-render to clear those rules. A 200 already
+      -- applied a clean ruleset above, so we only need to flip the flag
+      -- in that case; a 304 needs an explicit re-apply to drop the
+      -- failover chain. The transition trips on a single failed poll
+      -- (#422 — no 300s cushion).
       if fetch_ok ~= nil then
-        local poll_age = policy.poll_age_seconds(wall)
         local should_apply, fo_opts, new_in_failover =
-          policy.failover_transition(in_failover_render, fetch_ok, poll_age)
+          policy.failover_transition(in_failover_render, fetch_ok)
         if should_apply and not snap and last_snapshot then
           -- Recovery via 304, or entering failover. Re-render last_snapshot
           -- with the computed opts. Skip if we have no cached snapshot at
@@ -394,10 +395,10 @@ conntrack.watch({
           -- effect and there's nothing useful we can render.
           if policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts) then
             if new_in_failover then
-              log.info("failover render: poll_age=%s, applying failover chain for closed-mode profiles",
-                       policy.format_poll_age(poll_age))
+              log.info("failover render: poll failed, applying failover chain for closed-mode profiles (poll_age=%s)",
+                       policy.format_poll_age(policy.poll_age_seconds(wall)))
             else
-              log.info("failover lifted: applying fresh snapshot (poll_age=0)")
+              log.info("failover lifted: applying fresh snapshot")
             end
           else
             log.warn("failover transition: apply failed (in_failover=%s→%s)",
@@ -410,7 +411,7 @@ conntrack.watch({
           -- skeleton (#308) is still enforcing default-deny; nothing to
           -- render. Don't flip the flag so we keep retrying on each tick.
           log.warn("failover transition skipped: no cached snapshot (boot-skeleton default-deny still active, poll_age=%s)",
-                   policy.format_poll_age(poll_age))
+                   policy.format_poll_age(policy.poll_age_seconds(wall)))
           new_in_failover = in_failover_render
         end
         in_failover_render = new_in_failover

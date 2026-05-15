@@ -1070,10 +1070,10 @@ describe("render blockIpOnly enforcement (#353)", function()
 
   -- ── failover allow-all suppression (mirrors eb_/bl_ pattern) ────────────
 
-  it("suppresses blockIpOnly drops + DNAT for allow-all-failover MACs (poll_age>300)", function()
+  it("suppresses blockIpOnly drops + DNAT for allow-all-failover MACs (poll_failed=true)", function()
     local s = snap_bio()
     s.profiles["3"].failureMode = "allow-all"
-    local nft = render.nft(s, { poll_age_seconds = 301 })
+    local nft = render.nft(s, { poll_failed = true })
     -- Set declarations are still emitted (cheap; population is a no-op since
     -- the dnsmasq tag is still wired). But forward-chain drops and DNAT for
     -- these MACs must be gone.

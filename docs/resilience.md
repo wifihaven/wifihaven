@@ -90,10 +90,12 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
   outage (default 30s); the agent does not back off poll attempts as
   aggressively as usage POSTs because policy freshness matters more than
   usage freshness.
-- **Max API-down window before failover.** After **5 minutes** of consecutive
-  unreachable polls, the agent transitions to the per-profile failure mode
-  defined in §4. Until then, the cached snapshot stands. See §4 for the
-  rationale on the 5-minute threshold.
+- **Failover trips immediately on a failed poll.** The agent transitions
+  to the per-profile failure mode defined in §4 the moment a poll attempt
+  fails; the next successful poll lifts the transition. There is no time-
+  based cushion (#422 removed the prior 300s gate, which contradicted the
+  per-profile failureMode design intent — block-all should drop traffic
+  the moment we can't reach the API).
 
 ### Why
 The asymmetry — sequential drain for usage, fixed cadence for policy — is
@@ -109,13 +111,15 @@ correct policy within one poll interval.
 - `openwrt/files/usr/lib/lua/familydns/conntrack.lua`: same retry-queue
   pattern for events POSTs (#330); cap = 1000 batches, drop-oldest on
   overflow; drained from the conntrack watcher loop on every tick.
-- Agent main loop: track `last_successful_poll_ts`; if `now -
-  last_successful_poll_ts > 300s`, transition enforcement per §4.
+- Agent main loop: track `last_fetch_ok` for the most-recent poll;
+  transition enforcement per §4 immediately on any failed poll
+  (#422 — no 300s gate). `last_successful_poll_ts` is kept only for
+  human-readable log lines (`poll_age=NNNs`).
 
 ### How to verify
-- Stop the API container for 60s; agent should log retries and resume
-  cleanly with no policy change.
-- Stop the API for 6+ minutes; agent transitions per §4.
+- Stop the API container; on the first failed poll the agent transitions
+  per §4. Restart the API; on the next successful poll the agent applies
+  the fresh snapshot and clears the failover state.
 - Confirm queued usage drains sequentially after API return (check API
   logs for spaced POSTs, not one batch).
 
@@ -158,11 +162,10 @@ client (the agent) without parsing error bodies.
 ## 4. Internet outage on router (agent can't reach API) — KEY DESIGN DECISION
 
 ### Intended behavior
-- **Cached policy stands for the first 5 minutes.** Most outages are
-  shorter than this; the cached snapshot is the correct enforcement
-  posture during transient failures.
-- **After 5 minutes of consecutive failed polls**, the agent transitions
-  enforcement per **per-profile `failureMode`**. Three modes (#385) —
+- **Failover trips on the first failed poll.** The agent transitions
+  enforcement per **per-profile `failureMode`** the moment a poll
+  attempt fails (#422 — there is no time-based cushion). Three modes
+  (#385) —
   named identically across architecture.md §0.2, this section,
   `shared/src/Models.scala`, the wire JSON, and the DB column:
   - **`BlockAll`** (wire `"block-all"`, recommended for child profiles):
@@ -200,13 +203,15 @@ the cached snapshot enforcing exactly" (LastKnownGood). The agent
 shipped one interpretation (`Open` = LastKnownGood); the doc shipped the
 other (`Open` = AllowAll). #385 separates them.
 
-The 5-minute threshold balances two costs:
-- Too short (< 1 min): every flaky cellular failover triggers a
-  failover transition, which kids will notice and learn to exploit
-  (wait it out).
-- Too long (> 15 min): a determined kid who unplugs the WAN can browse
-  freely for that whole window. 5 minutes is short enough to be
-  annoying rather than useful.
+The failover transition is immediate (no time-based cushion). The earlier
+design used a 300s gate to absorb flaky cellular failovers, but #422
+removed it because the gate contradicted the per-profile `failureMode`
+contract: an admin who picks `BlockAll` expects the profile's devices to
+drop traffic the moment the API is unreachable, and an admin who picks
+`AllowAll` expects an immediate unblock. The transient-flap concern is
+addressed instead by the per-profile mode (e.g. `LastKnownGood` on adult
+profiles keeps the cached snapshot enforcing during a brief blip), not by
+a one-size-fits-all delay.
 
 Defaults reflect the asymmetric blast radius. For a child profile,
 "BlockAll" trades a false-block (kid loses access during a real ISP
@@ -231,9 +236,11 @@ never a default — it must be picked deliberately.
 - `api/src/policy/PolicyService.scala`: includes `failureMode` per
   `ProfilePolicy` in the rendered `PolicySnapshot`. The ETag covers
   this value so a mode change invalidates client caches.
-- `openwrt/files/usr/lib/lua/familydns/policy.lua`: tracks
-  `last_successful_poll_ts`; on `now - last > 300s`, renders nft with
-  `opts.poll_age_seconds`.
+- `openwrt/files/usr/lib/lua/familydns/policy.lua`: on every failed
+  poll, renders nft with `opts.poll_failed = true`; on the next
+  successful poll, renders with `opts.poll_failed = false` to clear the
+  failover chain (#422). `last_successful_poll_ts` is retained for
+  human-readable log lines only.
 - `openwrt/files/usr/lib/lua/familydns/render.lua`: branches by mode.
   `BlockAll` emits a dedicated `failover_drop` set and drop chain.
   `AllowAll` suppresses the profile's MACs from every drop list before
@@ -245,7 +252,7 @@ never a default — it must be picked deliberately.
 
 ### How to verify
 - Block the API at the router (firewall rule on the router itself
-  blocking egress to the API host). Wait 5 minutes. Confirm that:
+  blocking egress to the API host). Within one poll cycle, confirm that:
   - A `BlockAll` profile's device cannot reach the internet but the
     block page loads;
   - A `LastKnownGood` profile's device continues to work under cached
@@ -283,7 +290,7 @@ The previous agent-side skew detector (Date-header capture,
 | Scenario | Current behavior | Status |
 | --- | --- | --- |
 | 1. Power loss | Identity persists; **no default-deny gate before agent renders** — traffic forwards unfiltered for the boot window. Usage buckets in tmpfs (intentional). | **GAP** |
-| 2. API restart | No persisted policy cache (tmpfs only); usage POSTs have **no retry/backoff**; no 5-minute failover threshold. | **GAP** |
+| 2. API restart | No persisted policy cache (tmpfs only); usage POSTs have **no retry/backoff**; no failover-on-poll-fail trigger. | **GAP** |
 | 3. DB blip | Health endpoint correct (503). All other routes return **bare 500 on DB failure**. JWT auth rides through correctly. | **GAP** |
 | 4. Internet outage | No `failureMode` field exists. Agent is **fail-open** on cold start with no cached policy; rules persist in tmpfs only. | **GAP** |
 | 5. Time skew | Router does no time-based evaluation (Truth 2 / #350); API clock is authoritative. See #334 for API-side time handling. | **N/A (by design)** |

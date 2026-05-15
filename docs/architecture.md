@@ -71,8 +71,10 @@ case class ProfilePolicy(
     name: String,
     rules: BlockRules,
     failureMode: FailureMode,                  // per-profile: what the router does
-                                               //   for THIS profile's devices if it can't
-                                               //   reach the API for >5min. See
+                                               //   for THIS profile's devices the moment
+                                               //   a policy poll fails (#422 — failover
+                                               //   trips on the first failed poll; no
+                                               //   time-based cushion). See
                                                //   docs/resilience.md §4 for the
                                                //   per-mode behaviour and the
                                                //   defaulting policy.

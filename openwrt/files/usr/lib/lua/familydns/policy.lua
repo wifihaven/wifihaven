@@ -27,9 +27,12 @@
 --                                   sinkhole-shaped answer means dnsmasq
 --                                   is still applying a stale rendering
 --                                   (failed restart) and triggers a WARN.
---       opts.poll_age_seconds → forwarded to render.nft for the #385
+--       opts.poll_failed → forwarded to render.nft for the #385/#422
 --                                 failover branch (three modes: block-all,
---                                 allow-all, last-known-good).
+--                                 allow-all, last-known-good). True iff
+--                                 the most-recent poll attempt did not
+--                                 succeed; failover trips immediately on
+--                                 a single failure (no 300s cushion).
 
 local M = {}
 
@@ -139,8 +142,9 @@ end
 -- (`0.0.0.0`, `::`, empty / NXDOMAIN) means dnsmasq is still running a
 -- stale config that has DNS-layer blocks in it, which is the failure mode
 -- we want to catch.
--- opts.poll_age_seconds (#331): forwarded to render.nft so the agent's
--- failover-edge re-render can request the closed-mode drop chain.
+-- opts.poll_failed (#331/#422): forwarded to render.nft so the agent's
+-- failover-edge re-render can request the closed-mode drop chain on the
+-- first failed poll (and clear it on the next success).
 
 -- Default reader for the change-detection check (#414). Returns nil if the
 -- file is absent — first apply on a fresh boot treats that as "changed".
@@ -354,34 +358,33 @@ function M.reset_poll_state()
 end
 
 -- ---------------------------------------------------------------------------
--- Failover transition decision (#331). Pure function so the agent's on_tick
--- can stay thin and the boundary behavior is unit-testable.
+-- Failover transition decision (#331/#422). Pure function so the agent's
+-- on_tick can stay thin and the boundary behavior is unit-testable.
 --
 -- Inputs:
---   in_failover : bool  — was the last apply rendered with failover opts?
---   fetch_ok    : bool  — did this tick's poll succeed (200 or 304)?
---   poll_age    : number — seconds since last_successful_poll_ts (computed
---                          by caller; on success this is 0).
+--   in_failover : bool — was the last apply rendered with failover opts?
+--   fetch_ok    : bool — did this tick's poll succeed (200 or 304)?
 -- Returns:
---   should_apply       : bool — re-render is needed this tick
---   apply_opts         : table|nil — opts to pass to policy.apply
---   new_in_failover    : bool — updated state flag
+--   should_apply    : bool       — re-render is needed this tick
+--   apply_opts      : table|nil  — opts to pass to policy.apply
+--   new_in_failover : bool       — updated state flag
 --
--- The threshold matches docs/resilience.md §4 (and render.lua's
--- `poll_age > 300` check): strictly greater than 5 minutes flips Closed
--- profiles into drop-mode; any successful poll lifts it immediately.
+-- Semantics (#422): failover trips immediately on a failed poll and lifts
+-- immediately on a successful poll. There is no time-based cushion — the
+-- previous 300s gate contradicted the per-profile failureMode design intent
+-- (block-all should drop traffic the moment we can't reach the API).
 -- ---------------------------------------------------------------------------
-function M.failover_transition(in_failover, fetch_ok, poll_age)
+function M.failover_transition(in_failover, fetch_ok)
   if fetch_ok then
     if in_failover then
-      return true, { poll_age_seconds = 0 }, false
+      return true, { poll_failed = false }, false
     end
     return false, nil, false
   end
-  if poll_age > 300 and not in_failover then
-    return true, { poll_age_seconds = poll_age }, true
+  if not in_failover then
+    return true, { poll_failed = true }, true
   end
-  return false, nil, in_failover
+  return false, nil, true
 end
 
 return M

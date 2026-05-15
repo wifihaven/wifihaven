@@ -486,7 +486,7 @@ describe("policy.apply", function()
     }
   end
 
-  it("passes opts through to render.nft so failover branch fires (#331)", function()
+  it("passes opts through to render.nft so failover branch fires (#331/#422)", function()
     local nft_content
     policy.apply(snap_with_closed_profile(),
       function(path, content)
@@ -495,12 +495,12 @@ describe("policy.apply", function()
       end,
       function(_cmd) return 0 end,
       nil,
-      { poll_age_seconds = 301 })
+      { poll_failed = true })
     assert.truthy(nft_content)
     assert.truthy(nft_content:find("set failover_drop", 1, true),
-      "expected failover_drop set when opts.poll_age_seconds > 300")
+      "expected failover_drop set when opts.poll_failed=true")
     assert.truthy(nft_content:find("familydns_failover", 1, true),
-      "expected familydns_failover chain when opts.poll_age_seconds > 300")
+      "expected familydns_failover chain when opts.poll_failed=true")
     assert.truthy(nft_content:find("aa:aa:aa:00:00:01", 1, true),
       "expected the Closed-profile device MAC inside the failover set")
   end)
@@ -522,63 +522,46 @@ end)
 
 -- ── policy.failover_transition (#331) ─────────────────────────────────────
 
-describe("policy.failover_transition", function()
+describe("policy.failover_transition (#422)", function()
 
   it("no-op when fetch succeeds and we were not in failover", function()
-    local should, opts, new = policy.failover_transition(false, true, 0)
+    local should, opts, new = policy.failover_transition(false, true)
     assert.is_false(should)
     assert.is_nil(opts)
     assert.is_false(new)
   end)
 
-  it("no-op when fetch fails but poll_age is within 5-min window", function()
-    local should, opts, new = policy.failover_transition(false, false, 60)
-    assert.is_false(should)
-    assert.is_nil(opts)
-    assert.is_false(new)
-  end)
-
-  it("triggers failover when fetch fails and poll_age > 300", function()
-    local should, opts, new = policy.failover_transition(false, false, 301)
+  it("trips failover immediately on a single failed fetch (#422)", function()
+    local should, opts, new = policy.failover_transition(false, false)
     assert.is_true(should)
-    assert.equal(301, opts.poll_age_seconds)
+    assert.is_true(opts.poll_failed)
     assert.is_true(new)
   end)
 
   it("does NOT re-trigger while already in failover (dedupe)", function()
-    local should, opts, new = policy.failover_transition(true, false, 500)
+    local should, opts, new = policy.failover_transition(true, false)
     assert.is_false(should)
     assert.is_nil(opts)
     assert.is_true(new)
   end)
 
-  it("lifts failover on successful fetch with opts.poll_age_seconds=0", function()
-    local should, opts, new = policy.failover_transition(true, true, 0)
+  it("lifts failover on next successful fetch with opts.poll_failed=false", function()
+    local should, opts, new = policy.failover_transition(true, true)
     assert.is_true(should)
-    assert.equal(0, opts.poll_age_seconds)
+    assert.is_false(opts.poll_failed)
     assert.is_false(new)
   end)
 
-  it("boundary: poll_age=300 stays in-window; 301 trips failover", function()
-    local s300 = (select(1, policy.failover_transition(false, false, 300)))
-    local s301 = (select(1, policy.failover_transition(false, false, 301)))
-    assert.is_false(s300)
-    assert.is_true(s301)
-  end)
-
   it("rapid recover + re-fail re-arms the transition", function()
-    -- t=295: fail, in_failover=false → no trip
-    local s1, _, nif1 = policy.failover_transition(false, false, 295)
-    assert.is_false(s1); assert.is_false(nif1)
-    -- t=296: success → no-op
-    local s2, _, nif2 = policy.failover_transition(nif1, true, 0)
-    assert.is_false(s2); assert.is_false(nif2)
-    -- t=356: fail with fresh 60s poll_age (last_successful was at 296) → no trip
-    local s3, _, nif3 = policy.failover_transition(nif2, false, 60)
-    assert.is_false(s3); assert.is_false(nif3)
-    -- much later, t=657: poll_age=361 → trip
-    local s4, opts4, nif4 = policy.failover_transition(nif3, false, 361)
-    assert.is_true(s4); assert.equal(361, opts4.poll_age_seconds); assert.is_true(nif4)
+    -- fail #1 → trip
+    local s1, _, nif1 = policy.failover_transition(false, false)
+    assert.is_true(s1); assert.is_true(nif1)
+    -- success → lift
+    local s2, opts2, nif2 = policy.failover_transition(nif1, true)
+    assert.is_true(s2); assert.is_false(opts2.poll_failed); assert.is_false(nif2)
+    -- fail #2 → trip again
+    local s3, opts3, nif3 = policy.failover_transition(nif2, false)
+    assert.is_true(s3); assert.is_true(opts3.poll_failed); assert.is_true(nif3)
   end)
 
 end)
