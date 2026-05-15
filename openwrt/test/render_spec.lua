@@ -881,3 +881,225 @@ describe("render blocklist enforcement (#352)", function()
   end)
 
 end)
+
+-- ── blockIpOnly enforcement (#353) ───────────────────────────────────────────
+--
+-- Per-MAC "must use DNS" enforcement: when a device has BlockRules.blockIpOnly
+-- true, forward-chain drops any v4/v6 daddr that is NOT in this MAC's
+-- resolved_<mac> / resolved6_<mac> set. dnsmasq populates the sets at A/AAAA
+-- response time, scoped to the MAC via a dhcp-host tag — every hostname the
+-- device resolves through our resolver lands in the set; everything else
+-- (DoH, DoT, hard-coded IPs) drops.
+--
+-- The drop is order-independent w.r.t. extraBlocked / blocklist drops: all
+-- three are terminal `drop` rules under a `policy accept` chain, so the
+-- packet is dropped iff *any* matches. A host in extraBlocked still drops
+-- even though its IP also lands in resolved_<mac>.
+
+describe("render blockIpOnly enforcement (#353)", function()
+
+  local function snap_bio()
+    return {
+      etag        = "sha256:abc123",
+      generatedAt = "2026-05-15T14:00:00Z",
+      devices = {
+        ["aa:bb:cc:11:22:33"] = { profileId = 3, name = "kid-ipad", rules = nil },
+      },
+      profiles = {
+        ["3"] = {
+          name = "kids-strict",
+          rules = {
+            blocked      = false,
+            blockReason  = nil,
+            extraBlocked = {},
+            extraAllowed = {},
+            blocklistIds = {},
+            blockIpOnly  = true,
+          },
+          failureMode = "block-all",
+        },
+      },
+      blocklists = {},
+    }
+  end
+
+  -- ── dnsmasq side ────────────────────────────────────────────────────────
+
+  it("appends set:resolvetag_<sanmac> to the dhcp-host line when blockIpOnly=true", function()
+    local conf = render.dnsmasq(snap_bio())
+    assert.truthy(conf:find(
+      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:resolvetag_aa_bb_cc_11_22_33",
+      1, true))
+  end)
+
+  it("emits tag-scoped nftset= populator for the per-MAC resolved sets", function()
+    local conf = render.dnsmasq(snap_bio())
+    assert.truthy(conf:find(
+      "nftset=tag:resolvetag_aa_bb_cc_11_22_33,4#inet#familydns#resolved_aa_bb_cc_11_22_33,6#inet#familydns#resolved6_aa_bb_cc_11_22_33",
+      1, true))
+  end)
+
+  it("does NOT emit resolvetag / resolved nftset directives when blockIpOnly=false", function()
+    local s = snap_bio()
+    s.profiles["3"].rules.blockIpOnly = false
+    local conf = render.dnsmasq(s)
+    assert.is_nil(conf:find("resolvetag_", 1, true))
+    assert.is_nil(conf:find("resolved_", 1, true))
+    assert.is_nil(conf:find("resolved6_", 1, true))
+    -- And the dhcp-host line carries only the profile tag.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
+               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+  end)
+
+  it("device-override blockIpOnly=true takes effect even when profile is false", function()
+    local s = snap_bio()
+    s.profiles["3"].rules.blockIpOnly = false
+    s.devices["aa:bb:cc:11:22:33"].rules = {
+      blocked = false, blockReason = nil,
+      extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = true,
+    }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:resolvetag_aa_bb_cc_11_22_33",
+      1, true))
+    assert.truthy(conf:find("nftset=tag:resolvetag_aa_bb_cc_11_22_33", 1, true))
+  end)
+
+  -- ── nft side: per-MAC sets ──────────────────────────────────────────────
+
+  it("declares set resolved_<sanmac> (ipv4_addr, dynamic, 5m timeout)", function()
+    local nft = render.nft(snap_bio())
+    local pos = nft:find("set resolved_aa_bb_cc_11_22_33", 1, true)
+    assert.truthy(pos)
+    local blk = nft:sub(pos, pos + 200)
+    assert.truthy(blk:find("type ipv4_addr", 1, true))
+    assert.truthy(blk:find("flags dynamic,timeout", 1, true))
+    assert.truthy(blk:find("timeout 5m", 1, true))
+  end)
+
+  it("declares set resolved6_<sanmac> (ipv6_addr, dynamic, 5m timeout)", function()
+    local nft = render.nft(snap_bio())
+    local pos = nft:find("set resolved6_aa_bb_cc_11_22_33", 1, true)
+    assert.truthy(pos)
+    local blk = nft:sub(pos, pos + 200)
+    assert.truthy(blk:find("type ipv6_addr", 1, true))
+    assert.truthy(blk:find("flags dynamic,timeout", 1, true))
+    assert.truthy(blk:find("timeout 5m", 1, true))
+  end)
+
+  -- ── nft side: drop rules ────────────────────────────────────────────────
+
+  it("emits `ether saddr <mac> ip daddr != @resolved_<mac> drop` in familydns_block", function()
+    local nft = render.nft(snap_bio())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
+      1, true))
+  end)
+
+  it("emits the v6 sibling drop `ip6 daddr != @resolved6_<mac> drop`", function()
+    local nft = render.nft(snap_bio())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 drop",
+      1, true))
+  end)
+
+  -- ── nft side: block-page DNAT for un-resolved daddrs ────────────────────
+
+  it("DNATs v4 HTTP/80 to the block page for daddrs NOT in resolved_<mac>", function()
+    local nft = render.nft(snap_bio())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  it("DNATs v6 HTTP/80 to the block page for daddrs NOT in resolved6_<mac> (#411)", function()
+    local nft = render.nft(snap_bio())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 tcp dport 80 dnat ip6 to ::1:8081",
+      1, true))
+  end)
+
+  -- ── nft side: absence when blockIpOnly=false ────────────────────────────
+
+  it("emits no resolved_/resolved6_ sets, drops, or DNAT when no device has blockIpOnly", function()
+    local s = snap_bio()
+    s.profiles["3"].rules.blockIpOnly = false
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("set resolved_", 1, true))
+    assert.is_nil(nft:find("set resolved6_", 1, true))
+    assert.is_nil(nft:find("@resolved_", 1, true))
+    assert.is_nil(nft:find("@resolved6_", 1, true))
+  end)
+
+  -- ── scoping: per-MAC, not profile-wide-leak ─────────────────────────────
+
+  it("device-override blockIpOnly=true scopes the rules to that MAC only", function()
+    local s = snap_bio()
+    -- Profile flips OFF so the only thing enabling blockIpOnly is the override.
+    s.profiles["3"].rules.blockIpOnly = false
+    s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
+    s.devices["aa:bb:cc:11:22:33"].rules = {
+      blocked = false, blockReason = nil,
+      extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = true,
+    }
+    local nft = render.nft(s)
+    -- Override MAC has the rule.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
+      1, true))
+    -- Sibling under same profile must NOT inherit.
+    assert.is_nil(nft:find(
+      "ether saddr 11:22:33:44:55:66 ip daddr != @resolved_11_22_33_44_55_66 drop",
+      1, true))
+    assert.is_nil(nft:find("set resolved_11_22_33_44_55_66", 1, true))
+  end)
+
+  it("two devices both blockIpOnly=true → two separate resolved_<mac> sets and drop pairs", function()
+    local s = snap_bio()
+    s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33",  1, true))
+    assert.truthy(nft:find("set resolved_11_22_33_44_55_66",  1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr 11:22:33:44:55:66 ip daddr != @resolved_11_22_33_44_55_66 drop", 1, true))
+  end)
+
+  -- ── failover allow-all suppression (mirrors eb_/bl_ pattern) ────────────
+
+  it("suppresses blockIpOnly drops + DNAT for allow-all-failover MACs (poll_age>300)", function()
+    local s = snap_bio()
+    s.profiles["3"].failureMode = "allow-all"
+    local nft = render.nft(s, { poll_age_seconds = 301 })
+    -- Set declarations are still emitted (cheap; population is a no-op since
+    -- the dnsmasq tag is still wired). But forward-chain drops and DNAT for
+    -- these MACs must be gone.
+    assert.is_nil(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
+      1, true))
+    assert.is_nil(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 drop",
+      1, true))
+    assert.is_nil(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 tcp dport 80",
+      1, true))
+  end)
+
+  -- ── composition with extraBlocked: independent drops, no rescue ─────────
+
+  it("extraBlocked drop still fires for a host the device resolved via DNS (blockIpOnly does not 'rescue')", function()
+    local s = snap_bio()
+    s.profiles["3"].rules.extraBlocked = { "tiktok.com" }
+    local nft = render.nft(s)
+    -- Both drops emitted; nft chain policy is accept with independent drop
+    -- rules, so a packet matching the eb_ rule is dropped regardless of the
+    -- blockIpOnly rule's predicate.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com drop", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 drop",
+      1, true))
+  end)
+
+end)
