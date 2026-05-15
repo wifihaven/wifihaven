@@ -1,0 +1,81 @@
+name: VM e2e
+
+# Full VM-based e2e: boots the OpenWRT router VM + Alpine client VM and runs
+# the scenarios under scripts/e2e/scenarios/ against a disposable docker
+# compose API stack. Runs on the self-hosted KVM runner (#149).
+#
+# Triggers: push to main + manual dispatch only. Not pull_request — the repo
+# is public and the runner is self-hosted on a maintainer's host, so we don't
+# execute untrusted fork code on it. See docs/ops/kvm-runner.md → "Trust
+# model" for the full reasoning. Code review on merge is the trust gate.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-vm
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: VM e2e suite
+    runs-on: [self-hosted, linux, kvm]
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight (kvm/qemu/docker)
+        run: |
+          test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm \
+            || { echo "/dev/kvm missing or not r/w"; ls -l /dev/kvm || true; exit 1; }
+          qemu-system-x86_64 --version | head -n1
+          docker --version
+
+      - name: Build router image (if not cached)
+        run: |
+          if [[ -f scripts/vm/.cache/openwrt-familydns.img ]]; then
+            echo "router image cached, skipping build"
+          else
+            scripts/vm/build-router-image.sh
+          fi
+
+      - name: Build client base (if not cached)
+        run: scripts/vm/build-client-base.sh
+
+      - name: Run e2e suite
+        env:
+          FDNS_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-familydns.img
+        run: scripts/e2e-vm.sh
+
+      - name: Capture docker compose logs
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml -p familydns-e2e-vm \
+            logs --no-color > /tmp/api-logs.txt 2>&1 || true
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-vm-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            scripts/vm/.run/**
+            /tmp/api-logs.txt
+            !scripts/vm/.run/**/*.qcow2
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Tear down VMs
+        if: always()
+        run: |
+          scripts/vm/router-down.sh || true
+          scripts/vm/client-down.sh || true
+
+      - name: Tear down API stack
+        if: always()
+        run: |
+          docker compose -f docker/docker-compose.yml -p familydns-e2e-vm \
+            down -v --remove-orphans || true
