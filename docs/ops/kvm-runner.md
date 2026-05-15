@@ -146,6 +146,12 @@ All of these are part of the one-time host bootstrap in
 [`docs/vm-e2e-ubuntu.md`](../vm-e2e-ubuntu.md). If you've already developed
 the VM e2e harness on this host as a regular user, you're done.
 
+> **Don't re-add `NoNewPrivileges=true` to the systemd unit.** It refuses
+> the setuid transition for the `sudo ip link …` call above and breaks VM
+> bring-up with `sudo: The "no new privileges" flag is set …`. The unit
+> file in `scripts/ci/kvm-runner.service` deliberately omits it; the
+> NOPASSWD sudoers rule on `/usr/sbin/ip` is already the security gate.
+
 ## Trust model
 
 The repo is public, but the workflow that uses this runner triggers only on

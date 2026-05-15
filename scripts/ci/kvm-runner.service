@@ -41,7 +41,14 @@ RestartSec=10
 # Light hardening — the runner needs broad fs access for builds, qemu, and
 # its own _work tree under $HOME, so don't tighten further without testing.
 # ProtectHome is deliberately NOT set: the runner lives under $HOME.
-NoNewPrivileges=true
+#
+# NoNewPrivileges is deliberately NOT set: scripts/vm/lan-bridge-up.sh
+# (called by router-up.sh) runs `sudo ip link …` via the NOPASSWD rule in
+# /etc/sudoers.d/familydns-vm (see docs/ops/kvm-runner.md § "Host setup").
+# NoNewPrivileges=true would refuse the setuid transition and break VM
+# bring-up with:
+#   sudo: The "no new privileges" flag is set, which prevents sudo from
+#         running as root.
 ProtectSystem=full
 PrivateTmp=true
 
