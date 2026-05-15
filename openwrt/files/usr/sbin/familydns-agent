@@ -124,9 +124,9 @@ local function http_get(url, headers)
   for k, v in pairs(headers or {}) do
     hdr_args = hdr_args .. string.format(" -H %q", k .. ": " .. v)
   end
-  -- `-D <tmpfile>` dumps response headers; we read it back to surface at
-  -- least the `Date` header for clock-skew detection (#312). The body
-  -- continues to stream through stdout with the status code trailer.
+  -- `-D <tmpfile>` dumps response headers so callers that care can see
+  -- them; the body continues to stream through stdout with the status
+  -- code trailer.
   local hdr_tmp = os.tmpname()
   local cmd = string.format(
     "curl -s -w '\\n%%{http_code}' -D %q %s %q", hdr_tmp, hdr_args, url)
