@@ -617,7 +617,16 @@ openwrt/
 
 - **Policy timer (60 s)** — fetch snapshot, atomically rewrite
   `/tmp/dnsmasq.d/familydns.conf` and `/tmp/nftables.d/familydns.nft`,
-  then reload dnsmasq + nft. On `304`: do nothing.
+  then `nft -f` the new ruleset. The dnsmasq full restart only fires when
+  the rendered `dnsmasq.conf` actually differs byte-for-byte from the
+  on-disk copy (#414) — most policy applies flip nft-side state only
+  (blocked_macs membership from schedule / pause / time-limit transitions)
+  and don't require a DNS service blip. When the dnsmasq fragment does
+  change (new extraBlocked host, device profile reassignment, blocklist
+  membership), a full `/etc/init.d/dnsmasq restart` is required: SIGHUP
+  does not re-read `conf-dir` files, so `reload` would leave new
+  `dhcp-host=` / `nftset=` directives silently inactive (#328). On `304`:
+  do nothing.
 - **Usage timer (5 min)** — scrape nftables counters, correlate with dnsmasq
   query log + DHCP leases, POST to `/api/router/usage`. On 200, reset counters;
   on failure, retain and retry (endpoint is idempotent).
