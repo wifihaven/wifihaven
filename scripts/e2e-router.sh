@@ -165,13 +165,13 @@ EVTS=$(cat <<EOF
       "ts":   "$NOW"
     },
     {
-      "type":     "connection_attempt",
-      "mac":      "$MAC",
-      "hostname": "google.com",
-      "destIp":   "8.8.8.8",
-      "allowed":  true,
-      "reason":   "allow",
-      "ts":       "$NOW"
+      "type":    "connection_attempt",
+      "mac":     "$MAC",
+      "host":    {"type":"fqdn","value":"google.com"},
+      "destIp":  "8.8.8.8",
+      "allowed": true,
+      "reason":  "allow",
+      "ts":      "$NOW"
     }
   ]
 }
