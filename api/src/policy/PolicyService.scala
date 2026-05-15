@@ -298,9 +298,8 @@ class PolicyServiceLive(
 
   // Pattern matching is FQDN-only by design (#391). The decision endpoint
   // receives `RouterDecisionRequest.hostname: Hostname`, which the type system
-  // already constrains to FQDN-shape (Hostname.parse rejects IPv4 literals).
-  // Direct-IP traffic never reaches this matcher — IP-routed flows go through
-  // the nftables enforcement path, not the DNS-time decision.
+  // already constrains to FQDN-shape (Hostname.parse rejects IPv4 literals),
+  // so an IP literal can't even reach this matcher.
   private def matchesDomainPattern(domain: String, pattern: String): Boolean =
     if pattern.startsWith("*.") then {
       val suffix = pattern.drop(1)

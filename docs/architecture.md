@@ -523,9 +523,9 @@ unknown-device list and feed device autodetection.
 ### 6.6 `POST /api/router/decision`  *(optional fallback, pending #70)*
 
 For hostnames not in the most recent snapshot. This endpoint is FQDN-only
-by design — the agent only consults it at DNS resolution time, so the
-client identity here is always a resolved hostname, never an IP literal.
-(The IP-routed path uses nftables enforcement, not a per-flow API call.)
+by design: the request carries `hostname: Hostname` (a resolved name from
+the agent's dns-tail cache, §7.2), never an IP literal. Direct-IP flows
+are handled by nftables enforcement, not by a per-flow API call.
 
 **Request**: `{ "mac": "aa:bb:...", "hostname": "..." }`
 
