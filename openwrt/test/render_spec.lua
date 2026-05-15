@@ -1394,4 +1394,106 @@ describe("render extraAllowed enforcement (#421)", function()
       "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads", 1, true))
   end)
 
+  -- ── extraAllowed beats `blocked` (the @blocked_macs path too) ───────────
+  --
+  -- A fully-blocked device (pause / schedule / time-limit) must still be
+  -- able to reach hosts in its extraAllowed list. The @blocked_macs drop
+  -- is family-agnostic and can't carry an `ip daddr` predicate, so MACs
+  -- that are blocked AND have extraAllowed are pulled out of the set
+  -- into per-MAC, per-family rules with the ea exception.
+
+  it("pulls a blocked-AND-has-extraAllowed MAC out of @blocked_macs", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    -- @blocked_macs elements line either absent (set empty) or does not
+    -- include the kid MAC. Adult is not blocked here so the set is empty.
+    local pos = nft:find("set blocked_macs", 1, true)
+    assert.truthy(pos)
+    local blk_end = nft:find("\n  }", pos, true)
+    local blk = nft:sub(pos, blk_end)
+    assert.is_nil(blk:find("aa:bb:cc:11:22:33", 1, true))
+  end)
+
+  it("emits per-MAC v4 + v6 drops with ea exception for blocked-AND-has-extraAllowed", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
+  it("emits per-MAC v4 + v6 DNAT with ea exception for blocked-AND-has-extraAllowed", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != ::1 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip6 to ::1:8081",
+      1, true))
+  end)
+
+  it("leaves blocked MACs *without* extraAllowed in @blocked_macs (unconditional drop)", function()
+    local s = snap_ea()
+    -- Make adult both blocked AND keep extraAllowed={} → still in @blocked_macs.
+    s.profiles["1"].rules.blocked = true
+    s.profiles["1"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    -- Adult MAC must appear in @blocked_macs elements.
+    local pos = nft:find("set blocked_macs", 1, true)
+    local blk_end = nft:find("\n  }", pos, true)
+    local blk = nft:sub(pos, blk_end)
+    assert.truthy(blk:find("de:ad:be:ef:00:01", 1, true))
+    -- And the family-agnostic @blocked_macs drop fires for adult.
+    assert.truthy(nft:find("ether saddr @blocked_macs drop", 1, true))
+  end)
+
+  it("emits the @blocked_macs DNAT only when the set is non-empty", function()
+    local s = snap_ea()
+    -- ONLY the kid is blocked, and the kid has extraAllowed → set is empty.
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    -- No bare @blocked_macs DNAT (the set is empty).
+    assert.is_nil(nft:find(
+      "ether saddr @blocked_macs tcp dport 80", 1, true))
+    assert.is_nil(nft:find(
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80", 1, true))
+    -- But the per-MAC ea-gated DNAT is present.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  it("emits the block-page nat chain when only a blocked-with-ea MAC exists (no eb/bl/bio)", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.profiles["1"].rules.extraBlocked = {}
+    local nft = render.nft(s)
+    assert.truthy(nft:find("chain familydns_block_nat", 1, true))
+  end)
+
+  it("composes multiple extraAllowed hosts in the per-MAC blocked drop", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      1, true))
+  end)
+
 end)

@@ -22,19 +22,24 @@
 -- Then:
 --
 --   drop(m, d) ⇔
---         m ∈ @blocked_macs
+--         ( m ∈ blocked_macs ∧ ¬ea_hit(m, d) )
 --      ∨  ( ∃ h ∈ extraBlocked(m). d ∈ @eb_h ∧ ¬ea_hit(m, d) )
 --      ∨  ( ∃ id ∈ blocklistIds(m). d ∈ @bl_id ∧ ¬ea_hit(m, d) )
 --      ∨  blockIpOnly(m) ∧ d ∉ @resolved_<m>       (or @resolved6_<m> for v6)
 --      ∨  m ∈ @failover_drop                       (block-all failover only)
 --
--- allow := ¬drop. extraAllowed beats extraBlocked beats blocklists (#421):
--- the eb_/bl_ drop rules carry one `ip daddr != @ea_<m>_<a>` clause per
--- host in m's effective extraAllowed list, so a hit in any ea_ set
--- suppresses the eb_/bl_ drops for that (mac, packet). blockIpOnly is
--- intentionally NOT suppressed by ea sets — extraAllowed composes via
--- the dnsmasq resolver populating resolved_<m> at A/AAAA time, so a
--- resolved-allowed host already lands in resolved_<m>.
+-- allow := ¬drop. extraAllowed beats every "blocked" path (#421):
+-- the @blocked_macs / eb_ / bl_ drop rules each carry one `ip daddr != @ea_<m>_<a>`
+-- clause per host in m's effective extraAllowed list, so a hit in any
+-- ea_ set suppresses those drops for that (mac, packet). For the
+-- @blocked_macs path: blocked MACs *with* extraAllowed are pulled out of
+-- the set into per-MAC rules carrying the ea exception (one rule per
+-- family; the family-agnostic `ether saddr @blocked_macs drop` cannot
+-- carry an `ip daddr` predicate). Blocked MACs with no extraAllowed
+-- stay in the set and drop unconditionally as before.
+-- blockIpOnly is intentionally NOT suppressed by ea sets — extraAllowed
+-- composes via the dnsmasq resolver populating resolved_<m> at A/AAAA
+-- time, so a resolved-allowed host already lands in resolved_<m>.
 -- Time-limit / schedule / pause are collapsed server-side into
 -- rules.blocked + extraBlocked / extraAllowed by the API, so the agent
 -- never sees a temporal field.
@@ -479,11 +484,24 @@ function M.nft(snapshot, opts)
   -- blocked_macs: derived from per-device effective rules. The API server
   -- precomputes BlockRules.blocked from pause / time limit / schedule, so
   -- we just collect MACs whose effective rules.blocked == true.
-  local blocked_macs_list = {}
+  --
+  -- #421: blocked MACs whose effective rules also have a non-empty
+  -- extraAllowed list get pulled out of the @blocked_macs set into
+  -- per-MAC rules carrying the `ip daddr != @ea_<m>_<a>` exception. The
+  -- @blocked_macs set itself stays family-agnostic (it cannot carry an
+  -- `ip daddr` predicate), so MACs with ea exceptions need per-family
+  -- rules instead.
+  local ea_by_mac_early = effective_extra_allowed_by_mac(snapshot)
+  local blocked_macs_list   = {}   -- in @blocked_macs set (drop unconditionally)
+  local blocked_ea_macs     = {}   -- blocked AND has extraAllowed → per-MAC rules
   for mac, dev in sorted_devices(snapshot.devices) do
     local r = effective_rules(dev, snapshot.profiles)
     if r and r.blocked and not allowall_macs[mac] then
-      blocked_macs_list[#blocked_macs_list + 1] = mac
+      if ea_by_mac_early[mac] then
+        blocked_ea_macs[#blocked_ea_macs + 1] = mac
+      else
+        blocked_macs_list[#blocked_macs_list + 1] = mac
+      end
     end
   end
 
@@ -521,7 +539,7 @@ function M.nft(snapshot, opts)
   -- populator still runs harmlessly; sets are cheap) — the drop/DNAT
   -- suffixes below are what allowall actually suppresses, by virtue of
   -- the eb_/bl_ rules themselves being suppressed for those MACs.
-  local ea_by_mac = effective_extra_allowed_by_mac(snapshot)
+  local ea_by_mac = ea_by_mac_early
   do
     local ea_macs = {}
     for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
@@ -645,6 +663,21 @@ function M.nft(snapshot, opts)
   if #blocked_macs_list > 0 then
     ind2("ether saddr @blocked_macs drop")
   end
+  -- #421: blocked MAC + non-empty extraAllowed → per-MAC drop carrying the
+  -- ea exception, one rule per family. (The @blocked_macs set rule above
+  -- is family-agnostic, but the ea suffix is `ip daddr` / `ip6 daddr`, so
+  -- the rules below must be family-scoped.) The eb_/bl_ drops further
+  -- down also fire for these MACs, but the ea suffix on those rules
+  -- already keeps them inert when daddr is in an ea set, so the net
+  -- behaviour is "drop iff blocked and not in any ea set."
+  for _, mac in ipairs(blocked_ea_macs) do
+    -- The leading `ip daddr != @ea_...` / `ip6 daddr != @ea6_...` clause
+    -- in ea_suffix itself scopes the rule to v4 / v6 packets, so we don't
+    -- need an extra family keyword. ea_suffix returns " ip daddr ..." with
+    -- a leading space, so the rule reads cleanly.
+    ind2(string.format("ether saddr %s%s drop", mac, ea_suffix(mac, "ip")))
+    ind2(string.format("ether saddr %s%s drop", mac, ea_suffix(mac, "ip6")))
+  end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
   -- #421: each eb_/bl_ drop carries `ip daddr != @ea_<m>_<a>` exception
@@ -686,11 +719,17 @@ function M.nft(snapshot, opts)
   -- the local uhttpd block page so users see *why* a connection failed.
   -- Four triggers: MAC-wide block, per-(MAC, host) extraBlocked, per-(MAC,
   -- blocklistId), and per-MAC blockIpOnly (un-resolved daddr).
-  if #blocked_macs_list > 0 or #eb_pairs > 0 or #bl_pairs > 0 or #bio_macs > 0 then
+  if #blocked_macs_list > 0 or #blocked_ea_macs > 0 or #eb_pairs > 0 or #bl_pairs > 0 or #bio_macs > 0 then
     ind("chain familydns_block_nat {")
     ind2("type nat hook prerouting priority dstnat; policy accept;")
     if #blocked_macs_list > 0 then
       ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
+    end
+    -- #421: blocked + extraAllowed → per-MAC v4 DNAT with ea exception.
+    for _, mac in ipairs(blocked_ea_macs) do
+      ind2(string.format(
+        "ether saddr %s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        mac, ea_suffix(mac, "ip")))
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
@@ -715,6 +754,14 @@ function M.nft(snapshot, opts)
     -- page itself ever issues an outbound v6 request.
     if #blocked_macs_list > 0 then
       ind2("ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 dnat ip6 to ::1:8081")
+    end
+    -- #421: blocked + extraAllowed → per-MAC v6 DNAT with ea6 exception.
+    -- `ip6 daddr != ::1` guards against self-DNAT (same as the @blocked_macs
+    -- v6 line above).
+    for _, mac in ipairs(blocked_ea_macs) do
+      ind2(string.format(
+        "ether saddr %s ip6 daddr != ::1%s tcp dport 80 dnat ip6 to ::1:8081",
+        mac, ea_suffix(mac, "ip6")))
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
