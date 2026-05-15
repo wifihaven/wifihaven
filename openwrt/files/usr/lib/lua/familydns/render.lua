@@ -289,9 +289,9 @@ end
 -- render.nft(snapshot, opts) → string
 -- ---------------------------------------------------------------------------
 -- opts (optional table):
---   poll_age_seconds  number — seconds since the last successful policy poll.
---                              When > 300, the per-profile failureMode
---                              decides what happens (#385):
+--   poll_failed       boolean — true iff the most-recent policy poll attempt
+--                              did not succeed. When true, the per-profile
+--                              failureMode decides what happens (#385/#422):
 --                                "block-all"       → emit an additional drop
 --                                                    rule for the profile's
 --                                                    devices (fail-safe).
@@ -310,10 +310,12 @@ end
 --                                                    as-is (this is the
 --                                                    behaviour the original
 --                                                    binary "open" had).
---                              Below the 5-minute threshold all profiles
---                              behave as LastKnownGood — the cached
---                              snapshot stands and no failover transition
---                              has happened yet.
+--                              When false / absent, all profiles behave as
+--                              LastKnownGood — the cached snapshot stands.
+--                              The transition is immediate: a single failed
+--                              poll trips failover; the next successful poll
+--                              lifts it. There is no time-based cushion
+--                              (#422 removed the prior 300s gate).
 function M.nft(snapshot, opts)
   local out = {}
   local function emit(s)  out[#out + 1] = s  end
@@ -343,15 +345,16 @@ function M.nft(snapshot, opts)
     end
   end
 
-  -- #385: during failover (>5 min API-unreachable), an AllowAll profile's
-  -- devices must NOT receive any drop rule — not the @blocked_macs
-  -- entry, not the per-(MAC, host) eb_ drops, not the per-(MAC,
-  -- blocklistId) bl_ drops, and not the block-page DNAT. The cached
-  -- snapshot is intentionally discarded for these MACs (cf. LastKnownGood,
-  -- where the cached snapshot keeps enforcing). Compute the suppress set
-  -- once so every subsequent rule-emission step can filter cheaply.
-  local poll_age = opts and opts.poll_age_seconds
-  local in_failover = poll_age and poll_age > 300
+  -- #385/#422: during failover (most-recent poll failed), an AllowAll
+  -- profile's devices must NOT receive any drop rule — not the
+  -- @blocked_macs entry, not the per-(MAC, host) eb_ drops, not the
+  -- per-(MAC, blocklistId) bl_ drops, and not the block-page DNAT. The
+  -- cached snapshot is intentionally discarded for these MACs (cf.
+  -- LastKnownGood, where the cached snapshot keeps enforcing). Compute
+  -- the suppress set once so every subsequent rule-emission step can
+  -- filter cheaply. Failover trips on a single failed poll (#422) — there
+  -- is no time-keyed cushion.
+  local in_failover = opts and opts.poll_failed and true or false
   local allowall_macs = {}
   if in_failover then
     local allowall_pids = {}
@@ -610,7 +613,7 @@ function M.nft(snapshot, opts)
   end
 
   -- #385: API-unreachable failover. failureMode is per-profile (carried on
-  -- ProfilePolicy) with three variants — see the opts.poll_age_seconds
+  -- ProfilePolicy) with three variants — see the opts.poll_failed
   -- doc at the top of M.nft for the per-mode behaviour. This block only
   -- handles BlockAll: collect MACs of devices whose profile's failureMode
   -- is "block-all" and emit a drop chain for them. AllowAll is enforced
