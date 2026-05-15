@@ -504,19 +504,36 @@ describe("render.nft nat chain", function()
     assert.is_nil(nft:find("familydns_block_nat", 1, true))
   end)
 
-  -- #392: v6 block-page DNAT is explicitly out of scope. uhttpd binds v4
-  -- only, so a v6 HTTP request to a blocked host drops at the filter chain
-  -- with no DNAT redirect (browser sees a connection error, not the block
-  -- page). Pin the absence so a future test-writer doesn't quietly add a
-  -- v6 DNAT line that points at a non-existent v6 listener.
-  it("does NOT emit ip6/dnat lines in the nat chain (v6 block page deferred, #392)", function()
+  -- #411: v6 block-page DNAT mirrors v4. uhttpd also binds [::1]:8081 so the
+  -- redirect lands on a live listener (see install.sh). Each v4 DNAT line
+  -- gets a parallel v6 sibling targeting the eb6_/bl6_ sets and ::1:8081.
+  it("emits a v6 DNAT rule scoped to @blocked_macs (#411)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 dnat ip6 to ::1:8081",
+      1, true))
+  end)
+
+  it("DNATs v6 HTTP/80 from a MAC to the block page when daddr ∈ eb6_<host> (#411)", function()
     local nft = render.nft(snap_one())
-    local pos = nft:find("chain familydns_block_nat", 1, true)
-    assert.truthy(pos)
-    local close = nft:find("\n%s*}", pos)
-    local body = nft:sub(pos, (close or #nft) - 1)
-    assert.is_nil(body:find("ip6 daddr", 1, true))
-    assert.is_nil(body:find("dnat ip6 to", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 80 dnat ip6 to ::1:8081",
+      1, true))
+  end)
+
+  -- HTTPS (port 443) is explicitly NOT redirected in either family — DNATing
+  -- TLS to a local listener would produce certificate errors, not a block
+  -- page. The filter chain drops it; the user sees a fast connection error,
+  -- same UX as v4.
+  it("does NOT emit a DNAT rule for HTTPS/443 in either family (#411)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("dport 443", 1, true))
   end)
 
 end)
@@ -831,6 +848,13 @@ describe("render blocklist enforcement (#352)", function()
     local nft = render.nft(snap_bl())
     assert.truthy(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  it("DNATs v6 HTTP/80 from a MAC to the block page when daddr ∈ bl6_<id> (#411)", function()
+    local nft = render.nft(snap_bl())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads tcp dport 80 dnat ip6 to ::1:8081",
       1, true))
   end)
 

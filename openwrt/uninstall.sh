@@ -90,7 +90,7 @@ FamilyDNS OpenWRT agent — uninstall
 This will:
   - stop and disable the familydns service
   - remove the familydns package via $PKG_MGR
-  - delete the uhttpd block-page listener on 127.0.0.1:8081
+  - delete the uhttpd block-page listener on 127.0.0.1:8081 and [::1]:8081
   - wipe /etc/config/familydns (router_token will be lost)
 EOF
   if [ "$PURGE" -eq 1 ]; then
@@ -162,13 +162,13 @@ esac
 # section index — install.sh used `uci add uhttpd uhttpd` which assigns
 # whatever index was free).
 uhttpd_section=$(uci show uhttpd 2>/dev/null \
-  | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http='127\\.0\\.0\\.1:8081'\$/{print \$2; exit}")
+  | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http=.*'127\\.0\\.0\\.1:8081'/{print \$2; exit}")
 if [ -n "${uhttpd_section:-}" ]; then
   info "Removing uhttpd block-page listener (section: $uhttpd_section)..."
   uci delete "uhttpd.${uhttpd_section}" 2>/dev/null || true
   uci commit uhttpd
   /etc/init.d/uhttpd reload >/dev/null 2>&1 || true
-  note "removed uhttpd listener on 127.0.0.1:8081"
+  note "removed uhttpd listener on 127.0.0.1:8081 + [::1]:8081 (#411)"
 fi
 
 # 3a. #303: revert the route_localnet sysctl. The package removal takes the
