@@ -4,14 +4,15 @@ name: VM e2e
 # the scenarios under scripts/e2e/scenarios/ against a disposable docker
 # compose API stack. Runs on the self-hosted KVM runner (#149).
 #
-# Triggers: push to main + manual dispatch only. Not pull_request — the repo
-# is public and the runner is self-hosted on a maintainer's host, so we don't
-# execute untrusted fork code on it. See docs/ops/kvm-runner.md → "Trust
-# model" for the full reasoning. Code review on merge is the trust gate.
+# Invoked by master.yml (Master CD) on push:main as a gate before
+# publish-api, and directly via workflow_dispatch for manual runs. Not
+# triggered by pull_request — the repo is public and the runner is
+# self-hosted on a maintainer's host, so we don't execute untrusted fork
+# code on it. See docs/ops/kvm-runner.md → "Trust model" for the full
+# reasoning. Code review on merge is the trust gate.
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
