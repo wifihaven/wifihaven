@@ -83,9 +83,18 @@ uci set dhcp.@dnsmasq[0].logfacility='/tmp/familydns-dnsmasq.log'
 uci commit dhcp
 
 # Block-page listener on 127.0.0.1:8081 (mirrors install.sh, #303).
+# Drop uhttpd's stock LuCI listener — its default config tries to bind
+# 0.0.0.0:80 and 0.0.0.0:443, both of which collide with the LAN-side
+# block-page DNAT target and stop the service from starting at all.
+uci -q delete uhttpd.main
 section=$(uci add uhttpd uhttpd)
 uci set "uhttpd.${section}.listen_http=127.0.0.1:8081"
 uci set "uhttpd.${section}.home=/www/familydns"
 uci commit uhttpd
+
+# Without `enable`, OpenWRT has the package but procd never starts it on
+# boot — the DNAT'd block-page traffic then hits a closed port and curl
+# times out (HTTPCODE:000) instead of receiving the page.
+[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd enable
 
 exit 0

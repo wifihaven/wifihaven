@@ -183,7 +183,17 @@ def client_up(*, mac: str, name: str = "client1", ssh_port: int = 2223) -> Clien
     args = [_vm_script("client-up.sh"), "--mac", mac, "--name", name, "--ssh-port", str(ssh_port)]
     run(args, timeout=180)
     c = Client(name=name, mac=mac, ssh_port=ssh_port)
-    _wait_for_client_lan(c)
+    try:
+        _wait_for_client_lan(c)
+    except BaseException:
+        # If LAN-ready gating raises, the qemu daemon is still running and
+        # holds the SSH hostfwd port — leaving it would break every later
+        # scenario with "Could not set up host forwarding rule".
+        try:
+            client_down(name)
+        except Exception:  # noqa: BLE001
+            log.warning("client_down(%s) during client_up cleanup failed", name)
+        raise
     return c
 
 
@@ -203,8 +213,16 @@ def _wait_for_client_lan(client: Client, *, timeout_s: float = 60, interval_s: f
         "ip -4 addr show eth0 | grep -q '192\\.168\\.100\\.' && "
         "getent hosts example.com >/dev/null",
     ]
+    import subprocess as _sp
     while _time.monotonic() < deadline:
-        res = client_exec(client, probe_cmd, timeout=10, check=False)
+        try:
+            res = client_exec(client, probe_cmd, timeout=10, check=False)
+        except _sp.TimeoutExpired as e:
+            # SSH to a freshly-booted client can stall briefly; treat as a
+            # transient miss rather than aborting the whole wait.
+            last = f"client_exec timed out: {e}"
+            _time.sleep(interval_s)
+            continue
         if res.returncode == 0:
             return
         last = (res.stderr or res.stdout or "").strip()

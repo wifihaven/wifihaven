@@ -13,7 +13,12 @@ from lib.wait import wait_for_etag_change, wait_until
 pytestmark = pytest.mark.blocked_page
 
 
-BLOCKED_HOST = "blocked-page-test.example.net"
+# Must be a domain whose A-records are reachable from the router's WAN —
+# the agent populates the per-host nft set from dnsmasq's actual upstream
+# answers, and the DNAT-to-block-page rule only fires for IPs that landed
+# in that set. A non-existent host never gets any IPs, so no DNAT, no
+# block-page interception.
+BLOCKED_HOST = "example.net"
 
 
 def test_blocked_request_returns_block_page(

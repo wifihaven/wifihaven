@@ -32,14 +32,16 @@ def test_usage_visible_in_logs_and_time_status(
     assert any((l.get("mac") or "").lower() == client.mac.lower() for l in logs), \
         f"no /api/logs entry for {client.mac}; got {len(logs)} entries"
 
-    # /api/time/status returns ProfileTimeStatus[] keyed by profile, each with
-    # a deviceSummaries: [{mac, name, minutesUsed}] list. The device shows up
-    # there as soon as it has a profile, even before usage is ingested.
+    # /api/time/status returns ProfileTimeStatus[] keyed by profile, each
+    # with a `devices: [DeviceUsageSummary]` list. The schema is
+    # {deviceMac, deviceName, usedMins} (shared/Models.scala) — note the
+    # field is `deviceMac`, not `mac`. The device shows up there as soon
+    # as it has a profile, even before usage is ingested.
     statuses = admin.time_status()
     summaries = [
         d
         for prof in statuses
-        for d in prof.get("deviceSummaries", [])
+        for d in prof.get("devices", [])
     ]
-    assert any((d.get("mac") or "").lower() == client.mac.lower() for d in summaries), \
+    assert any((d.get("deviceMac") or "").lower() == client.mac.lower() for d in summaries), \
         f"no /api/time/status entry for {client.mac}; got {len(summaries)} summaries"

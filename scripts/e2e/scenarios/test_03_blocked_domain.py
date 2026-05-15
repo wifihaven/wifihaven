@@ -1,8 +1,10 @@
 """Scenario 3: Blocked domain rejected.
 
 Add a domain to extraBlocked, wait for the agent's next policy fetch (etag
-change), then verify a request to that domain is dropped/redirected and an
-allowed=False event is recorded.
+change), then verify HTTP/80 traffic to that host is intercepted: per
+render.lua the per-(MAC, host) rule DNATs port-80 traffic to the local
+uhttpd block page (127.0.0.1:8081), so the response body should come from
+the block page rather than the real upstream.
 """
 import pytest
 
@@ -22,18 +24,22 @@ def test_blocked_domain_request_dropped(
 
     wait_for_etag_change(admin, router.router_id, timeout_s=120)
 
-    probe = http_get(client, f"http://{BLOCKED_HOST}/", timeout_s=10)
-    # Either curl gets a connection failure (drop) or it gets the block-page
-    # response from the router. In either case the API should log an
-    # allowed=False event.
-    def find_block_event():
-        for e in debug_api.events_for_mac(client.mac):
-            if BLOCKED_HOST in (e.get("hostname") or "") and e.get("allowed") is False:
-                return e
+    # Per #351 + render.lua, extraBlocked HTTP/80 traffic is DNAT'd to the
+    # local block page; the response should not contain the real
+    # example.org content. Wait until at least one curl pass returns the
+    # block page — the agent may still be re-rendering the nft ruleset
+    # immediately after `wait_for_etag_change` returns.
+    def block_page_intercepted():
+        probe = http_get(client, f"http://{BLOCKED_HOST}/", timeout_s=8)
+        body_lower = (probe.body or "").lower()
+        if probe.http_code == 200 and (
+            "familydns" in body_lower or "blocked" in body_lower
+        ):
+            return probe
         return None
 
-    blocked = wait_until(
-        find_block_event, timeout_s=30, interval_s=2,
-        description=f"blocked event for {BLOCKED_HOST}",
+    probe = wait_until(
+        block_page_intercepted, timeout_s=60, interval_s=3,
+        description=f"block page response for {BLOCKED_HOST}",
     )
-    assert blocked is not None, f"no block event observed; probe={probe!r}"
+    assert probe is not None
