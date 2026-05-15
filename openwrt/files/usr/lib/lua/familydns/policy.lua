@@ -11,6 +11,10 @@
 --     write_fn(path, content) → ok, err
 --     reload_fn(cmd)          → exit_code
 --     opts (optional table)   → bag of options. Recognised keys:
+--       opts.read_fn(path) → string|nil — used to read the on-disk copy of
+--                                   the rendered dnsmasq.conf for the
+--                                   change-detection check (#414). Defaults
+--                                   to a plain io.open read.
 --       opts.dns_check_fn(domain) → string|nil — result of resolving `domain`
 --                                   via the router's own resolver, used by
 --                                   the #328 smoke probe. After #351 DNS no
@@ -138,6 +142,16 @@ end
 -- opts.poll_age_seconds (#331): forwarded to render.nft so the agent's
 -- failover-edge re-render can request the closed-mode drop chain.
 
+-- Default reader for the change-detection check (#414). Returns nil if the
+-- file is absent — first apply on a fresh boot treats that as "changed".
+local function default_read(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
 -- Default smoke probe: `dig @127.0.0.1` and return the first line of stdout.
 local function default_dns_check(domain)
   local cmd = string.format(
@@ -187,6 +201,17 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   local dnsmasq_content = render.dnsmasq(snapshot)
   local nft_content     = render.nft(snapshot, opts)
 
+  -- #414: dnsmasq only needs a full restart when its config-dir file
+  -- actually changes (dhcp-host= and nftset= directives are NOT picked up
+  -- on SIGHUP — see #328). Most policy.apply calls flip only nft-side
+  -- state (blocked_macs membership from schedules / pause / time limits,
+  -- failover transitions). Compare against the on-disk copy and skip the
+  -- restart when the rendered content is byte-identical; this avoids a
+  -- DNS service blip on every schedule boundary.
+  local read_fn = opts.read_fn or default_read
+  local existing_dnsmasq = read_fn("/tmp/dnsmasq.d/familydns.conf")
+  local dnsmasq_changed = (existing_dnsmasq ~= dnsmasq_content)
+
   local ok1, err1 = write_fn("/tmp/dnsmasq.d/familydns.conf", dnsmasq_content)
   if not ok1 then
     log.err("policy.apply: write dnsmasq conf failed: %s", tostring(err1))
@@ -199,32 +224,38 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     return false
   end
 
-  log.debug("policy.apply: wrote dnsmasq=%dB nft=%dB; restarting",
-            #dnsmasq_content, #nft_content)
-  -- #328: must be `restart`, not `reload`. SIGHUP doesn't re-read conf-dir,
-  -- so `reload` leaves new address=/, dhcp-host=, and nftset= directives
-  -- silently inactive until something else restarts the service.
-  reload_fn("/etc/init.d/dnsmasq restart")
+  if dnsmasq_changed then
+    log.debug("policy.apply: wrote dnsmasq=%dB (changed) nft=%dB; restarting dnsmasq",
+              #dnsmasq_content, #nft_content)
+    -- #328: must be `restart`, not `reload`. SIGHUP doesn't re-read conf-dir,
+    -- so `reload` leaves new dhcp-host= and nftset= directives silently
+    -- inactive until something else restarts the service. (Post-#329/#351
+    -- there are no `address=` sinkhole directives — but dhcp-host= and
+    -- nftset= still need a full restart for the same reason.)
+    reload_fn("/etc/init.d/dnsmasq restart")
+  else
+    log.debug("policy.apply: wrote dnsmasq=%dB (unchanged) nft=%dB; skipping dnsmasq restart",
+              #dnsmasq_content, #nft_content)
+  end
   -- Single atomic `nft -f`. The rendered file's prelude removes both the
   -- boot default-deny skeleton (table inet familydns_boot — #308) and any
   -- prior runtime table in one transaction, then installs the new ruleset.
   reload_fn("nft -f /tmp/nftables.d/familydns.nft")
 
-  -- #328 / #351 smoke probe. Skip cleanly when there's no extraBlocked
-  -- host to probe. Post-#351 expectation: dnsmasq must resolve the host
-  -- to a *real* upstream IP (DNS is not the enforcement plane). A
-  -- sinkhole-shaped or empty answer means dnsmasq is still serving a
-  -- stale config that contains DNS-layer blocks — the failure we are
-  -- watching for.
-  local probe_domain = first_extrablocked_host(dnsmasq_content)
-  if probe_domain then
-    local check = opts.dns_check_fn or default_dns_check
-    local result = check(probe_domain)
-    if is_blocked_at_connection(result) then
-      log.warn(
-        "policy.apply: smoke check failed; dnsmasq may be serving a stale " ..
-        "config — got %q for %s (expected a real upstream IP)",
-        tostring(result), probe_domain)
+  -- #328 / #351 smoke probe. Runs only when we actually restarted dnsmasq:
+  -- the probe exists to catch "we restarted but dnsmasq is still serving
+  -- a stale config", so it adds nothing when no restart happened.
+  if dnsmasq_changed then
+    local probe_domain = first_extrablocked_host(dnsmasq_content)
+    if probe_domain then
+      local check = opts.dns_check_fn or default_dns_check
+      local result = check(probe_domain)
+      if is_blocked_at_connection(result) then
+        log.warn(
+          "policy.apply: smoke check failed; dnsmasq may be serving a stale " ..
+          "config — got %q for %s (expected a real upstream IP)",
+          tostring(result), probe_domain)
+      end
     end
   end
 

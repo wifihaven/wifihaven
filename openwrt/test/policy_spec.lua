@@ -153,13 +153,20 @@ describe("policy.apply", function()
 
   -- #328: SIGHUP doesn't re-read conf-dir, so a `reload` leaves the new
   -- /tmp/dnsmasq.d/familydns.conf entries silently inactive until something
-  -- else restarts dnsmasq. We must `restart` to pick up address=/, dhcp-host=,
-  -- and ipset= directives.
+  -- else restarts dnsmasq. We must `restart` to pick up dhcp-host= and
+  -- nftset= directives. Post-#414 the restart is conditional on the
+  -- rendered content actually differing from the on-disk copy; pass
+  -- read_fn=nil-returning to simulate a cold first apply.
+  local function fresh_opts()
+    return { read_fn = function(_path) return nil end }
+  end
+
   it("calls `/etc/init.d/dnsmasq restart` (not reload) after writing (#328)", function()
     local reloads = {}
     policy.apply(decode_snap(),
       function(_path, _content) return true, nil end,
-      function(cmd) table.insert(reloads, cmd); return 0 end)
+      function(cmd) table.insert(reloads, cmd); return 0 end,
+      nil, fresh_opts())
     local found_restart, found_reload = false, false
     for _, cmd in ipairs(reloads) do
       if cmd == "/etc/init.d/dnsmasq restart" then found_restart = true end
@@ -175,12 +182,71 @@ describe("policy.apply", function()
     local reloads = {}
     policy.apply(decode_snap(),
       function(_path, _content) return true, nil end,
-      function(cmd) table.insert(reloads, cmd); return 0 end)
+      function(cmd) table.insert(reloads, cmd); return 0 end,
+      nil, fresh_opts())
     local found = false
     for _, cmd in ipairs(reloads) do
       if cmd:find("nft") then found = true end
     end
     assert.is_true(found, "expected an nft reload command")
+  end)
+
+  -- #414: avoid the DNS service blip when policy.apply runs but the rendered
+  -- dnsmasq.conf is byte-identical to what's on disk. Most apply calls flip
+  -- only nft-side state (blocked_macs membership from schedule / pause /
+  -- time-limit transitions), so the dnsmasq.conf side is stable.
+  it("skips dnsmasq restart when rendered conf matches on-disk copy (#414)", function()
+    local render = require("render")
+    local rendered = render.dnsmasq(decode_snap())
+    local reloads = {}
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd) table.insert(reloads, cmd); return 0 end,
+      nil,
+      { read_fn = function(path)
+          if path == "/tmp/dnsmasq.d/familydns.conf" then return rendered end
+          return nil
+        end })
+    for _, cmd in ipairs(reloads) do
+      assert.is_nil(cmd:find("dnsmasq"),
+        "must not restart dnsmasq when conf is unchanged; got: " .. cmd)
+    end
+    -- nft reload still runs unconditionally
+    local found_nft = false
+    for _, cmd in ipairs(reloads) do
+      if cmd:find("nft ") then found_nft = true end
+    end
+    assert.is_true(found_nft, "nft reload should still run even when dnsmasq is unchanged")
+  end)
+
+  it("restarts dnsmasq when on-disk copy differs from rendered content (#414)", function()
+    local reloads = {}
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd) table.insert(reloads, cmd); return 0 end,
+      nil,
+      { read_fn = function(_path) return "# stale content\n" end })
+    local found_restart = false
+    for _, cmd in ipairs(reloads) do
+      if cmd == "/etc/init.d/dnsmasq restart" then found_restart = true end
+    end
+    assert.is_true(found_restart,
+      "expected restart when on-disk copy is stale; got: " .. table.concat(reloads, " | "))
+  end)
+
+  it("restarts dnsmasq on first apply when no conf exists on disk (#414)", function()
+    local reloads = {}
+    policy.apply(decode_snap(),
+      function(_path, _content) return true, nil end,
+      function(cmd) table.insert(reloads, cmd); return 0 end,
+      nil,
+      { read_fn = function(_path) return nil end })
+    local found_restart = false
+    for _, cmd in ipairs(reloads) do
+      if cmd == "/etc/init.d/dnsmasq restart" then found_restart = true end
+    end
+    assert.is_true(found_restart,
+      "expected restart on first apply (missing file); got: " .. table.concat(reloads, " | "))
   end)
 
   it("skips both reload commands when the dnsmasq write fails", function()
@@ -291,13 +357,21 @@ describe("policy.apply", function()
     }, warns, infos
   end
 
+  -- Force dnsmasq_changed=true for the smoke-probe tests so the probe path
+  -- always runs regardless of any leftover /tmp/dnsmasq.d file on disk (#414).
+  local function smoke_opts(extra)
+    local o = { read_fn = function(_p) return nil end }
+    for k, v in pairs(extra or {}) do o[k] = v end
+    return o
+  end
+
   it("invokes dns_check_fn with an extraBlocked host after the restart (#328 / #351)", function()
     local probed
     policy.apply(decode_smoke(),
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      { dns_check_fn = function(domain) probed = domain; return "93.184.216.34" end })
+      smoke_opts({ dns_check_fn = function(domain) probed = domain; return "93.184.216.34" end }))
     assert.equal("badsite.example.com", probed)
   end)
 
@@ -312,7 +386,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      { dns_check_fn = function(_domain) return "0.0.0.0" end })
+      smoke_opts({ dns_check_fn = function(_domain) return "0.0.0.0" end }))
     local matched = false
     for _, w in ipairs(warns) do
       if w:find("smoke", 1, true) and w:find("0.0.0.0", 1, true) then
@@ -330,7 +404,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      { dns_check_fn = function(_d) return "" end })
+      smoke_opts({ dns_check_fn = function(_d) return "" end }))
     local matched = false
     for _, w in ipairs(warns) do
       if w:find("smoke", 1, true) then matched = true end
@@ -344,7 +418,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      { dns_check_fn = function(_d) return "93.184.216.34" end })
+      smoke_opts({ dns_check_fn = function(_d) return "93.184.216.34" end }))
     for _, w in ipairs(warns) do
       assert.is_nil(w:find("smoke", 1, true),
         "unexpected smoke-check warning: " .. w)
@@ -357,7 +431,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       stub_log,
-      { dns_check_fn = function(_d) return nil end })
+      smoke_opts({ dns_check_fn = function(_d) return nil end }))
     local matched = false
     for _, w in ipairs(warns) do
       if w:find("smoke", 1, true) then matched = true end
@@ -373,7 +447,7 @@ describe("policy.apply", function()
       function(_p, _c) return true, nil end,
       function(_cmd) return 0 end,
       nil,
-      { dns_check_fn = function(_d) called = true; return "93.184.216.34" end })
+      smoke_opts({ dns_check_fn = function(_d) called = true; return "93.184.216.34" end }))
     assert.is_false(called,
       "dns_check_fn should not be called when there is no extraBlocked host to probe")
   end)
