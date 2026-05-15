@@ -482,6 +482,65 @@ describe("build_dhcp_lease_event", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- #338: per-event idempotency key on connection_attempt events.
+-- ---------------------------------------------------------------------------
+
+describe("event_id idempotency (#338)", function()
+  local saved_gen = conntrack.gen_event_id
+  after_each(function() conntrack.gen_event_id = saved_gen end)
+
+  it("build_event stamps a UUID-shaped eventId via M.gen_event_id", function()
+    conntrack.gen_event_id = function() return "11111111-2222-3333-4444-555555555555" end
+    local ev = conntrack.build_event({
+      mac = "aa:bb:cc:11:22:33", hostname = "youtube.com",
+      dest_ip = "1.2.3.4", allowed = true, ts = "2026-05-11T00:00:00Z",
+    })
+    assert.equal("11111111-2222-3333-4444-555555555555", ev.eventId)
+  end)
+
+  it("each build_event call gets a fresh eventId", function()
+    local n = 0
+    conntrack.gen_event_id = function()
+      n = n + 1
+      return string.format("00000000-0000-0000-0000-%012d", n)
+    end
+    local a = conntrack.build_event({
+      mac = "aa", hostname = "h", dest_ip = "1.1.1.1",
+      allowed = true, ts = "t",
+    })
+    local b = conntrack.build_event({
+      mac = "aa", hostname = "h", dest_ip = "1.1.1.1",
+      allowed = true, ts = "t",
+    })
+    assert.is_not.equal(a.eventId, b.eventId)
+  end)
+
+  it("dhcp_lease and first_seen_mac builders do NOT include eventId", function()
+    -- Those events drive idempotent device upserts, not connection_events
+    -- rows, so they have no per-row dedup key.
+    local d = conntrack.build_dhcp_lease_event({
+      mac = "aa", ip = "1.1.1.1", hostname = "h", ts = "t",
+    })
+    local f = conntrack.build_first_seen_mac_event({
+      mac = "aa", ip = "1.1.1.1", hostname = "h", ts = "t",
+    })
+    assert.is_nil(d.eventId)
+    assert.is_nil(f.eventId)
+  end)
+
+  it("gen_event_id reads /proc/sys/kernel/random/uuid (smoke test on host)", function()
+    -- Skip if the host (CI container) doesn't expose the kernel UUID source.
+    local f = io.open("/proc/sys/kernel/random/uuid", "r")
+    if not f then return end
+    f:close()
+    local id = conntrack.gen_event_id()
+    assert.is_string(id)
+    -- RFC 4122 canonical form: 8-4-4-4-12 hex digits
+    assert.is_truthy(id:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 5. Retry logic
 -- ---------------------------------------------------------------------------
 
