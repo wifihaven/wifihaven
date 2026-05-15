@@ -104,7 +104,7 @@ USAGE_BODY=$(cat <<EOF
   "periodEnd":   "$NOW",
   "records": [
     {
-      "mac": "$MAC", "ip": "192.168.1.20", "hostname": "laptop.local",
+      "mac": "$MAC", "ip": "192.168.1.20", "host": {"type": "fqdn", "value": "laptop.local"},
       "activeSeconds": 90, "bytesIn": 50000, "bytesOut": 5000
     }
   ]

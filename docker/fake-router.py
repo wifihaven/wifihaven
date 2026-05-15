@@ -141,7 +141,7 @@ def _post_usage(router_id: str, router_token: str) -> None:
         {
             "mac":           MACS[i],
             "ip":            IPS[i],
-            "hostname":      HOSTNAMES[i],
+            "host":          {"type": "fqdn", "value": HOSTNAMES[i]},
             "activeSeconds": rng.randint(30, 300),
             "bytesIn":       rng.randint(10_000, 1_000_000),
             "bytesOut":      rng.randint(1_000, 100_000),
