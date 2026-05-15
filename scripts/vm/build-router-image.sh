@@ -117,6 +117,14 @@ mkdir -p "$STAGING_DIR/etc/uci-defaults"
 install -m 0755 "$SCRIPT_DIR/uci-defaults/99-familydns" \
     "$STAGING_DIR/etc/uci-defaults/99-familydns"
 
+# Bake the test-only SSH key into /etc/dropbear/authorized_keys so the
+# orchestrator can SSH in without a console-based key-injection step. Safe
+# only for ephemeral VMs; the keypair under scripts/vm/keys/ is documented as
+# committed test infra (see scripts/vm/keys/README.md).
+mkdir -p "$STAGING_DIR/etc/dropbear"
+install -m 0600 "$SCRIPT_DIR/keys/client_test_ed25519.pub" \
+    "$STAGING_DIR/etc/dropbear/authorized_keys"
+
 # ── 5. Drop the familydns ipk into the Image Builder's local packages dir ───
 # OpenWRT 23.05's scripts/ipkg-make-index.sh expects .ipk files to be
 # tarballs (`tar czf foo.ipk debian-binary control.tar.gz data.tar.gz`),
@@ -190,9 +198,13 @@ docker run --rm \
         # The set of packages to include. Dependencies declared by the ipk
         # (lua, libuci-lua, luci-lib-jsonc, conntrack, curl) are
         # pulled in automatically from the upstream OpenWRT feed.
+        # Swap stock dnsmasq for dnsmasq-full so the `ipset=` directives the
+        # agent renders into /tmp/dnsmasq.d/familydns.conf are accepted —
+        # plain dnsmasq is built without HAVE_IPSET and rejects the config
+        # at line 7 (#148 e2e).
         make image \
             PROFILE=generic \
-            PACKAGES="familydns" \
+            PACKAGES="familydns -dnsmasq dnsmasq-full" \
             FILES=/staging
     '
 

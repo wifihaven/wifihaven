@@ -56,4 +56,36 @@ mkdir -p /etc/dropbear
 touch /etc/dropbear/authorized_keys
 chmod 0600 /etc/dropbear/authorized_keys
 
+# OpenWRT's stock firewall rejects all WAN-side inbound traffic. The
+# orchestrator reaches the router via the WAN hostfwd (QEMU SLIRP), so
+# without an explicit allow, every SSH attempt gets `Connection reset by
+# peer` at the kex exchange. Open dropbear on WAN — safe because the WAN
+# in this image is a non-routable SLIRP that only the host can reach.
+uci batch <<EOF
+add firewall rule
+set firewall.@rule[-1].name='Allow-SSH-WAN-test'
+set firewall.@rule[-1].src='wan'
+set firewall.@rule[-1].proto='tcp'
+set firewall.@rule[-1].dest_port='22'
+set firewall.@rule[-1].target='ACCEPT'
+EOF
+uci commit firewall
+
+# Replicate the dnsmasq + uhttpd + sysctl wiring openwrt/install.sh does on a
+# fresh router. The e2e orchestrator (#148) skips install.sh and runs only the
+# `uci set ... router_token` half of enrollment, so without this the agent
+# never sees DNS query logs (events report raw IPs instead of hostnames) and
+# blocked HTTP requests don't render the block page. Baking it in at first
+# boot keeps the orchestrator small.
+uci set dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
+uci set dhcp.@dnsmasq[0].logqueries='1'
+uci set dhcp.@dnsmasq[0].logfacility='/tmp/familydns-dnsmasq.log'
+uci commit dhcp
+
+# Block-page listener on 127.0.0.1:8081 (mirrors install.sh, #303).
+section=$(uci add uhttpd uhttpd)
+uci set "uhttpd.${section}.listen_http=127.0.0.1:8081"
+uci set "uhttpd.${section}.home=/www/familydns"
+uci commit uhttpd
+
 exit 0

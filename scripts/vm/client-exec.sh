@@ -42,10 +42,16 @@ SSH_PORT="$(cat "${RUN_DIR}/ssh.port")"
 # check out world-readable, which SSH refuses to use. Tighten it idempotently.
 chmod 0600 "${FDNS_CLIENT_SSH_KEY}" 2>/dev/null || true
 
+# Quote each argv element so the remote shell re-parses back to the same word
+# boundaries. ssh joins multi-arg commands with bare spaces — without this, a
+# command like `sh -c "curl -w 'a b'"` reaches the remote as
+# `sh -c curl -w 'a b'`, which runs `curl` with no args.
+REMOTE_CMD=$(printf '%q ' "$@")
+
 exec ssh -o StrictHostKeyChecking=no \
          -o UserKnownHostsFile=/dev/null \
          -o LogLevel=ERROR \
          -o BatchMode=yes \
          -i "${FDNS_CLIENT_SSH_KEY}" \
          -p "${SSH_PORT}" \
-         root@127.0.0.1 -- "$@"
+         root@127.0.0.1 "${REMOTE_CMD}"
