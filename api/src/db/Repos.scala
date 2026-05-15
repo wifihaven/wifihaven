@@ -361,7 +361,16 @@ class UserProfileRepoLive(xa: Transactor[Task]) extends UserProfileRepo {
 }
 
 class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
-  private type R = (ProfileId, String, List[String], List[String], List[String], Boolean, String)
+  private type R = (
+      ProfileId,
+      String,
+      List[String],
+      List[String],
+      List[String],
+      Boolean,
+      String,
+      Boolean,
+  )
   private def toP(r: R)                             = Profile(
     r._1,
     r._2,
@@ -370,15 +379,16 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     r._5.map(Hostname.unsafe),
     r._6,
     FailureMode.parse(r._7).getOrElse(FailureMode.LastKnownGood),
+    r._8,
   )
   def listAll                                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles ORDER BY id"
+    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only FROM profiles ORDER BY id"
       .query[R]
       .map(toP)
       .to[List]
       .transact(xa)
   def findById(id: ProfileId)                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode FROM profiles WHERE id=$id"
+    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only FROM profiles WHERE id=$id"
       .query[R]
       .map(toP)
       .option
@@ -395,7 +405,8 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
             extra_blocked=${p.extraBlocked.map(_.value).toArray},
             extra_allowed=${p.extraAllowed.map(_.value).toArray},
             paused=${p.paused},
-            failure_mode=${FailureMode.asString(p.failureMode)}
+            failure_mode=${FailureMode.asString(p.failureMode)},
+            block_ip_only=${p.blockIpOnly}
           WHERE id=${p.id}""".update.run
       .transact(xa)
       .unit

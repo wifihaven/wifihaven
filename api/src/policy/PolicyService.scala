@@ -399,7 +399,7 @@ object PolicyService {
       extraBlocked = (p.extraBlocked ++ siteLimitExtraBlocked).distinct,
       extraAllowed = p.extraAllowed,
       blocklistIds = p.blockedCategories,
-      blockIpOnly = false, // #353: not yet a profile field; future surface
+      blockIpOnly = p.blockIpOnly, // #424: per-profile toggle (router enforcement #353)
     )
   }
 
