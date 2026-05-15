@@ -1,0 +1,49 @@
+## systemd unit template for the FamilyDNS KVM self-hosted GitHub Actions runner.
+##
+## Install via:
+##   sudo cp scripts/ci/kvm-runner.service /etc/systemd/system/kvm-runner.service
+##   sudo sed -i \
+##     -e "s|<RUNNER_USER>|$USER|g" \
+##     -e "s|<RUNNER_HOME>|$HOME/actions-runner|g" \
+##     /etc/systemd/system/kvm-runner.service
+##   sudo systemctl daemon-reload
+##   sudo systemctl enable --now kvm-runner.service
+##
+## See docs/ops/kvm-runner.md for full setup, including registration.
+## Defaults assume the runner lives at ~/actions-runner in the runner
+## user's home directory.
+
+[Unit]
+Description=GitHub Actions runner (FamilyDNS, KVM)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Non-root runner user. Must be in the 'kvm' and 'docker' groups.
+User=<RUNNER_USER>
+Group=<RUNNER_USER>
+
+# Directory created by ./config.sh (where run.sh + _work live).
+WorkingDirectory=<RUNNER_HOME>
+
+ExecStart=<RUNNER_HOME>/run.sh
+
+# The runner manages its own graceful shutdown when it receives SIGTERM —
+# it finishes the current job before exiting. Allow time for an e2e run.
+KillSignal=SIGTERM
+TimeoutStopSec=15min
+
+Restart=always
+RestartSec=10
+
+# Light hardening — the runner needs broad fs access for builds, qemu, and
+# its own _work tree under $HOME, so don't tighten further without testing.
+# ProtectHome is deliberately NOT set: the runner lives under $HOME.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

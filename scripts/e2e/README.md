@@ -119,6 +119,15 @@ wait_for_next_poll(admin, router.router_id, timeout_s=90)
 `router` fixture restores from `e2e-base` before each test. On dev hardware
 this typically gives <10 s reset between scenarios.
 
+## Running in CI
+
+The harness needs `/dev/kvm`, so CI runs on a self-hosted runner labeled
+`kvm`. Provisioning, runner registration, and the systemd template live in
+[`docs/ops/kvm-runner.md`](../../docs/ops/kvm-runner.md). The sanity workflow
+([`.github/workflows/e2e-kvm-sanity.yml`](../../.github/workflows/e2e-kvm-sanity.yml))
+exercises orchestrator wiring without booting VMs and is the smoke test for a
+newly registered runner.
+
 ## Running on a host without KVM
 
 The harness requires `/dev/kvm` (no macOS support — see `scripts/vm/README.md`).

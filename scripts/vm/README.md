@@ -20,7 +20,9 @@ of #144 (router VM) and #146 (client VM).
   `allow fdns-lan0`) so `qemu-bridge-helper` will attach taps.
 
 The harness is not expected to work on macOS — no KVM. Use a Linux dev host
-or CI runner.
+or CI runner. For running in CI, see
+[`docs/ops/kvm-runner.md`](../../docs/ops/kvm-runner.md) — self-hosted
+runner provisioning, registration, and the systemd unit template.
 
 ## Shared configuration
 
