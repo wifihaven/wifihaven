@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type {
@@ -93,6 +94,22 @@ export function ProfilesPage() {
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [hsForm, setHsForm] = useState<HouseholdSettings | null>(null)
   const [hsSaving, setHsSaving] = useState(false)
+
+  // #298: LogsPage links to `/profiles?id=...`; scroll + highlight the
+  // matching profile card so the parent sees what they clicked from logs.
+  const [params] = useSearchParams()
+  const queryId = params.get('id')
+  const [highlightId, setHighlightId] = useState<number | null>(null)
+  useEffect(() => {
+    if (!queryId || profiles.length === 0) return
+    const id = Number(queryId)
+    if (!Number.isFinite(id) || !profiles.some(p => p.profile.id === id)) return
+    setHighlightId(id)
+    const el = document.querySelector(`[data-testid="profile-card-${id}"]`) as HTMLElement | null
+    el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+    const t = setTimeout(() => setHighlightId(null), 2000)
+    return () => clearTimeout(t)
+  }, [queryId, profiles])
 
   const devicesByProfile = useMemo(() => {
     const m = new Map<number, Device[]>()
@@ -279,7 +296,7 @@ export function ProfilesPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         {profiles.map(pd => (
-          <div key={pd.profile.id} data-testid={`profile-card-${pd.profile.id}`} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
+          <div key={pd.profile.id} data-testid={`profile-card-${pd.profile.id}`} className={`bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4 transition-shadow ${highlightId === pd.profile.id ? 'ring-2 ring-emerald-500/60' : ''}`}>
             <div className="flex items-start justify-between gap-2">
               <div>
                 <h3 className="font-bold text-white text-lg">{pd.profile.name}</h3>

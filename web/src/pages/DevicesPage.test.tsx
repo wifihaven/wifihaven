@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import type { Device, ProfileDetail } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
@@ -22,6 +23,14 @@ vi.mock('@/hooks/useAuth', () => ({
 
 import { api } from '@/api/client'
 import { DevicesPage } from './DevicesPage'
+
+function renderPage(initialEntries: string[] = ['/devices']) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <DevicesPage />
+    </MemoryRouter>,
+  )
+}
 
 let mockAuth = { isAdmin: true }
 
@@ -56,7 +65,7 @@ beforeEach(() => {
 
 describe('DevicesPage — list', () => {
   it('renders names, MAC, and profile pills', async () => {
-    render(<DevicesPage />)
+    renderPage()
     expect(await screen.findByText("Kid's iPad")).toBeInTheDocument()
     expect(screen.getByText('aa:bb:cc:dd:ee:01')).toBeInTheDocument()
     expect(screen.getByText('Kids')).toBeInTheDocument()
@@ -67,7 +76,7 @@ describe('DevicesPage — list', () => {
 describe('DevicesPage — add', () => {
   it('opens modal with default profile, fills fields, and calls upsert', async () => {
     const user = userEvent.setup()
-    render(<DevicesPage />)
+    renderPage()
     await screen.findByText("Kid's iPad")
     await user.click(screen.getByRole('button', { name: /\+ Add Device/ }))
 
@@ -92,7 +101,7 @@ describe('DevicesPage — add', () => {
 describe('DevicesPage — edit', () => {
   it('pre-fills modal with existing device values', async () => {
     const user = userEvent.setup()
-    render(<DevicesPage />)
+    renderPage()
     const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
     await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
 
@@ -105,7 +114,7 @@ describe('DevicesPage — delete', () => {
   it('confirms then calls api.devices.delete', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
-    render(<DevicesPage />)
+    renderPage()
     const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
     await user.click(within(ipadRow).getByRole('button', { name: /Remove/ }))
     expect(confirmSpy).toHaveBeenCalled()
@@ -116,7 +125,7 @@ describe('DevicesPage — delete', () => {
   it('does not call delete when confirm is cancelled', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
-    render(<DevicesPage />)
+    renderPage()
     const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
     await user.click(within(ipadRow).getByRole('button', { name: /Remove/ }))
     expect(api.devices.delete).not.toHaveBeenCalled()
@@ -124,10 +133,26 @@ describe('DevicesPage — delete', () => {
   })
 })
 
+describe('DevicesPage — highlight from ?mac= (#298)', () => {
+  it('rings the matching device row when ?mac=... is set', async () => {
+    // jsdom doesn't implement scrollIntoView — stub to avoid a runtime throw.
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    renderPage(['/devices?mac=aa:bb:cc:dd:ee:01'])
+    const row = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
+    await waitFor(() => expect(row.className).toContain('ring-emerald-500'))
+  })
+
+  it('does not ring any row when ?mac= is not set', async () => {
+    renderPage()
+    const row = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
+    expect(row.className).not.toContain('ring-emerald-500')
+  })
+})
+
 describe('DevicesPage — role gating', () => {
   it('hides admin-only buttons for non-admins', async () => {
     mockAuth = { isAdmin: false }
-    render(<DevicesPage />)
+    renderPage()
     await screen.findByText("Kid's iPad")
     expect(screen.queryByRole('button', { name: /\+ Add Device/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Edit/ })).not.toBeInTheDocument()

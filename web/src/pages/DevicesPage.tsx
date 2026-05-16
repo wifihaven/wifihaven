@@ -1,8 +1,29 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type { Device, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+
+// Apply the LogsPage click-through highlight (#298): when the URL carries
+// `?mac=...`, scroll the matching device row into view and pulse a ring
+// around it so the parent can spot which device they clicked from logs.
+function useHighlightFromQuery(devices: Device[]) {
+  const [params] = useSearchParams()
+  const mac = params.get('mac')
+  const [highlightMac, setHighlightMac] = useState<string | null>(null)
+  useEffect(() => {
+    if (!mac || devices.length === 0) return
+    const exists = devices.some(d => d.mac === mac)
+    if (!exists) return
+    setHighlightMac(mac)
+    const el = document.querySelector(`[data-testid="device-row-${mac}"]`) as HTMLElement | null
+    el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+    const t = setTimeout(() => setHighlightMac(null), 2000)
+    return () => clearTimeout(t)
+  }, [mac, devices])
+  return highlightMac
+}
 
 // ── Devices page ───────────────────────────────────────────────────────────
 
@@ -13,6 +34,7 @@ export function DevicesPage() {
   const [loading,  setLoading]  = useState(true)
   const [editing,  setEditing]  = useState<Device | null>(null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
+  const highlightMac = useHighlightFromQuery(devices)
 
   useEffect(() => {
     Promise.all([api.devices.list(), api.profiles.list()])
@@ -61,7 +83,7 @@ export function DevicesPage() {
         {knownDevices.length === 0
           ? <p className="p-6 text-gray-500 text-sm">No devices yet.</p>
           : knownDevices.map(d => (
-              <div key={d.mac} data-testid={`device-row-${d.mac}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-emerald-500/60 ring-inset' : ''}`}>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-white truncate">{d.name}</p>
                   <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
@@ -96,7 +118,7 @@ export function DevicesPage() {
           </h2>
           <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
             {unknownDevices.map(d => (
-              <div key={d.mac} data-testid={`device-row-${d.mac}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-emerald-500/60 ring-inset' : ''}`}>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-400 truncate">{d.name}</p>
                   <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
