@@ -447,7 +447,7 @@ On router-record deletion:
 Rationale for allow-all (not default-deny on disownment): the admin's
 action of deleting the router signals "this router is no longer mine";
 keeping the LAN locked down after that is hostile. The LAN reverts to
-"no familydns enforcement" — same as if the package were uninstalled.
+"no wifihaven enforcement" — same as if the package were uninstalled.
 
 Sub-issue filed.
 
