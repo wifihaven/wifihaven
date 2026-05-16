@@ -86,4 +86,22 @@ object Presence {
     } accum.updateWith((mac, pat))(prev => Some(prev.getOrElse(0L) + bucketSeconds(bucket)))
     accum.view.mapValues(s => (s / 60).toInt).toMap
   }
+
+  /**
+   * Per-host minutes across all macs, attributing each bucket's duration to every distinct host in
+   * the bucket once. Used for the per-profile "what did they spend time on today" breakdown (#262).
+   * Note: summing across hosts can exceed the device's daily total — by design, the same 5-min
+   * bucket of activity contributes 5 minutes to each host the device touched in that window. The
+   * daily cap still counts the bucket once via `totalMinutesByMac`.
+   */
+  def hostMinutes(rows: List[PresenceRow]): Map[HostId, Int] = {
+    val accum = scala.collection.mutable.Map.empty[HostId, Long]
+    for ((_, bucket) <- rows.groupBy(r => (r.mac, r.periodStart))) {
+      val secs  = bucketSeconds(bucket)
+      val hosts = bucket.iterator.map(_.host).toSet
+      for (h <- hosts)
+        accum.updateWith(h)(prev => Some(prev.getOrElse(0L) + secs))
+    }
+    accum.view.mapValues(s => (s / 60).toInt).toMap
+  }
 }

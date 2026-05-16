@@ -11,6 +11,7 @@ import { LogsPage } from '@/pages/LogsPage'
 import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { RoutersPage } from '@/pages/RoutersPage'
+import { AdminPage } from '@/pages/AdminPage'
 import { BlockedPage } from '@/pages/BlockedPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -42,6 +43,7 @@ function AppRoutes() {
         <Route path="account"   element={<AccountPage />} />
         <Route path="users"     element={<RequireAdmin><UsersPage /></RequireAdmin>} />
         <Route path="routers"   element={<RequireAdmin><RoutersPage /></RequireAdmin>} />
+        <Route path="admin"     element={<RequireAdmin><AdminPage /></RequireAdmin>} />
       </Route>
     </Routes>
   )

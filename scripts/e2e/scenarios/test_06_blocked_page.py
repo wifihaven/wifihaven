@@ -1,9 +1,12 @@
 """Scenario 6: /blocked page rendering.
 
 Per architecture Truth 1: blocked HTTP traffic is DNATed by nftables to the
-local block page on port 80. The page is served by lighttpd on the router
-from /www/familydns/index.html. Curling a blocked HTTP destination should
-yield the block page body.
+local block page on port 80. The page is served by uhttpd-mod-lua via the
+handler at /www/familydns/handler.lua (#437); the handler resolves the
+client MAC and per-MAC block reason, then returns an HTML document that
+redirects to the API's /blocked page with mac+reason populated. Curling a
+blocked HTTP destination should yield the block page body (its <title> is
+"Blocked").
 """
 import pytest
 

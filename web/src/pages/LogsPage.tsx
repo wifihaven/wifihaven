@@ -1,8 +1,43 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { Device, ProfileDetail, QueryLog, Session } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
+
+// Click-through to the device/profile referenced by a row. The destination
+// pages (DevicesPage / ProfilesPage) read the query param and scroll the
+// matching row into view + highlight it. A dedicated detail route is the
+// proper home for this (#273) but does not exist yet.
+function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: string | null }) {
+  if (deviceName && mac) {
+    return (
+      <Link
+        to={`/devices?mac=${encodeURIComponent(mac)}`}
+        data-testid={`logs-device-link-${mac}`}
+        className="text-yellow-400 hover:underline"
+      >
+        {deviceName}
+      </Link>
+    )
+  }
+  // Unknown / unregistered MAC: show the MAC (or '?') as plain text — no link.
+  return <span className="text-yellow-400">{mac ?? '?'}</span>
+}
+
+function ProfileLink({ id, name }: { id: number | null; name: string | null }) {
+  if (id != null && name) {
+    return (
+      <Link
+        to={`/profiles?id=${id}`}
+        data-testid={`logs-profile-link-${id}`}
+        className="hover:underline"
+      >
+        {name}
+      </Link>
+    )
+  }
+  return <span>{name ?? ''}</span>
+}
 
 type Tab = 'sessions' | 'raw'
 
@@ -211,8 +246,8 @@ function SessionsTab({
                         className="border-b border-gray-800/50 hover:bg-gray-800/30"
                         data-testid="session-row">
                       <td className="px-4 py-2.5 text-gray-500">{fmtStarted(s.startedAt)}</td>
-                      <td className="px-4 py-2.5 text-yellow-400">{s.deviceName ?? s.mac}</td>
-                      <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell">{s.profileName ?? ''}</td>
+                      <td className="px-4 py-2.5"><DeviceLink mac={s.mac} deviceName={s.deviceName} /></td>
+                      <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell"><ProfileLink id={s.profileId} name={s.profileName} /></td>
                       <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={s.host} /></td>
                       <td className="px-4 py-2.5 text-emerald-400">{fmtDuration(s.durationSeconds)}</td>
                       <td className="px-4 py-2.5 text-gray-600 hidden lg:table-cell">{fmtBytes(s.bytesIn + s.bytesOut)}</td>
@@ -302,7 +337,7 @@ function RawEventsTab({
                   {logs.map(l => (
                     <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                       <td className="px-4 py-2.5 text-gray-500">{fmtTime(l.ts)}</td>
-                      <td className="px-4 py-2.5 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
+                      <td className="px-4 py-2.5"><DeviceLink mac={l.mac} deviceName={l.deviceName} /></td>
                       <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={l.host} /></td>
                       <td className={`px-4 py-2.5 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
                         {l.blocked ? '✗ blocked' : '✓ ok'}

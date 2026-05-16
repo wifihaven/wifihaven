@@ -166,6 +166,50 @@ describe('LogsPage — Connection events tab', () => {
   })
 })
 
+describe('LogsPage — click-through to device / profile (#298)', () => {
+  it('Sessions tab: device cell links to /devices?mac=...', async () => {
+    renderAt()
+    const link = await screen.findByTestId('logs-device-link-aa:bb:cc:dd:ee:01')
+    expect(link).toHaveAttribute('href', '/devices?mac=aa%3Abb%3Acc%3Add%3Aee%3A01')
+    expect(link).toHaveTextContent("Kid's iPad")
+  })
+
+  it('Sessions tab: profile cell links to /profiles?id=...', async () => {
+    renderAt()
+    // Both fixture sessions share profile 1, so two links carry this testid.
+    const links = await screen.findAllByTestId('logs-profile-link-1')
+    expect(links[0]).toHaveAttribute('href', '/profiles?id=1')
+    expect(links[0]).toHaveTextContent('Kids')
+  })
+
+  it('Connection events tab: device cell links to /devices?mac=...', async () => {
+    const user = userEvent.setup()
+    renderAt()
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    const link = await screen.findByTestId('logs-device-link-aa:bb:cc:dd:ee:01')
+    expect(link).toHaveAttribute('href', '/devices?mac=aa%3Abb%3Acc%3Add%3Aee%3A01')
+  })
+
+  it('Sessions tab: unrecognized MAC (no deviceName) renders MAC as plain text — no link', async () => {
+    const unknownSession: Session = {
+      ...session1,
+      mac: 'fa:fa:fa:fa:fa:fa',
+      deviceName: null,
+      profileId: null,
+      profileName: null,
+      host: { type: 'fqdn', value: 'unknown.example' },
+    }
+    ;(api.sessions.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sessions: [unknownSession], nextCursor: null,
+    } satisfies SessionPage)
+    renderAt()
+    await screen.findByText('unknown.example')
+    expect(screen.queryByTestId('logs-device-link-fa:fa:fa:fa:fa:fa')).not.toBeInTheDocument()
+    expect(screen.getByText('fa:fa:fa:fa:fa:fa')).toBeInTheDocument()
+  })
+})
+
 describe('LogsPage — Sessions tab timestamps', () => {
   it('Started column renders session start in viewer local time', async () => {
     renderAt()

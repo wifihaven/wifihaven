@@ -3,13 +3,19 @@ import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 
 function reasonText(reason: string, until?: string | null): string {
-  if (reason === 'paused') return 'Parental controls have paused internet access.'
-  if (reason === 'schedule') return until ? `Blocked by schedule until ${until}.` : 'Blocked by schedule.'
-  if (reason === 'time_limit') return 'Daily screen time limit reached.'
+  // MacBlockReason wire-format strings emitted by api/PolicyService and
+  // forwarded by the router's block-page handler (#437). Keep in sync with
+  // shared/src/Models.scala (MacBlockReason cases) and the inline copy in
+  // openwrt/files/usr/lib/lua/familydns/block_page.lua.
+  if (reason === 'Paused') return 'This profile is paused.'
+  if (reason === 'Schedule') return until ? `This is scheduled quiet time until ${until}.` : 'This is scheduled quiet time.'
+  if (reason === 'TimeLimit') return 'Daily screen time limit reached.'
+  if (reason === 'Manual') return 'This device has been blocked by a parent.'
+  // Per-flow drop reasons emitted by the router itself (not MacBlockReason).
   if (reason.startsWith('site_time_limit')) return 'Daily time limit for this site reached.'
   if (reason.startsWith('category:')) return `Blocked category: ${reason.slice('category:'.length)}.`
   if (reason === 'extra_blocked') return 'This site is blocked.'
-  return 'This site is blocked.'
+  return 'Access blocked.'
 }
 
 type Step = 'idle' | 'login' | 'grant' | 'done'

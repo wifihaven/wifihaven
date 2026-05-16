@@ -198,6 +198,11 @@ export interface DeviceUsageSummary {
   usedMins: number
 }
 
+export interface HostUsage {
+  host: HostId
+  usedMins: number
+}
+
 export interface ProfileTimeStatus {
   profileId: number
   profileName: string
@@ -208,6 +213,7 @@ export interface ProfileTimeStatus {
   remainingMins?: number | null
   siteUsage: SiteUsage[]
   devices: DeviceUsageSummary[]
+  hostUsage: HostUsage[]
 }
 
 export interface TimeExtension {
