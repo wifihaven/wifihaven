@@ -42,10 +42,17 @@ jobs:
       # runner user before checkout. No-op on clean runners.
       - name: Reclaim root-owned cache files (pre-checkout)
         run: |
+          # Belt+braces for #487/#490: previously-cancelled CI runs can leave
+          # the imagebuilder container running, which keeps writing root-owned
+          # files into the cache after the reclaim sweep finished. Force-remove
+          # by name before reclaiming.
+          docker rm -f fdns-imagebuilder 2>/dev/null || true
           CACHE="${{ github.workspace }}/scripts/vm/.cache"
           if [ -d "$CACHE" ]; then
-            docker run --rm -v "$CACHE":/c alpine \
-              chown -R "$(id -u):$(id -g)" /c || true
+            docker run --rm -v "$CACHE":/c alpine sh -c '
+              chmod -R u+rwX,a+rX /c 2>/dev/null
+              chown -R '"$(id -u):$(id -g)"' /c 2>/dev/null
+            ' || true
           fi
 
       - uses: actions/checkout@v4
