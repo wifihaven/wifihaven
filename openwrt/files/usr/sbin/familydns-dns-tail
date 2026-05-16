@@ -19,7 +19,15 @@ local debug_opt   = uci_get("debug", "0")
 local source_path = "/tmp/familydns-dnsmasq.log"
 local cache_path  = "/tmp/familydns-dns-cache.txt"
 local tmp_path    = cache_path .. ".tmp"
-local flush_every = 20  -- lines
+-- Flush after every ingested line: the agent's conntrack watcher reads the
+-- cache file at flow-start time (SYN → conntrack -E NEW), which lands
+-- milliseconds after the dnsmasq reply line that resolved the destination
+-- IP. Any flush delay here means lookup_hostname() returns nil and the
+-- connection_attempt event is built with hostname=nil — and that hostname
+-- is frozen on the event before it's queued / POSTed, so a later flush
+-- can't repair it (#472). Tail+ingest is line-driven and tmpfs writes are
+-- cheap, so flushing every line is the cheapest correct behavior.
+local flush_every = 1  -- lines
 
 log.init({ debug = debug_opt })
 log.info("dns-tail: starting source=%s cache=%s", source_path, cache_path)
