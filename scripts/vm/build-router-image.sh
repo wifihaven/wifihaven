@@ -158,6 +158,7 @@ echo "==> Running Image Builder in $IMAGEBUILDER_DOCKER_IMAGE"
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 docker run --rm \
+    --name fdns-imagebuilder \
     -e HOST_UID="$HOST_UID" \
     -e HOST_GID="$HOST_GID" \
     -v "$IB_ROOT":/ib \
@@ -172,7 +173,7 @@ docker run --rm \
         # actions/checkout cleanup with EACCES on stale .ipk / tmp/test.fs
         # files. chown the whole tree to be future-proof against new IB
         # output dirs.
-        trap "chown -R \"$HOST_UID:$HOST_GID\" /ib 2>/dev/null || true" EXIT
+        trap "chown -R \"$HOST_UID:$HOST_GID\" /ib 2>/dev/null || true; chmod -R u+rwX /ib 2>/dev/null || true" EXIT
 
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
