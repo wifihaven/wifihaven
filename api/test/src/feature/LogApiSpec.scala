@@ -371,21 +371,32 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
         pid         <- profileRepo.create("Kids", List.empty)
-        ipadId      <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:01"), "Kid's iPad", pid, "10.0.0.1")
-        _           <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "Phone", pid, "10.0.0.2")
-        _           <- connRepo.insertBatch(
+        ipadId      <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
+          "Kid's iPad",
+          pid,
+          "10.0.0.1",
+        )
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "Phone", pid, "10.0.0.2")
+        _ <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
               HostId.Fqdn(Hostname.unsafe("ipad-site.com")),
-              None, true, "allowed", recentTs,
+              None,
+              true,
+              "allowed",
+              recentTs,
             ),
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
               HostId.Fqdn(Hostname.unsafe("phone-site.com")),
-              None, true, "allowed", recentTs,
+              None,
+              true,
+              "allowed",
+              recentTs,
             ),
           ),
         )
@@ -408,21 +419,37 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         token       <- auth.login("admin", "changeme").map(_.token.value)
         kidsPid     <- profileRepo.create("Kids", List.empty)
         adultsPid   <- profileRepo.create("Adults", List.empty)
-        _           <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:01"), "Kid's iPad", kidsPid,   "10.0.0.1")
-        _           <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "Adult Phone", adultsPid, "10.0.0.2")
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
+          "Kid's iPad",
+          kidsPid,
+          "10.0.0.1",
+        )
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:02"),
+          "Adult Phone",
+          adultsPid,
+          "10.0.0.2",
+        )
         _           <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
               HostId.Fqdn(Hostname.unsafe("kids-site.com")),
-              None, true, "allowed", recentTs,
+              None,
+              true,
+              "allowed",
+              recentTs,
             ),
             ConnectionEventInsert(
               routerId,
               Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
               HostId.Fqdn(Hostname.unsafe("adults-site.com")),
-              None, true, "allowed", recentTs,
+              None,
+              true,
+              "allowed",
+              recentTs,
             ),
           ),
         )
