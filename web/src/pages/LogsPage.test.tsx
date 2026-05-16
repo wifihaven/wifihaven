@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import type { QueryLog, Session, SessionPage } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
@@ -16,6 +17,14 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { LogsPage } from './LogsPage'
+
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <LogsPage />
+    </MemoryRouter>,
+  )
+}
 
 const session1: Session = {
   mac: 'aa:bb:cc:dd:ee:01',
@@ -64,7 +73,7 @@ beforeEach(() => {
 
 describe('LogsPage — Sessions tab (default)', () => {
   it('renders Sessions tab by default and calls api.sessions.list', async () => {
-    render(<LogsPage />)
+    renderPage()
     expect(await screen.findByText('youtube.com')).toBeInTheDocument()
     expect(screen.getByText('tiktok.com')).toBeInTheDocument()
     expect(api.sessions.list).toHaveBeenCalledWith({
@@ -76,7 +85,7 @@ describe('LogsPage — Sessions tab (default)', () => {
   })
 
   it('shows device name, profile, duration, host for each session', async () => {
-    render(<LogsPage />)
+    renderPage()
     expect(await screen.findByText("Kid's iPad")).toBeInTheDocument()
     expect(screen.getByText('Phone')).toBeInTheDocument()
     // 600s → "10m", 180s → "3m"
@@ -86,7 +95,7 @@ describe('LogsPage — Sessions tab (default)', () => {
 
   it('typing into the host input refetches with the host filter', async () => {
     const user = userEvent.setup()
-    render(<LogsPage />)
+    renderPage()
     await screen.findByText('youtube.com')
     await user.type(screen.getByTestId('sessions-filter-host'), 'youtube')
     await waitFor(() => {
@@ -102,7 +111,7 @@ describe('LogsPage — Sessions tab (default)', () => {
     (api.sessions.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       sessions: [], nextCursor: null,
     } satisfies SessionPage)
-    render(<LogsPage />)
+    renderPage()
     expect(await screen.findByText('No sessions found.')).toBeInTheDocument()
   })
 })
@@ -110,7 +119,7 @@ describe('LogsPage — Sessions tab (default)', () => {
 describe('LogsPage — Connection events tab', () => {
   it('clicking Connection events tab calls api.logs.query and renders connection-event rows', async () => {
     const user = userEvent.setup()
-    render(<LogsPage />)
+    renderPage()
     await screen.findByText('youtube.com')
     await user.click(screen.getByTestId('logs-tab-raw'))
     expect(await screen.findByText('example.com')).toBeInTheDocument()
@@ -118,14 +127,14 @@ describe('LogsPage — Connection events tab', () => {
   })
 
   it('renders the "Connection events" tab label', async () => {
-    render(<LogsPage />)
+    renderPage()
     expect(await screen.findByRole('tab', { name: 'Connection events' })).toBeInTheDocument()
   })
 
   it('Connection events shows empty state with its own copy', async () => {
     (api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const user = userEvent.setup()
-    render(<LogsPage />)
+    renderPage()
     await screen.findByText('youtube.com')
     await user.click(screen.getByTestId('logs-tab-raw'))
     expect(await screen.findByText('No events found.')).toBeInTheDocument()
@@ -133,7 +142,7 @@ describe('LogsPage — Connection events tab', () => {
 
   it('Raw events Time column renders in viewer local time (not UTC slice)', async () => {
     const user = userEvent.setup()
-    render(<LogsPage />)
+    renderPage()
     await screen.findByText('youtube.com')
     await user.click(screen.getByTestId('logs-tab-raw'))
     await screen.findByText('example.com')
@@ -142,9 +151,53 @@ describe('LogsPage — Connection events tab', () => {
   })
 })
 
+describe('LogsPage — click-through to device / profile (#298)', () => {
+  it('Sessions tab: device cell links to /devices?mac=...', async () => {
+    renderPage()
+    const link = await screen.findByTestId('logs-device-link-aa:bb:cc:dd:ee:01')
+    expect(link).toHaveAttribute('href', '/devices?mac=aa%3Abb%3Acc%3Add%3Aee%3A01')
+    expect(link).toHaveTextContent("Kid's iPad")
+  })
+
+  it('Sessions tab: profile cell links to /profiles?id=...', async () => {
+    renderPage()
+    // Both fixture sessions share profile 1, so two links carry this testid.
+    const links = await screen.findAllByTestId('logs-profile-link-1')
+    expect(links[0]).toHaveAttribute('href', '/profiles?id=1')
+    expect(links[0]).toHaveTextContent('Kids')
+  })
+
+  it('Connection events tab: device cell links to /devices?mac=...', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    const link = await screen.findByTestId('logs-device-link-aa:bb:cc:dd:ee:01')
+    expect(link).toHaveAttribute('href', '/devices?mac=aa%3Abb%3Acc%3Add%3Aee%3A01')
+  })
+
+  it('Sessions tab: unrecognized MAC (no deviceName) renders MAC as plain text — no link', async () => {
+    const unknownSession: Session = {
+      ...session1,
+      mac: 'fa:fa:fa:fa:fa:fa',
+      deviceName: null,
+      profileId: null,
+      profileName: null,
+      host: { type: 'fqdn', value: 'unknown.example' },
+    }
+    ;(api.sessions.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sessions: [unknownSession], nextCursor: null,
+    } satisfies SessionPage)
+    renderPage()
+    await screen.findByText('unknown.example')
+    expect(screen.queryByTestId('logs-device-link-fa:fa:fa:fa:fa:fa')).not.toBeInTheDocument()
+    expect(screen.getByText('fa:fa:fa:fa:fa:fa')).toBeInTheDocument()
+  })
+})
+
 describe('LogsPage — Sessions tab timestamps', () => {
   it('Started column renders session start in viewer local time', async () => {
-    render(<LogsPage />)
+    renderPage()
     await screen.findByText('youtube.com')
     const expected = new Date(session1.startedAt).toLocaleTimeString([], {
       hour: '2-digit', minute: '2-digit',
