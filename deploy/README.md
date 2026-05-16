@@ -1,4 +1,4 @@
-# Deploying FamilyDNS
+# Deploying WifiHaven
 
 The api + postgres pair ships as a single Docker Compose stack. The dns and
 traffic services do **not** live here — they run on an OpenWRT router and
@@ -29,7 +29,7 @@ walkthrough or to install manually.
 
 ```bash
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env                # set FAMILYDNS_DB_PASSWORD and FAMILYDNS_JWT_SECRET
+$EDITOR deploy/.env                # set WIFIHAVEN_DB_PASSWORD and WIFIHAVEN_JWT_SECRET
 
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
 ```

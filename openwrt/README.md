@@ -1,10 +1,16 @@
-# familydns OpenWrt package
+# WifiHaven OpenWrt package
 
-OpenWrt agent for FamilyDNS. Supports both **OpenWRT 23.05.x** (opkg / `.ipk`)
+<!-- TODO(#357): rename the OpenWRT package itself (familydns → wifihaven) —
+     paths, UCI config, init script, agent binary, ipk/apk name. This doc
+     describes those identifiers as `familydns` until #357 lands. -->
+<!-- TODO(#364): GitHub repo URLs in this file still use `sameerparekh/familydns`;
+     they will move to `sameerparekh/wifihaven` when #364 lands. -->
+
+OpenWrt agent for WifiHaven. Supports both **OpenWRT 23.05.x** (opkg / `.ipk`)
 and **OpenWRT 24.10+ / SNAPSHOT** (apk / `.apk`). Enforces per-device
 connection-level filtering via **nftables** (forward-drop keyed on MAC +
 destination ipset), accounts traffic per `(mac, hostname)`, and streams
-connection events to the FamilyDNS API. dnsmasq on the router resolves DNS
+connection events to the WifiHaven API. dnsmasq on the router resolves DNS
 normally — it is **not** the enforcement plane; it is used for hostname
 attribution (`--ipset=` callbacks). See
 [`../docs/architecture.md` §0](../docs/architecture.md#0-enforcement-model).
@@ -223,7 +229,7 @@ logread -f | grep familydns
 uci show familydns
 ```
 
-The FamilyDNS admin UI → Routers → `<router name>` shows `last_seen_at`;
+The WifiHaven admin UI → Routers → `<router name>` shows `last_seen_at`;
 it should update every ~60 s once the policy timer is running.
 
 If the agent refuses to start, the most common cause is a missing or empty

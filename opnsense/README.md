@@ -1,7 +1,11 @@
-# familydns OPNsense agent
+# WifiHaven OPNsense agent
+
+<!-- TODO(#363, #357): OPNsense agent paths and identifiers (familydns-agent,
+     /usr/local/etc/familydns.conf, rc.d/familydns, etc.) get renamed when
+     the OPNsense rename lands. -->
 
 Python agent for OPNsense routers.  Streams `connection_attempt` events to
-the FamilyDNS API by tailing pflog0 (via `tcpdump`) and attributing hostnames
+the WifiHaven API by tailing pflog0 (via `tcpdump`) and attributing hostnames
 from the Unbound query log.
 
 ## Scope for this release (#94)
