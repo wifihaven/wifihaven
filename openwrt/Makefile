@@ -13,7 +13,7 @@ define Package/familydns
   SECTION:=net
   CATEGORY:=Network
   TITLE:=FamilyDNS router agent
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua
   PKGARCH:=all
 endef
 
@@ -49,7 +49,7 @@ define Package/familydns/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/share/familydns/boot.nft $(1)/usr/share/familydns/
 
 	$(INSTALL_DIR) $(1)/www/familydns
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/www/familydns/index.html $(1)/www/familydns/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/www/familydns/handler.lua $(1)/www/familydns/
 
 	$(INSTALL_DIR) $(1)/etc/sysctl.d
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/etc/sysctl.d/99-familydns.conf $(1)/etc/sysctl.d/

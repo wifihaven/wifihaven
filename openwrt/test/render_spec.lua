@@ -1582,3 +1582,51 @@ describe("render extraAllowed enforcement (#421)", function()
   end)
 
 end)
+
+-- ── render.write_blocked_reasons (#437) ──────────────────────────────────────
+--
+-- The agent calls this after every render.update_shared so the block-page
+-- uhttpd handler can map REMOTE_ADDR → MAC → reason instead of falling back
+-- to generic "blocked" copy.
+describe("render.write_blocked_reasons", function()
+  local function tmp_path()
+    local p = os.tmpname()
+    os.remove(p)  -- only want the path; we'll write to it
+    return p
+  end
+
+  local function read_all(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local c = f:read("*a"); f:close(); return c
+  end
+
+  it("writes one '<mac>\\t<reason>' line per blocked MAC, sorted", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_reasons({
+      ["de:ad:be:ef:00:01"] = "TimeLimit",
+      ["aa:bb:cc:11:22:33"] = "Paused",
+    }, p)
+    assert.is_true(ok)
+    assert.equals(
+      "aa:bb:cc:11:22:33\tPaused\nde:ad:be:ef:00:01\tTimeLimit\n",
+      read_all(p))
+    os.remove(p)
+  end)
+
+  it("writes an empty file when nothing is blocked", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_reasons({}, p)
+    assert.is_true(ok)
+    assert.equals("", read_all(p))
+    os.remove(p)
+  end)
+
+  it("treats a nil map as empty (no crash, empty output)", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_reasons(nil, p)
+    assert.is_true(ok)
+    assert.equals("", read_all(p))
+    os.remove(p)
+  end)
+end)

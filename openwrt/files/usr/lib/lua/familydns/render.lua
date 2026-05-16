@@ -907,4 +907,33 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   end
 end
 
+-- render.write_blocked_reasons(blocked_reason, path) → ok, err
+--
+-- Persist the in-memory { mac → reason_string } map (built by
+-- update_shared above) to a file the block-page uhttpd handler can read.
+-- Format: one "<mac>\t<reason>\n" per blocked MAC, sorted by MAC for
+-- deterministic output. Written atomically via tmp+rename so the handler
+-- never sees a partial write.
+--
+-- The block page handler (#437) looks the requesting device's MAC up in
+-- this file to render reason-specific copy ("This profile is paused.",
+-- etc.) instead of the generic "blocked" fallback.
+function M.write_blocked_reasons(blocked_reason, path)
+  local lines = {}
+  for mac, reason in pairs(blocked_reason or {}) do
+    table.insert(lines, mac .. "\t" .. tostring(reason))
+  end
+  table.sort(lines)
+  local body = table.concat(lines, "\n")
+  if #lines > 0 then body = body .. "\n" end
+  local tmp = path .. ".tmp"
+  local f, err = io.open(tmp, "w")
+  if not f then return nil, err end
+  f:write(body)
+  f:close()
+  local ok, rerr = os.rename(tmp, path)
+  if not ok then return nil, rerr end
+  return true
+end
+
 return M
