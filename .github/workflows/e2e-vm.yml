@@ -81,6 +81,11 @@ jobs:
           docker compose -f docker/docker-compose.yml -p familydns-e2e-vm \
             build --pull api
 
+      - name: Pre-flight kill of stale fdns VMs
+        run: |
+          scripts/vm/router-down.sh || true
+          scripts/vm/client-down.sh || true
+
       - name: Run e2e suite
         env:
           FDNS_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-familydns.img

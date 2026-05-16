@@ -61,4 +61,15 @@ if [[ -n "${PID}" ]] && kill -0 "${PID}" 2>/dev/null; then
 fi
 
 rm -rf "${RUN_DIR}"
+
+# Fallback: a previous run was killed hard (e.g., CI cancellation) and
+# left a qemu alive without an up-to-date pidfile. Kill by name so the
+# next client-up doesn't fail to bind hostfwd ports.
+if pgrep -f "qemu-system-x86_64.*-name fdns-${NAME}" >/dev/null 2>&1; then
+  echo "[client-down] found stale fdns-${NAME} qemu without pidfile match — killing"
+  pkill -f "qemu-system-x86_64.*-name fdns-${NAME}" || true
+  # Give the kernel a moment to release the bound ports.
+  sleep 1
+fi
+
 echo "[client-down] '${NAME}' stopped"
