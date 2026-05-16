@@ -58,21 +58,20 @@ def _mac_in_set(mac: str) -> bool:
 
 
 def _total_minutes_for_mac(debug_api, mac: str) -> int:
-    """Sum `minutesUsed` for `mac` across all hosts in today's time_usage.
+    """Bucket-deduplicated online minutes for `mac` from today's time_usage.
 
-    The debug endpoint exposes only integer `minutesUsed` (truncated from
-    the underlying `seconds_used` column — see DebugRoutes.scala). That
-    truncation is the granularity we can observe at this layer.
+    Reads `deviceTotalMinutes` (#474), which is computed server-side from
+    `traffic_reports` via Presence: each 5-min agent bucket counts once per
+    device regardless of how many hosts the device touched. Naively summing
+    per-host `minutesUsed` would inflate when DNS + gateway + the actual
+    site all see traffic in the same bucket.
     """
     needle = _norm_mac(mac)
-    total = 0
-    saw_any = False
     for row in debug_api.time_usage():
-        if _norm_mac(row.get("mac", "")) != needle:
-            continue
-        saw_any = True
-        total += int(row.get("minutesUsed", 0))
-    return total if saw_any else -1  # sentinel: no rows yet
+        if _norm_mac(row.get("mac", "")) == needle:
+            # Same value on every row for the same mac — first wins.
+            return int(row.get("deviceTotalMinutes", 0))
+    return -1  # sentinel: no rows yet
 
 
 # ── D2 (@smoke) — minute granularity (verifies #295) ───────────────────────
