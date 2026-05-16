@@ -5,14 +5,44 @@
 --     meta nftrace because it is available on stock OpenWrt 23.x without enabling
 --     per-rule tracing and produces structured, line-oriented output suitable for
 --     a Lua io.popen loop.
---   * Hostname attribution uses the in-memory nft_sets table that render.lua
---     populates from dnsmasq --ipset= callbacks.  We look up dest_ip against that
---     table to recover the hostname the client resolved, NOT reverse DNS.
+--   * Hostname attribution uses the dns_log cache (dnsmasq query-log path, #259).
+--     The in-memory nft_sets table is populated by render.lua only for site_limits
+--     domains and is NOT a complete IP→hostname mirror; per-host (eb_/bl_) and
+--     extraAllowed (ea_) decisions are therefore driven off the attributed hostname
+--     (hname) matched against eb_hosts_by_mac / ea_hosts_by_mac using dnsmasq's
+--     nftset suffix-match semantics (exact OR subdomain), NOT off nft_sets[host][ip].
 --   * Both allowed and blocked flows are batched.  Blocking state comes from the
---     same nft_sets/policy tables that render.lua writes; we read them but never
---     modify them here.
+--     same policy tables that render.lua writes; we read them but never modify them.
+--   * Reporting limitation: when DNS attribution is unavailable (hname=nil) and the
+--     MAC is paused/time-limited, the agent cannot tell whether the kernel's ea_
+--     carve-out fired.  In that case the flow is logged as blocked even if the
+--     kernel actually allowed it (flows to extraAllowed hosts from a blocked MAC
+--     with no DNS attribution are under-reported as blocked).  The same limitation
+--     applies to per-host eb_ classification: without hname we cannot match against
+--     eb_hosts_by_mac and the flow is left as allowed.
 
 local M = {}
+
+-- ---------------------------------------------------------------------------
+-- host_matches(hname, host) -> bool
+--
+-- Returns true when hname is an exact match for host, or when hname is a
+-- subdomain of host (i.e. hname ends with ".<host>").  This mirrors the
+-- suffix-match semantics of dnsmasq's `nftset=/<host>/...` directive, which
+-- also populates the nft set for all subdomains.
+--
+-- Examples:
+--   host_matches("example.com",     "example.com") → true
+--   host_matches("foo.example.com", "example.com") → true   (subdomain)
+--   host_matches("notexample.com",  "example.com") → false  (no dot prefix)
+--   host_matches("foo.bar",         "example.com") → false
+-- ---------------------------------------------------------------------------
+function M.host_matches(hname, host)
+  if hname == host then return true end
+  -- Check suffix ".<host>" — avoids false positive on e.g. "notexample.com"
+  -- matching "example.com".
+  return hname:sub(-(#host + 1)) == "." .. host
+end
 
 local function default_log()
   local ok, l = pcall(require, "familydns.log")
@@ -376,13 +406,17 @@ end
 -- time we observe a given MAC, then always emits a connection_attempt event.
 --
 -- ctx: {
---   arp_table      table   { ip -> mac }
---   nft_sets       table   { hostname -> { ip -> true } }
---   blocked_macs   table   { mac -> true }       (filled by render.update_shared)
---   blocked_reason table   { mac -> reason }     (filled by render.update_shared)
---   reported_macs  table   { mac -> true }  (mutated)
---   leases         table   { mac -> { ip, hostname } } (may be nil/empty)
---   ts             string  ISO8601 timestamp to attach to the events
+--   arp_table        table   { ip -> mac }
+--   nft_sets         table   { hostname -> { ip -> true } }
+--   blocked_macs     table   { mac -> true }       (filled by render.update_shared)
+--   blocked_reason   table   { mac -> reason }     (filled by render.update_shared)
+--   eb_hosts_by_mac  table   { mac -> { hostname -> true } }
+--                            (filled by render.update_shared — per-host eb_/bl_ drops)
+--   ea_hosts_by_mac  table   { mac -> { hostname -> true } }
+--                            (filled by render.update_shared — extraAllowed carve-outs)
+--   reported_macs    table   { mac -> true }  (mutated)
+--   leases           table   { mac -> { ip, hostname } } (may be nil/empty)
+--   ts               string  ISO8601 timestamp to attach to the events
 -- }
 -- ---------------------------------------------------------------------------
 function M.handle_flow(flow, ctx, batcher)
@@ -427,6 +461,7 @@ function M.handle_flow(flow, ctx, batcher)
   if not hname then
     hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
   end
+
   -- Per-MAC block lookup (#297): pause and time-limit block every flow from
   -- the device, regardless of destination IP. render.update_shared rebuilds
   -- blocked_macs/blocked_reason from the policy snapshot on every poll.
@@ -434,6 +469,80 @@ function M.handle_flow(flow, ctx, batcher)
   local reason
   if not allowed and ctx.blocked_reason then
     reason = ctx.blocked_reason[mac]
+  end
+
+  -- extraAllowed override for blocked MACs (#421): if the MAC is blocked by
+  -- the per-MAC rule (pause / schedule / time-limit) but hname matches a host
+  -- in ea_hosts_by_mac[mac] (using dnsmasq's suffix-match semantics), the
+  -- kernel's `ip daddr != @ea_<mac>_<host>` clause fires and the packet IS
+  -- forwarded.  Flip allowed back to true so the event is reported correctly.
+  --
+  -- Limitation: when hname is nil (no DNS attribution), we cannot determine
+  -- whether the ea_ carve-out fired.  The flow is left as blocked=true even
+  -- if the kernel allowed it.  This is documented as a known reporting gap
+  -- when DNS attribution is missing for flows from a blocked MAC.
+  if not allowed and hname and mac then
+    local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
+    if ea_hosts then
+      for ea_host in pairs(ea_hosts) do
+        if M.host_matches(hname, ea_host) then
+          allowed = true
+          reason  = nil
+          break
+        end
+      end
+    end
+  end
+
+  -- Per-host (eb_/bl_) block check: if the MAC is still considered allowed
+  -- above, check whether hname matches an extraBlocked or blocklist host for
+  -- this MAC using dnsmasq's nftset suffix-match semantics.  The kernel
+  -- enforces drops via:
+  --   ether saddr <mac> ip daddr @eb_<host> drop
+  -- We drive this decision off the attributed hostname (hname) matched against
+  -- eb_hosts_by_mac, NOT off nft_sets[host][dst_ip].  The lua nft_sets table
+  -- is never populated in production (only the kernel ipsets are); nft_sets is
+  -- only a partial attribution fallback for site_limits domains.
+  --
+  -- Each eb_ drop carries `ip daddr != @ea_<mac>_<host>` exception clauses,
+  -- so we must NOT classify as blocked when hname also matches a host in
+  -- ea_hosts_by_mac[mac] (#421).
+  --
+  -- Limitation: when hname is nil, we cannot match against eb_hosts_by_mac
+  -- and the flow is left as allowed.  This is a known reporting gap for
+  -- direct-IP flows (no DNS attribution) to extraBlocked addresses.
+  if allowed and hname and mac then
+    local eb_hosts = ctx.eb_hosts_by_mac and ctx.eb_hosts_by_mac[mac]
+    if eb_hosts then
+      -- Check whether hname (or any of its parent domains) matches an eb_ host.
+      local eb_hit = false
+      for host in pairs(eb_hosts) do
+        if M.host_matches(hname, host) then
+          eb_hit = true
+          break
+        end
+      end
+
+      if eb_hit then
+        -- Check the extraAllowed carve-out: if hname also matches any host in
+        -- ea_hosts_by_mac[mac], the `ip daddr != @ea_...` clause suppresses the
+        -- nft drop and the flow is allowed.
+        local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
+        local ea_hit = false
+        if ea_hosts then
+          for ea_host in pairs(ea_hosts) do
+            if M.host_matches(hname, ea_host) then
+              ea_hit = true
+              break
+            end
+          end
+        end
+        if not ea_hit then
+          allowed = false
+          reason  = "host"
+        end
+      end
+    end
   end
   log.debug("handle_flow: connection_attempt src=%s dst=%s mac=%s hostname=%s allowed=%s reason=%s",
             flow.src_ip, flow.dst_ip, tostring(mac), tostring(hname),
@@ -481,9 +590,11 @@ end
 --   router_id      string    UUID of this router
 --   api_url        string    base URL, e.g. "http://192.168.1.1:8080"
 --   router_token   string    bearer token
---   nft_sets       table     shared ref: { hostname -> { ip -> true } }
---   blocked_macs   table     shared ref: { mac -> true }  (filled by render.lua)
---   blocked_reason table     shared ref: { mac -> reason_string }
+--   nft_sets          table     shared ref: { hostname -> { ip -> true } }
+--   blocked_macs      table     shared ref: { mac -> true }  (filled by render.lua)
+--   blocked_reason    table     shared ref: { mac -> reason_string }
+--   eb_hosts_by_mac   table     shared ref: { mac -> { hostname -> true } }
+--   ea_hosts_by_mac   table     shared ref: { mac -> { hostname -> true } }
 --   lan_prefix     string    default "192.168.1."
 --   max_batch      int       default 50
 --   flush_interval int       default 10  (seconds)
@@ -570,6 +681,8 @@ function M.watch(cfg)
         lookup_hostname       = cfg.lookup_hostname,
         blocked_macs          = cfg.blocked_macs,
         blocked_reason        = cfg.blocked_reason,
+        eb_hosts_by_mac       = cfg.eb_hosts_by_mac,
+        ea_hosts_by_mac       = cfg.ea_hosts_by_mac,
         reported_macs         = reported_macs,
         pending_hostname_macs = pending_hostname_macs,
         leases                = leases or {},

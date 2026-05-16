@@ -22,11 +22,18 @@ DNS normally — it is not the enforcement plane (see
   [`install-api.md`](install-api.md) if you need to set one up first.
 - A one-time enrollment token generated in the admin UI under
   **Routers → Add router** (looks like `et_5f3c9b…`).
-The agent depends on `dnsmasq-full`, `nftables`, and `uhttpd`, all of which
-ship with stock OpenWRT on both 23.05.x and 24.10+. The remaining runtime
-dependencies (`lua`, `luci-lib-jsonc`, `conntrack-tools`, `curl`) are pulled
-in automatically by the system package manager (`opkg` on 23.05.x, `apk` on
-24.10+) — the package names are the same on both.
+The agent depends on `dnsmasq-full`, `nftables`, and `uhttpd`. The latter
+two ship with stock OpenWRT on both 23.05.x and 24.10+. `dnsmasq-full` is
+the stock build on a generic OpenWRT image but vendor images (notably
+GL.iNet) ship the basic `dnsmasq` instead, which is compiled without
+`HAVE_NFTSET` and silently refuses to load the agent's config — leaving
+every hostname-based block ineffective. The install script auto-detects
+this and swaps in `dnsmasq-full`; if you're installing manually, do the
+swap yourself before starting the agent (`apk del dnsmasq && apk add
+dnsmasq-full`, or the `opkg` equivalent). The remaining runtime
+dependencies (`lua`, `luci-lib-jsonc`, `conntrack-tools`, `curl`) are
+pulled in automatically by the system package manager (`opkg` on 23.05.x,
+`apk` on 24.10+) — the package names are the same on both.
 
 ## 2. Install with the one-shot script (recommended)
 

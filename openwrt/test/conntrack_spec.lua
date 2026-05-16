@@ -30,6 +30,37 @@ describe("ipset_lookup_hostname", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 1b. host_matches — dnsmasq nftset suffix-match semantics
+-- ---------------------------------------------------------------------------
+
+describe("host_matches", function()
+  it("returns true for an exact match", function()
+    assert.is_true(conntrack.host_matches("example.com", "example.com"))
+  end)
+
+  it("returns true when hname is a direct subdomain", function()
+    assert.is_true(conntrack.host_matches("foo.example.com", "example.com"))
+  end)
+
+  it("returns true when hname is a deeper subdomain", function()
+    assert.is_true(conntrack.host_matches("a.b.example.com", "example.com"))
+  end)
+
+  it("returns false for a non-matching host", function()
+    assert.is_false(conntrack.host_matches("other.com", "example.com"))
+  end)
+
+  it("returns false for a suffix without a dot separator (avoids false positive)", function()
+    -- 'notexample.com' must NOT match 'example.com'
+    assert.is_false(conntrack.host_matches("notexample.com", "example.com"))
+  end)
+
+  it("returns false for an empty hname", function()
+    assert.is_false(conntrack.host_matches("", "example.com"))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 2. MAC lookup: src_ip → mac via ARP table
 -- ---------------------------------------------------------------------------
 
@@ -462,6 +493,219 @@ describe("handle_flow", function()
       assert.not_equal("dhcp_lease", ev["type"])
     end
     assert.is_true(ctx.pending_hostname_macs[MAC])
+  end)
+
+  -- ── per-host (eb_/bl_) block classification ──────────────────────────────
+  --
+  -- The kernel drops packets via `ether saddr <mac> ip daddr @eb_<host> drop`
+  -- rules, but conntrack -E -e NEW still observes the SYN before the drop.
+  -- handle_flow must consult eb_hosts_by_mac + hname (attributed hostname from
+  -- dns_log cache) to correctly classify those flows as allowed=false with
+  -- reason="host".  The lua nft_sets table is never populated in production,
+  -- so decisions are driven off hname matching eb_hosts_by_mac — NOT off
+  -- nft_sets[host][dst_ip].
+
+  it("labels connection_attempt as blocked (reason=host) when hname exactly matches an eb_ host for the MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      -- hname is attributed via lookup_hostname; nft_sets is empty (as in production).
+      lookup_hostname = function(ip) if ip == DST_IP then return "example.com" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal(false,  ev.allowed)
+    assert.equal("host", ev.reason)
+  end)
+
+  it("labels connection_attempt as blocked when hname is a subdomain of an eb_ host (suffix-match)", function()
+    -- dnsmasq's nftset rule for example.com also matches foo.example.com, so
+    -- the agent must apply the same suffix-match semantics.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "foo.example.com" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,  ev.allowed)
+    assert.equal("host", ev.reason)
+  end)
+
+  it("does NOT block when hname does not match any eb_ host for the MAC", function()
+    -- Another host is in the eb_ set, but this flow is to a different hostname.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "other.com" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT block when eb_hosts_by_mac entry is for a different MAC", function()
+    -- Another MAC's extraBlocked, not this one's.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "example.com" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = { ["ff:ff:ff:ff:ff:ff"] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT block when hname matches an eb_ host but also matches an ea_ (extraAllowed) host (#421)", function()
+    -- #421: extraAllowed beats blocked — the nft drop carries `ip daddr != @ea_...`
+    -- so the kernel forwards the packet; handle_flow must mirror this decision.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "example.com" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT block when eb_hosts_by_mac is absent from ctx", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "example.com" end end,
+      nft_sets        = {},
+      -- no eb_hosts_by_mac
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT block when hname is nil (no DNS attribution) even if eb_hosts_by_mac has entries", function()
+    -- Limitation: without hname we can't match against eb_hosts_by_mac, so the
+    -- flow is left as allowed=true.  Direct-IP traffic is a known reporting gap.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      -- no lookup_hostname → hname will be nil (nft_sets also empty)
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT interfere with blocked_macs block: MAC already blocked stays blocked with original reason when hname is nil", function()
+    -- hname=nil → ea-override can't fire → flow stays blocked with MAC-level reason
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "paused" },
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,    ev.allowed)
+    assert.equal("paused", ev.reason)
+  end)
+
+  -- ── extraAllowed (ea_) override for blocked MACs (#421) ──────────────────
+  --
+  -- When a MAC is paused / schedule-blocked / time-limited, the kernel still
+  -- allows flows to extraAllowed hosts via `ip daddr != @ea_<mac>_<host>`
+  -- clauses.  handle_flow must flip allowed back to true when hname matches.
+
+  it("ea-override: blocked MAC + flow to extraAllowed host → allowed=true reason=nil", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "TimeLimit" },
+      lookup_hostname = function(ip) if ip == DST_IP then return "allowed.com" end end,
+      nft_sets        = {},
+      ea_hosts_by_mac = { [MAC] = { ["allowed.com"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal(true, ev.allowed)
+    assert.not_equal("TimeLimit", ev.reason)
+    -- reason should be "allow" (the default for allowed=true with no explicit reason)
+    assert.equal("allow", ev.reason)
+  end)
+
+  it("ea-override: blocked MAC + flow to a DIFFERENT (non-extraAllowed) hostname → allowed=false reason=TimeLimit", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "TimeLimit" },
+      lookup_hostname = function(ip) if ip == DST_IP then return "blocked-host.com" end end,
+      nft_sets        = {},
+      ea_hosts_by_mac = { [MAC] = { ["allowed.com"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,       ev.allowed)
+    assert.equal("TimeLimit", ev.reason)
+  end)
+
+  it("ea-override: blocked MAC + hname=nil (no DNS attribution) → allowed=false reason=TimeLimit (known limitation)", function()
+    -- Without hname we cannot determine whether the ea_ carve-out fired.
+    -- Flow stays logged as blocked even if the kernel allowed it.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "TimeLimit" },
+      -- no lookup_hostname, nft_sets empty → hname=nil
+      nft_sets        = {},
+      ea_hosts_by_mac = { [MAC] = { ["allowed.com"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,       ev.allowed)
+    assert.equal("TimeLimit", ev.reason)
+  end)
+
+  it("ea-override suffix-match: blocked MAC + extraAllowed example.com + flow hname=img.example.com → allowed=true", function()
+    -- extraAllowed entry is example.com (no subdomain); dnsmasq's nftset
+    -- semantics also cover img.example.com, so the ea_ override must fire.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "paused" },
+      lookup_hostname = function(ip) if ip == DST_IP then return "img.example.com" end end,
+      nft_sets        = {},
+      ea_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true,    ev.allowed)
+    assert.equal("allow", ev.reason)
   end)
 end)
 

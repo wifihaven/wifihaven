@@ -54,9 +54,11 @@ end
 
 -- ── Shared state (render.lua writes; conntrack.lua reads) ─────────────────────
 
-local nft_sets     = {}   -- { hostname -> { ip -> true } }
-local blocked_macs   = {} -- { mac -> true }          (paused / time-exhausted)
-local blocked_reason = {} -- { mac -> reason_string }
+local nft_sets       = {}   -- { hostname -> { ip -> true } }
+local blocked_macs   = {}   -- { mac -> true }          (paused / time-exhausted)
+local blocked_reason = {}   -- { mac -> reason_string }
+local eb_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraBlocked + blocklist)
+local ea_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraAllowed carve-outs)
 
 -- ── HTTP helpers (curl, available on all OpenWrt builds) ──────────────────────
 
@@ -224,7 +226,7 @@ do
   local cached = policy.load_snapshot(read_file, log)
   if cached then
     if policy.apply(cached, write_file, run_cmd, log) then
-      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason)
+      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/familydns/policy.json")
     else
@@ -247,7 +249,7 @@ do
   local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
   if snap then
     if policy.apply(snap, write_file, run_cmd, log) then
-      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
+      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
       current_etag = etag
       last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -314,10 +316,12 @@ conntrack.watch({
   router_id       = router_id,
   api_url         = api_url,
   router_token    = router_token,
-  nft_sets        = nft_sets,
-  lookup_hostname = lookup_hostname,
-  blocked_macs    = blocked_macs,
-  blocked_reason  = blocked_reason,
+  nft_sets          = nft_sets,
+  lookup_hostname   = lookup_hostname,
+  blocked_macs      = blocked_macs,
+  blocked_reason    = blocked_reason,
+  eb_hosts_by_mac   = eb_hosts_by_mac,
+  ea_hosts_by_mac   = ea_hosts_by_mac,
   lan_prefix      = lan_prefix,
   max_batch       = max_batch,
   flush_interval  = flush_int,
@@ -354,7 +358,7 @@ conntrack.watch({
         -- apply already emits a clean ruleset (no failover chain), so we
         -- just need to clear the flag below.
         if policy.apply(snap, write_file, run_cmd, log) then
-          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason)
+          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
           current_etag = etag
           last_snapshot = snap
           policy.mark_poll_success(wall)
