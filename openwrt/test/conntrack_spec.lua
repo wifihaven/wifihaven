@@ -463,6 +463,105 @@ describe("handle_flow", function()
     end
     assert.is_true(ctx.pending_hostname_macs[MAC])
   end)
+
+  -- ── per-host (eb_/bl_) block classification ──────────────────────────────
+  --
+  -- The kernel drops packets via `ether saddr <mac> ip daddr @eb_<host> drop`
+  -- rules, but conntrack -E -e NEW still observes the SYN before the drop.
+  -- handle_flow must consult eb_hosts_by_mac + nft_sets to correctly classify
+  -- those flows as allowed=false with reason="host".
+
+  it("labels connection_attempt as blocked (reason=host) when dst_ip is in an extraBlocked nft set for the MAC", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = { ["example.com"] = { [DST_IP] = true } },
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal(false,  ev.allowed)
+    assert.equal("host", ev.reason)
+  end)
+
+  it("labels connection_attempt as blocked when hname is nil but dst_ip matches an eb_ host via nft_sets scan", function()
+    -- No ctx.lookup_hostname and dst_ip is not in nft_sets as a hostname key
+    -- (so hname=nil), but dst_ip IS in nft_sets for a host in eb_hosts_by_mac.
+    local b = collecting_batcher()
+    local BLOCKED_IP = "104.20.23.154"
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = { ["example.com"] = { [BLOCKED_IP] = true } },
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = BLOCKED_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,  ev.allowed)
+    assert.equal("host", ev.reason)
+  end)
+
+  it("does NOT block when dst_ip is in nft_sets for an eb_ host but that host is NOT in eb_hosts_by_mac for the MAC", function()
+    -- Another MAC's extraBlocked, not this one's.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = { ["example.com"] = { [DST_IP] = true } },
+      eb_hosts_by_mac = { ["ff:ff:ff:ff:ff:ff"] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT block when dst_ip is in an eb_ nft set but also in an ea_ (extraAllowed) nft set for the MAC", function()
+    -- #421: extraAllowed beats blocked — the nft drop carries `ip daddr != @ea_...`
+    -- so the packet is allowed; handle_flow must mirror this.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = {
+        ["example.com"]  = { [DST_IP] = true },   -- eb_ set: blocked host
+        ["allowed.com"]  = { [DST_IP] = true },   -- ea_ set: allowed host shares the IP
+      },
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = { [MAC] = { ["allowed.com"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT block when eb_hosts_by_mac is absent from ctx", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      nft_sets        = { ["example.com"] = { [DST_IP] = true } },
+      -- no eb_hosts_by_mac
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("does NOT interfere with blocked_macs block: MAC already blocked stays blocked with original reason", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "paused" },
+      nft_sets        = { ["example.com"] = { [DST_IP] = true } },
+      eb_hosts_by_mac = { [MAC] = { ["example.com"] = true } },
+      ea_hosts_by_mac = {},
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,    ev.allowed)
+    assert.equal("paused", ev.reason)
+  end)
 end)
 
 describe("build_dhcp_lease_event", function()

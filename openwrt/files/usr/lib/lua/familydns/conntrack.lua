@@ -376,13 +376,17 @@ end
 -- time we observe a given MAC, then always emits a connection_attempt event.
 --
 -- ctx: {
---   arp_table      table   { ip -> mac }
---   nft_sets       table   { hostname -> { ip -> true } }
---   blocked_macs   table   { mac -> true }       (filled by render.update_shared)
---   blocked_reason table   { mac -> reason }     (filled by render.update_shared)
---   reported_macs  table   { mac -> true }  (mutated)
---   leases         table   { mac -> { ip, hostname } } (may be nil/empty)
---   ts             string  ISO8601 timestamp to attach to the events
+--   arp_table        table   { ip -> mac }
+--   nft_sets         table   { hostname -> { ip -> true } }
+--   blocked_macs     table   { mac -> true }       (filled by render.update_shared)
+--   blocked_reason   table   { mac -> reason }     (filled by render.update_shared)
+--   eb_hosts_by_mac  table   { mac -> { hostname -> true } }
+--                            (filled by render.update_shared — per-host eb_/bl_ drops)
+--   ea_hosts_by_mac  table   { mac -> { hostname -> true } }
+--                            (filled by render.update_shared — extraAllowed carve-outs)
+--   reported_macs    table   { mac -> true }  (mutated)
+--   leases           table   { mac -> { ip, hostname } } (may be nil/empty)
+--   ts               string  ISO8601 timestamp to attach to the events
 -- }
 -- ---------------------------------------------------------------------------
 function M.handle_flow(flow, ctx, batcher)
@@ -435,6 +439,59 @@ function M.handle_flow(flow, ctx, batcher)
   if not allowed and ctx.blocked_reason then
     reason = ctx.blocked_reason[mac]
   end
+
+  -- Per-host (eb_/bl_) block check: if the MAC is still considered allowed
+  -- above, check whether the flow's dst_ip hits an extraBlocked or blocklist
+  -- drop rule for this MAC. The kernel enforces this via nft rules of the form
+  --   ether saddr <mac> ip daddr @eb_<host> drop
+  -- The agent mirrors the live set state in nft_sets[hostname][ip].
+  -- Each such drop carries `ip daddr != @ea_<mac>_<host>` exception clauses,
+  -- so we must NOT classify as blocked when dst_ip also resolves to an
+  -- extraAllowed host for this MAC (#421).
+  if allowed and mac then
+    local eb_hosts = ctx.eb_hosts_by_mac and ctx.eb_hosts_by_mac[mac]
+    if eb_hosts then
+      -- Determine the candidate hostname(s) to test. Prefer the attributed
+      -- hname; if nil, scan all eb_ hosts for this MAC against nft_sets.
+      local candidates = {}
+      if hname then
+        candidates[1] = hname
+      else
+        for host in pairs(eb_hosts) do
+          candidates[#candidates + 1] = host
+        end
+      end
+
+      for _, candidate in ipairs(candidates) do
+        if eb_hosts[candidate] then
+          -- Check whether dst_ip is in the live nft set for this host.
+          local host_ips = ctx.nft_sets and ctx.nft_sets[candidate]
+          if host_ips and host_ips[flow.dst_ip] then
+            -- dst_ip is in an eb_/bl_ set for this MAC.  Now check the
+            -- extraAllowed carve-out: if dst_ip also resolves to any host in
+            -- ea_hosts_by_mac[mac], the `ip daddr != @ea_...` clause suppresses
+            -- the nft drop and the flow is allowed.
+            local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
+            local ea_hit = false
+            if ea_hosts then
+              for ea_host in pairs(ea_hosts) do
+                local ea_ips = ctx.nft_sets and ctx.nft_sets[ea_host]
+                if ea_ips and ea_ips[flow.dst_ip] then
+                  ea_hit = true
+                  break
+                end
+              end
+            end
+            if not ea_hit then
+              allowed = false
+              reason  = "host"
+              break
+            end
+          end
+        end
+      end
+    end
+  end
   log.debug("handle_flow: connection_attempt src=%s dst=%s mac=%s hostname=%s allowed=%s reason=%s",
             flow.src_ip, flow.dst_ip, tostring(mac), tostring(hname),
             tostring(allowed), tostring(reason))
@@ -481,9 +538,11 @@ end
 --   router_id      string    UUID of this router
 --   api_url        string    base URL, e.g. "http://192.168.1.1:8080"
 --   router_token   string    bearer token
---   nft_sets       table     shared ref: { hostname -> { ip -> true } }
---   blocked_macs   table     shared ref: { mac -> true }  (filled by render.lua)
---   blocked_reason table     shared ref: { mac -> reason_string }
+--   nft_sets          table     shared ref: { hostname -> { ip -> true } }
+--   blocked_macs      table     shared ref: { mac -> true }  (filled by render.lua)
+--   blocked_reason    table     shared ref: { mac -> reason_string }
+--   eb_hosts_by_mac   table     shared ref: { mac -> { hostname -> true } }
+--   ea_hosts_by_mac   table     shared ref: { mac -> { hostname -> true } }
 --   lan_prefix     string    default "192.168.1."
 --   max_batch      int       default 50
 --   flush_interval int       default 10  (seconds)
@@ -570,6 +629,8 @@ function M.watch(cfg)
         lookup_hostname       = cfg.lookup_hostname,
         blocked_macs          = cfg.blocked_macs,
         blocked_reason        = cfg.blocked_reason,
+        eb_hosts_by_mac       = cfg.eb_hosts_by_mac,
+        ea_hosts_by_mac       = cfg.ea_hosts_by_mac,
         reported_macs         = reported_macs,
         pending_hostname_macs = pending_hostname_macs,
         leases                = leases or {},
