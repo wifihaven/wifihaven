@@ -1,13 +1,13 @@
-package familydns.api.db
+package wifihaven.api.db
 
 import cats.syntax.all.*
 import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
-import familydns.shared.*
-import familydns.shared.types.*
-import familydns.shared.Schedule
-import familydns.api.db.TypeMeta.given
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.shared.Schedule
+import wifihaven.api.db.TypeMeta.given
 import zio.*
 import zio.interop.catz.*
 import java.time.{Instant, LocalDate, LocalTime, ZoneId}
@@ -245,18 +245,18 @@ trait TrafficReportRepo {
    * period_start) so the caller can fold contiguous runs directly. Filters are AND-composed. `macs
    * \= Some(Nil)` returns an empty list (no devices match).
    */
-  def listSessionRows(f: SessionFilter): Task[List[familydns.api.sessions.SessionRow]]
+  def listSessionRows(f: SessionFilter): Task[List[wifihaven.api.sessions.SessionRow]]
 
   /**
    * Minimal projection used by presence-based minute accounting (see
-   * [[familydns.api.presence.Presence]]). One row per (mac, period_start, hostname) for the given
+   * [[wifihaven.api.presence.Presence]]). One row per (mac, period_start, hostname) for the given
    * macs/date; the caller deduplicates by `(mac, period_start)` so per-hostname rows in a single
    * bucket don't inflate total screen time.
    */
   def listPresenceRows(
       macs: List[MacAddress],
       date: LocalDate,
-  ): Task[List[familydns.api.presence.PresenceRow]]
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
 }
 
 trait BlockEventRepo {
@@ -822,14 +822,14 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
     type Row = (MacAddress, Instant, HostId, Int)
     macs match {
-      case Nil => ZIO.succeed(List.empty[familydns.api.presence.PresenceRow])
+      case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         val q   = fr"""SELECT mac, period_start, host_type, host_value, active_seconds
                        FROM traffic_reports
                        WHERE date = $date AND """ ++ Fragments.in(fr"mac", nel)
         q.query[Row]
-          .map((m, ps, h, s) => familydns.api.presence.PresenceRow(m, ps, h, s))
+          .map((m, ps, h, s) => wifihaven.api.presence.PresenceRow(m, ps, h, s))
           .to[List]
           .transact(xa)
     }
@@ -856,7 +856,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     sql_
       .query[Row]
       .map { r =>
-        familydns.api.sessions.SessionRow(
+        wifihaven.api.sessions.SessionRow(
           routerId = r._1,
           mac = r._2,
           host = r._3,

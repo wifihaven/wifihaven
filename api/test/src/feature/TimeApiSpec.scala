@@ -1,14 +1,14 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.JwtConfig
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.policy.PolicyServiceLive
-import familydns.api.routes.*
-import familydns.shared.*
-import familydns.shared.types.*
-import familydns.shared.Clock.TestClock
-import familydns.testinfra.*
+import wifihaven.api.JwtConfig
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.policy.PolicyServiceLive
+import wifihaven.api.routes.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.shared.Clock.TestClock
+import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*

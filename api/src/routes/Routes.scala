@@ -1,9 +1,9 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.shared.*
-import familydns.shared.types.*
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -469,9 +469,9 @@ object TimeRoutes {
       // Only exempt site domains are excluded from the daily total.
       // Included sites (exemptFromDaily=false) count against the daily cap.
       exemptPats      = stls.filter(_.exemptFromDaily).map(_.domainPattern)
-      perMacTotal     = familydns.api.presence.Presence
+      perMacTotal     = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, exemptPats)
-      perMacPat       = familydns.api.presence.Presence
+      perMacPat       = wifihaven.api.presence.Presence
         .patternMinutesByMac(presence, stls.map(_.domainPattern))
       totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
       remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
@@ -522,10 +522,10 @@ object TimeRoutes {
       // Only exempt site domains are excluded from the daily total.
       // Included sites (exemptFromDaily=false) count against the daily cap.
       exemptPats = stls.filter(_.exemptFromDaily).map(_.domainPattern)
-      totalUsed  = familydns.api.presence.Presence
+      totalUsed  = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, exemptPats)
         .getOrElse(device.mac, 0)
-      perPat     = familydns.api.presence.Presence
+      perPat     = wifihaven.api.presence.Presence
         .patternMinutesByMac(presence, stls.map(_.domainPattern))
       remaining  = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
       siteUsage  = stls.map { stl =>

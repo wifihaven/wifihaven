@@ -1,8 +1,8 @@
-package familydns.api.db
+package wifihaven.api.db
 
 import com.zaxxer.hikari.HikariDataSource
 import doobie.Transactor
-import familydns.api.DbConfig
+import wifihaven.api.DbConfig
 import org.flywaydb.core.Flyway
 import zio.*
 import zio.interop.catz.*

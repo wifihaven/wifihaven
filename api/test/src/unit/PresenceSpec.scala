@@ -1,7 +1,7 @@
-package familydns.api.unit
+package wifihaven.api.unit
 
-import familydns.api.presence.{Presence, PresenceRow}
-import familydns.shared.types.*
+import wifihaven.api.presence.{Presence, PresenceRow}
+import wifihaven.shared.types.*
 import zio.test.*
 
 import java.time.Instant

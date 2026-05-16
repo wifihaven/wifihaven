@@ -1,6 +1,6 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.routes.StaticRoutes
+import wifihaven.api.routes.StaticRoutes
 import zio.*
 import zio.http.*
 import zio.test.*

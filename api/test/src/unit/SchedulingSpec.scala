@@ -1,8 +1,8 @@
-package familydns.api.unit
+package wifihaven.api.unit
 
-import familydns.api.policy.PolicyService
-import familydns.shared.{HouseholdSettings, Schedule}
-import familydns.shared.types.*
+import wifihaven.api.policy.PolicyService
+import wifihaven.shared.{HouseholdSettings, Schedule}
+import wifihaven.shared.types.*
 import zio.test.*
 
 import java.time.{Instant, LocalTime, ZoneId, ZonedDateTime}

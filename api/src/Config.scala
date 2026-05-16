@@ -1,4 +1,4 @@
-package familydns.api
+package wifihaven.api
 
 import zio.*
 import zio.config.*

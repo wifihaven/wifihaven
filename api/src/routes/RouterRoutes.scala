@@ -1,10 +1,10 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.policy.*
-import familydns.shared.*
-import familydns.shared.types.*
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.policy.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -15,7 +15,7 @@ import java.util.{Base64, UUID}
 /**
  * Routes agent-facing router endpoints. All routes require the router bearer token except
  * `/register`, which uses a one-time enrollment token. `RouterAuth` lives in
- * [[familydns.api.routes.RouterAuth]].
+ * [[wifihaven.api.routes.RouterAuth]].
  */
 object RouterRoutes {
 

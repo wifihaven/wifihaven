@@ -1,7 +1,7 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
-import familydns.api.db.*
-import familydns.shared.Clock
+import wifihaven.api.db.*
+import wifihaven.shared.Clock
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -76,7 +76,7 @@ object DebugRoutes {
               presence <- trafficRepo
                 .listPresenceRows(macs, today)
                 .mapError(ErrorMapper.dbErrorToResponse)
-              totals = familydns.api.presence.Presence
+              totals = wifihaven.api.presence.Presence
                 .totalMinutesByMac(presence, exemptPatterns = Nil)
             } yield Response.json(
               snap

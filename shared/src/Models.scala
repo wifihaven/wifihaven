@@ -1,6 +1,6 @@
-package familydns.shared
+package wifihaven.shared
 
-import familydns.shared.types.*
+import wifihaven.shared.types.*
 import zio.json.*
 
 import java.time.{LocalTime, ZoneId}
