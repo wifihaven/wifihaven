@@ -103,23 +103,45 @@ def _reconfigure_eth0_static(client, *, mac: str, ip: str) -> None:
     the router-agent's perspective this is a brand-new host that never
     DHCP'd — the very scenario F1b/F2 are about.
 
-    The sed-replace of `/etc/network/interfaces` is load-bearing (#475):
-    plain `pkill udhcpc` alone left a path open for `ifup eth0` to be
-    re-invoked after the MAC was rewritten (most likely via a hotplug
-    on `ip link set eth0 up`). The busybox dhcp method then re-launched
-    udhcpc with `-x hostname:$(hostname)`, the new MAC got a DHCP lease,
-    and the cloud-init-baked `fdns-client` hostname leaked into the
-    `dhcp_lease` event the agent forwards. Forcing the iface to
-    `inet manual` neutralizes any such ifup; the client fixture is
-    function-scoped so we don't need to restore.
+    History — three layers of defense, each addressing a previously-observed
+    leak (#475, #468, #483):
+
+      1. `sed dhcp → manual` on `/etc/network/interfaces` (#475) so any
+         later `ifup eth0` won't fire DHCP.
+      2. `ifdown` + `pkill -9 udhcpc` to kill the currently-running client.
+      3. (#483) Rename `/sbin/udhcpc` (and `/usr/sbin/udhcpc` if present) to
+         `.disabled` — the only bombproof way to ensure no remaining path
+         (mdev/udev hotplug, ifupdown if-up.d hooks, cloud-init network
+         module on subsequent boots, anything we haven't catalogued) can
+         re-launch udhcpc with `-x hostname:$(hostname)` and leak the
+         cloud-init-baked `fdns-client` hostname into a `dhcp_lease` event
+         for the new MAC. (1)+(2) alone proved insufficient — symptom
+         persisted in the F1b/F2 failures captured in run 25964749304
+         where the freshly-MAC'd row arrived named `fdns-client`.
+
+    The client fixture is function-scoped so we don't need to restore.
+    F2's Phase 2 calls `_restore_udhcpc(client)` before invoking udhcpc
+    explicitly with its intended hostname.
     """
     client_exec(client, ["sh", "-c", (
+        # Belt: blank /etc/hostname and the running kernel hostname so even
+        # if any DHCP slip-through occurs before the binary rename takes
+        # effect, $(hostname) doesn't expand to `fdns-client`.
+        ": > /etc/hostname; "
+        "hostname '' 2>/dev/null || hostname localhost.unknown; "
         "sed -i 's/^iface eth0 inet dhcp/iface eth0 inet manual/' "
         "/etc/network/interfaces; "
         "ifdown eth0 2>/dev/null || true; "
         "kill -9 $(cat /var/run/udhcpc.eth0.pid 2>/dev/null) 2>/dev/null || true; "
         "rm -f /var/run/udhcpc.eth0.pid; "
         "pkill -9 udhcpc 2>/dev/null || true; "
+        # Bombproof: make the binary itself uninvocable. Rename, don't
+        # delete — F2 Phase 2 restores it.
+        "for p in /sbin/udhcpc /usr/sbin/udhcpc; do "
+        "  if [ -e \"$p\" ] && [ ! -e \"$p.disabled\" ]; then "
+        "    mv \"$p\" \"$p.disabled\"; "
+        "  fi; "
+        "done; "
         "sleep 1; "
         "ip addr flush dev eth0; "
         "ip link set eth0 down; "
@@ -127,6 +149,18 @@ def _reconfigure_eth0_static(client, *, mac: str, ip: str) -> None:
         "ip link set eth0 up; "
         f"ip addr add {ip}/24 dev eth0; "
         f"ip route replace default via {ROUTER_LAN_IP}"
+    )])
+
+
+def _restore_udhcpc(client) -> None:
+    """Undo `_reconfigure_eth0_static`'s udhcpc disable so the binary can
+    be invoked explicitly (F2 Phase 2). No-op if it was never disabled."""
+    client_exec(client, ["sh", "-c", (
+        "for p in /sbin/udhcpc /usr/sbin/udhcpc; do "
+        "  if [ -e \"$p.disabled\" ] && [ ! -e \"$p\" ]; then "
+        "    mv \"$p.disabled\" \"$p\"; "
+        "  fi; "
+        "done"
     )])
 
 
@@ -232,6 +266,7 @@ def test_auto_named_row_renamed_when_dhcp_lease_arrives(
     # the ifupdown dhcp method we neutralized in phase 1 is what passes
     # `-x hostname:$(hostname)` at boot; we invoke udhcpc directly here
     # so we must pass it explicitly (#475).
+    _restore_udhcpc(client)
     client_exec(client, ["sh", "-c", (
         f"hostname {new_hostname}; "
         f"echo {new_hostname} > /etc/hostname; "
