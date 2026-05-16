@@ -488,6 +488,17 @@ object TimeRoutes {
       deviceSummaries = devices.map { d =>
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
+      // #262 — top-N host attribution across all profile devices for the day.
+      // Bucket-deduped per host; informational, so all hosts (including
+      // exempt-pattern matches) appear. UI shows top 10.
+      hostUsage       = familydns.api.presence.Presence
+        .hostMinutes(presence)
+        .iterator
+        .filter(_._2 > 0)
+        .map { case (h, m) => HostUsage(h, m) }
+        .toList
+        .sortBy(hu => (-hu.usedMins, hu.host.value))
+        .take(10)
     } yield ProfileTimeStatus(
       profile.id,
       profile.name,
@@ -498,6 +509,7 @@ object TimeRoutes {
       remaining,
       siteUsage,
       deviceSummaries,
+      hostUsage,
     )
   }
 
