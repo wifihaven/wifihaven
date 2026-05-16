@@ -24,7 +24,6 @@ vi.mock('@/api/client', () => ({
     },
     household: {
       get: vi.fn(),
-      update: vi.fn(),
     },
   },
 }))
@@ -112,7 +111,6 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
   })
-  ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
 
 describe('ProfilesPage — list', () => {
