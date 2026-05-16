@@ -23,6 +23,8 @@ case class DbUser(
 )
 case class LogFilter(
     mac: Option[String] = None,
+    deviceId: Option[DeviceId] = None,
+    profileId: Option[ProfileId] = None,
     blocked: Option[Boolean] = None,
     domain: Option[String] = None,
     location: Option[String] = None,
@@ -955,10 +957,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
            WHERE 1=1"""
     val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
     val byMac = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
+    val byDev = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
+    val byPid = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
     val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
     val byDom = f.domain.fold(fr"")(d => fr"AND ce.host_value ILIKE ${s"%$d%"}")
     val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
-    (base ++ since ++ byMac ++ byBl ++ byDom ++ byLoc ++
+    (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
       fr"ORDER BY ce.ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
       .query[
         (

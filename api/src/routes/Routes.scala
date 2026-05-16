@@ -491,7 +491,7 @@ object TimeRoutes {
       // #262 — top-N host attribution across all profile devices for the day.
       // Bucket-deduped per host; informational, so all hosts (including
       // exempt-pattern matches) appear. UI shows top 10.
-      hostUsage       = familydns.api.presence.Presence
+      hostUsage       = wifihaven.api.presence.Presence
         .hostMinutes(presence)
         .iterator
         .filter(_._2 > 0)
@@ -581,6 +581,8 @@ object LogRoutes {
             claims <- requireAuth(req, auth)
             filter = LogFilter(
               mac = req.url.queryParam("mac"),
+              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
+              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
               blocked = req.url.queryParam("blocked").map(_ == "true"),
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
