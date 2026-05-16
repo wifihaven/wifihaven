@@ -102,9 +102,24 @@ def _reconfigure_eth0_static(client, *, mac: str, ip: str) -> None:
     assigns the static IP, and installs a default route to the router. From
     the router-agent's perspective this is a brand-new host that never
     DHCP'd — the very scenario F1b/F2 are about.
+
+    The sed-replace of `/etc/network/interfaces` is load-bearing (#475):
+    plain `pkill udhcpc` alone left a path open for `ifup eth0` to be
+    re-invoked after the MAC was rewritten (most likely via a hotplug
+    on `ip link set eth0 up`). The busybox dhcp method then re-launched
+    udhcpc with `-x hostname:$(hostname)`, the new MAC got a DHCP lease,
+    and the cloud-init-baked `fdns-client` hostname leaked into the
+    `dhcp_lease` event the agent forwards. Forcing the iface to
+    `inet manual` neutralizes any such ifup; the client fixture is
+    function-scoped so we don't need to restore.
     """
     client_exec(client, ["sh", "-c", (
-        "pkill udhcpc 2>/dev/null; "
+        "sed -i 's/^iface eth0 inet dhcp/iface eth0 inet manual/' "
+        "/etc/network/interfaces; "
+        "ifdown eth0 2>/dev/null || true; "
+        "kill -9 $(cat /var/run/udhcpc.eth0.pid 2>/dev/null) 2>/dev/null || true; "
+        "rm -f /var/run/udhcpc.eth0.pid; "
+        "pkill -9 udhcpc 2>/dev/null || true; "
         "sleep 1; "
         "ip addr flush dev eth0; "
         "ip link set eth0 down; "
@@ -212,16 +227,19 @@ def test_auto_named_row_renamed_when_dhcp_lease_arrives(
     assert row.get("name") == _expected_auto_name(static_mac)
 
     # Phase 2: drop the static IP, set hostname, and DHCP. The lease
-    # carries hostname option 12 (busybox udhcpc reads /etc/hostname)
-    # → API renames the auto-named row.
+    # must carry hostname option 12 so the API's rename-if-auto path
+    # fires. busybox udhcpc does NOT auto-send the system hostname —
+    # the ifupdown dhcp method we neutralized in phase 1 is what passes
+    # `-x hostname:$(hostname)` at boot; we invoke udhcpc directly here
+    # so we must pass it explicitly (#475).
     client_exec(client, ["sh", "-c", (
         f"hostname {new_hostname}; "
         f"echo {new_hostname} > /etc/hostname; "
         "ip addr flush dev eth0; "
         "ip route del default 2>/dev/null; "
         "rm -f /var/run/udhcpc.eth0.pid; "
-        "udhcpc -q -n -i eth0 >/dev/null 2>&1 || true; "
-        "udhcpc -i eth0 >/dev/null 2>&1 || true"
+        f"udhcpc -q -n -i eth0 -x hostname:{new_hostname} >/dev/null 2>&1 || true; "
+        f"udhcpc -i eth0 -x hostname:{new_hostname} >/dev/null 2>&1 || true"
     )])
 
     _wait_device_name(admin, static_mac, new_hostname, timeout_s=120)
