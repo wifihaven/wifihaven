@@ -165,17 +165,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 4. Publish OpenWRT .ipk/.apk (path-filtered or v* tag) ────────────────
-  # Gates openwrt build/publish on the same checks as publish-api. Fires when
-  # openwrt/** paths change on main, OR on v* tag pushes so tag releases still
-  # flow through the gate (#494). vm-e2e is intentionally NOT in needs — see
-  # the comment above publish-api / #492.
+  # ── 4. Publish OpenWRT .ipk/.apk (unconditional on main + v* tags) ───────
+  # Gates openwrt build/publish on the same checks as publish-api. Runs on
+  # every main push (and v* tags) — NOT path-filtered. Path-filtering here is
+  # unsafe under `concurrency.cancel-in-progress: true`: a prior commit that
+  # touches openwrt/** can be superseded and cancelled before its publish job
+  # runs, and if the superseding commit doesn't touch openwrt/**, the build
+  # is skipped entirely and those openwrt changes never publish (#494).
+  # Republishing on every push is cheap relative to silently losing a build.
+  # vm-e2e is intentionally NOT in needs — see the comment above publish-api.
   publish-openwrt:
     name: Build + publish OpenWRT .ipk/.apk
-    needs: [changes, ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
-    if: >-
-      needs.changes.outputs.openwrt == 'true'
-      || startsWith(github.ref, 'refs/tags/v')
+    needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
     # Reusable-workflow callers cap the called workflow's GITHUB_TOKEN.
     # openwrt-build.yml's build job requests `contents: write` (to attach
     # files to the GitHub release on v* tags), so the caller must grant it
