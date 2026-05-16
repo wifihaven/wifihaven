@@ -176,5 +176,11 @@ jobs:
     if: >-
       needs.changes.outputs.openwrt == 'true'
       || startsWith(github.ref, 'refs/tags/v')
+    # Reusable-workflow callers cap the called workflow's GITHUB_TOKEN.
+    # openwrt-build.yml's build job requests `contents: write` (to attach
+    # files to the GitHub release on v* tags), so the caller must grant it
+    # here too — otherwise Master CD startup-fails before any job dispatches.
+    permissions:
+      contents: write
     uses: ./.github/workflows/openwrt-build.yml
     secrets: inherit
