@@ -239,6 +239,14 @@ object ProfileRoutes {
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
+            // #481: log mutations that should bump the policy snapshot etag.
+            // Without this the only evidence of "did the API even receive the
+            // pause flip?" was the absence of logs, which was useless.
+            _      <- ZIO.logInfo(
+              s"profile updated: id=${pid.value} paused=${p.paused}→${upr.paused} " +
+                s"name=${upr.name} extraBlockedCount=${upr.extraBlocked.size} " +
+                s"extraAllowedCount=${upr.extraAllowed.size}",
+            )
             _      <- scheduleRepo
               .replaceForProfile(pid, upr.schedules)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -324,6 +332,11 @@ object DeviceRoutes {
             id <- deviceRepo
               .upsert(mac, udr.name, udr.profileId, "")
               .mapError(ErrorMapper.dbErrorToResponse)
+            // #481: log device upsert so the next CI failure makes it obvious
+            // whether the mutation reached the API at all.
+            _  <- ZIO.logInfo(
+              s"device upserted: mac=${mac.value} profileId=${udr.profileId.value} name=${udr.name}",
+            )
           } yield Response.json(s"""{"id":${id.value}}""")
         },
       Method.DELETE / "api" / "devices" / string("mac") ->
@@ -337,6 +350,8 @@ object DeviceRoutes {
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _        <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
             _        <- deviceRepo.delete(normalized).mapError(ErrorMapper.dbErrorToResponse)
+            // #481: same rationale as PUT — make the next CI failure diagnostic.
+            _        <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
           } yield Response.ok
         },
     )
