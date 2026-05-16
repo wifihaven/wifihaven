@@ -6,9 +6,10 @@
 -- (#259). The cache snapshot is written atomically to /tmp so the agent can
 -- read it whenever a new flow arrives.
 
-local uci      = require("uci")
-local dns_log  = require("familydns.dns_log")
-local log      = require("familydns.log")
+local uci       = require("uci")
+local dns_log   = require("familydns.dns_log")
+local conntrack = require("familydns.conntrack")
+local log       = require("familydns.log")
 
 local cursor = uci.cursor()
 local function uci_get(opt, default)
@@ -19,6 +20,16 @@ local debug_opt   = uci_get("debug", "0")
 local source_path = "/tmp/familydns-dnsmasq.log"
 local cache_path  = "/tmp/familydns-dns-cache.txt"
 local tmp_path    = cache_path .. ".tmp"
+local leases_path = "/tmp/dhcp.leases"
+local nft_table   = "inet familydns"
+-- How often to refresh the bio-set membership cache (which MACs have a
+-- resolved_<sanmac> set declared in the live nft table). The agent re-renders
+-- on policy change; 30s is a generous bound on how long we'll keep populating
+-- stale sets / miss new ones. Cheap to lower if needed.
+local bio_refresh_seconds  = 30
+-- And how often to refresh ip→MAC from /tmp/dhcp.leases (changes when a
+-- device leases / renews; small file, mtime-checked refresh).
+local lease_refresh_seconds = 30
 -- Flush after every ingested line: the agent's conntrack watcher reads the
 -- cache file at flow-start time (SYN → conntrack -E NEW), which lands
 -- milliseconds after the dnsmasq reply line that resolved the destination
@@ -60,6 +71,104 @@ local function atomic_write(path, content)
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- #505: per-MAC blockIpOnly resolved-set populator.
+--
+-- dnsmasq 2.91 rejects the `tag:` prefix in `nftset=`, so render.lua does
+-- NOT emit a dnsmasq-side populator for resolved_<mac> / resolved6_<mac>.
+-- We populate those sets ourselves from the same query log we already tail
+-- for hostname attribution. For each `reply ... is <ip>` line:
+--   1. Parse client_ip + answer_ip + family (v4 or v6).
+--   2. Map client_ip → MAC via /tmp/dhcp.leases (reverse-indexed below).
+--   3. If a resolved_<sanmac> (or resolved6_<sanmac>) set exists in the
+--      live nft table, run `nft add element <table> <set> { <ip> }`.
+--
+-- The set declarations come from render.nft → /etc/nftables.d/familydns.nft
+-- loaded by `nft -f`; the only MACs with such a set are exactly the ones
+-- with effective blockIpOnly=true. We discover them by parsing
+-- `nft list table inet familydns`, so dns-tail doesn't need an independent
+-- policy ingestion path.
+-- ---------------------------------------------------------------------------
+
+-- Replace dots and colons with underscores (mirrors render.sanitize so the
+-- MAC → set-name mapping is consistent — name them in concert if you change
+-- the rule in render.lua).
+local function sanitize_mac(mac)
+  return (mac:gsub("[%.%:]", "_"))
+end
+
+local function refresh_ip_to_mac()
+  local leases = conntrack.parse_dhcp_leases(leases_path)
+  local out = {}
+  for mac, entry in pairs(leases) do
+    if entry.ip and entry.ip ~= "" then
+      out[entry.ip] = mac
+    end
+  end
+  return out
+end
+
+-- Returns a set { [sanmac] = true } of MACs that have a resolved_<sanmac> set
+-- declared. resolved6_<sanmac> tracks the same MAC, so we key on the v4 set
+-- name (both are always declared together in render.nft).
+local function refresh_bio_sanmacs()
+  local out = {}
+  local h = io.popen("nft -a list table " .. nft_table .. " 2>/dev/null", "r")
+  if not h then return out end
+  for line in h:lines() do
+    local sanmac = line:match("set%s+resolved_([%w_]+)%s*{")
+    if sanmac then out[sanmac] = true end
+  end
+  h:close()
+  return out
+end
+
+-- Shell-quoting: the answer IP comes from dnsmasq's log line (we already
+-- ran is_ipv4 / is_ipv6 on it), so it can only be hex/digits/dots/colons —
+-- but pass it through a strict allow-list anyway to be paranoid about any
+-- future call site reusing this helper.
+local function safe_addr(ip)
+  if type(ip) ~= "string" then return nil end
+  if ip:find("[^%x%.:]") then return nil end
+  return ip
+end
+
+local function nft_add_element(set_name, ip)
+  local safe = safe_addr(ip)
+  if not safe then return end
+  -- Discard nft's output; we expect ENOENT if the set was removed between
+  -- our cache refresh and the nft call (admin disabled blockIpOnly), and
+  -- "element exists" if the same IP was added moments ago (legitimate
+  -- duplicate). Neither is actionable here.
+  os.execute(string.format(
+    "nft add element %s %s { %s } >/dev/null 2>&1",
+    nft_table, set_name, safe))
+end
+
+local ip_to_mac     = refresh_ip_to_mac()
+local bio_sanmacs   = refresh_bio_sanmacs()
+local last_lease_refresh = os.time()
+local last_bio_refresh   = os.time()
+local bio_adds_total     = 0
+
+local function maybe_populate_bio(line, now)
+  local r = dns_log.parse_resolved_reply(line)
+  if not r then return end
+  local mac = ip_to_mac[r.client_ip]
+  if not mac then return end
+  local sanmac = sanitize_mac(mac)
+  if not bio_sanmacs[sanmac] then return end
+  local set_name = (r.family == "v6" and "resolved6_" or "resolved_") .. sanmac
+  nft_add_element(set_name, r.ip)
+  bio_adds_total = bio_adds_total + 1
+  log.debug("dns-tail: bio add %s { %s } client=%s mac=%s",
+            set_name, r.ip, r.client_ip, mac)
+end
+
+log.info("dns-tail: bio populator init — %d lease(s), %d bio set(s)",
+         (function() local n = 0; for _ in pairs(ip_to_mac) do n = n + 1 end; return n end)(),
+         (function() local n = 0; for _ in pairs(bio_sanmacs) do n = n + 1 end; return n end)())
+
 local since_flush      = 0
 local last_tick        = os.time()
 local last_stats_log   = os.time()
@@ -78,6 +187,15 @@ while true do
   lines_since_stat = lines_since_stat + 1
 
   local now = os.time()
+
+  -- #505: populate per-MAC blockIpOnly resolved sets in lockstep with the
+  -- hostname cache. This must be inline (not batched) for the same reason
+  -- as the hostname flush: conntrack -E NEW lands milliseconds after the
+  -- dnsmasq reply, and any delay here means the first packet of a newly
+  -- resolved flow hits an empty set and gets dropped (#472 / blockIpOnly
+  -- defeats user-visible connectivity).
+  maybe_populate_bio(line, now)
+
   if since_flush >= flush_every or (now - last_tick) >= 30 then
     cache.tick(now)
     atomic_write(cache_path, cache.dump_text())
@@ -86,12 +204,26 @@ while true do
     last_tick   = now
   end
 
+  -- Refresh per-MAC blockIpOnly state (lease table + which sets exist).
+  -- We do this on the tail loop rather than a timer so we don't need
+  -- non-blocking IO; periodic policy changes from the agent + DHCP renewals
+  -- are slow relative to log line throughput.
+  if (now - last_lease_refresh) >= lease_refresh_seconds then
+    ip_to_mac = refresh_ip_to_mac()
+    last_lease_refresh = now
+  end
+  if (now - last_bio_refresh) >= bio_refresh_seconds then
+    bio_sanmacs = refresh_bio_sanmacs()
+    last_bio_refresh = now
+  end
+
   -- One-line info heartbeat so silent failures (dnsmasq not logging, tail
   -- dropping the pipe, regex never matching) are diagnosable from logread
   -- alone without on-VM access (#480).
   if (now - last_stats_log) >= 60 then
-    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d",
-             lines_ingested, lines_since_stat, now - last_stats_log, cache.size())
+    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d",
+             lines_ingested, lines_since_stat, now - last_stats_log,
+             cache.size(), bio_adds_total)
     last_stats_log   = now
     lines_since_stat = 0
   end
