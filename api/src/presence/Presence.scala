@@ -1,6 +1,6 @@
-package familydns.api.presence
+package wifihaven.api.presence
 
-import familydns.shared.types.*
+import wifihaven.shared.types.*
 import java.time.Instant
 
 /**

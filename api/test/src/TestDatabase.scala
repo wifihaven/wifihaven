@@ -1,8 +1,8 @@
-package familydns.testinfra
+package wifihaven.testinfra
 
 import doobie.Transactor
-import familydns.api.db.*
-import familydns.shared.types.*
+import wifihaven.api.db.*
+import wifihaven.shared.types.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import org.flywaydb.core.Flyway
 import zio.*
@@ -110,7 +110,7 @@ object TestDatabase {
 
 /** Helper for building test layers with a controllable clock. */
 object TestLayers {
-  import familydns.shared.Clock
+  import wifihaven.shared.Clock
 
   def withClock(dt: java.time.LocalDateTime): ULayer[Clock] =
     Clock.TestClock.make(dt)
@@ -129,7 +129,7 @@ object TestLayers {
       _  <- scheduleRepo.replaceForProfile(
         id,
         List(
-          familydns.shared.ScheduleRequest(
+          wifihaven.shared.ScheduleRequest(
             "Bedtime",
             List("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
             java.time.LocalTime.of(21, 0),

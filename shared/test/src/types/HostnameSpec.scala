@@ -1,4 +1,4 @@
-package familydns.shared.types
+package wifihaven.shared.types
 
 import zio.json.*
 import zio.test.*

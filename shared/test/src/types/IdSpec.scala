@@ -1,4 +1,4 @@
-package familydns.shared.types
+package wifihaven.shared.types
 
 import zio.json.*
 import zio.test.*
@@ -17,14 +17,14 @@ object IdSpec extends ZIOSpecDefault {
     test("ProfileId and DeviceId are distinct at the type level") {
       // Same underlying Long but opaque types must not unify.
       assertTrue(!typeChecks("""
-        val p: familydns.shared.types.ProfileId =
-          familydns.shared.types.DeviceId(1L)
+        val p: wifihaven.shared.types.ProfileId =
+          wifihaven.shared.types.DeviceId(1L)
       """))
     },
     test("ProfileId and BlocklistId are distinct at the type level") {
       assertTrue(!typeChecks("""
-        val b: familydns.shared.types.BlocklistId =
-          familydns.shared.types.ProfileId(1L)
+        val b: wifihaven.shared.types.BlocklistId =
+          wifihaven.shared.types.ProfileId(1L)
       """))
     },
     test("RouterId round-trips as UUID JSON string") {
@@ -45,8 +45,8 @@ object IdSpec extends ZIOSpecDefault {
     },
     test("ProfileId and ScheduleId are distinct at the type level") {
       assertTrue(!typeChecks("""
-        val s: familydns.shared.types.ScheduleId =
-          familydns.shared.types.ProfileId(1L)
+        val s: wifihaven.shared.types.ScheduleId =
+          wifihaven.shared.types.ProfileId(1L)
       """))
     },
   )

@@ -1,9 +1,9 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.db.*
-import familydns.shared.*
-import familydns.shared.types.*
-import familydns.testinfra.*
+import wifihaven.api.db.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import doobie.Transactor
 import zio.*

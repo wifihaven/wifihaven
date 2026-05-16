@@ -1,8 +1,8 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
-import familydns.api.db.RouterRepo
-import familydns.shared.Router
-import familydns.shared.types.*
+import wifihaven.api.db.RouterRepo
+import wifihaven.shared.Router
+import wifihaven.shared.types.*
 import zio.*
 import zio.http.*
 
