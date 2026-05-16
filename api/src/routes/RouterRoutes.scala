@@ -62,11 +62,13 @@ object RouterRoutes {
               .touch(router.id, Some(snap.etag))
               .mapError(ErrorMapper.dbErrorToResponse)
             notMod = ifNoneMatch.contains(snap.etag.value)
-            _ <- ZIO.logDebug(
-              s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
-                s"etagOut=${snap.etag.value} notModified=$notMod devices=${snap.devices.size} " +
-                s"profiles=${snap.profiles.size}",
-            )
+            // #481: 200s (etag changed) are diagnostic gold for snapshot-propagation
+            // failures — log them at INFO so they survive the default log level.
+            // 304s stay at DEBUG to keep the steady-state poll cadence quiet.
+            logMsg = s"router policy: router=${router.id} etagIn=${ifNoneMatch.getOrElse("-")} " +
+              s"etagOut=${snap.etag.value} notModified=$notMod devices=${snap.devices.size} " +
+              s"profiles=${snap.profiles.size}"
+            _ <- if (notMod) ZIO.logDebug(logMsg) else ZIO.logInfo(logMsg)
             resp =
               if notMod then
                 Response
