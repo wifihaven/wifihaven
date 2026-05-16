@@ -29,6 +29,7 @@ object DebugRoutes {
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
       timeUsageRepo: TimeUsageRepo,
+      trafficRepo: TrafficReportRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     if !enabled then Routes.empty
@@ -65,10 +66,28 @@ object DebugRoutes {
               snap  <- timeUsageRepo
                 .snapshotAll(today)
                 .mapError(ErrorMapper.dbErrorToResponse)
+              // Per-host minutes from `time_usage` over-count wall-clock time when a
+              // single 5-min agent bucket touches multiple hosts (each host row holds
+              // ~60s for that bucket, summing them inflates "online minutes"). Surface
+              // the bucket-deduplicated per-mac total alongside each row so callers
+              // measuring device-online time can read a single value instead of summing.
+              // (#474)
+              macs = snap.keys.map(_._1).toList.distinct
+              presence <- trafficRepo
+                .listPresenceRows(macs, today)
+                .mapError(ErrorMapper.dbErrorToResponse)
+              totals = familydns.api.presence.Presence
+                .totalMinutesByMac(presence, exemptPatterns = Nil)
             } yield Response.json(
               snap
                 .map { case ((mac, host), mins) =>
-                  TimeUsageRow(mac.value, host.value, today.toString, mins)
+                  TimeUsageRow(
+                    mac.value,
+                    host.value,
+                    today.toString,
+                    mins,
+                    totals.getOrElse(mac, 0),
+                  )
                 }
                 .toList
                 .toJson,
@@ -77,8 +96,16 @@ object DebugRoutes {
         },
       )
 
-  private case class TimeUsageRow(mac: String, host: String, date: String, minutesUsed: Int)
-      derives JsonCodec
+  private case class TimeUsageRow(
+      mac: String,
+      host: String,
+      date: String,
+      minutesUsed: Int,
+      // Per-(mac, day) bucket-deduplicated online minutes (Presence-based, #474).
+      // Same value on every row for the same mac; callers should take this once
+      // per mac rather than summing `minutesUsed` across hosts.
+      deviceTotalMinutes: Int,
+  ) derives JsonCodec
 
   /**
    * Reject non-loopback callers. We check both the connection's remote address (when zio-http

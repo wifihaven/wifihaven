@@ -115,6 +115,6 @@ object Main extends ZIOAppDefault {
         deviceRepo,
         connRepo,
       ) ++
-      DebugRoutes.routes(cfg.debugEnabled, deviceRepo, connRepo, usageRepo, clock) ++
+      DebugRoutes.routes(cfg.debugEnabled, deviceRepo, connRepo, usageRepo, trafficRepo, clock) ++
       StaticRoutes.routes(cfg.http.staticDir)
 }
