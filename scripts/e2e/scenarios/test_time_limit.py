@@ -128,14 +128,19 @@ def test_time_limit_minute_granularity(
 
     # Granularity assertion (#295):
     #   - 0 → usage never accrued (regression)
-    #   - 1 → expected: 90s truncated to 1 minute
-    #   - 2 → acceptable upper bound if the burst stretched out / a second
-    #         report cycle landed before we polled
-    #   - >= 5 → suggests minute-bucket rounding (#295 contract violated)
-    assert 1 <= total_minutes <= 2, (
-        f"D2: expected minutesUsed in [1, 2] after ~90s of traffic, got "
+    #   - 1 → 90s truncated to a single minute bucket
+    #   - 2 → 90s straddled one minute boundary
+    #   - 3 → 90s straddled two minute boundaries (e.g. 0:45–2:15 touches
+    #         minutes 0, 1, 2). The agent reports active-seconds in per-minute
+    #         buckets and the API counts deduped buckets, so up to ~1 minute
+    #         of over-credit per boundary is expected at this granularity.
+    #   - >= 5 → suggests multi-minute bucket rounding (#295 contract violated)
+    assert 1 <= total_minutes <= 3, (
+        f"D2: expected minutesUsed in [1, 3] after ~90s of traffic, got "
         f"{total_minutes}. Either nothing accrued (=0) or the API is "
-        f"rounding to a multi-minute bucket (#295)."
+        f"rounding to a multi-minute bucket (#295). Upper bound is 3 because "
+        f"a 90s span can straddle up to two minute boundaries and the agent's "
+        f"1-minute granularity credits each touched bucket."
     )
 
 
