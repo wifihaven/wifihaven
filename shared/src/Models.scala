@@ -288,6 +288,8 @@ case class DeviceUsageSummary(
     usedMins: Int,
 ) derives JsonCodec
 
+case class HostUsage(host: HostId, usedMins: Int) derives JsonCodec
+
 case class ProfileTimeStatus(
     profileId: ProfileId,
     profileName: String,
@@ -298,6 +300,7 @@ case class ProfileTimeStatus(
     remainingMins: Option[Int],
     siteUsage: List[SiteUsage],
     devices: List[DeviceUsageSummary],
+    hostUsage: List[HostUsage],
 ) derives JsonCodec
 
 case class ProfileDetail(

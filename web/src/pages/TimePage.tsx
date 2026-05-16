@@ -194,6 +194,22 @@ function ProfileTimeCard({
         </div>
       )}
 
+      {status.hostUsage.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Top Sites</p>
+          {status.hostUsage.map(hu => (
+            <div
+              key={hu.host.value}
+              data-testid={`time-host-${status.profileId}-${hu.host.value}`}
+              className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
+            >
+              <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
+              <span className="text-gray-500 font-mono shrink-0 ml-2">{hu.usedMins}m</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {status.siteUsage.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Site Limits</p>

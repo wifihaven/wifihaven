@@ -149,5 +149,75 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    suite("hostMinutes")(
+      test("empty rows yields empty map") {
+        assertTrue(Presence.hostMinutes(Nil) == Map.empty[HostId, Int])
+      },
+      test("each host in a bucket gets the bucket's minutes attributed once") {
+        // A 5-min bucket with three distinct hosts: each host gets 5 minutes
+        // of attribution. Per-host view is informational, not a fraction of
+        // the daily total (which still counts the bucket once).
+        val rows = List(
+          row(mac1, 0, "youtube.com"),
+          row(mac1, 0, "google.com"),
+          row(mac1, 0, "dropbox.com"),
+        )
+        val res  = Presence.hostMinutes(rows)
+        assertTrue(
+          res == Map(
+            HostId.Fqdn(Hostname.unsafe("youtube.com"))  -> 5,
+            HostId.Fqdn(Hostname.unsafe("google.com"))   -> 5,
+            HostId.Fqdn(Hostname.unsafe("dropbox.com")) -> 5,
+          ),
+        )
+      },
+      test("same host across multiple buckets sums") {
+        val rows = List(
+          row(mac1, 0, "youtube.com"),
+          row(mac1, 1, "youtube.com"),
+          row(mac2, 2, "youtube.com"),
+        )
+        assertTrue(
+          Presence.hostMinutes(rows) == Map(
+            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 15,
+          ),
+        )
+      },
+      test("same host twice in one bucket only counts once for that bucket") {
+        val rows = List(
+          row(mac1, 0, "youtube.com"),
+          row(mac1, 0, "youtube.com"),
+        )
+        assertTrue(
+          Presence.hostMinutes(rows) == Map(
+            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 5,
+          ),
+        )
+      },
+      test("IP-literal hosts are attributed under their address form") {
+        val rows = List(
+          ipRow(mac1, 0, "192.0.2.1"),
+          row(mac1, 0, "youtube.com"),
+        )
+        assertTrue(
+          Presence.hostMinutes(rows) == Map(
+            HostId.IPv4(IpAddress.unsafe("192.0.2.1"))  -> 5,
+            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 5,
+          ),
+        )
+      },
+      test("uses max active_seconds in the bucket as duration") {
+        val rows = List(
+          row(mac1, 0, "a.com", 60),
+          row(mac1, 0, "b.com", 300),
+        )
+        assertTrue(
+          Presence.hostMinutes(rows) == Map(
+            HostId.Fqdn(Hostname.unsafe("a.com")) -> 5,
+            HostId.Fqdn(Hostname.unsafe("b.com")) -> 5,
+          ),
+        )
+      },
+    ),
   )
 }
