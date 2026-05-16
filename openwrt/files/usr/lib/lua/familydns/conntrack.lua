@@ -5,14 +5,44 @@
 --     meta nftrace because it is available on stock OpenWrt 23.x without enabling
 --     per-rule tracing and produces structured, line-oriented output suitable for
 --     a Lua io.popen loop.
---   * Hostname attribution uses the in-memory nft_sets table that render.lua
---     populates from dnsmasq --ipset= callbacks.  We look up dest_ip against that
---     table to recover the hostname the client resolved, NOT reverse DNS.
+--   * Hostname attribution uses the dns_log cache (dnsmasq query-log path, #259).
+--     The in-memory nft_sets table is populated by render.lua only for site_limits
+--     domains and is NOT a complete IP→hostname mirror; per-host (eb_/bl_) and
+--     extraAllowed (ea_) decisions are therefore driven off the attributed hostname
+--     (hname) matched against eb_hosts_by_mac / ea_hosts_by_mac using dnsmasq's
+--     nftset suffix-match semantics (exact OR subdomain), NOT off nft_sets[host][ip].
 --   * Both allowed and blocked flows are batched.  Blocking state comes from the
---     same nft_sets/policy tables that render.lua writes; we read them but never
---     modify them here.
+--     same policy tables that render.lua writes; we read them but never modify them.
+--   * Reporting limitation: when DNS attribution is unavailable (hname=nil) and the
+--     MAC is paused/time-limited, the agent cannot tell whether the kernel's ea_
+--     carve-out fired.  In that case the flow is logged as blocked even if the
+--     kernel actually allowed it (flows to extraAllowed hosts from a blocked MAC
+--     with no DNS attribution are under-reported as blocked).  The same limitation
+--     applies to per-host eb_ classification: without hname we cannot match against
+--     eb_hosts_by_mac and the flow is left as allowed.
 
 local M = {}
+
+-- ---------------------------------------------------------------------------
+-- host_matches(hname, host) -> bool
+--
+-- Returns true when hname is an exact match for host, or when hname is a
+-- subdomain of host (i.e. hname ends with ".<host>").  This mirrors the
+-- suffix-match semantics of dnsmasq's `nftset=/<host>/...` directive, which
+-- also populates the nft set for all subdomains.
+--
+-- Examples:
+--   host_matches("example.com",     "example.com") → true
+--   host_matches("foo.example.com", "example.com") → true   (subdomain)
+--   host_matches("notexample.com",  "example.com") → false  (no dot prefix)
+--   host_matches("foo.bar",         "example.com") → false
+-- ---------------------------------------------------------------------------
+function M.host_matches(hname, host)
+  if hname == host then return true end
+  -- Check suffix ".<host>" — avoids false positive on e.g. "notexample.com"
+  -- matching "example.com".
+  return hname:sub(-(#host + 1)) == "." .. host
+end
 
 local function default_log()
   local ok, l = pcall(require, "familydns.log")
@@ -431,6 +461,7 @@ function M.handle_flow(flow, ctx, batcher)
   if not hname then
     hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
   end
+
   -- Per-MAC block lookup (#297): pause and time-limit block every flow from
   -- the device, regardless of destination IP. render.update_shared rebuilds
   -- blocked_macs/blocked_reason from the policy snapshot on every poll.
@@ -440,54 +471,75 @@ function M.handle_flow(flow, ctx, batcher)
     reason = ctx.blocked_reason[mac]
   end
 
+  -- extraAllowed override for blocked MACs (#421): if the MAC is blocked by
+  -- the per-MAC rule (pause / schedule / time-limit) but hname matches a host
+  -- in ea_hosts_by_mac[mac] (using dnsmasq's suffix-match semantics), the
+  -- kernel's `ip daddr != @ea_<mac>_<host>` clause fires and the packet IS
+  -- forwarded.  Flip allowed back to true so the event is reported correctly.
+  --
+  -- Limitation: when hname is nil (no DNS attribution), we cannot determine
+  -- whether the ea_ carve-out fired.  The flow is left as blocked=true even
+  -- if the kernel allowed it.  This is documented as a known reporting gap
+  -- when DNS attribution is missing for flows from a blocked MAC.
+  if not allowed and hname and mac then
+    local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
+    if ea_hosts then
+      for ea_host in pairs(ea_hosts) do
+        if M.host_matches(hname, ea_host) then
+          allowed = true
+          reason  = nil
+          break
+        end
+      end
+    end
+  end
+
   -- Per-host (eb_/bl_) block check: if the MAC is still considered allowed
-  -- above, check whether the flow's dst_ip hits an extraBlocked or blocklist
-  -- drop rule for this MAC. The kernel enforces this via nft rules of the form
+  -- above, check whether hname matches an extraBlocked or blocklist host for
+  -- this MAC using dnsmasq's nftset suffix-match semantics.  The kernel
+  -- enforces drops via:
   --   ether saddr <mac> ip daddr @eb_<host> drop
-  -- The agent mirrors the live set state in nft_sets[hostname][ip].
-  -- Each such drop carries `ip daddr != @ea_<mac>_<host>` exception clauses,
-  -- so we must NOT classify as blocked when dst_ip also resolves to an
-  -- extraAllowed host for this MAC (#421).
-  if allowed and mac then
+  -- We drive this decision off the attributed hostname (hname) matched against
+  -- eb_hosts_by_mac, NOT off nft_sets[host][dst_ip].  The lua nft_sets table
+  -- is never populated in production (only the kernel ipsets are); nft_sets is
+  -- only a partial attribution fallback for site_limits domains.
+  --
+  -- Each eb_ drop carries `ip daddr != @ea_<mac>_<host>` exception clauses,
+  -- so we must NOT classify as blocked when hname also matches a host in
+  -- ea_hosts_by_mac[mac] (#421).
+  --
+  -- Limitation: when hname is nil, we cannot match against eb_hosts_by_mac
+  -- and the flow is left as allowed.  This is a known reporting gap for
+  -- direct-IP flows (no DNS attribution) to extraBlocked addresses.
+  if allowed and hname and mac then
     local eb_hosts = ctx.eb_hosts_by_mac and ctx.eb_hosts_by_mac[mac]
     if eb_hosts then
-      -- Determine the candidate hostname(s) to test. Prefer the attributed
-      -- hname; if nil, scan all eb_ hosts for this MAC against nft_sets.
-      local candidates = {}
-      if hname then
-        candidates[1] = hname
-      else
-        for host in pairs(eb_hosts) do
-          candidates[#candidates + 1] = host
+      -- Check whether hname (or any of its parent domains) matches an eb_ host.
+      local eb_hit = false
+      for host in pairs(eb_hosts) do
+        if M.host_matches(hname, host) then
+          eb_hit = true
+          break
         end
       end
 
-      for _, candidate in ipairs(candidates) do
-        if eb_hosts[candidate] then
-          -- Check whether dst_ip is in the live nft set for this host.
-          local host_ips = ctx.nft_sets and ctx.nft_sets[candidate]
-          if host_ips and host_ips[flow.dst_ip] then
-            -- dst_ip is in an eb_/bl_ set for this MAC.  Now check the
-            -- extraAllowed carve-out: if dst_ip also resolves to any host in
-            -- ea_hosts_by_mac[mac], the `ip daddr != @ea_...` clause suppresses
-            -- the nft drop and the flow is allowed.
-            local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
-            local ea_hit = false
-            if ea_hosts then
-              for ea_host in pairs(ea_hosts) do
-                local ea_ips = ctx.nft_sets and ctx.nft_sets[ea_host]
-                if ea_ips and ea_ips[flow.dst_ip] then
-                  ea_hit = true
-                  break
-                end
-              end
-            end
-            if not ea_hit then
-              allowed = false
-              reason  = "host"
+      if eb_hit then
+        -- Check the extraAllowed carve-out: if hname also matches any host in
+        -- ea_hosts_by_mac[mac], the `ip daddr != @ea_...` clause suppresses the
+        -- nft drop and the flow is allowed.
+        local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
+        local ea_hit = false
+        if ea_hosts then
+          for ea_host in pairs(ea_hosts) do
+            if M.host_matches(hname, ea_host) then
+              ea_hit = true
               break
             end
           end
+        end
+        if not ea_hit then
+          allowed = false
+          reason  = "host"
         end
       end
     end
