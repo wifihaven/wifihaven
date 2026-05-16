@@ -651,6 +651,79 @@ describe("render.update_shared", function()
     assert.equal("Manual", blocked_reason["aa:bb:cc:11:22:33"])
   end)
 
+  -- ── eb_hosts_by_mac / ea_hosts_by_mac population ──────────────────────────
+
+  it("populates eb_hosts_by_mac from a profile's extraBlocked list", function()
+    local s = snap_one()  -- profile 3 has extraBlocked = { "tiktok.com" }
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac = {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac)
+    assert.is_not_nil(eb_hosts_by_mac["aa:bb:cc:11:22:33"])
+    assert.is_true(eb_hosts_by_mac["aa:bb:cc:11:22:33"]["tiktok.com"])
+  end)
+
+  it("populates eb_hosts_by_mac from blocklistIds when _blocklist_hosts is present", function()
+    local s = snap_one()  -- profile 3 has blocklistIds = { "ads", "adult" }
+    s._blocklist_hosts = {
+      ads   = { "ad.doubleclick.net", "googleads.g.doubleclick.net" },
+      adult = { "pornhub.com" },
+    }
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac = {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac)
+    local eb = eb_hosts_by_mac["aa:bb:cc:11:22:33"]
+    assert.is_not_nil(eb)
+    assert.is_true(eb["ad.doubleclick.net"])
+    assert.is_true(eb["pornhub.com"])
+    -- extraBlocked host from profile is also present
+    assert.is_true(eb["tiktok.com"])
+  end)
+
+  it("populates ea_hosts_by_mac from a profile's extraAllowed list", function()
+    local s = snap_one()
+    s.profiles["3"].rules.extraAllowed = { "netflix.com", "youtube.com" }
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac = {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac)
+    local ea = ea_hosts_by_mac["aa:bb:cc:11:22:33"]
+    assert.is_not_nil(ea)
+    assert.is_true(ea["netflix.com"])
+    assert.is_true(ea["youtube.com"])
+  end)
+
+  it("clears stale eb_hosts_by_mac entries on rebuild", function()
+    local s = snap_one()
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac = { ["aa:bb:cc:11:22:33"] = { ["old.com"] = true } }
+    local ea_hosts_by_mac = {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac)
+    -- "old.com" should be gone; "tiktok.com" (from snap_one profile) should be present
+    local eb = eb_hosts_by_mac["aa:bb:cc:11:22:33"]
+    assert.is_nil(eb and eb["old.com"])
+    assert.is_true(eb and eb["tiktok.com"])
+  end)
+
+  it("does not populate eb_hosts_by_mac for a MAC that has no extraBlocked or blocklistIds", function()
+    local s = snap_one()
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac = {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac)
+    assert.is_nil(eb_hosts_by_mac["aa:bb:cc:11:22:33"])
+  end)
+
+  it("accepts nil eb_hosts_by_mac / ea_hosts_by_mac without error (backwards compat)", function()
+    assert.has_no.errors(function()
+      render.update_shared(snap_one(), {}, {}, {}, nil, nil)
+    end)
+  end)
+
 end)
 
 -- ── blocklist enforcement (#352) ─────────────────────────────────────────────

@@ -834,24 +834,81 @@ function M.nft(snapshot, opts)
 end
 
 -- ---------------------------------------------------------------------------
--- render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
+-- render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
+--                      eb_hosts_by_mac, ea_hosts_by_mac)
 -- ---------------------------------------------------------------------------
 -- Rebuilds blocked_macs / blocked_reason in place from each device's
 -- effective BlockRules. nft_sets is left intact — population is driven by
 -- dnsmasq --ipset= callbacks at resolution time (and by dns-tail per #259).
-function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason)
+--
+-- Also rebuilds eb_hosts_by_mac and ea_hosts_by_mac when provided:
+--   eb_hosts_by_mac: { mac -> { hostname -> true } }
+--     — the set of hostnames whose nft eb_/bl_ drop rules fire for this MAC
+--       (derived from effective extraBlocked and blocklistIds).
+--   ea_hosts_by_mac: { mac -> { hostname -> true } }
+--     — the set of hostnames in the MAC's effective extraAllowed list; a hit
+--       in this table suppresses the eb_/bl_ block classification.
+-- Both tables are cleared and rebuilt on every call. Callers that do not need
+-- per-host block classification may omit them (pass nil).
+function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac)
   if blocked_macs then
     for k in pairs(blocked_macs) do blocked_macs[k] = nil end
   end
   if blocked_reason then
     for k in pairs(blocked_reason) do blocked_reason[k] = nil end
   end
+  if eb_hosts_by_mac then
+    for k in pairs(eb_hosts_by_mac) do eb_hosts_by_mac[k] = nil end
+  end
+  if ea_hosts_by_mac then
+    for k in pairs(ea_hosts_by_mac) do ea_hosts_by_mac[k] = nil end
+  end
+
+  -- Build a blocklist-id → [hosts] lookup so we can expand blocklistIds below.
+  local bl_hosts = (snapshot and snapshot._blocklist_hosts) or {}
 
   for mac, dev in pairs(snapshot.devices or {}) do
     local r = effective_rules(dev, snapshot.profiles)
-    if r and r.blocked then
-      if blocked_macs   then blocked_macs[mac]   = true end
-      if blocked_reason then blocked_reason[mac] = r.blockReason or "blocked" end
+    if r then
+      if r.blocked then
+        if blocked_macs   then blocked_macs[mac]   = true end
+        if blocked_reason then blocked_reason[mac] = r.blockReason or "blocked" end
+      end
+
+      -- Per-host extraBlocked: collect all hostnames that the nft eb_ rules
+      -- would drop for this MAC (regardless of whether the MAC is also
+      -- blanket-blocked).
+      if eb_hosts_by_mac and type(r.extraBlocked) == "table" and #r.extraBlocked > 0 then
+        if not eb_hosts_by_mac[mac] then eb_hosts_by_mac[mac] = {} end
+        for _, host in ipairs(r.extraBlocked) do
+          eb_hosts_by_mac[mac][host] = true
+        end
+      end
+
+      -- Per-blocklist blocklistIds: expand each id to its constituent hosts
+      -- using the cached blocklist data attached to the snapshot.
+      if eb_hosts_by_mac and type(r.blocklistIds) == "table" and #r.blocklistIds > 0 then
+        for _, id in ipairs(r.blocklistIds) do
+          local hosts = bl_hosts[id]
+          if type(hosts) == "table" then
+            if not eb_hosts_by_mac[mac] then eb_hosts_by_mac[mac] = {} end
+            for _, host in ipairs(hosts) do
+              eb_hosts_by_mac[mac][host] = true
+            end
+          end
+        end
+      end
+
+      -- extraAllowed: collect all hostnames that suppress eb_/bl_ drops for
+      -- this MAC. A dst_ip in any ea_ set for this MAC escapes classification
+      -- as blocked.
+      if ea_hosts_by_mac and type(r.extraAllowed) == "table" and #r.extraAllowed > 0 then
+        if not ea_hosts_by_mac[mac] then ea_hosts_by_mac[mac] = {} end
+        for _, host in ipairs(r.extraAllowed) do
+          ea_hosts_by_mac[mac][host] = true
+        end
+      end
     end
   end
 end
