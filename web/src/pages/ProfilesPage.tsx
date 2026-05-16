@@ -91,8 +91,6 @@ export function ProfilesPage() {
   const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
   const [userPick, setUserPick] = useState<number[]>([])
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
-  const [hsForm, setHsForm] = useState<HouseholdSettings | null>(null)
-  const [hsSaving, setHsSaving] = useState(false)
 
   const devicesByProfile = useMemo(() => {
     const m = new Map<number, Device[]>()
@@ -130,21 +128,6 @@ export function ProfilesPage() {
     setDevices(devs)
     setAllUsers(users)
     setHousehold(hs)
-    if (hs) setHsForm(hs)
-  }
-
-  async function saveHousehold() {
-    if (!hsForm) return
-    setHsSaving(true)
-    try {
-      await api.household.update({
-        dailyResetTime: hsForm.dailyResetTime,
-        dailyResetTz: hsForm.dailyResetTz,
-      })
-      setHousehold(hsForm)
-    } finally {
-      setHsSaving(false)
-    }
   }
 
   useEffect(() => {
@@ -238,44 +221,6 @@ export function ProfilesPage() {
           </button>
         )}
       </div>
-
-      {isAdmin && hsForm && (
-        <div data-testid="household-settings-card"
-          className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-bold text-white">Household settings</h2>
-            <button
-              onClick={saveHousehold}
-              disabled={hsSaving || (household != null && household.dailyResetTime === hsForm.dailyResetTime && household.dailyResetTz === hsForm.dailyResetTz)}
-              data-testid="household-save"
-              className="text-xs bg-emerald-500/20 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-40">
-              {hsSaving ? 'Saving…' : 'Save settings'}
-            </button>
-          </div>
-          <p className="text-xs text-gray-400">
-            The wall-clock time at which daily usage limits reset. Both the reset time and timezone
-            are stored together — the reset always fires at the configured local clock time, even
-            across DST.
-          </p>
-          <div className="flex flex-wrap gap-3 items-end">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Reset time</label>
-              <input type="time" value={hsForm.dailyResetTime}
-                onChange={e => setHsForm({ ...hsForm, dailyResetTime: e.target.value })}
-                data-testid="household-reset-time"
-                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
-            </div>
-            <div className="flex-1 min-w-[14rem]">
-              <label className="block text-xs text-gray-500 mb-1">Timezone</label>
-              <TimezonePicker
-                value={hsForm.dailyResetTz}
-                onChange={tz => setHsForm({ ...hsForm, dailyResetTz: tz })}
-                testId="household-reset-tz"
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {profiles.map(pd => (
