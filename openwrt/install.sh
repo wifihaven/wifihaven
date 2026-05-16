@@ -72,6 +72,35 @@ if ! command -v curl >/dev/null 2>&1; then
   command -v curl >/dev/null 2>&1 || err "curl still not found after '$PKG_MGR $PKG_INSTALL curl'"
 fi
 
+# Ensure dnsmasq-full is installed. The agent's rendered config uses
+# `nftset=...` directives to populate the eb_*/bl_* ipsets that the
+# nftables forward-drop matches against; the basic `dnsmasq` package is
+# compiled with HAVE_NFTSET disabled and silently refuses to start with
+# that config ("recompile with HAVE_NFTSET defined" in syslog), leaving
+# every hostname-based block ineffective. Vendor OpenWRT builds (e.g.
+# GL.iNet) frequently ship plain dnsmasq instead of dnsmasq-full, so we
+# detect and swap rather than relying on package-level depends.
+ensure_dnsmasq_full() {
+  if [ "$PKG_MGR" = apk ]; then
+    apk list -I dnsmasq-full >/dev/null 2>&1 && return 0
+    if apk list -I dnsmasq >/dev/null 2>&1; then
+      info "Replacing dnsmasq with dnsmasq-full (required for nftset support)"
+      apk del dnsmasq >/dev/null
+    else
+      info "Installing dnsmasq-full (required for nftset support)"
+    fi
+    apk add dnsmasq-full >/dev/null || err "failed to install dnsmasq-full"
+  else
+    opkg list-installed | grep -q '^dnsmasq-full ' && return 0
+    info "Replacing dnsmasq with dnsmasq-full (required for nftset support)"
+    opkg update >/dev/null
+    opkg list-installed | grep -q '^dnsmasq ' && opkg remove dnsmasq >/dev/null
+    opkg install dnsmasq-full >/dev/null || err "failed to install dnsmasq-full"
+  fi
+  /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+}
+ensure_dnsmasq_full
+
 # Auto-detect defaults.
 lan_ip=$(uci -q get network.lan.ipaddr || true)
 if [ -n "$lan_ip" ]; then
