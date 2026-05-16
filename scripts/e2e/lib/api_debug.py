@@ -57,7 +57,7 @@ class DebugAPI:
         host_needle = hostname.lower() if hostname else None
         for e in self.events_for_mac(mac, limit=limit):
             if host_needle is not None:
-                if host_needle not in (e.get("hostname") or "").lower():
+                if host_needle not in event_hostname(e).lower():
                     continue
             if allowed is not None and e.get("allowed") is not allowed:
                 continue
@@ -81,3 +81,18 @@ class DebugAPI:
                 f"{proc.stderr.strip()}"
             )
         return json.loads(proc.stdout)
+
+
+def event_hostname(e: dict[str, Any]) -> str:
+    """Return the FQDN attribution on a connection_attempt event, or "".
+
+    The wire schema (#391) carries the resolved hostname inside a tagged
+    `host` union: `{"type": "fqdn", "value": "<name>"}` when DNS attribution
+    landed, or `{"type": "ipv4"|"ipv6", "value": "<ip>"}` when the agent only
+    had a raw destination IP. Tests want to match on the FQDN, not on a raw
+    IP that happens to substring-match — so filter on `type == "fqdn"`.
+    """
+    host = e.get("host") or {}
+    if isinstance(host, dict) and host.get("type") == "fqdn":
+        return host.get("value") or ""
+    return ""

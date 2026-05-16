@@ -286,31 +286,28 @@ end
 -- We inject them via cfg.on_tick so there's no need for threads or coroutines.
 
 -- Hostname lookup backed by the dns-tail sidecar's snapshot file (#259).
--- Memoized for 1s to keep per-flow overhead bounded. The previous mtime-based
--- freshness check used `stat -c %Y`, which isn't present on stock OpenWRT
--- busybox — the popen returned no output, mt fell to 0, and the equality
--- check with the initial dns_cache_mt=0 meant the cache was never loaded
--- (#287). Re-reading the (small) snapshot once per second is cheap enough.
+-- The previous mtime-based freshness check used `stat -c %Y`, which isn't
+-- present on stock OpenWRT busybox (#287); a follow-up tried a 1-second
+-- time-based memoization, but that re-introduced a race against dns-tail
+-- under tight DNS→SYN sequences: the first reply line, the cache flush,
+-- and the conntrack NEW for the resolved IP can all land inside the same
+-- monotonic-second window, leaving lookup_hostname() answering from the
+-- pre-flush in-memory snapshot and freezing hostname=nil on the event
+-- (#480, follow-up to #472).
+--
+-- Drop the memoization. The cache file lives on tmpfs and is at most a few
+-- kilobytes, so reading it once per outbound flow costs microseconds —
+-- well below the cost of the conntrack -E line that triggered the lookup.
 local dns_cache_path = "/tmp/familydns-dns-cache.txt"
 local dns_cache_ttl  = 3600
-local dns_cache_tbl  = {}
-local dns_cache_load = 0
 
 local function lookup_hostname(dst_ip)
-  -- Monotonic for the "has 1s elapsed?" gate (#336); wall-clock for the
-  -- dns_log freshness check, which compares against wall-clock TTLs stored
-  -- alongside each cached entry.
-  local mono = clock.monotonic_seconds()
-  if (mono - dns_cache_load) >= 1 then
-    dns_cache_load = mono
-    local f = io.open(dns_cache_path, "r")
-    if f then
-      local text = f:read("*a") or ""
-      dns_cache_tbl = dns_log.load_table(text, dns_cache_ttl, os.time())
-      f:close()
-    end
-  end
-  return dns_cache_tbl[dst_ip]
+  local f = io.open(dns_cache_path, "r")
+  if not f then return nil end
+  local text = f:read("*a") or ""
+  f:close()
+  local tbl = dns_log.load_table(text, dns_cache_ttl, os.time())
+  return tbl[dst_ip]
 end
 
 conntrack.watch({

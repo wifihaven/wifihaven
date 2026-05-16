@@ -231,12 +231,17 @@ def pytest_runtest_makereport(item, call):
             client_obj = item.funcargs.get("client")
             debug = item.funcargs.get("debug_api")
             if client_obj is not None and debug is not None:
+                from lib.api_debug import event_hostname
                 evs = debug.events_for_mac(client_obj.mac)
                 lines = [f"events for mac {client_obj.mac} ({len(evs)} total):"]
                 for e in evs[-20:]:
+                    # The connection_event wire schema (#391) wraps the hostname
+                    # in a tagged `host` union; reading the legacy flat
+                    # `hostname` key always returned None and made every event
+                    # look unattributed in the failure dump (#480).
                     lines.append(
                         f"  ts={e.get('ts')} allowed={e.get('allowed')} "
-                        f"reason={e.get('reason')!r} hostname={e.get('hostname')!r} "
+                        f"reason={e.get('reason')!r} hostname={event_hostname(e) or None!r} "
                         f"destIp={e.get('destIp')!r}"
                     )
                 sections.append(("debug events", "\n".join(lines)))

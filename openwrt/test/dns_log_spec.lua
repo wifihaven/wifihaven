@@ -85,6 +85,26 @@ describe("parse_reply_line", function()
       "Nov 12 10:00:01 dnsmasq[1234]: 7 192.168.1.42/54321 reply youtube.com is 2607:f8b0::1"
     assert.is_nil(dns_log.parse_reply_line(line))
   end)
+
+  -- dnsmasq emits `cached <name> is <ip>` instead of `reply ...` when answering
+  -- from its own in-memory cache. dns-tail must parse those identically — see
+  -- the verb-set comment in dns_log.lua (#480).
+  it("parses a `cached X is <ipv4>` line the same as a reply", function()
+    local line =
+      "Nov 12 10:00:01 dnsmasq[1234]: 8 192.168.1.42/54321 cached example.com is 93.184.216.34"
+    local r = dns_log.parse_reply_line(line)
+    assert.is_not_nil(r)
+    assert.equal("8",           r.qid)
+    assert.equal("example.com", r.name)
+    assert.equal("93.184.216.34", r.ip)
+  end)
+
+  it("ignores other verbs like `forwarded` and `config`", function()
+    assert.is_nil(dns_log.parse_reply_line(
+      "Nov 12 10:00:01 dnsmasq[1]: 9 192.168.1.42/54321 forwarded example.com to 1.1.1.1"))
+    assert.is_nil(dns_log.parse_reply_line(
+      "Nov 12 10:00:01 dnsmasq[1]: 9 127.0.0.1/54321 config error is REFUSED"))
+  end)
 end)
 
 -- ---------------------------------------------------------------------------
