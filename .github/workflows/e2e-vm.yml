@@ -84,6 +84,13 @@ jobs:
       - name: Run e2e suite
         env:
           FDNS_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-familydns.img
+          # #473: pytest's stack fixture defaults to tearing the docker
+          # compose stack down at session end, which removes containers
+          # before the failure-capture step below can read their logs.
+          # Keep the stack up here; the explicit "Tear down API stack" step
+          # at the bottom of this job (if: always()) handles cleanup after
+          # logs are captured.
+          E2E_VM_KEEP_STACK: "1"
         run: scripts/e2e-vm.sh
 
       - name: Capture docker compose logs
