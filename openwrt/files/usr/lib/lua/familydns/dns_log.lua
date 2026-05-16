@@ -30,6 +30,15 @@ local M = {}
 --
 --   [<syslog prefix> dnsmasq[pid]: ]<qid> <client_ip>/<port> query[A] <qname> from <src_ip>
 --   [<syslog prefix> dnsmasq[pid]: ]<qid> <client_ip>/<port> reply <name> is <value>
+--   [<syslog prefix> dnsmasq[pid]: ]<qid> <client_ip>/<port> cached <name> is <value>
+--
+-- `reply` lines are emitted when dnsmasq receives a response from an upstream
+-- resolver; `cached` lines are emitted when dnsmasq answers from its own
+-- in-memory cache. Both carry the same `<name> is <ip>` payload and both must
+-- be ingested — otherwise a client's repeat lookup (or a lookup that happens
+-- while dnsmasq's TTL is still good) lands no entry in the agent's IP→host
+-- cache, and the resulting connection_attempt event reports hostname=nil
+-- (#480, follow-up to #472).
 --
 -- We match the trailing structured portion and ignore the optional prefix.
 
@@ -53,8 +62,8 @@ end
 
 function M.parse_reply_line(line)
   if type(line) ~= "string" or line == "" then return nil end
-  local qid, name, value = line:match("(%d+)%s+%S+/%d+%s+reply%s+(%S+)%s+is%s+(%S+)")
-  if not qid then return nil end
+  local qid, verb, name, value = line:match("(%d+)%s+%S+/%d+%s+(%a+)%s+(%S+)%s+is%s+(%S+)")
+  if not qid or (verb ~= "reply" and verb ~= "cached") then return nil end
   if value == "<CNAME>" then
     return { qid = qid, name = name, ip = nil }
   end

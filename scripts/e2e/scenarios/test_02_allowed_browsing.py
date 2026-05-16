@@ -6,6 +6,7 @@ client's MAC address.
 """
 import pytest
 
+from lib.api_debug import event_hostname
 from lib.traffic import http_get
 from lib.wait import wait_until
 
@@ -23,7 +24,7 @@ def test_allowed_request_succeeds_and_event_recorded(
     def find_event():
         events = debug_api.events_for_mac(client.mac)
         for e in events:
-            if "example.com" in (e.get("hostname") or "") and e.get("allowed") is True:
+            if "example.com" in event_hostname(e) and e.get("allowed") is True:
                 return e
         return None
 

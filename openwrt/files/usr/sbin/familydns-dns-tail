@@ -60,8 +60,11 @@ local function atomic_write(path, content)
   return true
 end
 
-local since_flush = 0
-local last_tick   = os.time()
+local since_flush      = 0
+local last_tick        = os.time()
+local last_stats_log   = os.time()
+local lines_ingested   = 0
+local lines_since_stat = 0
 
 while true do
   local line = handle:read("*l")
@@ -70,7 +73,9 @@ while true do
     break
   end
   cache.ingest_line(line)
-  since_flush = since_flush + 1
+  since_flush      = since_flush + 1
+  lines_ingested   = lines_ingested + 1
+  lines_since_stat = lines_since_stat + 1
 
   local now = os.time()
   if since_flush >= flush_every or (now - last_tick) >= 30 then
@@ -79,6 +84,16 @@ while true do
     log.debug("dns-tail: flushed cache size=%d", cache.size())
     since_flush = 0
     last_tick   = now
+  end
+
+  -- One-line info heartbeat so silent failures (dnsmasq not logging, tail
+  -- dropping the pipe, regex never matching) are diagnosable from logread
+  -- alone without on-VM access (#480).
+  if (now - last_stats_log) >= 60 then
+    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d",
+             lines_ingested, lines_since_stat, now - last_stats_log, cache.size())
+    last_stats_log   = now
+    lines_since_stat = 0
   end
 end
 
