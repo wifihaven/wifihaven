@@ -68,7 +68,7 @@ class AdminAPI:
             "schedules": [],
             "timeLimit": None,
             "siteTimeLimits": [],
-            "failureMode": "closed",
+            "failureMode": "block-all",
         }
         defaults.update(fields)
         return self._request("POST", "/api/profiles", body=defaults)
@@ -107,7 +107,7 @@ class AdminAPI:
             "timeLimit": time_limit_minutes,
             "siteTimeLimits":
                 full.get("siteTimeLimits", []) if isinstance(full, dict) else [],
-            "failureMode": prof.get("failureMode", "closed"),
+            "failureMode": prof.get("failureMode", "block-all"),
         }
         body.update(changes)
         return self._request("PUT", f"/api/profiles/{profile_id}", body=body)
