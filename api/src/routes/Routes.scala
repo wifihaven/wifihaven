@@ -569,6 +569,8 @@ object LogRoutes {
             claims <- requireAuth(req, auth)
             filter = LogFilter(
               mac = req.url.queryParam("mac"),
+              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
+              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
               blocked = req.url.queryParam("blocked").map(_ == "true"),
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),

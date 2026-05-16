@@ -1,23 +1,125 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import type { QueryLog, Session } from '@/types/api'
+import type { Device, ProfileDetail, QueryLog, Session } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 
 type Tab = 'sessions' | 'raw'
 
+interface Filters {
+  deviceId: number | null
+  profileId: number | null
+}
+
 export function LogsPage() {
   const [tab, setTab] = useState<Tab>('sessions')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [devices, setDevices] = useState<Device[]>([])
+  const [profiles, setProfiles] = useState<ProfileDetail[]>([])
+
+  useEffect(() => {
+    api.devices.list().then(setDevices).catch(() => setDevices([]))
+    api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
+  }, [])
+
+  const filters: Filters = useMemo(() => ({
+    deviceId:  numOrNull(searchParams.get('deviceId')),
+    profileId: numOrNull(searchParams.get('profileId')),
+  }), [searchParams])
+
+  function updateFilter(key: keyof Filters, value: number | null) {
+    const next = new URLSearchParams(searchParams)
+    if (value === null) next.delete(key)
+    else next.set(key, String(value))
+    setSearchParams(next, { replace: true })
+  }
+
+  function clearFilters() {
+    const next = new URLSearchParams(searchParams)
+    next.delete('deviceId')
+    next.delete('profileId')
+    setSearchParams(next, { replace: true })
+  }
+
+  const hasFilters = filters.deviceId !== null || filters.profileId !== null
 
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-white">Activity</h1>
+
+      <FilterBar
+        filters={filters}
+        devices={devices}
+        profiles={profiles.map(pd => pd.profile)}
+        onChange={updateFilter}
+        onClear={clearFilters}
+      />
 
       <div className="flex gap-2" role="tablist">
         <TabButton id="sessions" current={tab} onClick={setTab}>Sessions</TabButton>
         <TabButton id="raw"      current={tab} onClick={setTab}>Connection events</TabButton>
       </div>
 
-      {tab === 'sessions' ? <SessionsTab /> : <RawEventsTab />}
+      {tab === 'sessions'
+        ? <SessionsTab  filters={filters} hasFilters={hasFilters} onClear={clearFilters} />
+        : <RawEventsTab filters={filters} hasFilters={hasFilters} onClear={clearFilters} />}
+    </div>
+  )
+}
+
+function numOrNull(v: string | null): number | null {
+  if (v === null) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+// ── Filter bar ─────────────────────────────────────────────────────────────
+
+function FilterBar({
+  filters, devices, profiles, onChange, onClear,
+}: {
+  filters: Filters
+  devices: Device[]
+  profiles: { id: number; name: string }[]
+  onChange: (key: keyof Filters, value: number | null) => void
+  onClear: () => void
+}) {
+  const active = filters.deviceId !== null || filters.profileId !== null
+  return (
+    <div className="flex flex-wrap gap-3 items-center" data-testid="logs-filter-bar">
+      <label className="text-xs text-gray-500 font-mono">Filter:</label>
+      <select
+        data-testid="logs-filter-device"
+        value={filters.deviceId ?? ''}
+        onChange={e => onChange('deviceId', e.target.value === '' ? null : Number(e.target.value))}
+        className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm"
+      >
+        <option value="">All devices</option>
+        {devices.map(d => (
+          <option key={d.id} value={d.id}>{d.name || d.mac}</option>
+        ))}
+      </select>
+      <select
+        data-testid="logs-filter-profile"
+        value={filters.profileId ?? ''}
+        onChange={e => onChange('profileId', e.target.value === '' ? null : Number(e.target.value))}
+        className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm"
+      >
+        <option value="">All profiles</option>
+        {profiles.map(p => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+        ))}
+      </select>
+      {active && (
+        <button
+          type="button"
+          onClick={onClear}
+          data-testid="logs-filter-clear"
+          className="text-xs text-gray-400 hover:text-white underline"
+        >
+          Clear
+        </button>
+      )}
     </div>
   )
 }
@@ -47,7 +149,9 @@ function TabButton({
 
 // ── Sessions tab ───────────────────────────────────────────────────────────
 
-function SessionsTab() {
+function SessionsTab({
+  filters, hasFilters, onClear,
+}: { filters: Filters; hasFilters: boolean; onClear: () => void }) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading,  setLoading]  = useState(true)
   const [host,     setHost]     = useState('')
@@ -57,6 +161,8 @@ function SessionsTab() {
     try {
       const page = await api.sessions.list({
         host:  host || undefined,
+        deviceId:  filters.deviceId  ?? undefined,
+        profileId: filters.profileId ?? undefined,
         hours: 24,
         limit: 100,
       })
@@ -66,7 +172,7 @@ function SessionsTab() {
     }
   }
 
-  useEffect(() => { load() }, [host])
+  useEffect(() => { load() }, [host, filters.deviceId, filters.profileId])
 
   return (
     <div className="space-y-4">
@@ -114,7 +220,13 @@ function SessionsTab() {
                   ))}
                 </tbody>
               </table>
-              {sessions.length === 0 && <p className="p-6 text-gray-500 text-sm">No sessions found.</p>}
+              {sessions.length === 0 && (
+                <EmptyState
+                  message={hasFilters ? 'No matching sessions.' : 'No sessions found.'}
+                  hasFilters={hasFilters}
+                  onClear={onClear}
+                />
+              )}
             </div>
         }
       </div>
@@ -124,7 +236,9 @@ function SessionsTab() {
 
 // ── Connection events tab (every row is a connection_attempt from /api/logs) ─
 
-function RawEventsTab() {
+function RawEventsTab({
+  filters, hasFilters, onClear,
+}: { filters: Filters; hasFilters: boolean; onClear: () => void }) {
   const [logs,    setLogs]    = useState<QueryLog[]>([])
   const [loading, setLoading] = useState(true)
   const [domain,  setDomain]  = useState('')
@@ -134,9 +248,11 @@ function RawEventsTab() {
     setLoading(true)
     try {
       const data = await api.logs.query({
-        domain:  domain || undefined,
-        blocked: blocked === 'all' ? undefined : blocked === 'true',
-        limit:   200,
+        domain:    domain || undefined,
+        blocked:   blocked === 'all' ? undefined : blocked === 'true',
+        deviceId:  filters.deviceId  ?? undefined,
+        profileId: filters.profileId ?? undefined,
+        limit:     200,
       })
       setLogs(data)
     } finally {
@@ -144,7 +260,7 @@ function RawEventsTab() {
     }
   }
 
-  useEffect(() => { load() }, [domain, blocked])
+  useEffect(() => { load() }, [domain, blocked, filters.deviceId, filters.profileId])
 
   return (
     <div className="space-y-4">
@@ -197,11 +313,40 @@ function RawEventsTab() {
                   ))}
                 </tbody>
               </table>
-              {logs.length === 0 && <p className="p-6 text-gray-500 text-sm">No events found.</p>}
+              {logs.length === 0 && (
+                <EmptyState
+                  message={hasFilters ? 'No matching events.' : 'No events found.'}
+                  hasFilters={hasFilters}
+                  onClear={onClear}
+                />
+              )}
             </div>
         }
       </div>
     </div>
+  )
+}
+
+function EmptyState({
+  message, hasFilters, onClear,
+}: { message: string; hasFilters: boolean; onClear: () => void }) {
+  return (
+    <p className="p-6 text-gray-500 text-sm" data-testid="logs-empty-state">
+      {message}
+      {hasFilters && (
+        <>
+          {' '}
+          <button
+            type="button"
+            onClick={onClear}
+            data-testid="logs-empty-clear"
+            className="text-emerald-400 hover:text-emerald-300 underline"
+          >
+            Clear filters
+          </button>
+        </>
+      )}
+    </p>
   )
 }
 
