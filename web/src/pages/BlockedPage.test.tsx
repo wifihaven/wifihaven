@@ -36,25 +36,32 @@ beforeEach(() => {
 })
 
 describe('BlockedPage — reason display', () => {
-  it('shows human-readable message for reason=paused', () => {
-    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com', reason: 'paused' })
-    expect(screen.getByText(/parental controls/i)).toBeInTheDocument()
+  // Reason strings here mirror MacBlockReason wire format
+  // (shared/src/Models.scala: Paused / Schedule / TimeLimit / Manual).
+  it('shows paused-profile copy for reason=Paused (#437)', () => {
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com', reason: 'Paused' })
+    expect(screen.getByText(/profile is paused/i)).toBeInTheDocument()
   })
 
-  it('shows schedule end time for reason=schedule with until param', () => {
+  it('shows schedule end time for reason=Schedule with until param', () => {
     renderBlocked({
       mac: 'aa:bb:cc:11:22:33',
       host: 'example.com',
-      reason: 'schedule',
+      reason: 'Schedule',
       until: '07:00',
     })
     expect(screen.getByText(/07:00/)).toBeInTheDocument()
   })
 
-  it('shows daily limit message for reason=time_limit', () => {
-    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'time_limit' })
+  it('shows daily limit message for reason=TimeLimit', () => {
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
     expect(screen.getByText(/daily/i)).toBeInTheDocument()
     expect(screen.getByText(/screen time/i)).toBeInTheDocument()
+  })
+
+  it('shows manual-block copy for reason=Manual', () => {
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com', reason: 'Manual' })
+    expect(screen.getByText(/blocked by a parent/i)).toBeInTheDocument()
   })
 
   it('shows category message for reason=category:ads', () => {
@@ -62,8 +69,13 @@ describe('BlockedPage — reason display', () => {
     expect(screen.getByText(/blocked category/i)).toBeInTheDocument()
   })
 
+  it('shows a non-empty fallback for unknown reason instead of leaving it blank (#437)', () => {
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com', reason: 'whatever' })
+    expect(screen.getByText(/access blocked/i)).toBeInTheDocument()
+  })
+
   it('shows the blocked hostname prominently', () => {
-    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'time_limit' })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
     expect(screen.getByText('youtube.com')).toBeInTheDocument()
   })
 })

@@ -176,22 +176,30 @@ happen first. See the install guide above for the enrollment flow.
 ## Block-page redirect
 
 Blocked HTTP/80 traffic is DNAT'd to `127.0.0.1:8081` (uhttpd) via a
-dedicated `nat hook prerouting` chain in `inet familydns`. uhttpd serves
-`/www/familydns/index.html`, which uses JavaScript to redirect the browser
-to `http://<api>/blocked?host=…&reason=…`.
+dedicated `nat hook prerouting` chain in `inet familydns`. uhttpd dispatches
+every request to the lua handler at `/www/familydns/handler.lua`
+(uhttpd-mod-lua). The handler resolves the client MAC from `/proc/net/arp`
+using `REMOTE_ADDR`, looks up the per-MAC block reason that the agent
+writes to `/var/run/familydns/blocked_reasons` after each policy apply,
+and returns an HTML document that redirects the browser to
+`http://<api>/blocked?host=…&reason=…&mac=…` — populated so the React
+block page can render reason-specific copy (#437).
 
-The block-page listener's document root is `/www/familydns` (not `/www`)
-so the DNAT's `/` path serves the block page directly rather than LuCI.
+The pre-#437 implementation served a static `index.html`; it had no way to
+know the client's MAC, so the reason on the API page always fell back to
+the generic "blocked" copy.
 
 HTTPS to blocked hosts times out intentionally — intercepting TLS without
 installing a custom CA on every client device is not practical.
 
-Configure uhttpd to listen on `127.0.0.1:8081`:
+Configure uhttpd to listen on `127.0.0.1:8081` and dispatch to the handler:
 
 ```sh
 uci add uhttpd uhttpd
 uci set uhttpd.@uhttpd[-1].listen_http='127.0.0.1:8081'
 uci set uhttpd.@uhttpd[-1].home='/www/familydns'
+uci set uhttpd.@uhttpd[-1].lua_prefix='/'
+uci set uhttpd.@uhttpd[-1].lua_handler='/www/familydns/handler.lua'
 uci commit uhttpd
 /etc/init.d/uhttpd reload
 ```

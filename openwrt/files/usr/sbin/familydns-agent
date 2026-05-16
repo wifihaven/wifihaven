@@ -179,21 +179,29 @@ end
 
 -- ── Ensure output directories exist ───────────────────────────────────────────
 
-os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/familydns")
+os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/familydns /var/run/familydns")
 
--- ── Patch block page with the actual API URL ────────────────────────────────
+-- ── Block-page runtime config (#437) ─────────────────────────────────────────
+-- The block-page uhttpd handler (/www/familydns/handler.lua, served via
+-- uhttpd-mod-lua) reads /var/run/familydns/api_url to know where to redirect
+-- blocked clients, and /var/run/familydns/blocked_reasons (written below by
+-- render.write_blocked_reasons after every snapshot apply) to look up the
+-- per-MAC reason for the current device.
+
+local BLOCK_PAGE_API_URL_PATH  = "/var/run/familydns/api_url"
+local BLOCK_PAGE_REASONS_PATH  = "/var/run/familydns/blocked_reasons"
 
 do
-  local html_path = "/www/familydns/index.html"
-  local f = io.open(html_path, "r")
-  if f then
-    local content = f:read("*a")
-    f:close()
-    if content:find("FAMILYDNS_API_URL", 1, true) then
-      local patched = content:gsub("FAMILYDNS_API_URL", api_url)
-      local out = io.open(html_path, "w")
-      if out then out:write(patched); out:close() end
-    end
+  local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
+  if f then f:write(api_url); f:close() end
+end
+
+-- Persist the per-MAC block reasons for the block-page handler. Called after
+-- every render.update_shared so the file mirrors the live in-memory map.
+local function persist_blocked_reasons()
+  local ok, err = render.write_blocked_reasons(blocked_reason, BLOCK_PAGE_REASONS_PATH)
+  if not ok then
+    log.debug("could not write %s: %s", BLOCK_PAGE_REASONS_PATH, tostring(err))
   end
 end
 
@@ -227,6 +235,7 @@ do
   if cached then
     if policy.apply(cached, write_file, run_cmd, log) then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
+      persist_blocked_reasons()
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/familydns/policy.json")
     else
@@ -250,6 +259,7 @@ do
   if snap then
     if policy.apply(snap, write_file, run_cmd, log) then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
+      persist_blocked_reasons()
       current_etag = etag
       last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -359,6 +369,7 @@ conntrack.watch({
         -- just need to clear the flag below.
         if policy.apply(snap, write_file, run_cmd, log) then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
+          persist_blocked_reasons()
           current_etag = etag
           last_snapshot = snap
           policy.mark_poll_success(wall)
