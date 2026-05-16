@@ -187,20 +187,21 @@ local function resolved_tag_name(mac)
 end
 
 -- #421: per-(MAC, host) extraAllowed exception sets. ea_<sanmac>_<sanhost>
--- holds the v4 resolved IPs of host a for the dhcp-tagged MAC m; ea6_ is the
--- v6 sibling. The eb_/bl_ drop rules append `ip daddr != @ea_<m>_<a>` for
--- each a ∈ extraAllowed(m), so a hit suppresses the drop. eatag_<sanmac>
--- is the dhcp-host tag that scopes the dnsmasq nftset= populator to one MAC
--- (separate from resolvetag_ so a device can opt into blockIpOnly without
--- also having extraAllowed, and vice-versa).
+-- holds the v4 resolved IPs of host a; ea6_ is the v6 sibling. The eb_/bl_
+-- drop rules append `ip daddr != @ea_<m>_<a>` for each a ∈ extraAllowed(m),
+-- so a hit suppresses the drop. The MAC scoping lives entirely in the nft
+-- rule (`ether saddr <m>`); the set name carries the MAC only as a unique
+-- per-(MAC, host) identifier — dnsmasq populates it from any client's
+-- resolution of the host (#496: dnsmasq's `nftset=` does not support a
+-- `tag:` prefix in 2.91, so per-MAC DNS-time scoping isn't an option here).
+-- Cross-pollination is benign: an IP belonging to host h enters every
+-- ea_<m>_h set declared, but a MAC <m'> without h in its extraAllowed has
+-- no corresponding nft rule referencing ea_<m'>_h, so the set is unread.
 local function ea_set_name(mac, host)
   return "ea_" .. sanitize(mac) .. "_" .. sanitize(host)
 end
 local function ea6_set_name(mac, host)
   return "ea6_" .. sanitize(mac) .. "_" .. sanitize(host)
-end
-local function ea_tag_name(mac)
-  return "eatag_" .. sanitize(mac)
 end
 
 -- Per-MAC effective extraAllowed hosts. Returns { [mac] = {host, ...} } with
@@ -258,8 +259,11 @@ function M.dnsmasq(snapshot)
   local bio_macs = {}
   for _, m in ipairs(block_ip_only_macs(snapshot)) do bio_macs[m] = true end
 
-  -- #421: which MACs need a per-MAC eatag (have non-empty effective
-  -- extraAllowed). Same lookup-by-MAC pattern as bio_macs.
+  -- #421: which MACs have non-empty effective extraAllowed. We use this
+  -- below to drive per-(MAC, host) ea_ nftset declarations, but no
+  -- dhcp-host tag is needed (#496: dnsmasq's nftset= parser rejects the
+  -- `tag:` prefix, so the per-MAC scoping lives in the nft rule instead
+  -- and the dnsmasq populator is untagged).
   local ea_by_mac = effective_extra_allowed_by_mac(snapshot)
 
   -- MAC → profile tag so dnsmasq can apply per-profile tagged callbacks.
@@ -269,17 +273,12 @@ function M.dnsmasq(snapshot)
   -- #353: blockIpOnly MACs get an additional `set:resolvetag_<sanmac>` tag
   -- on the same line so the tag-scoped `nftset=` populator below catches
   -- every A/AAAA answered to this client.
-  -- #421: MACs with extraAllowed get an additional `set:eatag_<sanmac>` tag
-  -- so the per-(MAC, host) ea_ populator below catches the right MAC.
   emit("# device MAC → profile tag")
   for mac, dev in sorted_devices(snapshot.devices) do
     if dev.profileId then
       local tags = { string.format("set:profile%d", dev.profileId) }
       if bio_macs[mac] then
         tags[#tags + 1] = "set:" .. resolved_tag_name(mac)
-      end
-      if ea_by_mac[mac] then
-        tags[#tags + 1] = "set:" .. ea_tag_name(mac)
       end
       emit(string.format("dhcp-host=%s,%s", mac, table.concat(tags, ",")))
     end
@@ -301,21 +300,24 @@ function M.dnsmasq(snapshot)
     emit("")
   end
 
-  -- #421: per-(MAC, host) extraAllowed nftset populators. Tag-scoped so
-  -- only the targeted MAC's DNS responses for host a land in ea_<m>_<a> /
-  -- ea6_<m>_<a>. The eb_/bl_ drop rules then carry `ip daddr != @ea_...`
-  -- clauses to suppress the drop when daddr is in any ea set for that MAC.
+  -- #421: per-(MAC, host) extraAllowed nftset populators. One line per
+  -- (mac, host) pair; the set is named per-(mac, host) but populated by
+  -- any client's resolution of host. The MAC scoping happens in the nft
+  -- rule (`ether saddr <mac> ... != @ea_<mac>_<host>`), not at DNS time.
+  -- (#496: dnsmasq 2.91's `nftset=` does NOT parse a `tag:` prefix — the
+  -- earlier tag-scoped form was silently rejected, leaving every ea_ set
+  -- empty and turning the per-MAC drop rule into an unconditional drop.)
   do
     local ea_macs = {}
     for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
     table.sort(ea_macs)
     if #ea_macs > 0 then
-      emit("# extraAllowed → per-(MAC, host) ea_ nftsets (#421)")
+      emit("# extraAllowed → per-(MAC, host) ea_ nftsets (#421, #496)")
       for _, mac in ipairs(ea_macs) do
         for _, host in ipairs(ea_by_mac[mac]) do
           emit(string.format(
-            "nftset=tag:%s,/%s/4#inet#familydns#%s,6#inet#familydns#%s",
-            ea_tag_name(mac), host,
+            "nftset=/%s/4#inet#familydns#%s,6#inet#familydns#%s",
+            host,
             ea_set_name(mac, host), ea6_set_name(mac, host)))
         end
       end
