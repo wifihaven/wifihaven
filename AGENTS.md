@@ -1,4 +1,4 @@
-# AGENTS.md — FamilyDNS
+# AGENTS.md — WifiHaven
 
 This file provides context for AI coding agents (Claude, Copilot, Cursor, etc.) working on this codebase.
 
@@ -78,7 +78,7 @@ shape, wire JSON examples, and the enforcement model.
 
 ## What this project is
 
-FamilyDNS is a self-hosted, network-level parental-control system with per-device filtering, time limits, and a web dashboard. The API runs on a Linux home server (Ubuntu) and replaces commercial products like Gryphon or TP-Link HomeShield; the enforcement agent runs on the gateway router (OpenWRT or OPNsense).
+WifiHaven is a self-hosted, network-level parental-control system with per-device filtering, time limits, and a web dashboard. The API runs on a Linux home server (Ubuntu) and replaces commercial products like Gryphon or TP-Link HomeShield; the enforcement agent runs on the gateway router (OpenWRT or OPNsense).
 
 ## Architecture
 
@@ -139,7 +139,7 @@ Order matters because earlier conditions short-circuit:
 The router never re-evaluates any of this. It receives the resolved
 `BlockRules` and applies them mechanically.
 
-(DNS resolution itself is never blocked by FamilyDNS. dnsmasq forwards
+(DNS resolution itself is never blocked by WifiHaven. dnsmasq forwards
 upstream as normal; the enforcement plane is nftables on the resolved IPs.)
 
 ## Tech stack decisions

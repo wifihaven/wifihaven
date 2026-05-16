@@ -1,4 +1,14 @@
-# FamilyDNS
+# WifiHaven
+
+<!-- TODO(#364): GitHub repo URLs (raw.githubusercontent.com/sameerparekh/familydns/…,
+     git@github.com:sameerparekh/familydns.git, etc.) and the post-clone
+     directory name `familydns/` still appear throughout this README. They
+     move to `sameerparekh/wifihaven` when the repo rename (#364) lands. -->
+<!-- TODO(#355–#360): install paths (/opt/familydns, $HOME/.familydns), system
+     user (`familydns`), systemd units (familydns-api.service, familydns-update.*),
+     Docker image (ghcr.io/sameerparekh/familydns-api), Postgres role/db
+     (`familydns`), and HOCON config namespace (`familydns.*`) all still use
+     the old name. They flip in their respective rename sub-issues. -->
 
 A self-hosted, network-level parental-control system with a web UI. Block
 categories of sites, set per-profile schedules ("no internet after 9pm"),
@@ -127,14 +137,14 @@ agent) and reach the api over the network (see [`docs/architecture-openwrt.md`](
 
 ```bash
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env                # set FAMILYDNS_DB_PASSWORD and FAMILYDNS_JWT_SECRET
+$EDITOR deploy/.env                # set WIFIHAVEN_DB_PASSWORD and WIFIHAVEN_JWT_SECRET
 
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
 ```
 
 Postgres is internal to the compose network — it is not published on a
-host port. The api binds to `:8080` (configurable via `FAMILYDNS_API_BIND`
-/ `FAMILYDNS_API_PORT`). Run `scripts/smoke-prod.sh` to validate the stack.
+host port. The api binds to `:8080` (configurable via `WIFIHAVEN_API_BIND`
+/ `WIFIHAVEN_API_PORT`). Run `scripts/smoke-prod.sh` to validate the stack.
 
 Full operator notes (backups, reverse-proxy guidance, migration from the
 host-based deploy below) live in [`deploy/README.md`](deploy/README.md).
@@ -164,8 +174,8 @@ the `production` branch — see [Production branch & deploy gate](#production-br
 installing systemd units, and seeding `/etc/familydns/application.conf`.
 Idempotent — safe to re-run.
 
-Override defaults via env: `FAMILYDNS_BRANCH`, `FAMILYDNS_REPO_URL`,
-`FAMILYDNS_PREFIX`, `FAMILYDNS_USER`, `FAMILYDNS_MILL_VERSION`.
+Override defaults via env: `WIFIHAVEN_BRANCH`, `WIFIHAVEN_REPO_URL`,
+`WIFIHAVEN_PREFIX`, `WIFIHAVEN_USER`, `WIFIHAVEN_MILL_VERSION`.
 
 What it does:
 
@@ -236,7 +246,7 @@ Branches:
   refuses to push and the divergence has to be resolved by hand.
 
 The host's deploy timer and `scripts/deploy.sh` track `production` (via
-`FAMILYDNS_BRANCH=production`, the new default), so the live box only
+`WIFIHAVEN_BRANCH=production`, the new default), so the live box only
 ever runs commits that have passed the e2e gate.
 
 ### Manual deploy
@@ -252,10 +262,10 @@ Environment knobs (set on the command line or in
 
 | Var                   | Default | Effect                                      |
 | --------------------- | ------- | ------------------------------------------- |
-| `FAMILYDNS_BRANCH`    | `production` | Branch to track (e2e-gated)            |
-| `FAMILYDNS_PREFIX`    | `/opt/familydns` | Install root                       |
-| `FAMILYDNS_NO_WEB`    | `0`     | Skip frontend build                         |
-| `FAMILYDNS_NO_RESTART`| `0`     | Build but don't restart the service         |
+| `WIFIHAVEN_BRANCH`    | `production` | Branch to track (e2e-gated)            |
+| `WIFIHAVEN_PREFIX`    | `/opt/familydns` | Install root                       |
+| `WIFIHAVEN_NO_WEB`    | `0`     | Skip frontend build                         |
+| `WIFIHAVEN_NO_RESTART`| `0`     | Build but don't restart the service         |
 
 ### Why the deploy logic lives in the repo
 

@@ -1,12 +1,12 @@
-package familydns.api
+package wifihaven.api
 
 import doobie.*
 import doobie.implicits.*
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.policy.*
-import familydns.api.routes.*
-import familydns.shared.Clock
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.policy.*
+import wifihaven.api.routes.*
+import wifihaven.shared.Clock
 import zio.*
 import zio.http.*
 import zio.interop.catz.*

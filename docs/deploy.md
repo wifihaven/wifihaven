@@ -1,4 +1,4 @@
-# FamilyDNS Deploy Architecture
+# WifiHaven Deploy Architecture
 
 This document covers the full CD pipeline, first-install bootstrap, and
 auto-update strategy for both deployment targets.
@@ -109,7 +109,7 @@ image **on demand** rather than wait for the daily tick, run
 `systemctl start familydns-update.service` (or the `familydns-update-now`
 operator skill).
 
-**User-mode installs** (`FAMILYDNS_PREFIX=$HOME/.familydns`): `install.sh`
+**User-mode installs** (`WIFIHAVEN_PREFIX=$HOME/.familydns`): `install.sh`
 rewrites `WorkingDirectory=` to the actual install dir before copying the
 unit into `/etc/systemd/system/`, so user-mode installs also get auto-update.
 
@@ -261,10 +261,10 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d
 
 | Variable | Description |
 |----------|-------------|
-| `FAMILYDNS_DB_USER` | Postgres username |
-| `FAMILYDNS_DB_PASSWORD` | Postgres password (strong, random) |
-| `FAMILYDNS_DB_NAME` | Postgres database name |
-| `FAMILYDNS_JWT_SECRET` | JWT signing secret, ≥32 random characters |
+| `WIFIHAVEN_DB_USER` | Postgres username |
+| `WIFIHAVEN_DB_PASSWORD` | Postgres password (strong, random) |
+| `WIFIHAVEN_DB_NAME` | Postgres database name |
+| `WIFIHAVEN_JWT_SECRET` | JWT signing secret, ≥32 random characters |
 
 Optional vars have defaults; see `deploy/.env.example` for the full list.
 

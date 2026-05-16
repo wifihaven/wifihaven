@@ -1,10 +1,10 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.db.*
-import familydns.api.policy.*
-import familydns.shared.*
-import familydns.shared.Clock.TestClock
-import familydns.testinfra.*
+import wifihaven.api.db.*
+import wifihaven.api.policy.*
+import wifihaven.shared.*
+import wifihaven.shared.Clock.TestClock
+import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.json.*

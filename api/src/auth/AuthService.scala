@@ -1,10 +1,10 @@
-package familydns.api.auth
+package wifihaven.api.auth
 
 import at.favre.lib.crypto.bcrypt.BCrypt
-import familydns.api.JwtConfig
-import familydns.api.db.*
-import familydns.shared.*
-import familydns.shared.types.*
+import wifihaven.api.JwtConfig
+import wifihaven.api.db.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
 import pdi.jwt.*
 import pdi.jwt.algorithms.JwtHmacAlgorithm
 import zio.{Clock as _, *}

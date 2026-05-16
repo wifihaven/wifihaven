@@ -1,6 +1,6 @@
-# First-install guide: FamilyDNS API server
+# First-install guide: WifiHaven API server
 
-This guide walks you through installing the FamilyDNS API + Postgres stack
+This guide walks you through installing the WifiHaven API + Postgres stack
 on a fresh Linux host. By the end, you will have:
 
 - The `api` and `postgres` containers running under Docker Compose.
@@ -41,11 +41,11 @@ By default the one-liner installs into `$HOME/.familydns` (user-writable, no
 sudo required) — this is the recommended path for first-time users and is
 what the `curl | bash` invocation above will do. For a system-wide install
 under `/opt/familydns` (recommended for production hosts), set
-`FAMILYDNS_PREFIX` explicitly and run the script with `sudo`:
+`WIFIHAVEN_PREFIX` explicitly and run the script with `sudo`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
-sudo FAMILYDNS_PREFIX=/opt/familydns bash install.sh
+sudo WIFIHAVEN_PREFIX=/opt/familydns bash install.sh
 ```
 
 Piping `curl … | sudo bash` works too, but only if sudo is already warmed up
@@ -65,30 +65,30 @@ In environments where there is no controlling terminal at all (CI runners,
 nohup, some container shells), `/dev/tty` is not available; the script
 detects that and switches to non-interactive mode automatically — values
 come from env vars (see below) or defaults. To force non-interactive mode
-even when a tty is present, set `FAMILYDNS_NONINTERACTIVE=1`.
+even when a tty is present, set `WIFIHAVEN_NONINTERACTIVE=1`.
 
 ### Non-interactive install
 
-For unattended installs, set `FAMILYDNS_NONINTERACTIVE=1` and any of the
+For unattended installs, set `WIFIHAVEN_NONINTERACTIVE=1` and any of the
 env vars below to skip prompts. You can pass them on the same one-liner:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \
-  | FAMILYDNS_NONINTERACTIVE=1 \
-    FAMILYDNS_PREFIX=$HOME/.familydns \
-    FAMILYDNS_API_HOST_PORT=8080 \
-    FAMILYDNS_NEW_ADMIN_PW='choose-a-good-one' \
+  | WIFIHAVEN_NONINTERACTIVE=1 \
+    WIFIHAVEN_PREFIX=$HOME/.familydns \
+    WIFIHAVEN_API_HOST_PORT=8080 \
+    WIFIHAVEN_NEW_ADMIN_PW='choose-a-good-one' \
     bash
 ```
 
 | Env var | Purpose | Default |
 |---|---|---|
-| `FAMILYDNS_PREFIX` | install path (preferred name) | `$HOME/.familydns` (non-root) or `/opt/familydns` (root) |
-| `FAMILYDNS_INSTALL_DIR` | legacy alias for `FAMILYDNS_PREFIX` | — |
-| `FAMILYDNS_API_HOST_PORT` | host port to bind | `8080` |
-| `FAMILYDNS_API_BIND` | host interface to bind on | `0.0.0.0` |
-| `FAMILYDNS_NEW_ADMIN_PW` | new admin password (skips rotation prompt) | prompt |
-| `FAMILYDNS_NONINTERACTIVE` | if set, never prompt; fail if any required value is missing | unset |
+| `WIFIHAVEN_PREFIX` | install path (preferred name) | `$HOME/.familydns` (non-root) or `/opt/familydns` (root) |
+| `WIFIHAVEN_INSTALL_DIR` | legacy alias for `WIFIHAVEN_PREFIX` | — |
+| `WIFIHAVEN_API_HOST_PORT` | host port to bind | `8080` |
+| `WIFIHAVEN_API_BIND` | host interface to bind on | `0.0.0.0` |
+| `WIFIHAVEN_NEW_ADMIN_PW` | new admin password (skips rotation prompt) | prompt |
+| `WIFIHAVEN_NONINTERACTIVE` | if set, never prompt; fail if any required value is missing | unset |
 
 Run `bash install.sh --help` to print the same list.
 
@@ -113,7 +113,7 @@ and §8 (firewall).
 
 - **Port 8080/tcp** open from wherever the OpenWRT router agent will reach
   the API (typically your LAN, or the public internet if the router is
-  remote). The port is configurable via `FAMILYDNS_API_PORT` — see §3.
+  remote). The port is configurable via `WIFIHAVEN_API_PORT` — see §3.
 - **Disk for Postgres data**. Data lives in the Docker named volume
   `pgdata`, which by default lands under `/var/lib/docker/volumes/` on the
   host. Make sure that filesystem has room (a few GB is plenty for typical
@@ -196,13 +196,13 @@ Edit `.env` and set each variable. **Never commit this file.** All values:
 
 | Variable | Required? | Purpose | How to set |
 |----------|-----------|---------|------------|
-| `FAMILYDNS_DB_NAME` | yes | Postgres database name. | Leave the default (`familydns`) unless you have a reason to change it. |
-| `FAMILYDNS_DB_USER` | yes | Postgres role used by the API. | Leave the default (`familydns`). |
-| `FAMILYDNS_DB_PASSWORD` | yes | Postgres password. Postgres is on the internal compose network only — but use a strong password anyway. | `openssl rand -base64 24` |
-| `FAMILYDNS_JWT_SECRET` | yes | HMAC secret used to sign user session tokens. **Must be ≥32 random characters.** Anyone with this secret can mint admin tokens. | `openssl rand -base64 48` |
-| `FAMILYDNS_JWT_HOURS` | no (default `24`) | Session token lifetime in hours. | Leave default unless you need shorter sessions. |
-| `FAMILYDNS_API_BIND` | no (default `0.0.0.0`) | Host interface the API port binds to. Set to `127.0.0.1` if you're putting a reverse proxy in front (§7). | `127.0.0.1` for proxied installs, `0.0.0.0` for direct LAN access. |
-| `FAMILYDNS_API_PORT` | no (default `8080`) | Host port mapped to the API. | Change only if 8080 is taken. |
+| `WIFIHAVEN_DB_NAME` | yes | Postgres database name. | Leave the default (`familydns`) unless you have a reason to change it. |
+| `WIFIHAVEN_DB_USER` | yes | Postgres role used by the API. | Leave the default (`familydns`). |
+| `WIFIHAVEN_DB_PASSWORD` | yes | Postgres password. Postgres is on the internal compose network only — but use a strong password anyway. | `openssl rand -base64 24` |
+| `WIFIHAVEN_JWT_SECRET` | yes | HMAC secret used to sign user session tokens. **Must be ≥32 random characters.** Anyone with this secret can mint admin tokens. | `openssl rand -base64 48` |
+| `WIFIHAVEN_JWT_HOURS` | no (default `24`) | Session token lifetime in hours. | Leave default unless you need shorter sessions. |
+| `WIFIHAVEN_API_BIND` | no (default `0.0.0.0`) | Host interface the API port binds to. Set to `127.0.0.1` if you're putting a reverse proxy in front (§7). | `127.0.0.1` for proxied installs, `0.0.0.0` for direct LAN access. |
+| `WIFIHAVEN_API_PORT` | no (default `8080`) | Host port mapped to the API. | Change only if 8080 is taken. |
 
 After editing, `chmod 600 .env` so secrets aren't world-readable.
 
@@ -262,7 +262,7 @@ docker compose -f docker-compose.prod.yml --env-file .env ps
 ```
 
 If the API container shows `unhealthy`, check `docker compose logs api`
-— common causes are a wrong `FAMILYDNS_DB_PASSWORD` or a `FAMILYDNS_JWT_SECRET`
+— common causes are a wrong `WIFIHAVEN_DB_PASSWORD` or a `WIFIHAVEN_JWT_SECRET`
 shorter than 32 characters.
 
 ---
@@ -307,7 +307,7 @@ For LAN-only deployments where the router and the API are on the same
 trusted network, you can skip TLS — the OpenWRT agent doesn't strictly
 require it. For anything reachable from the internet, terminate TLS in a
 reverse proxy and bind the API to `127.0.0.1` by setting
-`FAMILYDNS_API_BIND=127.0.0.1` in `.env`, then `docker compose up -d` again.
+`WIFIHAVEN_API_BIND=127.0.0.1` in `.env`, then `docker compose up -d` again.
 
 ### 7.1 Caddy
 
@@ -421,7 +421,7 @@ When devices are missing from the UI, showing up as 'unknown', or the
 router agent appears silent, three opt-in surfaces help trace the
 mac → API → DB → UI hop without exposing anything in normal production.
 
-### 9.1 Verbose logging (`FAMILYDNS_LOG_LEVEL=DEBUG`)
+### 9.1 Verbose logging (`WIFIHAVEN_LOG_LEVEL=DEBUG`)
 
 Each `/api/router/{usage,events,policy}` request emits one log line per
 record/event with the mac, hostname, allowed/blocked flag, and ts. Combine
@@ -434,7 +434,7 @@ commit; /etc/init.d/familydns restart` to make the agent log every policy
 fetch, usage POST, event flush, and per-flow mac/hostname attribution to
 `logread -t familydns` (#228).
 
-### 9.2 Loopback-only debug endpoints (`FAMILYDNS_DEBUG=1`)
+### 9.2 Loopback-only debug endpoints (`WIFIHAVEN_DEBUG=1`)
 
 When set, the API mounts three unauthenticated read-only JSON dumps,
 restricted by both `remoteAddress` and the `Host` header to loopback
@@ -447,7 +447,7 @@ callers on the API host:
 These are equivalent to running `psql` against the DB without the network
 exposure. Every request — allowed or refused — logs at INFO/WARN, so an
 accidentally-left-on debug build is loud in production. The startup banner
-also emits a `FAMILYDNS_DEBUG=1` WARNING.
+also emits a `WIFIHAVEN_DEBUG=1` WARNING.
 
 Usage from the API host:
 
@@ -471,7 +471,7 @@ docker compose \
 psql -h 127.0.0.1 -p 5433 -U familydns familydns
 ```
 
-Override the bind with `FAMILYDNS_DB_BIND=127.0.0.1:5433` in `deploy/.env`
+Override the bind with `WIFIHAVEN_DB_BIND=127.0.0.1:5433` in `deploy/.env`
 if the default port is taken. Keep the bind on `127.0.0.1` — exposing the
 DB on `0.0.0.0` leaks credentials.
 

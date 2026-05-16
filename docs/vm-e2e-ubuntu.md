@@ -104,7 +104,7 @@ scripts/vm/build-router-image.sh
 
 # 3. Bring up the router VM. Point at the custom image with an absolute
 #    path, and pick a non-conflicting host HTTP-forward port if 8080 is
-#    already taken on the host (e.g. by a running familydns API stack).
+#    already taken on the host (e.g. by a running wifihaven API stack).
 FDNS_ROUTER_HTTP_PORT=18081 \
 FDNS_ROUTER_IMAGE_PATH="$PWD/scripts/vm/.cache/openwrt-familydns.img" \
     scripts/vm/router-up.sh
@@ -123,7 +123,7 @@ scripts/vm/router-down.sh
 
 ## Known gotchas on Ubuntu
 
-- **Port 8080 collisions.** If you already run a familydns deploy on the
+- **Port 8080 collisions.** If you already run a wifihaven deploy on the
   host (e.g. via `/home/$USER/.familydns/docker-compose.yml`), the
   router VM's default HTTP forward (`-hostfwd tcp:127.0.0.1:8080-:80`)
   will fail with `Could not set up host forwarding rule`. Override via

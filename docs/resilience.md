@@ -2,7 +2,7 @@
 
 Status: **PROPOSAL — awaiting sign-off.** Tracks #269.
 
-This document defines how familydns SHOULD behave under five failure scenarios.
+This document defines how wifihaven SHOULD behave under five failure scenarios.
 It is the durable design contract. Implementation may lag; gaps are filed as
 individual follow-up issues that reference #269.
 
@@ -10,7 +10,7 @@ The decision in §4 (per-profile three-mode failover; #385) is a policy
 call that needs explicit operator sign-off before implementation lands.
 §5 was previously a sign-off item too, but is now settled by design: the
 router carries no time-based logic (Truth 2 / #350), so clock skew on the
-router is not a familydns concern.
+router is not a wifihaven concern.
 
 ---
 

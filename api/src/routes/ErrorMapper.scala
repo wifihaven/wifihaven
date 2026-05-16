@@ -1,4 +1,4 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
 import zio.http.*
 

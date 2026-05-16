@@ -1,6 +1,6 @@
 # Time handling — schedules, daily reset, DST
 
-This document explains how FamilyDNS handles wall-clock time across timezones
+This document explains how WifiHaven handles wall-clock time across timezones
 and DST transitions. The rules apply to schedule windows and daily-usage
 reset; both are evaluated by `PolicyService` on the API server.
 

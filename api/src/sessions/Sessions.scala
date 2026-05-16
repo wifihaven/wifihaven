@@ -1,7 +1,7 @@
-package familydns.api.sessions
+package wifihaven.api.sessions
 
-import familydns.shared.Session
-import familydns.shared.types.*
+import wifihaven.shared.Session
+import wifihaven.shared.types.*
 
 import java.time.{Instant, LocalDate}
 

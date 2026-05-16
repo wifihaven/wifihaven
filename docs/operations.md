@@ -1,6 +1,6 @@
 # Operations
 
-Runbooks for operating a deployed FamilyDNS test or production setup.
+Runbooks for operating a deployed WifiHaven test or production setup.
 
 ## Developer access to the test router (WAN-side SSH)
 
