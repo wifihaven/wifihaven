@@ -154,11 +154,27 @@ the VM e2e harness on this host as a regular user, you're done.
 
 ## Trust model
 
-The repo is public, but the workflow that uses this runner triggers only on
-`push: main` and `workflow_dispatch` — never on `pull_request`. A self-hosted
-runner is registered to a specific repo, so a fork pushing to *its* main
-does **not** reach our runner; the only way fork code can run on this box is
-if a maintainer merges it to upstream `main`. Trust gate = code review.
+The repo is public. The VM e2e workflow (`.github/workflows/e2e-vm.yml`) is
+triggered by:
+
+1. `pull_request` whose **base branch is `ci/vm-e2e`** — the dedicated
+   stabilization branch. The workflow job is gated by
+   `if: github.event.pull_request.head.repo.full_name == github.repository`
+   so PRs from forks are refused execution on the self-hosted runner; only
+   branches pushed into this repo can target `ci/vm-e2e` and run the suite.
+2. `workflow_dispatch` — manual runs from the Actions tab against any ref,
+   requires maintainer-equivalent permissions.
+3. `workflow_call` — reserved for future use; not currently invoked from
+   any other workflow.
+
+Notably **not** triggered on `push: main`, and **not** a `needs:` of Master
+CD's `publish-api` job — image publish is ungated from the VM e2e while the
+suite is being stabilized. Reintroduce as a `needs:` once the suite is
+reliably green on `ci/vm-e2e`.
+
+Trust gate for the runner = (a) restriction to `ci/vm-e2e` as the PR base,
+(b) same-repo head-branch requirement on `pull_request`, (c) code review
+before any branch is pushed to this repo.
 
 ## Maintenance
 

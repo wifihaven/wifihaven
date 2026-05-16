@@ -4,14 +4,25 @@ name: VM e2e
 # the scenarios under scripts/e2e/scenarios/ against a disposable docker
 # compose API stack. Runs on the self-hosted KVM runner (#149).
 #
-# Invoked by master.yml (Master CD) on push:main as a gate before
-# publish-api, and directly via workflow_dispatch for manual runs. Not
-# triggered by pull_request — the repo is public and the runner is
-# self-hosted on a maintainer's host, so we don't execute untrusted fork
-# code on it. See docs/ops/kvm-runner.md → "Trust model" for the full
-# reasoning. Code review on merge is the trust gate.
+# Triggers — VM e2e is currently a stabilization workstream and is not gating
+# publish; see docs/ops/kvm-runner.md → "Trust model":
+#
+#   1. pull_request targeting the `ci/vm-e2e` branch — that branch is the
+#      iteration baseline. Merging fixes into it via PR exercises the suite.
+#      The fork-safety guard on the job restricts execution to PRs from
+#      branches in this repository — fork PRs do not run on the self-hosted
+#      runner (public repo + private hardware).
+#   2. workflow_dispatch — manual runs from the Actions tab against any ref.
+#   3. workflow_call — kept for future use; not currently invoked from any
+#      other workflow.
+#
+# Notably NOT triggered on push:main and NOT a `needs:` of Master CD's
+# publish-api job. Image publish is ungated from the VM e2e while we
+# stabilize the suite.
 
 on:
+  pull_request:
+    branches: [ci/vm-e2e]
   workflow_call:
   workflow_dispatch:
 
@@ -22,6 +33,11 @@ concurrency:
 jobs:
   e2e:
     name: VM e2e suite
+    # Block fork PRs on the self-hosted runner. Same-repo PRs and manual
+    # dispatch / workflow_call invocations are always allowed.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
     # Observed durations: 30m was cut off mid-test_pause; 60m got past
     # test_pause but was killed mid-test_time_limit, which sleeps 330s
