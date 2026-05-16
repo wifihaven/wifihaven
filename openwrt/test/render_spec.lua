@@ -961,10 +961,14 @@ end)
 --
 -- Per-MAC "must use DNS" enforcement: when a device has BlockRules.blockIpOnly
 -- true, forward-chain drops any v4/v6 daddr that is NOT in this MAC's
--- resolved_<mac> / resolved6_<mac> set. dnsmasq populates the sets at A/AAAA
--- response time, scoped to the MAC via a dhcp-host tag — every hostname the
--- device resolves through our resolver lands in the set; everything else
--- (DoH, DoT, hard-coded IPs) drops.
+-- resolved_<mac> / resolved6_<mac> set. The familydns-dns-tail sidecar
+-- populates the sets at A/AAAA response time by tailing dnsmasq's query log
+-- and mapping the per-reply client IP back to a MAC via /tmp/dhcp.leases —
+-- every hostname the device resolves through our resolver lands in its set;
+-- everything else (DoH, DoT, hard-coded IPs) drops. dnsmasq's `nftset=`
+-- directive is NOT used for this set: dnsmasq 2.91 rejects the `tag:` prefix
+-- needed for per-MAC scoping (#496/#505), and cross-MAC pollination would
+-- defeat the feature.
 --
 -- The drop is order-independent w.r.t. extraBlocked / blocklist drops: all
 -- three are terminal `drop` rules under a `policy accept` chain, so the
@@ -1000,18 +1004,23 @@ describe("render blockIpOnly enforcement (#353)", function()
 
   -- ── dnsmasq side ────────────────────────────────────────────────────────
 
-  it("appends set:resolvetag_<sanmac> to the dhcp-host line when blockIpOnly=true", function()
+  it("does NOT add a resolvetag tag to the dhcp-host line (#505: dns-tail populates)", function()
     local conf = render.dnsmasq(snap_bio())
-    assert.truthy(conf:find(
-      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:resolvetag_aa_bb_cc_11_22_33",
-      1, true))
+    -- dhcp-host carries only the profile tag; resolvetag_ is never emitted.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
+               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+    assert.is_nil(conf:find("resolvetag_", 1, true))
   end)
 
-  it("emits tag-scoped nftset= populator for the per-MAC resolved sets", function()
+  it("does NOT emit any nftset= directive for resolved_/resolved6_ (#505)", function()
     local conf = render.dnsmasq(snap_bio())
-    assert.truthy(conf:find(
-      "nftset=tag:resolvetag_aa_bb_cc_11_22_33,4#inet#familydns#resolved_aa_bb_cc_11_22_33,6#inet#familydns#resolved6_aa_bb_cc_11_22_33",
-      1, true))
+    -- The populator is dns-tail, not dnsmasq. dnsmasq 2.91 rejects the
+    -- `tag:` prefix needed for per-MAC scoping (#496), so the directive is
+    -- omitted entirely — any reference to resolved_/resolved6_ here would
+    -- regress the bug.
+    assert.is_nil(conf:find("nftset=tag:", 1, true))
+    assert.is_nil(conf:find("resolved_aa_bb_cc_11_22_33", 1, true))
+    assert.is_nil(conf:find("resolved6_aa_bb_cc_11_22_33", 1, true))
   end)
 
   it("does NOT emit resolvetag / resolved nftset directives when blockIpOnly=false", function()
@@ -1034,10 +1043,13 @@ describe("render blockIpOnly enforcement (#353)", function()
       extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = true,
     }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find(
-      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:resolvetag_aa_bb_cc_11_22_33",
-      1, true))
-    assert.truthy(conf:find("nftset=tag:resolvetag_aa_bb_cc_11_22_33", 1, true))
+    -- dhcp-host still carries only the profile tag; population still comes
+    -- from dns-tail, not dnsmasq. The nft side (declared sets + drop rule)
+    -- is what actually enforces blockIpOnly — see the nft-side tests below.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
+               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+    assert.is_nil(conf:find("resolvetag_", 1, true))
+    assert.is_nil(conf:find("nftset=tag:", 1, true))
   end)
 
   -- ── nft side: per-MAC sets ──────────────────────────────────────────────
