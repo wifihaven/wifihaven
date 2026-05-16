@@ -491,7 +491,7 @@ object TimeRoutes {
       // #262 — top-N host attribution across all profile devices for the day.
       // Bucket-deduped per host; informational, so all hosts (including
       // exempt-pattern matches) appear. UI shows top 10.
-      hostUsage = familydns.api.presence.Presence
+      hostUsage       = familydns.api.presence.Presence
         .hostMinutes(presence)
         .iterator
         .filter(_._2 > 0)

@@ -642,14 +642,16 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp <- routes.runZIO(req)
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
-          kids = list.find(_.profileId == kidsId).get
+          kids    = list.find(_.profileId == kidsId).get
           hostMap = kids.hostUsage.map(hu => hu.host.value -> hu.usedMins).toMap
         } yield assertTrue(kids.hostUsage.length == 3) &&
-          assertTrue(hostMap == Map(
-            "youtube.com"      -> 35,
-            "khan-academy.org" -> 10,
-            "roblox.com"       -> 5,
-          )) &&
+          assertTrue(
+            hostMap == Map(
+              "youtube.com"      -> 35,
+              "khan-academy.org" -> 10,
+              "roblox.com"       -> 5,
+            ),
+          ) &&
           assertTrue(kids.hostUsage.map(_.usedMins) == List(35, 10, 5)) // sorted desc
       },
       test("hostUsage capped at top 10, smallest dropped (#262)") {
@@ -666,12 +668,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 240)
-          mac         = "aa:bb:cc:dd:ee:01"
+          mac = "aa:bb:cc:dd:ee:01"
           _        <- TestLayers.seedDevice(deviceRepo, mac, "iPad", kidsId)
           routerId <- seedRouter
           today = TestClock.schoolDayAfternoon.toLocalDate
           // Seed 12 distinct hosts; minutes = (12-i)*5 so host0 has the most.
-          _ <- ZIO.foreachDiscard(0 until 12) { i =>
+          _               <- ZIO.foreachDiscard(0 until 12) { i =>
             val mins = (12 - i) * 5
             seedTraffic(routerId, mac, s"host$i.example.com", today, mins, bucketOffset = i * 20)
           }
@@ -694,7 +696,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp <- routes.runZIO(req)
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
-          kids = list.find(_.profileId == kidsId).get
+          kids  = list.find(_.profileId == kidsId).get
           hosts = kids.hostUsage.map(_.host.value).toSet
         } yield assertTrue(kids.hostUsage.length == 10) &&
           // The two smallest (host10=10m, host11=5m) dropped; host0..host9 retained.

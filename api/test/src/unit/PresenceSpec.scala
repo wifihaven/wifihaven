@@ -165,8 +165,8 @@ object PresenceSpec extends ZIOSpecDefault {
         val res  = Presence.hostMinutes(rows)
         assertTrue(
           res == Map(
-            HostId.Fqdn(Hostname.unsafe("youtube.com"))  -> 5,
-            HostId.Fqdn(Hostname.unsafe("google.com"))   -> 5,
+            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 5,
+            HostId.Fqdn(Hostname.unsafe("google.com"))  -> 5,
             HostId.Fqdn(Hostname.unsafe("dropbox.com")) -> 5,
           ),
         )
