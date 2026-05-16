@@ -5,6 +5,12 @@ name: OpenWRT Package Build
 # on every push to main that touches openwrt/**, so the field router can
 # fetch the updated .apk without us cutting a real tag each iteration.
 # This is reverted by #244 once #228 is fixed.
+#
+# This workflow is also invoked from master.yml as a reusable workflow
+# (`workflow_call`) so the openwrt publish path is gated on the same Master
+# CD checks as publish-api (#494). The standalone push/PR/dispatch triggers
+# below are retained for ad-hoc work (direct tag pushes, PR validation,
+# manual runs).
 on:
   push:
     tags: ["v*"]
@@ -13,6 +19,7 @@ on:
   pull_request:
     paths: ["openwrt/**"]
   workflow_dispatch:
+  workflow_call:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"

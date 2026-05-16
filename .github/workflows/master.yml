@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       api: ${{ steps.filter.outputs.api }}
+      openwrt: ${{ steps.filter.outputs.openwrt }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -52,6 +53,8 @@ jobs:
               - 'config/application.conf.example'
               - '.scalafmt.conf'
               - '.scalafix.conf'
+            openwrt:
+              - 'openwrt/**'
 
   # ── 1. Full CI test matrix (unit, lint, lua, python, shell, frontend) ─────
   # Runs unconditionally — issue #190 wants test failures on main to block
@@ -161,3 +164,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ── 4. Publish OpenWRT .ipk/.apk (path-filtered or v* tag) ────────────────
+  # Gates openwrt build/publish on the same checks as publish-api. Fires when
+  # openwrt/** paths change on main, OR on v* tag pushes so tag releases still
+  # flow through the gate (#494). vm-e2e is intentionally NOT in needs — see
+  # the comment above publish-api / #492.
+  publish-openwrt:
+    name: Build + publish OpenWRT .ipk/.apk
+    needs: [changes, ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
+    if: >-
+      needs.changes.outputs.openwrt == 'true'
+      || startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/openwrt-build.yml
+    secrets: inherit
