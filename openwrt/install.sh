@@ -148,11 +148,21 @@ esac
 # Download the latest package matching this system's package manager.
 info "Resolving latest release asset (.$PKG_EXT)..."
 releases_json=$(curl -fsSL "$RELEASES_API")
-pkg_url=$(echo "$releases_json" \
+# Require the wifihaven_ prefix so we don't accidentally pick up a stale
+# pre-rename familydns_*.{ipk,apk} that lingers in the openwrt-latest
+# release between cleanup passes (#569). Fail loud on zero or multiple
+# matches — a future surprise (e.g. unexpected per-arch variants of an
+# _all package) should not silently install whichever sorts first.
+pkg_urls=$(echo "$releases_json" \
   | jsonfilter -e '@.assets[*].browser_download_url' \
-  | grep -E "\.${PKG_EXT}\$" \
-  | head -n1)
-[ -n "$pkg_url" ] || err "could not find a .$PKG_EXT asset in the latest release at $RELEASES_API"
+  | grep -E '/wifihaven_[^/]*\.'"${PKG_EXT}"'$')
+pkg_count=$(printf '%s\n' "$pkg_urls" | grep -c .)
+case "$pkg_count" in
+  0) err "could not find a wifihaven_*.${PKG_EXT} asset in the latest release at $RELEASES_API" ;;
+  1) pkg_url=$pkg_urls ;;
+  *) err "expected exactly one wifihaven_*.${PKG_EXT} asset in $RELEASES_API, found $pkg_count:
+$pkg_urls" ;;
+esac
 pkg_path="/tmp/wifihaven.${PKG_EXT}"
 info "Downloading $pkg_url"
 curl -fsSL -o "$pkg_path" "$pkg_url"
