@@ -31,7 +31,7 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-RUN_DIR="${FDNS_RUN_DIR}/${NAME}"
+RUN_DIR="${WH_RUN_DIR}/${NAME}"
 if [[ ! -f "${RUN_DIR}/ssh.port" ]]; then
   echo "client-exec.sh: client '${NAME}' is not running (no ${RUN_DIR}/ssh.port)" >&2
   exit 1
@@ -40,7 +40,7 @@ SSH_PORT="$(cat "${RUN_DIR}/ssh.port")"
 
 # Git doesn't track non-executable file modes; the committed private key may
 # check out world-readable, which SSH refuses to use. Tighten it idempotently.
-chmod 0600 "${FDNS_CLIENT_SSH_KEY}" 2>/dev/null || true
+chmod 0600 "${WH_CLIENT_SSH_KEY}" 2>/dev/null || true
 
 # Quote each argv element so the remote shell re-parses back to the same word
 # boundaries. ssh joins multi-arg commands with bare spaces — without this, a
@@ -52,6 +52,6 @@ exec ssh -o StrictHostKeyChecking=no \
          -o UserKnownHostsFile=/dev/null \
          -o LogLevel=ERROR \
          -o BatchMode=yes \
-         -i "${FDNS_CLIENT_SSH_KEY}" \
+         -i "${WH_CLIENT_SSH_KEY}" \
          -p "${SSH_PORT}" \
          root@127.0.0.1 "${REMOTE_CMD}"

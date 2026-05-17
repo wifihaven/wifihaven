@@ -106,7 +106,7 @@ This polls ghcr.io once a day (with a 5-min post-boot run so a freshly
 rebooted host catches up quickly). `docker compose pull` is a no-op when
 `latest` already matches the local digest, so it's cheap. To pull a new
 image **on demand** rather than wait for the daily tick, run
-`systemctl start wifihaven-update.service` (or the `familydns-update-now`
+`systemctl start wifihaven-update.service` (or the `wifihaven-update-now`
 operator skill).
 
 **User-mode installs** (`WIFIHAVEN_PREFIX=$HOME/.wifihaven`): `install.sh`
@@ -135,7 +135,7 @@ After that, run updates by hand from the install dir:
 The agent is pure Lua (`PKGARCH:=all`), so no cross-compilation is needed.
 `openwrt/build-ipk.sh` assembles the `.ipk` without the full OpenWRT SDK.
 
-Output: `openwrt/familydns_<version>-<release>_all.ipk`
+Output: `openwrt/wifihaven_<version>-<release>_all.ipk`
 
 ### 2.2 Build and publish: `.ipk` → GitHub Releases
 
@@ -155,7 +155,7 @@ router's auto-update script target the simple `releases/latest` endpoint
 - Push of a `v*` tag → build + attach to a GitHub Release.
 
 On a `v*` tag, `softprops/action-gh-release` creates the release named after
-the tag (e.g. `v0.2.0`) and attaches `openwrt/familydns_*.ipk`. The release
+the tag (e.g. `v0.2.0`) and attaches `openwrt/wifihaven_*.ipk`. The release
 is the distribution mechanism for the router.
 
 To cut a release:
@@ -164,7 +164,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-This produces `familydns_0.2.0-1_all.ipk` attached to the `v0.2.0` release
+This produces `wifihaven_0.2.0-1_all.ipk` attached to the `v0.2.0` release
 on GitHub. Routers running the auto-update script (§2.3) pick it up on their
 next poll.
 
@@ -185,11 +185,11 @@ canonical source of truth for versions.
 
 **Implementation** (sub-issue #131):
 
-Place at `/usr/sbin/familydns-update` on the router:
+Place at `/usr/sbin/wifihaven-update` on the router:
 
 ```sh
 #!/bin/sh
-CURRENT=$(opkg info familydns | awk '/^Version:/{print $2}')
+CURRENT=$(opkg info wifihaven | awk '/^Version:/{print $2}')
 LATEST_URL=$(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/latest \
   | jsonfilter -e '@.assets[0].browser_download_url')
 LATEST_VER=$(echo "$LATEST_URL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+')
@@ -201,14 +201,14 @@ fi
 
 Add to cron (`crontab -e` or `/etc/crontabs/root`):
 ```
-0 4 * * * /usr/sbin/familydns-update
+0 4 * * * /usr/sbin/wifihaven-update
 ```
 
 This checks once a day at 04:00 router-local time. The `.ipk` postinst
 installs this entry automatically and replaces any older entry from a
 previous package version (e.g. the historical `0 */6 * * *` cadence), so
 upgrades migrate the schedule without operator action. `opkg install --force-reinstall` preserves
-`/etc/config/familydns`, so the bearer token and router ID survive upgrades
+`/etc/config/wifihaven`, so the bearer token and router ID survive upgrades
 without re-enrollment.
 
 ### 2.4 Configuration persistence across upgrades
@@ -216,7 +216,7 @@ without re-enrollment.
 opkg's upgrade behavior for config files:
 - Files listed in `conffiles` (or installed under `/etc/config/`) are preserved
   across `opkg install --force-reinstall`.
-- `router_token` and `router_id` (written to `/etc/config/familydns` after
+- `router_token` and `router_id` (written to `/etc/config/wifihaven` after
   enrollment) survive any upgrade.
 - `api_url` is in the same UCI config file and also survives; no re-configuration
   needed after an upgrade.

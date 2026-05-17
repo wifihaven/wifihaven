@@ -3,7 +3,7 @@
 # server itself from a chosen branch. No registry push, no image transfer.
 #
 # Server layout:
-#   ~/familydns/   git checkout (source)
+#   ~/wifihaven/   git checkout (source)
 #   ~/.wifihaven/  runtime: docker-compose.prod.yml, .env, helper scripts
 #
 # The runtime compose file pins ghcr.io/wifihaven/wifihaven-api:latest.
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 API_HOST="${API_HOST:-192.168.10.43}"
-SRC_DIR="${SRC_DIR:-\$HOME/familydns}"
+SRC_DIR="${SRC_DIR:-\$HOME/wifihaven}"
 RUN_DIR="${RUN_DIR:-\$HOME/.wifihaven}"
 IMAGE="ghcr.io/wifihaven/wifihaven-api:latest"
 BRANCH="${1:-main}"

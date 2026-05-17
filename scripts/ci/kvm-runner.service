@@ -1,4 +1,4 @@
-## systemd unit template for the FamilyDNS KVM self-hosted GitHub Actions runner.
+## systemd unit template for the WifiHaven KVM self-hosted GitHub Actions runner.
 ##
 ## Install via:
 ##   sudo cp scripts/ci/kvm-runner.service /etc/systemd/system/kvm-runner.service
@@ -14,7 +14,7 @@
 ## user's home directory.
 
 [Unit]
-Description=GitHub Actions runner (FamilyDNS, KVM)
+Description=GitHub Actions runner (WifiHaven, KVM)
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -44,7 +44,7 @@ RestartSec=10
 #
 # NoNewPrivileges is deliberately NOT set: scripts/vm/lan-bridge-up.sh
 # (called by router-up.sh) runs `sudo ip link …` via the NOPASSWD rule in
-# /etc/sudoers.d/familydns-vm (see docs/ops/kvm-runner.md § "Host setup").
+# /etc/sudoers.d/wifihaven-vm (see docs/ops/kvm-runner.md § "Host setup").
 # NoNewPrivileges=true would refuse the setuid transition and break VM
 # bring-up with:
 #   sudo: The "no new privileges" flag is set, which prevents sudo from

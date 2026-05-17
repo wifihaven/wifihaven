@@ -52,7 +52,7 @@ def _wait_block_page(client, *, host: str = "example.com", timeout_s: float = 60
     def probe():
         p = http_get(client, f"http://{host}/", timeout_s=8)
         if p.http_code == 200 and (
-            "familydns" in p.body.lower() or "blocked" in p.body.lower()
+            "wifihaven" in p.body.lower() or "blocked" in p.body.lower()
         ):
             return p
         return None
@@ -65,7 +65,7 @@ def _wait_http_succeeds(client, *, host: str = "example.com", timeout_s: float =
         p = http_get(client, f"http://{host}/", timeout_s=8)
         if p.http_code is not None and 200 <= p.http_code < 400:
             # block-page also returns 200, so disambiguate by body
-            if "familydns" in p.body.lower() or "blocked" in p.body.lower():
+            if "wifihaven" in p.body.lower() or "blocked" in p.body.lower():
                 return None
             return p
         return None

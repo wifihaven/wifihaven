@@ -19,16 +19,16 @@ name="${1:-}"
 if router_is_running; then
   require_cmd socat
   log "loading snapshot '${name}' into running VM"
-  out="$(printf 'loadvm %s\n' "${name}" | socat -t2 - "UNIX-CONNECT:${FDNS_ROUTER_MONITOR_SOCK}" 2>&1 || true)"
+  out="$(printf 'loadvm %s\n' "${name}" | socat -t2 - "UNIX-CONNECT:${WH_ROUTER_MONITOR_SOCK}" 2>&1 || true)"
   echo "${out}" | sed 's/^/[qemu] /' >&2
   if echo "${out}" | grep -qiE 'error|failed'; then
     die "loadvm reported an error (see above)"
   fi
 else
   require_cmd qemu-img
-  [[ -f "${FDNS_ROUTER_OVERLAY}" ]] || die "overlay missing: ${FDNS_ROUTER_OVERLAY}"
-  log "applying snapshot '${name}' to ${FDNS_ROUTER_OVERLAY} (offline)"
-  qemu-img snapshot -a "${name}" "${FDNS_ROUTER_OVERLAY}"
+  [[ -f "${WH_ROUTER_OVERLAY}" ]] || die "overlay missing: ${WH_ROUTER_OVERLAY}"
+  log "applying snapshot '${name}' to ${WH_ROUTER_OVERLAY} (offline)"
+  qemu-img snapshot -a "${name}" "${WH_ROUTER_OVERLAY}"
 fi
 
 log "restored to snapshot '${name}'"

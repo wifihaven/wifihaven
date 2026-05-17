@@ -48,7 +48,7 @@ Default admin login: `admin / changeme` — change it immediately via
   `docker compose exec postgres psql ...`.
 - **Named volume for data.** `pgdata` is a Docker named volume; data
   survives `down` / `up` cycles. Backups are a `pg_dump` away
-  (`docker compose exec postgres pg_dump -U familydns familydns`).
+  (`docker compose exec postgres pg_dump -U wifihaven wifihaven`).
 - **Restart `unless-stopped`.** Both services come back automatically after
   a crash or host reboot, but stay down if you explicitly `docker compose
   stop` them.
@@ -72,11 +72,11 @@ git pull && docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.
 
 # Backup the database
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env \
-  exec postgres pg_dump -U familydns familydns > backup-$(date +%F).sql
+  exec postgres pg_dump -U wifihaven wifihaven > backup-$(date +%F).sql
 
 # Open a psql shell
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env \
-  exec postgres psql -U familydns familydns
+  exec postgres psql -U wifihaven wifihaven
 ```
 
 ## Smoke test
@@ -96,7 +96,7 @@ If you're running the older systemd-on-host install (`scripts/deploy.sh` +
 1. `pg_dump` your existing local postgres.
 2. Stop and disable the systemd units.
 3. Bring up the compose stack with a fresh `.env`.
-4. Restore the dump: `docker compose ... exec -T postgres psql -U familydns familydns < backup.sql`.
+4. Restore the dump: `docker compose ... exec -T postgres psql -U wifihaven wifihaven < backup.sql`.
 
 Open an issue if you hit anything missing — this path will get more polish
 as more installs migrate.

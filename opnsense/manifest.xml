@@ -2,10 +2,10 @@
 <package>
   <name>os-wifihaven</name>
   <version>0.1.0</version>
-  <comment>FamilyDNS router agent for OPNsense</comment>
+  <comment>WifiHaven router agent for OPNsense</comment>
   <desc>
     Tails pflog0 for new outbound flows, attributes hostnames via the Unbound
-    query log, and streams connection_attempt events to the FamilyDNS API
+    query log, and streams connection_attempt events to the WifiHaven API
     (POST /api/router/events).  Policy rendering and usage reporting are
     planned for a follow-up release.
   </desc>

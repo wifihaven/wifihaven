@@ -18,7 +18,7 @@ router is not a wifihaven concern.
 
 ### Intended behavior
 - **Identity survives.** On boot, the agent restores `router_id` and
-  `router_token` from `/etc/config/familydns`. It never re-enrolls if a token
+  `router_token` from `/etc/config/wifihaven`. It never re-enrolls if a token
   is already present — re-enrollment must be an explicit operator action.
 - **No traffic forwards before policy is applied.** Between kernel boot and
   the agent's first successful `policy.apply()`, forwarded LAN→WAN traffic
@@ -50,7 +50,7 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
   nft include that loads on firewall start, before the agent runs.
 - Agent removes the deny rules atomically as part of its first
   `policy.apply()`.
-- `familydns-agent` startup logic (already present): exit non-zero if
+- `wifihaven-agent` startup logic (already present): exit non-zero if
   router_id/token absent; never auto-enroll.
 
 ### How to verify
@@ -59,7 +59,7 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
    across the reboot. Expectation: ping fails throughout the reboot
    window and only resumes after the agent logs `policy applied` —
    no "unfiltered window" where ping resumes ahead of policy.
-3. Confirm `/etc/config/familydns` retains `router_id`/`router_token`
+3. Confirm `/etc/config/wifihaven` retains `router_id`/`router_token`
    across reboots; agent log shows "using cached credentials," not
    "enrolling."
 
@@ -70,7 +70,7 @@ A clean power-cycle losing < 60 seconds of usage data is materially harmless
 ### Intended behavior
 - **Agent rides through.** While the API is unreachable, the agent continues
   enforcing from its **last-applied policy snapshot**, which is persisted to
-  flash (`/etc/familydns/policy.json` or similar) on every successful poll.
+  flash (`/etc/wifihaven/policy.json` or similar) on every successful poll.
   Tmpfs is not enough — a reboot during the API outage would otherwise drop
   the router to default-deny (§1), which is correct for safety but disruptive
   for adults; the on-flash snapshot lets the router come back up enforcing
@@ -104,11 +104,11 @@ DB with one giant batched usage POST per router, but it SHOULD restore
 correct policy within one poll interval.
 
 ### Implementation
-- `openwrt/files/usr/lib/lua/familydns/policy.lua`: write snapshot to
-  `/etc/familydns/policy.json` after each successful apply.
-- `openwrt/files/usr/lib/lua/familydns/usage.lua`: maintain in-memory
+- `openwrt/files/usr/lib/lua/wifihaven/policy.lua`: write snapshot to
+  `/etc/wifihaven/policy.json` after each successful apply.
+- `openwrt/files/usr/lib/lua/wifihaven/usage.lua`: maintain in-memory
   retry queue; on failure, exponential backoff per-bucket.
-- `openwrt/files/usr/lib/lua/familydns/conntrack.lua`: same retry-queue
+- `openwrt/files/usr/lib/lua/wifihaven/conntrack.lua`: same retry-queue
   pattern for events POSTs (#330); cap = 1000 batches, drop-oldest on
   overflow; drained from the conntrack watcher loop on every tick.
 - Agent main loop: track `last_fetch_ok` for the most-recent poll;
@@ -236,15 +236,15 @@ never a default — it must be picked deliberately.
 - `api/src/policy/PolicyService.scala`: includes `failureMode` per
   `ProfilePolicy` in the rendered `PolicySnapshot`. The ETag covers
   this value so a mode change invalidates client caches.
-- `openwrt/files/usr/lib/lua/familydns/policy.lua`: on every failed
+- `openwrt/files/usr/lib/lua/wifihaven/policy.lua`: on every failed
   poll, renders nft with `opts.poll_failed = true`; on the next
   successful poll, renders with `opts.poll_failed = false` to clear the
   failover chain (#422). `last_successful_poll_ts` is retained for
   human-readable log lines only.
-- `openwrt/files/usr/lib/lua/familydns/render.lua`: branches by mode.
+- `openwrt/files/usr/lib/lua/wifihaven/render.lua`: branches by mode.
   `BlockAll` emits a dedicated `failover_drop` set and drop chain.
   `AllowAll` suppresses the profile's MACs from every drop list before
-  the `familydns_block` and `familydns_block_nat` chains are rendered.
+  the `wifihaven_block` and `wifihaven_block_nat` chains are rendered.
   `LastKnownGood` is the no-op default — nothing additional is
   rendered, and the cached snapshot rules keep enforcing exactly.
 - Admin UI: three-option radio on the profile edit page (`ProfilesPage`)

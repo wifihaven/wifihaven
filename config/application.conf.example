@@ -2,8 +2,8 @@ wifihaven {
   db {
     host     = "localhost"
     port     = 5432
-    database = "familydns"
-    user     = "familydns"
+    database = "wifihaven"
+    user     = "wifihaven"
     password = "changeme"
     poolSize = 10
   }

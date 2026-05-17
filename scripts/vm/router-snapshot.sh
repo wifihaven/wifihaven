@@ -15,18 +15,18 @@ name="${1:-}"
 
 router_is_running || die "router VM is not running"
 require_cmd socat
-[[ -S "${FDNS_ROUTER_MONITOR_SOCK}" ]] || die "monitor socket missing: ${FDNS_ROUTER_MONITOR_SOCK}"
+[[ -S "${WH_ROUTER_MONITOR_SOCK}" ]] || die "monitor socket missing: ${WH_ROUTER_MONITOR_SOCK}"
 
 log "saving snapshot '${name}'"
 # Send 'savevm' and let the connection close after the reply — never send
 # 'quit' (it would terminate the VM). socat -t2 holds the socket open ~2s
 # for QEMU to reply.
-out="$(printf 'savevm %s\n' "${name}" | socat -t2 - "UNIX-CONNECT:${FDNS_ROUTER_MONITOR_SOCK}" 2>&1 || true)"
+out="$(printf 'savevm %s\n' "${name}" | socat -t2 - "UNIX-CONNECT:${WH_ROUTER_MONITOR_SOCK}" 2>&1 || true)"
 echo "${out}" | sed 's/^/[qemu] /' >&2
 
 if echo "${out}" | grep -qiE 'error|failed'; then
   die "savevm reported an error (see above)"
 fi
 
-log "snapshot '${name}' saved into ${FDNS_ROUTER_OVERLAY}"
-log "list with: qemu-img snapshot -l '${FDNS_ROUTER_OVERLAY}'"
+log "snapshot '${name}' saved into ${WH_ROUTER_OVERLAY}"
+log "list with: qemu-img snapshot -l '${WH_ROUTER_OVERLAY}'"

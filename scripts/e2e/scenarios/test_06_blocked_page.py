@@ -2,7 +2,7 @@
 
 Per architecture Truth 1: blocked HTTP traffic is DNATed by nftables to the
 local block page on port 80. The page is served by uhttpd-mod-lua via the
-handler at /www/familydns/handler.lua (#437); the handler resolves the
+handler at /www/wifihaven/handler.lua (#437); the handler resolves the
 client MAC and per-MAC block reason, then returns an HTML document that
 redirects to the API's /blocked page with mac+reason populated. Curling a
 blocked HTTP destination should yield the block page body (its <title> is
@@ -34,7 +34,7 @@ def test_blocked_request_returns_block_page(
     # the DNAT rule is hot.
     def block_page_body():
         probe = http_get(client, f"http://{BLOCKED_HOST}/", timeout_s=8)
-        if probe.http_code == 200 and "familydns" in probe.body.lower():
+        if probe.http_code == 200 and "wifihaven" in probe.body.lower():
             return probe
         if probe.http_code == 200 and "blocked" in probe.body.lower():
             return probe

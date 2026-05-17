@@ -36,22 +36,6 @@ cat > "$WORK/ctrl/postinst" <<'POSTINST'
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 
-# One-shot migration from pre-rename familydns config (issue #357).
-if [ -f /etc/config/familydns ] && [ ! -s /etc/config/wifihaven ]; then
-    # Copy old UCI section name to the new section name as we move it.
-    sed 's/familydns/wifihaven/g' /etc/config/familydns > /etc/config/wifihaven
-    rm -f /etc/config/familydns
-fi
-if [ -d /var/lib/familydns ] && [ ! -d /var/lib/wifihaven ]; then
-    mv /var/lib/familydns /var/lib/wifihaven
-fi
-# Stop and remove old service scripts if still present from a pre-rename install.
-if [ -x /etc/init.d/familydns ]; then
-    /etc/init.d/familydns stop 2>/dev/null || true
-    /etc/init.d/familydns disable 2>/dev/null || true
-    rm -f /etc/init.d/familydns /etc/init.d/familydns-boot
-fi
-
 /etc/init.d/wifihaven enable
 # #308: enable + start the boot default-deny skeleton init so first install
 # (no reboot) is protected immediately, and every subsequent boot loads it

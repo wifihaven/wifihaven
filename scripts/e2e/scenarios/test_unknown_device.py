@@ -13,7 +13,7 @@ What is NOT covered here — and why (#517)
 The previous F1b and F2 scenarios attempted to drive the auto-name /
 late-DHCP-rename paths from a single VM by hot-swapping eth0 to a fresh
 MAC + static IP and asserting that no DHCP lease ever attached the
-cloud-init-baked `fdns-client` hostname to the new MAC. Four attempts
+cloud-init-baked `wh-client` hostname to the new MAC. Four attempts
 across #468/PR#470, #475/PR#477, #483/PR#484 and #517 all hit the same
 leak: the fresh MAC appeared on the API with the boot-image hostname.
 

@@ -83,7 +83,7 @@ WifiHaven is a self-hosted, network-level parental-control system with per-devic
 ## Architecture
 
 ```
-familydns/
+wifihaven/
 ├── shared/        # Domain models shared across all modules (Scala 3, ZIO JSON)
 ├── api/           # REST API + web server (ZIO HTTP, Doobie, PostgreSQL)
 ├── openwrt/       # Lua agent for OpenWRT (dnsmasq + nftables policy enforcement)
@@ -170,7 +170,7 @@ upstream as normal; the enforcement plane is nftables on the resolved IPs.)
 ## Always isolate spawned work in a worktree
 
 This repo is actively developed across many parallel sessions, so the main
-checkout at `/Users/sameer/workspace/familydns` is usually on some in-flight
+checkout at `/Users/sameer/workspace/wifihaven` is usually on some in-flight
 branch. **Spawning a session or agent that edits files without an isolated
 worktree pollutes that working tree and causes branch conflicts.**
 
@@ -185,7 +185,7 @@ Rules:
   latest `main`). State this explicitly in the prompt — the spawned session
   starts with no context.
 - Never push to or check out a new branch in the top-level
-  `/Users/sameer/workspace/familydns` checkout from a spawned session. Treat
+  `/Users/sameer/workspace/wifihaven` checkout from a spawned session. Treat
   it as someone else's working tree.
 - Worktrees live under `.claude/worktrees/<slug>` and use branch names
   `claude/<slug>` by convention (see `git worktree list`).
@@ -229,10 +229,10 @@ after long uptimes. Restarting Docker Desktop is the fix.
 
 ```bash
 # Start Postgres
-docker run -d --name familydns-pg \
-  -e POSTGRES_USER=familydns \
+docker run -d --name wifihaven-pg \
+  -e POSTGRES_USER=wifihaven \
   -e POSTGRES_PASSWORD=secret \
-  -e POSTGRES_DB=familydns \
+  -e POSTGRES_DB=wifihaven \
   -p 5432:5432 postgres:16
 
 # Copy and edit config
@@ -262,7 +262,7 @@ mill __.checkFormatting
 mill __.fix
 
 # OpenWRT agent tests (requires lua5.1 + busted + lua-cjson)
-cd openwrt && LUA_PATH="./files/usr/lib/lua/familydns/?.lua;$(lua -e 'print(package.path)')" busted test/
+cd openwrt && LUA_PATH="./files/usr/lib/lua/wifihaven/?.lua;$(lua -e 'print(package.path)')" busted test/
 
 # OPNsense agent tests (requires Python 3 + pytest)
 cd opnsense && python -m pytest test/ -v

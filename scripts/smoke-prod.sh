@@ -15,8 +15,8 @@ ENV_FILE="$(mktemp)"
 trap 'rm -f "$ENV_FILE"; docker compose -f deploy/docker-compose.prod.yml --env-file "$ENV_FILE" down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 
 cat > "$ENV_FILE" <<'EOF'
-WIFIHAVEN_DB_NAME=familydns
-WIFIHAVEN_DB_USER=familydns
+WIFIHAVEN_DB_NAME=wifihaven
+WIFIHAVEN_DB_USER=wifihaven
 WIFIHAVEN_DB_PASSWORD=smoke-test-password
 WIFIHAVEN_JWT_SECRET=smoke-test-jwt-secret-min-32-chars-long-yes
 WIFIHAVEN_JWT_HOURS=24

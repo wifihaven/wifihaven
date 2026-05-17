@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-RUN_DIR="${FDNS_RUN_DIR}/${NAME}"
+RUN_DIR="${WH_RUN_DIR}/${NAME}"
 PIDFILE="${RUN_DIR}/qemu.pid"
 QMP_SOCK="${RUN_DIR}/qemu.sock"
 
@@ -65,9 +65,9 @@ rm -rf "${RUN_DIR}"
 # Fallback: a previous run was killed hard (e.g., CI cancellation) and
 # left a qemu alive without an up-to-date pidfile. Kill by name so the
 # next client-up doesn't fail to bind hostfwd ports.
-if pgrep -f "qemu-system-x86_64.*-name fdns-${NAME}" >/dev/null 2>&1; then
-  echo "[client-down] found stale fdns-${NAME} qemu without pidfile match — killing"
-  pkill -f "qemu-system-x86_64.*-name fdns-${NAME}" || true
+if pgrep -f "qemu-system-x86_64.*-name wh-${NAME}" >/dev/null 2>&1; then
+  echo "[client-down] found stale wh-${NAME} qemu without pidfile match — killing"
+  pkill -f "qemu-system-x86_64.*-name wh-${NAME}" || true
   # Give the kernel a moment to release the bound ports.
   sleep 1
 fi

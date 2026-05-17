@@ -62,7 +62,7 @@ jobs:
           # the imagebuilder container running, which keeps writing root-owned
           # files into the cache after the reclaim sweep finished. Force-remove
           # by name before reclaiming.
-          docker rm -f fdns-imagebuilder 2>/dev/null || true
+          docker rm -f wh-imagebuilder 2>/dev/null || true
           CACHE="${{ github.workspace }}/scripts/vm/.cache"
           if [ -d "$CACHE" ]; then
             docker run --rm -v "$CACHE":/c alpine sh -c '
@@ -104,14 +104,14 @@ jobs:
           docker compose -f docker/docker-compose.yml -p wifihaven-e2e-vm \
             build --pull api
 
-      - name: Pre-flight kill of stale fdns VMs
+      - name: Pre-flight kill of stale wh VMs
         run: |
           scripts/vm/router-down.sh || true
           scripts/vm/client-down.sh || true
 
       - name: Run e2e suite
         env:
-          FDNS_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven.img
+          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven.img
           # #473: pytest's stack fixture defaults to tearing the docker
           # compose stack down at session end, which removes containers
           # before the failure-capture step below can read their logs.

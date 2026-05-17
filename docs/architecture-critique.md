@@ -267,9 +267,9 @@ failover transition. It is a magic number with no design home:
 - Is it negotiated?
 
 Currently it's a hard-coded constant in `policy.lua`'s `failover_transition`
-([policy.lua:386](openwrt/files/usr/lib/lua/familydns/policy.lua:386)) AND
+([policy.lua:386](openwrt/files/usr/lib/lua/wifihaven/policy.lua:386)) AND
 in `render.lua`'s `poll_age > 300` check
-([render.lua:230](openwrt/files/usr/lib/lua/familydns/render.lua:230)). To
+([render.lua:230](openwrt/files/usr/lib/lua/wifihaven/render.lua:230)). To
 change the threshold, the agent has to be re-released and re-installed —
 which is exactly when you'd want to change it (incident response).
 

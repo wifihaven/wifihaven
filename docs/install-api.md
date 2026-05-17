@@ -196,8 +196,8 @@ Edit `.env` and set each variable. **Never commit this file.** All values:
 
 | Variable | Required? | Purpose | How to set |
 |----------|-----------|---------|------------|
-| `WIFIHAVEN_DB_NAME` | yes | Postgres database name. | Leave the default (`familydns`) unless you have a reason to change it. |
-| `WIFIHAVEN_DB_USER` | yes | Postgres role used by the API. | Leave the default (`familydns`). |
+| `WIFIHAVEN_DB_NAME` | yes | Postgres database name. | Leave the default (`wifihaven`) unless you have a reason to change it. |
+| `WIFIHAVEN_DB_USER` | yes | Postgres role used by the API. | Leave the default (`wifihaven`). |
 | `WIFIHAVEN_DB_PASSWORD` | yes | Postgres password. Postgres is on the internal compose network only — but use a strong password anyway. | `openssl rand -base64 24` |
 | `WIFIHAVEN_JWT_SECRET` | yes | HMAC secret used to sign user session tokens. **Must be ≥32 random characters.** Anyone with this secret can mint admin tokens. | `openssl rand -base64 48` |
 | `WIFIHAVEN_JWT_HOURS` | no (default `24`) | Session token lifetime in hours. | Leave default unless you need shorter sessions. |
@@ -210,7 +210,7 @@ After editing, `chmod 600 .env` so secrets aren't world-readable.
 
 ## 4. Start the stack
 
-From `/opt/familydns/deploy`:
+From `/opt/wifihaven/deploy`:
 
 ```sh
 docker compose -f docker-compose.prod.yml --env-file .env up -d
@@ -314,7 +314,7 @@ reverse proxy and bind the API to `127.0.0.1` by setting
 `/etc/caddy/Caddyfile`:
 
 ```caddy
-familydns.example.com {
+wifihaven.example.com {
     reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -327,15 +327,15 @@ sudo systemctl reload caddy
 
 ### 7.2 nginx
 
-`/etc/nginx/sites-available/familydns`:
+`/etc/nginx/sites-available/wifihaven`:
 
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name familydns.example.com;
+    server_name wifihaven.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/familydns.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/familydns.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/wifihaven.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/wifihaven.example.com/privkey.pem;
 
     # The API streams responses for some endpoints; keep timeouts generous.
     proxy_read_timeout 300s;
@@ -354,7 +354,7 @@ server {
 
 server {
     listen 80;
-    server_name familydns.example.com;
+    server_name wifihaven.example.com;
     return 301 https://$host$request_uri;
 }
 ```
@@ -362,7 +362,7 @@ server {
 Issue/renew the cert with `certbot --nginx`, then:
 
 ```sh
-sudo ln -s /etc/nginx/sites-available/familydns /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/wifihaven /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -468,7 +468,7 @@ docker compose \
   -f deploy/docker-compose.prod.yml \
   -f deploy/docker-compose.debug.yml \
   --env-file deploy/.env up -d
-psql -h 127.0.0.1 -p 5433 -U familydns familydns
+psql -h 127.0.0.1 -p 5433 -U wifihaven wifihaven
 ```
 
 Override the bind with `WIFIHAVEN_DB_BIND=127.0.0.1:5433` in `deploy/.env`
@@ -485,12 +485,12 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
 
 ## 10. Next steps
 
-- **Auto-update.** Enabled by default via `familydns-update.timer` (installed
+- **Auto-update.** Enabled by default via `wifihaven-update.timer` (installed
   by `deploy/install.sh`). The host pulls and restarts on each new `latest`
   build, once a day. See `deploy.md §1.3` to disable or force an on-demand pull.
 - **Enroll a router.** In the admin UI, **Routers → Add router** generates
   an enrollment token. Then follow `docs/install-openwrt.md` (issue #133)
   on the OpenWRT side.
-- **Backups.** `docker compose exec postgres pg_dump -U familydns familydns`
+- **Backups.** `docker compose exec postgres pg_dump -U wifihaven wifihaven`
   produces a logical dump. Schedule it however you back up the rest of the
   host.
