@@ -16,8 +16,8 @@ Rename the project from `familydns` to **`wifihaven`**.
 - Scala package root: `wifihaven.*`.
 - OpenWRT package name: `wifihaven`.
 - Env-var prefix: `WIFIHAVEN_*`.
-- Docker image: `ghcr.io/sameerparekh/wifihaven-api`.
-- GitHub repo (eventually): `sameerparekh/wifihaven`.
+- Docker image: `ghcr.io/wifihaven/wifihaven-api`.
+- GitHub repo (eventually): `wifihaven/wifihaven`.
 
 ## Why rename at all
 

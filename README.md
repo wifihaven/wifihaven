@@ -1,13 +1,5 @@
 # WifiHaven
 
-<!-- TODO(#364): GitHub repo URLs (raw.githubusercontent.com/sameerparekh/familydns/…,
-     git@github.com:sameerparekh/familydns.git, etc.) and the post-clone
-     directory name `familydns/` still appear throughout this README. They
-     move to `sameerparekh/wifihaven` when the repo rename (#364) lands. -->
-<!-- TODO(#360): env-var prefix (FAMILYDNS_*) and HOCON config namespace
-     (`familydns.*`) still use the old name. They flip when the env-var
-     rename sub-issue lands. -->
-
 A self-hosted, network-level parental-control system with a web UI. Block
 categories of sites, set per-profile schedules ("no internet after 9pm"),
 enforce daily and per-site time limits, log queries, and grant temporary
@@ -61,7 +53,7 @@ router. Each script prompts for the values it needs and is safe to re-run.
 **1. API + Postgres** — on a Linux host with Docker + Compose v2:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh | bash
 ```
 
 Prompts for install path, port, bind address, and a new admin password;
@@ -71,7 +63,7 @@ Full walkthrough (TLS, reverse proxy, firewall, debugging): [`docs/install-api.m
 **2. OpenWRT router agent** — SSH in as root, then:
 
 ```sh
-sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"
 ```
 
 Prompts for the API URL, an enrollment token (admin UI → **Routers → Add
@@ -85,8 +77,8 @@ installs the matching artifact. Full walkthrough: [`docs/install-openwrt.md`](do
 
 ```bash
 # Prereqs: JDK 21, Node 22, mill 1.1.5, scalafmt (cs install scalafmt)
-git clone git@github.com:sameerparekh/familydns.git
-cd familydns
+git clone git@github.com:wifihaven/wifihaven.git
+cd wifihaven
 scripts/install-hooks.sh         # set up pre-commit / pre-push hooks
 
 # Run all tests
@@ -163,7 +155,7 @@ unit file under `deploy/` is kept for existing installs.
 On a fresh Debian / Ubuntu box, as your **normal login user** (not root):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/scripts/bootstrap-host.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/scripts/bootstrap-host.sh | bash
 ```
 
 The script asks for `sudo` once, then handles everything: installing the

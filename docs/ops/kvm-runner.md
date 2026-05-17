@@ -75,7 +75,7 @@ The runner installs under `~/actions-runner` in the runner user's home directory
 2. Get a one-time registration token (from any machine with `gh` auth — the
    token's only valid ~1 hour, so do this right before step 4):
    ```bash
-   gh api -X POST repos/sameerparekh/familydns/actions/runners/registration-token --jq .token
+   gh api -X POST repos/wifihaven/wifihaven/actions/runners/registration-token --jq .token
    ```
 
 3. As the runner user, download and unpack the latest runner release. Check
@@ -92,7 +92,7 @@ The runner installs under `~/actions-runner` in the runner user's home directory
    ```bash
    cd ~/actions-runner
    ./config.sh \
-     --url https://github.com/sameerparekh/familydns \
+     --url https://github.com/wifihaven/wifihaven \
      --token <REGISTRATION_TOKEN> \
      --name familydns-kvm-1 \
      --labels self-hosted,linux,kvm \
@@ -106,8 +106,8 @@ The runner installs under `~/actions-runner` in the runner user's home directory
    ```
    In another shell, dispatch the sanity workflow and watch it land:
    ```bash
-   gh workflow run e2e-kvm-sanity.yml -R sameerparekh/familydns
-   gh run watch -R sameerparekh/familydns
+   gh workflow run e2e-kvm-sanity.yml -R wifihaven/wifihaven
+   gh run watch -R wifihaven/wifihaven
    ```
    Ctrl-C `./run.sh` once the workflow finishes.
 

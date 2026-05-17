@@ -10,7 +10,7 @@
     planned for a follow-up release.
   </desc>
   <maintainer>sameer@creativedestruction.com</maintainer>
-  <www>https://github.com/sameerparekh/familydns</www>
+  <www>https://github.com/wifihaven/wifihaven</www>
   <prefix>/usr/local</prefix>
   <files>
     <file>/usr/local/sbin/familydns-agent</file>

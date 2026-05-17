@@ -28,7 +28,7 @@ services:
       retries: 30
 
   api:
-    image: ghcr.io/sameerparekh/wifihaven-api:latest
+    image: ghcr.io/wifihaven/wifihaven-api:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile

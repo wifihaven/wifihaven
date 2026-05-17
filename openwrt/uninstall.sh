@@ -8,12 +8,12 @@
 #
 # Usage (on an OpenWRT router, as root):
 #
-#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/uninstall.sh)"
 #
 # Or download then run:
 #
 #   uclient-fetch -qO /tmp/wifihaven-uninstall.sh \
-#     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+#     https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/uninstall.sh
 #   sh /tmp/wifihaven-uninstall.sh
 #
 # Flags:

@@ -49,7 +49,7 @@ a small fixed snapshot. The agent resolves device → effective rules once at
 apply time and then enforces purely per-MAC. **Profiles never appear in the
 enforcement pipeline.**
 
-Target snapshot shape (Scala 3, sealed-trait ADTs per [#114](https://github.com/sameerparekh/familydns/issues/114);
+Target snapshot shape (Scala 3, sealed-trait ADTs per [#114](https://github.com/wifihaven/wifihaven/issues/114);
 typed names used here even though the current code is stringly):
 
 ```scala

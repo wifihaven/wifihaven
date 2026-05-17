@@ -15,7 +15,7 @@ set -u
 
 # TODO(#244): revert to /releases/latest + semver compare once the rolling
 # debug period for #228 is done and proper tags resume.
-API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/openwrt-latest"
 STATE_DIR=/var/lib/wifihaven
 STAMP_FILE="$STATE_DIR/last_update_stamp"
 

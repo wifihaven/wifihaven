@@ -1,6 +1,6 @@
 # Sessions: stitching `traffic_reports` into per-host sessions
 
-Design for [#260](https://github.com/sameerparekh/familydns/issues/260) — replace
+Design for [#260](https://github.com/wifihaven/wifihaven/issues/260) — replace
 the per-query log surface with sessions-per-host as the primary user-facing
 view of device activity.
 
@@ -180,21 +180,21 @@ behavior moves to its own test file.
 ## Out of scope for this PR
 
 - Graphs of usage per profile/device/app — that's
-  [#127](https://github.com/sameerparekh/familydns/issues/127). The session
+  [#127](https://github.com/wifihaven/wifihaven/issues/127). The session
   shape is the building block; graphs will aggregate it.
 - Removing `connection_events` ingestion — it backs Raw events.
 - Materialized sessions table — filed as follow-up if (a) is too slow.
 
 ## Coordination
 
-- [#259](https://github.com/sameerparekh/familydns/issues/259) — hostnames in
+- [#259](https://github.com/wifihaven/wifihaven/issues/259) — hostnames in
   query log. Sessions are useless if `hostname` is an IP. Confirm #259's fix
   has landed (or at least that the `traffic_reports.hostname` column is
   populated with real hostnames, not IPs) before merging this PR.
-- [#261](https://github.com/sameerparekh/familydns/issues/261) — screen-time
+- [#261](https://github.com/wifihaven/wifihaven/issues/261) — screen-time
   shows 0m. Already closed; same source data, so this PR should benefit from
   that fix.
-- [#127](https://github.com/sameerparekh/familydns/issues/127) — usage
+- [#127](https://github.com/wifihaven/wifihaven/issues/127) — usage
   graphs. Sessions API will be the input.
-- [#64](https://github.com/sameerparekh/familydns/issues/64) — traffic /
+- [#64](https://github.com/wifihaven/wifihaven/issues/64) — traffic /
   session UI. This PR is the v1 of that surface.
