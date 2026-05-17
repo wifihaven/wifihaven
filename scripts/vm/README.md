@@ -17,7 +17,7 @@ of #144 (router VM) and #146 (client VM).
   `client-up.sh` runs. `router-up.sh` brings it up automatically; otherwise
   call `lan-bridge-up.sh` directly.
 - `/etc/qemu/bridge.conf` must contain `allow ${FDNS_LAN_BRIDGE}` (default
-  `allow fdns-lan0`) so `qemu-bridge-helper` will attach taps.
+  `allow wh-lan0`) so `qemu-bridge-helper` will attach taps.
 
 The harness is not expected to work on macOS — no KVM. Use a Linux dev host
 or CI runner. For running in CI, see

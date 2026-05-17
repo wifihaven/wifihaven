@@ -7,7 +7,7 @@
 # --- LAN bridge (shared with the router VM from #144) ------------------------
 # If #144 picks different names/ranges, update *here* — these constants are
 # referenced everywhere else by variable, not by literal.
-FDNS_LAN_BRIDGE="${FDNS_LAN_BRIDGE:-fdns-lan0}"
+FDNS_LAN_BRIDGE="${FDNS_LAN_BRIDGE:-wh-lan0}"
 FDNS_LAN_SUBNET="${FDNS_LAN_SUBNET:-192.168.100.0/24}"
 FDNS_LAN_ROUTER_IP="${FDNS_LAN_ROUTER_IP:-192.168.100.1}"
 
