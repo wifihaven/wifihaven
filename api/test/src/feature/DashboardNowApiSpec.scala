@@ -339,6 +339,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         auth     <- makeAuth
         hash     <- auth.hashPassword("pass")
         childId  <- userRepo.create("alice", hash, "child")
+        _        <- userRepo.clearMustChangePassword(childId)
         _        <- upRepo.setProfilesForUser(childId, List(kids))
         token    <- auth.login("alice", "pass").map(_.token)
         routes   <- buildRoutes(auth)

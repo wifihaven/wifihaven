@@ -291,6 +291,7 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         auth     <- makeAuth
         hash     <- auth.hashPassword("pass")
         childId  <- userRepo.create("alice", hash, "child")
+        _        <- userRepo.clearMustChangePassword(childId)
         _        <- upRepo.setProfilesForUser(childId, List(kids))
         token    <- auth.login("alice", "pass").map(_.token.value)
         routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
