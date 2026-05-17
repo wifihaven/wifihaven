@@ -1,4 +1,4 @@
-"""Tests for opnsense/familydns/pflog.py
+"""Tests for opnsense/wifihaven/pflog.py
 
 Run with: pytest opnsense/test/test_pflog.py
 """
@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from familydns.pflog import parse_pflog_line, build_event, is_outbound
+from wifihaven.pflog import parse_pflog_line, build_event, is_outbound
 
 # ---------------------------------------------------------------------------
 # 1. pflog line parsing — parse_pflog_line(line) -> dict | None

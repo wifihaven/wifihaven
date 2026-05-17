@@ -103,7 +103,7 @@ def watch(cfg: dict) -> None:
         lan_prefix     str   default "192.168.1."
         tcpdump_cmd    list  injectable for tests; default runs real tcpdump
     """
-    from familydns.unbound import lookup_arp
+    from wifihaven.unbound import lookup_arp
 
     lan_prefix = cfg.get("lan_prefix", "192.168.1.")
     hostname_cache = cfg["hostname_cache"]
@@ -123,7 +123,7 @@ def watch(cfg: dict) -> None:
             text=True,
         )
     except OSError as exc:
-        print(f"[familydns] pflog: cannot start tcpdump: {exc}", file=sys.stderr)
+        print(f"[wifihaven] pflog: cannot start tcpdump: {exc}", file=sys.stderr)
         return
 
     try:

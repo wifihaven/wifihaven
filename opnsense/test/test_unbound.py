@@ -1,4 +1,4 @@
-"""Tests for opnsense/familydns/unbound.py
+"""Tests for opnsense/wifihaven/unbound.py
 
 Run with: pytest opnsense/test/test_unbound.py
 """
@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from familydns.unbound import (
+from wifihaven.unbound import (
     parse_unbound_query_line,
     parse_arp_line,
     HostnameCache,

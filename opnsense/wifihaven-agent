@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Entry-point wrapper for the wifihaven OPNsense agent.
+
+Installed to /usr/local/sbin/wifihaven-agent.
+The actual logic lives in /usr/local/lib/wifihaven/.
+"""
+import sys
+sys.path.insert(0, "/usr/local/lib")
+
+from wifihaven.agent import main
+main()

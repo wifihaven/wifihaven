@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package>
-  <name>os-familydns</name>
+  <name>os-wifihaven</name>
   <version>0.1.0</version>
   <comment>FamilyDNS router agent for OPNsense</comment>
   <desc>
@@ -13,12 +13,12 @@
   <www>https://github.com/wifihaven/wifihaven</www>
   <prefix>/usr/local</prefix>
   <files>
-    <file>/usr/local/sbin/familydns-agent</file>
-    <file>/usr/local/lib/familydns/__init__.py</file>
-    <file>/usr/local/lib/familydns/agent.py</file>
-    <file>/usr/local/lib/familydns/pflog.py</file>
-    <file>/usr/local/lib/familydns/unbound.py</file>
-    <file>/usr/local/etc/rc.d/familydns</file>
+    <file>/usr/local/sbin/wifihaven-agent</file>
+    <file>/usr/local/lib/wifihaven/__init__.py</file>
+    <file>/usr/local/lib/wifihaven/agent.py</file>
+    <file>/usr/local/lib/wifihaven/pflog.py</file>
+    <file>/usr/local/lib/wifihaven/unbound.py</file>
+    <file>/usr/local/etc/rc.d/wifihaven</file>
   </files>
   <flatsize>32768</flatsize>
 </package>
