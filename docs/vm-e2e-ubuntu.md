@@ -106,7 +106,7 @@ scripts/vm/build-router-image.sh
 #    path, and pick a non-conflicting host HTTP-forward port if 8080 is
 #    already taken on the host (e.g. by a running wifihaven API stack).
 FDNS_ROUTER_HTTP_PORT=18081 \
-FDNS_ROUTER_IMAGE_PATH="$PWD/scripts/vm/.cache/openwrt-familydns.img" \
+FDNS_ROUTER_IMAGE_PATH="$PWD/scripts/vm/.cache/openwrt-wifihaven.img" \
     scripts/vm/router-up.sh
 
 # 4. Bring up a client with a chosen MAC.

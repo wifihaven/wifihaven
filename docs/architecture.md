@@ -618,7 +618,7 @@ openwrt/
 ### 7.4 Daemon loop (three timers)
 
 - **Policy timer (60 s)** — fetch snapshot, atomically rewrite
-  `/tmp/dnsmasq.d/familydns.conf` and `/tmp/nftables.d/familydns.nft`,
+  `/tmp/dnsmasq.d/wifihaven.conf` and `/tmp/nftables.d/wifihaven.nft`,
   then `nft -f` the new ruleset. The dnsmasq full restart only fires when
   the rendered `dnsmasq.conf` actually differs byte-for-byte from the
   on-disk copy (#414) — most policy applies flip nft-side state only
@@ -688,7 +688,7 @@ opnsense/
 ├── Makefile
 ├── files/
 │   ├── usr/local/etc/rc.d/familydns     # rc.d service
-│   ├── usr/local/etc/familydns.conf     # api_url, router_token, poll_interval
+│   ├── usr/local/etc/wifihaven.conf     # api_url, router_token, poll_interval
 │   └── usr/local/sbin/familydns-agent   # main daemon (Python)
 └── README.md
 ```

@@ -140,13 +140,13 @@ generation.
 
 ```sh
 # OpenWRT 23.05.x (opkg):
-curl -fsSL -o /tmp/familydns.ipk \
+curl -fsSL -o /tmp/wifihaven.ipk \
   $(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/latest \
     | jsonfilter -e '@.assets[*].browser_download_url' \
     | grep -E '\.ipk$' | head -n1)
 
 # OpenWRT 24.10+/SNAPSHOT (apk):
-curl -fsSL -o /tmp/familydns.apk \
+curl -fsSL -o /tmp/wifihaven.apk \
   $(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/latest \
     | jsonfilter -e '@.assets[*].browser_download_url' \
     | grep -E '\.apk$' | head -n1)
@@ -157,10 +157,10 @@ curl -fsSL -o /tmp/familydns.apk \
 ```sh
 # OpenWRT 23.05.x (opkg):
 opkg update
-opkg install /tmp/familydns.ipk
+opkg install /tmp/wifihaven.ipk
 
 # OpenWRT 24.10+/SNAPSHOT (apk):
-apk add --allow-untrusted /tmp/familydns.apk
+apk add --allow-untrusted /tmp/wifihaven.apk
 ```
 
 Either manager resolves and installs `lua`, `luci-lib-jsonc`,
@@ -171,11 +171,11 @@ enrollment must complete first.
 ### M3. Configure the API URL and LAN prefix
 
 ```sh
-uci set familydns.@familydns[0].api_url='https://api.example.com'
+uci set wifihaven.@wifihaven[0].api_url='https://api.example.com'
 # Default lan_prefix is '192.168.1.' — override if your LAN is elsewhere.
 # Example: LAN on 10.0.0.0/24
-uci set familydns.@familydns[0].lan_prefix='10.0.0.'
-uci commit familydns
+uci set wifihaven.@wifihaven[0].lan_prefix='10.0.0.'
+uci commit wifihaven
 ```
 
 > **Important — read this even if your LAN looks normal.**
@@ -203,10 +203,10 @@ auth.
 ### M5. Persist credentials and start the agent
 
 ```sh
-uci set familydns.@familydns[0].router_id='9c1f2e8a-…'
-uci set familydns.@familydns[0].router_token='rt_a7d12b…'
-uci commit familydns
-/etc/init.d/familydns start
+uci set wifihaven.@wifihaven[0].router_id='9c1f2e8a-…'
+uci set wifihaven.@wifihaven[0].router_token='rt_a7d12b…'
+uci commit wifihaven
+/etc/init.d/wifihaven start
 ```
 
 ### M6. Set up the local block page
