@@ -54,12 +54,12 @@ else
   fail "noninteractive should be true when no tty and no /dev/tty (got '${out}')"
 fi
 
-# ── 2. noninteractive() returns true when FAMILYDNS_NONINTERACTIVE=1
+# ── 2. noninteractive() returns true when WIFIHAVEN_NONINTERACTIVE=1
 #      regardless of tty state.
-if FAMILYDNS_NONINTERACTIVE=1 bash -c "source '${HELPERS}'; noninteractive"; then
-  pass "noninteractive=true when FAMILYDNS_NONINTERACTIVE=1"
+if WIFIHAVEN_NONINTERACTIVE=1 bash -c "source '${HELPERS}'; noninteractive"; then
+  pass "noninteractive=true when WIFIHAVEN_NONINTERACTIVE=1"
 else
-  fail "FAMILYDNS_NONINTERACTIVE=1 should force noninteractive"
+  fail "WIFIHAVEN_NONINTERACTIVE=1 should force noninteractive"
 fi
 
 # ── 3. can_prompt() returns true when /dev/tty is readable+writable, even
@@ -95,11 +95,11 @@ shim_test "can_prompt=no when no tty and /dev/tty ro"  1 1 0 no
 shim_test "can_prompt=no when no tty and no /dev/tty"  1 0 0 no
 
 # ── 4. prompt() uses default in noninteractive mode when env var unset.
-unset FAMILYDNS_TEST_VAR
-out="$(FAMILYDNS_NONINTERACTIVE=1 bash -c "
+unset WIFIHAVEN_TEST_VAR
+out="$(WIFIHAVEN_NONINTERACTIVE=1 bash -c "
   source '${HELPERS}'
-  prompt FAMILYDNS_TEST_VAR 'q' 'mydefault'
-  echo \"\${FAMILYDNS_TEST_VAR}\"
+  prompt WIFIHAVEN_TEST_VAR 'q' 'mydefault'
+  echo \"\${WIFIHAVEN_TEST_VAR}\"
 " </dev/null)"
 if [[ "${out}" == "mydefault" ]]; then
   pass "prompt() uses default when noninteractive and var unset"
@@ -108,10 +108,10 @@ else
 fi
 
 # ── 5. prompt() preserves a pre-set env var (doesn't overwrite with default).
-out="$(FAMILYDNS_NONINTERACTIVE=1 FAMILYDNS_TEST_VAR=preset bash -c "
+out="$(WIFIHAVEN_NONINTERACTIVE=1 WIFIHAVEN_TEST_VAR=preset bash -c "
   source '${HELPERS}'
-  prompt FAMILYDNS_TEST_VAR 'q' 'mydefault'
-  echo \"\${FAMILYDNS_TEST_VAR}\"
+  prompt WIFIHAVEN_TEST_VAR 'q' 'mydefault'
+  echo \"\${WIFIHAVEN_TEST_VAR}\"
 " </dev/null)"
 if [[ "${out}" == "preset" ]]; then
   pass "prompt() keeps pre-set env var over default"
@@ -120,9 +120,9 @@ else
 fi
 
 # ── 6. prompt() fails when noninteractive, var unset, and no default.
-if FAMILYDNS_NONINTERACTIVE=1 bash -c "
+if WIFIHAVEN_NONINTERACTIVE=1 bash -c "
   source '${HELPERS}'
-  prompt FAMILYDNS_TEST_VAR 'q'
+  prompt WIFIHAVEN_TEST_VAR 'q'
 " </dev/null >/dev/null 2>&1; then
   fail "prompt() should die when noninteractive, no var, no default"
 else
@@ -131,11 +131,11 @@ fi
 
 # ── 7. --help exits 0 and lists the env vars.
 help_out="$(bash "${SCRIPT}" --help 2>&1 || true)"
-if grep -q "FAMILYDNS_PREFIX" <<<"${help_out}" \
-   && grep -q "FAMILYDNS_NONINTERACTIVE" <<<"${help_out}"; then
+if grep -q "WIFIHAVEN_PREFIX" <<<"${help_out}" \
+   && grep -q "WIFIHAVEN_NONINTERACTIVE" <<<"${help_out}"; then
   pass "--help prints env var list"
 else
-  fail "--help should print FAMILYDNS_PREFIX and FAMILYDNS_NONINTERACTIVE"
+  fail "--help should print WIFIHAVEN_PREFIX and WIFIHAVEN_NONINTERACTIVE"
 fi
 
 # ── 8. wait_for_api: success path. Mock curl to return 0 immediately.
@@ -168,11 +168,11 @@ else
 fi
 
 # ── 9. wait_for_api: timeout path. Mock curl to always fail and docker to
-#      noop. Use a short FAMILYDNS_WAIT_TIMEOUT so the test runs fast. The
+#      noop. Use a short WIFIHAVEN_WAIT_TIMEOUT so the test runs fast. The
 #      function should return non-zero and print diagnostics.
 start_ts=$(date +%s)
 set +e
-out="$(FAMILYDNS_WAIT_TIMEOUT=3 bash -c "
+out="$(WIFIHAVEN_WAIT_TIMEOUT=3 bash -c "
   source '${HELPERS}'
   step() { :; }
   ok()   { echo \"OK: \$*\"; }
