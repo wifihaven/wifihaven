@@ -73,30 +73,30 @@ timer approach is equally simple, more transparent (standard Linux tooling), and
 doesn't add another long-running container to maintain.
 
 **Status**: enabled automatically by `deploy/install.sh` (issue #254). The
-units live in-tree at [`deploy/systemd/familydns-update.service`](../deploy/systemd/familydns-update.service)
-and [`deploy/systemd/familydns-update.timer`](../deploy/systemd/familydns-update.timer)
+units live in-tree at [`deploy/systemd/wifihaven-update.service`](../deploy/systemd/wifihaven-update.service)
+and [`deploy/systemd/wifihaven-update.timer`](../deploy/systemd/wifihaven-update.timer)
 (sub-issue #129). The bootstrap installer copies them into
 `/etc/systemd/system/`, runs `systemctl daemon-reload`, and
-`systemctl enable --now familydns-update.timer` on first install. The step
+`systemctl enable --now wifihaven-update.timer` on first install. The step
 is idempotent — re-running `install.sh` is safe.
 
 **Units** (excerpt — see the files for the full content):
 
 ```ini
-# familydns-update.service
+# wifihaven-update.service
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/familydns/deploy
+WorkingDirectory=/opt/wifihaven/deploy
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env pull
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env up -d
 ```
 
 ```ini
-# familydns-update.timer
+# wifihaven-update.timer
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=1d
-Unit=familydns-update.service
+Unit=wifihaven-update.service
 
 [Install]
 WantedBy=timers.target
@@ -106,10 +106,10 @@ This polls ghcr.io once a day (with a 5-min post-boot run so a freshly
 rebooted host catches up quickly). `docker compose pull` is a no-op when
 `latest` already matches the local digest, so it's cheap. To pull a new
 image **on demand** rather than wait for the daily tick, run
-`systemctl start familydns-update.service` (or the `familydns-update-now`
+`systemctl start wifihaven-update.service` (or the `familydns-update-now`
 operator skill).
 
-**User-mode installs** (`WIFIHAVEN_PREFIX=$HOME/.familydns`): `install.sh`
+**User-mode installs** (`WIFIHAVEN_PREFIX=$HOME/.wifihaven`): `install.sh`
 rewrites `WorkingDirectory=` to the actual install dir before copying the
 unit into `/etc/systemd/system/`, so user-mode installs also get auto-update.
 
@@ -117,13 +117,13 @@ unit into `/etc/systemd/system/`, so user-mode installs also get auto-update.
 a new image:
 
 ```sh
-sudo systemctl disable --now familydns-update.timer
+sudo systemctl disable --now wifihaven-update.timer
 ```
 
 After that, run updates by hand from the install dir:
 
 ```sh
-/opt/familydns/update.sh
+/opt/wifihaven/update.sh
 ```
 
 ---
@@ -243,8 +243,8 @@ guides for runnable commands, prerequisites, and verification steps.
 
 ```sh
 # 1. Clone the repo or copy deploy/ to the host
-git clone git@github.com:sameerparekh/familydns.git /opt/familydns
-cd /opt/familydns/deploy
+git clone git@github.com:sameerparekh/familydns.git /opt/wifihaven
+cd /opt/wifihaven/deploy
 
 # 2. Create .env from the example
 cp .env.example .env

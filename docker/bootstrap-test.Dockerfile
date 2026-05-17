@@ -54,13 +54,13 @@ set -euo pipefail
 sudo ln -sf /usr/local/bin/systemctl-stub /usr/local/bin/systemctl
 bash /src/scripts/bootstrap-host.sh
 echo "--- post-bootstrap checks ---"
-test -d /opt/familydns/repo/.git
-test -L /etc/systemd/system/familydns-api.service
-test -f /etc/systemd/system/familydns-deploy.service
-test -f /etc/systemd/system/familydns-deploy.timer
-sudo test -f /etc/familydns/application.conf
-test -f /etc/sudoers.d/familydns-deploy
-id familydns >/dev/null
+test -d /opt/wifihaven/repo/.git
+test -L /etc/systemd/system/wifihaven-api.service
+test -f /etc/systemd/system/wifihaven-deploy.service
+test -f /etc/systemd/system/wifihaven-deploy.timer
+sudo test -f /etc/wifihaven/application.conf
+test -f /etc/sudoers.d/wifihaven-deploy
+id wifihaven >/dev/null
 command -v mill >/dev/null
 command -v node >/dev/null
 command -v java >/dev/null
