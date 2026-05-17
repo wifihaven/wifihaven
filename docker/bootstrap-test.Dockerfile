@@ -7,8 +7,8 @@
 # and without touching the host.
 #
 # Usage:
-#   docker build -f docker/bootstrap-test.Dockerfile -t familydns-bootstrap-test .
-#   docker run --rm familydns-bootstrap-test
+#   docker build -f docker/bootstrap-test.Dockerfile -t wifihaven-bootstrap-test .
+#   docker run --rm wifihaven-bootstrap-test
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive

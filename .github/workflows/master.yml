@@ -24,7 +24,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/familydns-api
+  IMAGE_NAME: ${{ github.repository_owner }}/wifihaven-api
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
@@ -71,8 +71,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build + run bootstrap test image
         run: |
-          docker build -f docker/bootstrap-test.Dockerfile -t familydns-bootstrap-test .
-          docker run --rm familydns-bootstrap-test
+          docker build -f docker/bootstrap-test.Dockerfile -t wifihaven-bootstrap-test .
+          docker run --rm wifihaven-bootstrap-test
 
   e2e:
     name: Live e2e against staging stack
