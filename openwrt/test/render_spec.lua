@@ -1471,7 +1471,7 @@ describe("render extraAllowed enforcement (#421)", function()
   it("suppresses eb_/bl_ drops (including their ea exception) under allow-all failover", function()
     local s = snap_ea()
     s.profiles["3"].failureMode = "allow-all"
-    local nft = render.nft(s, { poll_age_seconds = 301 })
+    local nft = render.nft(s, { poll_failed = true })
     -- No eb / bl drops at all for the kid MAC.
     assert.is_nil(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com", 1, true))
