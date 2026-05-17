@@ -3,12 +3,10 @@ name: Master CD
 # Runs on every push to main:
 #   1. ci-tests   — full CI matrix via workflow_call to ci.yml (unconditional).
 #   2. e2e/smoke  — bootstrap, e2e, prod-stack smokes (unconditional).
-#   3. publish    — Docker image to ghcr.io, only when api-image inputs changed
-#                   AND all of the above passed AND a reviewer approves the
-#                   `production` environment.
-#
-# OpenWRT .ipk/.apk publishing is handled by openwrt-build.yml on v* tags
-# (issues #190, #191).
+#   3. publish    — Docker image to ghcr.io + OpenWRT .ipk/.apk, both
+#                   unconditional once gating jobs pass. Path-filtering was
+#                   unsafe under concurrency.cancel-in-progress — see the
+#                   comment on each publish job.
 
 on:
   push:
@@ -28,34 +26,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # ── 0. Detect path changes (gates publish only, not tests) ────────────────
-  changes:
-    name: Detect path changes
-    runs-on: ubuntu-latest
-    outputs:
-      api: ${{ steps.filter.outputs.api }}
-      openwrt: ${{ steps.filter.outputs.openwrt }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          # Inputs that get baked into the API Docker image. Keep in sync with
-          # docker/Dockerfile COPY directives — if it's not copied into the
-          # image, it shouldn't trigger a republish.
-          filters: |
-            api:
-              - 'api/**'
-              - 'shared/**'
-              - 'web/**'
-              - 'build.mill'
-              - 'docker/**'
-              - 'config/application.conf.example'
-              - '.scalafmt.conf'
-              - '.scalafix.conf'
-            openwrt:
-              - 'openwrt/**'
-
   # ── 1. Full CI test matrix (unit, lint, lua, python, shell, frontend) ─────
   # Runs unconditionally — issue #190 wants test failures on main to block
   # publish regardless of which paths changed.
@@ -114,13 +84,20 @@ jobs:
   # .github/workflows/e2e-vm.yml). Reintroduce as a `needs:` here once the
   # suite is reliably green on that branch.
 
-  # ── 3. Publish API image (path-filtered) ──────────────────────────────────
+  # ── 3. Publish API image (unconditional on main) ─────────────────────────
+  # Runs on every main push — NOT path-filtered. Path-filtering here is
+  # unsafe under `concurrency.cancel-in-progress: true`: a prior commit that
+  # touches api inputs can be superseded and cancelled before its publish
+  # job runs, and if the superseding commit doesn't touch api inputs, the
+  # image build is skipped entirely and those changes never ship. Mirrors
+  # the openwrt fix in #513. Republishing on every push is cheap relative
+  # to silently losing a build (cache-from: type=gha keeps no-op rebuilds
+  # fast).
   # NOTE: manual approval gate temporarily removed for live debugging of #228;
   # restore via #244 once the bug is fixed and we're back in normal cadence.
   publish-api:
     name: Publish Docker image to ghcr.io
-    needs: [changes, ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
-    if: needs.changes.outputs.api == 'true'
+    needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
