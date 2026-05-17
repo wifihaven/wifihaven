@@ -74,6 +74,11 @@ if [ -x /etc/init.d/familydns ]; then
     /etc/init.d/familydns disable 2>/dev/null || true
     rm -f /etc/init.d/familydns /etc/init.d/familydns-boot
 fi
+# Drop the stale nftables tables created by the old daemon. The new agent
+# will create `inet wifihaven` / `inet wifihaven_boot` on its first policy
+# render; leaving the old tables around is harmless but confusing.
+nft delete table inet familydns 2>/dev/null || true
+nft delete table inet familydns_boot 2>/dev/null || true
 
 /etc/init.d/wifihaven enable
 # #308: enable the boot default-deny skeleton init script so every reboot
