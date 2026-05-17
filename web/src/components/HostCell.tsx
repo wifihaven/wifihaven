@@ -11,7 +11,8 @@ export function HostCell({ host }: { host: HostId }) {
   return (
     <span className="italic text-gray-400">
       {host.value}
-      <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-600">
+      {' '}
+      <span className="text-[10px] uppercase tracking-wide text-gray-600">
         {host.type}
       </span>
     </span>

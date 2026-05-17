@@ -24,6 +24,49 @@
 local M = {}
 
 -- ---------------------------------------------------------------------------
+-- eb_san(host) -> string
+--
+-- Sanitize an extraBlocked hostname into the nftables set-name suffix used by
+-- render.lua: replace dots and colons with underscores, matching the
+-- sanitize() function in render.lua.  Used to build "eb_<san>" set names when
+-- falling back to nft membership queries for IP→hostname attribution misses
+-- (#579).
+-- ---------------------------------------------------------------------------
+function M.eb_san(host)
+  return (host:gsub("[%.%:]", "_"))
+end
+
+-- ---------------------------------------------------------------------------
+-- nft_eb_hit(dst_ip, eb_host, exec_fn) -> bool
+--
+-- Returns true when dst_ip is a current member of the nftables set
+-- `eb_<san(eb_host)>` in the `inet wifihaven` table.
+--
+-- exec_fn(cmd) -> exit_code is injectable for tests (defaults to os.execute).
+-- A return value of 0 (success) means the IP is in the set; any other value
+-- (or a nil return from os.execute on old Lua 5.1 runtimes) is treated as a
+-- miss.
+--
+-- Called only when DNS attribution (hname) is unavailable for a flow that
+-- targets a MAC with extraBlocked entries, so one nft query per eb_host per
+-- flow — acceptable because it is the slow-path (#579 logging correction).
+-- ---------------------------------------------------------------------------
+function M.nft_eb_hit(dst_ip, eb_host, exec_fn)
+  exec_fn = exec_fn or os.execute
+  local san  = M.eb_san(eb_host)
+  local cmd  = string.format(
+    "nft get element inet wifihaven eb_%s '{ %s }' >/dev/null 2>&1",
+    san, dst_ip)
+  local ret = exec_fn(cmd)
+  -- os.execute returns exit-code (number) on Lua 5.1/5.2, or a
+  -- (bool,"exit",code) tuple on Lua 5.3+/LuaJIT.  Handle both.
+  if type(ret) == "boolean" then
+    return ret  -- Lua 5.3+: true = success (exit 0)
+  end
+  return ret == 0  -- Lua 5.1/5.2: 0 = success
+end
+
+-- ---------------------------------------------------------------------------
 -- host_matches(hname, host) -> bool
 --
 -- Returns true when hname is an exact match for host, or when hname is a
@@ -414,6 +457,8 @@ end
 --                            (filled by render.update_shared — per-host eb_/bl_ drops)
 --   ea_hosts_by_mac  table   { mac -> { hostname -> true } }
 --                            (filled by render.update_shared — extraAllowed carve-outs)
+--   exec_fn          func    (optional) injectable exec_fn(cmd) -> exit_code;
+--                            used by nft_eb_hit fallback when hname is nil (#579)
 --   reported_macs    table   { mac -> true }  (mutated)
 --   leases           table   { mac -> { ip, hostname } } (may be nil/empty)
 --   ts               string  ISO8601 timestamp to attach to the events
@@ -508,18 +553,32 @@ function M.handle_flow(flow, ctx, batcher)
   -- so we must NOT classify as blocked when hname also matches a host in
   -- ea_hosts_by_mac[mac] (#421).
   --
-  -- Limitation: when hname is nil, we cannot match against eb_hosts_by_mac
-  -- and the flow is left as allowed.  This is a known reporting gap for
-  -- direct-IP flows (no DNS attribution) to extraBlocked addresses.
-  if allowed and hname and mac then
+  -- When hname is nil (DNS attribution miss — e.g. DoH, Apple Private Relay,
+  -- or a dns-tail race), fall back to querying the live nft set membership for
+  -- each extraBlocked host's eb_ set (#579).  This is the slow path: one
+  -- `nft get element` call per eb_host per flow.  ctx.exec_fn is injectable
+  -- for tests; defaults to os.execute.
+  if allowed and mac then
     local eb_hosts = ctx.eb_hosts_by_mac and ctx.eb_hosts_by_mac[mac]
     if eb_hosts then
       -- Check whether hname (or any of its parent domains) matches an eb_ host.
+      -- When hname is nil, fall back to nft set membership queries (#579).
       local eb_hit = false
+      local eb_hit_host  -- the eb_ host whose set/name matched (for ea_ check)
       for host in pairs(eb_hosts) do
-        if M.host_matches(hname, host) then
-          eb_hit = true
-          break
+        if hname then
+          if M.host_matches(hname, host) then
+            eb_hit = true
+            eb_hit_host = host
+            break
+          end
+        else
+          -- Slow-path: no DNS attribution; query the live nft eb_ set.
+          if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
+            eb_hit = true
+            eb_hit_host = host
+            break
+          end
         end
       end
 
@@ -527,13 +586,28 @@ function M.handle_flow(flow, ctx, batcher)
         -- Check the extraAllowed carve-out: if hname also matches any host in
         -- ea_hosts_by_mac[mac], the `ip daddr != @ea_...` clause suppresses the
         -- nft drop and the flow is allowed.
+        --
+        -- When hname is nil we cannot apply suffix-match semantics; treat any
+        -- ea_ host that exactly matches the eb_ host that fired as a carve-out.
+        -- This is a conservative approximation: it will only suppress the block
+        -- classification when the extraAllowed host is an exact match for the
+        -- extraBlocked host that fired, mirroring the exact situation where
+        -- an admin added the same host to both lists (#421).
         local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
         local ea_hit = false
         if ea_hosts then
           for ea_host in pairs(ea_hosts) do
-            if M.host_matches(hname, ea_host) then
-              ea_hit = true
-              break
+            if hname then
+              if M.host_matches(hname, ea_host) then
+                ea_hit = true
+                break
+              end
+            else
+              -- Slow-path: exact match of the ea_ host against the eb_ host.
+              if ea_host == eb_hit_host then
+                ea_hit = true
+                break
+              end
             end
           end
         end
@@ -574,13 +648,26 @@ function M.parse_conntrack_line(line)
 end
 
 -- ---------------------------------------------------------------------------
--- is_outbound(flow, lan_prefix) -> bool
+-- is_wan_bound(flow, lan_prefix) -> bool
 --
--- Returns true when the source IP is on the LAN (egress flow).
+-- Returns true when the flow is an outbound WAN-destined flow: src_ip is on
+-- the LAN AND dst_ip is NOT on the LAN.  This filters out LAN-internal flows
+-- (device → router, device → LAN peer, mDNS, DHCP, etc.) that should never
+-- appear in connection_events — they are noise with no parental-control signal.
+-- (#575)
+--
 -- lan_prefix example: "192.168.1."
 -- ---------------------------------------------------------------------------
-function M.is_outbound(flow, lan_prefix)
+function M.is_wan_bound(flow, lan_prefix)
   return flow.src_ip:sub(1, #lan_prefix) == lan_prefix
+     and flow.dst_ip:sub(1, #lan_prefix) ~= lan_prefix
+end
+
+-- is_outbound is kept as a backward-compatible alias so existing call sites
+-- outside the watch loop continue to work. New code should use is_wan_bound.
+-- @deprecated use is_wan_bound
+function M.is_outbound(flow, lan_prefix)
+  return M.is_wan_bound(flow, lan_prefix)
 end
 
 -- ---------------------------------------------------------------------------
@@ -602,6 +689,8 @@ end
 --   base_delay     int       default 2   (seconds, doubles each retry)
 --   http_post      function  injectable: post_fn(url, body) -> status, body
 --   sleep_fn       function  injectable for tests
+--   exec_fn        function  injectable: exec_fn(cmd) -> exit_code (default os.execute)
+--                            Used by the nft eb_ membership fallback for nil-hname flows (#579).
 -- }
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
@@ -664,7 +753,7 @@ function M.watch(cfg)
     if not line then break end
 
     local flow = M.parse_conntrack_line(line)
-    if flow and M.is_outbound(flow, lan_prefix) then
+    if flow and M.is_wan_bound(flow, lan_prefix) then
       local arp = M.parse_arp_table()
       local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
       -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a
@@ -683,6 +772,7 @@ function M.watch(cfg)
         blocked_reason        = cfg.blocked_reason,
         eb_hosts_by_mac       = cfg.eb_hosts_by_mac,
         ea_hosts_by_mac       = cfg.ea_hosts_by_mac,
+        exec_fn               = cfg.exec_fn,
         reported_macs         = reported_macs,
         pending_hostname_macs = pending_hostname_macs,
         leases                = leases or {},
