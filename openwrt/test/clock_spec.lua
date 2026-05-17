@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/clock.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/clock.lua
 -- Run with: cd openwrt && busted test/clock_spec.lua
 --
 -- The module picks its backend at require time, so we don't try to test the
@@ -10,7 +10,7 @@ describe("clock module", function()
 
   it("monotonic_seconds returns a positive number", function()
     package.loaded["clock"] = nil
-    package.loaded["familydns.clock"] = nil
+    package.loaded["wifihaven.clock"] = nil
     local clock = require("clock")
     local t = clock.monotonic_seconds()
     assert.is_number(t)
@@ -27,7 +27,7 @@ describe("clock module", function()
 
   it("is independent of os.time() — wall-clock jumps don't move it", function()
     package.loaded["clock"] = nil
-    package.loaded["familydns.clock"] = nil
+    package.loaded["wifihaven.clock"] = nil
     local clock = require("clock")
     -- Skip on systems where no real monotonic source is available (e.g.
     -- macOS dev box without luaposix and without /proc/uptime); the module
@@ -70,7 +70,7 @@ describe("clock /proc/uptime fallback", function()
     end
     -- Drop the cached module so the backend branch re-evaluates.
     package.loaded["clock"] = nil
-    package.loaded["familydns.clock"] = nil
+    package.loaded["wifihaven.clock"] = nil
     local ok, clock = pcall(original_require, "clock")
     _G.require = original_require
     assert.is_true(ok, "clock module failed to load with posix.time absent")
@@ -153,7 +153,7 @@ end)
 describe("policy.poll_age_seconds clamp (#336 defensive bandage)", function()
   it("clamps to 0 when wall-clock jumped backward past last_successful_poll_ts", function()
     package.loaded["policy"] = nil
-    package.loaded["familydns.policy"] = nil
+    package.loaded["wifihaven.policy"] = nil
     local policy = require("policy")
     policy.reset_poll_state()
     policy.mark_poll_success(1000)
@@ -172,7 +172,7 @@ describe("usage retry queue with monotonic now (#336)", function()
   -- now, the queue is jump-safe. Verify this property end-to-end.
   it("backoff fires on monotonic cadence even after wall-clock would have stalled", function()
     package.loaded["usage"] = nil
-    package.loaded["familydns.usage"] = nil
+    package.loaded["wifihaven.usage"] = nil
     local usage = require("usage")
     local q = usage.new_queue()
     local mono = 1000

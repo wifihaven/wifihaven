@@ -1,24 +1,24 @@
 #!/bin/sh
-# FamilyDNS OpenWRT agent — uninstaller.
+# WifiHaven OpenWRT agent — uninstaller.
 #
 # Cleanly reverses what openwrt/install.sh did: stops and disables the
 # agent, removes the package via apk/opkg, deletes the uhttpd block-page
-# listener section, and wipes the familydns UCI config (which contains a
+# listener section, and wipes the wifihaven UCI config (which contains a
 # bearer token).
 #
 # Usage (on an OpenWRT router, as root):
 #
-#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
+#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
 #
 # Or download then run:
 #
-#   uclient-fetch -qO /tmp/familydns-uninstall.sh \
-#     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh
-#   sh /tmp/familydns-uninstall.sh
+#   uclient-fetch -qO /tmp/wifihaven-uninstall.sh \
+#     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+#   sh /tmp/wifihaven-uninstall.sh
 #
 # Flags:
 #   -y, --yes     skip the confirmation prompt
-#       --purge   also remove /usr/lib/familydns and /usr/lib/lua/familydns
+#       --purge   also remove /usr/lib/wifihaven and /usr/lib/lua/wifihaven
 #                 (manual-workaround leftovers from older e2e shakeouts).
 #                 Default behaviour only undoes what install.sh did.
 #   -h, --help    print this usage and exit
@@ -85,17 +85,17 @@ fi
 if [ "$ASSUME_YES" -eq 0 ]; then
   cat >"$TTY" <<EOF
 
-FamilyDNS OpenWRT agent — uninstall
+WifiHaven OpenWRT agent — uninstall
 ===================================
 This will:
-  - stop and disable the familydns service
-  - remove the familydns package via $PKG_MGR
+  - stop and disable the wifihaven service
+  - remove the wifihaven package via $PKG_MGR
   - delete the uhttpd block-page listener on 127.0.0.1:8081 and [::1]:8081
-  - wipe /etc/config/familydns (router_token will be lost)
+  - wipe /etc/config/wifihaven (router_token will be lost)
 EOF
   if [ "$PURGE" -eq 1 ]; then
     cat >"$TTY" <<EOF
-  - [purge] rm -rf /usr/lib/familydns /usr/lib/lua/familydns
+  - [purge] rm -rf /usr/lib/wifihaven /usr/lib/lua/wifihaven
 EOF
   fi
   printf '\n' >"$TTY"
@@ -113,47 +113,47 @@ SUMMARY=""
 note() { SUMMARY="${SUMMARY}  - $*\n"; DID_ANYTHING=1; }
 
 # 1. Stop the service (tolerate "not installed" / "not running").
-if [ -x /etc/init.d/familydns ]; then
-  info "Stopping familydns service..."
-  /etc/init.d/familydns stop  >/dev/null 2>&1 || true
-  /etc/init.d/familydns disable >/dev/null 2>&1 || true
-  note "stopped and disabled familydns service"
+if [ -x /etc/init.d/wifihaven ]; then
+  info "Stopping wifihaven service..."
+  /etc/init.d/wifihaven stop  >/dev/null 2>&1 || true
+  /etc/init.d/wifihaven disable >/dev/null 2>&1 || true
+  note "stopped and disabled wifihaven service"
 fi
 
 # 1b. #308: disable the boot default-deny skeleton init and drop any live
-# `inet familydns_boot` table so the router stops blocking forwarded LAN→WAN
+# `inet wifihaven_boot` table so the router stops blocking forwarded LAN→WAN
 # traffic. If we don't do this an admin who uninstalls without rebooting
 # is left with a default-deny router.
-if [ -x /etc/init.d/familydns-boot ]; then
-  info "Disabling familydns-boot default-deny skeleton..."
-  /etc/init.d/familydns-boot disable >/dev/null 2>&1 || true
-  note "disabled familydns-boot service"
+if [ -x /etc/init.d/wifihaven-boot ]; then
+  info "Disabling wifihaven-boot default-deny skeleton..."
+  /etc/init.d/wifihaven-boot disable >/dev/null 2>&1 || true
+  note "disabled wifihaven-boot service"
 fi
-if command -v nft >/dev/null 2>&1 && nft list table inet familydns_boot >/dev/null 2>&1; then
-  info "Removing live familydns_boot nft table..."
-  nft delete table inet familydns_boot >/dev/null 2>&1 || true
-  note "removed inet familydns_boot table"
+if command -v nft >/dev/null 2>&1 && nft list table inet wifihaven_boot >/dev/null 2>&1; then
+  info "Removing live wifihaven_boot nft table..."
+  nft delete table inet wifihaven_boot >/dev/null 2>&1 || true
+  note "removed inet wifihaven_boot table"
 fi
-if command -v nft >/dev/null 2>&1 && nft list table inet familydns >/dev/null 2>&1; then
-  info "Removing live familydns runtime nft table..."
-  nft delete table inet familydns >/dev/null 2>&1 || true
-  note "removed inet familydns table"
+if command -v nft >/dev/null 2>&1 && nft list table inet wifihaven >/dev/null 2>&1; then
+  info "Removing live wifihaven runtime nft table..."
+  nft delete table inet wifihaven >/dev/null 2>&1 || true
+  note "removed inet wifihaven table"
 fi
 
 # 2. Remove the package.
 case "$PKG_MGR" in
   apk)
-    if apk list -I familydns 2>/dev/null | grep -q '^familydns'; then
-      info "Removing familydns package via apk..."
-      apk del familydns >/dev/null 2>&1 || apk del familydns || true
-      note "removed familydns package (apk)"
+    if apk list -I wifihaven 2>/dev/null | grep -q '^wifihaven'; then
+      info "Removing wifihaven package via apk..."
+      apk del wifihaven >/dev/null 2>&1 || apk del wifihaven || true
+      note "removed wifihaven package (apk)"
     fi
     ;;
   opkg)
-    if opkg list-installed 2>/dev/null | grep -q '^familydns '; then
-      info "Removing familydns package via opkg..."
-      opkg remove familydns >/dev/null 2>&1 || opkg remove familydns || true
-      note "removed familydns package (opkg)"
+    if opkg list-installed 2>/dev/null | grep -q '^wifihaven '; then
+      info "Removing wifihaven package via opkg..."
+      opkg remove wifihaven >/dev/null 2>&1 || opkg remove wifihaven || true
+      note "removed wifihaven package (opkg)"
     fi
     ;;
 esac
@@ -172,41 +172,41 @@ if [ -n "${uhttpd_section:-}" ]; then
 fi
 
 # 3a. #303: revert the route_localnet sysctl. The package removal takes the
-# /etc/sysctl.d/99-familydns.conf file, but the running kernel still has the
+# /etc/sysctl.d/99-wifihaven.conf file, but the running kernel still has the
 # value set until reboot — reset it explicitly so we don't leave LAN clients
 # able to route to 127.0.0.0/8 after uninstall.
-if [ -f /etc/sysctl.d/99-familydns.conf ] || [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
-  rm -f /etc/sysctl.d/99-familydns.conf
+if [ -f /etc/sysctl.d/99-wifihaven.conf ] || [ "$(sysctl -n net.ipv4.conf.br-lan.route_localnet 2>/dev/null)" = "1" ]; then
+  rm -f /etc/sysctl.d/99-wifihaven.conf
   sysctl -w net.ipv4.conf.br-lan.route_localnet=0 >/dev/null 2>&1 || true
   note "reset net.ipv4.conf.br-lan.route_localnet=0"
 fi
 
-# 4. Wipe familydns UCI. apk/opkg removal should have taken /etc/config/familydns
+# 4. Wipe wifihaven UCI. apk/opkg removal should have taken /etc/config/wifihaven
 # (the package owns it), but be defensive: scrub UCI state and the file if it
 # survived.
-if uci -q show familydns >/dev/null 2>&1; then
-  info "Wiping familydns UCI config..."
-  # `uci -q delete familydns` clears the in-memory tree; commit to disk.
-  while uci -q delete familydns >/dev/null 2>&1; do :; done
-  uci commit familydns 2>/dev/null || true
-  note "cleared familydns UCI state"
+if uci -q show wifihaven >/dev/null 2>&1; then
+  info "Wiping wifihaven UCI config..."
+  # `uci -q delete wifihaven` clears the in-memory tree; commit to disk.
+  while uci -q delete wifihaven >/dev/null 2>&1; do :; done
+  uci commit wifihaven 2>/dev/null || true
+  note "cleared wifihaven UCI state"
 fi
-if [ -e /etc/config/familydns ]; then
-  rm -f /etc/config/familydns
-  note "removed /etc/config/familydns"
+if [ -e /etc/config/wifihaven ]; then
+  rm -f /etc/config/wifihaven
+  note "removed /etc/config/wifihaven"
 fi
 
 # Cached policy snapshot (#309). Lives outside the package's tracked files
 # (the agent writes it at runtime), so the package manager won't remove it.
-if [ -d /etc/familydns ]; then
-  rm -rf /etc/familydns
-  note "removed /etc/familydns (cached policy snapshot)"
+if [ -d /etc/wifihaven ]; then
+  rm -rf /etc/wifihaven
+  note "removed /etc/wifihaven (cached policy snapshot)"
 fi
 
 # 5. Purge mode: also kill manual-workaround leftovers from older e2e
 # shakeouts (pre-#202, when modules were dropped under these paths by hand).
 if [ "$PURGE" -eq 1 ]; then
-  for d in /usr/lib/familydns /usr/lib/lua/familydns; do
+  for d in /usr/lib/wifihaven /usr/lib/lua/wifihaven; do
     if [ -e "$d" ]; then
       info "Purging $d..."
       rm -rf "$d"

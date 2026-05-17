@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/dns_log.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/dns_log.lua
 --
 -- dns_log is the forward-lookup hostname cache the agent uses to attribute
 -- connection_attempt events to the domain the client actually resolved

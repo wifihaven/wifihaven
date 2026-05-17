@@ -166,7 +166,7 @@ write_files:
       ${PUBKEY}
   - path: /etc/motd
     content: |
-      familydns test client VM — TEST FIXTURE, not for real use.
+      wifihaven test client VM — TEST FIXTURE, not for real use.
 
 # apk install. The cloud image already has community/main configured.
 packages:

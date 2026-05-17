@@ -9,7 +9,7 @@
 #   ROUTER=root@192.168.1.1 scripts/dev-push-router.sh
 #
 # Syncs the whole openwrt/files/ tree to the router. A file at
-# openwrt/files/usr/sbin/familydns-agent lands at /usr/sbin/familydns-agent.
+# openwrt/files/usr/sbin/wifihaven-agent lands at /usr/sbin/wifihaven-agent.
 # Executables under usr/sbin and init scripts under etc/init.d are chmod +x'd.
 #
 # Caveats — these still require a full package rebuild + install:
@@ -18,7 +18,7 @@
 #   - apk/ipk package layout / dependencies / C / nft components
 # Once installed, restarting the service picks up new lua + sbin scripts.
 #
-# /etc/config/familydns is per-router state and is NOT synced (excluded).
+# /etc/config/wifihaven is per-router state and is NOT synced (excluded).
 
 set -euo pipefail
 
@@ -38,19 +38,19 @@ push() {
   check_router
   echo "==> tar | ssh $SRC -> $ROUTER:/"
   # BusyBox on OpenWRT has no rsync; pipe a tarball instead.
-  # Exclude /etc/config/familydns (per-router UCI state).
+  # Exclude /etc/config/wifihaven (per-router UCI state).
   ( cd "$SRC" && tar -cf - \
       --exclude='*.swp' \
-      --exclude='./etc/config/familydns' \
+      --exclude='./etc/config/wifihaven' \
       . ) \
     | ssh "$ROUTER" "tar -xf - -C /"
 
   echo "==> fix permissions on executables"
   ssh "$ROUTER" '
-    for f in /usr/sbin/familydns-agent /usr/sbin/familydns-update /usr/sbin/familydns-dns-tail; do
+    for f in /usr/sbin/wifihaven-agent /usr/sbin/wifihaven-update /usr/sbin/wifihaven-dns-tail; do
       [ -f "$f" ] && chmod +x "$f"
     done
-    for f in /etc/init.d/familydns /etc/init.d/familydns-boot; do
+    for f in /etc/init.d/wifihaven /etc/init.d/wifihaven-boot; do
       [ -f "$f" ] && chmod +x "$f"
     done
     true
@@ -59,15 +59,15 @@ push() {
   echo "==> parity check"
   parity_check
 
-  echo "==> restart familydns"
-  ssh "$ROUTER" '/etc/init.d/familydns restart'
+  echo "==> restart wifihaven"
+  ssh "$ROUTER" '/etc/init.d/wifihaven restart'
 }
 
 parity_check() {
   local files=(
-    "usr/sbin/familydns-agent"
-    "usr/lib/lua/familydns/policy.lua"
-    "usr/lib/lua/familydns/render.lua"
+    "usr/sbin/wifihaven-agent"
+    "usr/lib/lua/wifihaven/policy.lua"
+    "usr/lib/lua/wifihaven/render.lua"
   )
   local mismatch=0
   for rel in "${files[@]}"; do
@@ -92,7 +92,7 @@ parity_check() {
 
 tail_logs() {
   echo "==> logread -f (Ctrl-C to stop)"
-  ssh -t "$ROUTER" 'logread -f | grep --line-buffered familydns'
+  ssh -t "$ROUTER" 'logread -f | grep --line-buffered wifihaven'
 }
 
 case "$cmd" in

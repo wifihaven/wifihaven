@@ -1,5 +1,5 @@
 #!/usr/bin/lua
--- familydns-agent — main daemon for the familydns OpenWrt package
+-- wifihaven-agent — main daemon for the wifihaven OpenWrt package
 --
 -- Three concurrent responsibilities (cooperative timer loop):
 --   1. Policy timer  (60 s)  — GET /api/router/policy; rewrite dnsmasq + nft config
@@ -13,20 +13,20 @@
 --   usage.lua      — nftables counter scraper + usage reporter
 
 local uci        = require("uci")
-local policy     = require("familydns.policy")
-local blocklists = require("familydns.blocklists")
-local usage      = require("familydns.usage")
-local conntrack  = require("familydns.conntrack")
-local render     = require("familydns.render")
-local dns_log    = require("familydns.dns_log")
-local log        = require("familydns.log")
-local clock      = require("familydns.clock")
+local policy     = require("wifihaven.policy")
+local blocklists = require("wifihaven.blocklists")
+local usage      = require("wifihaven.usage")
+local conntrack  = require("wifihaven.conntrack")
+local render     = require("wifihaven.render")
+local dns_log    = require("wifihaven.dns_log")
+local log        = require("wifihaven.log")
+local clock      = require("wifihaven.clock")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
 local cursor = uci.cursor()
 local function uci_get(opt, default)
-  return cursor:get("familydns", "@familydns[0]", opt) or default
+  return cursor:get("wifihaven", "@wifihaven[0]", opt) or default
 end
 
 local api_url       = uci_get("api_url",              "http://192.168.1.1:8080")
@@ -40,7 +40,7 @@ local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
 local debug_opt     = uci_get("debug",                            "0")
 
 log.init({ debug = debug_opt })
-log.info("familydns-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds",
+log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds",
          api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int)
 
 if router_token == "" then
@@ -179,17 +179,17 @@ end
 
 -- ── Ensure output directories exist ───────────────────────────────────────────
 
-os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/familydns /var/run/familydns")
+os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven")
 
 -- ── Block-page runtime config (#437) ─────────────────────────────────────────
--- The block-page uhttpd handler (/www/familydns/handler.lua, served via
--- uhttpd-mod-lua) reads /var/run/familydns/api_url to know where to redirect
--- blocked clients, and /var/run/familydns/blocked_reasons (written below by
+-- The block-page uhttpd handler (/www/wifihaven/handler.lua, served via
+-- uhttpd-mod-lua) reads /var/run/wifihaven/api_url to know where to redirect
+-- blocked clients, and /var/run/wifihaven/blocked_reasons (written below by
 -- render.write_blocked_reasons after every snapshot apply) to look up the
 -- per-MAC reason for the current device.
 
-local BLOCK_PAGE_API_URL_PATH  = "/var/run/familydns/api_url"
-local BLOCK_PAGE_REASONS_PATH  = "/var/run/familydns/blocked_reasons"
+local BLOCK_PAGE_API_URL_PATH  = "/var/run/wifihaven/api_url"
+local BLOCK_PAGE_REASONS_PATH  = "/var/run/wifihaven/blocked_reasons"
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
@@ -237,7 +237,7 @@ do
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
       persist_blocked_reasons()
       last_snapshot = cached
-      log.info("startup: applied cached policy from /etc/familydns/policy.json")
+      log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
       log.warn("startup: cached policy apply failed — staying on default-deny")
     end
@@ -281,7 +281,7 @@ end
 -- read at flush time) and reused by both the per-minute sampler and the
 -- 5-min usage timer below.
 local function read_nft_counters()
-  local pipe = io.popen("nft -j list set inet familydns mac_ip_tracking 2>/dev/null", "r")
+  local pipe = io.popen("nft -j list set inet wifihaven mac_ip_tracking 2>/dev/null", "r")
   if not pipe then return nil end
   local json_str = pipe:read("*a") or ""
   pipe:close()
@@ -310,7 +310,7 @@ end
 -- Drop the memoization. The cache file lives on tmpfs and is at most a few
 -- kilobytes, so reading it once per outbound flow costs microseconds —
 -- well below the cost of the conntrack -E line that triggered the lookup.
-local dns_cache_path = "/tmp/familydns-dns-cache.txt"
+local dns_cache_path = "/tmp/wifihaven-dns-cache.txt"
 local dns_cache_ttl  = 3600
 
 local function lookup_hostname(dst_ip)
@@ -355,14 +355,14 @@ conntrack.watch({
       if snap then
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
         local bl_result = blocklists.fetch_and_cache(
-          snap, http_get, nil, "/etc/familydns/blocklists")
+          snap, http_get, nil, "/etc/wifihaven/blocklists")
         if #bl_result.errors > 0 then
           for _, e in ipairs(bl_result.errors) do
             log.warn("blocklist fetch: %s", tostring(e))
           end
         end
-        blocklists.gc(snap, nil, "/etc/familydns/blocklists")
-        snap._blocklist_hosts = blocklists.load_cached(snap, nil, "/etc/familydns/blocklists")
+        blocklists.gc(snap, nil, "/etc/wifihaven/blocklists")
+        snap._blocklist_hosts = blocklists.load_cached(snap, nil, "/etc/wifihaven/blocklists")
 
         -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
@@ -391,7 +391,7 @@ conntrack.watch({
 
       -- #331/#422: failover transition. On the failure→failover edge we
       -- re-render the cached snapshot with poll_failed=true so render.lua
-      -- emits the failover_drop set + familydns_failover chain (#311). On
+      -- emits the failover_drop set + wifihaven_failover chain (#311). On
       -- the recovery edge we re-render to clear those rules. A 200 already
       -- applied a clean ruleset above, so we only need to flip the flag
       -- in that case; a 304 needs an explicit re-apply to drop the
@@ -471,7 +471,7 @@ conntrack.watch({
         -- Reset counters and tracker regardless of post outcome: the report
         -- is now owned by the retry queue (or already sent), so leaving the
         -- nft counters intact would double-count on the next bucket.
-        os.execute("nft reset set inet familydns mac_ip_tracking >/dev/null 2>&1")
+        os.execute("nft reset set inet wifihaven mac_ip_tracking >/dev/null 2>&1")
         usage.tracker_reset(activity_tracker)
         if not posted then
           log.warn("usage timer: queued for retry (queue depth=%d)",

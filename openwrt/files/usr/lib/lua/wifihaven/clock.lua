@@ -1,4 +1,4 @@
--- familydns.clock — monotonic-clock helper for scheduling math.
+-- wifihaven.clock — monotonic-clock helper for scheduling math.
 --
 -- Rule of thumb when picking which time source to use:
 --   * Use clock.monotonic_seconds() for any "has X elapsed?" check

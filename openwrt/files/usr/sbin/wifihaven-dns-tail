@@ -1,5 +1,5 @@
 #!/usr/bin/lua
--- familydns-dns-tail — sidecar daemon that tails dnsmasq's query log and
+-- wifihaven-dns-tail — sidecar daemon that tails dnsmasq's query log and
 -- maintains the ip → hostname cache the main agent reads for connection-event
 -- attribution. Run as a separate procd instance so the main agent can stay on
 -- its blocking conntrack read without needing non-blocking-I/O primitives
@@ -7,21 +7,21 @@
 -- read it whenever a new flow arrives.
 
 local uci       = require("uci")
-local dns_log   = require("familydns.dns_log")
-local conntrack = require("familydns.conntrack")
-local log       = require("familydns.log")
+local dns_log   = require("wifihaven.dns_log")
+local conntrack = require("wifihaven.conntrack")
+local log       = require("wifihaven.log")
 
 local cursor = uci.cursor()
 local function uci_get(opt, default)
-  return cursor:get("familydns", "@familydns[0]", opt) or default
+  return cursor:get("wifihaven", "@wifihaven[0]", opt) or default
 end
 
 local debug_opt   = uci_get("debug", "0")
-local source_path = "/tmp/familydns-dnsmasq.log"
-local cache_path  = "/tmp/familydns-dns-cache.txt"
+local source_path = "/tmp/wifihaven-dnsmasq.log"
+local cache_path  = "/tmp/wifihaven-dns-cache.txt"
 local tmp_path    = cache_path .. ".tmp"
 local leases_path = "/tmp/dhcp.leases"
-local nft_table   = "inet familydns"
+local nft_table   = "inet wifihaven"
 -- How often to refresh the bio-set membership cache (which MACs have a
 -- resolved_<sanmac> set declared in the live nft table). The agent re-renders
 -- on policy change; 30s is a generous bound on how long we'll keep populating
@@ -83,10 +83,10 @@ end
 --   3. If a resolved_<sanmac> (or resolved6_<sanmac>) set exists in the
 --      live nft table, run `nft add element <table> <set> { <ip> }`.
 --
--- The set declarations come from render.nft → /etc/nftables.d/familydns.nft
+-- The set declarations come from render.nft → /etc/nftables.d/wifihaven.nft
 -- loaded by `nft -f`; the only MACs with such a set are exactly the ones
 -- with effective blockIpOnly=true. We discover them by parsing
--- `nft list table inet familydns`, so dns-tail doesn't need an independent
+-- `nft list table inet wifihaven`, so dns-tail doesn't need an independent
 -- policy ingestion path.
 -- ---------------------------------------------------------------------------
 
@@ -112,7 +112,7 @@ end
 --   bio  — { [sanmac]   = true } MACs with a resolved_<sanmac> set (#505).
 --   eb4  — { [sanhost]  = true } hosts with an eb_<sanhost>  set (#515).
 --   eb6  — { [sanhost]  = true } hosts with an eb6_<sanhost> set (#515).
--- All three live in the same `inet familydns` table and refresh on the same
+-- All three live in the same `inet wifihaven` table and refresh on the same
 -- cadence, so a single `nft list table` popen pays for all of them.
 local function refresh_nft_sets()
   local bio, eb4, eb6 = {}, {}, {}

@@ -1,4 +1,4 @@
--- conntrack.lua — conntrack new-flow watcher + event batcher for familydns-agent
+-- conntrack.lua — conntrack new-flow watcher + event batcher for wifihaven-agent
 --
 -- Design notes:
 --   * conntrack -E -e NEW (conntrack-tools package) is used rather than nftables
@@ -45,7 +45,7 @@ function M.host_matches(hname, host)
 end
 
 local function default_log()
-  local ok, l = pcall(require, "familydns.log")
+  local ok, l = pcall(require, "wifihaven.log")
   if ok then return l end
   return {
     info  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
@@ -246,7 +246,7 @@ end
 -- deterministically.
 function M.new_batcher(max_size, flush_interval_sec, flush_fn, now_fn)
   now_fn = now_fn or function()
-    local ok, clock = pcall(require, "familydns.clock")
+    local ok, clock = pcall(require, "wifihaven.clock")
     if ok then return clock.monotonic_seconds() end
     return os.time()
   end
