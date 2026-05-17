@@ -19,6 +19,13 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
 }
 
+// #586: redirect to /account when the server-enforced must_change_password flag
+// is set so the operator cannot reach any other route until they rotate.
+function RequirePwChanged({ children }: { children: React.ReactNode }) {
+  const { mustChangePassword } = useAuth()
+  return mustChangePassword ? <Navigate to="/account" replace /> : <>{children}</>
+}
+
 function RequireAdmin({ children }: { children: React.ReactNode }) {
   const { isAdmin } = useAuth()
   return isAdmin ? <>{children}</> : <Navigate to="/dashboard" replace />
@@ -29,21 +36,22 @@ function AppRoutes() {
     <Routes>
       <Route path="/login"   element={<LoginPage />} />
       <Route path="/blocked" element={<BlockedPage />} />
-      <Route path="/" element={
-        <RequireAuth>
-          <Layout />
-        </RequireAuth>
-      }>
-        <Route index element={<Navigate to="/dashboard" replace />} />
-        <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="devices"   element={<DevicesPage />} />
-        <Route path="profiles"  element={<ProfilesPage />} />
-        <Route path="time"      element={<TimePage />} />
-        <Route path="logs"      element={<LogsPage />} />
-        <Route path="account"   element={<AccountPage />} />
-        <Route path="users"     element={<RequireAdmin><UsersPage /></RequireAdmin>} />
-        <Route path="routers"   element={<RequireAdmin><RoutersPage /></RequireAdmin>} />
-        <Route path="admin"     element={<RequireAdmin><AdminPage /></RequireAdmin>} />
+      {/*
+        /account is outside RequirePwChanged so the operator can reach the
+        change-password form even when the server-side flag is set (#586).
+        All other protected routes redirect to /account until the flag clears.
+      */}
+      <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
+        <Route path="account" element={<AccountPage />} />
+        <Route index element={<RequirePwChanged><Navigate to="/dashboard" replace /></RequirePwChanged>} />
+        <Route path="dashboard" element={<RequirePwChanged><DashboardPage /></RequirePwChanged>} />
+        <Route path="devices"   element={<RequirePwChanged><DevicesPage /></RequirePwChanged>} />
+        <Route path="profiles"  element={<RequirePwChanged><ProfilesPage /></RequirePwChanged>} />
+        <Route path="time"      element={<RequirePwChanged><TimePage /></RequirePwChanged>} />
+        <Route path="logs"      element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
+        <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
       </Route>
     </Routes>
   )

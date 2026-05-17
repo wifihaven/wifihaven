@@ -38,7 +38,10 @@ object AuthRoutes {
       Method.POST / "api" / "auth" / "change-password"       ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
+            // Skip the must_change_password guard: this is the one route that
+            // clears it. Using requireAuthSkipPwCheck prevents a deadlock where
+            // the flag blocks the only endpoint that can reset itself (#586).
+            claims <- requireAuthSkipPwCheck(req, auth)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
             cpr    <- ZIO
               .fromEither(body.fromJson[ChangePasswordRequest])
@@ -668,7 +671,17 @@ private def bearerToken(req: Request): Option[String] =
     if v.startsWith("Bearer ") then Some(v.drop(7)) else None
   }
 
-def requireAuth(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+// 403 body emitted when must_change_password is set (#586).
+private val passwordChangeRequiredResponse: Response =
+  Response
+    .json("""{"error":"password_change_required"}""")
+    .status(Status.Forbidden)
+
+/** Verify auth token only — does NOT check must_change_password. Used exclusively
+ *  by POST /api/auth/change-password so that the flag doesn't block the one route
+ *  that can clear it.
+ */
+def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[Response, JwtClaims] =
   ZIO
     .fromOption(bearerToken(req))
     .orElseFail(Response.unauthorized("Missing token"))
@@ -681,33 +694,37 @@ def requireAuth(req: Request, auth: AuthService): IO[Response, JwtClaims] =
         },
     )
 
-def requireAdmin(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+/** Verify auth token AND enforce that must_change_password is false.
+ *  Returns 403 {"error":"password_change_required"} if the flag is set (#586).
+ *  All authenticated routes except change-password use this.
+ */
+def requireAuth(req: Request, auth: AuthService): IO[Response, JwtClaims] =
   ZIO
     .fromOption(bearerToken(req))
     .orElseFail(Response.unauthorized("Missing token"))
     .flatMap(t =>
       auth
-        .requireAdmin(t)
+        .requirePasswordChanged(t)
         .mapError {
-          case AuthError.Forbidden    => Response.forbidden("Admin required")
+          case AuthError.Forbidden    => passwordChangeRequiredResponse
           case AuthError.TokenExpired => Response.unauthorized("Token expired")
           case _                      => Response.unauthorized("Invalid token")
         },
     )
 
+def requireAdmin(req: Request, auth: AuthService): IO[Response, JwtClaims] =
+  // requireAuth already enforces must_change_password; then we check role.
+  requireAuth(req, auth).flatMap { claims =>
+    if claims.role == "admin" then ZIO.succeed(claims)
+    else ZIO.fail(Response.forbidden("Admin required"))
+  }
+
 def requireWriter(req: Request, auth: AuthService): IO[Response, JwtClaims] =
-  ZIO
-    .fromOption(bearerToken(req))
-    .orElseFail(Response.unauthorized("Missing token"))
-    .flatMap(t =>
-      auth
-        .requireWriter(t)
-        .mapError {
-          case AuthError.Forbidden    => Response.forbidden("Adult or admin required")
-          case AuthError.TokenExpired => Response.unauthorized("Token expired")
-          case _                      => Response.unauthorized("Invalid token")
-        },
-    )
+  // requireAuth already enforces must_change_password; then we check role.
+  requireAuth(req, auth).flatMap { claims =>
+    if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(claims)
+    else ZIO.fail(Response.forbidden("Adult or admin required"))
+  }
 
 /** Admin and adult see all profiles. Child only sees profiles linked to their user. */
 def visibleProfiles(

@@ -6,11 +6,18 @@ interface AuthState {
   token: string | null
   username: string | null
   role: UserRole | null
+  // #586: mirrors the server's must_change_password flag. True immediately
+  // after login when the server sends mustChangePassword:true. Cleared
+  // (set to false) by the web after a successful password change.
+  mustChangePassword: boolean
 }
 
 interface AuthContextValue extends AuthState {
-  login: (username: string, password: string) => Promise<void>
+  // Returns { mustChangePassword } so callers can redirect before the React
+  // state update is applied (#586).
+  login: (username: string, password: string) => Promise<{ mustChangePassword: boolean }>
   logout: () => void
+  clearMustChangePassword: () => void
   isAdmin: boolean
   isAdult: boolean      // admin or adult — can edit linked profiles
   isChild: boolean
@@ -27,9 +34,13 @@ function readRole(): UserRole | null {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>(() => ({
-    token:    localStorage.getItem('token'),
-    username: localStorage.getItem('username'),
-    role:     readRole(),
+    token:               localStorage.getItem('token'),
+    username:            localStorage.getItem('username'),
+    role:                readRole(),
+    // mustChangePassword is not persisted across page reloads: after a reload
+    // the API will enforce the flag via 403 on the first authenticated call,
+    // which the client handles via the normal 403 handler in client.ts.
+    mustChangePassword:  false,
   }))
 
   const login = useCallback(async (username: string, password: string) => {
@@ -37,14 +48,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('token', resp.token)
     localStorage.setItem('username', resp.username)
     localStorage.setItem('role', resp.role)
-    setState({ token: resp.token, username: resp.username, role: resp.role })
+    const mcp = resp.mustChangePassword ?? false
+    setState({
+      token:              resp.token,
+      username:           resp.username,
+      role:               resp.role,
+      mustChangePassword: mcp,
+    })
+    // Return the flag so the caller (LoginPage) can redirect synchronously
+    // before the React state update propagates (#586).
+    return { mustChangePassword: mcp }
   }, [])
 
   const logout = useCallback(() => {
     localStorage.removeItem('token')
     localStorage.removeItem('username')
     localStorage.removeItem('role')
-    setState({ token: null, username: null, role: null })
+    setState({ token: null, username: null, role: null, mustChangePassword: false })
+  }, [])
+
+  // Called by AccountPage after a successful password change to allow navigation.
+  const clearMustChangePassword = useCallback(() => {
+    setState(prev => ({ ...prev, mustChangePassword: false }))
   }, [])
 
   const isAdmin = state.role === 'admin'
@@ -56,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ...state,
       login,
       logout,
+      clearMustChangePassword,
       isAdmin,
       isAdult,
       isChild,

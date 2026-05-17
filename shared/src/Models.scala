@@ -176,7 +176,15 @@ case class QueryLog(
 ) derives JsonCodec
 
 case class LoginRequest(username: String, password: String) derives JsonCodec
-case class LoginResponse(token: JwtToken, role: UserRole, username: String) derives JsonCodec
+// mustChangePassword: true when the server-side flag is set (e.g. freshly-seeded admin).
+// The web uses this to redirect directly to the change-password page after login
+// before the user can reach any other route.
+case class LoginResponse(
+    token: JwtToken,
+    role: UserRole,
+    username: String,
+    mustChangePassword: Boolean = false,
+) derives JsonCodec
 case class ChangePasswordRequest(currentPassword: String, newPassword: String) derives JsonCodec
 case class CreateUserRequest(
     username: String,

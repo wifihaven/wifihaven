@@ -37,6 +37,13 @@ trait AuthService {
   def verify(token: String): IO[AuthError, JwtClaims]
   def requireAdmin(token: String): IO[AuthError, JwtClaims]
   def requireWriter(token: String): IO[AuthError, JwtClaims]
+
+  /** Verify token and also check that must_change_password is not set.
+   *  Returns Forbidden if the flag is set (caller should 403 with
+   *  {"error":"password_change_required"}).
+   */
+  def requirePasswordChanged(token: String): IO[AuthError, JwtClaims]
+
   def changePassword(username: String, current: String, next: String): IO[AuthError, Unit]
   def hashPassword(password: String): UIO[String]
 }
@@ -70,7 +77,7 @@ class AuthServiceLive(
       token <- ZIO
         .attempt(JwtZIOJson.encode(claim, secret, algo))
         .mapError(e => AuthError.Unexpected(e.getMessage))
-    } yield LoginResponse(JwtToken.unsafe(token), user.role, user.username)
+    } yield LoginResponse(JwtToken.unsafe(token), user.role, user.username, user.mustChangePassword)
 
   // We delegate expiration/not-before checks to our injected Clock (see below).
   private val jwtOpts = JwtOptions(expiration = false, notBefore = false)
@@ -111,6 +118,17 @@ class AuthServiceLive(
       else ZIO.fail(AuthError.Forbidden)
     }
 
+  def requirePasswordChanged(token: String): IO[AuthError, JwtClaims] =
+    verify(token).flatMap { claims =>
+      userRepo
+        .findByUsername(claims.sub)
+        .mapError(e => AuthError.Unexpected(e.getMessage))
+        .flatMap {
+          case Some(user) if user.mustChangePassword => ZIO.fail(AuthError.Forbidden)
+          case _                                     => ZIO.succeed(claims)
+        }
+    }
+
   def changePassword(username: String, current: String, next: String): IO[AuthError, Unit] =
     for {
       user  <- userRepo
@@ -124,6 +142,10 @@ class AuthServiceLive(
       hash  <- hashPassword(next)
       _     <- userRepo
         .updatePassword(user.id, hash)
+        .mapError(e => AuthError.Unexpected(e.getMessage))
+      // Clear must_change_password flag on successful rotation (#586).
+      _     <- userRepo
+        .clearMustChangePassword(user.id)
         .mapError(e => AuthError.Unexpected(e.getMessage))
     } yield ()
 

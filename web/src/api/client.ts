@@ -34,6 +34,17 @@ async function req<T>(
     throw new Error('Unauthorised')
   }
 
+  // #586: server enforces must_change_password — redirect to /account so
+  // the operator can set a new password before using any other route.
+  if (res.status === 403) {
+    const text = await res.text().catch(() => '')
+    if (text.includes('password_change_required')) {
+      window.location.href = '/account'
+      throw new Error('password_change_required')
+    }
+    throw new Error(text || `HTTP 403`)
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(text || `HTTP ${res.status}`)

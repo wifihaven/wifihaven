@@ -20,6 +20,7 @@ case class DbUser(
     passwordHash: String,
     role: UserRole,
     createdAt: Instant,
+    mustChangePassword: Boolean = false,
 )
 case class LogFilter(
     mac: Option[String] = None,
@@ -45,6 +46,7 @@ trait UserRepo {
   def findById(id: UserId): Task[Option[DbUser]]
   def create(u: String, h: String, r: String): Task[UserId]
   def updatePassword(id: UserId, h: String): Task[Unit]
+  def clearMustChangePassword(id: UserId): Task[Unit]
   def listAll: Task[List[DbUser]]
   def delete(id: UserId): Task[Unit]
 }
@@ -285,15 +287,15 @@ trait ConnectionEventRepo {
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   def findByUsername(u: String)               =
-    sql"SELECT id,username,password_hash,role,created_at FROM users WHERE username=$u"
-      .query[(UserId, String, String, UserRole, Instant)]
-      .map(DbUser.apply)
+    sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE username=$u"
+      .query[(UserId, String, String, UserRole, Instant, Boolean)]
+      .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
       .option
       .transact(xa)
   def findById(id: UserId)                    =
-    sql"SELECT id,username,password_hash,role,created_at FROM users WHERE id=$id"
-      .query[(UserId, String, String, UserRole, Instant)]
-      .map(DbUser.apply)
+    sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE id=$id"
+      .query[(UserId, String, String, UserRole, Instant, Boolean)]
+      .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
       .option
       .transact(xa)
   def create(u: String, h: String, r: String) =
@@ -303,9 +305,11 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .transact(xa)
   def updatePassword(id: UserId, h: String)   =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
-  def listAll = sql"SELECT id,username,password_hash,role,created_at FROM users ORDER BY id"
-    .query[(UserId, String, String, UserRole, Instant)]
-    .map(DbUser.apply)
+  def clearMustChangePassword(id: UserId)     =
+    sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
+  def listAll = sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users ORDER BY id"
+    .query[(UserId, String, String, UserRole, Instant, Boolean)]
+    .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
     .to[List]
     .transact(xa)
   def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit

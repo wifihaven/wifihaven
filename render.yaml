@@ -51,6 +51,9 @@ services:
           property: password
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
+      # Staging runs DEBUG so issues are visible in the Render log stream.
+      # TODO(#587): when the prod env block is added here, set its
+      # WIFIHAVEN_LOG_LEVEL to INFO (not DEBUG) to avoid PII leakage in logs.
       - key: WIFIHAVEN_LOG_LEVEL
         value: DEBUG
       # Entrypoint warns if WIFIHAVEN_DEBUG is non-empty (mounts debug
