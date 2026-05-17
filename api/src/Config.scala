@@ -49,7 +49,7 @@ object AppConfig {
       val path = sys.props.getOrElse("config.file", "config/application.conf")
       read(
         deriveConfig[AppConfig]
-          .nested("familydns")
+          .nested("wifihaven")
           .from(
             TypesafeConfigProvider.fromHoconFile(new java.io.File(path)),
           ),
