@@ -35,7 +35,7 @@ beforeEach(() => {
 
 // Per-test override helper for the initial server state.
 function seedServer(s: { dailyResetTime: string; dailyResetTz: string }) {
-  ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...s })
+  (api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...s })
 }
 
 describe('AdminPage — daily reset card', () => {
@@ -190,10 +190,10 @@ describe('AdminPage — daily reset card', () => {
     // shape of bug #571). The UI must surface the server-of-record value,
     // not the user's typed-in value, so the operator sees the persistence
     // failure rather than a false confirmation.
-    ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+    (api.household.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
       async (next: { dailyResetTime: string }) => {
         // Pretend server only persisted the time, ignoring the tz.
-        ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        (api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
           dailyResetTime: next.dailyResetTime,
           dailyResetTz: 'America/Los_Angeles',
         })
