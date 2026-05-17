@@ -24,7 +24,7 @@ class DebugAPI:
         # Container name to docker-exec into. Defaults to the compose-managed
         # api container created by the e2e stack lifecycle (see stack.py).
         self.container = container or os.environ.get(
-            "E2E_VM_API_CONTAINER", "familydns-e2e-vm-api-1"
+            "E2E_VM_API_CONTAINER", "wifihaven-e2e-vm-api-1"
         )
 
     def devices(self) -> list[dict[str, Any]]:
