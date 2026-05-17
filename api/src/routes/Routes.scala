@@ -677,9 +677,9 @@ private val passwordChangeRequiredResponse: Response =
     .json("""{"error":"password_change_required"}""")
     .status(Status.Forbidden)
 
-/** Verify auth token only — does NOT check must_change_password. Used exclusively
- *  by POST /api/auth/change-password so that the flag doesn't block the one route
- *  that can clear it.
+/**
+ * Verify auth token only — does NOT check must_change_password. Used exclusively by POST
+ * /api/auth/change-password so that the flag doesn't block the one route that can clear it.
  */
 def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[Response, JwtClaims] =
   ZIO
@@ -694,9 +694,10 @@ def requireAuthSkipPwCheck(req: Request, auth: AuthService): IO[Response, JwtCla
         },
     )
 
-/** Verify auth token AND enforce that must_change_password is false.
- *  Returns 403 {"error":"password_change_required"} if the flag is set (#586).
- *  All authenticated routes except change-password use this.
+/**
+ * Verify auth token AND enforce that must_change_password is false. Returns 403
+ * {"error":"password_change_required"} if the flag is set (#586). All authenticated routes except
+ * change-password use this.
  */
 def requireAuth(req: Request, auth: AuthService): IO[Response, JwtClaims] =
   ZIO
