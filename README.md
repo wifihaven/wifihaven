@@ -6,9 +6,9 @@
      move to `sameerparekh/wifihaven` when the repo rename (#364) lands. -->
 <!-- TODO(#355–#360): install paths (/opt/familydns, $HOME/.familydns), system
      user (`familydns`), systemd units (familydns-api.service, familydns-update.*),
-     Docker image (ghcr.io/sameerparekh/familydns-api), Postgres role/db
-     (`familydns`), and HOCON config namespace (`familydns.*`) all still use
-     the old name. They flip in their respective rename sub-issues. -->
+     Postgres role/db (`familydns`), and HOCON config namespace (`familydns.*`)
+     all still use the old name. They flip in their respective rename
+     sub-issues. -->
 
 A self-hosted, network-level parental-control system with a web UI. Block
 categories of sites, set per-profile schedules ("no internet after 9pm"),
@@ -206,8 +206,8 @@ We don't want to debug bootstrap on the live box, so the script has a
 container smoke test:
 
 ```bash
-docker build -f docker/bootstrap-test.Dockerfile -t familydns-bootstrap-test .
-docker run --rm familydns-bootstrap-test
+docker build -f docker/bootstrap-test.Dockerfile -t wifihaven-bootstrap-test .
+docker run --rm wifihaven-bootstrap-test
 ```
 
 The container creates a non-root login user, points the bootstrap at the
