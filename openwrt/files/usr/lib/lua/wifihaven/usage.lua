@@ -134,15 +134,24 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Activity tracker — sub-minute "is this (mac, dst_ip) actively using the
--- network?" sampling.  See #295 (#516).
+-- network?" sampling.  See #295 (#516, #545).
 -- ---------------------------------------------------------------------------
--- The nftables set element counters in `mac_ip_tracking` are reset to 0 once
--- per 5-min bucket.  The agent calls `tracker_sample` every SECONDS_PER_SAMPLE
--- seconds with the currently-parsed counters; each call that observes byte
--- growth bumps the (mac, dst_ip)'s active-sample count.  At end-of-bucket
--- `build_report` multiplies that count by SECONDS_PER_SAMPLE (capped at 300)
--- to produce `activeSeconds`, and the agent resets the tracker for the next
--- bucket.
+-- The nftables set element counters in `mac_ip_tracking` are reset to 0 at
+-- each usage-flush.  The agent calls `tracker_sample(t, counters, mono)` every
+-- SECONDS_PER_SAMPLE seconds with the currently-parsed counters and the
+-- monotonic clock.  Each call that observes byte growth records the
+-- SECONDS_PER_SAMPLE-aligned monotonic window in which it was observed;
+-- `build_report` reports SECONDS_PER_SAMPLE × |distinct windows| as
+-- `activeSeconds` (capped at BUCKET_SECONDS).
+--
+-- Using *distinct windows* rather than a raw tick count (#545) ensures the
+-- final forced sample at flush — which the usage-timer fires immediately
+-- after a regular activity tick to capture last-second activity — cannot
+-- double-credit the same window.  With usage_int=60s and a sample every
+-- 10s, the previous tick-count scheme could over-credit by up to 10s per
+-- flush (regular tick at T=60 plus forced tick at T=60.x both saw growth
+-- but reflected the same 10s window), letting a 90s test that crossed two
+-- flush boundaries land above the [1,2]-minute test bound.
 --
 -- Wire format is unchanged — `activeSeconds` is still an integer.  10s
 -- granularity is fine enough that summing activeSeconds across buckets is
@@ -156,32 +165,59 @@ local BUCKET_SECONDS     = 300
 local function tracker_key(mac, dst_ip) return mac .. "|" .. dst_ip end
 
 function M.new_tracker()
-  return { last = {}, active_minutes = {} }
+  -- `windows[key]` is a set: window_idx -> true.  The legacy field
+  -- `active_minutes[key]` mirrors |windows[key]| so callers (build_report
+  -- and the existing unit tests) keep working unchanged.
+  return { last = {}, windows = {}, active_minutes = {} }
 end
 
--- Compare each counter to its previous byte total; an increase counts as one
--- active minute.  A counter that went DOWN is treated as a fresh start
--- (element expired and reappeared, or counters reset out-of-band); we still
--- count it as an active minute if the new value is > 0.
-function M.tracker_sample(tracker, counters)
+-- Compare each counter to its previous byte total; an increase records the
+-- current SECONDS_PER_SAMPLE-aligned monotonic window as active.  A counter
+-- that went DOWN is treated as a fresh start (element expired and reappeared,
+-- or counters reset out-of-band); we still record an active window if the
+-- new value is > 0.  Multiple samples within the same SECONDS_PER_SAMPLE
+-- window are deduped — recording the same window twice still credits 10s.
+--
+-- `mono` is the monotonic-clock seconds at the time of sampling.  Tests that
+-- don't care about boundary behavior may pass nil; we fall back to an
+-- internal counter that increments by SECONDS_PER_SAMPLE per call, which
+-- preserves the legacy "1 call = 1 window" semantics.
+function M.tracker_sample(tracker, counters, mono)
+  if not mono then
+    tracker._fake_mono = (tracker._fake_mono or 0) + SECONDS_PER_SAMPLE
+    mono = tracker._fake_mono
+  end
+  local window = math.floor(mono / SECONDS_PER_SAMPLE)
   for _, c in ipairs(counters or {}) do
-    local key  = tracker_key(c.mac, c.dst_ip)
-    local prev = tracker.last[key] or 0
+    local key   = tracker_key(c.mac, c.dst_ip)
+    local prev  = tracker.last[key] or 0
+    local grew  = false
     if c.bytes > prev then
-      tracker.active_minutes[key] = (tracker.active_minutes[key] or 0) + 1
+      grew = true
       tracker.last[key] = c.bytes
     elseif c.bytes < prev then
-      if c.bytes > 0 then
+      if c.bytes > 0 then grew = true end
+      tracker.last[key] = c.bytes
+    end
+    if grew then
+      local set = tracker.windows[key]
+      if not set then
+        set = {}
+        tracker.windows[key] = set
+      end
+      if not set[window] then
+        set[window] = true
         tracker.active_minutes[key] = (tracker.active_minutes[key] or 0) + 1
       end
-      tracker.last[key] = c.bytes
     end
   end
 end
 
 function M.tracker_reset(tracker)
   tracker.last           = {}
+  tracker.windows        = {}
   tracker.active_minutes = {}
+  tracker._fake_mono     = nil
 end
 
 -- ---------------------------------------------------------------------------

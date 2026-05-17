@@ -438,7 +438,7 @@ conntrack.watch({
       last_activity_sample = mono
       local counters = read_nft_counters()
       if counters then
-        usage.tracker_sample(activity_tracker, counters)
+        usage.tracker_sample(activity_tracker, counters, mono)
       end
     end
 
@@ -457,7 +457,10 @@ conntrack.watch({
       if counters then
         -- Final sample at flush so set elements that appeared after the
         -- last activity_sample_int tick still get an active sample counted.
-        usage.tracker_sample(activity_tracker, counters)
+        -- Passing `mono` (#545) means this forced sample dedupes with the
+        -- regular activity tick when both fall in the same 10s window,
+        -- avoiding an extra ~10s of credit per flush boundary.
+        usage.tracker_sample(activity_tracker, counters, mono)
         last_activity_sample = mono
         local report = usage.build_report(
           counters, nft_sets, period_start, period_end, router_id,
