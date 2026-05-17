@@ -15,13 +15,13 @@ ENV_FILE="$(mktemp)"
 trap 'rm -f "$ENV_FILE"; docker compose -f deploy/docker-compose.prod.yml --env-file "$ENV_FILE" down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 
 cat > "$ENV_FILE" <<'EOF'
-FAMILYDNS_DB_NAME=familydns
-FAMILYDNS_DB_USER=familydns
-FAMILYDNS_DB_PASSWORD=smoke-test-password
-FAMILYDNS_JWT_SECRET=smoke-test-jwt-secret-min-32-chars-long-yes
-FAMILYDNS_JWT_HOURS=24
-FAMILYDNS_API_BIND=127.0.0.1
-FAMILYDNS_API_PORT=18080
+WIFIHAVEN_DB_NAME=familydns
+WIFIHAVEN_DB_USER=familydns
+WIFIHAVEN_DB_PASSWORD=smoke-test-password
+WIFIHAVEN_JWT_SECRET=smoke-test-jwt-secret-min-32-chars-long-yes
+WIFIHAVEN_JWT_HOURS=24
+WIFIHAVEN_API_BIND=127.0.0.1
+WIFIHAVEN_API_PORT=18080
 EOF
 
 COMPOSE=(docker compose -f deploy/docker-compose.prod.yml --env-file "$ENV_FILE")

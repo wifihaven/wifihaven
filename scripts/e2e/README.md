@@ -20,7 +20,7 @@ scripts/e2e-vm.sh --keep -- -k usage      # leave VMs/stack up; pytest -k passth
 ┌─────────── host ────────────┐
 │  docker compose             │      ┌── router VM ──┐    ┌── client VM ──┐
 │   ├ postgres                │      │ OpenWRT 23.05 │    │ Alpine 3.22   │
-│   └ api  (FAMILYDNS_DEBUG=1)│◀─────┤ familydns-    │    │               │
+│   └ api  (WIFIHAVEN_DEBUG=1)│◀─────┤ familydns-    │    │               │
 │       :18080 (host port)    │ HTTP │ agent baked in│◀──▶│   eth0 (LAN)  │
 │                             │      │               │ DHCP│   curl/dig   │
 │  pytest orchestrator        │      │ eth1 = SLIRP  │ DNS │               │

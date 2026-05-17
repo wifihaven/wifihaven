@@ -1,4 +1,4 @@
-# Deploying FamilyDNS
+# Deploying WifiHaven
 
 The api + postgres pair ships as a single Docker Compose stack. The dns and
 traffic services do **not** live here — they run on an OpenWRT router and
@@ -10,7 +10,7 @@ reach this api over the network (see [`docs/architecture.md`](../docs/architectu
 | --------------------------------- | ------- |
 | `docker-compose.prod.yml`         | Single-stack compose: postgres + api. |
 | `.env.example`                    | Template for secrets/config. Copy to `.env`. |
-| `familydns-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
+| `wifihaven-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
 
 ## Quick install
 
@@ -29,7 +29,7 @@ walkthrough or to install manually.
 
 ```bash
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env                # set FAMILYDNS_DB_PASSWORD and FAMILYDNS_JWT_SECRET
+$EDITOR deploy/.env                # set WIFIHAVEN_DB_PASSWORD and WIFIHAVEN_JWT_SECRET
 
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
 ```
@@ -91,7 +91,7 @@ postgres is **not** reachable from the host, and tears the stack down.
 ## Migrating from the legacy host-based deploy
 
 If you're running the older systemd-on-host install (`scripts/deploy.sh` +
-`familydns-api.service`):
+`wifihaven-api.service`):
 
 1. `pg_dump` your existing local postgres.
 2. Stop and disable the systemd units.

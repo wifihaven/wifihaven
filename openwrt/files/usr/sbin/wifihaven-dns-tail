@@ -1,0 +1,287 @@
+#!/usr/bin/lua
+-- wifihaven-dns-tail — sidecar daemon that tails dnsmasq's query log and
+-- maintains the ip → hostname cache the main agent reads for connection-event
+-- attribution. Run as a separate procd instance so the main agent can stay on
+-- its blocking conntrack read without needing non-blocking-I/O primitives
+-- (#259). The cache snapshot is written atomically to /tmp so the agent can
+-- read it whenever a new flow arrives.
+
+local uci       = require("uci")
+local dns_log   = require("wifihaven.dns_log")
+local conntrack = require("wifihaven.conntrack")
+local log       = require("wifihaven.log")
+
+local cursor = uci.cursor()
+local function uci_get(opt, default)
+  return cursor:get("wifihaven", "@wifihaven[0]", opt) or default
+end
+
+local debug_opt   = uci_get("debug", "0")
+local source_path = "/tmp/wifihaven-dnsmasq.log"
+local cache_path  = "/tmp/wifihaven-dns-cache.txt"
+local tmp_path    = cache_path .. ".tmp"
+local leases_path = "/tmp/dhcp.leases"
+local nft_table   = "inet wifihaven"
+-- How often to refresh the bio-set membership cache (which MACs have a
+-- resolved_<sanmac> set declared in the live nft table). The agent re-renders
+-- on policy change; 30s is a generous bound on how long we'll keep populating
+-- stale sets / miss new ones. Cheap to lower if needed.
+local bio_refresh_seconds  = 30
+-- And how often to refresh ip→MAC from /tmp/dhcp.leases (changes when a
+-- device leases / renews; small file, mtime-checked refresh).
+local lease_refresh_seconds = 30
+-- Flush after every ingested line: the agent's conntrack watcher reads the
+-- cache file at flow-start time (SYN → conntrack -E NEW), which lands
+-- milliseconds after the dnsmasq reply line that resolved the destination
+-- IP. Any flush delay here means lookup_hostname() returns nil and the
+-- connection_attempt event is built with hostname=nil — and that hostname
+-- is frozen on the event before it's queued / POSTed, so a later flush
+-- can't repair it (#472). Tail+ingest is line-driven and tmpfs writes are
+-- cheap, so flushing every line is the cheapest correct behavior.
+local flush_every = 1  -- lines
+
+log.init({ debug = debug_opt })
+log.info("dns-tail: starting source=%s cache=%s", source_path, cache_path)
+
+local cache = dns_log.new({ ttl_seconds = 3600 })
+
+-- tail -F follows the log across rotations (dnsmasq SIGHUP, file replaced).
+-- -n 0 skips replay of the historical log so we don't burn CPU at boot.
+local handle = io.popen(string.format(
+  "tail -n 0 -F %q 2>/dev/null", source_path), "r")
+if not handle then
+  log.err("dns-tail: cannot start tail on %s", source_path)
+  os.exit(1)
+end
+
+local function atomic_write(path, content)
+  local f, err = io.open(tmp_path, "w")
+  if not f then
+    log.err("dns-tail: open %s failed: %s", tmp_path, tostring(err))
+    return false
+  end
+  f:write(content)
+  f:close()
+  local ok = os.rename(tmp_path, path)
+  if not ok then
+    log.err("dns-tail: rename %s -> %s failed", tmp_path, path)
+    os.remove(tmp_path)
+    return false
+  end
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- #505: per-MAC blockIpOnly resolved-set populator.
+--
+-- dnsmasq 2.91 rejects the `tag:` prefix in `nftset=`, so render.lua does
+-- NOT emit a dnsmasq-side populator for resolved_<mac> / resolved6_<mac>.
+-- We populate those sets ourselves from the same query log we already tail
+-- for hostname attribution. For each `reply ... is <ip>` line:
+--   1. Parse client_ip + answer_ip + family (v4 or v6).
+--   2. Map client_ip → MAC via /tmp/dhcp.leases (reverse-indexed below).
+--   3. If a resolved_<sanmac> (or resolved6_<sanmac>) set exists in the
+--      live nft table, run `nft add element <table> <set> { <ip> }`.
+--
+-- The set declarations come from render.nft → /etc/nftables.d/wifihaven.nft
+-- loaded by `nft -f`; the only MACs with such a set are exactly the ones
+-- with effective blockIpOnly=true. We discover them by parsing
+-- `nft list table inet wifihaven`, so dns-tail doesn't need an independent
+-- policy ingestion path.
+-- ---------------------------------------------------------------------------
+
+-- Replace dots and colons with underscores (mirrors render.sanitize so the
+-- MAC → set-name mapping is consistent — name them in concert if you change
+-- the rule in render.lua).
+local function sanitize_mac(mac)
+  return (mac:gsub("[%.%:]", "_"))
+end
+
+local function refresh_ip_to_mac()
+  local leases = conntrack.parse_dhcp_leases(leases_path)
+  local out = {}
+  for mac, entry in pairs(leases) do
+    if entry.ip and entry.ip ~= "" then
+      out[entry.ip] = mac
+    end
+  end
+  return out
+end
+
+-- Returns three sets keyed by sanitized name:
+--   bio  — { [sanmac]   = true } MACs with a resolved_<sanmac> set (#505).
+--   eb4  — { [sanhost]  = true } hosts with an eb_<sanhost>  set (#515).
+--   eb6  — { [sanhost]  = true } hosts with an eb6_<sanhost> set (#515).
+-- All three live in the same `inet wifihaven` table and refresh on the same
+-- cadence, so a single `nft list table` popen pays for all of them.
+local function refresh_nft_sets()
+  local bio, eb4, eb6 = {}, {}, {}
+  local h = io.popen("nft -a list table " .. nft_table .. " 2>/dev/null", "r")
+  if not h then return bio, eb4, eb6 end
+  for line in h:lines() do
+    local sanmac = line:match("set%s+resolved_([%w_]+)%s*{")
+    if sanmac then bio[sanmac] = true end
+    local sanhost4 = line:match("set%s+eb_([%w_]+)%s*{")
+    if sanhost4 then eb4[sanhost4] = true end
+    local sanhost6 = line:match("set%s+eb6_([%w_]+)%s*{")
+    if sanhost6 then eb6[sanhost6] = true end
+  end
+  h:close()
+  return bio, eb4, eb6
+end
+
+-- Shell-quoting: the answer IP comes from dnsmasq's log line (we already
+-- ran is_ipv4 / is_ipv6 on it), so it can only be hex/digits/dots/colons —
+-- but pass it through a strict allow-list anyway to be paranoid about any
+-- future call site reusing this helper.
+local function safe_addr(ip)
+  if type(ip) ~= "string" then return nil end
+  if ip:find("[^%x%.:]") then return nil end
+  return ip
+end
+
+local function nft_add_element(set_name, ip)
+  local safe = safe_addr(ip)
+  if not safe then return end
+  -- Discard nft's output; we expect ENOENT if the set was removed between
+  -- our cache refresh and the nft call (admin disabled blockIpOnly), and
+  -- "element exists" if the same IP was added moments ago (legitimate
+  -- duplicate). Neither is actionable here.
+  os.execute(string.format(
+    "nft add element %s %s { %s } >/dev/null 2>&1",
+    nft_table, set_name, safe))
+end
+
+local ip_to_mac     = refresh_ip_to_mac()
+local bio_sanmacs, eb_sanhosts, eb6_sanhosts = refresh_nft_sets()
+local last_lease_refresh = os.time()
+local last_bio_refresh   = os.time()
+local bio_adds_total     = 0
+local eb_adds_total      = 0
+
+local function maybe_populate_bio(line, now)
+  local r = dns_log.parse_resolved_reply(line)
+  if not r then return end
+  local mac = ip_to_mac[r.client_ip]
+  if not mac then return end
+  local sanmac = sanitize_mac(mac)
+  if not bio_sanmacs[sanmac] then return end
+  local set_name = (r.family == "v6" and "resolved6_" or "resolved_") .. sanmac
+  nft_add_element(set_name, r.ip)
+  bio_adds_total = bio_adds_total + 1
+  log.debug("dns-tail: bio add %s { %s } client=%s mac=%s",
+            set_name, r.ip, r.client_ip, mac)
+end
+
+-- #515: per-host extraBlocked set populator.
+--
+-- render.lua emits an `nftset=/host/4#...#eb_<sanhost>,6#...#eb6_<sanhost>`
+-- for every effective extraBlocked host, but in the deployed dnsmasq build
+-- those sets stay empty under e2e (test_extra_blocked × 2 timed out waiting
+-- for eb_example_com to gain its first element). Mirror the #505 fix shape:
+-- tail the same query log we already read for hostname attribution, and run
+-- `nft add element` ourselves when we see a `reply <host> is <ip>` that
+-- matches a declared eb_<sanhost> / eb6_<sanhost> set.
+--
+-- Subdomain semantics: dnsmasq's `nftset=/example.com/...` matches
+-- example.com AND every subdomain. Mirror that by walking labels — for
+-- `www.example.com` we test `www_example_com`, then `example_com`, then
+-- `com`. First hit wins; the v4 and v6 set memberships are checked
+-- independently so a host with only AAAA records still populates eb6_.
+local function sanitize_host(h)
+  return (h:gsub("[%.%:]", "_"))
+end
+
+local function maybe_populate_eb(line)
+  local r = dns_log.parse_resolved_reply(line)
+  if not r or not r.name then return end
+  local sets   = (r.family == "v6") and eb6_sanhosts or eb_sanhosts
+  local prefix = (r.family == "v6") and "eb6_"       or "eb_"
+  local n = r.name
+  while n and n ~= "" do
+    local sanhost = sanitize_host(n)
+    if sets[sanhost] then
+      nft_add_element(prefix .. sanhost, r.ip)
+      eb_adds_total = eb_adds_total + 1
+      log.debug("dns-tail: eb add %s%s { %s } name=%s",
+                prefix, sanhost, r.ip, r.name)
+      return
+    end
+    local dot = n:find("%.")
+    if not dot then return end
+    n = n:sub(dot + 1)
+  end
+end
+
+log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s)",
+         (function() local n = 0; for _ in pairs(ip_to_mac) do n = n + 1 end; return n end)(),
+         (function() local n = 0; for _ in pairs(bio_sanmacs) do n = n + 1 end; return n end)(),
+         (function() local n = 0; for _ in pairs(eb_sanhosts) do n = n + 1 end; return n end)())
+
+local since_flush      = 0
+local last_tick        = os.time()
+local last_stats_log   = os.time()
+local lines_ingested   = 0
+local lines_since_stat = 0
+
+while true do
+  local line = handle:read("*l")
+  if not line then
+    log.warn("dns-tail: tail pipe closed; exiting (procd will respawn)")
+    break
+  end
+  cache.ingest_line(line)
+  since_flush      = since_flush + 1
+  lines_ingested   = lines_ingested + 1
+  lines_since_stat = lines_since_stat + 1
+
+  local now = os.time()
+
+  -- #505: populate per-MAC blockIpOnly resolved sets in lockstep with the
+  -- hostname cache. This must be inline (not batched) for the same reason
+  -- as the hostname flush: conntrack -E NEW lands milliseconds after the
+  -- dnsmasq reply, and any delay here means the first packet of a newly
+  -- resolved flow hits an empty set and gets dropped (#472 / blockIpOnly
+  -- defeats user-visible connectivity).
+  maybe_populate_bio(line, now)
+
+  -- #515: same lockstep argument as bio — the per-host extraBlocked drop
+  -- rule fires on the first packet of the flow, so any delay between the
+  -- dnsmasq reply and the eb_<sanhost> element add lets the first SYN
+  -- through.
+  maybe_populate_eb(line)
+
+  if since_flush >= flush_every or (now - last_tick) >= 30 then
+    cache.tick(now)
+    atomic_write(cache_path, cache.dump_text())
+    log.debug("dns-tail: flushed cache size=%d", cache.size())
+    since_flush = 0
+    last_tick   = now
+  end
+
+  -- Refresh per-MAC blockIpOnly state (lease table + which sets exist).
+  -- We do this on the tail loop rather than a timer so we don't need
+  -- non-blocking IO; periodic policy changes from the agent + DHCP renewals
+  -- are slow relative to log line throughput.
+  if (now - last_lease_refresh) >= lease_refresh_seconds then
+    ip_to_mac = refresh_ip_to_mac()
+    last_lease_refresh = now
+  end
+  if (now - last_bio_refresh) >= bio_refresh_seconds then
+    bio_sanmacs, eb_sanhosts, eb6_sanhosts = refresh_nft_sets()
+    last_bio_refresh = now
+  end
+
+  -- One-line info heartbeat so silent failures (dnsmasq not logging, tail
+  -- dropping the pipe, regex never matching) are diagnosable from logread
+  -- alone without on-VM access (#480).
+  if (now - last_stats_log) >= 60 then
+    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d",
+             lines_ingested, lines_since_stat, now - last_stats_log,
+             cache.size(), bio_adds_total, eb_adds_total)
+    last_stats_log   = now
+    lines_since_stat = 0
+  end
+end
+
+handle:close()

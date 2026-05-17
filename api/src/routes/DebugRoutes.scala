@@ -1,14 +1,14 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
-import familydns.api.db.*
-import familydns.shared.Clock
+import wifihaven.api.db.*
+import wifihaven.shared.Clock
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
 /**
  * Read-only JSON dumps of the underlying tables, intended for diagnosing router/agent ingest issues
- * live (#228). Mounted ONLY when the API is started with `FAMILYDNS_DEBUG=1`; access is further
+ * live (#228). Mounted ONLY when the API is started with `WIFIHAVEN_DEBUG=1`; access is further
  * restricted to loopback callers on the API host.
  *
  * Endpoints: GET /api/debug/devices -> all device rows GET /api/debug/events?limit -> recent
@@ -76,17 +76,23 @@ object DebugRoutes {
               presence <- trafficRepo
                 .listPresenceRows(macs, today)
                 .mapError(ErrorMapper.dbErrorToResponse)
-              totals = familydns.api.presence.Presence
-                .totalMinutesByMac(presence, exemptPatterns = Nil)
+              // Surface raw active-seconds (sum of max-per-bucket activeSeconds) as well as
+              // the floor-divided minute count. The e2e D2 minute-granularity test (#516)
+              // ceil-divides this to get tight bounds; bucket-counting via floor(/60) drifts
+              // when activity straddles 5-min agent buckets.
+              totalSecs = wifihaven.api.presence.Presence
+                .totalSecondsByMac(presence, exemptPatterns = Nil)
             } yield Response.json(
               snap
                 .map { case ((mac, host), mins) =>
+                  val secs = totalSecs.getOrElse(mac, 0L)
                   TimeUsageRow(
                     mac.value,
                     host.value,
                     today.toString,
                     mins,
-                    totals.getOrElse(mac, 0),
+                    (secs / 60).toInt,
+                    secs,
                   )
                 }
                 .toList
@@ -105,6 +111,10 @@ object DebugRoutes {
       // Same value on every row for the same mac; callers should take this once
       // per mac rather than summing `minutesUsed` across hosts.
       deviceTotalMinutes: Int,
+      // Same as deviceTotalMinutes but expressed as raw seconds (no floor /60).
+      // Callers needing tight minute bounds (e.g. e2e D2 test, #516) should
+      // ceil-divide this rather than reading deviceTotalMinutes which floors.
+      deviceTotalActiveSeconds: Long,
   ) derives JsonCodec
 
   /**

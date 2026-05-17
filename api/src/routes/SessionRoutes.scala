@@ -1,10 +1,10 @@
-package familydns.api.routes
+package wifihaven.api.routes
 
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.sessions.Sessions
-import familydns.shared.*
-import familydns.shared.types.*
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.sessions.Sessions
+import wifihaven.shared.*
+import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*

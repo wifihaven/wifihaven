@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a QEMU-bootable OpenWRT x86_64 image with the familydns-agent ipk
+# Build a QEMU-bootable OpenWRT x86_64 image with the wifihaven-agent ipk
 # pre-installed.
 #
 # Wraps OpenWRT's official Image Builder, run inside a Docker container so
@@ -12,15 +12,15 @@
 #   IPK_SOURCE=path    IPK_PATH=/abs/path/to.ipk scripts/vm/build-router-image.sh
 #
 # Output:
-#   scripts/vm/.cache/openwrt-familydns.img        (uncompressed, ready for QEMU)
+#   scripts/vm/.cache/openwrt-wifihaven.img        (uncompressed, ready for QEMU)
 #
 # Acceptance test (cf. issue #150):
 #   1. This script runs to completion on a clean checkout.
-#   2. FDNS_ROUTER_IMAGE_PATH=$PWD/scripts/vm/.cache/openwrt-familydns.img \
+#   2. FDNS_ROUTER_IMAGE_PATH=$PWD/scripts/vm/.cache/openwrt-wifihaven.img \
 #        scripts/vm/router-up.sh boots it.
-#   3. opkg list-installed | grep familydns shows the agent.
-#   4. logread | grep familydns shows the agent starting up.
-#   5. uci show familydns returns the pre-baked defaults.
+#   3. opkg list-installed | grep wifihaven shows the agent.
+#   4. logread | grep wifihaven shows the agent starting up.
+#   5. uci show wifihaven returns the pre-baked defaults.
 
 set -euo pipefail
 
@@ -34,23 +34,23 @@ CACHE_DIR="$SCRIPT_DIR/.cache"
 DOWNLOAD_DIR="$CACHE_DIR/downloads"
 IB_ROOT="$CACHE_DIR/imagebuilder"
 STAGING_DIR="$CACHE_DIR/staging"
-OUTPUT_IMG="$CACHE_DIR/openwrt-familydns.img"
+OUTPUT_IMG="$CACHE_DIR/openwrt-wifihaven.img"
 
 IPK_SOURCE="${IPK_SOURCE:-local}"
 IPK_PATH="${IPK_PATH:-}"
 
 mkdir -p "$DOWNLOAD_DIR" "$STAGING_DIR"
 
-# ── 1. Locate the familydns-agent ipk ────────────────────────────────────────
+# ── 1. Locate the wifihaven-agent ipk ────────────────────────────────────────
 resolve_ipk() {
     case "$IPK_SOURCE" in
         local)
-            echo "==> Building familydns ipk locally" >&2
+            echo "==> Building wifihaven ipk locally" >&2
             (cd "$REPO_ROOT/openwrt" && ./build-ipk.sh >&2)
-            ls "$REPO_ROOT"/openwrt/familydns_*.ipk | head -n1
+            ls "$REPO_ROOT"/openwrt/wifihaven_*.ipk | head -n1
             ;;
         release)
-            echo "==> Fetching latest familydns ipk from GitHub Releases" >&2
+            echo "==> Fetching latest wifihaven ipk from GitHub Releases" >&2
             local url
             url="$(gh release view --json assets \
                    --jq '.assets[] | select(.name | endswith(".ipk")) | .url' \
@@ -114,8 +114,8 @@ tar -xf "$IB_TARBALL" -C "$IB_ROOT" --strip-components=1
 echo "==> Staging overlay files"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR/etc/uci-defaults"
-install -m 0755 "$SCRIPT_DIR/uci-defaults/99-familydns" \
-    "$STAGING_DIR/etc/uci-defaults/99-familydns"
+install -m 0755 "$SCRIPT_DIR/uci-defaults/99-wifihaven" \
+    "$STAGING_DIR/etc/uci-defaults/99-wifihaven"
 
 # Bake the test-only SSH key into /etc/dropbear/authorized_keys so the
 # orchestrator can SSH in without a console-based key-injection step. Safe
@@ -125,7 +125,7 @@ mkdir -p "$STAGING_DIR/etc/dropbear"
 install -m 0600 "$SCRIPT_DIR/keys/client_test_ed25519.pub" \
     "$STAGING_DIR/etc/dropbear/authorized_keys"
 
-# ── 5. Drop the familydns ipk into the Image Builder's local packages dir ───
+# ── 5. Drop the wifihaven ipk into the Image Builder's local packages dir ───
 # OpenWRT 23.05's scripts/ipkg-make-index.sh expects .ipk files to be
 # tarballs (`tar czf foo.ipk debian-binary control.tar.gz data.tar.gz`),
 # but openwrt/build-ipk.sh produces the deb-style `ar` format that opkg
@@ -213,7 +213,7 @@ docker run --rm \
         # (lua, libuci-lua, luci-lib-jsonc, conntrack, curl) are
         # pulled in automatically from the upstream OpenWRT feed.
         # Swap stock dnsmasq for dnsmasq-full so the `ipset=` directives the
-        # agent renders into /tmp/dnsmasq.d/familydns.conf are accepted —
+        # agent renders into /tmp/dnsmasq.d/wifihaven.conf are accepted —
         # plain dnsmasq is built without HAVE_IPSET and rejects the config
         # at line 7 (#148 e2e).
         # uhttpd hosts the local block page on 127.0.0.1:8081 (#303 / #351).
@@ -222,7 +222,7 @@ docker run --rm \
         # instead of receiving the block page.
         make image \
             PROFILE=generic \
-            PACKAGES="familydns -dnsmasq dnsmasq-full uhttpd" \
+            PACKAGES="wifihaven -dnsmasq dnsmasq-full uhttpd" \
             FILES=/staging
     '
 

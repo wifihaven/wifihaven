@@ -1,14 +1,14 @@
 #!/bin/sh
-# Run the familydns OpenWrt agent unit tests.
+# Run the wifihaven OpenWrt agent unit tests.
 # Requires: luarocks install busted lua-cjson
 #
 # LUA_PATH is set so that:
-#   require("render")            →  files/usr/lib/lua/familydns/render.lua    (short form, used in tests)
-#   require("familydns.render")  →  files/usr/lib/lua/familydns/render.lua    (qualified form, used in modules)
+#   require("render")            →  files/usr/lib/lua/wifihaven/render.lua    (short form, used in tests)
+#   require("wifihaven.render")  →  files/usr/lib/lua/wifihaven/render.lua    (qualified form, used in modules)
 set -e
 cd "$(dirname "$0")/.."
 
-LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
   busted test/conntrack_spec.lua \
          test/render_spec.lua \
          test/policy_spec.lua \
@@ -16,6 +16,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/familydns/?.lua;./test/s
          test/clock_spec.lua \
          test/failover_spec.lua \
          test/blocklists_spec.lua \
+         test/block_page_spec.lua \
          "$@"
 
 echo ""

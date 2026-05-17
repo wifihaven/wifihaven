@@ -1,4 +1,4 @@
-package familydns.shared
+package wifihaven.shared
 
 import zio.{Clock as _, *}
 import zio.test.*

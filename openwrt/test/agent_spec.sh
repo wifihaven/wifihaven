@@ -1,5 +1,5 @@
 #!/bin/sh
-# Shell-level guard for openwrt/files/usr/sbin/familydns-agent.
+# Shell-level guard for openwrt/files/usr/sbin/wifihaven-agent.
 # Run from the openwrt/ directory:  sh test/agent_spec.sh
 #
 # The agent script is a top-level Lua daemon (no module return), so it
@@ -11,7 +11,7 @@ set -e
 
 PASS=0; FAIL=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/files/usr/sbin/familydns-agent"
+SCRIPT="$ROOT/files/usr/sbin/wifihaven-agent"
 
 check() {
   if [ "$2" = "ok" ]; then

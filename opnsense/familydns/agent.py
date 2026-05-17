@@ -169,7 +169,7 @@ def main() -> None:
     import configparser
     import os
 
-    config_path = os.environ.get("FAMILYDNS_CONFIG", "/usr/local/etc/familydns.conf")
+    config_path = os.environ.get("WIFIHAVEN_CONFIG", "/usr/local/etc/familydns.conf")
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
     sec = cfg["familydns"] if "familydns" in cfg else {}

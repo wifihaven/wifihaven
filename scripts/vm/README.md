@@ -1,7 +1,7 @@
 # VM e2e harness
 
 Scripted QEMU/KVM setup for end-to-end testing of the OpenWRT side of
-FamilyDNS. The big picture is in #106; this directory is the implementation
+WifiHaven. The big picture is in #106; this directory is the implementation
 of #144 (router VM) and #146 (client VM).
 
 ## Host requirements
@@ -168,11 +168,11 @@ qemu-img snapshot -l scripts/vm/.run/router/overlay.qcow2
 
 Snapshot names must match `[A-Za-z0-9_.-]+`.
 
-## Custom router image (familydns-agent baked in, #150)
+## Custom router image (wifihaven-agent baked in, #150)
 
 `router-up.sh` defaults to the stock OpenWRT image pinned in `config.sh`.
 For end-to-end testing, [`build-router-image.sh`](build-router-image.sh)
-produces an OpenWRT image with the `familydns-agent` ipk pre-installed
+produces an OpenWRT image with the `wifihaven-agent` ipk pre-installed
 and first-boot defaults seeded under `/etc/uci-defaults/`. It wraps
 OpenWRT's official Image Builder, run inside a pinned Debian container
 for reproducibility.
@@ -185,18 +185,18 @@ scripts/vm/build-router-image.sh
 IPK_SOURCE=release scripts/vm/build-router-image.sh
 
 # Use a specific ipk file:
-IPK_SOURCE=path IPK_PATH=/abs/path/familydns_X.Y.Z-1_all.ipk \
+IPK_SOURCE=path IPK_PATH=/abs/path/wifihaven_X.Y.Z-1_all.ipk \
     scripts/vm/build-router-image.sh
 ```
 
-Output: `.cache/openwrt-familydns.img` (uncompressed, ready to feed
+Output: `.cache/openwrt-wifihaven.img` (uncompressed, ready to feed
 directly to QEMU). Image size: ~30–50 MB.
 
 To boot it via the existing harness, point `router-up.sh` at the file
 through `FDNS_ROUTER_IMAGE_PATH`:
 
 ```bash
-FDNS_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-familydns.img \
+FDNS_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-wifihaven.img \
     scripts/vm/router-up.sh
 ```
 
@@ -220,14 +220,14 @@ install via `opkg` — built by `openwrt/build-ipk.sh`, published by
 exercise the same bits. If the package contents change, change them in
 `openwrt/` — never patch a staged copy here.
 
-### First-boot config (`uci-defaults/99-familydns`)
+### First-boot config (`uci-defaults/99-wifihaven`)
 
 OpenWRT runs `/etc/uci-defaults/*` exactly once on first boot, then
 deletes each script. The seeded values (`api_url`, `lan_prefix`) are
 defaults the orchestrator (#148) overrides over SSH at boot — they only
 exist so a developer who boots the image and pokes at it sees something
 sensible. To extend the first-boot setup, add UCI commands to
-`uci-defaults/99-familydns` and rebuild.
+`uci-defaults/99-wifihaven` and rebuild.
 
 The script also seeds an empty `/etc/dropbear/authorized_keys` — the
 orchestrator drops its public key in via the QEMU console. **Only safe
@@ -238,7 +238,7 @@ for ephemeral VMs**; do not flash this image to a real router.
 [`.github/workflows/router-image-build.yml`](../../.github/workflows/router-image-build.yml)
 runs the build on every push to `main` and on PRs touching `openwrt/`
 or `scripts/vm/`. The resulting image is published as a workflow
-artifact named `openwrt-familydns-<openwrt-version>-<sha>`, which the
+artifact named `openwrt-wifihaven-<openwrt-version>-<sha>`, which the
 VM e2e suite (#148) consumes.
 
 ### Known quirks (v1 — deferred)

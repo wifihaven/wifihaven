@@ -1,6 +1,6 @@
-package familydns.shared.types
+package wifihaven.shared.types
 
-import familydns.shared.{FailureMode, UserRole}
+import wifihaven.shared.{FailureMode, UserRole}
 import zio.json.*
 import zio.test.*
 

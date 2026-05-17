@@ -32,7 +32,7 @@ ROUTER_HTTP_PORT = int(os.environ.get("FDNS_ROUTER_HTTP_PORT", "18081"))
 
 # QEMU SLIRP gateway as seen from inside the router VM. The router VM's WAN is
 # user-mode networking, so it reaches the host (where the API stack runs) via
-# 10.0.2.2. The orchestrator overrides familydns.api_url to point here.
+# 10.0.2.2. The orchestrator overrides wifihaven.api_url to point here.
 ROUTER_HOST_GATEWAY = "10.0.2.2"
 
 

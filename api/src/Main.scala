@@ -1,12 +1,12 @@
-package familydns.api
+package wifihaven.api
 
 import doobie.*
 import doobie.implicits.*
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.policy.*
-import familydns.api.routes.*
-import familydns.shared.Clock
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.policy.*
+import wifihaven.api.routes.*
+import wifihaven.shared.Clock
 import zio.*
 import zio.http.*
 import zio.interop.catz.*
@@ -24,7 +24,7 @@ object Main extends ZIOAppDefault {
       _      <- ZIO.logInfo(s"FamilyDNS API starting on ${cfg.http.host}:${cfg.http.port}")
       _      <- ZIO
         .logWarning(
-          "FAMILYDNS_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
+          "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
             "Disable in production.",
         )
         .when(cfg.debugEnabled)

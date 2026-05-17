@@ -33,6 +33,11 @@ const limited: ProfileTimeStatus = {
     { label: 'YouTube', domainPattern: 'youtube.com', limitMins: 30, usedMins: 30, remainingMins: 0 },
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 90 }],
+  hostUsage: [
+    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 35 },
+    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 10 },
+    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5 },
+  ],
 }
 
 const overLimit: ProfileTimeStatus = {
@@ -45,6 +50,7 @@ const overLimit: ProfileTimeStatus = {
   remainingMins: 0,
   siteUsage: [],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:02', deviceName: 'Phone', usedMins: 100 }],
+  hostUsage: [],
 }
 
 const noLimit: ProfileTimeStatus = {
@@ -57,6 +63,7 @@ const noLimit: ProfileTimeStatus = {
   remainingMins: null,
   siteUsage: [],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:03', deviceName: 'Laptop', usedMins: 0 }],
+  hostUsage: [],
 }
 
 beforeEach(() => {
@@ -80,6 +87,23 @@ describe('TimePage — list', () => {
     // no-limit card
     expect(screen.getByText('Laptop')).toBeInTheDocument()
     expect(screen.getByText(/No time limit set/)).toBeInTheDocument()
+  })
+
+  it('renders top-host breakdown when hostUsage is present (#262)', async () => {
+    render(<TimePage />)
+    expect(await screen.findByTestId('time-host-1-youtube.com')).toHaveTextContent('youtube.com')
+    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('35m')
+    expect(screen.getByTestId('time-host-1-khan-academy.org')).toHaveTextContent('khan-academy.org')
+    expect(screen.getByTestId('time-host-1-khan-academy.org')).toHaveTextContent('10m')
+    // IP-literal host is shown by its address form
+    expect(screen.getByTestId('time-host-1-192.0.2.1')).toHaveTextContent('192.0.2.1')
+  })
+
+  it('omits the top-host section when hostUsage is empty (#262)', async () => {
+    render(<TimePage />)
+    // overLimit profile (id=2) has hostUsage: [] — no time-host-* testids for it
+    await screen.findByTestId('time-card-2')
+    expect(screen.queryByTestId(/^time-host-2-/)).not.toBeInTheDocument()
   })
 })
 

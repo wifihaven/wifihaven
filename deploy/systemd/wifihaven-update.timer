@@ -1,0 +1,10 @@
+[Unit]
+Description=WifiHaven API auto-update timer (poll ghcr.io daily)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1d
+Unit=wifihaven-update.service
+
+[Install]
+WantedBy=timers.target

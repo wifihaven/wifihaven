@@ -1,7 +1,7 @@
 #!/bin/sh
 # First-boot defaults for the VM-e2e router image.
 #
-# This file is baked into the image at /etc/uci-defaults/99-familydns by
+# This file is baked into the image at /etc/uci-defaults/99-wifihaven by
 # scripts/vm/build-router-image.sh. OpenWRT executes everything in
 # /etc/uci-defaults exactly once on the first boot and then deletes the
 # script — so these values are seed defaults, not enforced state.
@@ -11,11 +11,11 @@
 # meant for "just boot it and poke at it" debugging.
 
 uci batch <<EOF
-set familydns.@familydns[0]=familydns
-set familydns.@familydns[0].api_url='http://10.0.2.2:8080'
-set familydns.@familydns[0].lan_prefix='192.168.100.'
+set wifihaven.@wifihaven[0]=wifihaven
+set wifihaven.@wifihaven[0].api_url='http://10.0.2.2:8080'
+set wifihaven.@wifihaven[0].lan_prefix='192.168.100.'
 EOF
-uci commit familydns
+uci commit wifihaven
 
 # Align the OpenWRT LAN with the harness's FDNS_LAN_SUBNET=192.168.100.0/24
 # (defined in scripts/vm/config.sh). Without this the LAN stays on OpenWRT's
@@ -33,7 +33,7 @@ uci commit network
 # dnsmasq, which is the only resolver in the client's /etc/resolv.conf —
 # keeps working, and step 6 (`dig example.com` via the router) is unaffected.
 #
-# In production the familydns-agent is expected to install equivalent
+# In production the wifihaven-agent is expected to install equivalent
 # enforcement once it's enrolled against an API and has a policy. Until that
 # path lands (#148 orchestrator + agent-side egress-DNS rules in render.lua),
 # seed it here so the harness in scripts/vm/ is testable standalone without
@@ -79,7 +79,7 @@ uci commit firewall
 # boot keeps the orchestrator small.
 uci set dhcp.@dnsmasq[0].confdir='/tmp/dnsmasq.d'
 uci set dhcp.@dnsmasq[0].logqueries='1'
-uci set dhcp.@dnsmasq[0].logfacility='/tmp/familydns-dnsmasq.log'
+uci set dhcp.@dnsmasq[0].logfacility='/tmp/wifihaven-dnsmasq.log'
 uci commit dhcp
 
 # Block-page listener on 127.0.0.1:8081 (mirrors install.sh, #303).
@@ -89,7 +89,7 @@ uci commit dhcp
 uci -q delete uhttpd.main
 section=$(uci add uhttpd uhttpd)
 uci set "uhttpd.${section}.listen_http=127.0.0.1:8081"
-uci set "uhttpd.${section}.home=/www/familydns"
+uci set "uhttpd.${section}.home=/www/wifihaven"
 uci commit uhttpd
 
 # Without `enable`, OpenWRT has the package but procd never starts it on

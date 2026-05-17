@@ -1,14 +1,14 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.JwtConfig
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.policy.PolicyServiceLive
-import familydns.api.routes.*
-import familydns.shared.*
-import familydns.shared.types.*
-import familydns.shared.Clock.TestClock
-import familydns.testinfra.*
+import wifihaven.api.JwtConfig
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.policy.PolicyServiceLive
+import wifihaven.api.routes.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.shared.Clock.TestClock
+import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*
@@ -597,6 +597,113 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(yt.limitMins == 30) &&
           assertTrue(yt.remainingMins == 0) &&   // clamped to 0
           assertTrue(kids.usedMins == 0)         // site usage NOT counted in total
+      },
+      test("hostUsage breakdown sums across all profile devices, sorted desc (#262)") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // mac1: youtube 20m + khan 10m (distinct buckets); mac2: youtube 15m + roblox 5m
+          o1 <- seedTraffic(routerId, mac1, "youtube.com", today, 20)
+          _  <- seedTraffic(routerId, mac1, "khan-academy.org", today, 10, bucketOffset = o1)
+          o2 <- seedTraffic(routerId, mac2, "youtube.com", today, 15)
+          _  <- seedTraffic(routerId, mac2, "roblox.com", today, 5, bucketOffset = o2)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids    = list.find(_.profileId == kidsId).get
+          hostMap = kids.hostUsage.map(hu => hu.host.value -> hu.usedMins).toMap
+        } yield assertTrue(kids.hostUsage.length == 3) &&
+          assertTrue(
+            hostMap == Map(
+              "youtube.com"      -> 35,
+              "khan-academy.org" -> 10,
+              "roblox.com"       -> 5,
+            ),
+          ) &&
+          assertTrue(kids.hostUsage.map(_.usedMins) == List(35, 10, 5)) // sorted desc
+      },
+      test("hostUsage capped at top 10, smallest dropped (#262)") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 240)
+          mac = "aa:bb:cc:dd:ee:01"
+          _        <- TestLayers.seedDevice(deviceRepo, mac, "iPad", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Seed 12 distinct hosts; minutes = (12-i)*5 so host0 has the most.
+          _               <- ZIO.foreachDiscard(0 until 12) { i =>
+            val mins = (12 - i) * 5
+            seedTraffic(routerId, mac, s"host$i.example.com", today, mins, bucketOffset = i * 20)
+          }
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids  = list.find(_.profileId == kidsId).get
+          hosts = kids.hostUsage.map(_.host.value).toSet
+        } yield assertTrue(kids.hostUsage.length == 10) &&
+          // The two smallest (host10=10m, host11=5m) dropped; host0..host9 retained.
+          assertTrue(!hosts.contains("host10.example.com")) &&
+          assertTrue(!hosts.contains("host11.example.com")) &&
+          assertTrue(hosts.contains("host0.example.com")) &&
+          assertTrue(hosts.contains("host9.example.com"))
       },
       test("policy snapshot has profile-level time_used_today aggregated across devices") {
         for {

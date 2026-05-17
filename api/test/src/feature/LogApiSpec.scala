@@ -1,13 +1,13 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.JwtConfig
-import familydns.api.auth.*
-import familydns.api.db.*
-import familydns.api.routes.*
-import familydns.shared.*
-import familydns.shared.types.*
-import familydns.shared.Clock.TestClock
-import familydns.testinfra.*
+import wifihaven.api.JwtConfig
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.api.routes.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.shared.Clock.TestClock
+import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*
@@ -359,6 +359,106 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         assertTrue(page2.length == 2) &&
         assertTrue(page3.length == 1) &&
         assertTrue(page1.map(_.host.value) != page2.map(_.host.value))
+    },
+    test("GET /api/logs?deviceId= filters to events whose mac belongs to that device (#342)") {
+      for {
+        _           <- cleanDb
+        routerId    <- seedRouter()
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        connRepo    <- ZIO.service[ConnectionEventRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token.value)
+        pid         <- profileRepo.create("Kids", List.empty)
+        ipadId      <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
+          "Kid's iPad",
+          pid,
+          "10.0.0.1",
+        )
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "Phone", pid, "10.0.0.2")
+        _ <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
+              HostId.Fqdn(Hostname.unsafe("ipad-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
+              HostId.Fqdn(Hostname.unsafe("phone-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, s"/api/logs?deviceId=${ipadId.value}", token)
+        body <- resp.body.asString
+        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+      } yield assertTrue(logs.length == 1) &&
+        assertTrue(logs.head.host.value == "ipad-site.com")
+    },
+    test("GET /api/logs?profileId= filters to events whose device belongs to that profile (#342)") {
+      for {
+        _           <- cleanDb
+        routerId    <- seedRouter()
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        connRepo    <- ZIO.service[ConnectionEventRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token.value)
+        kidsPid     <- profileRepo.create("Kids", List.empty)
+        adultsPid   <- profileRepo.create("Adults", List.empty)
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
+          "Kid's iPad",
+          kidsPid,
+          "10.0.0.1",
+        )
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:02"),
+          "Adult Phone",
+          adultsPid,
+          "10.0.0.2",
+        )
+        _           <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
+              HostId.Fqdn(Hostname.unsafe("kids-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
+              HostId.Fqdn(Hostname.unsafe("adults-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
+        body <- resp.body.asString
+        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+      } yield assertTrue(logs.length == 1) &&
+        assertTrue(logs.head.host.value == "kids-site.com")
     },
   ) @@ TestAspect.sequential
 }

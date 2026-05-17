@@ -1,4 +1,12 @@
-# FamilyDNS
+# WifiHaven
+
+<!-- TODO(#364): GitHub repo URLs (raw.githubusercontent.com/sameerparekh/familydns/…,
+     git@github.com:sameerparekh/familydns.git, etc.) and the post-clone
+     directory name `familydns/` still appear throughout this README. They
+     move to `sameerparekh/wifihaven` when the repo rename (#364) lands. -->
+<!-- TODO(#360): env-var prefix (FAMILYDNS_*) and HOCON config namespace
+     (`familydns.*`) still use the old name. They flip when the env-var
+     rename sub-issue lands. -->
 
 A self-hosted, network-level parental-control system with a web UI. Block
 categories of sites, set per-profile schedules ("no internet after 9pm"),
@@ -127,14 +135,14 @@ agent) and reach the api over the network (see [`docs/architecture-openwrt.md`](
 
 ```bash
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env                # set FAMILYDNS_DB_PASSWORD and FAMILYDNS_JWT_SECRET
+$EDITOR deploy/.env                # set WIFIHAVEN_DB_PASSWORD and WIFIHAVEN_JWT_SECRET
 
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
 ```
 
 Postgres is internal to the compose network — it is not published on a
-host port. The api binds to `:8080` (configurable via `FAMILYDNS_API_BIND`
-/ `FAMILYDNS_API_PORT`). Run `scripts/smoke-prod.sh` to validate the stack.
+host port. The api binds to `:8080` (configurable via `WIFIHAVEN_API_BIND`
+/ `WIFIHAVEN_API_PORT`). Run `scripts/smoke-prod.sh` to validate the stack.
 
 Full operator notes (backups, reverse-proxy guidance, migration from the
 host-based deploy below) live in [`deploy/README.md`](deploy/README.md).
@@ -159,35 +167,35 @@ curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/scripts
 ```
 
 The script asks for `sudo` once, then handles everything: installing the
-toolchain, creating the `familydns` system user, cloning the repo (tracking
+toolchain, creating the `wifihaven` system user, cloning the repo (tracking
 the `production` branch — see [Production branch & deploy gate](#production-branch--deploy-gate)),
-installing systemd units, and seeding `/etc/familydns/application.conf`.
+installing systemd units, and seeding `/etc/wifihaven/application.conf`.
 Idempotent — safe to re-run.
 
-Override defaults via env: `FAMILYDNS_BRANCH`, `FAMILYDNS_REPO_URL`,
-`FAMILYDNS_PREFIX`, `FAMILYDNS_USER`, `FAMILYDNS_MILL_VERSION`.
+Override defaults via env: `WIFIHAVEN_BRANCH`, `WIFIHAVEN_REPO_URL`,
+`WIFIHAVEN_PREFIX`, `WIFIHAVEN_USER`, `WIFIHAVEN_MILL_VERSION`.
 
 What it does:
 
 1. apt-installs JDK 21, Node 22, git, curl
 2. Installs Coursier, Mill, scalafmt into `/usr/local/bin`
-3. Creates the `familydns` system user + `/opt/familydns`, `/var/lib/familydns`,
-   `/var/log/familydns`, `/etc/familydns`
-4. Clones the repo into `/opt/familydns/repo` **as the `familydns` user**
+3. Creates the `wifihaven` system user + `/opt/wifihaven`, `/var/lib/wifihaven`,
+   `/var/log/wifihaven`, `/etc/wifihaven`
+4. Clones the repo into `/opt/wifihaven/repo` **as the `wifihaven` user**
    (root never owns the checkout)
-5. Symlinks `deploy/familydns-api.service` into `/etc/systemd/system` so
+5. Symlinks `deploy/wifihaven-api.service` into `/etc/systemd/system` so
    unit-file updates flow with `git pull`
-6. Writes `/etc/systemd/system/familydns-deploy.{service,timer}`
+6. Writes `/etc/systemd/system/wifihaven-deploy.{service,timer}`
    that re-runs `scripts/deploy.sh` hourly
-7. Seeds `/etc/familydns/application.conf`
+7. Seeds `/etc/wifihaven/application.conf`
 8. Adds a minimal sudoers rule for the deploy user
 
-After bootstrap, edit `/etc/familydns/application.conf` (set `jwt.secret`
+After bootstrap, edit `/etc/wifihaven/application.conf` (set `jwt.secret`
 and `db.password`), then:
 
 ```bash
-sudo systemctl enable --now familydns-api.service
-sudo systemctl enable --now familydns-deploy.timer    # auto-pull every hour
+sudo systemctl enable --now wifihaven-api.service
+sudo systemctl enable --now wifihaven-deploy.timer    # auto-pull every hour
 ```
 
 #### Testing the bootstrap script in Docker
@@ -196,14 +204,14 @@ We don't want to debug bootstrap on the live box, so the script has a
 container smoke test:
 
 ```bash
-docker build -f docker/bootstrap-test.Dockerfile -t familydns-bootstrap-test .
-docker run --rm familydns-bootstrap-test
+docker build -f docker/bootstrap-test.Dockerfile -t wifihaven-bootstrap-test .
+docker run --rm wifihaven-bootstrap-test
 ```
 
 The container creates a non-root login user, points the bootstrap at the
 local checkout (via `file://` git remote), runs it, and asserts that the
-expected layout (`/opt/familydns/repo`, the systemd units, the sudoers
-file, the `familydns` user, mill/node/java) exists. CI runs this on
+expected layout (`/opt/wifihaven/repo`, the systemd units, the sudoers
+file, the `wifihaven` user, mill/node/java) exists. CI runs this on
 every PR (`.github/workflows/e2e.yml` → `bootstrap-smoke`).
 
 ### Staging stack (browser + DNS testing, locally and in CI)
@@ -236,26 +244,26 @@ Branches:
   refuses to push and the divergence has to be resolved by hand.
 
 The host's deploy timer and `scripts/deploy.sh` track `production` (via
-`FAMILYDNS_BRANCH=production`, the new default), so the live box only
+`WIFIHAVEN_BRANCH=production`, the new default), so the live box only
 ever runs commits that have passed the e2e gate.
 
 ### Manual deploy
 
 ```bash
-sudo -u familydns /opt/familydns/repo/scripts/deploy.sh
-# logs:  journalctl -t familydns-deploy
-# state: cat /opt/familydns/deploy.log    # rev + timestamp per deploy
+sudo -u wifihaven /opt/wifihaven/repo/scripts/deploy.sh
+# logs:  journalctl -t wifihaven-deploy
+# state: cat /opt/wifihaven/deploy.log    # rev + timestamp per deploy
 ```
 
 Environment knobs (set on the command line or in
-`/etc/familydns/api.env`):
+`/etc/wifihaven/api.env`):
 
 | Var                   | Default | Effect                                      |
 | --------------------- | ------- | ------------------------------------------- |
-| `FAMILYDNS_BRANCH`    | `production` | Branch to track (e2e-gated)            |
-| `FAMILYDNS_PREFIX`    | `/opt/familydns` | Install root                       |
-| `FAMILYDNS_NO_WEB`    | `0`     | Skip frontend build                         |
-| `FAMILYDNS_NO_RESTART`| `0`     | Build but don't restart the service         |
+| `WIFIHAVEN_BRANCH`    | `production` | Branch to track (e2e-gated)            |
+| `WIFIHAVEN_PREFIX`    | `/opt/wifihaven` | Install root                       |
+| `WIFIHAVEN_NO_WEB`    | `0`     | Skip frontend build                         |
+| `WIFIHAVEN_NO_RESTART`| `0`     | Build but don't restart the service         |
 
 ### Why the deploy logic lives in the repo
 
@@ -264,7 +272,7 @@ rather than copying them. That way:
 
 - `git pull` (or the deploy timer) is enough to roll out a new unit file
 - the boot script (`bootstrap-host.sh`), the deploy script (`deploy.sh`),
-  and the unit file (`deploy/familydns-api.service`) are all reviewed via
+  and the unit file (`deploy/wifihaven-api.service`) are all reviewed via
   PRs against `main` like any other code
 - a deploy timer can re-run `scripts/deploy.sh` from the freshly-pulled
   repo — fixes to the deploy logic apply on the next tick

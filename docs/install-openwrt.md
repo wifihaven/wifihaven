@@ -1,13 +1,13 @@
-# Installing the FamilyDNS Agent on OpenWRT
+# Installing the WifiHaven Agent on OpenWRT
 
-This guide walks through a first install of the FamilyDNS agent on an OpenWRT
+This guide walks through a first install of the WifiHaven agent on an OpenWRT
 router. The recommended path is the one-shot install script; the manual
 steps below it exist for debugging and for environments where running a
 piped shell script is not acceptable.
 
 The agent enforces per-device connection-level filtering (nftables forward-drop
 keyed on MAC + destination ipset), accounts traffic per `(mac, hostname)`, and
-streams connection events to the FamilyDNS API. dnsmasq on the router resolves
+streams connection events to the WifiHaven API. dnsmasq on the router resolves
 DNS normally — it is not the enforcement plane (see
 [`architecture.md` §0](architecture.md#0-enforcement-model)).
 
@@ -18,7 +18,7 @@ DNS normally — it is not the enforcement plane (see
   release.
 - Internet access from the router.
 - Root SSH access to the router.
-- A FamilyDNS API server already deployed and reachable from the router. See
+- A WifiHaven API server already deployed and reachable from the router. See
   [`install-api.md`](install-api.md) if you need to set one up first.
 - A one-time enrollment token generated in the admin UI under
   **Routers → Add router** (looks like `et_5f3c9b…`).

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Auto-updater for the familydns package.
+# Auto-updater for the wifihaven package.
 # Pulls the rolling `openwrt-latest` GitHub pre-release and re-installs whenever
 # that release's published_at timestamp changes. This matches the rolling-build
 # CD set up by #245 (image-per-push to main, no per-release tag cut).
@@ -8,29 +8,29 @@
 # again — see TODO(#244) below.
 #
 # Supports both opkg (OpenWRT <= 23.05) and apk-tools (OpenWRT 24.10+).
-# /etc/config/familydns is declared as a conffile, so router_token survives
+# /etc/config/wifihaven is declared as a conffile, so router_token survives
 # upgrades under either package manager.
-# Safe to run from cron; logs to syslog under tag "familydns".
+# Safe to run from cron; logs to syslog under tag "wifihaven".
 set -u
 
 # TODO(#244): revert to /releases/latest + semver compare once the rolling
 # debug period for #228 is done and proper tags resume.
-API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"
-STATE_DIR=/var/lib/familydns
+API_URL="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+STATE_DIR=/var/lib/wifihaven
 STAMP_FILE="$STATE_DIR/last_update_stamp"
 
-log() { logger -t familydns "update: $*"; }
+log() { logger -t wifihaven "update: $*"; }
 
 # Detect package manager. Prefer apk (24.10+) when both are present, since
 # routers mid-migration may still ship a vestigial opkg binary.
 if command -v apk >/dev/null 2>&1; then
   PM=apk
   PKG_EXT='\.apk$'
-  TMP=/tmp/familydns-update.apk
+  TMP=/tmp/wifihaven-update.apk
 elif command -v opkg >/dev/null 2>&1; then
   PM=opkg
   PKG_EXT='\.ipk$'
-  TMP=/tmp/familydns-update.ipk
+  TMP=/tmp/wifihaven-update.ipk
 else
   log "no package manager found (neither apk nor opkg); skipping"
   exit 0
@@ -68,21 +68,21 @@ fi
 
 case "$PM" in
   apk)
-    if apk add --allow-untrusted "$TMP" >/tmp/familydns-update.log 2>&1; then
+    if apk add --allow-untrusted "$TMP" >/tmp/wifihaven-update.log 2>&1; then
       log "installed rolling build $LATEST_STAMP"
-      rm -f "$TMP" /tmp/familydns-update.log
+      rm -f "$TMP" /tmp/wifihaven-update.log
     else
-      log "apk add failed; see /tmp/familydns-update.log"
+      log "apk add failed; see /tmp/wifihaven-update.log"
       rm -f "$TMP"
       exit 1
     fi
     ;;
   opkg)
-    if opkg install --force-reinstall "$TMP" >/tmp/familydns-update.log 2>&1; then
+    if opkg install --force-reinstall "$TMP" >/tmp/wifihaven-update.log 2>&1; then
       log "installed rolling build $LATEST_STAMP"
-      rm -f "$TMP" /tmp/familydns-update.log
+      rm -f "$TMP" /tmp/wifihaven-update.log
     else
-      log "opkg install failed; see /tmp/familydns-update.log"
+      log "opkg install failed; see /tmp/wifihaven-update.log"
       rm -f "$TMP"
       exit 1
     fi

@@ -1,7 +1,7 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/usage.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/usage.lua
 -- Run with: cd openwrt && busted test/usage_spec.lua
 --
--- Input shape: `nft -j list set inet familydns mac_ip_tracking`.
+-- Input shape: `nft -j list set inet wifihaven mac_ip_tracking`.
 -- The `mac_ip_tracking` dynamic set is declared in render.lua with
 -- `flags dynamic,timeout` + `counter`, so each set element carries its own
 -- counter and the JSON layout is:
@@ -13,7 +13,7 @@ local NFT_JSON = [[{
   "nftables": [
     { "metainfo": { "version": "1.1.6", "json_schema_version": 1 } },
     { "set": {
-        "family": "inet", "table": "familydns", "name": "mac_ip_tracking",
+        "family": "inet", "table": "wifihaven", "name": "mac_ip_tracking",
         "type": ["ether_addr", "ipv4_addr"],
         "flags": ["timeout", "dynamic"],
         "elem": [
@@ -245,13 +245,16 @@ describe("usage.build_report", function()
 
 end)
 
--- ── tracker (per-minute activity sampler) ─────────────────────────────────
+-- ── tracker (sub-minute activity sampler, #295, #516) ────────────────────
 --
--- The router scrapes nft counters every 60 s within a 5-min bucket and feeds
--- them to a tracker; the tracker remembers how many distinct minutes each
--- (mac, dst_ip) saw counter growth, which build_report converts into
--- activeSeconds.  Counter reset / set-element expiry (bytes goes DOWN) is
--- treated as a fresh start so we don't double-count.
+-- The router scrapes nft counters every SECONDS_PER_SAMPLE (10 s) within a
+-- 5-min bucket and feeds them to a tracker; the tracker remembers how many
+-- distinct samples each (mac, dst_ip) saw counter growth, which build_report
+-- converts into activeSeconds.  Counter reset / set-element expiry (bytes
+-- goes DOWN) is treated as a fresh start so we don't double-count.
+-- The tracker field is still named `active_minutes` for back-compat — it's
+-- a sample count, not a minute count, since #516 dropped the sample
+-- interval from 60s to 10s.
 
 describe("usage.tracker", function()
 
@@ -266,13 +269,13 @@ describe("usage.tracker", function()
     assert.is_nil(next(t.active_minutes))
   end)
 
-  it("counts a single sample with bytes > 0 (from 0 baseline) as 1 active minute", function()
+  it("counts a single sample with bytes > 0 (from 0 baseline) as 1 active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
     assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
-  it("counts each subsequent sample with growth as another active minute", function()
+  it("counts each subsequent sample with growth as another active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  100) })
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  500) })
@@ -280,7 +283,7 @@ describe("usage.tracker", function()
     assert.equal(3, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
-  it("does NOT count a sample where bytes are unchanged", function()
+  it("does NOT count a sample where bytes are unchanged (no active sample)", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- +1
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- no growth
@@ -288,14 +291,14 @@ describe("usage.tracker", function()
     assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
-  it("treats a counter decrease (reset / element-expire-and-reappear) as a fresh active minute", function()
+  it("treats a counter decrease (reset / element-expire-and-reappear) as a fresh active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })  -- +1
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  50) })  -- reset, bytes>0 → +1
     assert.equal(2, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
-  it("does not count a counter decrease to 0 as an active minute", function()
+  it("does not count a counter decrease to 0 as an active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })  -- +1
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",   0) })  -- decrease to 0 → no
@@ -353,45 +356,45 @@ describe("usage.build_report with tracker", function()
     return { mac = mac, dst_ip = dst_ip, bytes = bytes, packets = 0 }
   end
 
-  it("uses 60 * active_minutes from the tracker (1 minute → 60s)", function()
+  it("uses 10 * active_samples from the tracker (1 sample → 10s)", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })
     local r = usage.build_report(
       { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
       NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
-    assert.equal(60, r.records[1].activeSeconds)
+    assert.equal(10, r.records[1].activeSeconds)
   end)
 
-  it("reports 300s when all 5 minutes were active", function()
+  it("reports 300s when all 30 samples (5 min @ 10s) were active", function()
     local t = usage.new_tracker()
-    for i = 1, 5 do
+    for i = 1, 30 do
       usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100 * i) })
     end
     local r = usage.build_report(
-      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 3000) },
       NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
     assert.equal(300, r.records[1].activeSeconds)
   end)
 
-  it("caps activeSeconds at 300 even if the tracker recorded more than 5 minutes (drift)", function()
+  it("caps activeSeconds at 300 even if the tracker recorded more than the bucket (drift)", function()
     local t = usage.new_tracker()
-    for i = 1, 7 do
+    for i = 1, 35 do
       usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100 * i) })
     end
     local r = usage.build_report(
-      { s("aa:bb:cc:11:22:33", "1.2.3.4", 700) },
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 3500) },
       NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
     assert.equal(300, r.records[1].activeSeconds)
   end)
 
-  it("falls back to 60s when bytes > 0 but tracker has no entry (entry appeared after last sample)", function()
+  it("falls back to one sample (10s) when bytes > 0 but tracker has no entry (entry appeared after last sample)", function()
     local t = usage.new_tracker()
     -- tracker has seen device A but not B
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
     local r = usage.build_report(
       { s("de:ad:be:ef:00:01", "9.9.9.9", 200) },
       NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
-    assert.equal(60, r.records[1].activeSeconds)
+    assert.equal(10, r.records[1].activeSeconds)
   end)
 
   it("retains legacy 300 behavior when no tracker is passed (back-compat)", function()
@@ -403,9 +406,9 @@ describe("usage.build_report with tracker", function()
 
   it("assigns activeSeconds per (mac, dst_ip) independently from the same tracker", function()
     local t = usage.new_tracker()
-    -- device A: 1 active minute
+    -- device A: 1 active sample (10s)
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
-    -- device B joins at minute 2 with growth across 4 more samples
+    -- device B joins later with growth across 4 more samples (40s total)
     for i = 1, 4 do
       usage.tracker_sample(t, {
         s("aa:bb:cc:11:22:33", "1.2.3.4", 100),         -- no growth for A
@@ -418,8 +421,8 @@ describe("usage.build_report with tracker", function()
     }, NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
     local by_mac = {}
     for _, rec in ipairs(r.records) do by_mac[rec.mac] = rec end
-    assert.equal(60,  by_mac["aa:bb:cc:11:22:33"].activeSeconds)
-    assert.equal(240, by_mac["de:ad:be:ef:00:01"].activeSeconds)
+    assert.equal(10, by_mac["aa:bb:cc:11:22:33"].activeSeconds)
+    assert.equal(40, by_mac["de:ad:be:ef:00:01"].activeSeconds)
   end)
 
 end)

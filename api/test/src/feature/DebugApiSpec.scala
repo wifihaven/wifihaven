@@ -1,10 +1,10 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.db.*
-import familydns.api.routes.*
-import familydns.shared.*
-import familydns.shared.types.*
-import familydns.testinfra.*
+import wifihaven.api.db.*
+import wifihaven.api.routes.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*
@@ -13,7 +13,7 @@ import zio.test.*
 import java.time.LocalDateTime
 
 // Tests for the /api/debug/... observability endpoints (#228). Endpoints are
-// gated by an `enabled` flag (driven by FAMILYDNS_DEBUG in production) and a
+// gated by an `enabled` flag (driven by WIFIHAVEN_DEBUG in production) and a
 // per-request loopback check.
 object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 

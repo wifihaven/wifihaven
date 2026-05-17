@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/dns_log.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/dns_log.lua
 --
 -- dns_log is the forward-lookup hostname cache the agent uses to attribute
 -- connection_attempt events to the domain the client actually resolved
@@ -104,6 +104,77 @@ describe("parse_reply_line", function()
       "Nov 12 10:00:01 dnsmasq[1]: 9 192.168.1.42/54321 forwarded example.com to 1.1.1.1"))
     assert.is_nil(dns_log.parse_reply_line(
       "Nov 12 10:00:01 dnsmasq[1]: 9 127.0.0.1/54321 config error is REFUSED"))
+  end)
+end)
+
+-- parse_resolved_reply: feeds the dns-tail-driven blockIpOnly populator
+-- (#505). Unlike parse_reply_line it must extract the *client* IP from the
+-- log line (we use it to map back to a MAC via /tmp/dhcp.leases) and must
+-- return v6 answers too (resolved6_<mac> drops v6 daddrs the same way
+-- resolved_<mac> drops v4 daddrs).
+describe("parse_resolved_reply (#505)", function()
+  it("returns client_ip + v4 ip + family=v4 for an A reply", function()
+    local r = dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1234]: 7 192.168.1.42/54321 reply youtube.com is 142.250.80.46")
+    assert.is_not_nil(r)
+    assert.equal("192.168.1.42",   r.client_ip)
+    assert.equal("youtube.com",    r.name)
+    assert.equal("142.250.80.46",  r.ip)
+    assert.equal("v4",             r.family)
+  end)
+
+  -- #515: the per-host eb_<sanhost> populator keys on r.name, so make sure
+  -- the parser is actually surfacing the qname (was previously discarded as
+  -- `_name` when only the bio populator needed the line).
+  it("surfaces the answered name on v6 replies too (#515)", function()
+    local r = dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1234]: 8 192.168.1.42/54321 reply example.com is 2606:2800:220:1::248")
+    assert.is_not_nil(r)
+    assert.equal("example.com",          r.name)
+    assert.equal("2606:2800:220:1::248", r.ip)
+    assert.equal("v6",                   r.family)
+  end)
+
+  it("returns client_ip + v6 ip + family=v6 for an AAAA reply", function()
+    local r = dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1234]: 8 192.168.1.42/54321 reply youtube.com is 2607:f8b0:4005:80a::200e")
+    assert.is_not_nil(r)
+    assert.equal("192.168.1.42",              r.client_ip)
+    assert.equal("2607:f8b0:4005:80a::200e",  r.ip)
+    assert.equal("v6",                        r.family)
+  end)
+
+  it("parses `cached` lines the same as `reply` lines", function()
+    local r = dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1234]: 9 192.168.1.42/54321 cached example.com is 93.184.216.34")
+    assert.is_not_nil(r)
+    assert.equal("192.168.1.42",   r.client_ip)
+    assert.equal("93.184.216.34",  r.ip)
+    assert.equal("v4",             r.family)
+  end)
+
+  it("skips CNAME / NXDOMAIN / NODATA answers", function()
+    assert.is_nil(dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1]: 7 192.168.1.42/54321 reply youtube.com is <CNAME>"))
+    assert.is_nil(dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1]: 7 192.168.1.42/54321 reply youtube.com is NXDOMAIN"))
+    assert.is_nil(dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1]: 7 192.168.1.42/54321 reply youtube.com is NODATA-IPv6"))
+  end)
+
+  it("rejects lines whose client IP isn't a v4 lease (no MAC lookup possible)", function()
+    -- A query from the router itself (loopback) — we'd have no way to scope
+    -- the populator to a MAC, so skip the line.
+    local r = dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1]: 7 ::1/54321 reply youtube.com is 142.250.80.46")
+    assert.is_nil(r)
+  end)
+
+  it("ignores non-reply verbs", function()
+    assert.is_nil(dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1]: 9 192.168.1.42/54321 forwarded example.com to 1.1.1.1"))
+    assert.is_nil(dns_log.parse_resolved_reply(""))
+    assert.is_nil(dns_log.parse_resolved_reply(nil))
   end)
 end)
 

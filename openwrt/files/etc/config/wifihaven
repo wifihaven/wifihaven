@@ -1,5 +1,5 @@
-config familydns 'familydns'
-	# Base URL of the familydns API server (HTTP, no trailing slash)
+config wifihaven 'wifihaven'
+	# Base URL of the wifihaven API server (HTTP, no trailing slash)
 	option api_url 'http://192.168.1.1:8080'
 
 	# Long-lived router bearer token obtained during enrollment
@@ -18,7 +18,7 @@ config familydns 'familydns'
 	option event_flush_interval '10'
 
 	# How often (seconds) to poll for a new policy snapshot
-	option policy_poll_interval '60'
+	option policy_poll_interval '5'
 
 	# How often (seconds) to POST usage counters
-	option usage_report_interval '300'
+	option usage_report_interval '60'

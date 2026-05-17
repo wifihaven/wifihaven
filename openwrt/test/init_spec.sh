@@ -1,10 +1,10 @@
 #!/bin/sh
-# Shell-level smoke tests for openwrt/files/etc/init.d/familydns
+# Shell-level smoke tests for openwrt/files/etc/init.d/wifihaven
 # Run from the openwrt/ directory:  sh test/init_spec.sh
 set -e
 
 PASS=0; FAIL=0
-INIT="$(cd "$(dirname "$0")/.." && pwd)/files/etc/init.d/familydns"
+INIT="$(cd "$(dirname "$0")/.." && pwd)/files/etc/init.d/wifihaven"
 
 check() {
   if [ "$2" = "ok" ]; then
@@ -36,15 +36,15 @@ grep -q 'start_service()' "$INIT" \
   && check "defines start_service()" ok \
   || check "defines start_service()" "not found"
 
-# 5. start_service must set the command to familydns-agent
-grep -q 'familydns-agent' "$INIT" \
-  && check "command points to familydns-agent" ok \
-  || check "command points to familydns-agent" "not found"
+# 5. start_service must set the command to wifihaven-agent
+grep -q 'wifihaven-agent' "$INIT" \
+  && check "command points to wifihaven-agent" ok \
+  || check "command points to wifihaven-agent" "not found"
 
 # 5b. dns-tail sidecar must also be started (#259 — hostname attribution)
-grep -q 'familydns-dns-tail' "$INIT" \
-  && check "starts familydns-dns-tail sidecar" ok \
-  || check "starts familydns-dns-tail sidecar" "not found"
+grep -q 'wifihaven-dns-tail' "$INIT" \
+  && check "starts wifihaven-dns-tail sidecar" ok \
+  || check "starts wifihaven-dns-tail sidecar" "not found"
 
 # 6. Must configure procd_set_param respawn (auto-restart on crash)
 grep -q 'procd_set_param respawn' "$INIT" \
@@ -56,10 +56,10 @@ grep -q 'service_triggers()' "$INIT" \
   && check "defines service_triggers()" ok \
   || check "defines service_triggers()" "not found"
 
-# 8. Reload trigger must reference the familydns UCI section
-grep -q 'procd_add_reload_trigger.*familydns' "$INIT" \
-  && check "reload trigger references familydns UCI section" ok \
-  || check "reload trigger references familydns UCI section" "not found"
+# 8. Reload trigger must reference the wifihaven UCI section
+grep -q 'procd_add_reload_trigger.*wifihaven' "$INIT" \
+  && check "reload trigger references wifihaven UCI section" ok \
+  || check "reload trigger references wifihaven UCI section" "not found"
 
 # 9. START/STOP ordering values must be present
 grep -q 'START=' "$INIT" \
@@ -76,7 +76,7 @@ grep -q 'procd_set_param stderr' "$INIT" \
   || check "enables stderr logging via procd" "not found"
 
 # 11. stdout logging must also be enabled (#228: agent stdout was previously
-# discarded, leaving `logread -f | grep familydns` empty)
+# discarded, leaving `logread -f | grep wifihaven` empty)
 grep -q 'procd_set_param stdout' "$INIT" \
   && check "enables stdout logging via procd" ok \
   || check "enables stdout logging via procd" "not found"

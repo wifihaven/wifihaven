@@ -1,8 +1,8 @@
 #!/bin/sh
-# Shell-level tests for openwrt/files/usr/share/familydns/boot.nft (#308).
+# Shell-level tests for openwrt/files/usr/share/wifihaven/boot.nft (#308).
 #
-# This static nft file is loaded at boot by /etc/init.d/familydns-boot.
-# It establishes `table inet familydns_boot` whose sole job is to drop
+# This static nft file is loaded at boot by /etc/init.d/wifihaven-boot.
+# It establishes `table inet wifihaven_boot` whose sole job is to drop
 # forwarded LAN→WAN traffic until the agent's first policy.apply() swaps
 # in the real rules atomically (see render_spec.lua #308 tests).
 #
@@ -10,7 +10,7 @@
 set -e
 
 PASS=0; FAIL=0
-BOOT_NFT="$(cd "$(dirname "$0")/.." && pwd)/files/usr/share/familydns/boot.nft"
+BOOT_NFT="$(cd "$(dirname "$0")/.." && pwd)/files/usr/share/wifihaven/boot.nft"
 
 check() {
   if [ "$2" = "ok" ]; then
@@ -26,9 +26,9 @@ check() {
   && check "boot.nft is non-empty" ok \
   || check "boot.nft is non-empty" "empty file"
 
-grep -q 'table inet familydns_boot' "$BOOT_NFT" \
-  && check "declares 'table inet familydns_boot'" ok \
-  || check "declares 'table inet familydns_boot'" "not found"
+grep -q 'table inet wifihaven_boot' "$BOOT_NFT" \
+  && check "declares 'table inet wifihaven_boot'" ok \
+  || check "declares 'table inet wifihaven_boot'" "not found"
 
 # Forward chain with type filter hook forward — this is the LAN→WAN gate.
 grep -q 'type filter hook forward' "$BOOT_NFT" \
@@ -42,7 +42,7 @@ grep -E 'type filter hook forward[^;]*;[[:space:]]*policy drop' "$BOOT_NFT" >/de
   || check "forward chain policy is drop" "must declare 'policy drop' on the forward chain"
 
 # Established/related allowed so existing flows (none on a real reboot, but
-# matters for `service familydns-boot restart` against a live system) don't
+# matters for `service wifihaven-boot restart` against a live system) don't
 # get torn down.
 grep -q 'ct state established,related' "$BOOT_NFT" \
   && check "allows ct state established,related" ok \

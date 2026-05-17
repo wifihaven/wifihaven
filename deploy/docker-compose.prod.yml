@@ -16,9 +16,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${FAMILYDNS_DB_USER:?FAMILYDNS_DB_USER required}
-      POSTGRES_PASSWORD: ${FAMILYDNS_DB_PASSWORD:?FAMILYDNS_DB_PASSWORD required}
-      POSTGRES_DB: ${FAMILYDNS_DB_NAME:?FAMILYDNS_DB_NAME required}
+      POSTGRES_USER: ${WIFIHAVEN_DB_USER:?WIFIHAVEN_DB_USER required}
+      POSTGRES_PASSWORD: ${WIFIHAVEN_DB_PASSWORD:?WIFIHAVEN_DB_PASSWORD required}
+      POSTGRES_DB: ${WIFIHAVEN_DB_NAME:?WIFIHAVEN_DB_NAME required}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +28,7 @@ services:
       retries: 30
 
   api:
-    image: ghcr.io/sameerparekh/familydns-api:latest
+    image: ghcr.io/sameerparekh/wifihaven-api:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -37,17 +37,17 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      FAMILYDNS_MODE: api
-      FAMILYDNS_DB_HOST: postgres
-      FAMILYDNS_DB_PORT: "5432"
-      FAMILYDNS_DB_NAME: ${FAMILYDNS_DB_NAME}
-      FAMILYDNS_DB_USER: ${FAMILYDNS_DB_USER}
-      FAMILYDNS_DB_PASSWORD: ${FAMILYDNS_DB_PASSWORD}
-      FAMILYDNS_HTTP_PORT: "8080"
-      FAMILYDNS_JWT_SECRET: ${FAMILYDNS_JWT_SECRET:?FAMILYDNS_JWT_SECRET required (>=32 chars)}
-      FAMILYDNS_JWT_HOURS: ${FAMILYDNS_JWT_HOURS:-24}
+      WIFIHAVEN_MODE: api
+      WIFIHAVEN_DB_HOST: postgres
+      WIFIHAVEN_DB_PORT: "5432"
+      WIFIHAVEN_DB_NAME: ${WIFIHAVEN_DB_NAME}
+      WIFIHAVEN_DB_USER: ${WIFIHAVEN_DB_USER}
+      WIFIHAVEN_DB_PASSWORD: ${WIFIHAVEN_DB_PASSWORD}
+      WIFIHAVEN_HTTP_PORT: "8080"
+      WIFIHAVEN_JWT_SECRET: ${WIFIHAVEN_JWT_SECRET:?WIFIHAVEN_JWT_SECRET required (>=32 chars)}
+      WIFIHAVEN_JWT_HOURS: ${WIFIHAVEN_JWT_HOURS:-24}
     ports:
-      - "${FAMILYDNS_API_BIND:-0.0.0.0}:${FAMILYDNS_API_PORT:-8080}:8080"
+      - "${WIFIHAVEN_API_BIND:-0.0.0.0}:${WIFIHAVEN_API_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/api/health"]
       interval: 10s

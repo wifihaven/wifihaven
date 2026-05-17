@@ -1,7 +1,7 @@
 #!/bin/sh
-# Build familydns_<version>_all.ipk without the full OpenWRT SDK.
+# Build wifihaven_<version>_all.ipk without the full OpenWRT SDK.
 # The package is pure Lua (PKGARCH:=all), so no cross-compilation is needed.
-# Output: openwrt/familydns_<version>-<release>_all.ipk
+# Output: openwrt/wifihaven_<version>-<release>_all.ipk
 #
 # Override version at build time:
 #   PKG_VERSION=0.2.0 PKG_RELEASE=1 ./openwrt/build-ipk.sh
@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 PKG_VERSION="${PKG_VERSION:-$(grep '^PKG_VERSION:=' "$SCRIPT_DIR/Makefile" | cut -d= -f2)}"
 PKG_RELEASE="${PKG_RELEASE:-$(grep '^PKG_RELEASE:=' "$SCRIPT_DIR/Makefile" | cut -d= -f2)}"
-OUT_IPK="$SCRIPT_DIR/familydns_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
+OUT_IPK="$SCRIPT_DIR/wifihaven_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -23,30 +23,47 @@ printf '2.0\n' > "$WORK/debian-binary"
 mkdir "$WORK/ctrl"
 
 cat > "$WORK/ctrl/control" <<EOF
-Package: familydns
+Package: wifihaven
 Version: ${PKG_VERSION}-${PKG_RELEASE}
-Depends: lua, libuci-lua, luci-lib-jsonc, conntrack, curl
+Depends: lua, libuci-lua, luci-lib-jsonc, conntrack, curl, uhttpd-mod-lua
 Architecture: all
-Maintainer: FamilyDNS <noreply@example.com>
-Description: Agent daemon for FamilyDNS. Enforces per-device DNS filtering
- and time limits via dnsmasq + nftables; reports traffic to the FamilyDNS API.
+Maintainer: WifiHaven <noreply@example.com>
+Description: Agent daemon for WifiHaven. Enforces per-device DNS filtering
+ and time limits via dnsmasq + nftables; reports traffic to the WifiHaven API.
 EOF
 
 cat > "$WORK/ctrl/postinst" <<'POSTINST'
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
-/etc/init.d/familydns enable
+
+# One-shot migration from pre-rename familydns config (issue #357).
+if [ -f /etc/config/familydns ] && [ ! -s /etc/config/wifihaven ]; then
+    # Copy old UCI section name to the new section name as we move it.
+    sed 's/familydns/wifihaven/g' /etc/config/familydns > /etc/config/wifihaven
+    rm -f /etc/config/familydns
+fi
+if [ -d /var/lib/familydns ] && [ ! -d /var/lib/wifihaven ]; then
+    mv /var/lib/familydns /var/lib/wifihaven
+fi
+# Stop and remove old service scripts if still present from a pre-rename install.
+if [ -x /etc/init.d/familydns ]; then
+    /etc/init.d/familydns stop 2>/dev/null || true
+    /etc/init.d/familydns disable 2>/dev/null || true
+    rm -f /etc/init.d/familydns /etc/init.d/familydns-boot
+fi
+
+/etc/init.d/wifihaven enable
 # #308: enable + start the boot default-deny skeleton init so first install
 # (no reboot) is protected immediately, and every subsequent boot loads it
 # before fw4.
-/etc/init.d/familydns-boot enable
-/etc/init.d/familydns-boot start 2>/dev/null || true
+/etc/init.d/wifihaven-boot enable
+/etc/init.d/wifihaven-boot start 2>/dev/null || true
 # Install cron entry for the auto-updater (daily, 04:00 router-local).
-# Replace any existing familydns-update entry so upgrades migrate the
+# Replace any existing wifihaven-update entry so upgrades migrate the
 # cadence — older packages installed it at "0 */6 * * *".
 mkdir -p /etc/crontabs
-[ -f /etc/crontabs/root ] && sed -i '/familydns-update/d' /etc/crontabs/root
-echo '0 4 * * * /usr/sbin/familydns-update' >> /etc/crontabs/root
+[ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
+echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
 /etc/init.d/cron enable 2>/dev/null || true
 /etc/init.d/cron restart 2>/dev/null || true
 POSTINST
@@ -55,7 +72,7 @@ chmod 0755 "$WORK/ctrl/postinst"
 # Mark UCI config as a conffile so opkg preserves it across upgrades
 # (router_token must survive auto-updates; see #131).
 cat > "$WORK/ctrl/conffiles" <<'CONFFILES'
-/etc/config/familydns
+/etc/config/wifihaven
 CONFFILES
 
 (cd "$WORK/ctrl" && tar czf "$WORK/control.tar.gz" .)
@@ -67,9 +84,9 @@ cp -r "$SCRIPT_DIR/files/." "$WORK/data/"
 # Fix permissions
 find "$WORK/data/usr/sbin"            -type f -exec chmod 0755 {} \;
 find "$WORK/data/etc/init.d"          -type f -exec chmod 0755 {} \;
-find "$WORK/data/usr/lib/lua/familydns" -type f -exec chmod 0644 {} \; 2>/dev/null || true
-if [ -f "$WORK/data/etc/config/familydns" ]; then
-    chmod 0600 "$WORK/data/etc/config/familydns"
+find "$WORK/data/usr/lib/lua/wifihaven" -type f -exec chmod 0644 {} \; 2>/dev/null || true
+if [ -f "$WORK/data/etc/config/wifihaven" ]; then
+    chmod 0600 "$WORK/data/etc/config/wifihaven"
 fi
 
 (cd "$WORK/data" && tar czf "$WORK/data.tar.gz" .)

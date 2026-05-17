@@ -14,7 +14,7 @@
 
 local M = {}
 
-local DEFAULT_CACHE_DIR = "/etc/familydns/blocklists"
+local DEFAULT_CACHE_DIR = "/etc/wifihaven/blocklists"
 
 -- Parse a blocklist body: strip comment lines (^#) and blank lines.
 -- Returns a list of hostnames.
