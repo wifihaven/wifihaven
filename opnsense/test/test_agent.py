@@ -1,4 +1,4 @@
-"""Tests for batching and retry logic in opnsense/familydns/agent.py
+"""Tests for batching and retry logic in opnsense/wifihaven/agent.py
 
 Run with: pytest opnsense/test/test_agent.py
 """
@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from familydns.agent import Batcher, post_with_retry
+from wifihaven.agent import Batcher, post_with_retry
 
 MAX_BATCH = 50
 FLUSH_INTERVAL = 10  # seconds

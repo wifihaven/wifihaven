@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# PROVIDE: wifihaven
+# REQUIRE: NETWORKING unbound
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="wifihaven"
+rcvar="wifihaven_enable"
+command="/usr/local/sbin/wifihaven-agent"
+pidfile="/var/run/wifihaven.pid"
+start_cmd="wifihaven_start"
+stop_cmd="wifihaven_stop"
+
+: ${wifihaven_enable:="NO"}
+: ${wifihaven_config:="/usr/local/etc/wifihaven.conf"}
+
+wifihaven_start()
+{
+    export WIFIHAVEN_CONFIG="${wifihaven_config}"
+    /usr/sbin/daemon -p "${pidfile}" -f "${command}"
+    echo "Starting ${name}."
+}
+
+wifihaven_stop()
+{
+    if [ -f "${pidfile}" ]; then
+        kill "$(cat "${pidfile}")" 2>/dev/null
+        rm -f "${pidfile}"
+    fi
+    echo "Stopping ${name}."
+}
+
+load_rc_config ${name}
+run_rc_command "$1"

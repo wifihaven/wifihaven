@@ -1,9 +1,5 @@
 # WifiHaven OPNsense agent
 
-<!-- TODO(#363, #357): OPNsense agent paths and identifiers (familydns-agent,
-     /usr/local/etc/familydns.conf, rc.d/familydns, etc.) get renamed when
-     the OPNsense rename lands. -->
-
 Python agent for OPNsense routers.  Streams `connection_attempt` events to
 the WifiHaven API by tailing pflog0 (via `tcpdump`) and attributing hostnames
 from the Unbound query log.
@@ -33,27 +29,27 @@ from the Unbound query log.
 pkg install python3
 
 # 2. Copy agent files
-cp familydns-agent          /usr/local/sbin/familydns-agent
-chmod +x                    /usr/local/sbin/familydns-agent
-cp -r familydns/            /usr/local/lib/familydns/
-cp rc.d/familydns           /usr/local/etc/rc.d/familydns
-chmod +x                    /usr/local/etc/rc.d/familydns
+cp wifihaven-agent          /usr/local/sbin/wifihaven-agent
+chmod +x                    /usr/local/sbin/wifihaven-agent
+cp -r wifihaven/            /usr/local/lib/wifihaven/
+cp rc.d/wifihaven           /usr/local/etc/rc.d/wifihaven
+chmod +x                    /usr/local/etc/rc.d/wifihaven
 
 # 3. Create config file
-cp familydns.conf.example   /usr/local/etc/familydns.conf
-# Edit /usr/local/etc/familydns.conf — see section below.
+cp wifihaven.conf.example   /usr/local/etc/wifihaven.conf
+# Edit /usr/local/etc/wifihaven.conf — see section below.
 
 # 4. Enable and start
-sysrc familydns_enable=YES
-service familydns start
+sysrc wifihaven_enable=YES
+service wifihaven start
 ```
 
 ## Configuration
 
-`/usr/local/etc/familydns.conf`:
+`/usr/local/etc/wifihaven.conf`:
 
 ```ini
-[familydns]
+[wifihaven]
 api_url            = http://192.168.1.100:8080
 router_token       = rt_xxxxxxxxxxxxxxxx   ; from POST /api/router/register
 router_id          = 9c1f2e8a-...          ; from POST /api/router/register
@@ -92,7 +88,7 @@ curl -X POST http://<api_host>:8080/api/router/register \
 # → {"routerId":"...","routerToken":"rt_..."}
 ```
 
-Paste the returned values into `/usr/local/etc/familydns.conf`.
+Paste the returned values into `/usr/local/etc/wifihaven.conf`.
 
 ## Running tests
 

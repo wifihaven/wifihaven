@@ -1,4 +1,4 @@
-"""agent.py — main daemon skeleton for the familydns OPNsense agent.
+"""agent.py — main daemon skeleton for the wifihaven OPNsense agent.
 
 Wires together:
   - pflog watcher  → connection_attempt events → POST /api/router/events
@@ -169,10 +169,10 @@ def main() -> None:
     import configparser
     import os
 
-    config_path = os.environ.get("WIFIHAVEN_CONFIG", "/usr/local/etc/familydns.conf")
+    config_path = os.environ.get("WIFIHAVEN_CONFIG", "/usr/local/etc/wifihaven.conf")
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
-    sec = cfg["familydns"] if "familydns" in cfg else {}
+    sec = cfg["wifihaven"] if "wifihaven" in cfg else {}
 
     api_url = sec.get("api_url", "http://192.168.1.1:8080")
     router_token = sec.get("router_token", "")
@@ -184,14 +184,14 @@ def main() -> None:
 
     # TODO(#111): enrollment — exchange enrollmentToken for router_token/router_id automatically
     if not router_token:
-        print("[familydns] router_token not set — run enrollment first", file=sys.stderr)
+        print("[wifihaven] router_token not set — run enrollment first", file=sys.stderr)
         sys.exit(1)
     if not router_id:
-        print("[familydns] router_id not set — run enrollment first", file=sys.stderr)
+        print("[wifihaven] router_id not set — run enrollment first", file=sys.stderr)
         sys.exit(1)
 
-    from familydns.unbound import HostnameCache, watch as unbound_watch
-    from familydns.pflog import watch as pflog_watch
+    from wifihaven.unbound import HostnameCache, watch as unbound_watch
+    from wifihaven.pflog import watch as pflog_watch
 
     hostname_cache = HostnameCache(maxsize=4096)
     post_fn, events_url = _make_post_fn(api_url, router_token, router_id)
@@ -201,7 +201,7 @@ def main() -> None:
         ok = post_with_retry(events_url, payload, 3, 2, post_fn)
         if not ok:
             print(
-                "[familydns] pflog: failed to POST events batch after retries, dropping",
+                "[wifihaven] pflog: failed to POST events batch after retries, dropping",
                 file=sys.stderr,
             )
 

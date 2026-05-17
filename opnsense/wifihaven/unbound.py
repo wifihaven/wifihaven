@@ -177,7 +177,7 @@ def watch(cfg: dict) -> None:
             text=True,
         )
     except OSError as exc:
-        print(f"[familydns] unbound: cannot tail log: {exc}", file=sys.stderr)
+        print(f"[wifihaven] unbound: cannot tail log: {exc}", file=sys.stderr)
         return
 
     try:

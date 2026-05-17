@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the familydns OPNsense agent unit tests.
+# Run the wifihaven OPNsense agent unit tests.
 # Requires: pip install pytest
 set -e
 cd "$(dirname "$0")/.."
