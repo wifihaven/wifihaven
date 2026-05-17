@@ -69,7 +69,13 @@ function DailyResetCard({
         dailyResetTime: form.dailyResetTime,
         dailyResetTz: form.dailyResetTz,
       })
-      onSaved(form)
+      // Re-read from the server so the summary reflects what was actually
+      // persisted, not just the local form. Without this, a server that
+      // silently dropped a field (e.g. a route handler ignoring dailyResetTz)
+      // would still show the new value in the UI and confuse the operator
+      // (#571).
+      const fresh = await api.household.get()
+      onSaved(fresh)
       setEditing(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save')

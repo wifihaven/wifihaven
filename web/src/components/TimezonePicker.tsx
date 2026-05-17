@@ -81,6 +81,16 @@ export function TimezonePicker({ value, onChange, testId }: Props) {
             data-testid={testId ? `${testId}-select` : undefined}
             className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-full"
           >
+            {/* (#571) When the filter narrows to one option and that option
+                != value, the browser pre-highlights the lone <option> as the
+                de-facto selection — clicking it then fires no `change`
+                event and the controlled value never updates. Including a
+                hidden option matching the current value gives the select a
+                real "current selection" so clicking the filtered option is
+                an actual change. */}
+            {!filtered.includes(value) && (
+              <option value={value} hidden>{value}</option>
+            )}
             {filtered.map(z => (
               <option key={z} value={z}>{z}</option>
             ))}

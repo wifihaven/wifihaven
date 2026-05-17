@@ -96,3 +96,19 @@ describe('RoutersPage — copy to clipboard', () => {
   })
 })
 
+describe('RoutersPage — enroll form', () => {
+  it('(#568) submits the form when Enter is pressed in the name field', async () => {
+    const user = userEvent.setup()
+    render(<RoutersPage />)
+    await screen.findByText('home-gw')
+    await user.click(screen.getByRole('button', { name: /enroll router/i }))
+
+    const nameInput = screen.getByPlaceholderText('home-gw') as HTMLInputElement
+    await user.type(nameInput, 'new-gw{Enter}')
+
+    await waitFor(() =>
+      expect(api.routers.create).toHaveBeenCalledWith({ name: 'new-gw' }),
+    )
+  })
+})
+
