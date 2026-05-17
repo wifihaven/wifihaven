@@ -14,11 +14,11 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: familydns
-      POSTGRES_PASSWORD: familydns
-      POSTGRES_DB: familydns
+      POSTGRES_USER: wifihaven
+      POSTGRES_PASSWORD: wifihaven
+      POSTGRES_DB: wifihaven
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U familydns -d familydns"]
+      test: ["CMD-SHELL", "pg_isready -U wifihaven -d wifihaven"]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -35,9 +35,9 @@ services:
     environment:
       WIFIHAVEN_DB_HOST: postgres
       WIFIHAVEN_DB_PORT: "5432"
-      WIFIHAVEN_DB_NAME: familydns
-      WIFIHAVEN_DB_USER: familydns
-      WIFIHAVEN_DB_PASSWORD: familydns
+      WIFIHAVEN_DB_NAME: wifihaven
+      WIFIHAVEN_DB_USER: wifihaven
+      WIFIHAVEN_DB_PASSWORD: wifihaven
       WIFIHAVEN_HTTP_PORT: "8080"
       WIFIHAVEN_JWT_SECRET: "staging-jwt-secret-do-not-use-in-prod-32ch"
     ports:

@@ -35,8 +35,8 @@ local router_id     = uci_get("router_id",            "")
 local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
 local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
-local policy_int    = tonumber(uci_get("policy_poll_interval",    "60"))
-local usage_int     = tonumber(uci_get("usage_report_interval",   "300"))
+local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
+local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
 local debug_opt     = uci_get("debug",                            "0")
 
 log.init({ debug = debug_opt })
@@ -219,7 +219,7 @@ local in_failover_render  = false
 local last_policy_run     = 0
 local last_usage_run      = 0
 local last_activity_sample = 0
-local activity_sample_int  = 60                 -- per-minute activity granularity (#295)
+local activity_sample_int  = 10                 -- 10s activity granularity (#295, #516)
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
@@ -430,9 +430,10 @@ conntrack.watch({
       end
     end
 
-    -- Activity sampler (#295): every 60 s, snapshot counters and feed them
-    -- to the tracker so end-of-bucket activeSeconds reflects real per-minute
-    -- usage rather than collapsing to {0, 300}.
+    -- Activity sampler (#295, #516): every 10 s, snapshot counters and feed
+    -- them to the tracker so end-of-bucket activeSeconds reflects real
+    -- ~10-second-granularity usage rather than collapsing to {0, 300} or
+    -- rounding to whole-minute buckets.
     if (mono - last_activity_sample) >= activity_sample_int then
       last_activity_sample = mono
       local counters = read_nft_counters()
@@ -454,8 +455,8 @@ conntrack.watch({
       -- `nft reset set ...` to zero those per-element counters in place.
       local counters = read_nft_counters()
       if counters then
-        -- Final per-minute sample at flush so set elements that appeared
-        -- after the last 60s tick still get an active minute counted.
+        -- Final sample at flush so set elements that appeared after the
+        -- last activity_sample_int tick still get an active sample counted.
         usage.tracker_sample(activity_tracker, counters)
         last_activity_sample = mono
         local report = usage.build_report(

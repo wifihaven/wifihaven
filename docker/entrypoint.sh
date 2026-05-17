@@ -5,9 +5,9 @@ set -euo pipefail
 # Required env (compose / GH Actions sets these):
 : "${WIFIHAVEN_DB_HOST:=postgres}"
 : "${WIFIHAVEN_DB_PORT:=5432}"
-: "${WIFIHAVEN_DB_NAME:=familydns}"
-: "${WIFIHAVEN_DB_USER:=familydns}"
-: "${WIFIHAVEN_DB_PASSWORD:=familydns}"
+: "${WIFIHAVEN_DB_NAME:=wifihaven}"
+: "${WIFIHAVEN_DB_USER:=wifihaven}"
+: "${WIFIHAVEN_DB_PASSWORD:=wifihaven}"
 : "${WIFIHAVEN_HTTP_HOST:=0.0.0.0}"
 : "${WIFIHAVEN_HTTP_PORT:=8080}"
 : "${WIFIHAVEN_STATIC_DIR:=/app/web}"
@@ -24,7 +24,7 @@ fi
 
 mkdir -p /app/config
 cat > /app/config/application.conf <<EOF
-familydns {
+wifihaven {
   db {
     host     = "${WIFIHAVEN_DB_HOST}"
     port     = ${WIFIHAVEN_DB_PORT}

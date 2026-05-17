@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
-# FamilyDNS deploy — Linux only.
+# WifiHaven deploy — Linux only.
 #
 # Pulls the latest main, builds the API assembly + web bundle, swaps the
-# artifacts in /opt/familydns/, and restarts the systemd unit.
+# artifacts in /opt/wifihaven/, and restarts the systemd unit.
 #
 # Designed to be run by a system service or a cron job; can also be run by
 # hand. Uses sudo where required, so configure passwordless sudo for the
 # deploy user (see README).
 #
 # Layout:
-#   /opt/familydns/repo/      ← git checkout (this script lives here)
-#   /opt/familydns/api.jar    ← latest assembly (symlink to versioned file)
-#   /opt/familydns/web/       ← latest static bundle
-#   /etc/familydns/           ← config (application.conf, api.env)
+#   /opt/wifihaven/repo/      ← git checkout (this script lives here)
+#   /opt/wifihaven/api.jar    ← latest assembly (symlink to versioned file)
+#   /opt/wifihaven/web/       ← latest static bundle
+#   /etc/wifihaven/           ← config (application.conf, api.env)
 #
 # Environment:
 #   WIFIHAVEN_BRANCH   default: main
-#   WIFIHAVEN_PREFIX   default: /opt/familydns
+#   WIFIHAVEN_PREFIX   default: /opt/wifihaven
 #   WIFIHAVEN_NO_WEB   set to 1 to skip frontend build
 #   WIFIHAVEN_NO_RESTART  set to 1 to build but not restart services
 
 set -euo pipefail
 
 BRANCH="${WIFIHAVEN_BRANCH:-production}"
-PREFIX="${WIFIHAVEN_PREFIX:-/opt/familydns}"
+PREFIX="${WIFIHAVEN_PREFIX:-/opt/wifihaven}"
 REPO="$PREFIX/repo"
-LOG_TAG="familydns-deploy"
+LOG_TAG="wifihaven-deploy"
 
 log()  { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee >(logger -t "$LOG_TAG"); }
 fail() { log "FAILED: $*"; exit 1; }
@@ -62,14 +62,14 @@ fi
 
 # ── Atomic swap of artifacts ──────────────────────────────────────────────
 log "Swapping artifacts into $PREFIX..."
-sudo install -d -o familydns -g familydns "$PREFIX"
-sudo install -m 0644 -o familydns -g familydns "$JAR_SRC" "$PREFIX/api.jar.new"
+sudo install -d -o wifihaven -g wifihaven "$PREFIX"
+sudo install -m 0644 -o wifihaven -g wifihaven "$JAR_SRC" "$PREFIX/api.jar.new"
 sudo mv -f "$PREFIX/api.jar.new" "$PREFIX/api.jar"
 
 if [ "${WIFIHAVEN_NO_WEB:-0}" != "1" ]; then
   sudo rm -rf "$PREFIX/web.new"
   sudo cp -r web/dist "$PREFIX/web.new"
-  sudo chown -R familydns:familydns "$PREFIX/web.new"
+  sudo chown -R wifihaven:wifihaven "$PREFIX/web.new"
   sudo rm -rf "$PREFIX/web.old"
   if [ -d "$PREFIX/web" ]; then sudo mv "$PREFIX/web" "$PREFIX/web.old"; fi
   sudo mv "$PREFIX/web.new" "$PREFIX/web"
@@ -80,11 +80,11 @@ echo "$REV  $(date -u +%Y-%m-%dT%H:%M:%SZ)" | sudo tee -a "$PREFIX/deploy.log" >
 
 # ── Restart service ───────────────────────────────────────────────────────
 if [ "${WIFIHAVEN_NO_RESTART:-0}" != "1" ]; then
-  log "Restarting familydns-api.service..."
-  sudo systemctl restart familydns-api.service
+  log "Restarting wifihaven-api.service..."
+  sudo systemctl restart wifihaven-api.service
   sleep 2
-  systemctl is-active --quiet familydns-api.service \
-    || { sudo journalctl -u familydns-api -n 80 --no-pager; fail "api did not come up"; }
+  systemctl is-active --quiet wifihaven-api.service \
+    || { sudo journalctl -u wifihaven-api -n 80 --no-pager; fail "api did not come up"; }
 fi
 
 log "Deploy OK ($REV)"
