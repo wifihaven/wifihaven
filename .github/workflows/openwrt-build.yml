@@ -55,7 +55,7 @@ jobs:
 
       - name: Verify .ipk contents
         run: |
-          ipk=$(ls openwrt/familydns_*.ipk)
+          ipk=$(ls openwrt/wifihaven_*.ipk)
           echo "Package: $ipk"
           ls -lh "$ipk"
           echo "--- ar contents ---"
@@ -81,10 +81,10 @@ jobs:
 
       - name: Verify .apk contents
         run: |
-          apk_file=$(ls openwrt/familydns_*.apk)
+          apk_file=$(ls openwrt/wifihaven_*.apk)
           echo "Package: $apk_file"
           ls -lh "$apk_file"
-          apk_bin="$HOME/.cache/familydns-apk-tools/build/src/apk"
+          apk_bin="$HOME/.cache/wifihaven-apk-tools/build/src/apk"
           echo "--- file type ---"
           file "$apk_file"
           echo "--- apk adbdump (metadata + payload listing) ---"
@@ -93,15 +93,15 @@ jobs:
       - name: Upload .ipk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: familydns-ipk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
-          path: openwrt/familydns_*.ipk
+          name: wifihaven-ipk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
+          path: openwrt/wifihaven_*.ipk
           if-no-files-found: error
 
       - name: Upload .apk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: familydns-apk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
-          path: openwrt/familydns_*.apk
+          name: wifihaven-apk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
+          path: openwrt/wifihaven_*.apk
           if-no-files-found: error
 
       - name: Create GitHub release and attach packages (tag)
@@ -109,8 +109,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            openwrt/familydns_*.ipk
-            openwrt/familydns_*.apk
+            openwrt/wifihaven_*.ipk
+            openwrt/wifihaven_*.apk
           generate_release_notes: true
 
       # Rolling pre-release for #228 live debugging. Reverted by #244.
@@ -126,5 +126,5 @@ jobs:
             For #228 live debugging — see #243 / #244.
           prerelease: true
           files: |
-            openwrt/familydns_*.ipk
-            openwrt/familydns_*.apk
+            openwrt/wifihaven_*.ipk
+            openwrt/wifihaven_*.apk

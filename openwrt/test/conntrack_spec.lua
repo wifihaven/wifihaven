@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/conntrack.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/conntrack.lua
 -- Run with: busted openwrt/test/conntrack_spec.lua
 -- Requires: busted (luarocks install busted)
 
@@ -253,7 +253,7 @@ describe("parse_dhcp_leases", function()
   end
 
   it("returns an empty table when the file doesn't exist", function()
-    local leases = conntrack.parse_dhcp_leases("/tmp/__does_not_exist_familydns__")
+    local leases = conntrack.parse_dhcp_leases("/tmp/__does_not_exist_wifihaven__")
     assert.same({}, leases)
   end)
 

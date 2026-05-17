@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/blocklists.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/blocklists.lua
 -- Run with: cd openwrt && busted test/blocklists_spec.lua
 
 local blocklists = require("blocklists")
@@ -67,13 +67,13 @@ describe("blocklists.fetch_and_cache", function()
     end
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
-    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/familydns/blocklists")
+    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/wifihaven/blocklists")
 
     assert.equal(1, fetches)
     assert.not_nil(result.hosts_by_id)
     assert.not_nil(result.hosts_by_id["test_ads"])
     -- Final path exists, tmp path does not.
-    local final = "/etc/familydns/blocklists/test_ads-abc123.txt"
+    local final = "/etc/wifihaven/blocklists/test_ads-abc123.txt"
     assert.not_nil(fs._files[final], "expected final cache file to exist")
     assert.is_nil(fs._files[final .. ".tmp"], "tmp file should have been renamed away")
     -- Hosts are parsed from the body.
@@ -91,7 +91,7 @@ describe("blocklists.fetch_and_cache", function()
     local function http_get(_url, _etag) fetches = fetches + 1; return "host.example\n", 200, '"v1"' end
 
     -- Pre-seed the cache file.
-    local cache_dir = "/etc/familydns/blocklists"
+    local cache_dir = "/etc/wifihaven/blocklists"
     fs._files[cache_dir .. "/test_ads-abc123.txt"] = "host.example\n"
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
@@ -105,7 +105,7 @@ describe("blocklists.fetch_and_cache", function()
     local fetches = 0
     local function http_get(_url, _etag) fetches = fetches + 1; return "newhost.example\n", 200, '"v2"' end
 
-    local cache_dir = "/etc/familydns/blocklists"
+    local cache_dir = "/etc/wifihaven/blocklists"
     -- Old version file in cache.
     fs._files[cache_dir .. "/test_ads-old_version.txt"] = "oldhost.example\n"
 
@@ -128,10 +128,10 @@ describe("blocklists.fetch_and_cache", function()
     end
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
-    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/familydns/blocklists")
+    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/wifihaven/blocklists")
 
     assert.truthy(#result.errors > 0)
-    assert.is_nil(fs._files["/etc/familydns/blocklists/test_ads-abc123.txt"])
+    assert.is_nil(fs._files["/etc/wifihaven/blocklists/test_ads-abc123.txt"])
   end)
 
   it("skips comment lines and blank lines in the body", function()
@@ -141,7 +141,7 @@ describe("blocklists.fetch_and_cache", function()
     end
 
     local s = snap({ test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" } })
-    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/familydns/blocklists")
+    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/wifihaven/blocklists")
 
     local hosts = result.hosts_by_id["test_ads"]
     assert.not_nil(hosts)
@@ -155,7 +155,7 @@ describe("blocklists.fetch_and_cache", function()
   it("returns error when http_get_fn is nil", function()
     local fs = make_fs()
     local s  = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
-    local result = blocklists.fetch_and_cache(s, nil, fs, "/etc/familydns/blocklists")
+    local result = blocklists.fetch_and_cache(s, nil, fs, "/etc/wifihaven/blocklists")
     assert.truthy(#result.errors > 0)
   end)
 
@@ -167,7 +167,7 @@ describe("blocklists.load_cached", function()
 
   it("reads the cached file for (id, version) and returns host list", function()
     local fs        = make_fs()
-    local cache_dir = "/etc/familydns/blocklists"
+    local cache_dir = "/etc/wifihaven/blocklists"
     fs._files[cache_dir .. "/test_ads-abc123.txt"] =
       "# version: abc123\nads.example.com\ndoubleclick.net\n"
 
@@ -188,7 +188,7 @@ describe("blocklists.load_cached", function()
   it("returns empty table when cache file is absent", function()
     local fs  = make_fs()
     local s   = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
-    local res = blocklists.load_cached(s, fs, "/etc/familydns/blocklists")
+    local res = blocklists.load_cached(s, fs, "/etc/wifihaven/blocklists")
     -- Either missing key or empty list is acceptable.
     local hosts = res["test_ads"] or {}
     assert.equal(0, #hosts)
@@ -202,7 +202,7 @@ describe("blocklists.gc", function()
 
   it("removes cache files whose (id, version) is not in current snapshot", function()
     local fs        = make_fs()
-    local cache_dir = "/etc/familydns/blocklists"
+    local cache_dir = "/etc/wifihaven/blocklists"
     -- Current version file (must be kept).
     fs._files[cache_dir .. "/test_ads-current.txt"]    = "host1\n"
     -- Stale version (must be removed).
@@ -223,7 +223,7 @@ describe("blocklists.gc", function()
 
   it("does not remove files for ids that are still in snapshot", function()
     local fs        = make_fs()
-    local cache_dir = "/etc/familydns/blocklists"
+    local cache_dir = "/etc/wifihaven/blocklists"
     fs._files[cache_dir .. "/test_ads-v1.txt"]    = "host1\n"
     fs._files[cache_dir .. "/test_social-v2.txt"] = "host2\n"
 

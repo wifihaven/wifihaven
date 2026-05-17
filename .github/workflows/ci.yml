@@ -136,7 +136,7 @@ jobs:
       - name: Run openwrt agent tests
         working-directory: openwrt
         run: |
-          LUA_PATH="./files/usr/lib/lua/familydns/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+          LUA_PATH="./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
             busted test/conntrack_spec.lua
 
   # ── OPNsense agent: Python unit tests ───────────────────────────────────

@@ -1,12 +1,12 @@
 #!/bin/sh
-# Shell-level smoke tests for openwrt/files/usr/sbin/familydns-update
+# Shell-level smoke tests for openwrt/files/usr/sbin/wifihaven-update
 # and the cron-install postinst hook in openwrt/build-ipk.sh and Makefile.
 # Run from the openwrt/ directory:  sh test/update_spec.sh
 set -e
 
 PASS=0; FAIL=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/files/usr/sbin/familydns-update"
+SCRIPT="$ROOT/files/usr/sbin/wifihaven-update"
 MAKEFILE="$ROOT/Makefile"
 BUILDER="$ROOT/build-ipk.sh"
 
@@ -25,10 +25,10 @@ check() {
   && check "update script is executable" ok \
   || check "update script is executable" "missing +x bit"
 
-# 2. Logs to syslog under familydns tag
-grep -q 'logger -t familydns' "$SCRIPT" \
-  && check "logs to syslog tag familydns" ok \
-  || check "logs to syslog tag familydns" "no logger -t familydns"
+# 2. Logs to syslog under wifihaven tag
+grep -q 'logger -t wifihaven' "$SCRIPT" \
+  && check "logs to syslog tag wifihaven" ok \
+  || check "logs to syslog tag wifihaven" "no logger -t wifihaven"
 
 # 3. Detects both package managers (apk for 24.10+, opkg for older)
 grep -q 'command -v apk' "$SCRIPT" && grep -q 'command -v opkg' "$SCRIPT" \
@@ -42,8 +42,8 @@ grep -q '@.published_at' "$SCRIPT" \
   || check "uses release published_at as freshness signal" "missing published_at compare"
 
 grep -q 'last_update_stamp' "$SCRIPT" \
-  && check "persists last-applied stamp under /var/lib/familydns" ok \
-  || check "persists last-applied stamp under /var/lib/familydns" "missing stamp file"
+  && check "persists last-applied stamp under /var/lib/wifihaven" ok \
+  || check "persists last-applied stamp under /var/lib/wifihaven" "missing stamp file"
 
 # 4c. Installs via apk add --allow-untrusted on apk path
 grep -q 'apk add --allow-untrusted' "$SCRIPT" \
@@ -77,17 +77,17 @@ grep -qE 'rm -f .*(\.ipk|\.apk|\$TMP|"\$TMP")' "$SCRIPT" \
   || check "cleans up downloaded package after install" "no rm -f for downloaded package"
 
 # 8. Makefile installs the update script
-grep -q 'familydns-update' "$MAKEFILE" \
-  && check "Makefile installs familydns-update" ok \
-  || check "Makefile installs familydns-update" "not referenced in Makefile"
+grep -q 'wifihaven-update' "$MAKEFILE" \
+  && check "Makefile installs wifihaven-update" ok \
+  || check "Makefile installs wifihaven-update" "not referenced in Makefile"
 
-# 9. Makefile declares /etc/config/familydns as conffile
-grep -A1 'Package/familydns/conffiles' "$MAKEFILE" | grep -q '/etc/config/familydns' \
-  && check "Makefile lists familydns conffile" ok \
-  || check "Makefile lists familydns conffile" "missing conffiles stanza"
+# 9. Makefile declares /etc/config/wifihaven as conffile
+grep -A1 'Package/wifihaven/conffiles' "$MAKEFILE" | grep -q '/etc/config/wifihaven' \
+  && check "Makefile lists wifihaven conffile" ok \
+  || check "Makefile lists wifihaven conffile" "missing conffiles stanza"
 
 # 10. Makefile postinst installs the cron entry
-grep -q "familydns-update" "$MAKEFILE" && \
+grep -q "wifihaven-update" "$MAKEFILE" && \
 grep -q "/etc/crontabs/root" "$MAKEFILE" \
   && check "Makefile postinst adds cron entry" ok \
   || check "Makefile postinst adds cron entry" "cron install missing in postinst"
@@ -99,16 +99,16 @@ grep -q '/etc/crontabs/root' "$BUILDER" \
   || check "build-ipk.sh postinst installs cron entry" "missing cron install"
 
 grep -q 'conffiles' "$BUILDER" && \
-grep -A2 'ctrl/conffiles' "$BUILDER" | grep -q '/etc/config/familydns' \
+grep -A2 'ctrl/conffiles' "$BUILDER" | grep -q '/etc/config/wifihaven' \
   && check "build-ipk.sh declares conffile" ok \
   || check "build-ipk.sh declares conffile" "missing conffiles file"
 
 # 12. Cron interval is daily at 04:00 (issue #254 — see deploy.md §1.3 / §2.3)
-grep -q '0 4 \* \* \* /usr/sbin/familydns-update' "$MAKEFILE" \
+grep -q '0 4 \* \* \* /usr/sbin/wifihaven-update' "$MAKEFILE" \
   && check "Makefile cron is daily at 04:00" ok \
   || check "Makefile cron is daily at 04:00" "wrong cron expression"
 
-grep -q '0 4 \* \* \* /usr/sbin/familydns-update' "$BUILDER" \
+grep -q '0 4 \* \* \* /usr/sbin/wifihaven-update' "$BUILDER" \
   && check "build-ipk.sh cron is daily at 04:00" ok \
   || check "build-ipk.sh cron is daily at 04:00" "wrong cron expression"
 

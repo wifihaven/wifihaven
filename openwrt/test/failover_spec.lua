@@ -210,7 +210,7 @@ describe("render.nft — #385/#422 three-mode failover", function()
 
   it("normal (non-failover) snapshot rendering is unchanged when opts omitted", function()
     local nft = render.nft(snap_three())
-    assert.truthy(nft:find("table inet familydns", 1, true))
+    assert.truthy(nft:find("table inet wifihaven", 1, true))
     assert.truthy(nft:find("set profile1_macs", 1, true))
     assert.truthy(nft:find("set profile2_macs", 1, true))
     assert.truthy(nft:find("set profile3_macs", 1, true))

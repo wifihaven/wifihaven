@@ -1,15 +1,15 @@
 #!/bin/sh
-# FamilyDNS OpenWRT agent — interactive first-install script.
+# WifiHaven OpenWRT agent — interactive first-install script.
 #
 # Usage (on an OpenWRT 23.05.x router, as root):
 #
-#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
 #
 # Or download then run:
 #
-#   uclient-fetch -qO /tmp/familydns-install.sh \
-#     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh
-#   sh /tmp/familydns-install.sh
+#   uclient-fetch -qO /tmp/wifihaven-install.sh \
+#     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+#   sh /tmp/wifihaven-install.sh
 #
 # The script prompts for the API URL, the one-time enrollment token, and the
 # LAN prefix; downloads the latest .ipk from GitHub Releases; installs it;
@@ -23,7 +23,7 @@ set -eu
 
 # TODO(#244): revert to /releases/latest once the rolling debug period for
 # #228 is done and proper tags resume. Pairs with #280 (auto-updater swap).
-RELEASES_API="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"
+RELEASES_API="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
@@ -112,7 +112,7 @@ platform_ver=$(awk -F"'" '/DISTRIB_RELEASE/{print $2}' /etc/openwrt_release 2>/d
 
 cat >"$TTY" <<EOF
 
-FamilyDNS OpenWRT agent — interactive install
+WifiHaven OpenWRT agent — interactive install
 =============================================
 This will install the agent, enroll this router against your API server,
 and start the agent. Press Ctrl-C at any prompt to abort.
@@ -153,7 +153,7 @@ pkg_url=$(echo "$releases_json" \
   | grep -E "\.${PKG_EXT}\$" \
   | head -n1)
 [ -n "$pkg_url" ] || err "could not find a .$PKG_EXT asset in the latest release at $RELEASES_API"
-pkg_path="/tmp/familydns.${PKG_EXT}"
+pkg_path="/tmp/wifihaven.${PKG_EXT}"
 info "Downloading $pkg_url"
 curl -fsSL -o "$pkg_path" "$pkg_url"
 
@@ -175,16 +175,16 @@ fi
 
 # Write base UCI config before enrolling so a re-run after a failed enroll
 # does not have to re-enter these.
-uci set familydns.@familydns[0].api_url="$API_URL"
-uci set familydns.@familydns[0].lan_prefix="$LAN_PREFIX"
-uci commit familydns
+uci set wifihaven.@wifihaven[0].api_url="$API_URL"
+uci set wifihaven.@wifihaven[0].lan_prefix="$LAN_PREFIX"
+uci commit wifihaven
 
 # Enroll.
 info "Enrolling router with $API_URL..."
 if [ "$PKG_MGR" = apk ]; then
-  agent_ver=$(apk list -I familydns 2>/dev/null | head -n1 | awk '{print $1}' | sed 's/^familydns-//')
+  agent_ver=$(apk list -I wifihaven 2>/dev/null | head -n1 | awk '{print $1}' | sed 's/^wifihaven-//')
 else
-  agent_ver=$(opkg info familydns | awk '/^Version:/{print $2}' | head -n1)
+  agent_ver=$(opkg info wifihaven | awk '/^Version:/{print $2}' | head -n1)
 fi
 body=$(printf '{"enrollmentToken":"%s","platformVersion":"%s","agentVersion":"%s"}' \
   "$ENROLLMENT_TOKEN" "$platform_ver" "$agent_ver")
@@ -198,18 +198,18 @@ router_token=$(echo "$resp" | jsonfilter -e '@.routerToken' | head -n1)
 [ -n "$router_id" ]    || err "enrollment response missing routerId: $resp"
 [ -n "$router_token" ] || err "enrollment response missing routerToken: $resp"
 
-uci set familydns.@familydns[0].router_id="$router_id"
-uci set familydns.@familydns[0].router_token="$router_token"
-uci commit familydns
+uci set wifihaven.@wifihaven[0].router_id="$router_id"
+uci set wifihaven.@wifihaven[0].router_token="$router_token"
+uci commit wifihaven
 
-# Wire dnsmasq for familydns (#287):
-#   - confdir=/tmp/dnsmasq.d makes dnsmasq load /tmp/dnsmasq.d/familydns.conf
+# Wire dnsmasq for wifihaven (#287):
+#   - confdir=/tmp/dnsmasq.d makes dnsmasq load /tmp/dnsmasq.d/wifihaven.conf
 #     (the agent's rendered profile-tag / NXDOMAIN / ipset config). Without
 #     this, dnsmasq only loads /tmp/dnsmasq.<section>.d/, which the agent
 #     doesn't know the name of.
 #   - logqueries=1 → --log-queries=extra, so dnsmasq emits the structured
 #     query+reply lines dns_log.lua parses.
-#   - logfacility=/tmp/familydns-dnsmasq.log routes the query log to a file
+#   - logfacility=/tmp/wifihaven-dnsmasq.log routes the query log to a file
 #     instead of syslog AND triggers the dnsmasq init.d to bind-mount that
 #     file RW into dnsmasq's ujail (so the dnsmasq user can actually write
 #     it).
@@ -217,7 +217,7 @@ dnsmasq_changed=0
 for opt_kv in \
   "confdir=/tmp/dnsmasq.d" \
   "logqueries=1" \
-  "logfacility=/tmp/familydns-dnsmasq.log"; do
+  "logfacility=/tmp/wifihaven-dnsmasq.log"; do
   opt=${opt_kv%%=*}
   val=${opt_kv#*=}
   cur=$(uci -q get "dhcp.@dnsmasq[0].$opt" || true)
@@ -228,7 +228,7 @@ for opt_kv in \
 done
 if [ "$dnsmasq_changed" = 1 ]; then
   uci commit dhcp
-  info "Restarting dnsmasq with familydns query-log + confdir wiring..."
+  info "Restarting dnsmasq with wifihaven query-log + confdir wiring..."
   /etc/init.d/dnsmasq restart
 fi
 
@@ -237,7 +237,7 @@ fi
 # the block page, not a connection error).
 #
 # Every request to this listener is dispatched to the lua handler at
-# /www/familydns/handler.lua (uhttpd-mod-lua). The handler resolves the
+# /www/wifihaven/handler.lua (uhttpd-mod-lua). The handler resolves the
 # requesting device's MAC (from /proc/net/arp by REMOTE_ADDR), looks up the
 # per-MAC block reason written by the agent, and returns a redirect to the
 # API's /blocked page with mac+reason populated (#437). The static
@@ -247,16 +247,16 @@ uhttpd_section=$(uci show uhttpd 2>/dev/null \
 uhttpd_changed=0
 if [ -n "$uhttpd_section" ]; then
   current_home=$(uci -q get "uhttpd.${uhttpd_section}.home" || echo "")
-  if [ "$current_home" != "/www/familydns" ]; then
-    info "Updating block-page uhttpd home to /www/familydns..."
-    uci set "uhttpd.${uhttpd_section}.home=/www/familydns"
+  if [ "$current_home" != "/www/wifihaven" ]; then
+    info "Updating block-page uhttpd home to /www/wifihaven..."
+    uci set "uhttpd.${uhttpd_section}.home=/www/wifihaven"
     uhttpd_changed=1
   fi
 else
   info "Configuring uhttpd block-page listener on 127.0.0.1:8081..."
   uhttpd_section=$(uci add uhttpd uhttpd)
   uci add_list "uhttpd.${uhttpd_section}.listen_http=127.0.0.1:8081"
-  uci set "uhttpd.${uhttpd_section}.home=/www/familydns"
+  uci set "uhttpd.${uhttpd_section}.home=/www/wifihaven"
   uhttpd_changed=1
 fi
 
@@ -272,7 +272,7 @@ fi
 # Route every URL through the lua handler so the block page can do per-MAC
 # lookups instead of serving a static file (#437).
 desired_lua_prefix='/'
-desired_lua_handler='/www/familydns/handler.lua'
+desired_lua_handler='/www/wifihaven/handler.lua'
 current_lua_prefix=$(uci -q get "uhttpd.${uhttpd_section}.lua_prefix" || echo "")
 current_lua_handler=$(uci -q get "uhttpd.${uhttpd_section}.lua_handler" || echo "")
 if [ "$current_lua_prefix" != "$desired_lua_prefix" ]; then
@@ -293,20 +293,20 @@ fi
 
 # #303: enable route_localnet on the LAN bridge so the nft prerouting DNAT
 # to 127.0.0.1:8081 (block-page uhttpd) is routable for LAN clients. The
-# persistent file is shipped at /etc/sysctl.d/99-familydns.conf by the
+# persistent file is shipped at /etc/sysctl.d/99-wifihaven.conf by the
 # package; apply it now so the running kernel picks it up without a reboot.
 # Manual installs (no package manager) also need this — sysctl -p loads the
 # file if present.
-if [ -f /etc/sysctl.d/99-familydns.conf ]; then
-  sysctl -p /etc/sysctl.d/99-familydns.conf >/dev/null 2>&1 || true
+if [ -f /etc/sysctl.d/99-wifihaven.conf ]; then
+  sysctl -p /etc/sysctl.d/99-wifihaven.conf >/dev/null 2>&1 || true
 else
   sysctl -w net.ipv4.conf.br-lan.route_localnet=1 >/dev/null 2>&1 || true
 fi
 
 # Enable and start.
-info "Enabling and starting the familydns agent..."
-/etc/init.d/familydns enable
-/etc/init.d/familydns start
+info "Enabling and starting the wifihaven agent..."
+/etc/init.d/wifihaven enable
+/etc/init.d/wifihaven start
 
 cat <<EOF
 
@@ -317,7 +317,7 @@ Done. Router enrolled successfully.
   LAN prefix:  $LAN_PREFIX
 
 Watch the agent log:
-  logread -f | grep familydns
+  logread -f | grep wifihaven
 
 The admin UI -> Routers should show a fresh last_seen_at for this router
 within ~60 seconds.

@@ -92,7 +92,7 @@ M._is_ipv4 = is_ipv4
 --
 -- Extracts the dnsmasq client IP (the device that issued the query — the
 -- "source IP" we look up in the DHCP lease table to find the MAC) and the
--- answer IP from a `reply`/`cached` log line. Used by familydns-dns-tail
+-- answer IP from a `reply`/`cached` log line. Used by wifihaven-dns-tail
 -- (#505) to populate per-MAC blockIpOnly resolved_<mac> / resolved6_<mac>
 -- sets out-of-band, because dnsmasq 2.91's `nftset=tag:` is broken (#496)
 -- and per-MAC scoping is semantically essential for blockIpOnly.

@@ -1,7 +1,7 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/usage.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/usage.lua
 -- Run with: cd openwrt && busted test/usage_spec.lua
 --
--- Input shape: `nft -j list set inet familydns mac_ip_tracking`.
+-- Input shape: `nft -j list set inet wifihaven mac_ip_tracking`.
 -- The `mac_ip_tracking` dynamic set is declared in render.lua with
 -- `flags dynamic,timeout` + `counter`, so each set element carries its own
 -- counter and the JSON layout is:
@@ -13,7 +13,7 @@ local NFT_JSON = [[{
   "nftables": [
     { "metainfo": { "version": "1.1.6", "json_schema_version": 1 } },
     { "set": {
-        "family": "inet", "table": "familydns", "name": "mac_ip_tracking",
+        "family": "inet", "table": "wifihaven", "name": "mac_ip_tracking",
         "type": ["ether_addr", "ipv4_addr"],
         "flags": ["timeout", "dynamic"],
         "elem": [

@@ -9,22 +9,22 @@
 --     counter
 --     ...
 --   }
---   chain familydns_account {
+--   chain wifihaven_account {
 --     type filter hook forward priority 1; policy accept;
 --     update @mac_ip_tracking { ether saddr . ip daddr } counter
 --   }
 --
 -- Each set element carries its own counter, so we read
--- `nft -j list set inet familydns mac_ip_tracking` and walk
+-- `nft -j list set inet wifihaven mac_ip_tracking` and walk
 -- `nftables[*].set.elem[*].elem.{val.concat:[mac,ip], counter:{packets,bytes}}`.
 -- After a successful POST the agent calls
--- `nft reset set inet familydns mac_ip_tracking` to zero the per-element
+-- `nft reset set inet wifihaven mac_ip_tracking` to zero the per-element
 -- counters in place so the next bucket starts clean.
 --
 -- Public API:
 --   usage.parse_nft_counters(json_str)
 --     → list of { mac, dst_ip, bytes, packets }
---     Input: JSON from `nft -j list set inet familydns mac_ip_tracking`
+--     Input: JSON from `nft -j list set inet wifihaven mac_ip_tracking`
 --
 --   usage.build_report(counters, nft_sets, period_start, period_end, router_id
 --                      [, leases [, lookup_hostname [, tracker]]])
@@ -49,7 +49,7 @@ local M = {}
 
 -- log is injectable; default to the real logger wrapper, fall back to stderr.
 local function default_log()
-  local ok, l = pcall(require, "familydns.log")
+  local ok, l = pcall(require, "wifihaven.log")
   if ok then return l end
   return {
     info  = function(fmt, ...) io.stderr:write(string.format(fmt .. "\n", ...)) end,
@@ -62,7 +62,7 @@ end
 -- ---------------------------------------------------------------------------
 -- usage.parse_nft_counters(json_str)
 --
--- Walks the JSON output of `nft -j list set inet familydns mac_ip_tracking`
+-- Walks the JSON output of `nft -j list set inet wifihaven mac_ip_tracking`
 -- and returns one record per set element with a non-zero counter.
 --
 -- Shape (nftables 1.x):

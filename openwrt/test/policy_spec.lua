@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/policy.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/policy.lua
 -- Run with: cd openwrt && busted test/policy_spec.lua
 
 local policy = require("policy")
@@ -135,24 +135,24 @@ describe("policy.apply", function()
     return json.decode(SNAPSHOT_JSON)
   end
 
-  it("writes dnsmasq conf to /tmp/dnsmasq.d/familydns.conf", function()
+  it("writes dnsmasq conf to /tmp/dnsmasq.d/wifihaven.conf", function()
     local writes = {}
     policy.apply(decode_snap(),
       function(path, _content) writes[path] = true; return true, nil end,
       function(_cmd) return 0 end)
-    assert.truthy(writes["/tmp/dnsmasq.d/familydns.conf"])
+    assert.truthy(writes["/tmp/dnsmasq.d/wifihaven.conf"])
   end)
 
-  it("writes nft fragment to /tmp/nftables.d/familydns.nft", function()
+  it("writes nft fragment to /tmp/nftables.d/wifihaven.nft", function()
     local writes = {}
     policy.apply(decode_snap(),
       function(path, _content) writes[path] = true; return true, nil end,
       function(_cmd) return 0 end)
-    assert.truthy(writes["/tmp/nftables.d/familydns.nft"])
+    assert.truthy(writes["/tmp/nftables.d/wifihaven.nft"])
   end)
 
   -- #328: SIGHUP doesn't re-read conf-dir, so a `reload` leaves the new
-  -- /tmp/dnsmasq.d/familydns.conf entries silently inactive until something
+  -- /tmp/dnsmasq.d/wifihaven.conf entries silently inactive until something
   -- else restarts dnsmasq. We must `restart` to pick up dhcp-host= and
   -- nftset= directives. Post-#414 the restart is conditional on the
   -- rendered content actually differing from the on-disk copy; pass
@@ -204,7 +204,7 @@ describe("policy.apply", function()
       function(cmd) table.insert(reloads, cmd); return 0 end,
       nil,
       { read_fn = function(path)
-          if path == "/tmp/dnsmasq.d/familydns.conf" then return rendered end
+          if path == "/tmp/dnsmasq.d/wifihaven.conf" then return rendered end
           return nil
         end })
     for _, cmd in ipairs(reloads) do
@@ -276,10 +276,10 @@ describe("policy.apply", function()
     policy.apply(decode_snap(),
       function(path, content) contents[path] = content; return true, nil end,
       function(_cmd) return 0 end)
-    assert.truthy(contents["/tmp/dnsmasq.d/familydns.conf"] and
-                  #contents["/tmp/dnsmasq.d/familydns.conf"] > 0)
-    assert.truthy(contents["/tmp/nftables.d/familydns.nft"] and
-                  #contents["/tmp/nftables.d/familydns.nft"] > 0)
+    assert.truthy(contents["/tmp/dnsmasq.d/wifihaven.conf"] and
+                  #contents["/tmp/dnsmasq.d/wifihaven.conf"] > 0)
+    assert.truthy(contents["/tmp/nftables.d/wifihaven.nft"] and
+                  #contents["/tmp/nftables.d/wifihaven.nft"] > 0)
   end)
 
   it("returns true on success", function()
@@ -306,7 +306,7 @@ describe("policy.apply", function()
       "expected exactly one nft command (atomic swap is in the rendered file)")
     assert.truthy(nft_cmds[1]:find("nft -f", 1, true),
       "expected `nft -f` invocation; got: " .. tostring(nft_cmds[1]))
-    assert.truthy(nft_cmds[1]:find("/tmp/nftables.d/familydns.nft", 1, true),
+    assert.truthy(nft_cmds[1]:find("/tmp/nftables.d/wifihaven.nft", 1, true),
       "expected the rendered file path in the nft command")
     assert.is_nil(nft_cmds[1]:find("delete table", 1, true),
       "policy.apply must not issue a separate `nft delete table` — the prelude in the rendered file handles it atomically")
@@ -499,8 +499,8 @@ describe("policy.apply", function()
     assert.truthy(nft_content)
     assert.truthy(nft_content:find("set failover_drop", 1, true),
       "expected failover_drop set when opts.poll_failed=true")
-    assert.truthy(nft_content:find("familydns_failover", 1, true),
-      "expected familydns_failover chain when opts.poll_failed=true")
+    assert.truthy(nft_content:find("wifihaven_failover", 1, true),
+      "expected wifihaven_failover chain when opts.poll_failed=true")
     assert.truthy(nft_content:find("aa:aa:aa:00:00:01", 1, true),
       "expected the Closed-profile device MAC inside the failover set")
   end)
@@ -570,14 +570,14 @@ end)
 
 describe("policy.save_snapshot", function()
 
-  local SNAPSHOT_PATH = "/etc/familydns/policy.json"
+  local SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 
   local function decode_snap()
     local json = require("cjson")
     return json.decode(SNAPSHOT_JSON)
   end
 
-  it("writes JSON to a tmp file and renames to /etc/familydns/policy.json", function()
+  it("writes JSON to a tmp file and renames to /etc/wifihaven/policy.json", function()
     local writes = {}
     local renames = {}
     local ok = policy.save_snapshot(decode_snap(),
@@ -631,10 +631,10 @@ describe("policy.load_snapshot", function()
     assert.equal("kids", snap.profiles["3"].name)
   end)
 
-  it("reads from /etc/familydns/policy.json", function()
+  it("reads from /etc/wifihaven/policy.json", function()
     local read_path
     policy.load_snapshot(function(path) read_path = path; return SNAPSHOT_JSON end)
-    assert.equal("/etc/familydns/policy.json", read_path)
+    assert.equal("/etc/wifihaven/policy.json", read_path)
   end)
 
   it("returns nil when the file is missing (read_fn returns nil)", function()

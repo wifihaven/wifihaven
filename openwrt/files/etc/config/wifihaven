@@ -1,5 +1,5 @@
-config familydns 'familydns'
-	# Base URL of the familydns API server (HTTP, no trailing slash)
+config wifihaven 'wifihaven'
+	# Base URL of the wifihaven API server (HTTP, no trailing slash)
 	option api_url 'http://192.168.1.1:8080'
 
 	# Long-lived router bearer token obtained during enrollment

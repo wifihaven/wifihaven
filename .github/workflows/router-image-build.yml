@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-image:
-    name: Image Builder (x86_64) + familydns-agent
+    name: Image Builder (x86_64) + wifihaven-agent
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,13 +52,13 @@ jobs:
 
       - name: Image summary
         run: |
-          ls -lh scripts/vm/.cache/openwrt-familydns.img
-          file scripts/vm/.cache/openwrt-familydns.img
+          ls -lh scripts/vm/.cache/openwrt-wifihaven.img
+          file scripts/vm/.cache/openwrt-wifihaven.img
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-familydns-${{ steps.ver.outputs.openwrt_version }}-${{ github.sha }}
-          path: scripts/vm/.cache/openwrt-familydns.img
+          name: openwrt-wifihaven-${{ steps.ver.outputs.openwrt_version }}-${{ github.sha }}
+          path: scripts/vm/.cache/openwrt-wifihaven.img
           if-no-files-found: error
           retention-days: 14
