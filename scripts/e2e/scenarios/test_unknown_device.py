@@ -3,68 +3,69 @@
 Locks in the contract that traffic from a never-registered MAC results in
 an auto-created device row on the API side with NULL profile_id.
 
-Two real-world scenarios produce different initial names:
+What's covered here (F1, smoke): a DHCP client at boot results in a row
+named after the DHCP-advertised hostname. This is the common real-world
+case for a freshly-plugged-in device.
 
-  - **DHCP clients** (the common case): the host DHCPs at boot, advertising
-    its hostname via option 12. The API's `dhcp_lease` ingest path stores
-    the row with that hostname directly — no auto-name involved. F1
-    covers this.
-  - **Static-IP clients**: the host has a hand-configured IP and never
-    DHCPs. The first the router agent sees is a `connection_attempt` /
-    `first_seen_mac` with no hostname, so the API stores the row with
-    auto-generated `device-XXYYZZ` (#62 + #249). F1b covers this.
-  - **Late-arriving DHCP** (e.g. static-IP host that later switches to
-    DHCP, or DHCP arrives after a connection attempt): the row was
-    created with auto-name and is renamed in place when the lease lands
-    carrying a hostname (#249's rename-if-auto path). F2 covers this.
+What is NOT covered here — and why (#517)
+-----------------------------------------
 
-The static-IP and rename paths are driven from a single VM by swapping
-eth0's MAC at runtime to a fresh, API-unknown MAC and configuring it
-either statically or with DHCP+hostname. The boot-time DHCP exchange the
-client did with its original MAC is unrelated and ignored — the test
-only asserts on the fresh MAC's row.
+The previous F1b and F2 scenarios attempted to drive the auto-name /
+late-DHCP-rename paths from a single VM by hot-swapping eth0 to a fresh
+MAC + static IP and asserting that no DHCP lease ever attached the
+cloud-init-baked `fdns-client` hostname to the new MAC. Four attempts
+across #468/PR#470, #475/PR#477, #483/PR#484 and #517 all hit the same
+leak: the fresh MAC appeared on the API with the boot-image hostname.
+
+The 4th-attempt evidence (run 25972689545) was conclusive — the leaked
+row carried `lastSeenIp=192.168.100.205` (a DHCP-pool address, NOT the
+static `192.168.100.50` the test configured). Because the agent populates
+`first_seen_mac.ip` from the dnsmasq lease file (`conntrack.parse_dhcp_leases`
+keyed by MAC), the only way that field can carry a pool IP is if udhcpc
+did in fact DHCP with the new MAC after the test's reconfigure step.
+
+Three layers of defense — `sed iface dhcp → manual`, `pkill -9 udhcpc`,
+and renaming the `/sbin/udhcpc` binary to `.disabled` — were still
+bypassed. The remaining suspects (busybox-applet invocation as `busybox
+udhcpc ...`, mdev/hotplug scripts that read the symlink target before
+the rename, post-`ip link up` hotplug events) form a long tail we cannot
+practically catalogue from the VM image alone. Trying to harden further
+would make the test fixture less and less like a real Alpine client,
+defeating the realism that motivates the VM tier.
+
+The equivalent contract is already enforced at the API layer in
+`api/test/src/feature/RouterIngestSpec.scala`:
+
+  - `events: first_seen_mac creates an unknown-device row when missing`
+    covers F1b (no hostname → `device-XXYYZZ`).
+  - `events: dhcp_lease renames a device whose name matches device-XXYYZZ`
+    covers F2 (late DHCP lease upgrades an auto-name row in place).
+
+Those tests exercise `RouterIngestRoutes.upsertDeviceFromEvent` directly,
+which is the only code path the VM tests were ever really validating —
+the rest was DHCP-suppression scaffolding that turned out to be
+unenforceable on a stock cloud-init Alpine image.
+
+If you reopen this question, the right next experiment is NOT another
+disable layer on the client; it's either (i) baking a no-DHCP, no-hostname
+client variant from a different base image, or (ii) keeping the test
+deletion and accepting that this contract lives at the unit tier.
 """
 from __future__ import annotations
 
-import random
 import re
 
 import pytest
 
-from lib.traffic import http_get
-from lib.vm import client_exec
 from lib.wait import wait_until
 
 pytestmark = pytest.mark.unknown_device
 
 AUTO_NAME_RE = re.compile(r"^device-[0-9a-f]{6}$")
 
-# Static IP outside the router's dnsmasq DHCP pool (default starts at .100).
-STATIC_CLIENT_IP = "192.168.100.50"
-ROUTER_LAN_IP = "192.168.100.1"
-
 
 def _norm_mac(mac: str) -> str:
     return mac.lower().strip()
-
-
-def _expected_auto_name(mac: str) -> str:
-    hex_only = _norm_mac(mac).replace(":", "").replace("-", "")
-    return f"device-{hex_only[-6:]}"
-
-
-def _fresh_unknown_mac() -> str:
-    """Locally-administered MAC the API has never seen.
-
-    Uses a distinct OUI prefix (02:e2:f0:*) from the boot-time client MAC
-    (`_gen_mac` in conftest.py uses 02:e2:e2:*) so a stray match between
-    the two is obvious in logs.
-    """
-    return "02:e2:f0:%02x:%02x:%02x" % (
-        random.randint(0, 255),
-        random.randint(0, 255),
-        random.randint(0, 255),
-    )
 
 
 def _device_row_for_mac(admin, mac: str) -> dict | None:
@@ -81,87 +82,6 @@ def _wait_device_row(admin, mac: str, *, timeout_s: float = 90) -> dict:
         timeout_s=timeout_s, interval_s=2,
         description=f"device row for {mac} appears via list_devices",
     )
-
-
-def _wait_device_name(admin, mac: str, expected: str, *, timeout_s: float = 90) -> dict:
-    def pred():
-        row = _device_row_for_mac(admin, mac)
-        if row is None:
-            return None
-        return row if row.get("name") == expected else None
-    return wait_until(
-        pred, timeout_s=timeout_s, interval_s=2,
-        description=f"device row for {mac} renamed to {expected!r}",
-    )
-
-
-def _reconfigure_eth0_static(client, *, mac: str, ip: str) -> None:
-    """Swap eth0 to a fresh MAC + static IP with no DHCP client running.
-
-    Kills any running udhcpc, flushes eth0, sets a new link-layer address,
-    assigns the static IP, and installs a default route to the router. From
-    the router-agent's perspective this is a brand-new host that never
-    DHCP'd — the very scenario F1b/F2 are about.
-
-    History — three layers of defense, each addressing a previously-observed
-    leak (#475, #468, #483):
-
-      1. `sed dhcp → manual` on `/etc/network/interfaces` (#475) so any
-         later `ifup eth0` won't fire DHCP.
-      2. `ifdown` + `pkill -9 udhcpc` to kill the currently-running client.
-      3. (#483) Rename `/sbin/udhcpc` (and `/usr/sbin/udhcpc` if present) to
-         `.disabled` — the only bombproof way to ensure no remaining path
-         (mdev/udev hotplug, ifupdown if-up.d hooks, cloud-init network
-         module on subsequent boots, anything we haven't catalogued) can
-         re-launch udhcpc with `-x hostname:$(hostname)` and leak the
-         cloud-init-baked `fdns-client` hostname into a `dhcp_lease` event
-         for the new MAC. (1)+(2) alone proved insufficient — symptom
-         persisted in the F1b/F2 failures captured in run 25964749304
-         where the freshly-MAC'd row arrived named `fdns-client`.
-
-    The client fixture is function-scoped so we don't need to restore.
-    F2's Phase 2 calls `_restore_udhcpc(client)` before invoking udhcpc
-    explicitly with its intended hostname.
-    """
-    client_exec(client, ["sh", "-c", (
-        # Belt: blank /etc/hostname and the running kernel hostname so even
-        # if any DHCP slip-through occurs before the binary rename takes
-        # effect, $(hostname) doesn't expand to `fdns-client`.
-        ": > /etc/hostname; "
-        "hostname '' 2>/dev/null || hostname localhost.unknown; "
-        "sed -i 's/^iface eth0 inet dhcp/iface eth0 inet manual/' "
-        "/etc/network/interfaces; "
-        "ifdown eth0 2>/dev/null || true; "
-        "kill -9 $(cat /var/run/udhcpc.eth0.pid 2>/dev/null) 2>/dev/null || true; "
-        "rm -f /var/run/udhcpc.eth0.pid; "
-        "pkill -9 udhcpc 2>/dev/null || true; "
-        # Bombproof: make the binary itself uninvocable. Rename, don't
-        # delete — F2 Phase 2 restores it.
-        "for p in /sbin/udhcpc /usr/sbin/udhcpc; do "
-        "  if [ -e \"$p\" ] && [ ! -e \"$p.disabled\" ]; then "
-        "    mv \"$p\" \"$p.disabled\"; "
-        "  fi; "
-        "done; "
-        "sleep 1; "
-        "ip addr flush dev eth0; "
-        "ip link set eth0 down; "
-        f"ip link set eth0 address {mac}; "
-        "ip link set eth0 up; "
-        f"ip addr add {ip}/24 dev eth0; "
-        f"ip route replace default via {ROUTER_LAN_IP}"
-    )])
-
-
-def _restore_udhcpc(client) -> None:
-    """Undo `_reconfigure_eth0_static`'s udhcpc disable so the binary can
-    be invoked explicitly (F2 Phase 2). No-op if it was never disabled."""
-    client_exec(client, ["sh", "-c", (
-        "for p in /sbin/udhcpc /usr/sbin/udhcpc; do "
-        "  if [ -e \"$p.disabled\" ] && [ ! -e \"$p\" ]; then "
-        "    mv \"$p.disabled\" \"$p\"; "
-        "  fi; "
-        "done"
-    )])
 
 
 # ── F1 ─────────────────────────────────────────────────────────────────────
@@ -190,91 +110,3 @@ def test_unknown_dhcp_mac_autocreates_with_hostname(router, client, admin, debug
     assert row.get("profileId") is None, (
         f"expected profileId=None for autocreated row, got {row.get('profileId')!r}"
     )
-
-
-# ── F1b ────────────────────────────────────────────────────────────────────
-
-
-def test_unknown_static_ip_mac_autocreates_with_auto_name(
-    router, client, admin, debug_api,
-):
-    """F1b: static-IP client, no DHCP → row named `device-XXYYZZ`.
-
-    Reconfigures eth0 to a fresh MAC with a static IP and no DHCP client.
-    The router agent's first event for this MAC is a `connection_attempt`
-    (or `first_seen_mac`) with no hostname, so the API auto-names per
-    #62 + #249.
-    """
-    static_mac = _fresh_unknown_mac()
-    assert _device_row_for_mac(admin, static_mac) is None, (
-        "precondition: freshly-generated MAC must not have a device row"
-    )
-
-    _reconfigure_eth0_static(client, mac=static_mac, ip=STATIC_CLIENT_IP)
-
-    # Drive a request; failure to connect (default-deny pre-policy) is OK —
-    # the agent only needs to observe the MAC to emit first_seen_mac.
-    http_get(client, "http://example.com/", timeout_s=8)
-
-    row = _wait_device_row(admin, static_mac, timeout_s=90)
-
-    name = row.get("name") or ""
-    assert AUTO_NAME_RE.match(name), (
-        f"expected auto-generated name matching {AUTO_NAME_RE.pattern}, "
-        f"got {name!r} (static-IP client should never carry a DHCP hostname)"
-    )
-    assert name == _expected_auto_name(static_mac), (
-        f"expected {_expected_auto_name(static_mac)!r} (lowercased MAC suffix), "
-        f"got {name!r}"
-    )
-    assert row.get("profileId") is None, (
-        f"expected profileId=None for autocreated row, got {row.get('profileId')!r}"
-    )
-
-
-# ── F2 ─────────────────────────────────────────────────────────────────────
-
-
-def test_auto_named_row_renamed_when_dhcp_lease_arrives(
-    router, client, admin, debug_api,
-):
-    """F2: static-IP host with auto-name → DHCP arrives → row renamed.
-
-    Per #249's rename-if-auto path: a device row whose name still matches
-    `device-XXYYZZ` is renamed when a later DHCP lease carries a real
-    hostname. Drives the ordering deterministically by starting the host
-    static (no DHCP) so the row lands with the auto-name, then bringing
-    DHCP up with a chosen hostname so the lease event upgrades it.
-    """
-    static_mac = _fresh_unknown_mac()
-    new_hostname = "kid-laptop"
-    assert _device_row_for_mac(admin, static_mac) is None
-
-    # Phase 1: static IP, no DHCP. Drive traffic so the agent observes
-    # the MAC and the API stores an auto-named row.
-    _reconfigure_eth0_static(client, mac=static_mac, ip=STATIC_CLIENT_IP)
-    http_get(client, "http://example.com/", timeout_s=8)
-    row = _wait_device_row(admin, static_mac, timeout_s=90)
-    assert AUTO_NAME_RE.match(row.get("name") or ""), (
-        f"F2 precondition: expected auto-name, got {row.get('name')!r}"
-    )
-    assert row.get("name") == _expected_auto_name(static_mac)
-
-    # Phase 2: drop the static IP, set hostname, and DHCP. The lease
-    # must carry hostname option 12 so the API's rename-if-auto path
-    # fires. busybox udhcpc does NOT auto-send the system hostname —
-    # the ifupdown dhcp method we neutralized in phase 1 is what passes
-    # `-x hostname:$(hostname)` at boot; we invoke udhcpc directly here
-    # so we must pass it explicitly (#475).
-    _restore_udhcpc(client)
-    client_exec(client, ["sh", "-c", (
-        f"hostname {new_hostname}; "
-        f"echo {new_hostname} > /etc/hostname; "
-        "ip addr flush dev eth0; "
-        "ip route del default 2>/dev/null; "
-        "rm -f /var/run/udhcpc.eth0.pid; "
-        f"udhcpc -q -n -i eth0 -x hostname:{new_hostname} >/dev/null 2>&1 || true; "
-        f"udhcpc -i eth0 -x hostname:{new_hostname} >/dev/null 2>&1 || true"
-    )])
-
-    _wait_device_name(admin, static_mac, new_hostname, timeout_s=120)
