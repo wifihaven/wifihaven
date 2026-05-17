@@ -40,7 +40,7 @@ pulled in automatically by the system package manager (`opkg` on 23.05.x,
 SSH into the router as root and run:
 
 ```sh
-sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"
 ```
 
 The script prompts for:
@@ -76,7 +76,7 @@ Download and inspect the script first:
 
 ```sh
 uclient-fetch -qO /tmp/familydns-install.sh \
-  https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh
+  https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh
 less /tmp/familydns-install.sh
 sh /tmp/familydns-install.sh
 ```
@@ -88,7 +88,7 @@ package, drop the uhttpd block-page listener, wipe the familydns UCI
 config):
 
 ```sh
-sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/uninstall.sh)"
 ```
 
 Pass `--purge` to additionally remove `/usr/lib/familydns` and
@@ -119,7 +119,7 @@ interval).
 
 Routers running unattended should pull new agent releases automatically. The
 auto-update cron job is tracked in
-[#131](https://github.com/sameerparekh/familydns/issues/131). Until then,
+[#131](https://github.com/wifihaven/wifihaven/issues/131). Until then,
 upgrade manually by re-running the one-shot install command from §2 — the
 script's install step (`opkg install` or `apk add --allow-untrusted`) uses
 the standard upgrade path, which preserves `/etc/config/familydns`, so the
@@ -141,13 +141,13 @@ generation.
 ```sh
 # OpenWRT 23.05.x (opkg):
 curl -fsSL -o /tmp/familydns.ipk \
-  $(curl -sf https://api.github.com/repos/sameerparekh/familydns/releases/latest \
+  $(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/latest \
     | jsonfilter -e '@.assets[*].browser_download_url' \
     | grep -E '\.ipk$' | head -n1)
 
 # OpenWRT 24.10+/SNAPSHOT (apk):
 curl -fsSL -o /tmp/familydns.apk \
-  $(curl -sf https://api.github.com/repos/sameerparekh/familydns/releases/latest \
+  $(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/latest \
     | jsonfilter -e '@.assets[*].browser_download_url' \
     | grep -E '\.apk$' | head -n1)
 ```

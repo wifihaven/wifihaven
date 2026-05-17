@@ -1,6 +1,6 @@
 # Architecture critique — pre-rename, pre-go-live
 
-Status: **review draft.** Tracks [#368](https://github.com/sameerparekh/familydns/issues/368).
+Status: **review draft.** Tracks [#368](https://github.com/wifihaven/wifihaven/issues/368).
 
 This is a hostile-critic review of the **design record** — `docs/architecture.md`,
 `docs/resilience.md`, `AGENTS.md`'s two truths, and the wire contracts in
@@ -17,7 +17,7 @@ between the docs and the wire types.
 The deliverable is this document plus eleven sub-issues. Each finding has a
 concrete design response — agreed in the #368 thread.
 
-Out of scope: security has its own audit ([#369](https://github.com/sameerparekh/familydns/issues/369)).
+Out of scope: security has its own audit ([#369](https://github.com/wifihaven/wifihaven/issues/369)).
 Where a finding has both structural and security framing, this doc owns the
 structural side and cross-references #369.
 
@@ -32,7 +32,7 @@ structural side and cross-references #369.
    **Response:** explicit `unmanagedMacPolicy` in the snapshot, an
    "unmanaged" admin-UI page with per-MAC enroll/block/allow actions,
    and push notification when a new MAC appears (web now, mobile later).
-   Sub-issue: [#374](https://github.com/sameerparekh/familydns/issues/374) (rewritten).
+   Sub-issue: [#374](https://github.com/wifihaven/wifihaven/issues/374) (rewritten).
 
 2. **The wire contract has no schema-evolution policy.** §0.2 and §6.2
    define field names; nothing says how versions evolve, no `snapshotVersion`,
@@ -42,7 +42,7 @@ structural side and cross-references #369.
    **Response:** define a capability set on both ends; snapshot carries
    `snapshotVersion` + `serverCapabilities`; agent advertises
    `agentCapabilities` on enrollment and policy GET; API serves the highest
-   shape both ends understand. Sub-issue: [#376](https://github.com/sameerparekh/familydns/issues/376) (rewritten).
+   shape both ends understand. Sub-issue: [#376](https://github.com/wifihaven/wifihaven/issues/376) (rewritten).
 
 3. **`FailureMode` is internally inconsistent across the design record.**
    `architecture.md` §0.2 specifies `BlockAll | AllowAll | LastKnownGood`.
@@ -113,7 +113,7 @@ This is the right answer to MAC randomization in a parental-controls
 product: you can't prevent it, but you CAN make the resulting unmanaged
 MAC a loud, surfaced event rather than a silent bypass.
 
-Sub-issue: [#374](https://github.com/sameerparekh/familydns/issues/374).
+Sub-issue: [#374](https://github.com/wifihaven/wifihaven/issues/374).
 
 ---
 
@@ -214,7 +214,7 @@ The capability set lets new features land server-side without breaking
 older agents — the canonical example is shipping #370 (canonical-shape
 collapse) safely while old agents still poll.
 
-Sub-issue: [#376](https://github.com/sameerparekh/familydns/issues/376) (rewritten).
+Sub-issue: [#376](https://github.com/wifihaven/wifihaven/issues/376) (rewritten).
 
 ---
 
@@ -556,14 +556,14 @@ Recorded for traceability:
 
 | # | Title | Finding |
 |---|-------|---------|
-| [#374](https://github.com/sameerparekh/familydns/issues/374) | unmanaged-mac: alerting, default-block flag, admin UI page, push notification | §1 |
-| [#383](https://github.com/sameerparekh/familydns/issues/383) | block-page: serve HTTPS variant with self-signed cert | §2 |
-| [#384](https://github.com/sameerparekh/familydns/issues/384) | blockIpOnly: allow IPs that resolved-for-this-MAC to extraAllowed hosts | §3 |
-| [#376](https://github.com/sameerparekh/familydns/issues/376) | wire-contract: schema versioning + capability negotiation | §4 |
-| [#385](https://github.com/sameerparekh/familydns/issues/385) | FailureMode: align design record on three modes (BlockAll / AllowAll / LastKnownGood) | §5 |
-| [#386](https://github.com/sameerparekh/familydns/issues/386) | snapshot: failover threshold owned by API, shipped in snapshot | §6 |
-| [#387](https://github.com/sameerparekh/familydns/issues/387) | OpnSense agent: design doc proving wire-contract portability before #94 | §7 |
-| [#388](https://github.com/sameerparekh/familydns/issues/388) | docs: fully specify agent responsibilities in architecture.md §3.2 | §8 |
-| [#389](https://github.com/sameerparekh/familydns/issues/389) | docs: document the one-ETag two-rate-classes tradeoff | §9 |
-| [#390](https://github.com/sameerparekh/familydns/issues/390) | router-deletion: 410 Gone + agent stops + allow-all | §10 |
-| [#391](https://github.com/sameerparekh/familydns/issues/391) | wire-contract: hostname becomes union of FQDN \| IPv4 \| IPv6 | §11 |
+| [#374](https://github.com/wifihaven/wifihaven/issues/374) | unmanaged-mac: alerting, default-block flag, admin UI page, push notification | §1 |
+| [#383](https://github.com/wifihaven/wifihaven/issues/383) | block-page: serve HTTPS variant with self-signed cert | §2 |
+| [#384](https://github.com/wifihaven/wifihaven/issues/384) | blockIpOnly: allow IPs that resolved-for-this-MAC to extraAllowed hosts | §3 |
+| [#376](https://github.com/wifihaven/wifihaven/issues/376) | wire-contract: schema versioning + capability negotiation | §4 |
+| [#385](https://github.com/wifihaven/wifihaven/issues/385) | FailureMode: align design record on three modes (BlockAll / AllowAll / LastKnownGood) | §5 |
+| [#386](https://github.com/wifihaven/wifihaven/issues/386) | snapshot: failover threshold owned by API, shipped in snapshot | §6 |
+| [#387](https://github.com/wifihaven/wifihaven/issues/387) | OpnSense agent: design doc proving wire-contract portability before #94 | §7 |
+| [#388](https://github.com/wifihaven/wifihaven/issues/388) | docs: fully specify agent responsibilities in architecture.md §3.2 | §8 |
+| [#389](https://github.com/wifihaven/wifihaven/issues/389) | docs: document the one-ETag two-rate-classes tradeoff | §9 |
+| [#390](https://github.com/wifihaven/wifihaven/issues/390) | router-deletion: 410 Gone + agent stops + allow-all | §10 |
+| [#391](https://github.com/wifihaven/wifihaven/issues/391) | wire-contract: hostname becomes union of FQDN \| IPv4 \| IPv6 | §11 |

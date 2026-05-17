@@ -19,7 +19,7 @@ README — prereq checks, secret generation, `.env`, image pull, stack
 start, health wait, and admin password rotation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh | bash
 ```
 
 See [`docs/install-api.md`](../docs/install-api.md) for the full

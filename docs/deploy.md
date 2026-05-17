@@ -44,7 +44,7 @@ has already published `latest`.
 The `sha-` tag is immutable and safe to reference for rollbacks. `latest` is
 what the prod compose stack pulls on auto-update.
 
-**Image name**: `ghcr.io/sameerparekh/wifihaven-api`
+**Image name**: `ghcr.io/wifihaven/wifihaven-api`
 
 The GHCR token is the built-in `GITHUB_TOKEN`; no manual secret needed.
 
@@ -57,7 +57,7 @@ In production, the `api` service is configured to pull from ghcr.io:
 
 ```yaml
 api:
-  image: ghcr.io/sameerparekh/wifihaven-api:latest
+  image: ghcr.io/wifihaven/wifihaven-api:latest
 ```
 
 The image is never built on the prod host. All builds happen in CI.
@@ -190,7 +190,7 @@ Place at `/usr/sbin/familydns-update` on the router:
 ```sh
 #!/bin/sh
 CURRENT=$(opkg info familydns | awk '/^Version:/{print $2}')
-LATEST_URL=$(curl -sf https://api.github.com/repos/sameerparekh/familydns/releases/latest \
+LATEST_URL=$(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/latest \
   | jsonfilter -e '@.assets[0].browser_download_url')
 LATEST_VER=$(echo "$LATEST_URL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+')
 if [ "$LATEST_VER" != "$CURRENT" ]; then
@@ -243,7 +243,7 @@ guides for runnable commands, prerequisites, and verification steps.
 
 ```sh
 # 1. Clone the repo or copy deploy/ to the host
-git clone git@github.com:sameerparekh/familydns.git /opt/wifihaven
+git clone git@github.com:wifihaven/wifihaven.git /opt/wifihaven
 cd /opt/wifihaven/deploy
 
 # 2. Create .env from the example
@@ -285,7 +285,7 @@ End users install via the one-shot script — see
 manual-fallback path. The headline command, run as root on the router:
 
 ```sh
-sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"
 ```
 
 It prompts for the API URL, the one-time enrollment token (generated in the

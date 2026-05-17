@@ -3,12 +3,12 @@
 #
 # Usage (on an OpenWRT 23.05.x router, as root):
 #
-#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+#   sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"
 #
 # Or download then run:
 #
 #   uclient-fetch -qO /tmp/wifihaven-install.sh \
-#     https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+#     https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh
 #   sh /tmp/wifihaven-install.sh
 #
 # The script prompts for the API URL, the one-time enrollment token, and the
@@ -23,7 +23,7 @@ set -eu
 
 # TODO(#244): revert to /releases/latest once the rolling debug period for
 # #228 is done and proper tags resume. Pairs with #280 (auto-updater swap).
-RELEASES_API="https://api.github.com/repos/sameerparekh/familydns/releases/tags/openwrt-latest"  # TODO(#364): update to sameerparekh/wifihaven after repo rename
+RELEASES_API="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/openwrt-latest"
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }

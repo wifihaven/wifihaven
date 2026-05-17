@@ -21,7 +21,7 @@ install.sh`), this gets you a running stack with sensible defaults and a
 rotated admin password:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh | bash
 ```
 
 The script:
@@ -44,7 +44,7 @@ under `/opt/wifihaven` (recommended for production hosts), set
 `WIFIHAVEN_PREFIX` explicitly and run the script with `sudo`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh -o install.sh
 sudo WIFIHAVEN_PREFIX=/opt/wifihaven bash install.sh
 ```
 
@@ -73,7 +73,7 @@ For unattended installs, set `WIFIHAVEN_NONINTERACTIVE=1` and any of the
 env vars below to skip prompts. You can pass them on the same one-liner:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh \
   | WIFIHAVEN_NONINTERACTIVE=1 \
     WIFIHAVEN_PREFIX=$HOME/.wifihaven \
     WIFIHAVEN_API_HOST_PORT=8080 \
@@ -136,7 +136,7 @@ and §8 (firewall).
 ## 2. Obtain the image
 
 The API image is published to GitHub Container Registry at
-`ghcr.io/sameerparekh/wifihaven-api`. Tags:
+`ghcr.io/wifihaven/wifihaven-api`. Tags:
 
 | Tag | When to use |
 |-----|-------------|
@@ -146,7 +146,7 @@ The API image is published to GitHub Container Registry at
 After issue #128 lands the package will be public, so anonymous pulls work:
 
 ```sh
-docker pull ghcr.io/sameerparekh/wifihaven-api:latest
+docker pull ghcr.io/wifihaven/wifihaven-api:latest
 ```
 
 If the package is still private when you install, log in to ghcr.io first
@@ -154,7 +154,7 @@ with a GitHub personal access token that has the `read:packages` scope:
 
 ```sh
 echo "$GHCR_PAT" | docker login ghcr.io -u <your-github-username> --password-stdin
-docker pull ghcr.io/sameerparekh/wifihaven-api:latest
+docker pull ghcr.io/wifihaven/wifihaven-api:latest
 ```
 
 You don't strictly need to pre-pull — `docker compose up -d` in §4 will
@@ -173,7 +173,7 @@ simplest path is a shallow clone:
 ```sh
 sudo mkdir -p /opt/wifihaven
 sudo chown "$USER" /opt/wifihaven
-git clone --depth 1 https://github.com/sameerparekh/familydns.git /opt/wifihaven
+git clone --depth 1 https://github.com/wifihaven/wifihaven.git /opt/wifihaven
 cd /opt/wifihaven/deploy
 ```
 
@@ -182,8 +182,8 @@ from GitHub:
 
 ```sh
 mkdir -p /opt/wifihaven/deploy && cd /opt/wifihaven/deploy
-curl -fsSLO https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/docker-compose.prod.yml
-curl -fsSLO https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/.env.example
+curl -fsSLO https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/docker-compose.prod.yml
+curl -fsSLO https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/.env.example
 ```
 
 ### 3.2 Create your `.env`

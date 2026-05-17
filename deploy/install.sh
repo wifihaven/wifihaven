@@ -2,10 +2,10 @@
 #
 # WifiHaven API — first-install bootstrap.
 #
-#   curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh | bash
 #
 # Or, to review first (recommended):
-#   curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
+#   curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh -o install.sh
 #   less install.sh
 #   bash install.sh
 #
@@ -32,7 +32,7 @@ case "${1:-}" in
     ;;
 esac
 
-REPO_RAW="${WIFIHAVEN_REPO_RAW:-https://raw.githubusercontent.com/sameerparekh/familydns/main}"
+REPO_RAW="${WIFIHAVEN_REPO_RAW:-https://raw.githubusercontent.com/wifihaven/wifihaven/main}"
 COMPOSE_URL="${REPO_RAW}/deploy/docker-compose.prod.yml"
 ENV_EXAMPLE_URL="${REPO_RAW}/deploy/.env.example"
 HELPER_SCRIPTS=(start stop restart logs status update)
@@ -163,15 +163,15 @@ if [ ! -d "$WIFIHAVEN_INSTALL_DIR" ]; then
   one of:
 
     # 1. User-mode install (no sudo needed):
-    curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \\
+    curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh \\
       | WIFIHAVEN_PREFIX=\$HOME/.wifihaven bash
 
     # 2. Save and run with sudo:
-    curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
+    curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh -o install.sh
     sudo bash install.sh
 
     # 3. Warm up sudo first, then pipe:
-    sudo -v && curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
+    sudo -v && curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh | bash
 EOF
       die "$msg"
     fi

@@ -4,7 +4,7 @@ This document explains how WifiHaven handles wall-clock time across timezones
 and DST transitions. The rules apply to schedule windows and daily-usage
 reset; both are evaluated by `PolicyService` on the API server.
 
-See issue [#334](https://github.com/sameerparekh/familydns/issues/334) for
+See issue [#334](https://github.com/wifihaven/wifihaven/issues/334) for
 the design discussion.
 
 ## The rule: timezone lives with the data
@@ -144,8 +144,8 @@ host tz only affects the install-time default for `household_settings.tz`.
 - **No agent-side time decisions.** The router agent does not evaluate
   schedules or daily limits — `PolicyService` collapses everything into the
   per-MAC `BlockRules` in the snapshot, plus the `expiresAt` Instant on
-  per-host decisions. See [#350](https://github.com/sameerparekh/familydns/issues/350)
-  (Truth 2) and [#415](https://github.com/sameerparekh/familydns/issues/415)
+  per-host decisions. See [#350](https://github.com/wifihaven/wifihaven/issues/350)
+  (Truth 2) and [#415](https://github.com/wifihaven/wifihaven/issues/415)
   (agent skew code removal).
 - **No per-user viewer-local time display.** The UI shows a schedule's time
   in the schedule's stored tz so all viewers see the same string ("9 PM

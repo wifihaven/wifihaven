@@ -1,6 +1,6 @@
 [Unit]
 Description=WifiHaven API server
-Documentation=https://github.com/sameerparekh/familydns
+Documentation=https://github.com/wifihaven/wifihaven
 After=network-online.target postgresql.service
 Wants=network-online.target
 

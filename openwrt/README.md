@@ -1,8 +1,5 @@
 # WifiHaven OpenWrt package
 
-<!-- TODO(#364): GitHub repo URLs in this file still use `sameerparekh/familydns`;
-     they will move to `sameerparekh/wifihaven` when #364 lands. -->
-
 OpenWrt agent for WifiHaven. Supports both **OpenWRT 23.05.x** (opkg / `.ipk`)
 and **OpenWRT 24.10+ / SNAPSHOT** (apk / `.apk`). Enforces per-device
 connection-level filtering via **nftables** (forward-drop keyed on MAC +
@@ -134,7 +131,7 @@ git push origin v0.2.0
 End users install via the one-shot script:
 
 ```sh
-sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/install.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh)"
 ```
 
 The script source is [`install.sh`](install.sh); the full guide (with the
@@ -152,7 +149,7 @@ remove the package, drop the uhttpd block-page listener, wipe the
 wifihaven UCI config including the bearer token):
 
 ```sh
-sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/sameerparekh/familydns/main/openwrt/uninstall.sh)"
+sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/uninstall.sh)"
 ```
 
 Pass `--purge` to additionally remove `/usr/lib/wifihaven` and
@@ -251,7 +248,7 @@ the released version is strictly newer than the installed one (verified via
 conffile so the router token survives the upgrade — no re-enrollment.
 
 On OpenWRT 24.10+/SNAPSHOT (apk-only systems) the script exits silently;
-the parallel `.apk` track is in [#176](https://github.com/sameerparekh/familydns/issues/176).
+the parallel `.apk` track is in [#176](https://github.com/wifihaven/wifihaven/issues/176).
 
 To force an update immediately:
 

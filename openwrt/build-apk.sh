@@ -106,14 +106,13 @@ chmod 0755 "$WORK/post-install"
 
 # ── build .apk ───────────────────────────────────────────────────────────────
 rm -f "$OUT_APK"
-# TODO(#364): update url to sameerparekh/wifihaven after repo rename
 "$APK_BIN" mkpkg \
     --info "name:wifihaven" \
     --info "version:${PKG_VERSION}-r${PKG_RELEASE}" \
     --info "description:WifiHaven router agent (per-device DNS filtering + time limits)" \
     --info "arch:noarch" \
     --info "license:MIT" \
-    --info "url:https://github.com/sameerparekh/familydns" \
+    --info "url:https://github.com/wifihaven/wifihaven" \
     --info "maintainer:WifiHaven <noreply@example.com>" \
     --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl uhttpd-mod-lua" \
     --script "post-install:$WORK/post-install" \

@@ -3,7 +3,7 @@
 #
 # Designed to be curl-piped:
 #
-#   curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/scripts/bootstrap-host.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/scripts/bootstrap-host.sh | bash
 #
 # Or run from a checkout:  scripts/bootstrap-host.sh
 #
@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO_URL="${WIFIHAVEN_REPO_URL:-https://github.com/sameerparekh/familydns.git}"
+REPO_URL="${WIFIHAVEN_REPO_URL:-https://github.com/wifihaven/wifihaven.git}"
 BRANCH="${WIFIHAVEN_BRANCH:-production}"
 PREFIX="${WIFIHAVEN_PREFIX:-/opt/wifihaven}"
 USER_NAME="${WIFIHAVEN_USER:-wifihaven}"

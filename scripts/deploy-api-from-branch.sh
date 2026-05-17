@@ -6,7 +6,7 @@
 #   ~/familydns/   git checkout (source)
 #   ~/.wifihaven/  runtime: docker-compose.prod.yml, .env, helper scripts
 #
-# The runtime compose file pins ghcr.io/sameerparekh/wifihaven-api:latest.
+# The runtime compose file pins ghcr.io/wifihaven/wifihaven-api:latest.
 # We build locally on the server and tag with that exact reference; the
 # next `start.sh` (compose up -d) picks up the new image id and recreates
 # the api container.
@@ -26,7 +26,7 @@ set -euo pipefail
 API_HOST="${API_HOST:-192.168.10.43}"
 SRC_DIR="${SRC_DIR:-\$HOME/familydns}"
 RUN_DIR="${RUN_DIR:-\$HOME/.wifihaven}"
-IMAGE="ghcr.io/sameerparekh/wifihaven-api:latest"
+IMAGE="ghcr.io/wifihaven/wifihaven-api:latest"
 BRANCH="${1:-main}"
 
 echo "==> deploying branch '$BRANCH' to $API_HOST"
