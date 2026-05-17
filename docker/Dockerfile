@@ -51,7 +51,7 @@ RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
 
-ENV FAMILYDNS_HTTP_PORT=8080 \
-    FAMILYDNS_STATIC_DIR=/app/web
+ENV WIFIHAVEN_HTTP_PORT=8080 \
+    WIFIHAVEN_STATIC_DIR=/app/web
 
 ENTRYPOINT ["/app/entrypoint.sh"]

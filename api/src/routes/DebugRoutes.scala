@@ -8,7 +8,7 @@ import zio.json.*
 
 /**
  * Read-only JSON dumps of the underlying tables, intended for diagnosing router/agent ingest issues
- * live (#228). Mounted ONLY when the API is started with `FAMILYDNS_DEBUG=1`; access is further
+ * live (#228). Mounted ONLY when the API is started with `WIFIHAVEN_DEBUG=1`; access is further
  * restricted to loopback callers on the API host.
  *
  * Endpoints: GET /api/debug/devices -> all device rows GET /api/debug/events?limit -> recent

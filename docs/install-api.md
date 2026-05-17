@@ -37,15 +37,15 @@ The script:
 Re-running it on an existing install is safe — it offers to keep your
 existing `.env` and `docker compose up -d` is idempotent.
 
-By default the one-liner installs into `$HOME/.familydns` (user-writable, no
+By default the one-liner installs into `$HOME/.wifihaven` (user-writable, no
 sudo required) — this is the recommended path for first-time users and is
 what the `curl | bash` invocation above will do. For a system-wide install
-under `/opt/familydns` (recommended for production hosts), set
+under `/opt/wifihaven` (recommended for production hosts), set
 `WIFIHAVEN_PREFIX` explicitly and run the script with `sudo`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
-sudo WIFIHAVEN_PREFIX=/opt/familydns bash install.sh
+sudo WIFIHAVEN_PREFIX=/opt/wifihaven bash install.sh
 ```
 
 Piping `curl … | sudo bash` works too, but only if sudo is already warmed up
@@ -75,7 +75,7 @@ env vars below to skip prompts. You can pass them on the same one-liner:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \
   | WIFIHAVEN_NONINTERACTIVE=1 \
-    WIFIHAVEN_PREFIX=$HOME/.familydns \
+    WIFIHAVEN_PREFIX=$HOME/.wifihaven \
     WIFIHAVEN_API_HOST_PORT=8080 \
     WIFIHAVEN_NEW_ADMIN_PW='choose-a-good-one' \
     bash
@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/
 
 | Env var | Purpose | Default |
 |---|---|---|
-| `WIFIHAVEN_PREFIX` | install path (preferred name) | `$HOME/.familydns` (non-root) or `/opt/familydns` (root) |
+| `WIFIHAVEN_PREFIX` | install path (preferred name) | `$HOME/.wifihaven` (non-root) or `/opt/wifihaven` (root) |
 | `WIFIHAVEN_INSTALL_DIR` | legacy alias for `WIFIHAVEN_PREFIX` | — |
 | `WIFIHAVEN_API_HOST_PORT` | host port to bind | `8080` |
 | `WIFIHAVEN_API_BIND` | host interface to bind on | `0.0.0.0` |
@@ -136,7 +136,7 @@ and §8 (firewall).
 ## 2. Obtain the image
 
 The API image is published to GitHub Container Registry at
-`ghcr.io/sameerparekh/familydns-api`. Tags:
+`ghcr.io/sameerparekh/wifihaven-api`. Tags:
 
 | Tag | When to use |
 |-----|-------------|
@@ -146,7 +146,7 @@ The API image is published to GitHub Container Registry at
 After issue #128 lands the package will be public, so anonymous pulls work:
 
 ```sh
-docker pull ghcr.io/sameerparekh/familydns-api:latest
+docker pull ghcr.io/sameerparekh/wifihaven-api:latest
 ```
 
 If the package is still private when you install, log in to ghcr.io first
@@ -154,7 +154,7 @@ with a GitHub personal access token that has the `read:packages` scope:
 
 ```sh
 echo "$GHCR_PAT" | docker login ghcr.io -u <your-github-username> --password-stdin
-docker pull ghcr.io/sameerparekh/familydns-api:latest
+docker pull ghcr.io/sameerparekh/wifihaven-api:latest
 ```
 
 You don't strictly need to pre-pull — `docker compose up -d` in §4 will
@@ -171,17 +171,17 @@ You only need the `deploy/` directory on the host, not the full source. The
 simplest path is a shallow clone:
 
 ```sh
-sudo mkdir -p /opt/familydns
-sudo chown "$USER" /opt/familydns
-git clone --depth 1 https://github.com/sameerparekh/familydns.git /opt/familydns
-cd /opt/familydns/deploy
+sudo mkdir -p /opt/wifihaven
+sudo chown "$USER" /opt/wifihaven
+git clone --depth 1 https://github.com/sameerparekh/familydns.git /opt/wifihaven
+cd /opt/wifihaven/deploy
 ```
 
 Or, if you'd rather not clone the whole repo, copy the two files directly
 from GitHub:
 
 ```sh
-mkdir -p /opt/familydns/deploy && cd /opt/familydns/deploy
+mkdir -p /opt/wifihaven/deploy && cd /opt/wifihaven/deploy
 curl -fsSLO https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/docker-compose.prod.yml
 curl -fsSLO https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/.env.example
 ```

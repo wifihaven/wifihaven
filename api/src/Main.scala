@@ -24,7 +24,7 @@ object Main extends ZIOAppDefault {
       _      <- ZIO.logInfo(s"FamilyDNS API starting on ${cfg.http.host}:${cfg.http.port}")
       _      <- ZIO
         .logWarning(
-          "FAMILYDNS_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
+          "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
             "Disable in production.",
         )
         .when(cfg.debugEnabled)

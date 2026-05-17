@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# FamilyDNS API — first-install bootstrap.
+# WifiHaven API — first-install bootstrap.
 #
 #   curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
 #
@@ -13,15 +13,15 @@
 # .env and offers to keep it, and `docker compose up -d` is idempotent.
 #
 # Env vars to skip prompts (useful for unattended installs):
-#   FAMILYDNS_PREFIX         install path. Default: $HOME/.familydns when run
-#                            as a normal user (no sudo needed), /opt/familydns
-#                            when run as root. Set to /opt/familydns explicitly
+#   WIFIHAVEN_PREFIX         install path. Default: $HOME/.wifihaven when run
+#                            as a normal user (no sudo needed), /opt/wifihaven
+#                            when run as root. Set to /opt/wifihaven explicitly
 #                            for a system-wide install (requires sudo/root).
-#   FAMILYDNS_INSTALL_DIR    legacy alias for FAMILYDNS_PREFIX.
-#   FAMILYDNS_API_HOST_PORT  host port to bind           (default: 8080)
-#   FAMILYDNS_API_BIND       host interface to bind on   (default: 0.0.0.0)
-#   FAMILYDNS_NEW_ADMIN_PW   new admin password          (default: prompt)
-#   FAMILYDNS_NONINTERACTIVE if set, never prompt; fail if any value missing.
+#   WIFIHAVEN_INSTALL_DIR    legacy alias for WIFIHAVEN_PREFIX.
+#   WIFIHAVEN_API_HOST_PORT  host port to bind           (default: 8080)
+#   WIFIHAVEN_API_BIND       host interface to bind on   (default: 0.0.0.0)
+#   WIFIHAVEN_NEW_ADMIN_PW   new admin password          (default: prompt)
+#   WIFIHAVEN_NONINTERACTIVE if set, never prompt; fail if any value missing.
 
 set -euo pipefail
 
@@ -32,7 +32,7 @@ case "${1:-}" in
     ;;
 esac
 
-REPO_RAW="${FAMILYDNS_REPO_RAW:-https://raw.githubusercontent.com/sameerparekh/familydns/main}"
+REPO_RAW="${WIFIHAVEN_REPO_RAW:-https://raw.githubusercontent.com/sameerparekh/familydns/main}"
 COMPOSE_URL="${REPO_RAW}/deploy/docker-compose.prod.yml"
 ENV_EXAMPLE_URL="${REPO_RAW}/deploy/.env.example"
 HELPER_SCRIPTS=(start stop restart logs status update)
@@ -60,7 +60,7 @@ is_tty() { [ -t 0 ] && [ -t 1 ]; }
 # tty), where we should fall back to env-var-or-default.
 can_prompt() { is_tty || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; }
 
-noninteractive() { [ -n "${FAMILYDNS_NONINTERACTIVE:-}" ] || ! can_prompt; }
+noninteractive() { [ -n "${WIFIHAVEN_NONINTERACTIVE:-}" ] || ! can_prompt; }
 
 prompt() {
   # prompt VAR "Question" "default"
@@ -120,33 +120,33 @@ ok "docker $(docker --version | awk '{print $3}' | tr -d ',') / compose $(docker
 
 step "Configuration"
 
-# FAMILYDNS_PREFIX is the preferred name; FAMILYDNS_INSTALL_DIR is the legacy alias.
-if [ -n "${FAMILYDNS_PREFIX:-}" ] && [ -z "${FAMILYDNS_INSTALL_DIR:-}" ]; then
-  FAMILYDNS_INSTALL_DIR="$FAMILYDNS_PREFIX"
+# WIFIHAVEN_PREFIX is the preferred name; WIFIHAVEN_INSTALL_DIR is the legacy alias.
+if [ -n "${WIFIHAVEN_PREFIX:-}" ] && [ -z "${WIFIHAVEN_INSTALL_DIR:-}" ]; then
+  WIFIHAVEN_INSTALL_DIR="$WIFIHAVEN_PREFIX"
 fi
 
 # Default prefix: user-writable when not root (so `curl|bash` works without
-# sudo), /opt/familydns when running as root.
+# sudo), /opt/wifihaven when running as root.
 if [ "$(id -u)" -eq 0 ]; then
-  DEFAULT_PREFIX="/opt/familydns"
+  DEFAULT_PREFIX="/opt/wifihaven"
 else
-  DEFAULT_PREFIX="${HOME}/.familydns"
+  DEFAULT_PREFIX="${HOME}/.wifihaven"
 fi
 
-prompt FAMILYDNS_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
-prompt FAMILYDNS_API_HOST_PORT  "Host port for the API"                       "8080"
-prompt FAMILYDNS_API_BIND       "Bind address (0.0.0.0 or 127.0.0.1)"         "0.0.0.0"
+prompt WIFIHAVEN_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
+prompt WIFIHAVEN_API_HOST_PORT  "Host port for the API"                       "8080"
+prompt WIFIHAVEN_API_BIND       "Bind address (0.0.0.0 or 127.0.0.1)"         "0.0.0.0"
 
 # ── 3. Install directory ──────────────────────────────────────────────────
 
-step "Preparing $FAMILYDNS_INSTALL_DIR"
+step "Preparing $WIFIHAVEN_INSTALL_DIR"
 
-if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
-  parent_dir="$(dirname "$FAMILYDNS_INSTALL_DIR")"
+if [ ! -d "$WIFIHAVEN_INSTALL_DIR" ]; then
+  parent_dir="$(dirname "$WIFIHAVEN_INSTALL_DIR")"
   if [ -w "$parent_dir" ]; then
-    mkdir -p "$FAMILYDNS_INSTALL_DIR"
+    mkdir -p "$WIFIHAVEN_INSTALL_DIR"
   elif [ "$(id -u)" -eq 0 ]; then
-    mkdir -p "$FAMILYDNS_INSTALL_DIR"
+    mkdir -p "$WIFIHAVEN_INSTALL_DIR"
   else
     # Need sudo to create the install dir. If stdin is not a tty (e.g.
     # `curl … | bash`), sudo can't prompt for a password and will fail
@@ -158,13 +158,13 @@ if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
       # inside command substitution.
       IFS= read -r -d '' msg <<EOF || true
 
-  This install needs root to write to ${FAMILYDNS_INSTALL_DIR}, but stdin is
+  This install needs root to write to ${WIFIHAVEN_INSTALL_DIR}, but stdin is
   not a tty (curl|bash detected) so sudo cannot prompt for a password. Run
   one of:
 
     # 1. User-mode install (no sudo needed):
     curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \\
-      | FAMILYDNS_PREFIX=\$HOME/.familydns bash
+      | WIFIHAVEN_PREFIX=\$HOME/.wifihaven bash
 
     # 2. Save and run with sudo:
     curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
@@ -175,12 +175,12 @@ if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
 EOF
       die "$msg"
     fi
-    sudo mkdir -p "$FAMILYDNS_INSTALL_DIR"
-    sudo chown "$USER" "$FAMILYDNS_INSTALL_DIR"
+    sudo mkdir -p "$WIFIHAVEN_INSTALL_DIR"
+    sudo chown "$USER" "$WIFIHAVEN_INSTALL_DIR"
   fi
 fi
-cd "$FAMILYDNS_INSTALL_DIR"
-ok "$FAMILYDNS_INSTALL_DIR ready"
+cd "$WIFIHAVEN_INSTALL_DIR"
+ok "$WIFIHAVEN_INSTALL_DIR ready"
 
 # ── 4. Fetch compose file ─────────────────────────────────────────────────
 
@@ -203,26 +203,26 @@ ok "docker-compose.prod.yml + .env.example + ${#HELPER_SCRIPTS[@]} helper script
 if [ -f .env ]; then
   IFS= read -r -d '' msg <<EOF || true
 
-  An existing .env was found at ${FAMILYDNS_INSTALL_DIR}/.env — this looks
+  An existing .env was found at ${WIFIHAVEN_INSTALL_DIR}/.env — this looks
   like an existing install. install.sh only handles first-install and will
   not overwrite an existing one.
 
   To manage an existing install, use the helper scripts in the install
   dir:
 
-    ${FAMILYDNS_INSTALL_DIR}/update.sh    # pull latest images and restart
-    ${FAMILYDNS_INSTALL_DIR}/restart.sh   # restart in place
-    ${FAMILYDNS_INSTALL_DIR}/stop.sh      # stop (data preserved)
-    ${FAMILYDNS_INSTALL_DIR}/start.sh     # bring back up
-    ${FAMILYDNS_INSTALL_DIR}/logs.sh      # tail api logs
-    ${FAMILYDNS_INSTALL_DIR}/status.sh    # container status
+    ${WIFIHAVEN_INSTALL_DIR}/update.sh    # pull latest images and restart
+    ${WIFIHAVEN_INSTALL_DIR}/restart.sh   # restart in place
+    ${WIFIHAVEN_INSTALL_DIR}/stop.sh      # stop (data preserved)
+    ${WIFIHAVEN_INSTALL_DIR}/start.sh     # bring back up
+    ${WIFIHAVEN_INSTALL_DIR}/logs.sh      # tail api logs
+    ${WIFIHAVEN_INSTALL_DIR}/status.sh    # container status
 
   ⚠  DANGER — only run the next block if you intend to PERMANENTLY DELETE
-     all FamilyDNS data on this host (devices, profiles, query logs,
+     all WifiHaven data on this host (devices, profiles, query logs,
      admin user, everything). There is no undo.
 
-    ${FAMILYDNS_INSTALL_DIR}/stop.sh -v
-    rm ${FAMILYDNS_INSTALL_DIR}/.env
+    ${WIFIHAVEN_INSTALL_DIR}/stop.sh -v
+    rm ${WIFIHAVEN_INSTALL_DIR}/.env
     # then re-run install.sh
 EOF
   die "$msg"
@@ -271,15 +271,15 @@ cat > .env <<EOF
 # Generated by deploy/install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Keep this file private — chmod 600.
 
-FAMILYDNS_DB_NAME=familydns
-FAMILYDNS_DB_USER=familydns
-FAMILYDNS_DB_PASSWORD=${DB_PASSWORD}
+WIFIHAVEN_DB_NAME=wifihaven
+WIFIHAVEN_DB_USER=wifihaven
+WIFIHAVEN_DB_PASSWORD=${DB_PASSWORD}
 
-FAMILYDNS_JWT_SECRET=${JWT_SECRET}
-FAMILYDNS_JWT_HOURS=24
+WIFIHAVEN_JWT_SECRET=${JWT_SECRET}
+WIFIHAVEN_JWT_HOURS=24
 
-FAMILYDNS_API_BIND=${FAMILYDNS_API_BIND}
-FAMILYDNS_API_PORT=${FAMILYDNS_API_HOST_PORT}
+WIFIHAVEN_API_BIND=${WIFIHAVEN_API_BIND}
+WIFIHAVEN_API_PORT=${WIFIHAVEN_API_HOST_PORT}
 EOF
 chmod 600 .env
 ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"
@@ -297,10 +297,10 @@ ok "Containers started"
 
 # ── 7. Wait for health ────────────────────────────────────────────────────
 
-API_URL="http://127.0.0.1:${FAMILYDNS_API_HOST_PORT}"
+API_URL="http://127.0.0.1:${WIFIHAVEN_API_HOST_PORT}"
 
 # wait_for_api polls the api until it's accepting JSON requests, or until
-# the timeout (FAMILYDNS_WAIT_TIMEOUT seconds, default 90) elapses. On
+# the timeout (WIFIHAVEN_WAIT_TIMEOUT seconds, default 90) elapses. On
 # failure it dumps the last 100 lines of the api container logs plus
 # `compose ps` so the user can diagnose without re-running anything by hand.
 #
@@ -313,7 +313,7 @@ API_URL="http://127.0.0.1:${FAMILYDNS_API_HOST_PORT}"
 #      agree on what "healthy" means.
 wait_for_api() {
   local url="${API_URL}/api/auth/login"
-  local timeout="${FAMILYDNS_WAIT_TIMEOUT:-90}"
+  local timeout="${WIFIHAVEN_WAIT_TIMEOUT:-90}"
   local start elapsed code
   start=$(date +%s)
   elapsed=0
@@ -346,7 +346,7 @@ wait_for_api() {
   echo "  - DB credentials in .env don't match what postgres was created with"
   echo "    (try: docker compose -f docker-compose.prod.yml --env-file .env down -v"
   echo "     and re-run install.sh)"
-  echo "  - FAMILYDNS_JWT_SECRET missing or empty in .env"
+  echo "  - WIFIHAVEN_JWT_SECRET missing or empty in .env"
   echo "  - Postgres still initializing (rare; retry install.sh once)"
   return 1
 }
@@ -357,7 +357,7 @@ wait_for_api || exit 1
 
 step "Rotating default admin password"
 
-NEW_PW="${FAMILYDNS_NEW_ADMIN_PW:-}"
+NEW_PW="${WIFIHAVEN_NEW_ADMIN_PW:-}"
 ALREADY_ROTATED=0
 
 # If 'changeme' no longer logs in, the password has already been rotated.
@@ -374,7 +374,7 @@ fi
 if [ "$ALREADY_ROTATED" -eq 0 ]; then
   if [ -z "$NEW_PW" ]; then
     if noninteractive; then
-      warn "FAMILYDNS_NEW_ADMIN_PW not set — leaving the default 'admin/changeme' in place."
+      warn "WIFIHAVEN_NEW_ADMIN_PW not set — leaving the default 'admin/changeme' in place."
       warn "Rotate it manually before exposing the API."
     else
       while [ -z "$NEW_PW" ]; do
@@ -467,7 +467,7 @@ fi
 
 # ── 9b. Install auto-update timer ─────────────────────────────────────────
 #
-# Drops familydns-update.service + .timer into /etc/systemd/system/ and
+# Drops wifihaven-update.service + .timer into /etc/systemd/system/ and
 # enables the timer so the host pulls a fresh image every 5 minutes. This
 # is what closes the deploy gap for issue #254: without it, fixes that
 # land on `main` don't reach existing installs until someone ssh's in to
@@ -481,7 +481,7 @@ step "Installing auto-update timer"
 SUDO=""
 if ! command -v systemctl >/dev/null 2>&1; then
   warn "systemctl not found — skipping auto-update timer."
-  warn "Update manually with ${FAMILYDNS_INSTALL_DIR}/update.sh, or install a"
+  warn "Update manually with ${WIFIHAVEN_INSTALL_DIR}/update.sh, or install a"
   warn "cron entry that runs it on your preferred cadence."
 else
   if [ "$(id -u)" -ne 0 ]; then
@@ -489,33 +489,33 @@ else
   fi
 
   UNIT_TMP="$(mktemp -d)"
-  if curl -fsSL "${REPO_RAW}/deploy/systemd/familydns-update.service" \
-        -o "${UNIT_TMP}/familydns-update.service" \
-     && curl -fsSL "${REPO_RAW}/deploy/systemd/familydns-update.timer" \
-        -o "${UNIT_TMP}/familydns-update.timer"; then
-    # The shipped unit hard-codes /opt/familydns/deploy as the
+  if curl -fsSL "${REPO_RAW}/deploy/systemd/wifihaven-update.service" \
+        -o "${UNIT_TMP}/wifihaven-update.service" \
+     && curl -fsSL "${REPO_RAW}/deploy/systemd/wifihaven-update.timer" \
+        -o "${UNIT_TMP}/wifihaven-update.timer"; then
+    # The shipped unit hard-codes /opt/wifihaven/deploy as the
     # WorkingDirectory (matches the documented system-wide install
     # path). Patch it to the actual install dir so user-mode installs
-    # at $HOME/.familydns also get auto-update.
-    if [ "$FAMILYDNS_INSTALL_DIR" != "/opt/familydns" ]; then
-      sed -i.bak "s|^WorkingDirectory=/opt/familydns/deploy$|WorkingDirectory=${FAMILYDNS_INSTALL_DIR}|" \
-        "${UNIT_TMP}/familydns-update.service"
-      rm -f "${UNIT_TMP}/familydns-update.service.bak"
+    # at $HOME/.wifihaven also get auto-update.
+    if [ "$WIFIHAVEN_INSTALL_DIR" != "/opt/wifihaven" ]; then
+      sed -i.bak "s|^WorkingDirectory=/opt/wifihaven/deploy$|WorkingDirectory=${WIFIHAVEN_INSTALL_DIR}|" \
+        "${UNIT_TMP}/wifihaven-update.service"
+      rm -f "${UNIT_TMP}/wifihaven-update.service.bak"
     fi
 
     install_ok=1
-    $SUDO install -m 0644 "${UNIT_TMP}/familydns-update.service" \
-      /etc/systemd/system/familydns-update.service || install_ok=0
-    $SUDO install -m 0644 "${UNIT_TMP}/familydns-update.timer" \
-      /etc/systemd/system/familydns-update.timer || install_ok=0
+    $SUDO install -m 0644 "${UNIT_TMP}/wifihaven-update.service" \
+      /etc/systemd/system/wifihaven-update.service || install_ok=0
+    $SUDO install -m 0644 "${UNIT_TMP}/wifihaven-update.timer" \
+      /etc/systemd/system/wifihaven-update.timer || install_ok=0
 
     if [ "$install_ok" -eq 1 ] \
        && $SUDO systemctl daemon-reload \
-       && $SUDO systemctl enable --now familydns-update.timer; then
-      ok "familydns-update.timer enabled (polls ghcr.io daily)"
-      ok "Disable with:  ${SUDO:+sudo }systemctl disable --now familydns-update.timer"
+       && $SUDO systemctl enable --now wifihaven-update.timer; then
+      ok "wifihaven-update.timer enabled (polls ghcr.io daily)"
+      ok "Disable with:  ${SUDO:+sudo }systemctl disable --now wifihaven-update.timer"
     else
-      warn "Could not install/enable familydns-update.timer."
+      warn "Could not install/enable wifihaven-update.timer."
       warn "Install manually — see docs/deploy.md §1.3."
     fi
   else
@@ -529,17 +529,17 @@ fi
 
 echo
 c_green "═══════════════════════════════════════════════════════════════"
-c_green "  FamilyDNS API is up at ${API_URL}"
+c_green "  WifiHaven API is up at ${API_URL}"
 c_green "═══════════════════════════════════════════════════════════════"
 cat <<EOF
 
-  Install dir : ${FAMILYDNS_INSTALL_DIR}
-  Update      : ${FAMILYDNS_INSTALL_DIR}/update.sh    # pull latest images and restart
-  Restart     : ${FAMILYDNS_INSTALL_DIR}/restart.sh
-  Stop        : ${FAMILYDNS_INSTALL_DIR}/stop.sh      # data preserved
-  Start       : ${FAMILYDNS_INSTALL_DIR}/start.sh
-  Logs        : ${FAMILYDNS_INSTALL_DIR}/logs.sh      # tail api logs
-  Status      : ${FAMILYDNS_INSTALL_DIR}/status.sh
+  Install dir : ${WIFIHAVEN_INSTALL_DIR}
+  Update      : ${WIFIHAVEN_INSTALL_DIR}/update.sh    # pull latest images and restart
+  Restart     : ${WIFIHAVEN_INSTALL_DIR}/restart.sh
+  Stop        : ${WIFIHAVEN_INSTALL_DIR}/stop.sh      # data preserved
+  Start       : ${WIFIHAVEN_INSTALL_DIR}/start.sh
+  Logs        : ${WIFIHAVEN_INSTALL_DIR}/logs.sh      # tail api logs
+  Status      : ${WIFIHAVEN_INSTALL_DIR}/status.sh
 
 Next steps:
   1. (optional) Put a TLS-terminating reverse proxy (Caddy / nginx) in
@@ -547,7 +547,7 @@ Next steps:
   2. Log in at ${API_URL} as 'admin' and head to Routers → Add router to
      enroll your OpenWRT gateway. Then follow docs/install-openwrt.md.
 
-  Auto-update is on by default (familydns-update.timer, every 5 minutes).
-  To turn it off: ${SUDO:+sudo }systemctl disable --now familydns-update.timer
+  Auto-update is on by default (wifihaven-update.timer, every 5 minutes).
+  To turn it off: ${SUDO:+sudo }systemctl disable --now wifihaven-update.timer
      See docs/deploy.md §1.3.
 EOF

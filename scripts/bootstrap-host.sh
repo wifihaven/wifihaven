@@ -11,17 +11,17 @@
 # small set of operations that genuinely need root (apt, /usr/local/bin,
 # useradd, /etc/systemd, /etc/sudoers.d, /opt, /var/lib, /var/log, /etc).
 # Everything else (the repo clone, scalafmt install via coursier, builds) runs
-# as the familydns service user, never root.
+# as the wifihaven service user, never root.
 #
 # Idempotent: safe to re-run.
 
 set -euo pipefail
 
-REPO_URL="${FAMILYDNS_REPO_URL:-https://github.com/sameerparekh/familydns.git}"
-BRANCH="${FAMILYDNS_BRANCH:-production}"
-PREFIX="${FAMILYDNS_PREFIX:-/opt/familydns}"
-USER_NAME="${FAMILYDNS_USER:-familydns}"
-MILL_VERSION="${FAMILYDNS_MILL_VERSION:-1.1.5}"
+REPO_URL="${WIFIHAVEN_REPO_URL:-https://github.com/sameerparekh/familydns.git}"
+BRANCH="${WIFIHAVEN_BRANCH:-production}"
+PREFIX="${WIFIHAVEN_PREFIX:-/opt/wifihaven}"
+USER_NAME="${WIFIHAVEN_USER:-wifihaven}"
+MILL_VERSION="${WIFIHAVEN_MILL_VERSION:-1.1.5}"
 
 if [ "$(uname -s)" != "Linux" ]; then
   echo "bootstrap-host.sh only supports Linux" >&2
@@ -107,8 +107,8 @@ fi
 
 sudo install -d -o "$USER_NAME" -g "$USER_NAME" "$PREFIX"
 sudo install -d -o "$USER_NAME" -g "$USER_NAME" /var/lib/"$USER_NAME"
-sudo install -d -o "$USER_NAME" -g "$USER_NAME" /var/log/familydns
-sudo install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" /etc/familydns
+sudo install -d -o "$USER_NAME" -g "$USER_NAME" /var/log/wifihaven
+sudo install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" /etc/wifihaven
 
 # ── 4. Clone or update the repo (as the deploy user) ──────────────────────
 if [ ! -d "$PREFIX/repo/.git" ]; then
@@ -125,30 +125,30 @@ fi
 # ── 5. systemd units (symlinked from the repo so updates flow with git) ────
 log "Installing systemd units..."
 sudo install -d /etc/systemd/system
-sudo ln -sfn "$PREFIX/repo/deploy/familydns-api.service" \
-     /etc/systemd/system/familydns-api.service
+sudo ln -sfn "$PREFIX/repo/deploy/wifihaven-api.service" \
+     /etc/systemd/system/wifihaven-api.service
 
-sudo tee /etc/systemd/system/familydns-deploy.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/wifihaven-deploy.service >/dev/null <<EOF
 [Unit]
-Description=Pull and deploy FamilyDNS from $BRANCH
+Description=Pull and deploy WifiHaven from $BRANCH
 After=network-online.target
 
 [Service]
 Type=oneshot
 User=$USER_NAME
-Environment=FAMILYDNS_BRANCH=$BRANCH
+Environment=WIFIHAVEN_BRANCH=$BRANCH
 WorkingDirectory=$PREFIX/repo
 ExecStart=$PREFIX/repo/scripts/deploy.sh
 EOF
 
-sudo tee /etc/systemd/system/familydns-deploy.timer >/dev/null <<EOF
+sudo tee /etc/systemd/system/wifihaven-deploy.timer >/dev/null <<EOF
 [Unit]
-Description=Run familydns-deploy hourly
+Description=Run wifihaven-deploy hourly
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=1h
-Unit=familydns-deploy.service
+Unit=wifihaven-deploy.service
 
 [Install]
 WantedBy=timers.target
@@ -157,30 +157,30 @@ EOF
 sudo systemctl daemon-reload
 
 # ── 6. Sample config ──────────────────────────────────────────────────────
-if [ ! -f /etc/familydns/application.conf ]; then
-  log "Seeding /etc/familydns/application.conf from example..."
+if [ ! -f /etc/wifihaven/application.conf ]; then
+  log "Seeding /etc/wifihaven/application.conf from example..."
   sudo install -m 0640 -o "$USER_NAME" -g "$USER_NAME" \
     "$PREFIX/repo/config/application.conf.example" \
-    /etc/familydns/application.conf
+    /etc/wifihaven/application.conf
 fi
 
 # ── 7. Sudoers rule for the deploy user ───────────────────────────────────
-sudo tee /etc/sudoers.d/familydns-deploy >/dev/null <<EOF
-$USER_NAME ALL=(root) NOPASSWD: /bin/systemctl restart familydns-api.service, /usr/bin/install, /bin/mv, /bin/rm, /bin/cp, /usr/bin/tee
+sudo tee /etc/sudoers.d/wifihaven-deploy >/dev/null <<EOF
+$USER_NAME ALL=(root) NOPASSWD: /bin/systemctl restart wifihaven-api.service, /usr/bin/install, /bin/mv, /bin/rm, /bin/cp, /usr/bin/tee
 EOF
-sudo chmod 0440 /etc/sudoers.d/familydns-deploy
+sudo chmod 0440 /etc/sudoers.d/wifihaven-deploy
 
 cat <<MSG
 
 [bootstrap] Done.
 
 Next steps:
-  1. Edit /etc/familydns/application.conf — set jwt.secret + db.password.
-  2. (Optional) /etc/familydns/api.env for environment overrides.
-  3. sudo systemctl enable --now familydns-api.service
-  4. sudo systemctl enable --now familydns-deploy.timer
+  1. Edit /etc/wifihaven/application.conf — set jwt.secret + db.password.
+  2. (Optional) /etc/wifihaven/api.env for environment overrides.
+  3. sudo systemctl enable --now wifihaven-api.service
+  4. sudo systemctl enable --now wifihaven-deploy.timer
   5. Initial build/deploy:
-       sudo -u $USER_NAME FAMILYDNS_BRANCH=$BRANCH $PREFIX/repo/scripts/deploy.sh
+       sudo -u $USER_NAME WIFIHAVEN_BRANCH=$BRANCH $PREFIX/repo/scripts/deploy.sh
 
 Tracking branch: $BRANCH (e2e-tested before promotion).
 MSG

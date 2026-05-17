@@ -36,11 +36,11 @@
 
 local M = {}
 
-local render = require("familydns.render")
+local render = require("wifihaven.render")
 
 -- log is injectable for tests; default uses the real logger wrapper.
 local function default_log()
-  local ok, l = pcall(require, "familydns.log")
+  local ok, l = pcall(require, "wifihaven.log")
   if ok then return l end
   -- Fallback to a stderr shim when the module isn't on the path (e.g. older
   -- test harnesses).
@@ -213,16 +213,16 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- restart when the rendered content is byte-identical; this avoids a
   -- DNS service blip on every schedule boundary.
   local read_fn = opts.read_fn or default_read
-  local existing_dnsmasq = read_fn("/tmp/dnsmasq.d/familydns.conf")
+  local existing_dnsmasq = read_fn("/tmp/dnsmasq.d/wifihaven.conf")
   local dnsmasq_changed = (existing_dnsmasq ~= dnsmasq_content)
 
-  local ok1, err1 = write_fn("/tmp/dnsmasq.d/familydns.conf", dnsmasq_content)
+  local ok1, err1 = write_fn("/tmp/dnsmasq.d/wifihaven.conf", dnsmasq_content)
   if not ok1 then
     log.err("policy.apply: write dnsmasq conf failed: %s", tostring(err1))
     return false
   end
 
-  local ok2, err2 = write_fn("/tmp/nftables.d/familydns.nft", nft_content)
+  local ok2, err2 = write_fn("/tmp/nftables.d/wifihaven.nft", nft_content)
   if not ok2 then
     log.err("policy.apply: write nft file failed: %s", tostring(err2))
     return false
@@ -242,9 +242,9 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
               #dnsmasq_content, #nft_content)
   end
   -- Single atomic `nft -f`. The rendered file's prelude removes both the
-  -- boot default-deny skeleton (table inet familydns_boot — #308) and any
+  -- boot default-deny skeleton (table inet wifihaven_boot — #308) and any
   -- prior runtime table in one transaction, then installs the new ruleset.
-  reload_fn("nft -f /tmp/nftables.d/familydns.nft")
+  reload_fn("nft -f /tmp/nftables.d/wifihaven.nft")
 
   -- #328 / #351 smoke probe. Runs only when we actually restarted dnsmasq:
   -- the probe exists to catch "we restarted but dnsmasq is still serving
@@ -272,7 +272,7 @@ end
 -- default-deny boot skeleton (§1 / #308) until the first poll succeeds.
 -- ---------------------------------------------------------------------------
 
-local SNAPSHOT_PATH = "/etc/familydns/policy.json"
+local SNAPSHOT_PATH = "/etc/wifihaven/policy.json"
 
 -- save_snapshot(snap, write_fn, rename_fn) → bool
 --   write_fn(path, content)  → ok, err

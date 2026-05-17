@@ -10,11 +10,11 @@ case class AppConfig(
     http: HttpConfig,
     jwt: JwtConfig,
 ) {
-  // FAMILYDNS_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
+  // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
   // Read from env, not HOCON, so it stays out of application.conf — debug
   // belongs to the runtime environment, not the persistent config.
-  val debugEnabled: Boolean = AppConfig.envTruthy(sys.env.get("FAMILYDNS_DEBUG"))
+  val debugEnabled: Boolean = AppConfig.envTruthy(sys.env.get("WIFIHAVEN_DEBUG"))
 }
 
 case class DbConfig(
@@ -49,7 +49,7 @@ object AppConfig {
       val path = sys.props.getOrElse("config.file", "config/application.conf")
       read(
         deriveConfig[AppConfig]
-          .nested("familydns")
+          .nested("wifihaven")
           .from(
             TypesafeConfigProvider.fromHoconFile(new java.io.File(path)),
           ),

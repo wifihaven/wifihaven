@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/block_page.lua (#437)
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/block_page.lua (#437)
 -- Run with: cd openwrt && busted test/block_page_spec.lua
 
 local bp = require("block_page")

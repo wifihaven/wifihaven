@@ -4,9 +4,9 @@
 #
 # Server layout:
 #   ~/familydns/   git checkout (source)
-#   ~/.familydns/  runtime: docker-compose.prod.yml, .env, helper scripts
+#   ~/.wifihaven/  runtime: docker-compose.prod.yml, .env, helper scripts
 #
-# The runtime compose file pins ghcr.io/sameerparekh/familydns-api:latest.
+# The runtime compose file pins ghcr.io/sameerparekh/wifihaven-api:latest.
 # We build locally on the server and tag with that exact reference; the
 # next `start.sh` (compose up -d) picks up the new image id and recreates
 # the api container.
@@ -16,7 +16,7 @@
 #   scripts/deploy-api-from-branch.sh some-branch      # deploy a branch
 #   API_HOST=user@host scripts/deploy-api-from-branch.sh some-branch
 #
-# Caveat: ~/.familydns/update.sh runs `docker compose pull` and will
+# Caveat: ~/.wifihaven/update.sh runs `docker compose pull` and will
 # clobber this locally-built image with whatever is on ghcr. After the
 # branch is merged and ghcr publishes a new :latest, run update.sh to
 # swap back.
@@ -25,8 +25,8 @@ set -euo pipefail
 
 API_HOST="${API_HOST:-192.168.10.43}"
 SRC_DIR="${SRC_DIR:-\$HOME/familydns}"
-RUN_DIR="${RUN_DIR:-\$HOME/.familydns}"
-IMAGE="ghcr.io/sameerparekh/familydns-api:latest"
+RUN_DIR="${RUN_DIR:-\$HOME/.wifihaven}"
+IMAGE="ghcr.io/sameerparekh/wifihaven-api:latest"
 BRANCH="${1:-main}"
 
 echo "==> deploying branch '$BRANCH' to $API_HOST"

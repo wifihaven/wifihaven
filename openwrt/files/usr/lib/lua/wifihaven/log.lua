@@ -1,5 +1,5 @@
 -- log.lua — small wrapper around the BusyBox `logger` command for the
--- familydns-agent.  All log lines are tagged "familydns" so they're easy
+-- wifihaven-agent.  All log lines are tagged "wifihaven" so they're easy
 -- to grep in `logread`.
 --
 -- Public API:
@@ -14,7 +14,7 @@
 --
 -- We deliberately shell out to `logger` instead of writing to stderr because
 -- procd's stderr capture has been a source of "silent agent" bugs in the
--- past (see #228).  `logger -t familydns ...` reliably appears in `logread`
+-- past (see #228).  `logger -t wifihaven ...` reliably appears in `logread`
 -- without depending on procd_set_param wiring.
 
 local M = {}
@@ -70,7 +70,7 @@ local function emit(priority, fmt, ...)
     end
   end
   local cmd = string.format(
-    "logger -t familydns -p %s %s",
+    "logger -t wifihaven -p %s %s",
     priority, shquote(msg))
   M._exec(cmd)
 end

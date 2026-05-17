@@ -1,6 +1,6 @@
 -- block_page.lua — pure helpers for the uhttpd-mod-lua block-page handler.
 --
--- The static index.html previously served at /www/familydns/index.html cannot
+-- The static index.html previously served at /www/wifihaven/index.html cannot
 -- know which device requested it (the nft DNAT rewrites the destination only;
 -- the original URL is whatever the client typed). This module looks up the
 -- client MAC from /proc/net/arp using REMOTE_ADDR and the policy reason from

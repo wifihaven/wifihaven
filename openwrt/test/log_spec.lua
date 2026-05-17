@@ -1,4 +1,4 @@
--- Tests for openwrt/files/usr/lib/lua/familydns/log.lua
+-- Tests for openwrt/files/usr/lib/lua/wifihaven/log.lua
 -- Run with: busted openwrt/test/log_spec.lua
 
 local log = require("log")
@@ -46,7 +46,7 @@ describe("log module", function()
       log.err("boom")
       log.warn("careful")
       assert.equal(3, #recorded)
-      assert.matches("logger %-t familydns ", recorded[1])
+      assert.matches("logger %-t wifihaven ", recorded[1])
       assert.matches("hello world", recorded[1])
       assert.matches("%-p user%.err", recorded[2])
       assert.matches("%-p user%.warning", recorded[3])
@@ -59,7 +59,7 @@ describe("log module", function()
       -- Must not contain an unescaped single quote inside a single-quoted block.
       -- The implementation uses %q-style quoting; the literal command must
       -- start the message arg with a quote character.
-      assert.matches("logger %-t familydns ", recorded[1])
+      assert.matches("logger %-t wifihaven ", recorded[1])
       -- And the dangerous characters must not break out:
       assert.is_nil(recorded[1]:find("`evil`%s*$"))
     end)
