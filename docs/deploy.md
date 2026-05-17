@@ -44,7 +44,7 @@ has already published `latest`.
 The `sha-` tag is immutable and safe to reference for rollbacks. `latest` is
 what the prod compose stack pulls on auto-update.
 
-**Image name**: `ghcr.io/sameerparekh/familydns-api`
+**Image name**: `ghcr.io/sameerparekh/wifihaven-api`
 
 The GHCR token is the built-in `GITHUB_TOKEN`; no manual secret needed.
 
@@ -57,7 +57,7 @@ In production, the `api` service is configured to pull from ghcr.io:
 
 ```yaml
 api:
-  image: ghcr.io/sameerparekh/familydns-api:latest
+  image: ghcr.io/sameerparekh/wifihaven-api:latest
 ```
 
 The image is never built on the prod host. All builds happen in CI.

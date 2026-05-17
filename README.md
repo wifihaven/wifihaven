@@ -4,10 +4,9 @@
      git@github.com:sameerparekh/familydns.git, etc.) and the post-clone
      directory name `familydns/` still appear throughout this README. They
      move to `sameerparekh/wifihaven` when the repo rename (#364) lands. -->
-<!-- TODO(#356, #358, #360): Docker image (ghcr.io/sameerparekh/familydns-api),
-     Postgres role/db (`familydns`), env-var prefix (FAMILYDNS_*) and HOCON
-     config namespace (`familydns.*`) still use the old name. They flip in
-     their respective rename sub-issues. -->
+<!-- TODO(#360): env-var prefix (FAMILYDNS_*) and HOCON config namespace
+     (`familydns.*`) still use the old name. They flip when the env-var
+     rename sub-issue lands. -->
 
 A self-hosted, network-level parental-control system with a web UI. Block
 categories of sites, set per-profile schedules ("no internet after 9pm"),

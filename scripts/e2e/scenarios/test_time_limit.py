@@ -30,6 +30,7 @@ issues, never bundled fixes (see #346 discipline).
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -60,17 +61,18 @@ def _mac_in_set(mac: str) -> bool:
 def _total_minutes_for_mac(debug_api, mac: str) -> int:
     """Bucket-deduplicated online minutes for `mac` from today's time_usage.
 
-    Reads `deviceTotalMinutes` (#474), which is computed server-side from
-    `traffic_reports` via Presence: each 5-min agent bucket counts once per
-    device regardless of how many hosts the device touched. Naively summing
-    per-host `minutesUsed` would inflate when DNS + gateway + the actual
-    site all see traffic in the same bucket.
+    Reads `deviceTotalActiveSeconds` (#516) and ceil-divides by 60. The raw
+    seconds field sums each 5-min agent bucket's max activeSeconds across
+    hosts (Presence dedupe, #474); the floor-divided `deviceTotalMinutes`
+    drifted under 90s tests because boundary-straddling activity could land
+    up to ~240s of credited time. With #516's sub-minute agent sampling and
+    a ceil here, the bound stays tight.
     """
     needle = _norm_mac(mac)
     for row in debug_api.time_usage():
         if _norm_mac(row.get("mac", "")) == needle:
-            # Same value on every row for the same mac — first wins.
-            return int(row.get("deviceTotalMinutes", 0))
+            secs = int(row.get("deviceTotalActiveSeconds", 0))
+            return math.ceil(secs / 60)
     return -1  # sentinel: no rows yet
 
 
@@ -126,21 +128,24 @@ def test_time_limit_minute_granularity(
         f"D2: MAC was blocked despite 60-min cap; total_minutes={total_minutes}"
     )
 
-    # Granularity assertion (#295):
+    # Granularity assertion (#295, #516):
     #   - 0 → usage never accrued (regression)
-    #   - 1 → 90s truncated to a single minute bucket
-    #   - 2 → 90s straddled one minute boundary
-    #   - 3 → 90s straddled two minute boundaries (e.g. 0:45–2:15 touches
-    #         minutes 0, 1, 2). The agent reports active-seconds in per-minute
-    #         buckets and the API counts deduped buckets, so up to ~1 minute
-    #         of over-credit per boundary is expected at this granularity.
-    #   - >= 5 → suggests multi-minute bucket rounding (#295 contract violated)
-    assert 1 <= total_minutes <= 3, (
-        f"D2: expected minutesUsed in [1, 3] after ~90s of traffic, got "
-        f"{total_minutes}. Either nothing accrued (=0) or the API is "
-        f"rounding to a multi-minute bucket (#295). Upper bound is 3 because "
-        f"a 90s span can straddle up to two minute boundaries and the agent's "
-        f"1-minute granularity credits each touched bucket."
+    #   - 1 → 90s of active-seconds → ceil(90/60) = 2; could read 1 if some
+    #         samples landed below the burst window or if the device's
+    #         background traffic per bucket sums to <60s.
+    #   - 2 → expected: 90s of active-seconds → ceil(90/60) = 2, possibly
+    #         padded by a few seconds of in-bucket background activity.
+    #   - >= 3 → agent sampling drifted; sum(activeSeconds) exceeded 120s.
+    # Pre-#516 this drifted (6 → 3 → 4) because the agent sampled every 60s
+    # and credited a full minute per sample-of-growth; with sub-minute (10s)
+    # sampling and a ceil-divided sum, the bound is back to [1, 2].
+    assert 1 <= total_minutes <= 2, (
+        f"D2: expected minutesUsed in [1, 2] after ~90s of traffic, got "
+        f"{total_minutes}. The agent should now report activeSeconds at ~10s "
+        f"granularity (#516); a value > 2 suggests precision regression or "
+        f"unexpected in-bucket background traffic. Helper ceil-divides "
+        f"deviceTotalActiveSeconds rather than reading the floored "
+        f"deviceTotalMinutes."
     )
 
 

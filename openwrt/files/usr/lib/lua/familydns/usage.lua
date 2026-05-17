@@ -133,21 +133,24 @@ local function host_for_ip(dst_ip, nft_sets, lookup_hostname)
 end
 
 -- ---------------------------------------------------------------------------
--- Activity tracker — per-minute "is this (mac, dst_ip) actively using the
--- network?" sampling.  See #295.
+-- Activity tracker — sub-minute "is this (mac, dst_ip) actively using the
+-- network?" sampling.  See #295 (#516).
 -- ---------------------------------------------------------------------------
 -- The nftables set element counters in `mac_ip_tracking` are reset to 0 once
--- per 5-min bucket.  The agent calls `tracker_sample` every 60 s with the
--- currently-parsed counters; each call that observes byte growth bumps the
--- (mac, dst_ip)'s active-minute count.  At end-of-bucket `build_report`
--- multiplies that count by 60 (capped at 300) to produce `activeSeconds`,
--- and the agent resets the tracker for the next bucket.
+-- per 5-min bucket.  The agent calls `tracker_sample` every SECONDS_PER_SAMPLE
+-- seconds with the currently-parsed counters; each call that observes byte
+-- growth bumps the (mac, dst_ip)'s active-sample count.  At end-of-bucket
+-- `build_report` multiplies that count by SECONDS_PER_SAMPLE (capped at 300)
+-- to produce `activeSeconds`, and the agent resets the tracker for the next
+-- bucket.
 --
--- Wire format is unchanged — `activeSeconds` is still an integer.  The
--- minute granularity is purely router-side; sub-minute is a future extension
--- (issue #295 "Future work") that only needs to change SECONDS_PER_SAMPLE
--- and the sampling cadence in the agent loop.
-local SECONDS_PER_SAMPLE = 60
+-- Wire format is unchanged — `activeSeconds` is still an integer.  10s
+-- granularity is fine enough that summing activeSeconds across buckets is
+-- accurate to within ~10 s of real wall-clock active time, which is what
+-- the time-limit test (#516) and Presence aggregation need.  Increasing
+-- the sample frequency to every 10 s (from 60 s) trades a small amount of
+-- router CPU (nftables counter reads are cheap) for accuracy.
+local SECONDS_PER_SAMPLE = 10
 local BUCKET_SECONDS     = 300
 
 local function tracker_key(mac, dst_ip) return mac .. "|" .. dst_ip end
@@ -186,10 +189,10 @@ end
 --                    [, leases [, lookup_hostname [, tracker]]])
 -- ---------------------------------------------------------------------------
 -- activeSeconds:
---   * With a tracker: 60 × active_minutes[(mac, dst_ip)], capped at 300.
---     A counter present in `counters` but missing from the tracker (e.g. set
---     element first appeared after the last per-minute sample) falls back to
---     one active minute when bytes > 0.
+--   * With a tracker: SECONDS_PER_SAMPLE × active_samples[(mac, dst_ip)],
+--     capped at 300.  A counter present in `counters` but missing from the
+--     tracker (e.g. set element first appeared after the last sample) falls
+--     back to one active sample when bytes > 0.
 --   * Without a tracker (legacy / back-compat): bytes > 0 → 300, else 0.
 function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname, tracker)
   local records = {}

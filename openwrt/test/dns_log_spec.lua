@@ -118,8 +118,21 @@ describe("parse_resolved_reply (#505)", function()
       "Nov 12 10:00:01 dnsmasq[1234]: 7 192.168.1.42/54321 reply youtube.com is 142.250.80.46")
     assert.is_not_nil(r)
     assert.equal("192.168.1.42",   r.client_ip)
+    assert.equal("youtube.com",    r.name)
     assert.equal("142.250.80.46",  r.ip)
     assert.equal("v4",             r.family)
+  end)
+
+  -- #515: the per-host eb_<sanhost> populator keys on r.name, so make sure
+  -- the parser is actually surfacing the qname (was previously discarded as
+  -- `_name` when only the bio populator needed the line).
+  it("surfaces the answered name on v6 replies too (#515)", function()
+    local r = dns_log.parse_resolved_reply(
+      "Nov 12 10:00:01 dnsmasq[1234]: 8 192.168.1.42/54321 reply example.com is 2606:2800:220:1::248")
+    assert.is_not_nil(r)
+    assert.equal("example.com",          r.name)
+    assert.equal("2606:2800:220:1::248", r.ip)
+    assert.equal("v6",                   r.family)
   end)
 
   it("returns client_ip + v6 ip + family=v6 for an AAAA reply", function()

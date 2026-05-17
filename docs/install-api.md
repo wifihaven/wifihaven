@@ -136,7 +136,7 @@ and §8 (firewall).
 ## 2. Obtain the image
 
 The API image is published to GitHub Container Registry at
-`ghcr.io/sameerparekh/familydns-api`. Tags:
+`ghcr.io/sameerparekh/wifihaven-api`. Tags:
 
 | Tag | When to use |
 |-----|-------------|
@@ -146,7 +146,7 @@ The API image is published to GitHub Container Registry at
 After issue #128 lands the package will be public, so anonymous pulls work:
 
 ```sh
-docker pull ghcr.io/sameerparekh/familydns-api:latest
+docker pull ghcr.io/sameerparekh/wifihaven-api:latest
 ```
 
 If the package is still private when you install, log in to ghcr.io first
@@ -154,7 +154,7 @@ with a GitHub personal access token that has the `read:packages` scope:
 
 ```sh
 echo "$GHCR_PAT" | docker login ghcr.io -u <your-github-username> --password-stdin
-docker pull ghcr.io/sameerparekh/familydns-api:latest
+docker pull ghcr.io/sameerparekh/wifihaven-api:latest
 ```
 
 You don't strictly need to pre-pull — `docker compose up -d` in §4 will
