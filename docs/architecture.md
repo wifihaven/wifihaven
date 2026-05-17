@@ -487,7 +487,9 @@ attribution sidecar lost the race). IP-typed rows are stored alongside FQDN
 rows but are systematically excluded from FQDN pattern matching (site-limit
 patterns like `*.example.com`) — an IP literal can never match a hostname
 pattern, so counting it against one would be a silent correctness bug. See
-§7.2 and §8.2 for the platform-specific attribution path.
+§7.2 and §8.2 for the platform-specific attribution path, and
+[docs/ops/hostname-attribution.md](ops/hostname-attribution.md) for the
+known buckets of bare-IP events operators encounter in the field.
 
 **Response 200**: empty body.
 
