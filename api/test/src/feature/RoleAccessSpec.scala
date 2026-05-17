@@ -39,8 +39,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
   /**
    * Create a user with a given role and link them to the listed profile ids.
    *
-   * Clears must_change_password so that these test users are fully operational immediately;
-   * the flag behaviour itself is tested in UserCreateSpec (#599).
+   * Clears must_change_password so that these test users are fully operational immediately; the
+   * flag behaviour itself is tested in UserCreateSpec (#599).
    */
   private def createUser(
       userRepo: UserRepo,
