@@ -299,7 +299,8 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .option
       .transact(xa)
   def create(u: String, h: String, r: String) =
-    sql"INSERT INTO users(username,password_hash,role) VALUES($u,$h,$r) RETURNING id"
+    // Always force a password change on first login for admin-created users (#599).
+    sql"INSERT INTO users(username,password_hash,role,must_change_password) VALUES($u,$h,$r,true) RETURNING id"
       .query[UserId]
       .unique
       .transact(xa)
