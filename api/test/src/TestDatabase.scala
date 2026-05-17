@@ -93,6 +93,17 @@ object TestDatabase {
             )
         } finally conn.close()
       }
+      // #586: V18 migration sets must_change_password=true for the seeded admin so
+      // production deployments force a password rotation. In tests we want the admin
+      // to be fully operational, so clear the flag after each migration reset.
+      _  <- ZIO.attempt {
+        val conn = pg.getPostgresDatabase.getConnection
+        try {
+          conn
+            .createStatement()
+            .execute("UPDATE users SET must_change_password=false WHERE username='admin'")
+        } finally conn.close()
+      }
     } yield ()
 
   /** All repo types bundled for convenience */
