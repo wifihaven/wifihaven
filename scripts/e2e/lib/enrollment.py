@@ -1,13 +1,13 @@
 """Enroll a router VM and wire the resulting routerToken into UCI.
 
 The OpenWRT agent does NOT auto-enroll: it errors out if router_token is
-empty (openwrt/files/usr/sbin/familydns-agent). So the orchestrator runs the
+empty (openwrt/files/usr/sbin/wifihaven-agent). So the orchestrator runs the
 enrollment flow itself from the host:
 
   1. POST /api/admin/routers          → enrollmentToken
   2. POST /api/router/register        → routerToken (host-side, no SLIRP needed)
   3. SSH to the router and `uci set` router_id + router_token + api_url
-  4. /etc/init.d/familydns restart
+  4. /etc/init.d/wifihaven restart
 """
 from __future__ import annotations
 
@@ -55,11 +55,11 @@ def enroll_router(
 
     api_url_for_router = f"http://{ROUTER_HOST_GATEWAY}:{api_port}"
     uci_script = (
-        f"uci set familydns.@familydns[0].api_url='{api_url_for_router}' && "
-        f"uci set familydns.@familydns[0].router_id='{router_id}' && "
-        f"uci set familydns.@familydns[0].router_token='{router_token}' && "
-        f"uci commit familydns && "
-        f"/etc/init.d/familydns restart"
+        f"uci set wifihaven.@wifihaven[0].api_url='{api_url_for_router}' && "
+        f"uci set wifihaven.@wifihaven[0].router_id='{router_id}' && "
+        f"uci set wifihaven.@wifihaven[0].router_token='{router_token}' && "
+        f"uci commit wifihaven && "
+        f"/etc/init.d/wifihaven restart"
     )
     log.info("provisioning router VM with router_id=%s api_url=%s", router_id, api_url_for_router)
     router_ssh(uci_script, timeout=60).check()
