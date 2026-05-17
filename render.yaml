@@ -20,7 +20,7 @@ services:
   - type: web
     runtime: image
     name: wifihaven-api-staging
-    plan: starter
+    plan: hobby
     # Reconfirm region before launch — pick the Render region closest to the
     # operator's house. Tuning tracked in #590.
     region: oregon
@@ -63,6 +63,6 @@ services:
 
 databases:
   - name: wifihaven-pg-staging
-    plan: starter
+    plan: hobby
     postgresMajorVersion: 16
     region: oregon
