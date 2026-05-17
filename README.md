@@ -7,7 +7,7 @@ extensions — all on your own hardware, no third-party DNS provider.
 
 ```
                  +-------------------+    +-----------+
-HTTP / web ────▶ |  familydns-api    | ─▶ |  Postgres |
+HTTP / web ────▶ |  wifihaven-api    | ─▶ |  Postgres |
    :8080         +-------------------+    +-----------+
                    ▲              ▲
                    │ policy pull  │ usage push
