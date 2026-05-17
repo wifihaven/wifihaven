@@ -43,7 +43,7 @@ export function Layout() {
               </svg>
             </button>
             <span className="font-bold text-emerald-400 text-lg tracking-tight">
-              Family<span className="text-white">DNS</span>
+              Wifi<span className="text-white">Haven</span>
             </span>
           </div>
 

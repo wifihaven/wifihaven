@@ -16,12 +16,27 @@ import { AdminPage } from './AdminPage'
 
 beforeEach(() => {
   vi.resetAllMocks()
-  ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+  // Server-of-record: simulates the live API. `update` mutates this and
+  // `get` reads from it, so tests exercise the real round-trip the UI does
+  // (PUT, then re-GET to refresh the summary — #571).
+  let stored: { dailyResetTime: string; dailyResetTz: string } = {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
-  })
-  ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  }
+  ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async () => ({ ...stored }),
+  )
+  ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async (next: { dailyResetTime: string; dailyResetTz: string }) => {
+      stored = { ...next }
+    },
+  )
 })
+
+// Per-test override helper for the initial server state.
+function seedServer(s: { dailyResetTime: string; dailyResetTz: string }) {
+  ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...s })
+}
 
 describe('AdminPage — daily reset card', () => {
   it('defaults to collapsed summary view with current values', async () => {
@@ -35,10 +50,7 @@ describe('AdminPage — daily reset card', () => {
   })
 
   it('formats 13:30 as "1:30 PM" in the summary', async () => {
-    (api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      dailyResetTime: '13:30',
-      dailyResetTz: 'America/New_York',
-    })
+    seedServer({ dailyResetTime: '13:30', dailyResetTz: 'America/New_York' })
     render(<AdminPage />)
     const summary = await screen.findByTestId('household-summary')
     expect(summary).toHaveTextContent(/Resets daily at 1:30 PM/i)
@@ -101,6 +113,75 @@ describe('AdminPage — daily reset card', () => {
     // Re-opening edit shows original (not dirty) value
     await user.click(screen.getByTestId('household-edit'))
     expect((screen.getByTestId('household-reset-time') as HTMLInputElement).value).toBe('00:00')
+  })
+
+  it('(#571) changing the TZ in the dropdown persists it via update', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('household-summary')
+    await user.click(screen.getByTestId('household-edit'))
+
+    const tzSelect = screen.getByTestId('household-reset-tz-select') as HTMLSelectElement
+    await user.selectOptions(tzSelect, 'America/New_York')
+
+    await user.click(screen.getByTestId('household-save'))
+
+    await waitFor(() =>
+      expect(api.household.update).toHaveBeenCalledWith({
+        dailyResetTime: '00:00',
+        dailyResetTz: 'America/New_York',
+      }),
+    )
+  })
+
+  it('(#571) picking a non-common TZ via "More…" expander persists it', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('household-summary')
+    await user.click(screen.getByTestId('household-edit'))
+
+    const tzSelect = screen.getByTestId('household-reset-tz-select') as HTMLSelectElement
+    await user.selectOptions(tzSelect, '__more__')
+
+    const expanded = screen.getByTestId('household-reset-tz-select') as HTMLSelectElement
+    await user.selectOptions(expanded, 'Europe/London')
+
+    await user.click(screen.getByTestId('household-save'))
+
+    await waitFor(() =>
+      expect(api.household.update).toHaveBeenCalledWith({
+        dailyResetTime: '00:00',
+        dailyResetTz: 'Europe/London',
+      }),
+    )
+  })
+
+  it('(#571) summary after save reflects what the server returns, not the local form', async () => {
+    // Simulate a server that silently drops dailyResetTz (the suspected
+    // shape of bug #571). The UI must surface the server-of-record value,
+    // not the user's typed-in value, so the operator sees the persistence
+    // failure rather than a false confirmation.
+    ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (next: { dailyResetTime: string }) => {
+        // Pretend server only persisted the time, ignoring the tz.
+        ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+          dailyResetTime: next.dailyResetTime,
+          dailyResetTz: 'America/Los_Angeles',
+        })
+      },
+    )
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('household-summary')
+    await user.click(screen.getByTestId('household-edit'))
+
+    const tzSelect = screen.getByTestId('household-reset-tz-select') as HTMLSelectElement
+    await user.selectOptions(tzSelect, 'America/New_York')
+    await user.click(screen.getByTestId('household-save'))
+
+    const summary = await screen.findByTestId('household-summary')
+    // Surfaces the dropped value: America/Los_Angeles, NOT America/New_York.
+    expect(summary).toHaveTextContent('America/Los_Angeles')
   })
 
   it('keeps the form open and shows an error when the API rejects', async () => {

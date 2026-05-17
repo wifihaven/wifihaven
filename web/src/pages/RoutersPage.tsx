@@ -118,39 +118,44 @@ export function RoutersPage() {
 
       {creating && (
         <Modal title="Enroll a Router" onClose={() => setCreating(false)}>
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
-              {error}
+          <form
+            onSubmit={e => { e.preventDefault(); saveCreate() }}
+            className="space-y-5"
+          >
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+                {error}
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Name <span className="text-red-400">*</span>
+              </label>
+              <input type="text" value={name} autoFocus required
+                onChange={e => setName(e.target.value)}
+                placeholder="home-gw"
+                className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500" />
+              <p className="text-xs text-gray-500 mt-2">
+                This is the only place the router's display name is set — the
+                install script on the router doesn't ask for it.
+              </p>
             </div>
-          )}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-              Name <span className="text-red-400">*</span>
-            </label>
-            <input type="text" value={name} autoFocus required
-              onChange={e => setName(e.target.value)}
-              placeholder="home-gw"
-              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500" />
-            <p className="text-xs text-gray-500 mt-2">
-              This is the only place the router's display name is set — the
-              install script on the router doesn't ask for it.
+            <p className="text-sm text-gray-400">
+              We'll generate a one-time enrollment token. Run the OpenWRT
+              install script on the router and paste the token when prompted;
+              no other identifier is needed. The token is single-use.
             </p>
-          </div>
-          <p className="text-sm text-gray-400">
-            We'll generate a one-time enrollment token. Run the OpenWRT
-            install script on the router and paste the token when prompted;
-            no other identifier is needed. The token is single-use.
-          </p>
-          <div className="flex gap-3 pt-2">
-            <button onClick={() => setCreating(false)} disabled={saving}
-              className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
-              Cancel
-            </button>
-            <button onClick={saveCreate} disabled={saving}
-              className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
-              {saving ? 'Generating…' : 'Generate Token'}
-            </button>
-          </div>
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={() => setCreating(false)} disabled={saving}
+                className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
+                Cancel
+              </button>
+              <button type="submit" disabled={saving}
+                className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
+                {saving ? 'Generating…' : 'Generate Token'}
+              </button>
+            </div>
+          </form>
         </Modal>
       )}
 
