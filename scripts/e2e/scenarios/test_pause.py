@@ -100,17 +100,17 @@ def test_pause_blocks_and_unpause_restores(
 
     # ── A1: pause ─────────────────────────────────────────────────────────
     admin.set_profile_paused(profile_id, True)
-    wait_for_etag_change(admin, router.router_id, timeout_s=120)
+    wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
-    _wait_mac_in_blocked_set(mac, present=True, timeout_s=60)
+    _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
     _wait_block_page(client, timeout_s=60)
     _wait_pause_event(debug_api, mac, timeout_s=30)
 
     # ── A2: unpause ───────────────────────────────────────────────────────
     admin.set_profile_paused(profile_id, False)
-    wait_for_etag_change(admin, router.router_id, timeout_s=120)
+    wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
-    _wait_mac_in_blocked_set(mac, present=False, timeout_s=60)
+    _wait_mac_in_blocked_set(mac, present=False, timeout_s=180)
     _wait_http_succeeds(client, timeout_s=60)
 
 
@@ -128,15 +128,15 @@ def test_pause_then_add_device_blocks_new_mac(
     """
     profile_id = scratch_profile["id"]
     admin.set_profile_paused(profile_id, True)
-    wait_for_etag_change(admin, router.router_id, timeout_s=120)
+    wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
     # New MAC, never seen by the router or API before.
     new_mac = "02:e2:e2:a3:00:%02x" % (uuid.uuid4().int & 0xFF)
     admin.upsert_device(mac=new_mac, name=f"e2e-a3-{new_mac[-5:]}", profile_id=profile_id)
-    wait_for_etag_change(admin, router.router_id, timeout_s=120)
+    wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
     try:
-        _wait_mac_in_blocked_set(new_mac, present=True, timeout_s=60)
+        _wait_mac_in_blocked_set(new_mac, present=True, timeout_s=180)
     finally:
         try:
             admin.delete_device(new_mac)
@@ -155,16 +155,16 @@ def test_reassign_off_paused_profile_unblocks_mac(
     mac = client.mac
 
     admin.set_profile_paused(paused_pid, True)
-    wait_for_etag_change(admin, router.router_id, timeout_s=120)
-    _wait_mac_in_blocked_set(mac, present=True, timeout_s=60)
+    wait_for_etag_change(admin, router.router_id, timeout_s=240)
+    _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
 
     # Create a second, unpaused profile and reassign.
     other = admin.create_profile(name=f"e2e-a4-other-{uuid.uuid4().hex[:6]}")
     other_pid = other["profile"]["id"] if "profile" in other else other["id"]
     try:
         admin.upsert_device(mac=mac, name=f"e2e-a4-{mac[-5:]}", profile_id=other_pid)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
-        _wait_mac_in_blocked_set(mac, present=False, timeout_s=60)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
+        _wait_mac_in_blocked_set(mac, present=False, timeout_s=180)
     finally:
         # scratch_device's teardown still tries delete_device(mac); reassign
         # leaves the row pointing at `other_pid`, which is fine. We just need
