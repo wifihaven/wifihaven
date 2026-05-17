@@ -16,7 +16,7 @@ from .sh import run
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PROJECT = "familydns-e2e-vm"
+DEFAULT_PROJECT = "wifihaven-e2e-vm"
 DEFAULT_API_PORT = 18080
 
 

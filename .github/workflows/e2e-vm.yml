@@ -94,14 +94,14 @@ jobs:
       # The self-hosted KVM runner keeps docker images across jobs (see
       # docs/ops/kvm-runner.md). scripts/e2e/lib/stack.py defaults to
       # rebuild=False, so `docker compose up` reuses any cached
-      # familydns-e2e-vm-api image — which can be months stale relative to
+      # wifihaven-e2e-vm-api image — which can be months stale relative to
       # current source. Force a fresh build here so CI always tests HEAD.
       # `--pull` refreshes base layers; only `api` is built locally
       # (postgres and fake-router use upstream images). Local dev keeps the
       # fast no-rebuild path. Fixes #465.
       - name: Build API image (force fresh layer)
         run: |
-          docker compose -f docker/docker-compose.yml -p familydns-e2e-vm \
+          docker compose -f docker/docker-compose.yml -p wifihaven-e2e-vm \
             build --pull api
 
       - name: Pre-flight kill of stale fdns VMs
@@ -124,7 +124,7 @@ jobs:
       - name: Capture docker compose logs
         if: failure()
         run: |
-          docker compose -f docker/docker-compose.yml -p familydns-e2e-vm \
+          docker compose -f docker/docker-compose.yml -p wifihaven-e2e-vm \
             logs --no-color > /tmp/api-logs.txt 2>&1 || true
 
       - name: Upload failure artifacts
@@ -148,5 +148,5 @@ jobs:
       - name: Tear down API stack
         if: always()
         run: |
-          docker compose -f docker/docker-compose.yml -p familydns-e2e-vm \
+          docker compose -f docker/docker-compose.yml -p wifihaven-e2e-vm \
             down -v --remove-orphans || true
