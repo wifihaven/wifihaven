@@ -38,9 +38,9 @@ trait AuthService {
   def requireAdmin(token: String): IO[AuthError, JwtClaims]
   def requireWriter(token: String): IO[AuthError, JwtClaims]
 
-  /** Verify token and also check that must_change_password is not set.
-   *  Returns Forbidden if the flag is set (caller should 403 with
-   *  {"error":"password_change_required"}).
+  /**
+   * Verify token and also check that must_change_password is not set. Returns Forbidden if the flag
+   * is set (caller should 403 with {"error":"password_change_required"}).
    */
   def requirePasswordChanged(token: String): IO[AuthError, JwtClaims]
 
