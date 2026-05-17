@@ -115,6 +115,11 @@ Then check the admin UI: **Routers → `<your router name>`** should show a
 fresh `last_seen_at`, updating roughly every 60 seconds (the policy poll
 interval).
 
+For a deeper end-to-end check that mirrors the VM e2e suite — enrollment,
+allowed browsing, blocking, pause, schedule, time limits, usage reporting,
+unknown-device autocreation — follow [docs/manual-qa.md](manual-qa.md)
+with one connected device.
+
 ## 4. (Optional) Auto-update
 
 Routers running unattended should pull new agent releases automatically. The
