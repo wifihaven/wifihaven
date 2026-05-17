@@ -28,6 +28,9 @@ function handle_request(env)
 
   local reasons = read_file("/var/run/wifihaven/blocked_reasons")
   local reason  = mac and block_page.parse_reasons(reasons, mac) or nil
+  -- No MAC-wide reason means the DNAT was triggered by an extraBlocked match,
+  -- not a whole-MAC block. (#576)
+  if mac and not reason then reason = "ExtraBlocked" end
 
   local api_url = read_file("/var/run/wifihaven/api_url")
   if api_url then api_url = api_url:gsub("%s+$", "") end

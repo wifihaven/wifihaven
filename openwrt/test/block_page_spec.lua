@@ -89,17 +89,33 @@ describe("block_page.render_html", function()
     assert.truthy(html:find("http://api.example.com/blocked", 1, true))
   end)
 
+  -- #580: redirect page must carry a viewport meta and show inline copy so
+  -- iOS Safari users see content even if the cross-origin redirect is blocked.
+  it("redirect page includes viewport meta and visible block reason (#580)", function()
+    local html = bp.render_html(
+      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "TimeLimit")
+    assert.truthy(html:find('name="viewport"', 1, true))
+    assert.truthy(html:find("Daily screen time limit reached.", 1, true))
+  end)
+
+  -- #580: inline fallback (no api_url) must also carry viewport meta.
+  it("inline fallback includes viewport meta (#580)", function()
+    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+    assert.truthy(html:find('name="viewport"', 1, true))
+  end)
+
   it("falls back to inline copy when api_url is missing", function()
     local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
     assert.truthy(html:find("This profile is paused.", 1, true))
     assert.is_nil(html:find("window.location.replace", 1, true))
   end)
 
-  it("inline copy covers every MacBlockReason and a fallback", function()
+  it("inline copy covers every MacBlockReason, ExtraBlocked, and a fallback", function()
     assert.equals("This profile is paused.",                  bp.inline_copy_for("Paused"))
     assert.equals("This is scheduled quiet time.",            bp.inline_copy_for("Schedule"))
     assert.equals("Daily screen time limit reached.",         bp.inline_copy_for("TimeLimit"))
     assert.equals("This device has been blocked by a parent.",bp.inline_copy_for("Manual"))
+    assert.equals("This site is blocked by the household.",   bp.inline_copy_for("ExtraBlocked"))
     assert.equals("This site is blocked.",                    bp.inline_copy_for("Bogus"))
     assert.equals("This site is blocked.",                    bp.inline_copy_for(nil))
   end)

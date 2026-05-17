@@ -73,10 +73,11 @@ end
 -- BlockedPage.tsx mapping so the local fallback page still communicates the
 -- reason instead of generic "blocked".
 local INLINE_COPY = {
-  Paused    = "This profile is paused.",
-  Schedule  = "This is scheduled quiet time.",
-  TimeLimit = "Daily screen time limit reached.",
-  Manual    = "This device has been blocked by a parent.",
+  Paused       = "This profile is paused.",
+  Schedule     = "This is scheduled quiet time.",
+  TimeLimit    = "Daily screen time limit reached.",
+  Manual       = "This device has been blocked by a parent.",
+  ExtraBlocked = "This site is blocked by the household.",
 }
 
 function M.inline_copy_for(reason)
@@ -88,34 +89,50 @@ end
 -- self-contained page with inline copy keyed on `reason`.
 function M.render_html(api_url, host, mac, reason)
   local dest = M.build_dest_url(api_url, host, mac, reason)
-  if dest then
-    return ([[<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="utf-8">
-<title>Blocked</title>
-<meta http-equiv="refresh" content="0;url=%s">
-</head><body>
-<script>window.location.replace(%q);</script>
-<p>Redirecting...</p>
-</body></html>
-]]):format(html_escape(dest), dest)
-  end
-
   local copy = M.inline_copy_for(reason)
   local site_line = (host and host ~= "")
     and ("Site: " .. html_escape(host)) or ""
-  return ([[<!DOCTYPE html>
+  -- Shared inline style used by both paths so the page is always visible.
+  -- min-height:100vh without flex avoids the iOS Safari height-collapse bug
+  -- that occurs when a flex container has no explicit height (#580).
+  local style = "body{font-family:sans-serif;margin:0;background:#f5f5f5;display:table;width:100%;min-height:100vh}.wrap{display:table-cell;vertical-align:middle;padding:2rem}.card{background:#fff;border-radius:8px;padding:2rem 2.5rem;max-width:400px;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,.12);text-align:center}h1{color:#c0392b;margin-top:0}p{color:#555;line-height:1.6}"
+  if dest then
+    -- Redirect to the API's /blocked page for richer React UI.
+    -- The page shows inline content immediately so iOS Safari users see
+    -- something even if the cross-origin redirect to an RFC1918 host is
+    -- blocked by the browser (#580).
+    return ([[<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Blocked</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f5f5f5}.card{background:#fff;border-radius:8px;padding:2rem 2.5rem;max-width:400px;box-shadow:0 2px 8px rgba(0,0,0,.12);text-align:center}h1{color:#c0392b;margin-top:0}p{color:#555;line-height:1.6}</style>
+<meta http-equiv="refresh" content="0;url=%s">
+<style>%s</style>
 </head><body>
-<div class="card">
+<script>window.location.replace(%q);</script>
+<div class="wrap"><div class="card">
 <h1>&#128683; Blocked</h1>
 <p>%s</p>
 <p><small>%s</small></p>
-</div></body></html>
-]]):format(html_escape(copy), site_line)
+</div></div>
+</body></html>
+]]):format(html_escape(dest), style, dest, html_escape(copy), site_line)
+  end
+
+  return ([[<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blocked</title>
+<style>%s</style>
+</head><body>
+<div class="wrap"><div class="card">
+<h1>&#128683; Blocked</h1>
+<p>%s</p>
+<p><small>%s</small></p>
+</div></div>
+</body></html>
+]]):format(style, html_escape(copy), site_line)
 end
 
 return M
