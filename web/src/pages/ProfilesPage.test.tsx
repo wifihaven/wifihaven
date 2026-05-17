@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import type { Device, ProfileDetail, User } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
@@ -23,7 +24,6 @@ vi.mock('@/api/client', () => ({
     },
     household: {
       get: vi.fn(),
-      update: vi.fn(),
     },
   },
 }))
@@ -34,6 +34,14 @@ vi.mock('@/hooks/useAuth', () => ({
 
 import { api } from '@/api/client'
 import { ProfilesPage } from './ProfilesPage'
+
+function renderPage(initialEntries: string[] = ['/profiles']) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <ProfilesPage />
+    </MemoryRouter>,
+  )
+}
 
 let mockAuth = { isAdmin: true }
 
@@ -103,12 +111,11 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
   })
-  ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
 
 describe('ProfilesPage — list', () => {
   it('renders profile names, paused badge, blocked categories, schedules, site limits, and daily limit', async () => {
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     expect(within(kidsCard).getByText('Kids')).toBeInTheDocument()
     expect(screen.getByText('Adults')).toBeInTheDocument()
@@ -130,7 +137,7 @@ describe('ProfilesPage — pause / delete', () => {
   // The previous POST /pause endpoint was a server-side toggle (race-prone).
   it('clicking Pause calls api.profiles.update with paused=true and reloads', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /Pause/ }))
     await waitFor(() =>
@@ -144,7 +151,7 @@ describe('ProfilesPage — pause / delete', () => {
 
   it('clicking Resume calls api.profiles.update with paused=false', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const adultsCard = await screen.findByTestId('profile-card-2')
     await user.click(within(adultsCard).getByRole('button', { name: /Resume/ }))
     await waitFor(() =>
@@ -158,7 +165,7 @@ describe('ProfilesPage — pause / delete', () => {
   it('confirms then calls api.profiles.delete', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
     expect(confirmSpy).toHaveBeenCalled()
@@ -169,7 +176,7 @@ describe('ProfilesPage — pause / delete', () => {
   it('does not delete when confirm is cancelled', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
     expect(api.profiles.delete).not.toHaveBeenCalled()
@@ -180,7 +187,7 @@ describe('ProfilesPage — pause / delete', () => {
 describe('ProfilesPage — create', () => {
   it('shows validation error when name is empty', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
@@ -190,7 +197,7 @@ describe('ProfilesPage — create', () => {
 
   it('fills the editor and calls api.profiles.create with the expected body', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
 
@@ -245,7 +252,7 @@ describe('ProfilesPage — create', () => {
 describe('ProfilesPage — edit', () => {
   it('pre-fills editor from selected profile and calls api.profiles.update', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
 
@@ -284,7 +291,7 @@ describe('ProfilesPage — edit', () => {
 describe('ProfilesPage — role gating', () => {
   it('hides admin-only buttons for non-admins', async () => {
     mockAuth = { isAdmin: false }
-    render(<ProfilesPage />)
+    renderPage()
     await screen.findByText('Kids')
     expect(screen.queryByRole('button', { name: /\+ New Profile/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Pause/ })).not.toBeInTheDocument()
@@ -296,7 +303,7 @@ describe('ProfilesPage — role gating', () => {
 
 describe('ProfilesPage — devices section', () => {
   it('renders devices grouped under their profile', async () => {
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     const adultsCard = screen.getByTestId('profile-card-2')
 
@@ -310,7 +317,7 @@ describe('ProfilesPage — devices section', () => {
 
 describe('ProfilesPage — linked users section', () => {
   it('renders linked users for each profile (admin view)', async () => {
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     const adultsCard = screen.getByTestId('profile-card-2')
 
@@ -324,7 +331,7 @@ describe('ProfilesPage — linked users section', () => {
 
   it('hides the linked-users section entirely for non-admins', async () => {
     mockAuth = { isAdmin: false }
-    render(<ProfilesPage />)
+    renderPage()
     await screen.findByText('Kids')
     expect(screen.queryByTestId('profile-users-1')).not.toBeInTheDocument()
     expect(screen.queryByTestId('profile-users-2')).not.toBeInTheDocument()
@@ -333,7 +340,7 @@ describe('ProfilesPage — linked users section', () => {
 
   it('admin clicks Edit users → modal opens with current users pre-checked → Save calls api.profiles.setUsers', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /Edit users/ }))
 
@@ -359,7 +366,7 @@ describe('ProfilesPage — linked users section', () => {
 describe('ProfilesPage — #385 failureMode (three modes)', () => {
   it('edit form pre-fills failureMode from the profile (BlockAll for Kids)', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
@@ -372,7 +379,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
 
   it('edit form pre-fills failureMode from the profile (LastKnownGood for Adults)', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const adultsCard = await screen.findByTestId('profile-card-2')
     await user.click(within(adultsCard).getByRole('button', { name: /^Edit$/ }))
     const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
@@ -383,7 +390,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
 
   it('selecting AllowAll and saving sends the new value', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(screen.getByTestId('profile-failure-mode-allow-all'))
@@ -395,7 +402,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
 
   it('selecting LastKnownGood and saving sends the new value', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(screen.getByTestId('profile-failure-mode-last-known-good'))
@@ -407,7 +414,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
 
   it('new profile form defaults to LastKnownGood (column default)', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
     const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
@@ -416,7 +423,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
 
   it('renders explanatory copy for each of the three modes', async () => {
     const user = userEvent.setup()
-    render(<ProfilesPage />)
+    renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     expect(
@@ -428,5 +435,20 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     expect(
       screen.getByText(/clear every block for this profile's devices/i),
     ).toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — highlight from ?id= (#298)', () => {
+  it('rings the matching profile card when ?id=... is set', async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    renderPage(['/profiles?id=1'])
+    const card = await screen.findByTestId('profile-card-1')
+    await waitFor(() => expect(card.className).toContain('ring-emerald-500'))
+  })
+
+  it('does not ring any card when ?id= is not set', async () => {
+    renderPage()
+    const card = await screen.findByTestId('profile-card-1')
+    expect(card.className).not.toContain('ring-emerald-500')
   })
 })

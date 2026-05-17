@@ -12,6 +12,7 @@ const navItems: NavItem[] = [
   { to: '/logs',      label: 'Logs',      icon: '≡' },
   { to: '/users',     label: 'Users',     icon: '◐', adminOnly: true },
   { to: '/routers',   label: 'Routers',   icon: '⬢', adminOnly: true },
+  { to: '/admin',     label: 'Admin',     icon: '⚙', adminOnly: true },
 ]
 
 export function Layout() {

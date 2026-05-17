@@ -1,7 +1,7 @@
 # VM e2e harness
 
 Scripted QEMU/KVM setup for end-to-end testing of the OpenWRT side of
-FamilyDNS. The big picture is in #106; this directory is the implementation
+WifiHaven. The big picture is in #106; this directory is the implementation
 of #144 (router VM) and #146 (client VM).
 
 ## Host requirements

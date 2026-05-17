@@ -234,10 +234,14 @@ fi
 
 # Idempotent uhttpd listener for the local block page on 127.0.0.1:8081 and
 # [::1]:8081 (#411 — v6 sibling so v6 HTTP requests to blocked hosts land on
-# the block page, not a connection error). Document root is /www/familydns so
-# the nft DNAT (which lands at "/" — the user's original HTTP request had
-# Host: example.com, path /) serves /www/familydns/index.html, not the LuCI
-# redirect at /www/index.html (#303).
+# the block page, not a connection error).
+#
+# Every request to this listener is dispatched to the lua handler at
+# /www/familydns/handler.lua (uhttpd-mod-lua). The handler resolves the
+# requesting device's MAC (from /proc/net/arp by REMOTE_ADDR), looks up the
+# per-MAC block reason written by the agent, and returns a redirect to the
+# API's /blocked page with mac+reason populated (#437). The static
+# index.html that used to live here had no way to know the client's MAC.
 uhttpd_section=$(uci show uhttpd 2>/dev/null \
   | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http=.*'127\\.0\\.0\\.1:8081'/{print \$2; exit}")
 uhttpd_changed=0
@@ -265,11 +269,26 @@ if ! uci -q get "uhttpd.${uhttpd_section}.listen_http" \
   uhttpd_changed=1
 fi
 
+# Route every URL through the lua handler so the block page can do per-MAC
+# lookups instead of serving a static file (#437).
+desired_lua_prefix='/'
+desired_lua_handler='/www/familydns/handler.lua'
+current_lua_prefix=$(uci -q get "uhttpd.${uhttpd_section}.lua_prefix" || echo "")
+current_lua_handler=$(uci -q get "uhttpd.${uhttpd_section}.lua_handler" || echo "")
+if [ "$current_lua_prefix" != "$desired_lua_prefix" ]; then
+  uci set "uhttpd.${uhttpd_section}.lua_prefix=$desired_lua_prefix"
+  uhttpd_changed=1
+fi
+if [ "$current_lua_handler" != "$desired_lua_handler" ]; then
+  uci set "uhttpd.${uhttpd_section}.lua_handler=$desired_lua_handler"
+  uhttpd_changed=1
+fi
+
 if [ "$uhttpd_changed" = 1 ]; then
   uci commit uhttpd
   /etc/init.d/uhttpd reload
 else
-  info "Block-page uhttpd listener already configured (v4 + v6)."
+  info "Block-page uhttpd listener already configured (v4 + v6, lua handler)."
 fi
 
 # #303: enable route_localnet on the LAN bridge so the nft prerouting DNAT

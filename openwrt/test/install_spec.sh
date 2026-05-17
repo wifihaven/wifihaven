@@ -89,5 +89,29 @@ grep -q "Updating block-page uhttpd home" "$SCRIPT" \
   && check "upgrades existing block-page listener to new home" ok \
   || check "upgrades existing block-page listener to new home" "missing upgrade path"
 
+# #437: the block-page listener must dispatch every request through the lua
+# handler (uhttpd-mod-lua) so the page can resolve the requesting device's
+# MAC and render reason-specific copy. Without these UCI options the
+# pre-#437 static index.html (now removed) would be served as a 404.
+grep -q "lua_prefix=" "$SCRIPT" \
+  && check "configures lua_prefix on block-page listener" ok \
+  || check "configures lua_prefix on block-page listener" "missing lua_prefix"
+
+grep -q "/www/familydns/handler.lua" "$SCRIPT" \
+  && check "configures lua_handler pointing at /www/familydns/handler.lua" ok \
+  || check "configures lua_handler pointing at /www/familydns/handler.lua" \
+           "missing lua_handler wiring"
+
+# #437: the new handler ships at this path; ensure the file exists in tree.
+[ -f "$ROOT/files/www/familydns/handler.lua" ] \
+  && check "handler.lua exists in tree" ok \
+  || check "handler.lua exists in tree" "missing openwrt/files/www/familydns/handler.lua"
+
+# #437: the static index.html is gone (replaced by the lua handler).
+[ ! -f "$ROOT/files/www/familydns/index.html" ] \
+  && check "legacy static index.html has been removed" ok \
+  || check "legacy static index.html has been removed" \
+           "openwrt/files/www/familydns/index.html still present"
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

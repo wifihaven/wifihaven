@@ -111,6 +111,8 @@ export const api = {
   logs: {
     query: (params: {
       mac?: string
+      deviceId?: number
+      profileId?: number
       blocked?: boolean
       domain?: string
       location?: string
@@ -120,6 +122,8 @@ export const api = {
     }) => {
       const qs = new URLSearchParams()
       if (params.mac)      qs.set('mac', params.mac)
+      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
+      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
       if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
       if (params.domain)   qs.set('domain', params.domain)
       if (params.location) qs.set('location', params.location)

@@ -1,9 +1,9 @@
-package familydns.api.feature
+package wifihaven.api.feature
 
-import familydns.api.db.*
-import familydns.api.routes.*
-import familydns.shared.*
-import familydns.shared.types.*
+import wifihaven.api.db.*
+import wifihaven.api.routes.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
 import zio.*
 import zio.http.*
 import zio.json.ast.Json

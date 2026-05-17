@@ -1,6 +1,6 @@
-package familydns.shared.types
+package wifihaven.shared.types
 
-import familydns.shared.{BlockReason, MacBlockReason}
+import wifihaven.shared.{BlockReason, MacBlockReason}
 import zio.json.*
 import zio.test.*
 
@@ -61,23 +61,23 @@ object BlockReasonSpec extends ZIOSpecDefault {
     suite("Type-system subtype constraint")(
       test("MacBlockReason is assignable to BlockReason") {
         assertTrue(typeChecks("""
-          val r: familydns.shared.BlockReason =
-            familydns.shared.MacBlockReason.Paused
+          val r: wifihaven.shared.BlockReason =
+            wifihaven.shared.MacBlockReason.Paused
         """))
       },
       test("BlockReason.Host does NOT typecheck as MacBlockReason") {
         assertTrue(!typeChecks("""
-          val r: familydns.shared.MacBlockReason =
-            familydns.shared.BlockReason.Host(
-              familydns.shared.types.Hostname.parse("a.com").toOption.get
+          val r: wifihaven.shared.MacBlockReason =
+            wifihaven.shared.BlockReason.Host(
+              wifihaven.shared.types.Hostname.parse("a.com").toOption.get
             )
         """))
       },
       test("BlockReason.IpOnly does NOT typecheck as MacBlockReason") {
         assertTrue(!typeChecks("""
-          val r: familydns.shared.MacBlockReason =
-            familydns.shared.BlockReason.IpOnly(
-              familydns.shared.types.IpAddress.parse("1.2.3.4").toOption.get
+          val r: wifihaven.shared.MacBlockReason =
+            wifihaven.shared.BlockReason.IpOnly(
+              wifihaven.shared.types.IpAddress.parse("1.2.3.4").toOption.get
             )
         """))
       },

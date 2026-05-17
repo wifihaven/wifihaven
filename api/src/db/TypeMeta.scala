@@ -1,9 +1,9 @@
-package familydns.api.db
+package wifihaven.api.db
 
 import doobie.*
 import doobie.postgres.implicits.*
-import familydns.shared.{FailureMode, MacBlockReason, UserRole}
-import familydns.shared.types.*
+import wifihaven.shared.{FailureMode, MacBlockReason, UserRole}
+import wifihaven.shared.types.*
 
 import java.time.ZoneId
 

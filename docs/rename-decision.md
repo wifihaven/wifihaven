@@ -1,8 +1,10 @@
-# Project rename: `familydns` → `wifihaven` (pencilled in)
+# Project rename: `familydns` → `wifihaven` (approved, in progress)
 
-**Status:** Pencilled in pending family consultation. Not executed yet — execution
-is tracked in the META tracker issue (filed alongside this doc) and the per-slice
-rename issues it links to.
+**Status:** Name `wifihaven` approved (#365). Execution is in progress across
+the per-slice rename issues linked from META #365. This docs-and-agent-context
+slice is #361. Technical identifiers (Scala packages, Docker image, install
+paths, env vars in code, OpenWRT package + UCI, GitHub repo URL) are renamed
+by sibling sub-issues — see #365 for ordering.
 
 **Closes (when execution lands):** #38
 

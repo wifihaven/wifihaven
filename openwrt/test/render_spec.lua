@@ -961,10 +961,14 @@ end)
 --
 -- Per-MAC "must use DNS" enforcement: when a device has BlockRules.blockIpOnly
 -- true, forward-chain drops any v4/v6 daddr that is NOT in this MAC's
--- resolved_<mac> / resolved6_<mac> set. dnsmasq populates the sets at A/AAAA
--- response time, scoped to the MAC via a dhcp-host tag — every hostname the
--- device resolves through our resolver lands in the set; everything else
--- (DoH, DoT, hard-coded IPs) drops.
+-- resolved_<mac> / resolved6_<mac> set. The familydns-dns-tail sidecar
+-- populates the sets at A/AAAA response time by tailing dnsmasq's query log
+-- and mapping the per-reply client IP back to a MAC via /tmp/dhcp.leases —
+-- every hostname the device resolves through our resolver lands in its set;
+-- everything else (DoH, DoT, hard-coded IPs) drops. dnsmasq's `nftset=`
+-- directive is NOT used for this set: dnsmasq 2.91 rejects the `tag:` prefix
+-- needed for per-MAC scoping (#496/#505), and cross-MAC pollination would
+-- defeat the feature.
 --
 -- The drop is order-independent w.r.t. extraBlocked / blocklist drops: all
 -- three are terminal `drop` rules under a `policy accept` chain, so the
@@ -1000,18 +1004,23 @@ describe("render blockIpOnly enforcement (#353)", function()
 
   -- ── dnsmasq side ────────────────────────────────────────────────────────
 
-  it("appends set:resolvetag_<sanmac> to the dhcp-host line when blockIpOnly=true", function()
+  it("does NOT add a resolvetag tag to the dhcp-host line (#505: dns-tail populates)", function()
     local conf = render.dnsmasq(snap_bio())
-    assert.truthy(conf:find(
-      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:resolvetag_aa_bb_cc_11_22_33",
-      1, true))
+    -- dhcp-host carries only the profile tag; resolvetag_ is never emitted.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
+               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+    assert.is_nil(conf:find("resolvetag_", 1, true))
   end)
 
-  it("emits tag-scoped nftset= populator for the per-MAC resolved sets", function()
+  it("does NOT emit any nftset= directive for resolved_/resolved6_ (#505)", function()
     local conf = render.dnsmasq(snap_bio())
-    assert.truthy(conf:find(
-      "nftset=tag:resolvetag_aa_bb_cc_11_22_33,4#inet#familydns#resolved_aa_bb_cc_11_22_33,6#inet#familydns#resolved6_aa_bb_cc_11_22_33",
-      1, true))
+    -- The populator is dns-tail, not dnsmasq. dnsmasq 2.91 rejects the
+    -- `tag:` prefix needed for per-MAC scoping (#496), so the directive is
+    -- omitted entirely — any reference to resolved_/resolved6_ here would
+    -- regress the bug.
+    assert.is_nil(conf:find("nftset=tag:", 1, true))
+    assert.is_nil(conf:find("resolved_aa_bb_cc_11_22_33", 1, true))
+    assert.is_nil(conf:find("resolved6_aa_bb_cc_11_22_33", 1, true))
   end)
 
   it("does NOT emit resolvetag / resolved nftset directives when blockIpOnly=false", function()
@@ -1034,10 +1043,13 @@ describe("render blockIpOnly enforcement (#353)", function()
       extraBlocked = {}, extraAllowed = {}, blocklistIds = {}, blockIpOnly = true,
     }
     local conf = render.dnsmasq(s)
-    assert.truthy(conf:find(
-      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:resolvetag_aa_bb_cc_11_22_33",
-      1, true))
-    assert.truthy(conf:find("nftset=tag:resolvetag_aa_bb_cc_11_22_33", 1, true))
+    -- dhcp-host still carries only the profile tag; population still comes
+    -- from dns-tail, not dnsmasq. The nft side (declared sets + drop rule)
+    -- is what actually enforces blockIpOnly — see the nft-side tests below.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
+               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
+    assert.is_nil(conf:find("resolvetag_", 1, true))
+    assert.is_nil(conf:find("nftset=tag:", 1, true))
   end)
 
   -- ── nft side: per-MAC sets ──────────────────────────────────────────────
@@ -1235,27 +1247,30 @@ describe("render extraAllowed enforcement (#421)", function()
 
   -- ── dnsmasq side ────────────────────────────────────────────────────────
 
-  it("appends set:eatag_<sanmac> to the dhcp-host line of a MAC with extraAllowed", function()
+  -- #496: dnsmasq 2.91's nftset= parser rejects a `tag:` prefix, so the
+  -- ea_ populator must NOT be tag-scoped. The MAC scoping lives in the
+  -- nft rule (`ether saddr <mac> ... != @ea_<mac>_<host>`) instead.
+  it("does NOT append eatag_ to any dhcp-host line", function()
     local conf = render.dnsmasq(snap_ea())
-    assert.truthy(conf:find(
-      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:eatag_aa_bb_cc_11_22_33",
-      1, true))
+    assert.is_nil(conf:find("eatag_", 1, true))
+    -- The MAC with extraAllowed still gets its profile tag, just not an eatag.
+    assert.truthy(conf:find("dhcp-host=aa:bb:cc:11:22:33,set:profile3\n", 1, true)
+               or conf:match("dhcp-host=aa:bb:cc:11:22:33,set:profile3$"))
   end)
 
   it("does NOT append eatag_ to MACs with empty extraAllowed", function()
     local conf = render.dnsmasq(snap_ea())
-    -- Adult MAC has extraAllowed={}; its line must be plain set:profile1.
     assert.truthy(conf:find("dhcp-host=de:ad:be:ef:00:01,set:profile1\n", 1, true)
                or conf:match("dhcp-host=de:ad:be:ef:00:01,set:profile1$"))
-    assert.is_nil(conf:find(
-      "dhcp-host=de:ad:be:ef:00:01,.-eatag_", 1, false))
   end)
 
-  it("emits tag-scoped nftset= populator for the per-(MAC, host) ea_ / ea6_ sets", function()
+  it("emits untagged nftset= populator for the per-(MAC, host) ea_ / ea6_ sets", function()
     local conf = render.dnsmasq(snap_ea())
     assert.truthy(conf:find(
-      "nftset=tag:eatag_aa_bb_cc_11_22_33,/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com,6#inet#familydns#ea6_aa_bb_cc_11_22_33_music_tiktok_com",
+      "nftset=/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com,6#inet#familydns#ea6_aa_bb_cc_11_22_33_music_tiktok_com",
       1, true))
+    -- Regression guard: never emit the broken tag:-scoped form (#496).
+    assert.is_nil(conf:find("nftset=tag:", 1, true))
   end)
 
   it("emits one nftset= populator per (mac, host) when a MAC has multiple extraAllowed hosts", function()
@@ -1263,14 +1278,14 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
     local conf = render.dnsmasq(s)
     assert.truthy(conf:find(
-      "nftset=tag:eatag_aa_bb_cc_11_22_33,/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com",
+      "nftset=/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com",
       1, true))
     assert.truthy(conf:find(
-      "nftset=tag:eatag_aa_bb_cc_11_22_33,/khanacademy.org/4#inet#familydns#ea_aa_bb_cc_11_22_33_khanacademy_org",
+      "nftset=/khanacademy.org/4#inet#familydns#ea_aa_bb_cc_11_22_33_khanacademy_org",
       1, true))
   end)
 
-  it("does NOT emit ea_ nftsets or eatag dhcp-host suffix when no device has extraAllowed", function()
+  it("does NOT emit ea_ nftsets when no device has extraAllowed", function()
     local s = snap_ea()
     s.profiles["3"].rules.extraAllowed = {}
     local conf = render.dnsmasq(s)
@@ -1280,7 +1295,6 @@ describe("render extraAllowed enforcement (#421)", function()
 
   it("device-override extraAllowed scopes the ea populator to that MAC only", function()
     local s = snap_ea()
-    -- Profile flips OFF; sibling under same profile has no override.
     s.profiles["3"].rules.extraAllowed = {}
     s.devices["11:22:33:44:55:66"] = { profileId = 3, name = "kid-phone", rules = nil }
     s.devices["aa:bb:cc:11:22:33"].rules = {
@@ -1289,14 +1303,12 @@ describe("render extraAllowed enforcement (#421)", function()
       blocklistIds = {}, blockIpOnly = false,
     }
     local conf = render.dnsmasq(s)
-    -- Override MAC gets eatag + populator.
+    -- Override MAC gets the populator under its own per-(MAC, host) set name.
     assert.truthy(conf:find(
-      "dhcp-host=aa:bb:cc:11:22:33,set:profile3,set:eatag_aa_bb_cc_11_22_33",
+      "nftset=/music.tiktok.com/4#inet#familydns#ea_aa_bb_cc_11_22_33_music_tiktok_com",
       1, true))
-    assert.truthy(conf:find(
-      "nftset=tag:eatag_aa_bb_cc_11_22_33,/music.tiktok.com/", 1, true))
-    -- Sibling under same profile must NOT inherit.
-    assert.is_nil(conf:find("eatag_11_22_33_44_55_66", 1, true))
+    -- Sibling under same profile must NOT have a populator with its own set.
+    assert.is_nil(conf:find("ea_11_22_33_44_55_66", 1, true))
   end)
 
   -- ── nft side: set declarations ──────────────────────────────────────────
@@ -1569,4 +1581,52 @@ describe("render extraAllowed enforcement (#421)", function()
       1, true))
   end)
 
+end)
+
+-- ── render.write_blocked_reasons (#437) ──────────────────────────────────────
+--
+-- The agent calls this after every render.update_shared so the block-page
+-- uhttpd handler can map REMOTE_ADDR → MAC → reason instead of falling back
+-- to generic "blocked" copy.
+describe("render.write_blocked_reasons", function()
+  local function tmp_path()
+    local p = os.tmpname()
+    os.remove(p)  -- only want the path; we'll write to it
+    return p
+  end
+
+  local function read_all(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local c = f:read("*a"); f:close(); return c
+  end
+
+  it("writes one '<mac>\\t<reason>' line per blocked MAC, sorted", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_reasons({
+      ["de:ad:be:ef:00:01"] = "TimeLimit",
+      ["aa:bb:cc:11:22:33"] = "Paused",
+    }, p)
+    assert.is_true(ok)
+    assert.equals(
+      "aa:bb:cc:11:22:33\tPaused\nde:ad:be:ef:00:01\tTimeLimit\n",
+      read_all(p))
+    os.remove(p)
+  end)
+
+  it("writes an empty file when nothing is blocked", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_reasons({}, p)
+    assert.is_true(ok)
+    assert.equals("", read_all(p))
+    os.remove(p)
+  end)
+
+  it("treats a nil map as empty (no crash, empty output)", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_reasons(nil, p)
+    assert.is_true(ok)
+    assert.equals("", read_all(p))
+    os.remove(p)
+  end)
 end)

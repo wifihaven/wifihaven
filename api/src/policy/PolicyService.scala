@@ -1,9 +1,9 @@
-package familydns.api.policy
+package wifihaven.api.policy
 
-import familydns.api.db.*
-import familydns.api.presence.Presence
-import familydns.shared.{Schedule as DbSchedule, *}
-import familydns.shared.types.*
+import wifihaven.api.db.*
+import wifihaven.api.presence.Presence
+import wifihaven.shared.{Schedule as DbSchedule, *}
+import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 
 import java.security.MessageDigest
