@@ -113,16 +113,22 @@ grep -q "/www/familydns/handler.lua" "$SCRIPT" \
   || check "legacy static index.html has been removed" \
            "openwrt/files/www/familydns/index.html still present"
 
-# #528: build-ipk.sh hardcodes the ipk's Depends line (the OpenWRT Image
-# Builder reads that, not the Makefile, when assembling the router image).
-# It must include uhttpd-mod-lua so the lua_handler wired in just above
-# actually runs — without the module uhttpd silently ignores lua_handler,
-# falls back to static-file serving, and 404s every request (the legacy
-# index.html was removed alongside the handler).
+# #528: build-ipk.sh and build-apk.sh both hardcode the package's depends
+# line (the OpenWRT Image Builder reads the package metadata, not the
+# Makefile, when assembling the router image). Both must include
+# uhttpd-mod-lua so the lua_handler wired in just above actually runs —
+# without the module uhttpd silently ignores lua_handler, falls back to
+# static-file serving, and 404s every request (the legacy index.html was
+# removed alongside the handler).
 grep -q "uhttpd-mod-lua" "$ROOT/build-ipk.sh" \
   && check "build-ipk.sh Depends pulls in uhttpd-mod-lua" ok \
   || check "build-ipk.sh Depends pulls in uhttpd-mod-lua" \
            "missing uhttpd-mod-lua dep in build-ipk.sh"
+
+grep -q "uhttpd-mod-lua" "$ROOT/build-apk.sh" \
+  && check "build-apk.sh depends pulls in uhttpd-mod-lua" ok \
+  || check "build-apk.sh depends pulls in uhttpd-mod-lua" \
+           "missing uhttpd-mod-lua dep in build-apk.sh"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
