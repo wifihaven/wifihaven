@@ -1,11 +1,11 @@
 [Unit]
-Description=FamilyDNS API auto-update (pull latest image and restart)
+Description=WifiHaven API auto-update (pull latest image and restart)
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/familydns/deploy
+WorkingDirectory=/opt/wifihaven/deploy
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env pull
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml --env-file .env up -d

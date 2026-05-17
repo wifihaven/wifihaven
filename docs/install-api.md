@@ -37,15 +37,15 @@ The script:
 Re-running it on an existing install is safe — it offers to keep your
 existing `.env` and `docker compose up -d` is idempotent.
 
-By default the one-liner installs into `$HOME/.familydns` (user-writable, no
+By default the one-liner installs into `$HOME/.wifihaven` (user-writable, no
 sudo required) — this is the recommended path for first-time users and is
 what the `curl | bash` invocation above will do. For a system-wide install
-under `/opt/familydns` (recommended for production hosts), set
+under `/opt/wifihaven` (recommended for production hosts), set
 `WIFIHAVEN_PREFIX` explicitly and run the script with `sudo`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
-sudo WIFIHAVEN_PREFIX=/opt/familydns bash install.sh
+sudo WIFIHAVEN_PREFIX=/opt/wifihaven bash install.sh
 ```
 
 Piping `curl … | sudo bash` works too, but only if sudo is already warmed up
@@ -75,7 +75,7 @@ env vars below to skip prompts. You can pass them on the same one-liner:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \
   | WIFIHAVEN_NONINTERACTIVE=1 \
-    WIFIHAVEN_PREFIX=$HOME/.familydns \
+    WIFIHAVEN_PREFIX=$HOME/.wifihaven \
     WIFIHAVEN_API_HOST_PORT=8080 \
     WIFIHAVEN_NEW_ADMIN_PW='choose-a-good-one' \
     bash
@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/
 
 | Env var | Purpose | Default |
 |---|---|---|
-| `WIFIHAVEN_PREFIX` | install path (preferred name) | `$HOME/.familydns` (non-root) or `/opt/familydns` (root) |
+| `WIFIHAVEN_PREFIX` | install path (preferred name) | `$HOME/.wifihaven` (non-root) or `/opt/wifihaven` (root) |
 | `WIFIHAVEN_INSTALL_DIR` | legacy alias for `WIFIHAVEN_PREFIX` | — |
 | `WIFIHAVEN_API_HOST_PORT` | host port to bind | `8080` |
 | `WIFIHAVEN_API_BIND` | host interface to bind on | `0.0.0.0` |
@@ -171,17 +171,17 @@ You only need the `deploy/` directory on the host, not the full source. The
 simplest path is a shallow clone:
 
 ```sh
-sudo mkdir -p /opt/familydns
-sudo chown "$USER" /opt/familydns
-git clone --depth 1 https://github.com/sameerparekh/familydns.git /opt/familydns
-cd /opt/familydns/deploy
+sudo mkdir -p /opt/wifihaven
+sudo chown "$USER" /opt/wifihaven
+git clone --depth 1 https://github.com/sameerparekh/familydns.git /opt/wifihaven
+cd /opt/wifihaven/deploy
 ```
 
 Or, if you'd rather not clone the whole repo, copy the two files directly
 from GitHub:
 
 ```sh
-mkdir -p /opt/familydns/deploy && cd /opt/familydns/deploy
+mkdir -p /opt/wifihaven/deploy && cd /opt/wifihaven/deploy
 curl -fsSLO https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/docker-compose.prod.yml
 curl -fsSLO https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/.env.example
 ```

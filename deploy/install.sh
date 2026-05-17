@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# FamilyDNS API — first-install bootstrap.
+# WifiHaven API — first-install bootstrap.
 #
 #   curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh | bash
 #
@@ -13,9 +13,9 @@
 # .env and offers to keep it, and `docker compose up -d` is idempotent.
 #
 # Env vars to skip prompts (useful for unattended installs):
-#   FAMILYDNS_PREFIX         install path. Default: $HOME/.familydns when run
-#                            as a normal user (no sudo needed), /opt/familydns
-#                            when run as root. Set to /opt/familydns explicitly
+#   FAMILYDNS_PREFIX         install path. Default: $HOME/.wifihaven when run
+#                            as a normal user (no sudo needed), /opt/wifihaven
+#                            when run as root. Set to /opt/wifihaven explicitly
 #                            for a system-wide install (requires sudo/root).
 #   FAMILYDNS_INSTALL_DIR    legacy alias for FAMILYDNS_PREFIX.
 #   FAMILYDNS_API_HOST_PORT  host port to bind           (default: 8080)
@@ -126,11 +126,11 @@ if [ -n "${FAMILYDNS_PREFIX:-}" ] && [ -z "${FAMILYDNS_INSTALL_DIR:-}" ]; then
 fi
 
 # Default prefix: user-writable when not root (so `curl|bash` works without
-# sudo), /opt/familydns when running as root.
+# sudo), /opt/wifihaven when running as root.
 if [ "$(id -u)" -eq 0 ]; then
-  DEFAULT_PREFIX="/opt/familydns"
+  DEFAULT_PREFIX="/opt/wifihaven"
 else
-  DEFAULT_PREFIX="${HOME}/.familydns"
+  DEFAULT_PREFIX="${HOME}/.wifihaven"
 fi
 
 prompt FAMILYDNS_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
@@ -164,7 +164,7 @@ if [ ! -d "$FAMILYDNS_INSTALL_DIR" ]; then
 
     # 1. User-mode install (no sudo needed):
     curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh \\
-      | FAMILYDNS_PREFIX=\$HOME/.familydns bash
+      | FAMILYDNS_PREFIX=\$HOME/.wifihaven bash
 
     # 2. Save and run with sudo:
     curl -fsSL https://raw.githubusercontent.com/sameerparekh/familydns/main/deploy/install.sh -o install.sh
@@ -218,7 +218,7 @@ if [ -f .env ]; then
     ${FAMILYDNS_INSTALL_DIR}/status.sh    # container status
 
   ⚠  DANGER — only run the next block if you intend to PERMANENTLY DELETE
-     all FamilyDNS data on this host (devices, profiles, query logs,
+     all WifiHaven data on this host (devices, profiles, query logs,
      admin user, everything). There is no undo.
 
     ${FAMILYDNS_INSTALL_DIR}/stop.sh -v
@@ -467,7 +467,7 @@ fi
 
 # ── 9b. Install auto-update timer ─────────────────────────────────────────
 #
-# Drops familydns-update.service + .timer into /etc/systemd/system/ and
+# Drops wifihaven-update.service + .timer into /etc/systemd/system/ and
 # enables the timer so the host pulls a fresh image every 5 minutes. This
 # is what closes the deploy gap for issue #254: without it, fixes that
 # land on `main` don't reach existing installs until someone ssh's in to
@@ -489,33 +489,33 @@ else
   fi
 
   UNIT_TMP="$(mktemp -d)"
-  if curl -fsSL "${REPO_RAW}/deploy/systemd/familydns-update.service" \
-        -o "${UNIT_TMP}/familydns-update.service" \
-     && curl -fsSL "${REPO_RAW}/deploy/systemd/familydns-update.timer" \
-        -o "${UNIT_TMP}/familydns-update.timer"; then
-    # The shipped unit hard-codes /opt/familydns/deploy as the
+  if curl -fsSL "${REPO_RAW}/deploy/systemd/wifihaven-update.service" \
+        -o "${UNIT_TMP}/wifihaven-update.service" \
+     && curl -fsSL "${REPO_RAW}/deploy/systemd/wifihaven-update.timer" \
+        -o "${UNIT_TMP}/wifihaven-update.timer"; then
+    # The shipped unit hard-codes /opt/wifihaven/deploy as the
     # WorkingDirectory (matches the documented system-wide install
     # path). Patch it to the actual install dir so user-mode installs
-    # at $HOME/.familydns also get auto-update.
-    if [ "$FAMILYDNS_INSTALL_DIR" != "/opt/familydns" ]; then
-      sed -i.bak "s|^WorkingDirectory=/opt/familydns/deploy$|WorkingDirectory=${FAMILYDNS_INSTALL_DIR}|" \
-        "${UNIT_TMP}/familydns-update.service"
-      rm -f "${UNIT_TMP}/familydns-update.service.bak"
+    # at $HOME/.wifihaven also get auto-update.
+    if [ "$FAMILYDNS_INSTALL_DIR" != "/opt/wifihaven" ]; then
+      sed -i.bak "s|^WorkingDirectory=/opt/wifihaven/deploy$|WorkingDirectory=${FAMILYDNS_INSTALL_DIR}|" \
+        "${UNIT_TMP}/wifihaven-update.service"
+      rm -f "${UNIT_TMP}/wifihaven-update.service.bak"
     fi
 
     install_ok=1
-    $SUDO install -m 0644 "${UNIT_TMP}/familydns-update.service" \
-      /etc/systemd/system/familydns-update.service || install_ok=0
-    $SUDO install -m 0644 "${UNIT_TMP}/familydns-update.timer" \
-      /etc/systemd/system/familydns-update.timer || install_ok=0
+    $SUDO install -m 0644 "${UNIT_TMP}/wifihaven-update.service" \
+      /etc/systemd/system/wifihaven-update.service || install_ok=0
+    $SUDO install -m 0644 "${UNIT_TMP}/wifihaven-update.timer" \
+      /etc/systemd/system/wifihaven-update.timer || install_ok=0
 
     if [ "$install_ok" -eq 1 ] \
        && $SUDO systemctl daemon-reload \
-       && $SUDO systemctl enable --now familydns-update.timer; then
-      ok "familydns-update.timer enabled (polls ghcr.io daily)"
-      ok "Disable with:  ${SUDO:+sudo }systemctl disable --now familydns-update.timer"
+       && $SUDO systemctl enable --now wifihaven-update.timer; then
+      ok "wifihaven-update.timer enabled (polls ghcr.io daily)"
+      ok "Disable with:  ${SUDO:+sudo }systemctl disable --now wifihaven-update.timer"
     else
-      warn "Could not install/enable familydns-update.timer."
+      warn "Could not install/enable wifihaven-update.timer."
       warn "Install manually — see docs/deploy.md §1.3."
     fi
   else
@@ -529,7 +529,7 @@ fi
 
 echo
 c_green "═══════════════════════════════════════════════════════════════"
-c_green "  FamilyDNS API is up at ${API_URL}"
+c_green "  WifiHaven API is up at ${API_URL}"
 c_green "═══════════════════════════════════════════════════════════════"
 cat <<EOF
 
@@ -547,7 +547,7 @@ Next steps:
   2. Log in at ${API_URL} as 'admin' and head to Routers → Add router to
      enroll your OpenWRT gateway. Then follow docs/install-openwrt.md.
 
-  Auto-update is on by default (familydns-update.timer, every 5 minutes).
-  To turn it off: ${SUDO:+sudo }systemctl disable --now familydns-update.timer
+  Auto-update is on by default (wifihaven-update.timer, every 5 minutes).
+  To turn it off: ${SUDO:+sudo }systemctl disable --now wifihaven-update.timer
      See docs/deploy.md §1.3.
 EOF

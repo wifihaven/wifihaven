@@ -10,7 +10,7 @@ reach this api over the network (see [`docs/architecture.md`](../docs/architectu
 | --------------------------------- | ------- |
 | `docker-compose.prod.yml`         | Single-stack compose: postgres + api. |
 | `.env.example`                    | Template for secrets/config. Copy to `.env`. |
-| `familydns-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
+| `wifihaven-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
 
 ## Quick install
 
@@ -91,7 +91,7 @@ postgres is **not** reachable from the host, and tears the stack down.
 ## Migrating from the legacy host-based deploy
 
 If you're running the older systemd-on-host install (`scripts/deploy.sh` +
-`familydns-api.service`):
+`wifihaven-api.service`):
 
 1. `pg_dump` your existing local postgres.
 2. Stop and disable the systemd units.
