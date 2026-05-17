@@ -43,3 +43,11 @@ def test_blocked_request_returns_block_page(
     probe = wait_until(block_page_body, timeout_s=60, interval_s=3,
                        description="block page response from router")
     assert probe.http_code == 200, probe
+
+    # The redirect page must carry inline content so the reason is visible
+    # even if the browser blocks the cross-origin redirect (#576, #580).
+    body_lower = probe.body.lower()
+    assert "blocked" in body_lower, "expected 'blocked' in block page body"
+    assert "request extension" not in body_lower, (
+        "block page must not expose a 'Request extension' link (#577)"
+    )
