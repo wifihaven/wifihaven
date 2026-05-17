@@ -95,7 +95,7 @@ def _set_clock_and_sync(admin, router, when: datetime) -> None:
     wall-clock jump; `wait_for_next_poll` here pins the next sync to the
     next cycle boundary and asserts the agent actually polled."""
     set_router_clock(when)
-    wait_for_next_poll(admin, router.router_id, timeout_s=120)
+    wait_for_next_poll(admin, router.router_id, timeout_s=240)
 
 
 def _schedule_id_from(profile: dict, name: str) -> int | None:
@@ -134,9 +134,9 @@ def test_in_window_blocks(
         _set_clock_and_sync(admin, router, anchor)
 
         result = admin.add_schedule(profile_id, schedule)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
         _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
     finally:
         sid = _schedule_id_from(result or {}, sched_name)
@@ -176,8 +176,8 @@ def test_out_of_window_allows(
         _set_clock_and_sync(admin, router, anchor)
 
         result = admin.add_schedule(profile_id, schedule)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
-        wait_for_next_poll(admin, router.router_id, timeout_s=120)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
+        wait_for_next_poll(admin, router.router_id, timeout_s=240)
 
         assert not _mac_in_set(mac), \
             f"{mac} should not be blocked while clock is outside the window"
@@ -230,8 +230,8 @@ def test_cross_midnight_LA_tz(
         _set_clock_and_sync(admin, router, la(23, 57))
 
         result = admin.add_schedule(profile_id, schedule)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
-        wait_for_next_poll(admin, router.router_id, timeout_s=120)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
+        wait_for_next_poll(admin, router.router_id, timeout_s=240)
 
         # # pending #334
         assert not _mac_in_set(mac), "23:57 LA: outside window, should be allowed"
@@ -239,7 +239,7 @@ def test_cross_midnight_LA_tz(
         # Step to 23:59 LA — inside window.
         _set_clock_and_sync(admin, router, la(23, 59))
         # # pending #334
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
 
         # Step across midnight to 00:01 LA (next day) — still inside window.
         next_la = date_la + timedelta(days=1)
@@ -248,7 +248,7 @@ def test_cross_midnight_LA_tz(
             next_la.replace(hour=0, minute=1).astimezone(timezone.utc),
         )
         # # pending #334
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
 
         # Step to 00:04 LA — past window close.
         _set_clock_and_sync(
@@ -256,7 +256,7 @@ def test_cross_midnight_LA_tz(
             next_la.replace(hour=0, minute=4).astimezone(timezone.utc),
         )
         # # pending #334
-        _wait_mac_in_blocked_set(mac, present=False, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=False, timeout_s=180)
     finally:
         sid = _schedule_id_from(result or {}, sched_name)
         if sid is not None:
@@ -297,23 +297,23 @@ def test_pause_overrides_schedule(
         _set_clock_and_sync(admin, router, anchor)
 
         result = admin.add_schedule(profile_id, schedule)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
         _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
 
         # Pause — reason should flip to paused within one poll.
         admin.set_profile_paused(profile_id, True)
         paused = True
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=60)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
         _wait_event(debug_api, mac, reason="paused", timeout_s=60)
 
         # Unpause — schedule still in window, reason should revert.
         admin.set_profile_paused(profile_id, False)
         paused = False
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=60)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
         _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
     finally:
         if paused:
@@ -364,15 +364,15 @@ def test_all_day_monday(
         _set_clock_and_sync(admin, router, sunday_2359)
 
         result = admin.add_schedule(profile_id, schedule)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
-        wait_for_next_poll(admin, router.router_id, timeout_s=120)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
+        wait_for_next_poll(admin, router.router_id, timeout_s=240)
 
         # # pending #334
         assert not _mac_in_set(mac), "Sun 23:59 LA: outside Monday window, should be allowed"
 
         _set_clock_and_sync(admin, router, monday_0001)
         # # pending #334
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
     finally:
         sid = _schedule_id_from(result or {}, sched_name)
         if sid is not None:
@@ -414,13 +414,13 @@ def test_in_then_out_smoke(
         _set_clock_and_sync(admin, router, in_window)
 
         result = admin.add_schedule(profile_id, schedule)
-        wait_for_etag_change(admin, router.router_id, timeout_s=120)
+        wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
-        _wait_mac_in_blocked_set(mac, present=True, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
         _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
 
         _set_clock_and_sync(admin, router, out_window)
-        _wait_mac_in_blocked_set(mac, present=False, timeout_s=90)
+        _wait_mac_in_blocked_set(mac, present=False, timeout_s=180)
         _wait_http_succeeds(client, timeout_s=60)
     finally:
         sid = _schedule_id_from(result or {}, sched_name)

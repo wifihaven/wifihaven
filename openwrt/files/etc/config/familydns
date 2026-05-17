@@ -18,7 +18,7 @@ config familydns 'familydns'
 	option event_flush_interval '10'
 
 	# How often (seconds) to poll for a new policy snapshot
-	option policy_poll_interval '60'
+	option policy_poll_interval '5'
 
 	# How often (seconds) to POST usage counters
-	option usage_report_interval '300'
+	option usage_report_interval '60'
