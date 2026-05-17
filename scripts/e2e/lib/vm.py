@@ -27,8 +27,8 @@ ROUTER_SSH_USER = "root"
 # Router LuCI HTTP hostfwd. The orchestrator never uses LuCI but the underlying
 # router-up.sh always sets up the forward. Default 8080 collides with a
 # developer's docker-compose stack (and with our own e2e stack on certain
-# layouts), so pin it to a high port. Override with FDNS_ROUTER_HTTP_PORT.
-ROUTER_HTTP_PORT = int(os.environ.get("FDNS_ROUTER_HTTP_PORT", "18081"))
+# layouts), so pin it to a high port. Override with WH_ROUTER_HTTP_PORT.
+ROUTER_HTTP_PORT = int(os.environ.get("WH_ROUTER_HTTP_PORT", "18081"))
 
 # QEMU SLIRP gateway as seen from inside the router VM. The router VM's WAN is
 # user-mode networking, so it reaches the host (where the API stack runs) via
@@ -53,9 +53,9 @@ def router_up(*, image_path: str | None = None, wait_ssh_timeout: float = 180) -
     """
     env = os.environ.copy()
     if image_path:
-        env["FDNS_ROUTER_IMAGE_PATH"] = image_path
-    env.setdefault("FDNS_ROUTER_HTTP_PORT", str(ROUTER_HTTP_PORT))
-    env.setdefault("FDNS_ROUTER_SSH_PORT", str(ROUTER_SSH_PORT))
+        env["WH_ROUTER_IMAGE_PATH"] = image_path
+    env.setdefault("WH_ROUTER_HTTP_PORT", str(ROUTER_HTTP_PORT))
+    env.setdefault("WH_ROUTER_SSH_PORT", str(ROUTER_SSH_PORT))
     res = run([_vm_script("router-up.sh")], env=env, timeout=300)
     _wait_for_router_ssh(timeout_s=wait_ssh_timeout)
     return res

@@ -16,7 +16,7 @@
 #
 # Acceptance test (cf. issue #150):
 #   1. This script runs to completion on a clean checkout.
-#   2. FDNS_ROUTER_IMAGE_PATH=$PWD/scripts/vm/.cache/openwrt-wifihaven.img \
+#   2. WH_ROUTER_IMAGE_PATH=$PWD/scripts/vm/.cache/openwrt-wifihaven.img \
 #        scripts/vm/router-up.sh boots it.
 #   3. opkg list-installed | grep wifihaven shows the agent.
 #   4. logread | grep wifihaven shows the agent starting up.
@@ -158,7 +158,7 @@ echo "==> Running Image Builder in $IMAGEBUILDER_DOCKER_IMAGE"
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 docker run --rm \
-    --name fdns-imagebuilder \
+    --name wh-imagebuilder \
     -e HOST_UID="$HOST_UID" \
     -e HOST_GID="$HOST_GID" \
     -v "$IB_ROOT":/ib \
@@ -252,4 +252,4 @@ SIZE_MB=$(( $(stat -f%z "$OUTPUT_IMG" 2>/dev/null || stat -c%s "$OUTPUT_IMG") / 
 echo ""
 echo "==> Done."
 echo "    Image: $OUTPUT_IMG (${SIZE_MB} MB)"
-echo "    Boot with: FDNS_ROUTER_IMAGE_PATH=$OUTPUT_IMG scripts/vm/router-up.sh"
+echo "    Boot with: WH_ROUTER_IMAGE_PATH=$OUTPUT_IMG scripts/vm/router-up.sh"

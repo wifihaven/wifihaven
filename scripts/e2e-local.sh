@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-shot local validation: bring up an isolated staging stack and run
 # both e2e suites against it. Safe to run alongside a separately-deployed
-# familydns stack — uses a distinct compose project + ports.
+# wifihaven stack — uses a distinct compose project + ports.
 #
 # Usage:
 #   scripts/e2e-local.sh                # build (if needed), run, tear down
@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${E2E_PORT:-18080}"
-PROJECT="${E2E_PROJECT:-familydns-e2e}"
+PROJECT="${E2E_PROJECT:-wifihaven-e2e}"
 COMPOSE=(docker compose -p "$PROJECT" -f docker/docker-compose.yml)
 
 # Override the api service's host port via an inline compose override so we

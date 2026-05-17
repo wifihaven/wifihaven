@@ -1,4 +1,4 @@
-# Staging / e2e image for FamilyDNS.
+# Staging / e2e image for WifiHaven.
 #
 # Multi-stage:
 #   1. scala-build: compile + assemble the api jar with mill

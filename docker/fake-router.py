@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fake-router — simulates an OpenWRT FamilyDNS agent in the staging stack.
+fake-router — simulates an OpenWRT WifiHaven agent in the staging stack.
 
 Self-provisions on startup (admin login → create router → register), then
 runs the same polling loop the real Lua agent runs:

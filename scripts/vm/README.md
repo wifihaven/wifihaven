@@ -16,8 +16,8 @@ of #144 (router VM) and #146 (client VM).
 - The LAN bridge from the router VM (#144) must already be up before
   `client-up.sh` runs. `router-up.sh` brings it up automatically; otherwise
   call `lan-bridge-up.sh` directly.
-- `/etc/qemu/bridge.conf` must contain `allow ${FDNS_LAN_BRIDGE}` (default
-  `allow fdns-lan0`) so `qemu-bridge-helper` will attach taps.
+- `/etc/qemu/bridge.conf` must contain `allow ${WH_LAN_BRIDGE}` (default
+  `allow wh-lan0`) so `qemu-bridge-helper` will attach taps.
 
 The harness is not expected to work on macOS — no KVM. Use a Linux dev host
 or CI runner. For running in CI, see
@@ -56,7 +56,7 @@ Each client gets two NICs:
 
 | iface | attached to                | purpose                                 |
 |-------|----------------------------|------------------------------------------|
-| eth0  | `${FDNS_LAN_BRIDGE}` bridge | LAN side. DHCP from router VM. **All real traffic** (DNS, HTTP, etc.) goes here. |
+| eth0  | `${WH_LAN_BRIDGE}` bridge | LAN side. DHCP from router VM. **All real traffic** (DNS, HTTP, etc.) goes here. |
 | eth1  | QEMU user-mode (SLIRP)     | Orchestrator SSH only (port-forwarded to `127.0.0.1:<ssh-port>`). **No default route**, **no DNS** — keeps the SSH path from leaking traffic around the router. |
 
 The DHCP-provided resolver on eth0 (the router) becomes the system resolver,
@@ -109,7 +109,7 @@ OpenWRT 23.05.6 x86/64 booted in QEMU/KVM with two NICs:
 
 | iface | attached to | purpose |
 |---|---|---|
-| eth0 | `${FDNS_LAN_BRIDGE}` bridge | LAN side — shared with client VMs (#146). |
+| eth0 | `${WH_LAN_BRIDGE}` bridge | LAN side — shared with client VMs (#146). |
 | eth1 | QEMU user-mode (SLIRP) | WAN side — gets NAT-to-internet for free, plus host port-forwards for orchestrator access. |
 
 OpenWRT's default board config assigns eth0→lan, eth1→wan, matching the order
@@ -133,23 +133,23 @@ snapshots) and can be inspected with `qemu-img snapshot -l`.
 ### Image pinning + bumping
 
 The OpenWRT version and SHA256 are pinned in [`config.sh`](config.sh)
-(`FDNS_OPENWRT_VERSION`, `FDNS_OPENWRT_SHA256`). To bump:
+(`WH_OPENWRT_VERSION`, `WH_OPENWRT_SHA256`). To bump:
 
-1. Edit `FDNS_OPENWRT_VERSION`.
+1. Edit `WH_OPENWRT_VERSION`.
 2. Fetch the new SHA256:
    ```bash
    curl -sSL "https://downloads.openwrt.org/releases/${VER}/targets/x86/64/sha256sums" \
      | grep generic-ext4-combined.img.gz
    ```
-3. Update `FDNS_OPENWRT_SHA256`.
+3. Update `WH_OPENWRT_SHA256`.
 4. `rm -rf scripts/vm/.cache scripts/vm/.run/router` and re-run `router-up.sh`.
 
 ### Host access
 
-- **SSH**: `ssh -p ${FDNS_ROUTER_SSH_PORT} root@127.0.0.1` (default 2222).
+- **SSH**: `ssh -p ${WH_ROUTER_SSH_PORT} root@127.0.0.1` (default 2222).
   Stock OpenWRT root password is empty on first boot — set one immediately or
   wait for #150 (custom image bakes in a known test password + SSH key).
-- **LuCI HTTP**: `http://127.0.0.1:${FDNS_ROUTER_HTTP_PORT}` (default 8080).
+- **LuCI HTTP**: `http://127.0.0.1:${WH_ROUTER_HTTP_PORT}` (default 8080).
 - **QEMU monitor** (savevm / loadvm / info network / system_powerdown):
   ```bash
   socat - UNIX-CONNECT:scripts/vm/.run/router/monitor.sock
@@ -193,10 +193,10 @@ Output: `.cache/openwrt-wifihaven.img` (uncompressed, ready to feed
 directly to QEMU). Image size: ~30–50 MB.
 
 To boot it via the existing harness, point `router-up.sh` at the file
-through `FDNS_ROUTER_IMAGE_PATH`:
+through `WH_ROUTER_IMAGE_PATH`:
 
 ```bash
-FDNS_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-wifihaven.img \
+WH_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-wifihaven.img \
     scripts/vm/router-up.sh
 ```
 
@@ -243,9 +243,9 @@ VM e2e suite (#148) consumes.
 
 ### Known quirks (v1 — deferred)
 
-- **OpenWRT's default LAN IP is `192.168.1.1`, not in `${FDNS_LAN_SUBNET}`.**
+- **OpenWRT's default LAN IP is `192.168.1.1`, not in `${WH_LAN_SUBNET}`.**
   Clients DHCP from the router so this still works end-to-end, but the host
-  cannot reach the router over the LAN bridge by a `${FDNS_LAN_SUBNET}`
+  cannot reach the router over the LAN bridge by a `${WH_LAN_SUBNET}`
   address yet. Use the WAN-side SSH hostfwd (`127.0.0.1:2222`) to manage
   the router. Tracked as a follow-up.
 
@@ -256,6 +256,6 @@ VM e2e suite (#148) consumes.
 2. `ssh -p 2222 root@127.0.0.1` lands a shell on the router (empty password).
 3. From the router: `ping -c2 8.8.8.8` succeeds (WAN NAT working).
 4. From the router: `ip link show eth0` is `UP`. On the host, `bridge link
-   show` lists a tap attached to `${FDNS_LAN_BRIDGE}`.
+   show` lists a tap attached to `${WH_LAN_BRIDGE}`.
 5. `router-snapshot.sh smoke` succeeds; `qemu-img snapshot -l ...` lists it;
    `router-down.sh && router-up.sh && router-restore.sh smoke` round-trips.

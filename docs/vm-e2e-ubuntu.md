@@ -56,7 +56,7 @@ hooks on some hosts — the `usermod` route is more reliable.
 
 ### LAN bridge + `qemu-bridge-helper`
 
-`client-up.sh` attaches the client VM's LAN NIC to the `fdns-lan0` bridge
+`client-up.sh` attaches the client VM's LAN NIC to the `wh-lan0` bridge
 via `qemu-bridge-helper`, which is not setuid by default on Ubuntu and
 which refuses to attach to bridges that aren't in `/etc/qemu/bridge.conf`.
 Both need fixing once:
@@ -64,7 +64,7 @@ Both need fixing once:
 ```bash
 sudo bash -c '
   mkdir -p /etc/qemu
-  echo "allow fdns-lan0" > /etc/qemu/bridge.conf
+  echo "allow wh-lan0" > /etc/qemu/bridge.conf
   setcap cap_net_admin+ep /usr/lib/qemu/qemu-bridge-helper
 '
 ```
@@ -81,8 +81,8 @@ password each run. Grant a narrow `NOPASSWD` rule for `ip` only:
 ```bash
 sudo bash -c "
   echo '$USER ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip' \
-    > /etc/sudoers.d/familydns-vm
-  chmod 0440 /etc/sudoers.d/familydns-vm
+    > /etc/sudoers.d/wifihaven-vm
+  chmod 0440 /etc/sudoers.d/wifihaven-vm
 "
 ```
 
@@ -97,7 +97,7 @@ After the one-time setup, the per-session sequence is fully unprivileged:
 # 1. Build the client base image (~30 s the first time, instant after).
 scripts/vm/build-client-base.sh
 
-# 2. Build the custom OpenWRT router image with familydns-agent baked in
+# 2. Build the custom OpenWRT router image with wifihaven-agent baked in
 #    (#150, ~60 s after caches are warm). Required for the LAN to be on
 #    192.168.100.0/24 per the e2e plan in #226.
 scripts/vm/build-router-image.sh
@@ -105,8 +105,8 @@ scripts/vm/build-router-image.sh
 # 3. Bring up the router VM. Point at the custom image with an absolute
 #    path, and pick a non-conflicting host HTTP-forward port if 8080 is
 #    already taken on the host (e.g. by a running wifihaven API stack).
-FDNS_ROUTER_HTTP_PORT=18081 \
-FDNS_ROUTER_IMAGE_PATH="$PWD/scripts/vm/.cache/openwrt-wifihaven.img" \
+WH_ROUTER_HTTP_PORT=18081 \
+WH_ROUTER_IMAGE_PATH="$PWD/scripts/vm/.cache/openwrt-wifihaven.img" \
     scripts/vm/router-up.sh
 
 # 4. Bring up a client with a chosen MAC.
@@ -124,11 +124,11 @@ scripts/vm/router-down.sh
 ## Known gotchas on Ubuntu
 
 - **Port 8080 collisions.** If you already run a wifihaven deploy on the
-  host (e.g. via `/home/$USER/.familydns/docker-compose.yml`), the
+  host (e.g. via `/home/$USER/.wifihaven/docker-compose.yml`), the
   router VM's default HTTP forward (`-hostfwd tcp:127.0.0.1:8080-:80`)
   will fail with `Could not set up host forwarding rule`. Override via
-  `FDNS_ROUTER_HTTP_PORT=18081 scripts/vm/router-up.sh` and adjust your
-  own SSH forward (`FDNS_ROUTER_SSH_PORT`) similarly if 2222 is taken.
+  `WH_ROUTER_HTTP_PORT=18081 scripts/vm/router-up.sh` and adjust your
+  own SSH forward (`WH_ROUTER_SSH_PORT`) similarly if 2222 is taken.
 
 - **Image Builder leaves root-owned files in `.cache/`.** OpenWRT's
   Image Builder runs inside a Debian container as root, and its
@@ -149,7 +149,7 @@ scripts/vm/router-down.sh
   Permission denied` after it was working, use the `usermod -aG kvm`
   approach above instead of `setfacl`.
 
-- **Bridge MTU.** `lan-bridge-up.sh` creates `fdns-lan0` without setting
+- **Bridge MTU.** `lan-bridge-up.sh` creates `wh-lan0` without setting
   an MTU; the default 1500 is fine for the e2e plan, but if you bridge
   this to a tun/tap with smaller MTU you'll see TCP stalls.
 
@@ -165,7 +165,7 @@ done
 test -r /dev/kvm && test -w /dev/kvm && echo "ok /dev/kvm" || echo "MISSING /dev/kvm rw"
 
 # Bridge + qemu-bridge-helper:
-grep -q "^allow fdns-lan0\b" /etc/qemu/bridge.conf && echo "ok bridge.conf"
+grep -q "^allow wh-lan0\b" /etc/qemu/bridge.conf && echo "ok bridge.conf"
 getcap /usr/lib/qemu/qemu-bridge-helper | grep -q cap_net_admin && echo "ok qemu-bridge-helper cap"
 
 # Passwordless ip:

@@ -70,7 +70,7 @@ def _wait_http_succeeds(client, *, host: str = "example.com", timeout_s: float =
     def probe():
         p = http_get(client, f"http://{host}/", timeout_s=8)
         if p.http_code is not None and 200 <= p.http_code < 400:
-            if "familydns" in p.body.lower() or "blocked" in p.body.lower():
+            if "wifihaven" in p.body.lower() or "blocked" in p.body.lower():
                 return None
             return p
         return None

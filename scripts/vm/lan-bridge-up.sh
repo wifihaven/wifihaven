@@ -10,26 +10,26 @@ source "${HERE}/lib.sh"
 
 require_cmd ip
 
-if ip link show "${FDNS_LAN_BRIDGE}" >/dev/null 2>&1; then
-  log "bridge ${FDNS_LAN_BRIDGE} already exists"
+if ip link show "${WH_LAN_BRIDGE}" >/dev/null 2>&1; then
+  log "bridge ${WH_LAN_BRIDGE} already exists"
 else
-  log "creating bridge ${FDNS_LAN_BRIDGE}"
-  sudo ip link add name "${FDNS_LAN_BRIDGE}" type bridge
+  log "creating bridge ${WH_LAN_BRIDGE}"
+  sudo ip link add name "${WH_LAN_BRIDGE}" type bridge
 fi
 
-sudo ip link set "${FDNS_LAN_BRIDGE}" up
+sudo ip link set "${WH_LAN_BRIDGE}" up
 
 # qemu-bridge-helper refuses to attach taps unless the bridge is in
 # /etc/qemu/bridge.conf. We don't auto-edit it (root-owned), just warn.
 if [[ -f /etc/qemu/bridge.conf ]]; then
-  if ! grep -qE "^allow ${FDNS_LAN_BRIDGE}\b" /etc/qemu/bridge.conf; then
-    log "warning: /etc/qemu/bridge.conf does not allow ${FDNS_LAN_BRIDGE};"
-    log "         add 'allow ${FDNS_LAN_BRIDGE}' as root, e.g.:"
-    log "           echo 'allow ${FDNS_LAN_BRIDGE}' | sudo tee -a /etc/qemu/bridge.conf"
+  if ! grep -qE "^allow ${WH_LAN_BRIDGE}\b" /etc/qemu/bridge.conf; then
+    log "warning: /etc/qemu/bridge.conf does not allow ${WH_LAN_BRIDGE};"
+    log "         add 'allow ${WH_LAN_BRIDGE}' as root, e.g.:"
+    log "           echo 'allow ${WH_LAN_BRIDGE}' | sudo tee -a /etc/qemu/bridge.conf"
   fi
 else
   log "warning: /etc/qemu/bridge.conf missing — qemu-bridge-helper will refuse"
-  log "         to attach. Create it as root with 'allow ${FDNS_LAN_BRIDGE}'."
+  log "         to attach. Create it as root with 'allow ${WH_LAN_BRIDGE}'."
 fi
 
-log "LAN bridge ${FDNS_LAN_BRIDGE} ready"
+log "LAN bridge ${WH_LAN_BRIDGE} ready"

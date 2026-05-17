@@ -40,7 +40,7 @@ from lib.wait import (
 log = logging.getLogger(__name__)
 
 API_PORT = int(os.environ.get("E2E_VM_API_PORT", "18080"))
-ROUTER_IMAGE_PATH = os.environ.get("FDNS_ROUTER_IMAGE_PATH")  # custom image w/ agent baked in
+ROUTER_IMAGE_PATH = os.environ.get("WH_ROUTER_IMAGE_PATH")  # custom image w/ agent baked in
 KEEP_VMS = os.environ.get("E2E_VM_KEEP", "0") == "1"
 KEEP_STACK = os.environ.get("E2E_VM_KEEP_STACK", "0") == "1"
 SKIP_STACK = os.environ.get("E2E_VM_SKIP_STACK", "0") == "1"

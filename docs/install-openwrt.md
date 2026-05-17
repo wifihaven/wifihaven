@@ -60,12 +60,12 @@ It then:
    24.10+/SNAPSHOT), downloads the matching asset (`.ipk` or `.apk`) from
    the latest GitHub release, and installs it (`opkg install …` or
    `apk add --allow-untrusted …`).
-2. Writes `api_url` and `lan_prefix` to `/etc/config/familydns`.
+2. Writes `api_url` and `lan_prefix` to `/etc/config/wifihaven`.
 3. POSTs `/api/router/register` to exchange the enrollment token for a
    `routerId` and `routerToken`, and writes both to UCI.
 4. Adds a `uhttpd` listener on `127.0.0.1:8081` for the local block page
    (idempotent — skipped if already configured).
-5. Enables and starts the `familydns` procd service.
+5. Enables and starts the `wifihaven` procd service.
 
 If anything goes wrong it aborts before starting the agent, leaving the
 router in a clean state so you can re-run after fixing the underlying issue.
@@ -75,24 +75,24 @@ router in a clean state so you can re-run after fixing the underlying issue.
 Download and inspect the script first:
 
 ```sh
-uclient-fetch -qO /tmp/familydns-install.sh \
+uclient-fetch -qO /tmp/wifihaven-install.sh \
   https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/install.sh
-less /tmp/familydns-install.sh
-sh /tmp/familydns-install.sh
+less /tmp/wifihaven-install.sh
+sh /tmp/wifihaven-install.sh
 ```
 
 ### Uninstalling
 
 To cleanly revert the install (stop and disable the service, remove the
-package, drop the uhttpd block-page listener, wipe the familydns UCI
+package, drop the uhttpd block-page listener, wipe the wifihaven UCI
 config):
 
 ```sh
 sh -c "$(uclient-fetch -qO - https://raw.githubusercontent.com/wifihaven/wifihaven/main/openwrt/uninstall.sh)"
 ```
 
-Pass `--purge` to additionally remove `/usr/lib/familydns` and
-`/usr/lib/lua/familydns` (manual-workaround leftovers from older e2e
+Pass `--purge` to additionally remove `/usr/lib/wifihaven` and
+`/usr/lib/lua/wifihaven` (manual-workaround leftovers from older e2e
 shakeouts). The script is idempotent — re-running on an already-clean
 router exits 0.
 
@@ -100,15 +100,15 @@ router exits 0.
 
 ```sh
 # Tail the system log for agent output:
-logread -f | grep familydns
+logread -f | grep wifihaven
 ```
 
 On a healthy start you should see lines like:
 
 ```
-[familydns] starting conntrack watcher
-[familydns] policy snapshot fetched, etag=…
-[familydns] flushed N events to /api/router/events
+[wifihaven] starting conntrack watcher
+[wifihaven] policy snapshot fetched, etag=…
+[wifihaven] flushed N events to /api/router/events
 ```
 
 Then check the admin UI: **Routers → `<your router name>`** should show a
@@ -122,7 +122,7 @@ auto-update cron job is tracked in
 [#131](https://github.com/wifihaven/wifihaven/issues/131). Until then,
 upgrade manually by re-running the one-shot install command from §2 — the
 script's install step (`opkg install` or `apk add --allow-untrusted`) uses
-the standard upgrade path, which preserves `/etc/config/familydns`, so the
+the standard upgrade path, which preserves `/etc/config/wifihaven`, so the
 router credentials survive and no re-enrollment is needed.
 
 ## Manual install (fallback)
@@ -165,7 +165,7 @@ apk add --allow-untrusted /tmp/wifihaven.apk
 
 Either manager resolves and installs `lua`, `luci-lib-jsonc`,
 `conntrack-tools`, and `curl`. The post-install hook enables the
-`familydns` procd service for autostart but does **not** start it yet —
+`wifihaven` procd service for autostart but does **not** start it yet —
 enrollment must complete first.
 
 ### M3. Configure the API URL and LAN prefix
@@ -212,7 +212,7 @@ uci commit wifihaven
 ### M6. Set up the local block page
 
 When the agent blocks an HTTP request, it DNATs port 80 to `127.0.0.1:8081`.
-A local `uhttpd` instance serves `/www/familydns/block.html`, which the
+A local `uhttpd` instance serves `/www/wifihaven/block.html`, which the
 agent installs. The block page redirects the browser to the API's
 `/blocked?host=…&reason=…` endpoint.
 

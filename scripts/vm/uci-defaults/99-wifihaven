@@ -17,7 +17,7 @@ set wifihaven.@wifihaven[0].lan_prefix='192.168.100.'
 EOF
 uci commit wifihaven
 
-# Align the OpenWRT LAN with the harness's FDNS_LAN_SUBNET=192.168.100.0/24
+# Align the OpenWRT LAN with the harness's WH_LAN_SUBNET=192.168.100.0/24
 # (defined in scripts/vm/config.sh). Without this the LAN stays on OpenWRT's
 # 192.168.1.0/24 default, which doesn't match what scripts/vm/client-up.sh and
 # the e2e plan (#226) expect.

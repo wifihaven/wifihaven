@@ -6,7 +6,7 @@ function reasonText(reason: string, until?: string | null): string {
   // MacBlockReason wire-format strings emitted by api/PolicyService and
   // forwarded by the router's block-page handler (#437). Keep in sync with
   // shared/src/Models.scala (MacBlockReason cases) and the inline copy in
-  // openwrt/files/usr/lib/lua/familydns/block_page.lua.
+  // openwrt/files/usr/lib/lua/wifihaven/block_page.lua.
   if (reason === 'Paused') return 'This profile is paused.'
   if (reason === 'Schedule') return until ? `This is scheduled quiet time until ${until}.` : 'This is scheduled quiet time.'
   if (reason === 'TimeLimit') return 'Daily screen time limit reached.'

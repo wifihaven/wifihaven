@@ -21,7 +21,7 @@ object Main extends ZIOAppDefault {
   def run =
     (for {
       cfg    <- ZIO.service[AppConfig]
-      _      <- ZIO.logInfo(s"FamilyDNS API starting on ${cfg.http.host}:${cfg.http.port}")
+      _      <- ZIO.logInfo(s"WifiHaven API starting on ${cfg.http.host}:${cfg.http.port}")
       _      <- ZIO
         .logWarning(
           "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +

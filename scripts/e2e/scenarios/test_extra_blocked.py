@@ -50,7 +50,7 @@ BLOCKED_MACS_SET = "blocked_macs"
 
 # render.lua's sanitize() replaces "." and ":" with "_". `example.com`
 # becomes `eb_example_com` (v4) / `eb6_example_com` (v6). See
-# openwrt/files/usr/lib/lua/familydns/render.lua eb_set_name().
+# openwrt/files/usr/lib/lua/wifihaven/render.lua eb_set_name().
 EB_SET_V4 = "eb_" + BLOCKED_HOST.replace(".", "_").replace(":", "_")
 
 IPV4_LINE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
@@ -74,7 +74,7 @@ def _wait_block_page(client, *, host: str = BLOCKED_HOST, timeout_s: float = 90)
         p = http_get(client, f"http://{host}/", timeout_s=8)
         body_lower = (p.body or "").lower()
         if p.http_code == 200 and (
-            "familydns" in body_lower or "blocked" in body_lower
+            "wifihaven" in body_lower or "blocked" in body_lower
         ):
             return p
         return None

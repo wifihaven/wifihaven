@@ -33,7 +33,7 @@ def test_blocked_domain_request_dropped(
         probe = http_get(client, f"http://{BLOCKED_HOST}/", timeout_s=8)
         body_lower = (probe.body or "").lower()
         if probe.http_code == 200 and (
-            "familydns" in body_lower or "blocked" in body_lower
+            "wifihaven" in body_lower or "blocked" in body_lower
         ):
             return probe
         return None

@@ -11,9 +11,9 @@ stale_qemu_sweep() {
   # Fallback: a previous run was killed hard (e.g., CI cancellation) and
   # left a qemu alive without an up-to-date pidfile. Kill by name so the
   # next router-up doesn't fail to bind hostfwd ports.
-  if pgrep -f "qemu-system-x86_64.*-name fdns-router" >/dev/null 2>&1; then
-    log "found stale fdns-router qemu without pidfile match — killing"
-    pkill -f "qemu-system-x86_64.*-name fdns-router" || true
+  if pgrep -f "qemu-system-x86_64.*-name wh-router" >/dev/null 2>&1; then
+    log "found stale wh-router qemu without pidfile match — killing"
+    pkill -f "qemu-system-x86_64.*-name wh-router" || true
     # Give the kernel a moment to release the bound ports.
     sleep 1
   fi
@@ -21,16 +21,16 @@ stale_qemu_sweep() {
 
 if ! router_is_running; then
   log "router VM not running"
-  rm -f "${FDNS_ROUTER_PIDFILE}" "${FDNS_ROUTER_MONITOR_SOCK}"
+  rm -f "${WH_ROUTER_PIDFILE}" "${WH_ROUTER_MONITOR_SOCK}"
   stale_qemu_sweep
   exit 0
 fi
 
-pid="$(cat "${FDNS_ROUTER_PIDFILE}")"
+pid="$(cat "${WH_ROUTER_PIDFILE}")"
 log "asking router VM (pid ${pid}) to power off via monitor"
 
-if [[ -S "${FDNS_ROUTER_MONITOR_SOCK}" ]] && command -v socat >/dev/null 2>&1; then
-  printf 'system_powerdown\n' | socat - "UNIX-CONNECT:${FDNS_ROUTER_MONITOR_SOCK}" >/dev/null 2>&1 || true
+if [[ -S "${WH_ROUTER_MONITOR_SOCK}" ]] && command -v socat >/dev/null 2>&1; then
+  printf 'system_powerdown\n' | socat - "UNIX-CONNECT:${WH_ROUTER_MONITOR_SOCK}" >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do
     kill -0 "${pid}" 2>/dev/null || break
     sleep 0.5
@@ -51,6 +51,6 @@ if kill -0 "${pid}" 2>/dev/null; then
   kill -9 "${pid}" 2>/dev/null || true
 fi
 
-rm -f "${FDNS_ROUTER_PIDFILE}" "${FDNS_ROUTER_MONITOR_SOCK}"
+rm -f "${WH_ROUTER_PIDFILE}" "${WH_ROUTER_MONITOR_SOCK}"
 stale_qemu_sweep
 log "router VM stopped"

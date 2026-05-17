@@ -20,7 +20,7 @@ scripts/e2e-vm.sh --keep -- -k usage      # leave VMs/stack up; pytest -k passth
 ┌─────────── host ────────────┐
 │  docker compose             │      ┌── router VM ──┐    ┌── client VM ──┐
 │   ├ postgres                │      │ OpenWRT 23.05 │    │ Alpine 3.22   │
-│   └ api  (WIFIHAVEN_DEBUG=1)│◀─────┤ familydns-    │    │               │
+│   └ api  (WIFIHAVEN_DEBUG=1)│◀─────┤ wifihaven-    │    │               │
 │       :18080 (host port)    │ HTTP │ agent baked in│◀──▶│   eth0 (LAN)  │
 │                             │      │               │ DHCP│   curl/dig   │
 │  pytest orchestrator        │      │ eth1 = SLIRP  │ DNS │               │
@@ -144,7 +144,7 @@ VM-dependent tests `pytest.skip` themselves. Stack-only paths still run.
 `pytest_runtest_makereport` attaches three sections to every failed test:
 
 1. Router VM serial console tail (`scripts/vm/.run/router/console.log`)
-2. `logread -e familydns | tail -n 80` from the router (agent log)
+2. `logread -e wifihaven | tail -n 80` from the router (agent log)
 3. `docker compose logs api --tail 120`
 
 These appear in the standard pytest captured-output footer.

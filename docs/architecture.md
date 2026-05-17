@@ -159,7 +159,7 @@ for usage attribution (§7.2). It is **never** the enforcement plane.
 >   A records, but AAAA replies are not captured into a parallel `eb6_<host>`
 >   v6 set, so a blocked host that resolves over v6 escapes the drop (#392).
 > - `blocklistIds` / category blocking is not applied on the router at all.
->   `render.lua` and `familydns-agent` do not fetch RPZ files or render
+>   `render.lua` and `wifihaven-agent` do not fetch RPZ files or render
 >   category rules. `PolicyService.decide` uses categories only on the
 >   fallback `POST /api/router/decision` endpoint (#352).
 > - `blockIpOnly` is carried in the snapshot but not yet enforced (#353).
@@ -563,11 +563,11 @@ guidance, not part of the wire contract.
 - **nftables counter objects** keyed on `ether saddr . ip daddr` for per-MAC,
   per-IP byte counts.
 - **dnsmasq query log** (`--log-queries=extra`, written to a private file at
-  `/tmp/familydns-dnsmasq.log`) is the primary source for `dst_ip → hostname`
+  `/tmp/wifihaven-dnsmasq.log`) is the primary source for `dst_ip → hostname`
   attribution on every connection event. A sidecar process
-  (`familydns-dns-tail`) tails the file, parses `query[A] <name>` and
+  (`wifihaven-dns-tail`) tails the file, parses `query[A] <name>` and
   `reply <name> is <ip>` lines into a TTL-bounded cache, and writes a snapshot
-  to `/tmp/familydns-dns-cache.txt`. The main agent reads the snapshot when a
+  to `/tmp/wifihaven-dns-cache.txt`. The main agent reads the snapshot when a
   new conntrack flow arrives.
 - **uhttpd** on a loopback port serves the local block page; nftables `dnat`
   redirects blocked HTTP/80 to it.
@@ -603,15 +603,15 @@ UI can render direct-IP rows distinguishably from named hosts.
 openwrt/
 ├── Makefile                            # opkg metadata, builds via OpenWRT SDK
 ├── files/
-│   ├── etc/init.d/familydns            # procd init script
-│   ├── etc/config/familydns            # UCI: api_url, router_token, poll_interval
-│   ├── usr/sbin/familydns-agent        # main daemon (Lua)
-│   ├── usr/sbin/familydns-dns-tail     # dnsmasq query-log tailer (sidecar)
-│   ├── usr/lib/lua/familydns/policy.lua    # snapshot fetcher, atomic apply
-│   ├── usr/lib/lua/familydns/usage.lua     # nftables counter scraper, reporter
-│   ├── usr/lib/lua/familydns/dns_log.lua   # forward-lookup hostname cache (#259)
-│   ├── usr/lib/lua/familydns/render.lua    # writes dnsmasq + nft fragments
-│   └── www/familydns/block.html        # local block page → 302 to api /blocked
+│   ├── etc/init.d/wifihaven            # procd init script
+│   ├── etc/config/wifihaven            # UCI: api_url, router_token, poll_interval
+│   ├── usr/sbin/wifihaven-agent        # main daemon (Lua)
+│   ├── usr/sbin/wifihaven-dns-tail     # dnsmasq query-log tailer (sidecar)
+│   ├── usr/lib/lua/wifihaven/policy.lua    # snapshot fetcher, atomic apply
+│   ├── usr/lib/lua/wifihaven/usage.lua     # nftables counter scraper, reporter
+│   ├── usr/lib/lua/wifihaven/dns_log.lua   # forward-lookup hostname cache (#259)
+│   ├── usr/lib/lua/wifihaven/render.lua    # writes dnsmasq + nft fragments
+│   └── www/wifihaven/block.html        # local block page → 302 to api /blocked
 └── README.md
 ```
 
@@ -687,9 +687,9 @@ opnsense/
 ├── pkg-descr
 ├── Makefile
 ├── files/
-│   ├── usr/local/etc/rc.d/familydns     # rc.d service
+│   ├── usr/local/etc/rc.d/wifihaven     # rc.d service
 │   ├── usr/local/etc/wifihaven.conf     # api_url, router_token, poll_interval
-│   └── usr/local/sbin/familydns-agent   # main daemon (Python)
+│   └── usr/local/sbin/wifihaven-agent   # main daemon (Python)
 └── README.md
 ```
 

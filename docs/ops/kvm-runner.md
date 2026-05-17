@@ -29,7 +29,7 @@ provision ourselves.
   - `binutils` (for `ar`, used by `openwrt/build-ipk.sh`)
 
 Use `docs/vm-e2e-ubuntu.md` as the per-host bootstrap checklist: it covers
-`/dev/kvm` group membership, the `fdns-lan0` bridge, `qemu-bridge-helper`
+`/dev/kvm` group membership, the `wh-lan0` bridge, `qemu-bridge-helper`
 capabilities, and the narrow `NOPASSWD` rule for `ip`.
 
 ### Suggested hosts
@@ -94,7 +94,7 @@ The runner installs under `~/actions-runner` in the runner user's home directory
    ./config.sh \
      --url https://github.com/wifihaven/wifihaven \
      --token <REGISTRATION_TOKEN> \
-     --name familydns-kvm-1 \
+     --name wifihaven-kvm-1 \
      --labels self-hosted,linux,kvm \
      --work _work \
      --unattended
@@ -138,8 +138,8 @@ execution is unprivileged:
 |---|---|
 | `/dev/kvm` read/write | runner user is in the `kvm` group |
 | docker socket | runner user is in the `docker` group |
-| attach taps to `fdns-lan0` | `cap_net_admin` on `qemu-bridge-helper` (`setcap`) + `/etc/qemu/bridge.conf` allowlists the bridge |
-| `ip link add/set …` for the LAN bridge | NOPASSWD sudo rule in `/etc/sudoers.d/familydns-vm`, scoped to `/usr/sbin/ip` only |
+| attach taps to `wh-lan0` | `cap_net_admin` on `qemu-bridge-helper` (`setcap`) + `/etc/qemu/bridge.conf` allowlists the bridge |
+| `ip link add/set …` for the LAN bridge | NOPASSWD sudo rule in `/etc/sudoers.d/wifihaven-vm`, scoped to `/usr/sbin/ip` only |
 | outbound HTTPS to GitHub | none (standard outbound) |
 
 All of these are part of the one-time host bootstrap in

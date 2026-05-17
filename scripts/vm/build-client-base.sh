@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the client VM base qcow2 from a pristine Alpine cloud image.
 #
-# Idempotent: a no-op if ${FDNS_CLIENT_BASE_IMG} already exists, unless --force
+# Idempotent: a no-op if ${WH_CLIENT_BASE_IMG} already exists, unless --force
 # is passed.
 #
 # What it does:
@@ -14,7 +14,7 @@
 #        - poweroffs when done.
 #   3. Boot QEMU once with the seed attached, on user-mode networking so apk
 #      can reach the internet.
-#   4. Move the cured image to ${FDNS_CLIENT_BASE_IMG}.
+#   4. Move the cured image to ${WH_CLIENT_BASE_IMG}.
 #
 # The base is read-only after this point — per-boot scripts layer qcow2
 # overlays on top of it (see client-up.sh).
@@ -38,8 +38,8 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -f "${FDNS_CLIENT_BASE_IMG}" && ${FORCE} -eq 0 ]]; then
-  echo "[build-client-base] ${FDNS_CLIENT_BASE_IMG} already exists (use --force to rebuild)"
+if [[ -f "${WH_CLIENT_BASE_IMG}" && ${FORCE} -eq 0 ]]; then
+  echo "[build-client-base] ${WH_CLIENT_BASE_IMG} already exists (use --force to rebuild)"
   exit 0
 fi
 
@@ -62,31 +62,31 @@ if [[ -z "${ISO_TOOL}" ]]; then
   exit 1
 fi
 
-mkdir -p "${FDNS_CACHE_DIR}/pristine"
-PRISTINE="${FDNS_CACHE_DIR}/pristine/${FDNS_ALPINE_IMAGE}"
+mkdir -p "${WH_CACHE_DIR}/pristine"
+PRISTINE="${WH_CACHE_DIR}/pristine/${WH_ALPINE_IMAGE}"
 
 if [[ ! -f "${PRISTINE}" ]]; then
-  echo "[build-client-base] downloading ${FDNS_ALPINE_URL}"
-  curl -fL --retry 3 -o "${PRISTINE}.tmp" "${FDNS_ALPINE_URL}"
+  echo "[build-client-base] downloading ${WH_ALPINE_URL}"
+  curl -fL --retry 3 -o "${PRISTINE}.tmp" "${WH_ALPINE_URL}"
   mv "${PRISTINE}.tmp" "${PRISTINE}"
 fi
 
 echo "[build-client-base] verifying SHA-512"
 ACTUAL_SHA="$(openssl dgst -sha512 "${PRISTINE}" | awk '{print $NF}')"
-if [[ "${ACTUAL_SHA}" != "${FDNS_ALPINE_SHA512}" ]]; then
+if [[ "${ACTUAL_SHA}" != "${WH_ALPINE_SHA512}" ]]; then
   echo "[build-client-base] SHA-512 mismatch for ${PRISTINE}" >&2
-  echo "  expected: ${FDNS_ALPINE_SHA512}" >&2
+  echo "  expected: ${WH_ALPINE_SHA512}" >&2
   echo "  actual:   ${ACTUAL_SHA}" >&2
   exit 1
 fi
 
-if [[ ! -f "${FDNS_CLIENT_SSH_PUB}" ]]; then
-  echo "[build-client-base] missing ${FDNS_CLIENT_SSH_PUB}" >&2
+if [[ ! -f "${WH_CLIENT_SSH_PUB}" ]]; then
+  echo "[build-client-base] missing ${WH_CLIENT_SSH_PUB}" >&2
   exit 1
 fi
-PUBKEY="$(cat "${FDNS_CLIENT_SSH_PUB}")"
+PUBKEY="$(cat "${WH_CLIENT_SSH_PUB}")"
 
-WORK="$(mktemp -d -t fdns-client-build.XXXXXX)"
+WORK="$(mktemp -d -t wh-client-build.XXXXXX)"
 trap 'rm -rf "${WORK}"' EXIT
 
 WORK_IMG="${WORK}/work.qcow2"
@@ -99,8 +99,8 @@ SEED_DIR="${WORK}/seed"
 mkdir -p "${SEED_DIR}"
 
 cat >"${SEED_DIR}/meta-data" <<EOF
-instance-id: fdns-client-base
-local-hostname: fdns-client
+instance-id: wh-client-base
+local-hostname: wh-client
 EOF
 
 # network-config: tell cloud-init's network renderer how to set up both NICs.
@@ -159,7 +159,7 @@ write_files:
   # Write the test SSH key under /etc (parent dir exists) — runcmd below
   # installs it into /root/.ssh. write_files to /root/.ssh/* is unreliable
   # on this Alpine cloud-init build because the parent dir doesn't yet exist.
-  - path: /etc/fdns-authorized_keys
+  - path: /etc/wh-authorized_keys
     permissions: '0600'
     owner: root:root
     content: |
@@ -194,10 +194,10 @@ runcmd:
   - rc-update add networking default
   # PermitRootLogin prohibit-password is the Alpine default; make explicit.
   - sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-  # Install the test SSH key staged at /etc/fdns-authorized_keys.
+  # Install the test SSH key staged at /etc/wh-authorized_keys.
   - mkdir -p /root/.ssh
   - chmod 700 /root/.ssh
-  - install -m 0600 -o root -g root /etc/fdns-authorized_keys /root/.ssh/authorized_keys
+  - install -m 0600 -o root -g root /etc/wh-authorized_keys /root/.ssh/authorized_keys
   # Signal "build complete" by powering off cleanly.
   - poweroff
 EOF
@@ -226,7 +226,7 @@ fi
 echo "[build-client-base] booting Alpine to install tools (this can take 1–2 minutes)"
 # 10 minute hard cap so a stuck build doesn't hang CI.
 timeout 600 qemu-system-x86_64 \
-  -name fdns-client-base-build \
+  -name wh-client-base-build \
   -m 1024 -smp 2 \
   "${ACCEL_ARGS[@]}" \
   -nographic -serial mon:stdio \
@@ -235,6 +235,6 @@ timeout 600 qemu-system-x86_64 \
   -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
   -no-reboot
 
-mkdir -p "${FDNS_CACHE_DIR}"
-mv "${WORK_IMG}" "${FDNS_CLIENT_BASE_IMG}"
-echo "[build-client-base] wrote ${FDNS_CLIENT_BASE_IMG}"
+mkdir -p "${WH_CACHE_DIR}"
+mv "${WORK_IMG}" "${WH_CLIENT_BASE_IMG}"
+echo "[build-client-base] wrote ${WH_CLIENT_BASE_IMG}"

@@ -19,7 +19,7 @@
 #   E2E_VM_KEEP=1           don't tear down VMs (router + clients)
 #   E2E_VM_SKIP_STACK=1     assume stack already up at $E2E_VM_API_PORT
 #   E2E_VM_SKIP_VMS=1       skip VM-dependent tests (CI sanity mode)
-#   FDNS_ROUTER_IMAGE_PATH  use a custom-built router image instead of stock
+#   WH_ROUTER_IMAGE_PATH  use a custom-built router image instead of stock
 #                           (required for v1; see scripts/vm/build-router-image.sh)
 
 set -euo pipefail
