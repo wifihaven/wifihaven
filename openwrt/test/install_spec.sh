@@ -58,6 +58,22 @@ grep -q "releases/tags/openwrt-latest" "$SCRIPT" \
   || check "install.sh fetches releases/tags/openwrt-latest" \
            "install.sh appears to hit /releases/latest — would land stale build"
 
+# #569: the release-asset filter must require the wifihaven_ prefix.
+# Without it, a stale pre-rename familydns_*.{ipk,apk} co-resident in the
+# openwrt-latest release sorts first and gets installed instead.
+grep -q "wifihaven_\[\^/\]\*" "$SCRIPT" \
+  && check "asset filter requires wifihaven_ prefix" ok \
+  || check "asset filter requires wifihaven_ prefix" \
+           "install.sh asset filter does not anchor on wifihaven_ prefix"
+
+# #569: the filter must fail loud if multiple assets match (the _all
+# package should produce exactly one match; a future surprise should
+# not silently install whichever happens to sort first).
+grep -q "expected exactly one wifihaven" "$SCRIPT" \
+  && check "asset filter errors on multiple matches" ok \
+  || check "asset filter errors on multiple matches" \
+           "install.sh does not fail loud when >1 wifihaven asset matches"
+
 # #197: the installer must not collect a router name. The name is set
 # once in the admin UI when the enrollment token is issued; the install
 # script only needs the token. A second prompt risks a mismatch that
