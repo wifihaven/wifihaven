@@ -6,7 +6,7 @@
   </appender>
 
   <!--
-    FAMILYDNS_LOG_LEVEL controls verbosity of the familydns.* loggers.
+    WIFIHAVEN_LOG_LEVEL controls verbosity of the familydns.* loggers.
     Defaults to INFO. Set to DEBUG to see per-request detail on the
     /api/router/* endpoints (mac, hostname, allowed/blocked, etc.). See
     docs/install-api.md § Debugging.
@@ -15,5 +15,5 @@
     <appender-ref ref="STDOUT" />
   </root>
 
-  <logger name="familydns" level="${FAMILYDNS_LOG_LEVEL:-INFO}" />
+  <logger name="familydns" level="${WIFIHAVEN_LOG_LEVEL:-INFO}" />
 </configuration>

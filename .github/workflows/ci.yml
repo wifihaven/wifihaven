@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      FAMILYDNS_JWT_SECRET: test-jwt-secret-for-ci-only
+      WIFIHAVEN_JWT_SECRET: test-jwt-secret-for-ci-only
 
     steps:
       - uses: actions/checkout@v4

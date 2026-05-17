@@ -17,11 +17,11 @@
 
 set -euo pipefail
 
-REPO_URL="${FAMILYDNS_REPO_URL:-https://github.com/sameerparekh/familydns.git}"
-BRANCH="${FAMILYDNS_BRANCH:-production}"
-PREFIX="${FAMILYDNS_PREFIX:-/opt/wifihaven}"
-USER_NAME="${FAMILYDNS_USER:-wifihaven}"
-MILL_VERSION="${FAMILYDNS_MILL_VERSION:-1.1.5}"
+REPO_URL="${WIFIHAVEN_REPO_URL:-https://github.com/sameerparekh/familydns.git}"
+BRANCH="${WIFIHAVEN_BRANCH:-production}"
+PREFIX="${WIFIHAVEN_PREFIX:-/opt/wifihaven}"
+USER_NAME="${WIFIHAVEN_USER:-wifihaven}"
+MILL_VERSION="${WIFIHAVEN_MILL_VERSION:-1.1.5}"
 
 if [ "$(uname -s)" != "Linux" ]; then
   echo "bootstrap-host.sh only supports Linux" >&2
@@ -136,7 +136,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=$USER_NAME
-Environment=FAMILYDNS_BRANCH=$BRANCH
+Environment=WIFIHAVEN_BRANCH=$BRANCH
 WorkingDirectory=$PREFIX/repo
 ExecStart=$PREFIX/repo/scripts/deploy.sh
 EOF
@@ -180,7 +180,7 @@ Next steps:
   3. sudo systemctl enable --now wifihaven-api.service
   4. sudo systemctl enable --now wifihaven-deploy.timer
   5. Initial build/deploy:
-       sudo -u $USER_NAME FAMILYDNS_BRANCH=$BRANCH $PREFIX/repo/scripts/deploy.sh
+       sudo -u $USER_NAME WIFIHAVEN_BRANCH=$BRANCH $PREFIX/repo/scripts/deploy.sh
 
 Tracking branch: $BRANCH (e2e-tested before promotion).
 MSG

@@ -35,8 +35,8 @@ RUN rm -rf /src/.git \
 USER deploy
 WORKDIR /home/deploy
 
-ENV FAMILYDNS_REPO_URL=file:///src \
-    FAMILYDNS_BRANCH=production
+ENV WIFIHAVEN_REPO_URL=file:///src \
+    WIFIHAVEN_BRANCH=production
 
 # We can't run systemctl inside a container, so we stub it. The bootstrap only
 # uses `daemon-reload`, which is harmless to no-op.

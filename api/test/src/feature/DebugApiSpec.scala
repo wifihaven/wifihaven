@@ -13,7 +13,7 @@ import zio.test.*
 import java.time.LocalDateTime
 
 // Tests for the /api/debug/... observability endpoints (#228). Endpoints are
-// gated by an `enabled` flag (driven by FAMILYDNS_DEBUG in production) and a
+// gated by an `enabled` flag (driven by WIFIHAVEN_DEBUG in production) and a
 // per-request loopback check.
 object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 

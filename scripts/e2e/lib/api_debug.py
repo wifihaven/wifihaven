@@ -1,6 +1,6 @@
 """Debug API client — wraps the loopback-only /api/debug/* endpoints (#228).
 
-Requires FAMILYDNS_DEBUG=1 on the API service. The orchestrator's compose
+Requires WIFIHAVEN_DEBUG=1 on the API service. The orchestrator's compose
 override sets this; nothing in production exposes these routes.
 
 The endpoints reject non-loopback callers based on the connection's remote

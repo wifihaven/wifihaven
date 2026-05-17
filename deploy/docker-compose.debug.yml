@@ -10,18 +10,18 @@
 #     --env-file deploy/.env up -d
 #
 # Postgres is bound to 127.0.0.1 by default (never 0.0.0.0). Set
-# FAMILYDNS_DB_BIND in deploy/.env to override the host:port the database
+# WIFIHAVEN_DB_BIND in deploy/.env to override the host:port the database
 # port is published on; leave the bind portion at 127.0.0.1 unless you
 # really know what you're doing.
 
 services:
   postgres:
     ports:
-      - "${FAMILYDNS_DB_BIND:-127.0.0.1:5433}:5432"
+      - "${WIFIHAVEN_DB_BIND:-127.0.0.1:5433}:5432"
 
   api:
     environment:
       # Mounts /api/debug/* (loopback-only). See docs/install-api.md § Debugging.
-      FAMILYDNS_DEBUG: "1"
+      WIFIHAVEN_DEBUG: "1"
       # Verbose per-request logging on /api/router/* endpoints.
-      FAMILYDNS_LOG_LEVEL: "DEBUG"
+      WIFIHAVEN_LOG_LEVEL: "DEBUG"

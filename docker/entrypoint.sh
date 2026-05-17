@@ -3,53 +3,53 @@
 set -euo pipefail
 
 # Required env (compose / GH Actions sets these):
-: "${FAMILYDNS_DB_HOST:=postgres}"
-: "${FAMILYDNS_DB_PORT:=5432}"
-: "${FAMILYDNS_DB_NAME:=wifihaven}"
-: "${FAMILYDNS_DB_USER:=wifihaven}"
-: "${FAMILYDNS_DB_PASSWORD:=wifihaven}"
-: "${FAMILYDNS_HTTP_HOST:=0.0.0.0}"
-: "${FAMILYDNS_HTTP_PORT:=8080}"
-: "${FAMILYDNS_STATIC_DIR:=/app/web}"
-: "${FAMILYDNS_JWT_SECRET:=staging-jwt-secret-do-not-use-in-prod-32ch}"
-: "${FAMILYDNS_JWT_HOURS:=24}"
-: "${FAMILYDNS_LOG_LEVEL:=INFO}"
-: "${FAMILYDNS_DEBUG:=}"
+: "${WIFIHAVEN_DB_HOST:=postgres}"
+: "${WIFIHAVEN_DB_PORT:=5432}"
+: "${WIFIHAVEN_DB_NAME:=wifihaven}"
+: "${WIFIHAVEN_DB_USER:=wifihaven}"
+: "${WIFIHAVEN_DB_PASSWORD:=wifihaven}"
+: "${WIFIHAVEN_HTTP_HOST:=0.0.0.0}"
+: "${WIFIHAVEN_HTTP_PORT:=8080}"
+: "${WIFIHAVEN_STATIC_DIR:=/app/web}"
+: "${WIFIHAVEN_JWT_SECRET:=staging-jwt-secret-do-not-use-in-prod-32ch}"
+: "${WIFIHAVEN_JWT_HOURS:=24}"
+: "${WIFIHAVEN_LOG_LEVEL:=INFO}"
+: "${WIFIHAVEN_DEBUG:=}"
 
-export FAMILYDNS_LOG_LEVEL FAMILYDNS_DEBUG
+export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
-if [ -n "${FAMILYDNS_DEBUG}" ]; then
-  echo "[entrypoint] WARNING: FAMILYDNS_DEBUG is set — debug endpoints will be mounted (loopback only). Disable in production."
+if [ -n "${WIFIHAVEN_DEBUG}" ]; then
+  echo "[entrypoint] WARNING: WIFIHAVEN_DEBUG is set — debug endpoints will be mounted (loopback only). Disable in production."
 fi
 
 mkdir -p /app/config
 cat > /app/config/application.conf <<EOF
 wifihaven {
   db {
-    host     = "${FAMILYDNS_DB_HOST}"
-    port     = ${FAMILYDNS_DB_PORT}
-    database = "${FAMILYDNS_DB_NAME}"
-    user     = "${FAMILYDNS_DB_USER}"
-    password = "${FAMILYDNS_DB_PASSWORD}"
+    host     = "${WIFIHAVEN_DB_HOST}"
+    port     = ${WIFIHAVEN_DB_PORT}
+    database = "${WIFIHAVEN_DB_NAME}"
+    user     = "${WIFIHAVEN_DB_USER}"
+    password = "${WIFIHAVEN_DB_PASSWORD}"
     poolSize = 5
   }
   http {
-    host      = "${FAMILYDNS_HTTP_HOST}"
-    port      = ${FAMILYDNS_HTTP_PORT}
-    staticDir = "${FAMILYDNS_STATIC_DIR}"
+    host      = "${WIFIHAVEN_HTTP_HOST}"
+    port      = ${WIFIHAVEN_HTTP_PORT}
+    staticDir = "${WIFIHAVEN_STATIC_DIR}"
   }
   jwt {
-    secret      = "${FAMILYDNS_JWT_SECRET}"
-    expiryHours = ${FAMILYDNS_JWT_HOURS}
+    secret      = "${WIFIHAVEN_JWT_SECRET}"
+    expiryHours = ${WIFIHAVEN_JWT_HOURS}
   }
 }
 EOF
 
 # Wait for postgres if requested
 if [ "${WAIT_FOR_POSTGRES:-1}" = "1" ]; then
-  echo "[entrypoint] Waiting for postgres at ${FAMILYDNS_DB_HOST}:${FAMILYDNS_DB_PORT}..."
+  echo "[entrypoint] Waiting for postgres at ${WIFIHAVEN_DB_HOST}:${WIFIHAVEN_DB_PORT}..."
   for i in $(seq 1 60); do
-    if (echo > "/dev/tcp/${FAMILYDNS_DB_HOST}/${FAMILYDNS_DB_PORT}") 2>/dev/null; then
+    if (echo > "/dev/tcp/${WIFIHAVEN_DB_HOST}/${WIFIHAVEN_DB_PORT}") 2>/dev/null; then
       echo "[entrypoint] postgres reachable"
       break
     fi

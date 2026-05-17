@@ -1,6 +1,6 @@
 """API stack lifecycle (docker compose) + diagnostic log capture.
 
-The orchestrator needs FAMILYDNS_DEBUG=1 so the /api/debug/* endpoints are
+The orchestrator needs WIFIHAVEN_DEBUG=1 so the /api/debug/* endpoints are
 mounted (loopback-only by design). We bring up our own compose project on a
 dedicated port so we don't collide with a developer's running stack.
 """
@@ -82,7 +82,7 @@ def bring_up(
         "    ports: !override\n"
         f"      - \"0.0.0.0:{api_port}:8080\"\n"
         "    environment:\n"
-        "      FAMILYDNS_DEBUG: \"1\"\n"
+        "      WIFIHAVEN_DEBUG: \"1\"\n"
         # The compose stack ships a `fake-router` service that posts 2 fake
         # connection events per second under its own router_id. In e2e it
         # drowns our real router's events out of any reasonable
