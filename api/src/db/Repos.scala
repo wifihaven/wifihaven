@@ -307,11 +307,12 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
   def clearMustChangePassword(id: UserId)     =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  def listAll = sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users ORDER BY id"
-    .query[(UserId, String, String, UserRole, Instant, Boolean)]
-    .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
-    .to[List]
-    .transact(xa)
+  def listAll                                 =
+    sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users ORDER BY id"
+      .query[(UserId, String, String, UserRole, Instant, Boolean)]
+      .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
+      .to[List]
+      .transact(xa)
   def delete(id: UserId) = sql"DELETE FROM users WHERE id=$id".update.run.transact(xa).unit
 }
 
