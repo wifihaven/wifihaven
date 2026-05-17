@@ -134,6 +134,35 @@ describe('AdminPage — daily reset card', () => {
     )
   })
 
+  it('(#571) filter that narrows to one option then click persists it', async () => {
+    // Repro of the on-device bug: operator picks "More…", types a filter
+    // that narrows to a single match, clicks it, hits Save. Pre-fix the
+    // controlled <select>'s value never updated because the lone <option>
+    // was already the browser's de-facto selection, so no `change` fired.
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('household-summary')
+    await user.click(screen.getByTestId('household-edit'))
+
+    const tzSelect = screen.getByTestId('household-reset-tz-select') as HTMLSelectElement
+    await user.selectOptions(tzSelect, '__more__')
+
+    const filterInput = screen.getByTestId('household-reset-tz-filter')
+    await user.type(filterInput, 'Denver')
+
+    const expanded = screen.getByTestId('household-reset-tz-select') as HTMLSelectElement
+    await user.selectOptions(expanded, 'America/Denver')
+
+    await user.click(screen.getByTestId('household-save'))
+
+    await waitFor(() =>
+      expect(api.household.update).toHaveBeenCalledWith({
+        dailyResetTime: '00:00',
+        dailyResetTz: 'America/Denver',
+      }),
+    )
+  })
+
   it('(#571) picking a non-common TZ via "More…" expander persists it', async () => {
     const user = userEvent.setup()
     render(<AdminPage />)
