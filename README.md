@@ -280,12 +280,12 @@ but you lose the auto-update property.
 `config/application.conf` (HOCON) is the source of truth. The example is at
 `config/application.conf.example`. Notable keys:
 
-- `familydns.db.*` — Postgres connection
-- `familydns.http.port` — API port (default `8080`)
-- `familydns.http.staticDir` — where to serve the React bundle from
-- `familydns.jwt.secret` — **must be ≥ 32 random chars**, change before going live
-- `familydns.jwt.expiryHours` — JWT lifetime (default 24h)
-- `familydns.dns.cacheRefreshSeconds` — how often the policy snapshot cache is refreshed
+- `wifihaven.db.*` — Postgres connection
+- `wifihaven.http.port` — API port (default `8080`)
+- `wifihaven.http.staticDir` — where to serve the React bundle from
+- `wifihaven.jwt.secret` — **must be ≥ 32 random chars**, change before going live
+- `wifihaven.jwt.expiryHours` — JWT lifetime (default 24h)
+- `wifihaven.dns.cacheRefreshSeconds` — how often the policy snapshot cache is refreshed
 
 ## Testing
 
