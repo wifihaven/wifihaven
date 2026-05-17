@@ -115,7 +115,7 @@ rm -f "$OUT_APK"
     --info "license:MIT" \
     --info "url:https://github.com/sameerparekh/familydns" \
     --info "maintainer:WifiHaven <noreply@example.com>" \
-    --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl" \
+    --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl uhttpd-mod-lua" \
     --script "post-install:$WORK/post-install" \
     --files "$WORK/data" \
     --output "$OUT_APK"

@@ -25,7 +25,7 @@ mkdir "$WORK/ctrl"
 cat > "$WORK/ctrl/control" <<EOF
 Package: wifihaven
 Version: ${PKG_VERSION}-${PKG_RELEASE}
-Depends: lua, libuci-lua, luci-lib-jsonc, conntrack, curl
+Depends: lua, libuci-lua, luci-lib-jsonc, conntrack, curl, uhttpd-mod-lua
 Architecture: all
 Maintainer: WifiHaven <noreply@example.com>
 Description: Agent daemon for WifiHaven. Enforces per-device DNS filtering

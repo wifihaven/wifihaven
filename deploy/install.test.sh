@@ -202,18 +202,26 @@ fi
 #       drops them into /etc/systemd/system/ and enable --now's the timer.
 #       Without this, the deploy gap that motivated #254 reopens silently.
 SYSTEMD_DIR="$(dirname "${SCRIPT}")/systemd"
-if [[ -f "${SYSTEMD_DIR}/familydns-update.service" \
-   && -f "${SYSTEMD_DIR}/familydns-update.timer" ]]; then
-  pass "deploy/systemd ships familydns-update.{service,timer}"
+if [[ -f "${SYSTEMD_DIR}/wifihaven-update.service" \
+   && -f "${SYSTEMD_DIR}/wifihaven-update.timer" ]]; then
+  pass "deploy/systemd ships wifihaven-update.{service,timer}"
 else
-  fail "deploy/systemd missing familydns-update.{service,timer}"
+  fail "deploy/systemd missing wifihaven-update.{service,timer}"
 fi
 
-if grep -q "/etc/systemd/system/familydns-update.timer" "${SCRIPT}" \
-   && grep -q "systemctl enable --now familydns-update.timer" "${SCRIPT}"; then
-  pass "install.sh installs + enables familydns-update.timer (#254)"
+if grep -q "/etc/systemd/system/wifihaven-update.timer" "${SCRIPT}" \
+   && grep -q "systemctl enable --now wifihaven-update.timer" "${SCRIPT}"; then
+  pass "install.sh installs + enables wifihaven-update.timer (#254)"
 else
-  fail "install.sh does not install/enable familydns-update.timer — #254 deploy gap"
+  fail "install.sh does not install/enable wifihaven-update.timer — #254 deploy gap"
+fi
+
+# ── 11. #359: install.sh defaults to the renamed install paths.
+if grep -q 'DEFAULT_PREFIX="/opt/wifihaven"' "${SCRIPT}" \
+   && grep -q 'DEFAULT_PREFIX="${HOME}/.wifihaven"' "${SCRIPT}"; then
+  pass "install.sh defaults to /opt/wifihaven and \$HOME/.wifihaven (#359)"
+else
+  fail "install.sh does not default to renamed install paths (#359)"
 fi
 
 echo

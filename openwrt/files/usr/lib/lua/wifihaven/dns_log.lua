@@ -88,23 +88,28 @@ end
 M._is_ipv6 = is_ipv6
 M._is_ipv4 = is_ipv4
 
--- parse_resolved_reply(line) → { client_ip, ip, family } | nil
+-- parse_resolved_reply(line) → { client_ip, name, ip, family } | nil
 --
 -- Extracts the dnsmasq client IP (the device that issued the query — the
--- "source IP" we look up in the DHCP lease table to find the MAC) and the
--- answer IP from a `reply`/`cached` log line. Used by wifihaven-dns-tail
--- (#505) to populate per-MAC blockIpOnly resolved_<mac> / resolved6_<mac>
--- sets out-of-band, because dnsmasq 2.91's `nftset=tag:` is broken (#496)
--- and per-MAC scoping is semantically essential for blockIpOnly.
+-- "source IP" we look up in the DHCP lease table to find the MAC), the
+-- answered hostname, and the answer IP from a `reply`/`cached` log line.
+-- Used by wifihaven-dns-tail:
+--   - #505: per-MAC blockIpOnly resolved_<mac> / resolved6_<mac> sets
+--     (keyed by client_ip → MAC); dnsmasq 2.91's `nftset=tag:` is broken
+--     (#496) and per-MAC scoping is semantically essential there.
+--   - #515: per-host extraBlocked eb_<sanhost> / eb6_<sanhost> sets,
+--     populated out-of-band for the same reason — dnsmasq's `nftset=/h/...`
+--     path is unreliable in the deployed build (the sets stayed empty
+--     under the e2e test that resolved the host through the LAN resolver).
 --
 -- Unlike parse_reply_line (which feeds the hostname-attribution cache and
 -- intentionally tracks v4 answers only because conntrack flows are v4),
--- this returns BOTH families: the resolved6_<mac> set must be populated
--- for AAAA answers, and v6 daddrs are filtered by the per-MAC drop rule.
+-- this returns BOTH families: the resolved6_ / eb6_ sets must be populated
+-- for AAAA answers, and v6 daddrs are filtered by the matching drop rules.
 -- `family` is "v4" or "v6".
 function M.parse_resolved_reply(line)
   if type(line) ~= "string" or line == "" then return nil end
-  local qid, client_ip, verb, _name, value = line:match(
+  local qid, client_ip, verb, name, value = line:match(
     "(%d+)%s+(%S+)/%d+%s+(%a+)%s+(%S+)%s+is%s+(%S+)")
   if not qid or (verb ~= "reply" and verb ~= "cached") then return nil end
   -- client_ip in the log line includes a port suffix `/53` etc. — already
@@ -112,10 +117,10 @@ function M.parse_resolved_reply(line)
   -- (DHCPv4 lease maps client_ip → MAC).
   if not is_ipv4(client_ip) then return nil end
   if is_ipv4(value) then
-    return { client_ip = client_ip, ip = value, family = "v4" }
+    return { client_ip = client_ip, name = name, ip = value, family = "v4" }
   end
   if is_ipv6(value) then
-    return { client_ip = client_ip, ip = value, family = "v6" }
+    return { client_ip = client_ip, name = name, ip = value, family = "v6" }
   end
   -- <CNAME>, NXDOMAIN, NODATA-IPvX → not a usable answer.
   return nil

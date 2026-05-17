@@ -43,15 +43,18 @@ object Presence {
     bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
 
   /**
-   * Per-mac total minutes for the day, counting each 5-min bucket once. A bucket counts iff at
-   * least one host in the bucket is NOT in `exemptPatterns` — i.e. the device was active on
-   * something that bears on the daily cap. IP-literal hosts are never exempt (patterns only match
-   * FQDNs).
+   * Per-mac total active-seconds for the day, summing each 5-min bucket's max activeSeconds
+   * (bucket-deduplicated across hosts) once. A bucket counts iff at least one host in the bucket is
+   * NOT in `exemptPatterns`. IP-literal hosts are never exempt (patterns only match FQDNs).
+   *
+   * Surfaces raw seconds rather than floor-divided minutes so callers that need the precision (see
+   * #516 e2e test) can ceil-divide themselves; minute-resolution callers should use
+   * [[totalMinutesByMac]].
    */
-  def totalMinutesByMac(
+  def totalSecondsByMac(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
-  ): Map[MacAddress, Int] = {
+  ): Map[MacAddress, Long] = {
     def isExempt(h: HostId) =
       h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
     rows
@@ -62,10 +65,19 @@ object Presence {
           mac -> bucketSeconds(bucket)
       }
       .groupMapReduce(_._1)(_._2)(_ + _)
-      .view
-      .mapValues(s => (s / 60).toInt)
-      .toMap
   }
+
+  /**
+   * Per-mac total minutes for the day, counting each 5-min bucket once. A bucket counts iff at
+   * least one host in the bucket is NOT in `exemptPatterns` — i.e. the device was active on
+   * something that bears on the daily cap. IP-literal hosts are never exempt (patterns only match
+   * FQDNs).
+   */
+  def totalMinutesByMac(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+  ): Map[MacAddress, Int] =
+    totalSecondsByMac(rows, exemptPatterns).view.mapValues(s => (s / 60).toInt).toMap
 
   /**
    * Per-(mac, pattern) minutes, counting each bucket once per device per pattern when any host in
