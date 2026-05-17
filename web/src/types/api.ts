@@ -1,4 +1,4 @@
-// Mirrors familydns.shared Models.scala
+// Mirrors wifihaven.shared Models.scala
 
 // #385: three failover modes. Wire form is lower-kebab to match
 // shared/src/Models.scala FailureMode.asString.
