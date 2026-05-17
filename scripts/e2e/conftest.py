@@ -216,7 +216,7 @@ def pytest_runtest_makereport(item, call):
             sections.append(("router serial", f"<unavailable: {e}>"))
         try:
             from lib.vm import router_ssh
-            r = router_ssh("logread -e familydns | tail -n 80", check=False, timeout=10)
+            r = router_ssh("logread -e wifihaven | tail -n 80", check=False, timeout=10)
             sections.append(("router agent log", (r.stdout or "") + (r.stderr or "")))
         except Exception as e:  # noqa: BLE001
             sections.append(("router agent log", f"<unavailable: {e}>"))
