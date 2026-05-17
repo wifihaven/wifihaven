@@ -339,7 +339,7 @@ Test infrastructure lives in `api/test/src/TestDatabase.scala`:
 
 ### Clock is always injected — never call java.time directly
 
-`familydns.shared.Clock` is the only way to get the current time anywhere in the codebase.
+`wifihaven.shared.Clock` is the only way to get the current time anywhere in the codebase.
 
 ```scala
 // WRONG
