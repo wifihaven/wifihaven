@@ -1,0 +1,68 @@
+# Render Blueprint — wifihaven staging environment
+#
+# Scope: this file defines the STAGING environment only. Production is added
+# in a follow-up (#587) and will live alongside these resources in this same
+# blueprint.
+#
+# Region: `oregon` is a placeholder — operator should reconfirm the region
+# closest to the deployment before launch. Tuning is tracked in #590.
+#
+# Image tag: pinned to `:latest` as the bootstrap default, matching today's
+# `deploy/docker-compose.prod.yml`. The CI-driven sha-tag flow lands in #588.
+#
+# WIFIHAVEN_JWT_SECRET: `generateValue: true` runs ONCE at first apply. Do
+# NOT rotate this value — rotating invalidates every admin session AND every
+# router agent token, requiring a full re-pair of every deployed gateway.
+#
+# Tracked under #251 (umbrella render.com deploy effort) / closes #585.
+
+services:
+  - type: web
+    runtime: image
+    name: wifihaven-api-staging
+    plan: starter
+    # Reconfirm region before launch — pick the Render region closest to the
+    # operator's house. Tuning tracked in #590.
+    region: oregon
+    numInstances: 1
+    healthCheckPath: /api/health
+    image:
+      url: ghcr.io/wifihaven/wifihaven-api:latest
+    envVars:
+      - key: WIFIHAVEN_DB_HOST
+        fromDatabase:
+          name: wifihaven-pg-staging
+          property: host
+      - key: WIFIHAVEN_DB_PORT
+        fromDatabase:
+          name: wifihaven-pg-staging
+          property: port
+      - key: WIFIHAVEN_DB_NAME
+        fromDatabase:
+          name: wifihaven-pg-staging
+          property: database
+      - key: WIFIHAVEN_DB_USER
+        fromDatabase:
+          name: wifihaven-pg-staging
+          property: user
+      - key: WIFIHAVEN_DB_PASSWORD
+        fromDatabase:
+          name: wifihaven-pg-staging
+          property: password
+      - key: WIFIHAVEN_HTTP_PORT
+        value: 8080
+      - key: WIFIHAVEN_LOG_LEVEL
+        value: DEBUG
+      # Entrypoint warns if WIFIHAVEN_DEBUG is non-empty (mounts debug
+      # endpoints on loopback). Keep explicitly empty in staging.
+      - key: WIFIHAVEN_DEBUG
+        value: ""
+      # Generated ONCE on first apply. Never rotate — see header.
+      - key: WIFIHAVEN_JWT_SECRET
+        generateValue: true
+
+databases:
+  - name: wifihaven-pg-staging
+    plan: starter
+    postgresMajorVersion: 16
+    region: oregon
