@@ -158,6 +158,18 @@ jobs:
         working-directory: opnsense
         run: python -m pytest test/ -v
 
+  # ── render.yaml: YAML parse check ───────────────────────────────────────
+  render-blueprint:
+    name: Render Blueprint Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse render.yaml
+        # Ruby ships preinstalled on ubuntu-latest. Catches YAML regressions
+        # before they reach Render's blueprint importer.
+        run: ruby -ryaml -e "YAML.load_file('render.yaml')"
+
   # ── Frontend: type-check, lint, build ────────────────────────────────────
   frontend:
     name: Frontend Build & Lint
