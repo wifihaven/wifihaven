@@ -648,26 +648,13 @@ function M.parse_conntrack_line(line)
 end
 
 -- ---------------------------------------------------------------------------
--- is_wan_bound(flow, lan_prefix) -> bool
+-- is_outbound(flow, lan_prefix) -> bool
 --
--- Returns true when the flow is an outbound WAN-destined flow: src_ip is on
--- the LAN AND dst_ip is NOT on the LAN.  This filters out LAN-internal flows
--- (device → router, device → LAN peer, mDNS, DHCP, etc.) that should never
--- appear in connection_events — they are noise with no parental-control signal.
--- (#575)
---
+-- Returns true when the source IP is on the LAN (egress flow).
 -- lan_prefix example: "192.168.1."
 -- ---------------------------------------------------------------------------
-function M.is_wan_bound(flow, lan_prefix)
-  return flow.src_ip:sub(1, #lan_prefix) == lan_prefix
-     and flow.dst_ip:sub(1, #lan_prefix) ~= lan_prefix
-end
-
--- is_outbound is kept as a backward-compatible alias so existing call sites
--- outside the watch loop continue to work. New code should use is_wan_bound.
--- @deprecated use is_wan_bound
 function M.is_outbound(flow, lan_prefix)
-  return M.is_wan_bound(flow, lan_prefix)
+  return flow.src_ip:sub(1, #lan_prefix) == lan_prefix
 end
 
 -- ---------------------------------------------------------------------------
@@ -753,7 +740,7 @@ function M.watch(cfg)
     if not line then break end
 
     local flow = M.parse_conntrack_line(line)
-    if flow and M.is_wan_bound(flow, lan_prefix) then
+    if flow and M.is_outbound(flow, lan_prefix) then
       local arp = M.parse_arp_table()
       local mac_candidate = M.arp_lookup_mac(flow.src_ip, arp)
       -- Parse the lease file when (a) MAC is new, or (b) MAC is pending a
