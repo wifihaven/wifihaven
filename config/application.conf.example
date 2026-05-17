@@ -1,4 +1,4 @@
-familydns {
+wifihaven {
   db {
     host     = "localhost"
     port     = 5432
