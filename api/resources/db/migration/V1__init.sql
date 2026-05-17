@@ -1,5 +1,5 @@
 -- V1__init.sql
--- WifiHaven full schema
+-- FamilyDNS full schema
 
 CREATE TABLE users (
   id            BIGSERIAL PRIMARY KEY,
