@@ -244,6 +244,22 @@ function M.new(opts)
 
   function self.size() return entry_count end
 
+  -- Iterate every non-expired entry as (ip, hostname, ts). Used by
+  -- wifihaven-dns-tail (#544) to backfill newly-declared eb_<sanhost>
+  -- nft sets from prior dnsmasq replies — when a profile gains an
+  -- extraBlocked host, the eb_ set is created empty, and without a
+  -- backfill it stays empty until the client re-resolves the host.
+  -- Sweep order is unspecified (pairs() on the entries map); callers
+  -- must not depend on insertion order.
+  function self.for_each_entry(fn)
+    local now = now_fn()
+    for ip, e in pairs(entries) do
+      if (now - e.ts) <= ttl then
+        fn(ip, e.hostname, e.ts)
+      end
+    end
+  end
+
   -- Serialise the live cache to a single newline-delimited string.
   -- Format: "<ip>\t<hostname>\t<ts>\n" per non-expired entry.
   function self.dump_text()

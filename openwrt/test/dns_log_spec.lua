@@ -392,3 +392,57 @@ describe("dump_text + load_table", function()
     assert.same({}, dns_log.load_table("garbage\nnot a real entry\n", 3600, 0))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- 5. for_each_entry (#544 — eb_<sanhost> backfill helper)
+-- ---------------------------------------------------------------------------
+
+describe("for_each_entry (#544)", function()
+  local function fake_clock()
+    local t = 1000000
+    return {
+      now  = function() return t end,
+      advance = function(secs) t = t + secs end,
+    }
+  end
+
+  it("visits every live entry as (ip, hostname, ts)", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    c.ingest_line("1 1.1.1.1/1 query[A] a.example from 1.1.1.1")
+    c.ingest_line("1 1.1.1.1/1 reply a.example is 10.0.0.1")
+    c.ingest_line("2 1.1.1.1/2 query[A] b.example from 1.1.1.1")
+    c.ingest_line("2 1.1.1.1/2 reply b.example is 10.0.0.2")
+
+    local seen = {}
+    c.for_each_entry(function(ip, hostname, ts)
+      seen[ip] = { hostname = hostname, ts = ts }
+    end)
+    assert.equal("a.example", seen["10.0.0.1"].hostname)
+    assert.equal("b.example", seen["10.0.0.2"].hostname)
+    assert.equal(1000000, seen["10.0.0.1"].ts)
+  end)
+
+  it("skips ttl-expired entries", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    c.ingest_line("1 1.1.1.1/1 query[A] stale.example from 1.1.1.1")
+    c.ingest_line("1 1.1.1.1/1 reply stale.example is 10.0.0.1")
+    clk.advance(7200)  -- past ttl
+    c.ingest_line("2 1.1.1.1/2 query[A] fresh.example from 1.1.1.1")
+    c.ingest_line("2 1.1.1.1/2 reply fresh.example is 10.0.0.2")
+
+    local seen = {}
+    c.for_each_entry(function(ip, hostname) seen[ip] = hostname end)
+    assert.is_nil(seen["10.0.0.1"])
+    assert.equal("fresh.example", seen["10.0.0.2"])
+  end)
+
+  it("is a no-op on an empty cache", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    local calls = 0
+    c.for_each_entry(function() calls = calls + 1 end)
+    assert.equal(0, calls)
+  end)
+end)
