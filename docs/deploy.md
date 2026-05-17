@@ -194,8 +194,8 @@ LATEST_URL=$(curl -sf https://api.github.com/repos/wifihaven/wifihaven/releases/
   | jsonfilter -e '@.assets[0].browser_download_url')
 LATEST_VER=$(echo "$LATEST_URL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+')
 if [ "$LATEST_VER" != "$CURRENT" ]; then
-  curl -fsSL -o /tmp/familydns.ipk "$LATEST_URL"
-  opkg install --force-reinstall /tmp/familydns.ipk
+  curl -fsSL -o /tmp/wifihaven.ipk "$LATEST_URL"
+  opkg install --force-reinstall /tmp/wifihaven.ipk
 fi
 ```
 

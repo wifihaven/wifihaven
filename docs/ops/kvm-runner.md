@@ -50,7 +50,7 @@ start:
 ```bash
 # As the runner user, from a checkout of this repo:
 scripts/vm/build-client-base.sh      # → scripts/vm/.cache/client-base.qcow2
-scripts/vm/build-router-image.sh     # → scripts/vm/.cache/openwrt-familydns.img
+scripts/vm/build-router-image.sh     # → scripts/vm/.cache/openwrt-wifihaven.img
 ```
 
 Cache locations (kept across runs, safe to delete to force a rebuild):
@@ -58,7 +58,7 @@ Cache locations (kept across runs, safe to delete to force a rebuild):
 | path                                    | what                                   |
 |-----------------------------------------|----------------------------------------|
 | `scripts/vm/.cache/client-base.qcow2`   | Alpine client base image               |
-| `scripts/vm/.cache/openwrt-familydns.img` | Custom OpenWRT image w/ agent baked in |
+| `scripts/vm/.cache/openwrt-wifihaven.img` | Custom OpenWRT image w/ agent baked in |
 | `scripts/vm/.cache/imagebuilder/`       | OpenWRT Image Builder working tree     |
 | `.e2e-vm-venv/`                         | pytest venv (created lazily)           |
 

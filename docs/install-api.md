@@ -429,10 +429,10 @@ with `docker compose logs -f api` while the offending device is active.
 Defaults to `INFO`; set in `deploy/.env` (or use the debug overlay below,
 which turns this on for you).
 
-On the **OpenWRT side**, set `uci set familydns.@familydns[0].debug=1; uci
-commit; /etc/init.d/familydns restart` to make the agent log every policy
+On the **OpenWRT side**, set `uci set wifihaven.@wifihaven[0].debug=1; uci
+commit; /etc/init.d/wifihaven restart` to make the agent log every policy
 fetch, usage POST, event flush, and per-flow mac/hostname attribution to
-`logread -t familydns` (#228).
+`logread -t wifihaven` (#228).
 
 ### 9.2 Loopback-only debug endpoints (`WIFIHAVEN_DEBUG=1`)
 
