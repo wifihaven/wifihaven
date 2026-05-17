@@ -286,13 +286,13 @@ trait ConnectionEventRepo {
 }
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
-  def findByUsername(u: String)               =
+  def findByUsername(u: String)             =
     sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE username=$u"
       .query[(UserId, String, String, UserRole, Instant, Boolean)]
       .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
       .option
       .transact(xa)
-  def findById(id: UserId)                    =
+  def findById(id: UserId)                  =
     sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE id=$id"
       .query[(UserId, String, String, UserRole, Instant, Boolean)]
       .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
@@ -304,11 +304,11 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .query[UserId]
       .unique
       .transact(xa)
-  def updatePassword(id: UserId, h: String)   =
+  def updatePassword(id: UserId, h: String) =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
-  def clearMustChangePassword(id: UserId)     =
+  def clearMustChangePassword(id: UserId)   =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
-  def listAll                                 =
+  def listAll                               =
     sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users ORDER BY id"
       .query[(UserId, String, String, UserRole, Instant, Boolean)]
       .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
