@@ -56,7 +56,7 @@ hooks on some hosts — the `usermod` route is more reliable.
 
 ### LAN bridge + `qemu-bridge-helper`
 
-`client-up.sh` attaches the client VM's LAN NIC to the `fdns-lan0` bridge
+`client-up.sh` attaches the client VM's LAN NIC to the `wh-lan0` bridge
 via `qemu-bridge-helper`, which is not setuid by default on Ubuntu and
 which refuses to attach to bridges that aren't in `/etc/qemu/bridge.conf`.
 Both need fixing once:
@@ -64,7 +64,7 @@ Both need fixing once:
 ```bash
 sudo bash -c '
   mkdir -p /etc/qemu
-  echo "allow fdns-lan0" > /etc/qemu/bridge.conf
+  echo "allow wh-lan0" > /etc/qemu/bridge.conf
   setcap cap_net_admin+ep /usr/lib/qemu/qemu-bridge-helper
 '
 ```
@@ -149,7 +149,7 @@ scripts/vm/router-down.sh
   Permission denied` after it was working, use the `usermod -aG kvm`
   approach above instead of `setfacl`.
 
-- **Bridge MTU.** `lan-bridge-up.sh` creates `fdns-lan0` without setting
+- **Bridge MTU.** `lan-bridge-up.sh` creates `wh-lan0` without setting
   an MTU; the default 1500 is fine for the e2e plan, but if you bridge
   this to a tun/tap with smaller MTU you'll see TCP stalls.
 
@@ -165,7 +165,7 @@ done
 test -r /dev/kvm && test -w /dev/kvm && echo "ok /dev/kvm" || echo "MISSING /dev/kvm rw"
 
 # Bridge + qemu-bridge-helper:
-grep -q "^allow fdns-lan0\b" /etc/qemu/bridge.conf && echo "ok bridge.conf"
+grep -q "^allow wh-lan0\b" /etc/qemu/bridge.conf && echo "ok bridge.conf"
 getcap /usr/lib/qemu/qemu-bridge-helper | grep -q cap_net_admin && echo "ok qemu-bridge-helper cap"
 
 # Passwordless ip:
