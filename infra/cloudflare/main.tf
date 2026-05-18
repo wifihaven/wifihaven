@@ -78,7 +78,7 @@ resource "cloudflare_record" "api_prod" {
   zone_id = var.zone_id
   name    = "api"
   type    = "CNAME"
-  value   = var.api_prod_cname_target
+  content = var.api_prod_cname_target
   proxied = false
   ttl     = 1 # auto
   comment = "Render wifihaven-api-prod (#613)"
@@ -88,7 +88,7 @@ resource "cloudflare_record" "api_staging" {
   zone_id = var.zone_id
   name    = "api-staging"
   type    = "CNAME"
-  value   = var.api_staging_cname_target
+  content = var.api_staging_cname_target
   proxied = false
   ttl     = 1
   comment = "Render wifihaven-api-staging (#613)"
