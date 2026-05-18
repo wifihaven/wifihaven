@@ -28,12 +28,16 @@ object CorsSpec extends ZIOSpecDefault {
 
   def spec = suite("CORS middleware (#612)")(
     test("preflight from allowed origin → 204 with echo + configured headers") {
+      // #626: send the request header lowercase the way a real browser does
+      // (per Fetch spec). Asserts on the actual Allow-Headers content, not
+      // just presence — the original #616 test only checked presence, which
+      // is how the empty-value regression slipped through.
       val req = Request
         .options("/api/auth/login")
         .addHeader(Header.Origin.parse(allowedOrigin).toOption.get)
         .addHeader(Header.AccessControlRequestMethod(Method.POST))
         .addHeader(
-          Header.AccessControlRequestHeaders(NonEmptyChunk("Content-Type")),
+          Header.AccessControlRequestHeaders(NonEmptyChunk("content-type")),
         )
       for {
         resp <- runReq(req)
@@ -53,11 +57,33 @@ object CorsSpec extends ZIOSpecDefault {
         am.exists(_.contains(Method.DELETE)),
         ah.exists {
           case Header.AccessControlAllowHeaders.Some(vs) =>
-            vs.exists(_.equalsIgnoreCase("Content-Type"))
+            vs.exists(_.equalsIgnoreCase("content-type"))
           case _                                         => false
         },
         ma.exists(_.duration == 10.minutes),
         ac.contains(Header.AccessControlAllowCredentials.DoNotAllow),
+      )
+    },
+    test("preflight echoes content-type when browser requests it (SPA login shape, #626)") {
+      // Exact shape of the SPA login preflight the browser sends: lowercase
+      // `content-type` in Access-Control-Request-Headers. Regression guard
+      // for the empty Allow-Headers seen on staging.
+      val req = Request
+        .options("/api/auth/login")
+        .addHeader(Header.Origin.parse(allowedOrigin).toOption.get)
+        .addHeader(Header.AccessControlRequestMethod(Method.POST))
+        .addHeader(
+          Header.AccessControlRequestHeaders(NonEmptyChunk("content-type")),
+        )
+      for {
+        resp <- runReq(req)
+      } yield assertTrue(
+        resp.status == Status.NoContent,
+        resp.header(Header.AccessControlAllowHeaders).exists {
+          case Header.AccessControlAllowHeaders.Some(vs) =>
+            vs.exists(_.equalsIgnoreCase("content-type"))
+          case _                                         => false
+        },
       )
     },
     test("preflight from disallowed origin → no allow-origin header") {
