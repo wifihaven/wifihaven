@@ -15,7 +15,14 @@ BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
 # fake-router (docker/fake-router.py) rotates the seeded admin password on
 # first run to this value. e2e scripts execute *after* `compose up --wait`,
 # so the DB is always in the post-rotation state by the time we log in.
+# Against the deployed staging API (Gate 1 / #653) this is overridden from
+# the workflow's STAGING_ADMIN_PASS secret.
 ADMIN_PASS="${ADMIN_PASS:-fake-router-bootstrap-pw-do-not-use-elsewhere}"
+# Unique suffix so we don't collide with residue from a previous run against
+# a persistent backend (staging). Against the disposable compose stack this
+# is just a different per-run name with no observable effect.
+RUN_ID="${RUN_ID:-$(date +%s)-$$}"
+PROFILE_NAME="e2e-test-${RUN_ID}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 pass() { echo "  ✓ $*"; }
@@ -55,13 +62,23 @@ pass "profiles list returned $(wc -c <"$TMP/profiles.json") bytes"
 step "Create a profile"
 CREATE=$(curl -fsS -X POST "$BASE/api/profiles" \
   "${AUTH[@]}" -H 'content-type: application/json' \
-  -d '{"name":"e2e-test","blockedCategories":["adult"],"extraBlocked":[],"extraAllowed":[],"paused":false,"schedules":[],"timeLimit":null,"siteTimeLimits":[]}')
+  -d "{\"name\":\"$PROFILE_NAME\",\"blockedCategories\":[\"adult\"],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}")
 PID=$(echo "$CREATE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 [ -n "$PID" ] || fail "no profile id in create response: $CREATE"
-pass "created profile id=$PID"
+pass "created profile id=$PID name=$PROFILE_NAME"
+
+# Best-effort cleanup so we don't leave residue in a persistent backend.
+# Replaces the TMP-cleanup-only trap installed above; both compose together.
+cleanup_tests() {
+  local rc=$?
+  rm -rf "$TMP"
+  curl -s -X DELETE "$BASE/api/profiles/$PID" "${AUTH[@]}" >/dev/null 2>&1 || true
+  return $rc
+}
+trap cleanup_tests EXIT
 
 step "Fetch the profile we just created"
-curl -fsS "${AUTH[@]}" "$BASE/api/profiles/$PID" | grep -q '"name":"e2e-test"' \
+curl -fsS "${AUTH[@]}" "$BASE/api/profiles/$PID" | grep -q "\"name\":\"$PROFILE_NAME\"" \
   || fail "profile $PID did not round-trip"
 pass "profile round-trips"
 

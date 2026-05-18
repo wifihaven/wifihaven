@@ -11,7 +11,18 @@ set -euo pipefail
 BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
 # See scripts/e2e-tests.sh — fake-router rotates the seeded admin password on
 # first boot, so by the time this script runs the DB has the rotated value.
+# Against deployed staging (Gate 1 / #653) overridden from STAGING_ADMIN_PASS.
 ADMIN_PASS="${ADMIN_PASS:-fake-router-bootstrap-pw-do-not-use-elsewhere}"
+# Unique suffix avoids collisions with residue from a previous (or concurrent)
+# run against a persistent backend (staging). On the disposable compose stack
+# this is just per-run state with no observable effect.
+RUN_ID="${RUN_ID:-$(date +%s)-$$}"
+PROFILE_NAME="e2e-router-${RUN_ID}"
+ROUTER_NAME="e2e-test-router-${RUN_ID}"
+# Derive a unicast, locally-administered MAC from RUN_ID so parallel runs
+# against staging don't fight over the same `lastSeenIp` row.
+mac_suffix=$(printf '%s' "$RUN_ID" | shasum 2>/dev/null | head -c 6)
+MAC="e2:e2:e2:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 pass() { echo "  ✓ $*"; }
@@ -39,32 +50,32 @@ AUTH=(-H "authorization: Bearer $ADMIN")
 step "Create test profile (dailyMinutes=1)"
 PROF=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
   -H 'content-type: application/json' \
-  -d '{"name":"e2e-router","blockedCategories":[],"extraBlocked":[],"extraAllowed":[],"paused":false,"schedules":[],"timeLimit":1,"siteTimeLimits":[]}')
+  -d "{\"name\":\"$PROFILE_NAME\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":1,\"siteTimeLimits\":[]}")
 PID=$(echo "$PROF" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 [ -n "$PID" ] || fail "no profile id: $PROF"
-pass "profile id=$PID"
+pass "profile id=$PID name=$PROFILE_NAME"
 
 # Register cleanup so test data is removed even on failure.
 cleanup() {
   echo
   echo "▶ Cleanup"
+  curl -s -X DELETE "$BASE/api/devices/$MAC"        "${AUTH[@]}" >/dev/null 2>&1 || true
   curl -s -X DELETE "$BASE/api/profiles/$PID"       "${AUTH[@]}" >/dev/null 2>&1 || true
   curl -s -X DELETE "$BASE/api/admin/routers/$RID"  "${AUTH[@]}" >/dev/null 2>&1 || true
-  pass "test profile + router removed"
+  pass "test profile + device + router removed"
 }
 trap cleanup EXIT
 
-MAC="e2:e2:e2:e2:e2:01"
 curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
   -H 'content-type: application/json' \
-  -d "{\"mac\":\"$MAC\",\"name\":\"e2e-laptop\",\"profileId\":$PID}" >/dev/null
+  -d "{\"mac\":\"$MAC\",\"name\":\"e2e-laptop-${RUN_ID}\",\"profileId\":$PID}" >/dev/null
 pass "device mac=$MAC → profile $PID"
 
 # ── 1. Router enrollment yields a usable bearer token ─────────────────────
 step "Router enrollment"
 ROUTER=$(curl -fsS -X POST "$BASE/api/admin/routers" "${AUTH[@]}" \
   -H 'content-type: application/json' \
-  -d '{"name":"e2e-test-router"}')
+  -d "{\"name\":\"$ROUTER_NAME\"}")
 RID=$(echo   "$ROUTER" | sed -n 's/.*"routerId":"\([^"]*\)".*/\1/p')
 ENROLL=$(echo "$ROUTER" | sed -n 's/.*"enrollmentToken":"\([^"]*\)".*/\1/p')
 [ -n "$RID" ] && [ -n "$ENROLL" ] || fail "bad create-router response: $ROUTER"
@@ -249,7 +260,7 @@ pause_profile() {
   local paused=$1
   curl -fsS -X PUT "$BASE/api/profiles/$PID" "${AUTH[@]}" \
     -H 'content-type: application/json' \
-    -d "{\"name\":\"e2e-router\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":$paused,\"schedules\":[],\"timeLimit\":1,\"siteTimeLimits\":[]}" \
+    -d "{\"name\":\"$PROFILE_NAME\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":$paused,\"schedules\":[],\"timeLimit\":1,\"siteTimeLimits\":[]}" \
     >/dev/null
 }
 pause_profile true
@@ -276,7 +287,7 @@ step "Add always-on schedule → blockReason=Schedule in snapshot"
 # blockReason=Schedule.
 SCHED_BODY=$(cat <<EOF
 {
-  "name": "e2e-router",
+  "name": "$PROFILE_NAME",
   "blockedCategories": [],
   "extraBlocked": [],
   "extraAllowed": [],
@@ -325,6 +336,61 @@ for REASON in "paused" "time_limit" "schedule" "category:adult" "extra_blocked";
   [ "$CODE" = "200" ] || fail "/blocked?reason=$REASON returned $CODE (expected 200)"
   pass "/blocked?reason=$REASON → 200"
 done
+
+# ── 9. Negative cases per router endpoint (#653) ──────────────────────────
+#
+# Gate 1 also asserts that the API rejects what it should: missing auth on
+# every router endpoint, malformed JSON on events, bogus enrollment tokens.
+# These overlap with the contract goldens but are exercised at runtime so a
+# regression in the auth/parse path can't slip through.
+step "Negative: missing auth → 401 on router endpoints"
+for path in /api/router/policy /api/router/events /api/router/usage; do
+  if [ "$path" = "/api/router/policy" ]; then
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$path")
+  else
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+      -H 'content-type: application/json' -d '{}' "$BASE$path")
+  fi
+  [ "$CODE" = "401" ] || fail "expected 401 on $path (no auth), got $CODE"
+  pass "$path → 401 without auth"
+done
+
+step "Negative: bogus bearer → 401 on /api/router/policy"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H 'authorization: Bearer rt_bogus_does_not_exist' \
+  "$BASE/api/router/policy")
+[ "$CODE" = "401" ] || fail "expected 401 with bogus bearer, got $CODE"
+pass "bogus bearer → 401"
+
+step "Negative: bogus enrollment token → 4xx on /api/router/register"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' \
+  -d '{"enrollmentToken":"et_bogus_does_not_exist"}' \
+  "$BASE/api/router/register")
+case "$CODE" in
+  4*) pass "bogus enrollmentToken → $CODE" ;;
+  *)  fail "expected 4xx on bogus enrollmentToken, got $CODE" ;;
+esac
+
+step "Negative: malformed JSON → 4xx on /api/router/events"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${RAUTH[@]}" \
+  -H 'content-type: application/json' \
+  --data-binary '{"this is": "not router events JSON"' \
+  "$BASE/api/router/events")
+case "$CODE" in
+  4*) pass "malformed events body → $CODE" ;;
+  *)  fail "expected 4xx on malformed events body, got $CODE" ;;
+esac
+
+step "Negative: wrong-password login → 401"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"definitely-not-the-password"}' \
+  "$BASE/api/auth/login")
+case "$CODE" in
+  401|403) pass "wrong-password login → $CODE" ;;
+  *)       fail "expected 401/403 on wrong password, got $CODE" ;;
+esac
 
 echo
 echo "All router e2e checks passed."

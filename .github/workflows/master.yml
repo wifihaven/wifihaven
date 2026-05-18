@@ -316,13 +316,15 @@ jobs:
           [[ "$status" == "401" || "$status" == "200" || "$status" == "403" ]]
 
   # ── 5b. Gate 1 — API contract smoke against staging (#653) ──────────────
-  # Drives the deployed staging API via a stdlib-only fake-router driver:
-  # admin auth, profile / schedule / pause / time-limit / extraBlocked
-  # setup, router enrollment, /api/router/policy shape + content, events +
-  # usage ingest happy paths, plus 401 / 4xx negatives per endpoint. Blocks
-  # API publish (retag-latest, deploy-prod-render) and the SPA prod deploy
-  # by sitting on the `approve-production` sentinel's `needs:`. Does NOT
-  # block publish-openwrt — Gate 2 (#654) owns the OpenWRT side.
+  # Re-runs the same admin + router-API e2e scripts that already gate
+  # build-image (scripts/e2e-tests.sh + scripts/e2e-router.sh) — but against
+  # the freshly-deployed staging Render service instead of the in-CI
+  # docker-compose stack. Same semantic coverage (timeLimit → blockReason,
+  # pause → Paused, schedule → Schedule, HostId variants, etag round-trip,
+  # legacy `hostname` rejection) plus 401 / 4xx negatives per endpoint.
+  # Blocks API publish (retag-latest, deploy-prod-render) and the SPA prod
+  # deploy by sitting on `approve-production`'s `needs:`. Does NOT block
+  # publish-openwrt — Gate 2 (#654) owns the OpenWRT side.
   api-smoke-staging:
     name: Gate 1 — API contract smoke (staging)
     needs: [smoke-staging]
@@ -330,15 +332,18 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Run API contract smoke
+      - name: Admin API smoke against staging
         env:
-          WIFIHAVEN_API_BASE: ${{ env.STAGING_API_URL }}
-          WIFIHAVEN_ADMIN_USER: ${{ secrets.STAGING_ADMIN_USER }}
-          WIFIHAVEN_ADMIN_PASS: ${{ secrets.STAGING_ADMIN_PASS }}
-        run: python3 scripts/api-smoke/smoke.py
+          E2E_BASE_URL: ${{ env.STAGING_API_URL }}
+          ADMIN_PASS: ${{ secrets.STAGING_ADMIN_PASS }}
+          RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/e2e-tests.sh
+      - name: Router API smoke against staging
+        env:
+          E2E_BASE_URL: ${{ env.STAGING_API_URL }}
+          ADMIN_PASS: ${{ secrets.STAGING_ADMIN_PASS }}
+          RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/e2e-router.sh
 
   # ════════════════════════════════════════════════════════════════════════
   # ── DEPLOY-PRODUCTION ── (manual-approval gate + parallel jobs) ─────────

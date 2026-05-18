@@ -53,4 +53,3 @@ mill.??????
 .e2e-vm-venv/
 .e2e-vm-artifacts/
 scripts/e2e/**/__pycache__/
-scripts/api-smoke/**/__pycache__/
