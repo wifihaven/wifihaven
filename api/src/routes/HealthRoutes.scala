@@ -26,7 +26,7 @@ object HealthRoutes {
       )
 
     Routes(
-      Method.GET / "api" / "health" ->
+      Method.GET / "api" / "health"  ->
         handler { (_: Request) => getResponse },
       Method.HEAD / "api" / "health" ->
         handler { (_: Request) => getResponse.map(_.copy(body = Body.empty)) },
