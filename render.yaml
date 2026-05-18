@@ -1,7 +1,9 @@
 # Render Blueprint — wifihaven staging + production environments
 #
-# This file defines both the STAGING and PRODUCTION environments as a Blueprint.
-# Staging was added in #585; production + CDN Static Sites added in #587.
+# This file defines the API stack (web services + Postgres) on Render. The
+# SPA moved to Cloudflare Pages in #613; see `.github/workflows/deploy-spa.yml`
+# and `docs/deploy-cloud.md`. Do NOT add Static Site blocks back here — the
+# SPA hosting boundary is intentionally split.
 #
 # Region: `oregon` is a placeholder — operator should reconfirm the region
 # closest to the deployment before launch. Tuning is tracked in #590.
@@ -19,7 +21,7 @@
 # router agent token, requiring a full re-pair of every deployed gateway.
 #
 # Tracked under #251 (umbrella render.com deploy effort).
-# Staging closes #585; production + CDN closes #587.
+# Staging closes #585; production + CDN closes #587. SPA migrated in #613.
 
 services:
   # ── Staging API ────────────────────────────────────────────────────────────
@@ -140,50 +142,6 @@ services:
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true
-
-  # ── Staging SPA (CDN Static Site) ─────────────────────────────────────────
-  # Serves the React/Vite bundle from Render's CDN edge.
-  # VITE_API_BASE_URL bakes the staging API origin into the bundle at build
-  # time so the SPA always points at the staging API, never prod.
-  # JVM still bundles the SPA (see TODO(#601) in docker/Dockerfile) as a
-  # fallback while the CDN path is being validated.
-  - type: web
-    runtime: static
-    name: wifihaven-spa-staging
-    buildCommand: npm ci && npm run build
-    staticPublishPath: ./dist
-    rootDir: web
-    domains:
-      - staging.wifihaven.net
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: VITE_API_BASE_URL
-        value: https://api-staging.wifihaven.net
-
-  # ── Production SPA (CDN Static Site) ──────────────────────────────────────
-  # Serves the React/Vite bundle from Render's CDN edge.
-  # VITE_API_BASE_URL bakes the prod API origin into the bundle at build time.
-  # JVM still bundles the SPA (see TODO(#601) in docker/Dockerfile) as a
-  # fallback while the CDN path is being validated.
-  - type: web
-    runtime: static
-    name: wifihaven-spa-prod
-    buildCommand: npm ci && npm run build
-    staticPublishPath: ./dist
-    rootDir: web
-    domains:
-      - wifihaven.net
-      - www.wifihaven.net
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: VITE_API_BASE_URL
-        value: https://api.wifihaven.net
 
 databases:
   # ── Staging Postgres ───────────────────────────────────────────────────────

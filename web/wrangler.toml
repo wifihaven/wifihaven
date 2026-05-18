@@ -1,0 +1,7 @@
+# Cloudflare Pages config — production project.
+# Used by `wrangler pages deploy` from .github/workflows/deploy-spa.yml.
+# Staging is in wrangler.staging.toml. See docs/deploy-cloud.md.
+
+name = "wifihaven"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-05-17"

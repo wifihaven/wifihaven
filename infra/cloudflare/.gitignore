@@ -1,0 +1,11 @@
+# State files: contain provider-specific data and may include sensitive
+# values (per resource). Local state only for now — TODO(#613-followup)
+# to move to a remote backend.
+*.tfstate
+*.tfstate.*
+
+# Plugin cache. Large; restored by `terraform init`.
+.terraform/
+
+# tfvars: explicitly committed — the four IDs in terraform.tfvars are not
+# secrets. The actual secret (API token) lives in CLOUDFLARE_API_TOKEN.
