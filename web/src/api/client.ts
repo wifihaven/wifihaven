@@ -6,7 +6,13 @@ import type {
   User,
 } from '@/types/api'
 
-const BASE = '/api'
+// VITE_API_BASE_URL is empty by default (relative path — SPA served from the
+// same origin as the API, which is the current JVM-bundled behaviour). Static
+// Site builds override this to an absolute URL so the CDN-served SPA knows
+// which API host to reach: https://api.wifihaven.app for prod,
+// https://api-staging.wifihaven.app for staging. See render.yaml and #587.
+const VITE_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+const BASE = `${VITE_API_BASE_URL}/api`
 
 function getToken(): string | null {
   return localStorage.getItem('token')
