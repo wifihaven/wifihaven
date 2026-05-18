@@ -30,7 +30,7 @@ services:
     image:
       url: ghcr.io/wifihaven/wifihaven-api:latest
     domains:
-      - name: api-staging.wifihaven.app
+      - name: api-staging.wifihaven.net
     envVars:
       - key: WIFIHAVEN_DB_HOST
         fromDatabase:
@@ -78,7 +78,7 @@ services:
     image:
       url: ghcr.io/wifihaven/wifihaven-api:latest
     domains:
-      - name: api.wifihaven.app
+      - name: api.wifihaven.net
     envVars:
       - key: WIFIHAVEN_DB_HOST
         fromDatabase:
@@ -126,14 +126,14 @@ services:
     staticPublishPath: ./dist
     rootDir: web
     domains:
-      - name: staging.wifihaven.app
+      - name: staging.wifihaven.net
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://api-staging.wifihaven.app
+        value: https://api-staging.wifihaven.net
 
   # ── Production SPA (CDN Static Site) ──────────────────────────────────────
   # Serves the React/Vite bundle from Render's CDN edge.
@@ -147,14 +147,15 @@ services:
     staticPublishPath: ./dist
     rootDir: web
     domains:
-      - name: wifihaven.app
+      - name: wifihaven.net
+      - name: www.wifihaven.net
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://api.wifihaven.app
+        value: https://api.wifihaven.net
 
 databases:
   # ── Staging Postgres ───────────────────────────────────────────────────────
