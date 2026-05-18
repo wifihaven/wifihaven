@@ -1,0 +1,21 @@
+name: Keep staging warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping staging health endpoint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit staging health endpoint
+        # Fallback to the *.onrender.com URL handles the case where the
+        # custom-domain cert is mid-renewal — direct origin keeps working
+        # with Render's wildcard.
+        run: |
+          curl -fsS --max-time 30 \
+            https://api-staging.wifihaven.net/api/health \
+            || curl -fsS --max-time 30 \
+              https://wifihaven-api-staging.onrender.com/api/health
