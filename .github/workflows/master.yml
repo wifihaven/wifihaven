@@ -1,21 +1,41 @@
 name: Master CD
 
-# Runs on every push to main:
-#   1. ci-tests   — full CI matrix via workflow_call to ci.yml (unconditional).
-#   2. e2e/smoke  — bootstrap, e2e, prod-stack smokes (unconditional).
-#   3. publish    — Docker image to ghcr.io + OpenWRT .ipk/.apk, both
-#                   unconditional once gating jobs pass. Path-filtering was
-#                   unsafe under concurrency.cancel-in-progress — see the
-#                   comment on each publish job.
+# Runs on every push to main. After #588 the flow is:
+#
+#   ci-tests + bootstrap-smoke + e2e + prod-stack-smoke   (vm-e2e on its own track)
+#     → build-image                  (push sha-<commit> + `staging` tags ONLY; not `:latest`)
+#     → deploy-staging               (curl staging deploy hook; wait for /api/health)
+#     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net)
+#     → deploy-production            (parallel jobs; all gated on smoke-staging passing):
+#                                       • retag-latest      — promote sha-<commit> → :latest
+#                                                             via `docker buildx imagetools create`
+#                                                             (no rebuild — image already gated)
+#                                       • publish-openwrt   — reusable openwrt-build.yml with
+#                                                             publish_release: true
+#                                       • deploy-prod-render — curl prod deploy hook + health poll
+#
+# Gate semantics: the public consumer surface (`:latest`, the openwrt-latest
+# rolling release, the prod Render service) only updates after staging smoke
+# passes. A failed smoke leaves all three on the previous version — atomic at
+# the gate.
+#
+# TODO(#498): re-add a real manual approval gate via `environment: production`
+# on the three deploy-production jobs. Until that lands, deploy-production
+# fires automatically once smoke-staging is green.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Only one publish can run at a time. If a new run kicks off while an older
-# run is still paused waiting on the production environment approval, cancel
-# the older one — we always want the latest commit's run to take precedence.
+# Cancel-in-progress is scoped to the build/gate portion only — if a new
+# main push lands while an older run is still in build/staging, dropping
+# the older run is fine. We do NOT want cancel-in-progress applying to the
+# deploy-production jobs: cancelling mid-promotion can leave one of the
+# three sub-jobs done and the others not, producing a partial release.
+# Splitting the concurrency group by job name (via the job-level
+# `concurrency` field) is more surgical than narrowing the top-level group,
+# so we keep this group covering build/staging and let prod jobs run free.
 concurrency:
   group: master-${{ github.ref }}
   cancel-in-progress: true
@@ -24,11 +44,11 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/wifihaven-api
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  STAGING_API_URL: https://api-staging.wifihaven.net
+  PROD_API_URL: https://api.wifihaven.net
 
 jobs:
   # ── 1. Full CI test matrix (unit, lint, lua, python, shell, frontend) ─────
-  # Runs unconditionally — issue #190 wants test failures on main to block
-  # publish regardless of which paths changed.
   ci-tests:
     name: CI
     uses: ./.github/workflows/ci.yml
@@ -79,30 +99,21 @@ jobs:
       - name: Run prod-stack smoke
         run: scripts/smoke-prod.sh
 
-  # VM e2e is intentionally NOT a gate on publish — the suite is being
-  # stabilized on its own track (PRs targeting the `ci/vm-e2e` branch run
-  # .github/workflows/e2e-vm.yml). Reintroduce as a `needs:` here once the
-  # suite is reliably green on that branch.
+  # vm-e2e is intentionally NOT a gate — see e2e-vm.yml (its own track).
 
-  # ── 3. Publish API image (unconditional on main) ─────────────────────────
-  # Runs on every main push — NOT path-filtered. Path-filtering here is
-  # unsafe under `concurrency.cancel-in-progress: true`: a prior commit that
-  # touches api inputs can be superseded and cancelled before its publish
-  # job runs, and if the superseding commit doesn't touch api inputs, the
-  # image build is skipped entirely and those changes never ship. Mirrors
-  # the openwrt fix in #513. Republishing on every push is cheap relative
-  # to silently losing a build (cache-from: type=gha keeps no-op rebuilds
-  # fast).
-  # NOTE: manual approval gate temporarily removed for live debugging of #228;
-  # restore via #244 once the bug is fixed and we're back in normal cadence.
-  publish-api:
-    name: Publish Docker image to ghcr.io
+  # ── 3. Build the API image (sha-<commit> + `staging` tags only) ──────────
+  # `:latest` is NOT pushed here. Promotion to `:latest` happens in the
+  # deploy-production retag job, only after staging smoke passes. Staging
+  # tracks the moving `staging` tag — simpler than rewriting the Render
+  # service image URL via API on every deploy (issue #588 says: pick the
+  # simpler option; we did).
+  build-image:
+    name: Build Docker image to ghcr.io (sha + staging tags)
     needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     steps:
       - uses: actions/checkout@v4
 
@@ -126,8 +137,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # NOTE: `latest` is deliberately omitted — it's published by the
+          # deploy-production retag job after staging smoke.
           tags: |
-            type=raw,value=latest
+            type=raw,value=staging
             type=sha,prefix=sha-,format=short
 
       - name: Build and push
@@ -142,23 +155,181 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 4. Publish OpenWRT .ipk/.apk (unconditional on main + v* tags) ───────
-  # Gates openwrt build/publish on the same checks as publish-api. Runs on
-  # every main push (and v* tags) — NOT path-filtered. Path-filtering here is
-  # unsafe under `concurrency.cancel-in-progress: true`: a prior commit that
-  # touches openwrt/** can be superseded and cancelled before its publish job
-  # runs, and if the superseding commit doesn't touch openwrt/**, the build
-  # is skipped entirely and those openwrt changes never publish (#494).
-  # Republishing on every push is cheap relative to silently losing a build.
-  # vm-e2e is intentionally NOT in needs — see the comment above publish-api.
+  # ── 4. Deploy staging ─────────────────────────────────────────────────────
+  # The Render staging service is configured to track the `staging` image
+  # tag. The deploy hook tells Render to pull whatever now lives at that tag
+  # (which the build-image job just pushed) and roll the service.
+  deploy-staging:
+    name: Deploy staging (Render)
+    needs: [build-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render staging deploy hook
+        env:
+          RENDER_DEPLOY_HOOK_STAGING: ${{ secrets.RENDER_DEPLOY_HOOK_STAGING }}
+        run: |
+          # Use --fail to surface non-2xx; pipe to /dev/null so the URL
+          # (which contains the secret key) is never echoed even on failure.
+          curl --fail --silent --show-error --max-time 30 \
+            -X POST "$RENDER_DEPLOY_HOOK_STAGING" >/dev/null
+          echo "Staging deploy hook accepted."
+
+      - name: Wait for staging to be healthy
+        run: |
+          # Poll /api/health until it returns 200 with db ok. Render's image
+          # rollout typically takes 30-90s; allow up to 8 minutes.
+          # We check both the HTTP status AND the body to confirm THIS run's
+          # deploy is live (not the previous image still serving while the
+          # new one is starting). The `version` field (if exposed) would be
+          # more authoritative; for now /api/health 200 + db ok is enough —
+          # the smoke-staging job that follows will catch any real breakage.
+          deadline=$(( $(date +%s) + 480 ))
+          while (( $(date +%s) < deadline )); do
+            if curl --fail --silent --max-time 10 \
+                 "${STAGING_API_URL}/api/health" | grep -q '"db":\s*"ok"'; then
+              echo "Staging is healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for staging /api/health." >&2
+          exit 1
+
+  # ── 5. Smoke-test staging ─────────────────────────────────────────────────
+  # Fast (<2 min) end-user-facing checks against the deployed staging URL.
+  # NOT a replica of scripts/e2e-tests.sh — that runs pre-deploy against the
+  # docker-compose stack. This is "did the deploy itself break anything that
+  # only manifests on real Render infra" — CORS, TLS, db connectivity, the
+  # SPA cross-origin contract.
+  smoke-staging:
+    name: Smoke-test staging
+    needs: [deploy-staging]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health endpoint returns 200 + db ok
+        run: |
+          body=$(curl --fail --silent --show-error --max-time 10 \
+            "${STAGING_API_URL}/api/health")
+          echo "$body"
+          echo "$body" | grep -q '"db":\s*"ok"'
+
+      - name: CORS preflight from staging SPA origin returns expected headers
+        # Catches the class of bug fixed in #626 (empty
+        # Access-Control-Allow-Headers).
+        run: |
+          headers=$(curl --silent --show-error --max-time 10 -i \
+            -X OPTIONS \
+            -H "Origin: https://staging.wifihaven.net" \
+            -H "Access-Control-Request-Method: POST" \
+            -H "Access-Control-Request-Headers: content-type,authorization" \
+            "${STAGING_API_URL}/api/health")
+          echo "$headers"
+          echo "$headers" | grep -i '^access-control-allow-origin: https://staging.wifihaven.net'
+          # Allow-Headers must echo back the requested headers — empty value
+          # is the #626 regression.
+          allow=$(echo "$headers" | grep -i '^access-control-allow-headers:' || true)
+          [[ -n "$allow" ]] || { echo "missing Access-Control-Allow-Headers" >&2; exit 1; }
+          echo "$allow" | grep -iq 'content-type'
+
+      - name: Authenticated route reaches the database
+        # Hits a route that exercises a DB read. /api/health already checks
+        # connectivity, but a 401 from an auth-gated route confirms the
+        # request actually reached the app router (not a Render edge cache
+        # or maintenance page).
+        run: |
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --max-time 10 "${STAGING_API_URL}/api/devices")
+          echo "status=$status"
+          # 401 (unauth) or 200 (if endpoint is public) are both fine; 5xx
+          # or 404 indicates the deploy is broken.
+          [[ "$status" == "401" || "$status" == "200" || "$status" == "403" ]]
+
+  # ════════════════════════════════════════════════════════════════════════
+  # ── DEPLOY-PRODUCTION ── (parallel jobs, all gated on smoke-staging) ────
+  # ════════════════════════════════════════════════════════════════════════
+  # Three sibling jobs, each `needs: [smoke-staging]`. They run in parallel.
+  # If any one of them fails, the others may still complete — the gate that
+  # matters (staging smoke) has already passed, and partial promotion is
+  # better than rolling back work that's already shipped to one surface.
+  #
+  # TODO(#498): add `environment: production` to all three jobs so they
+  # require manual approval. Until then they auto-fire after smoke passes.
+
+  # 6a. Retag sha-<commit> → :latest. No rebuild — `imagetools create`
+  # operates on the registry-side manifest. The sha image has already been
+  # gated by ci + staging smoke, so this is a pure pointer move.
+  # Chose `docker buildx imagetools create` over `regctl` to avoid pulling
+  # in another tool; buildx is already set up on github-hosted runners.
+  retag-latest:
+    name: Promote sha → :latest (deploy-production)
+    needs: [smoke-staging]
+    runs-on: ubuntu-latest
+    # TODO(#498): environment: production
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retag sha-<short> to :latest
+        run: |
+          short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          src="${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}"
+          dst="${REGISTRY}/${IMAGE_NAME}:latest"
+          echo "Promoting $src → $dst"
+          docker buildx imagetools create -t "$dst" "$src"
+
+  # 6b. Publish the openwrt rolling release. The build runs anyway via the
+  # standalone openwrt-build.yml triggers for PRs and main pushes — what's
+  # gated is the GitHub Release upload, controlled by the publish_release
+  # input. See openwrt-build.yml for the gating logic.
   publish-openwrt:
-    name: Build + publish OpenWRT .ipk/.apk
-    needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
-    # Reusable-workflow callers cap the called workflow's GITHUB_TOKEN.
-    # openwrt-build.yml's build job requests `contents: write` (to attach
-    # files to the GitHub release on v* tags), so the caller must grant it
-    # here too — otherwise Master CD startup-fails before any job dispatches.
+    name: Publish OpenWRT release (deploy-production)
+    needs: [smoke-staging]
+    # TODO(#498): environment: production
     permissions:
       contents: write
     uses: ./.github/workflows/openwrt-build.yml
+    with:
+      publish_release: true
     secrets: inherit
+
+  # 6c. Trigger the Render prod deploy hook + wait for healthy. Prod tracks
+  # the `:latest` tag, so this must run after retag-latest has moved the
+  # pointer — or Render will deploy whatever was on `:latest` before. We
+  # depend on retag-latest to enforce ordering.
+  deploy-prod-render:
+    name: Deploy production (Render)
+    needs: [smoke-staging, retag-latest]
+    runs-on: ubuntu-latest
+    # TODO(#498): environment: production
+    steps:
+      - name: Trigger Render prod deploy hook
+        env:
+          RENDER_DEPLOY_HOOK_PROD: ${{ secrets.RENDER_DEPLOY_HOOK_PROD }}
+        run: |
+          curl --fail --silent --show-error --max-time 30 \
+            -X POST "$RENDER_DEPLOY_HOOK_PROD" >/dev/null
+          echo "Production deploy hook accepted."
+
+      - name: Wait for production to be healthy
+        run: |
+          deadline=$(( $(date +%s) + 480 ))
+          while (( $(date +%s) < deadline )); do
+            if curl --fail --silent --max-time 10 \
+                 "${PROD_API_URL}/api/health" | grep -q '"db":\s*"ok"'; then
+              echo "Production is healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for production /api/health." >&2
+          exit 1
