@@ -84,5 +84,34 @@ STATUS=$(curl -fsS "${AUTH[@]}" "$BASE/api/time/status")
 echo "$STATUS" | grep -q '^\[' || fail "time/status did not return a JSON array: $STATUS"
 pass "/api/time/status responded"
 
+# ── fake-router steady-state health (#456) ───────────────────────────────
+# Even with a 2xx contract assertion in e2e-router.sh, the fake-router
+# container in compose can silently 4xx on every tick if its on-wire shape
+# drifts — CI stays green because no test reads its logs. Scan post-warmup
+# logs once and fail on any `events error` / `usage error` line.
+#
+# `docker` is the gatekeeper: when available we assert; otherwise skip (this
+# script also runs against non-compose deployments).
+step "fake-router steady-state log scan (no events/usage errors)"
+if command -v docker >/dev/null 2>&1; then
+  CID=$(docker ps --filter "label=com.docker.compose.service=fake-router" \
+    --format '{{.ID}}' | head -n1)
+  if [ -n "$CID" ]; then
+    # Drop the first 5s of bootstrap chatter — login retries against the
+    # not-yet-ready API legitimately log errors before settling.
+    if docker logs --since 5s "$CID" 2>&1 | grep -E 'events error|usage error' >"$TMP/fr-errs.txt"; then
+      echo "--- fake-router error lines ---"
+      cat "$TMP/fr-errs.txt"
+      echo "-------------------------------"
+      fail "fake-router posted errors after warmup — wire contract drift?"
+    fi
+    pass "fake-router post-warmup logs clean"
+  else
+    pass "fake-router container not running — skipped"
+  fi
+else
+  pass "docker not available — skipped"
+fi
+
 echo
 echo "All e2e checks passed."
