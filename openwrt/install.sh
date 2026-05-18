@@ -232,76 +232,11 @@ if [ "$dnsmasq_changed" = 1 ]; then
   /etc/init.d/dnsmasq restart
 fi
 
-# Idempotent uhttpd listener for the local block page on 127.0.0.1:8081 and
-# [::1]:8081 (#411 — v6 sibling so v6 HTTP requests to blocked hosts land on
-# the block page, not a connection error).
-#
-# Every request to this listener is dispatched to the lua handler at
-# /www/wifihaven/handler.lua (uhttpd-mod-lua). The handler resolves the
-# requesting device's MAC (from /proc/net/arp by REMOTE_ADDR), looks up the
-# per-MAC block reason written by the agent, and returns a redirect to the
-# API's /blocked page with mac+reason populated (#437). The static
-# index.html that used to live here had no way to know the client's MAC.
-uhttpd_section=$(uci show uhttpd 2>/dev/null \
-  | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http=.*'127\\.0\\.0\\.1:8081'/{print \$2; exit}")
-uhttpd_changed=0
-if [ -n "$uhttpd_section" ]; then
-  current_home=$(uci -q get "uhttpd.${uhttpd_section}.home" || echo "")
-  if [ "$current_home" != "/www/wifihaven" ]; then
-    info "Updating block-page uhttpd home to /www/wifihaven..."
-    uci set "uhttpd.${uhttpd_section}.home=/www/wifihaven"
-    uhttpd_changed=1
-  fi
-else
-  info "Configuring uhttpd block-page listener on 127.0.0.1:8081..."
-  uhttpd_section=$(uci add uhttpd uhttpd)
-  uci add_list "uhttpd.${uhttpd_section}.listen_http=127.0.0.1:8081"
-  uci set "uhttpd.${uhttpd_section}.home=/www/wifihaven"
-  uhttpd_changed=1
-fi
-
-# Add v6 listener if absent. uhttpd treats listen_http as a list, so add_list
-# is safe to append; we just need to dedupe.
-if ! uci -q get "uhttpd.${uhttpd_section}.listen_http" \
-    | tr ' ' '\n' | grep -qx '\[::1\]:8081'; then
-  info "Adding v6 block-page uhttpd listener on [::1]:8081..."
-  uci add_list "uhttpd.${uhttpd_section}.listen_http=[::1]:8081"
-  uhttpd_changed=1
-fi
-
-# Route every URL through the lua handler so the block page can do per-MAC
-# lookups instead of serving a static file (#437).
-desired_lua_prefix='/'
-desired_lua_handler='/www/wifihaven/handler.lua'
-current_lua_prefix=$(uci -q get "uhttpd.${uhttpd_section}.lua_prefix" || echo "")
-current_lua_handler=$(uci -q get "uhttpd.${uhttpd_section}.lua_handler" || echo "")
-if [ "$current_lua_prefix" != "$desired_lua_prefix" ]; then
-  uci set "uhttpd.${uhttpd_section}.lua_prefix=$desired_lua_prefix"
-  uhttpd_changed=1
-fi
-if [ "$current_lua_handler" != "$desired_lua_handler" ]; then
-  uci set "uhttpd.${uhttpd_section}.lua_handler=$desired_lua_handler"
-  uhttpd_changed=1
-fi
-
-if [ "$uhttpd_changed" = 1 ]; then
-  uci commit uhttpd
-  /etc/init.d/uhttpd reload
-else
-  info "Block-page uhttpd listener already configured (v4 + v6, lua handler)."
-fi
-
-# #303: enable route_localnet on the LAN bridge so the nft prerouting DNAT
-# to 127.0.0.1:8081 (block-page uhttpd) is routable for LAN clients. The
-# persistent file is shipped at /etc/sysctl.d/99-wifihaven.conf by the
-# package; apply it now so the running kernel picks it up without a reboot.
-# Manual installs (no package manager) also need this — sysctl -p loads the
-# file if present.
-if [ -f /etc/sysctl.d/99-wifihaven.conf ]; then
-  sysctl -p /etc/sysctl.d/99-wifihaven.conf >/dev/null 2>&1 || true
-else
-  sysctl -w net.ipv4.conf.br-lan.route_localnet=1 >/dev/null 2>&1 || true
-fi
+# Wire the uhttpd block-page listener + route_localnet sysctl. Shared
+# helper so the package postinst (#542) and this manual installer don't
+# drift — see openwrt/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh.
+info "Configuring uhttpd block-page listener..."
+sh /usr/lib/wifihaven/setup-uhttpd-block-page.sh
 
 # Enable and start.
 info "Enabling and starting the wifihaven agent..."
