@@ -5,6 +5,36 @@
 local conntrack = require("conntrack")
 
 -- ---------------------------------------------------------------------------
+-- 0. parse_conntrack_line — must return nil for empty heartbeat lines (#543)
+-- ---------------------------------------------------------------------------
+
+describe("parse_conntrack_line", function()
+  it("parses a NEW flow line", function()
+    local flow = conntrack.parse_conntrack_line(
+      "[NEW] tcp 6 120 SYN_SENT src=192.168.1.42 dst=1.2.3.4 sport=54321 dport=443")
+    assert.is_not_nil(flow)
+    assert.equal("192.168.1.42", flow.src_ip)
+    assert.equal("1.2.3.4",      flow.dst_ip)
+    assert.equal("tcp",          flow.proto)
+    assert.equal(443,            flow.dport)
+  end)
+
+  -- The watch loop (#543 fix) wraps `conntrack -E -e NEW` in a shell that
+  -- emits an empty heartbeat line every tick_interval seconds, so the blocking
+  -- handle:read("*l") returns regularly while the LAN is idle. Heartbeat
+  -- lines MUST parse to nil so the per-iteration flow-handling is skipped
+  -- but the iteration's batcher.tick / drain / on_tick still fires.
+  it("returns nil for an empty heartbeat line", function()
+    assert.is_nil(conntrack.parse_conntrack_line(""))
+  end)
+
+  it("returns nil for an UPDATE line (only NEW is parsed)", function()
+    assert.is_nil(conntrack.parse_conntrack_line(
+      "[UPDATE] tcp 6 432000 ESTABLISHED src=192.168.1.42 dst=1.2.3.4"))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 1. ipset attribution: dest_ip → hostname
 -- ---------------------------------------------------------------------------
 

@@ -598,6 +598,9 @@ end
 --   lan_prefix     string    default "192.168.1."
 --   max_batch      int       default 50
 --   flush_interval int       default 10  (seconds)
+--   tick_interval  int       default 1   (seconds) — heartbeat cadence that
+--                                          unblocks the conntrack reader so
+--                                          on_tick fires while LAN is idle
 --   max_retries    int       default 3
 --   base_delay     int       default 2   (seconds, doubles each retry)
 --   http_post      function  injectable: post_fn(url, body) -> status, body
@@ -610,6 +613,7 @@ function M.watch(cfg)
   local lan_prefix = cfg.lan_prefix     or "192.168.1."
   local max_batch  = cfg.max_batch      or 50
   local flush_int  = cfg.flush_interval or 10
+  local tick_int   = cfg.tick_interval  or 1
   local max_retry  = cfg.max_retries    or 3
   local base_delay = cfg.base_delay     or 2
 
@@ -647,9 +651,23 @@ function M.watch(cfg)
     end
   end)
 
-  log.info("conntrack: starting watcher lan_prefix=%s max_batch=%d flush_interval=%ds",
-           lan_prefix, max_batch, flush_int)
-  local handle = io.popen("conntrack -E -e NEW 2>/dev/null", "r")
+  log.info("conntrack: starting watcher lan_prefix=%s max_batch=%d flush_interval=%ds tick_int=%ds",
+           lan_prefix, max_batch, flush_int, tick_int)
+  -- Wrap conntrack in a shell that emits an empty line every tick_int seconds
+  -- so the blocking handle:read("*l") below returns regularly even when the
+  -- LAN is idle. Without this heartbeat, on_tick — which drives policy poll
+  -- and usage report — only fires when a NEW flow appears, starving timer
+  -- work during quiescent periods (fixes #543).
+  --
+  -- Heartbeat lines are empty; parse_conntrack_line returns nil for them, so
+  -- the rest of the loop body (batcher.tick, retry drain, on_tick) runs
+  -- without any flow-handling side effects.
+  local cmd = string.format(
+    "( while :; do sleep %d; printf '\\n'; done ) & HB=$!; " ..
+    "trap 'kill -TERM $HB 2>/dev/null || true' EXIT INT TERM HUP; " ..
+    "conntrack -E -e NEW 2>/dev/null",
+    tick_int)
+  local handle = io.popen(cmd, "r")
   if not handle then
     log.err("conntrack: cannot start conntrack -E -e NEW")
     return
