@@ -53,7 +53,9 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy web/dist --project-name=wifihaven-staging --branch=main
+          workingDirectory: web
+          # Project name + build dir come from web/wrangler.staging.toml.
+          command: pages deploy --config wrangler.staging.toml --branch=main
 
   # ── Production SPA ─────────────────────────────────────────────────────────
   # TODO(#588): gate prod on the same staging-smoke chain as the API deploy
@@ -87,4 +89,6 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy web/dist --project-name=wifihaven --branch=main
+          workingDirectory: web
+          # Project name + build dir come from web/wrangler.toml.
+          command: pages deploy --config wrangler.toml --branch=main

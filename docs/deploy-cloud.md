@@ -134,7 +134,10 @@ After §1-§4 are done, the first SPA deploy fires on the next push to
 workflow → **Run workflow**).
 
 1. CI runs `npm ci && VITE_API_BASE_URL=... npm run build` for each env.
-2. CI runs `wrangler pages deploy web/dist --project-name=<name>`.
+2. CI runs `wrangler pages deploy --config <wrangler.toml|wrangler.staging.toml>`.
+   Project name (`wifihaven` or `wifihaven-staging`) and publish dir
+   (`./dist`) come from the wrangler config file — keep the Pages
+   project name in the dashboard and the `name =` field in sync.
 3. Cloudflare assigns a deployment URL like
    `https://<hash>.wifihaven.pages.dev`, then aliases the configured
    custom domains to the new deployment.
