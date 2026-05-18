@@ -12,6 +12,9 @@ object HealthApiSpec extends ZIOSpecDefault {
   private def get(routes: Routes[Any, Response]): UIO[Response] =
     routes(Request.get("/api/health")).merge
 
+  private def head(routes: Routes[Any, Response]): UIO[Response] =
+    routes(Request.get("/api/health").copy(method = Method.HEAD)).merge
+
   def spec = suite("Health API")(
     test("GET /api/health returns 200 with status=ok,db=ok when DB check succeeds") {
       val routes = HealthRoutes.routes(ZIO.unit)
@@ -36,6 +39,24 @@ object HealthApiSpec extends ZIOSpecDefault {
         assertTrue(
           json.asObject.flatMap(_.get("db")).flatMap(_.asString).contains("SQLException"),
         )
+    },
+    test("HEAD /api/health returns 200 with empty body when DB check succeeds") {
+      val routes = HealthRoutes.routes(ZIO.unit)
+      for {
+        resp <- head(routes)
+        body <- resp.body.asString
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(body.isEmpty)
+    },
+    test("HEAD /api/health returns 503 with empty body when DB check fails") {
+      val routes = HealthRoutes.routes(
+        ZIO.fail(new java.sql.SQLException("connection refused")),
+      )
+      for {
+        resp <- head(routes)
+        body <- resp.body.asString
+      } yield assertTrue(resp.status == Status.ServiceUnavailable) &&
+        assertTrue(body.isEmpty)
     },
     test("error response does not leak SQL details") {
       val secret = "ERROR: relation \"secret_table\" does not exist at line 42"
