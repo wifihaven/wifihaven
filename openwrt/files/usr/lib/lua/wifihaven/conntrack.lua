@@ -99,6 +99,87 @@ local function default_log()
 end
 
 -- ---------------------------------------------------------------------------
+-- new_fqdn_retry_state(opts) -> state
+--
+-- Per-second retry budget for the FQDN-attribution race fix (#583).
+--
+-- The wifihaven-dns-tail sidecar tails dnsmasq's query log and writes
+-- /tmp/wifihaven-dns-cache.txt; the conntrack watcher reads that file when a
+-- new flow's SYN passes the router. The two paths race: a fresh DNS reply
+-- can arrive at the kernel a few milliseconds before dns-tail has parsed
+-- it + flushed the snapshot, so the lookup misses and the connection_attempt
+-- event ships with host.type=ipv4 even though dnsmasq just resolved the host.
+--
+-- A short re-read after a small sleep usually catches it. The budget caps
+-- how many flows per second can pay this latency so a flood of genuinely
+-- IP-only flows (DoH, Apple Private Relay, hard-coded IP literals) does
+-- not stall the conntrack loop.
+--
+-- opts: { max_per_second = 10, delay_seconds = 0.1, now_fn, sleep_fn }
+-- ---------------------------------------------------------------------------
+local function monotonic_now()
+  local ok, clock = pcall(require, "wifihaven.clock")
+  if ok then return clock.monotonic_seconds() end
+  return os.time()
+end
+
+local function default_sleep(s)
+  -- BusyBox usleep takes microseconds; fall back to `sleep` for whole seconds
+  -- if usleep is missing on some exotic build.
+  local us = math.floor((s or 0) * 1e6)
+  if us <= 0 then return end
+  os.execute(string.format("usleep %d 2>/dev/null || sleep %d", us, math.max(1, math.floor(s))))
+end
+
+function M.new_fqdn_retry_state(opts)
+  opts = opts or {}
+  local max = opts.max_per_second or 10
+  local now_fn = opts.now_fn or monotonic_now
+  return {
+    max_per_second = max,
+    tokens         = max,
+    window_start   = now_fn(),
+    delay_seconds  = opts.delay_seconds or 0.1,
+    now_fn         = opts.now_fn,
+    sleep_fn       = opts.sleep_fn,
+  }
+end
+
+-- ---------------------------------------------------------------------------
+-- attribute_hostname(dst_ip, lookup_fn, retry_state) -> string | nil
+--
+-- Look up the hostname for dst_ip; if the first lookup misses and the
+-- retry_state has tokens in the current 1-second window, sleep
+-- retry_state.delay_seconds and look up again. Closes the FQDN-attribution
+-- race (#583) where the dnsmasq reply line resolving dst_ip has not yet
+-- been ingested + atomically flushed to the cache file by wifihaven-dns-tail
+-- at the moment conntrack -E NEW fires.
+--
+-- retry_state is mutated (token decrement, window refill); callers should
+-- share one state across the watch loop so the budget is honored globally.
+-- Passing retry_state=nil disables the retry (used by tests and by callers
+-- that don't want to spend cycles on this).
+-- ---------------------------------------------------------------------------
+function M.attribute_hostname(dst_ip, lookup_fn, retry_state)
+  if not lookup_fn then return nil end
+  local h = lookup_fn(dst_ip)
+  if h or not retry_state then return h end
+
+  local now_fn = retry_state.now_fn or monotonic_now
+  local now = now_fn()
+  if (now - (retry_state.window_start or 0)) >= 1 then
+    retry_state.window_start = now
+    retry_state.tokens = retry_state.max_per_second
+  end
+  if (retry_state.tokens or 0) <= 0 then return nil end
+  retry_state.tokens = retry_state.tokens - 1
+
+  local sleep_fn = retry_state.sleep_fn or default_sleep
+  sleep_fn(retry_state.delay_seconds)
+  return lookup_fn(dst_ip)
+end
+
+-- ---------------------------------------------------------------------------
 -- ipset_lookup_hostname(dest_ip, nft_sets) -> string | nil
 --
 -- nft_sets: { hostname -> { ip -> true } }  (maintained by render.lua)
@@ -459,6 +540,9 @@ end
 --                            (filled by render.update_shared — extraAllowed carve-outs)
 --   exec_fn          func    (optional) injectable exec_fn(cmd) -> exit_code;
 --                            used by nft_eb_hit fallback when hname is nil (#579)
+--   fqdn_retry_state table   (optional) per-second retry budget for the
+--                            FQDN-attribution race (#583); created by
+--                            new_fqdn_retry_state. Passing nil disables retries.
 --   reported_macs    table   { mac -> true }  (mutated)
 --   leases           table   { mac -> { ip, hostname } } (may be nil/empty)
 --   ts               string  ISO8601 timestamp to attach to the events
@@ -499,10 +583,12 @@ function M.handle_flow(flow, ctx, batcher)
   -- Hostname attribution: prefer the injected lookup (dnsmasq query-log cache,
 -- see dns_log.lua + #259), fall back to ipset attribution. Both can miss for
 -- direct-IP traffic; build_event uses dest_ip as a last resort.
-  local hname
-  if ctx.lookup_hostname then
-    hname = ctx.lookup_hostname(flow.dst_ip)
-  end
+  -- #583: the dns-tail sidecar may not have flushed the cache for a freshly
+  -- resolved dst_ip by the time conntrack -E NEW fires here. attribute_hostname
+  -- retries the lookup once after a short pause when the first read misses,
+  -- gated by a per-second budget on ctx.fqdn_retry_state so genuinely IP-only
+  -- flows (DoH, hard-coded IPs) don't dominate the loop.
+  local hname = M.attribute_hostname(flow.dst_ip, ctx.lookup_hostname, ctx.fqdn_retry_state)
   if not hname then
     hname = M.ipset_lookup_hostname(flow.dst_ip, ctx.nft_sets or {})
   end
@@ -691,6 +777,14 @@ end
 --   sleep_fn       function  injectable for tests
 --   exec_fn        function  injectable: exec_fn(cmd) -> exit_code (default os.execute)
 --                            Used by the nft eb_ membership fallback for nil-hname flows (#579).
+--   fqdn_retry_max_per_second int  (optional) cap on FQDN-attribution retries per
+--                                  second when the first lookup misses (#583).
+--   fqdn_retry_delay_seconds  num  (optional) sleep before the second lookup
+--                                  (default 0.1 — long enough to absorb the
+--                                  typical dns-tail flush latency).
+--   fqdn_retry_sleep_fn       function (optional) injectable sleep for tests.
+--   fqdn_retry_state          table   (optional) inject a pre-built retry state
+--                                     (tests; usually omitted).
 -- }
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
@@ -704,6 +798,13 @@ function M.watch(cfg)
 
   local events_url = cfg.api_url .. "/api/router/events"
   local event_queue = cfg.event_queue or M.new_event_queue()
+
+  -- #583: per-second budget for FQDN-attribution race retries.
+  local fqdn_retry_state = cfg.fqdn_retry_state or M.new_fqdn_retry_state({
+    max_per_second = cfg.fqdn_retry_max_per_second,
+    delay_seconds  = cfg.fqdn_retry_delay_seconds,
+    sleep_fn       = cfg.fqdn_retry_sleep_fn,
+  })
 
   local function do_post(url, body)
     return cfg.http_post(url, body, {
@@ -768,6 +869,7 @@ function M.watch(cfg)
         arp_table             = arp,
         nft_sets              = cfg.nft_sets or {},
         lookup_hostname       = cfg.lookup_hostname,
+        fqdn_retry_state      = fqdn_retry_state,
         blocked_macs          = cfg.blocked_macs,
         blocked_reason        = cfg.blocked_reason,
         eb_hosts_by_mac       = cfg.eb_hosts_by_mac,

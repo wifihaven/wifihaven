@@ -453,6 +453,131 @@ describe("handle_flow", function()
     assert.equal("legacy.example", b.events[2].host.value)
   end)
 
+  -- #583: dns-tail race fix. When the first lookup misses but the reply is
+  -- about to land, handle_flow should sleep briefly and retry the lookup
+  -- before falling through to host.type=ipv4.
+  it("retries lookup_hostname after a short sleep when the first read misses (#583)", function()
+    local b = collecting_batcher()
+    local attempts = 0
+    local slept    = {}
+    local retry_state = conntrack.new_fqdn_retry_state({
+      max_per_second = 5,
+      delay_seconds  = 0.1,
+      now_fn         = function() return 1000 end,
+      sleep_fn       = function(s) slept[#slept + 1] = s end,
+    })
+    local ctx = ctx_with({
+      leases           = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      fqdn_retry_state = retry_state,
+      lookup_hostname  = function(ip)
+        attempts = attempts + 1
+        -- Race: first read misses (cache not flushed yet); second hits.
+        if attempts == 1 then return nil end
+        if ip == DST_IP then return "neverssl.com" end
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    assert.equal(2, attempts)
+    assert.same({ 0.1 }, slept)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    assert.equal("fqdn",          ev.host.type)
+    assert.equal("neverssl.com",  ev.host.value)
+    -- One token consumed.
+    assert.equal(4, retry_state.tokens)
+  end)
+
+  it("does NOT retry when the first lookup hits (#583)", function()
+    local b = collecting_batcher()
+    local attempts = 0
+    local slept    = {}
+    local retry_state = conntrack.new_fqdn_retry_state({
+      max_per_second = 5,
+      delay_seconds  = 0.1,
+      now_fn         = function() return 1000 end,
+      sleep_fn       = function(s) slept[#slept + 1] = s end,
+    })
+    local ctx = ctx_with({
+      leases           = { [MAC] = { ip = "192.168.1.42", hostname = "laptop" } },
+      fqdn_retry_state = retry_state,
+      lookup_hostname  = function(ip)
+        attempts = attempts + 1
+        if ip == DST_IP then return "neverssl.com" end
+      end,
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+
+    assert.equal(1, attempts)
+    assert.same({}, slept)
+    -- No token consumed on a first-read hit.
+    assert.equal(5, retry_state.tokens)
+  end)
+
+  it("stops retrying once the per-second budget is exhausted (#583)", function()
+    -- A flood of IP-only flows (DoH, hard-coded IPs) within a single second
+    -- must not stall the conntrack loop on N×delay_seconds of sleep.
+    local b = collecting_batcher()
+    local now = 1000  -- monotonic time, frozen so all calls share one window
+    local slept = {}
+    local retry_state = conntrack.new_fqdn_retry_state({
+      max_per_second = 2,
+      delay_seconds  = 0.1,
+      now_fn         = function() return now end,
+      sleep_fn       = function(s) slept[#slept + 1] = s end,
+    })
+    local ctx_base = {
+      arp_table        = { [SRC_IP] = MAC },
+      nft_sets         = {},
+      blocked_macs     = {},
+      blocked_reason   = {},
+      reported_macs    = { [MAC] = true },
+      leases           = {},
+      ts               = "2026-05-11T00:00:00Z",
+      fqdn_retry_state = retry_state,
+      lookup_hostname  = function(_ip) return nil end,  -- never resolves
+    }
+    for _ = 1, 5 do
+      conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_base, b)
+    end
+
+    -- Only the first 2 flows in the window may have paid the retry sleep.
+    assert.equal(2, #slept)
+    assert.equal(0, retry_state.tokens)
+  end)
+
+  it("refills the per-second budget once the window rolls over (#583)", function()
+    local b = collecting_batcher()
+    local now = 1000
+    local slept = {}
+    local retry_state = conntrack.new_fqdn_retry_state({
+      max_per_second = 1,
+      delay_seconds  = 0.1,
+      now_fn         = function() return now end,
+      sleep_fn       = function(s) slept[#slept + 1] = s end,
+    })
+    local ctx_base = {
+      arp_table        = { [SRC_IP] = MAC },
+      nft_sets         = {},
+      blocked_macs     = {},
+      blocked_reason   = {},
+      reported_macs    = { [MAC] = true },
+      leases           = {},
+      ts               = "2026-05-11T00:00:00Z",
+      fqdn_retry_state = retry_state,
+      lookup_hostname  = function(_ip) return nil end,
+    }
+    -- Burn the budget in window 1.
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_base, b)
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_base, b)
+    assert.equal(1, #slept)
+
+    -- Roll past the 1s window; the next miss should retry again.
+    now = now + 2
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx_base, b)
+    assert.equal(2, #slept)
+  end)
+
   -- #297: connection_attempt events for paused/time-exhausted profiles must
   -- be labeled blocked. nftables drops the flow, but conntrack -E -e NEW
   -- still observes the SYN_SENT entry — without a MAC-based block table the
@@ -773,6 +898,41 @@ describe("handle_flow", function()
     local ev = b.events[#b.events]
     assert.equal(true,    ev.allowed)
     assert.equal("allow", ev.reason)
+  end)
+end)
+
+describe("attribute_hostname (#583 dns-tail race)", function()
+  it("returns the first-read hit without consulting retry_state", function()
+    local state = conntrack.new_fqdn_retry_state({
+      max_per_second = 3, delay_seconds = 0.1,
+      now_fn = function() return 0 end,
+      sleep_fn = function() error("must not sleep on a hit") end,
+    })
+    local h = conntrack.attribute_hostname("1.2.3.4",
+      function(_ip) return "example.com" end, state)
+    assert.equal("example.com", h)
+    assert.equal(3, state.tokens)
+  end)
+
+  it("returns nil and does not sleep when retry_state is nil", function()
+    local h = conntrack.attribute_hostname("1.2.3.4", function() return nil end, nil)
+    assert.is_nil(h)
+  end)
+
+  it("retries once and returns the late-arriving hostname", function()
+    local n, slept = 0, {}
+    local state = conntrack.new_fqdn_retry_state({
+      max_per_second = 2, delay_seconds = 0.05,
+      now_fn = function() return 0 end,
+      sleep_fn = function(s) slept[#slept + 1] = s end,
+    })
+    local h = conntrack.attribute_hostname("1.2.3.4", function(_ip)
+      n = n + 1
+      if n == 2 then return "late.example" end
+    end, state)
+    assert.equal("late.example", h)
+    assert.same({ 0.05 }, slept)
+    assert.equal(1, state.tokens)
   end)
 end)
 
