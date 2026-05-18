@@ -111,7 +111,7 @@ object StaticRoutesSpec extends ZIOSpecDefault {
         for {
           _ <- write(dir, "index.html", "<html>spa</html>")
           serveSpa = false
-          rs = HealthRoutes.routes(ZIO.unit) ++
+          rs       = HealthRoutes.routes(ZIO.unit) ++
             (if (serveSpa) StaticRoutes.routes(dir.getAbsolutePath) else Routes.empty)
           root   <- get(rs, "/")
           health <- get(rs, "/api/health")
@@ -124,7 +124,7 @@ object StaticRoutesSpec extends ZIOSpecDefault {
         for {
           _ <- write(dir, "index.html", "<html>spa</html>")
           serveSpa = true
-          rs = HealthRoutes.routes(ZIO.unit) ++
+          rs       = HealthRoutes.routes(ZIO.unit) ++
             (if (serveSpa) StaticRoutes.routes(dir.getAbsolutePath) else Routes.empty)
           root   <- get(rs, "/")
           body   <- root.body.asString
