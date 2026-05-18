@@ -31,7 +31,7 @@ Site SPAs).
 ## 2. DNS CNAME records
 
 Once Render finishes provisioning, add these CNAMEs at your DNS provider
-(wherever `wifihaven.app` is registered):
+(wherever `wifihaven.net` is registered):
 
 | Subdomain / apex        | CNAME target                                          |
 |-------------------------|-------------------------------------------------------|
@@ -39,6 +39,14 @@ Once Render finishes provisioning, add these CNAMEs at your DNS provider
 | `api`                   | shown in Render → `wifihaven-api-prod` → Settings → Custom Domains    |
 | `staging`               | shown in Render → `wifihaven-spa-staging` → Settings → Custom Domains  |
 | `@` (apex / root)       | shown in Render → `wifihaven-spa-prod` → Settings → Custom Domains     |
+| `www`                   | same target as apex — `wifihaven-spa-prod` accepts both `wifihaven.net` and `www.wifihaven.net` |
+
+The prod SPA Static Site is configured with both `wifihaven.net` and
+`www.wifihaven.net` as custom domains (see `render.yaml`). Render issues
+Let's Encrypt certificates for both and serves the same bundle from either
+hostname; it does not auto-redirect between apex and www, so users who land
+on `www.` stay on `www.` (and vice versa). If a canonical redirect is
+desired later, configure it as a Render redirect rule or in the SPA itself.
 
 **Note on apex domains**: many DNS providers do not support a CNAME at the
 zone apex (`@`). If yours does not, use an **ALIAS** or **ANAME** record
@@ -57,16 +65,16 @@ Run these checks from your laptop once DNS and certs are live:
 
 ```sh
 # Prod API
-curl -sS https://api.wifihaven.app/api/health
+curl -sS https://api.wifihaven.net/api/health
 
 # Staging API
-curl -sS https://api-staging.wifihaven.app/api/health
+curl -sS https://api-staging.wifihaven.net/api/health
 
 # Prod SPA (look for HTML with <title>WifiHaven</title> or similar)
-curl -sS -o /dev/null -w "%{http_code}" https://wifihaven.app/
+curl -sS -o /dev/null -w "%{http_code}" https://wifihaven.net/
 
 # Staging SPA
-curl -sS -o /dev/null -w "%{http_code}" https://staging.wifihaven.app/
+curl -sS -o /dev/null -w "%{http_code}" https://staging.wifihaven.net/
 ```
 
 Both API health endpoints should return HTTP 200 with a JSON body.
@@ -97,14 +105,14 @@ existing staging entries:
 
 | Item name                              | What to store                                 |
 |----------------------------------------|-----------------------------------------------|
-| `WifiHaven — Prod Admin Password`      | The admin password set via `POST /auth/change-password` on first login to `https://api.wifihaven.app` |
+| `WifiHaven — Prod Admin Password`      | The admin password set via `POST /auth/change-password` on first login to `https://api.wifihaven.net` |
 | `WifiHaven — Prod RO Postgres URL`     | The `wifihaven_ro` connection string for `wifihaven-pg-prod` (see `docs/render-readonly-role.md`) |
 | `WifiHaven — Staging Admin Password`   | (already stored from #586; rotate if needed)   |
 | `WifiHaven — Staging RO Postgres URL`  | (already stored from #586; rotate if needed)   |
 
 **Admin password first-login flow**: the prod API ships with a default
 `admin/changeme` credential that is force-expired on first login (#586).
-Open `https://wifihaven.app/` in a browser, log in, and the UI will redirect
+Open `https://wifihaven.net/` in a browser, log in, and the UI will redirect
 you to `/account` to set a new password before any other action. Store the
 new password in 1Password immediately.
 
@@ -130,8 +138,8 @@ Follow the same steps as `docs/render-readonly-role.md`, using
 The Render Static Site builds bake in the API URL at build time via
 `VITE_API_BASE_URL`:
 
-- `wifihaven-spa-prod` sets `VITE_API_BASE_URL=https://api.wifihaven.app`
-- `wifihaven-spa-staging` sets `VITE_API_BASE_URL=https://api-staging.wifihaven.app`
+- `wifihaven-spa-prod` sets `VITE_API_BASE_URL=https://api.wifihaven.net`
+- `wifihaven-spa-staging` sets `VITE_API_BASE_URL=https://api-staging.wifihaven.net`
 
 The JVM Docker image still bundles the SPA as a fallback while the CDN path
 is being validated (see TODO(#601) in `docker/Dockerfile`). The JVM-bundled
