@@ -47,7 +47,7 @@ The script prompts for:
 
 | Prompt | Notes |
 |---|---|
-| API server URL | e.g. `https://api.example.com` (no trailing slash needed; the script trims it). |
+| API server URL | Defaults to `https://api.wifihaven.net` (production cloud API). Press enter to accept for the main household router; override for on-prem or dev installs (e.g. `http://192.168.1.1:8080`). No trailing slash needed; the script trims it. |
 | Enrollment token | The `et_…` value from the admin UI. Single-use; invalidated on success. |
 | LAN prefix | Auto-detected from `network.lan.ipaddr` (last octet stripped); must end with a dot. The agent uses this literal-string prefix to decide which side of each connection is on the LAN when attributing flows to a device — accept the default unless your LAN isn't a /24 starting at .1. A wrong value silently mis-attributes every flow. For unattended provisioning, skip this script and use the manual `uci` path in §M3. |
 

@@ -119,7 +119,7 @@ and start the agent. Press Ctrl-C at any prompt to abort.
 
 EOF
 
-prompt API_URL          "API server URL (e.g. https://api.example.com)"
+prompt API_URL          "API server URL" "https://api.wifihaven.net"
 [ -n "${API_URL:-}" ] || err "API URL is required"
 API_URL=${API_URL%/}
 
