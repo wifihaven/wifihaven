@@ -89,6 +89,13 @@ jobs:
               - 'shared/**'
               - 'build.mill'
               - 'scripts/regen-contract-fixtures.sh'
+              # Additional producers (#667): the install.sh printf that
+              # generates POST /api/router/register bodies (the documented
+              # exception in shared/contract/README.md), and the python
+              # fake-router which is a second producer of router→API bodies
+              # — #664 demonstrated it can drift the contract independently.
+              - 'openwrt/install.sh'
+              - 'docker/fake-router.py'
             python:
               - '.github/workflows/ci.yml'
               - 'opnsense/**'
