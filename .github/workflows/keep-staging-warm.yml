@@ -2,7 +2,12 @@ name: Keep staging warm
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    # Offset cron avoids the "top of every 10 min" stampede on GHA shared
+    # runners — :00/:10/:20/... are the most-contested and most-frequently-
+    # dropped slots. Offsetting trades a tiny bit of phase for substantially
+    # more reliable firing. Still well under the 15-min Hobby idle-suspend
+    # threshold.
+    - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch:
 
 jobs:
