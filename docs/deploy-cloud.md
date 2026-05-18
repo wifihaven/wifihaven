@@ -89,28 +89,37 @@ resolves.
 
 ---
 
-## 3. Create the Cloudflare Pages projects
+## 3. Apply the Cloudflare Terraform
 
-Two projects, mirroring the prod/staging split on the API side:
+All Cloudflare resources (Pages projects, custom domains, API DNS
+records) are declarative in `infra/cloudflare/`. The Terraform module's
+own README has the step-by-step; the gist:
 
-1. Cloudflare dash → **Workers & Pages** → **Create application** →
-   **Pages** → **Direct Upload** (NOT "Connect to Git" — CI does the
-   build and pushes the artifact via Wrangler).
-2. Project name: `wifihaven-staging`. Click **Create project**. Skip the
-   sample upload — the first real deploy comes from CI.
-3. Repeat for `wifihaven` (prod).
+```sh
+cd infra/cloudflare
+cp terraform.tfvars.example terraform.tfvars
+$EDITOR terraform.tfvars            # account_id, zone_id, Render CNAMEs
+export CLOUDFLARE_API_TOKEN=<token>  # Pages:Edit + Zone:DNS:Edit scopes
+terraform init
+terraform plan
+terraform apply
+```
 
-For each project, **Custom domains** tab → **Set up a custom domain**:
-
-- `wifihaven` (prod): add `wifihaven.net` and `www.wifihaven.net`.
-- `wifihaven-staging`: add `staging.wifihaven.net`.
+This creates two Pages projects (`wifihaven`, `wifihaven-staging`,
+Direct Upload — CI pushes via Wrangler), three Pages custom domains
+(apex, `www`, `staging`), and the two API CNAMEs.
 
 Cloudflare auto-issues edge certs (DNS-01 challenge — no path
-interception). Verify the cert status flips to **Active** in the UI.
+interception). Cert status flips to **Active** in the dash within a
+minute or two.
 
 Apex + `www` behavior: both serve the same bundle. If you want
-`www → apex` canonical redirect, add a Cloudflare Page Rule or a
-Bulk Redirect later. Optional.
+`www → apex` canonical redirect, add a Cloudflare Page Rule or a Bulk
+Redirect later — out of scope of the Terraform module for now.
+
+> The §1 table above lists the two API CNAME records for reference; both
+> are managed by Terraform now and should NOT be added manually in the
+> Cloudflare DNS UI (Terraform will report drift).
 
 ---
 
@@ -120,7 +129,7 @@ CI needs two secrets to push to Pages:
 
 | Secret name              | Value                                                |
 |--------------------------|------------------------------------------------------|
-| `CLOUDFLARE_API_TOKEN`   | Cloudflare → My Profile → API Tokens → **Create Token** → custom token with scope `Account / Cloudflare Pages / Edit`. |
+| `CLOUDFLARE_API_TOKEN`   | Cloudflare → My Profile → API Tokens → **Create Token** → custom token. Scopes: `Account / Cloudflare Pages / Edit` (needed by both CI and Terraform) AND `Zone / DNS / Edit` scoped to the wifihaven.net zone (needed by Terraform only). One token can hold both — same token works for CI and `terraform apply`. |
 | `CLOUDFLARE_ACCOUNT_ID`  | Cloudflare dash → any zone → right sidebar → Account ID. |
 
 Set both at https://github.com/wifihaven/wifihaven/settings/secrets/actions.

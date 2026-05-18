@@ -1,0 +1,5 @@
+account_id = "<paste from Cloudflare dash → any zone → right sidebar → Account ID>"
+zone_id    = "<paste from Cloudflare dash → wifihaven.net → right sidebar → Zone ID>"
+
+api_prod_cname_target    = "<from Render → wifihaven-api-prod    → Settings → Custom Domains>"
+api_staging_cname_target = "<from Render → wifihaven-api-staging → Settings → Custom Domains>"
