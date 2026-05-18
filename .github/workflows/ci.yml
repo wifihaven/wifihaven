@@ -33,6 +33,7 @@ jobs:
       shell: ${{ steps.filter.outputs.shell || steps.force.outputs.all }}
       render: ${{ steps.filter.outputs.render || steps.force.outputs.all }}
       migrations: ${{ steps.filter.outputs.migrations || steps.force.outputs.all }}
+      contract: ${{ steps.filter.outputs.contract || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for non-PR triggers
         id: force
@@ -69,13 +70,25 @@ jobs:
             lua:
               - '.github/workflows/ci.yml'
               - 'openwrt/**'
-              # Bidirectional contract (#634): the lua contract spec consumes
-              # shared/contract/api-to-router/*.json, so a change to the
-              # fixtures — or to the Scala models whose codecs emit them —
-              # must rerun the lua tests even when openwrt/ is untouched.
+            # Bidirectional contract (#634) lives in its own job — see
+            # `contract-tests` below. Kept separate so a pure Scala model
+            # tweak doesn't drag the full openwrt/lua matrix along.
+            contract:
+              - '.github/workflows/ci.yml'
               - 'shared/contract/**'
               - 'shared/src/Models.scala'
               - 'shared/src/types/**'
+              - 'openwrt/test/contract_spec.lua'
+              - 'openwrt/test/contract_gen.lua'
+              - 'openwrt/files/usr/lib/lua/wifihaven/render.lua'
+              - 'openwrt/files/usr/lib/lua/wifihaven/render.nft'
+              - 'openwrt/files/usr/lib/lua/wifihaven/conntrack.lua'
+              - 'openwrt/files/usr/lib/lua/wifihaven/usage.lua'
+              - 'openwrt/test/shim/**'
+              - 'api/**'
+              - 'shared/**'
+              - 'build.mill'
+              - 'scripts/regen-contract-fixtures.sh'
             python:
               - '.github/workflows/ci.yml'
               - 'opnsense/**'
@@ -221,17 +234,77 @@ jobs:
           LUA_PATH="./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
             busted test/conntrack_spec.lua
 
-      # Bidirectional contract test (#634) — consumer side. Reads the golden
-      # JSON fixtures under shared/contract/api-to-router/ (produced by the
-      # API zio-json codecs) through the same luci.jsonc parser the agent
-      # uses in production, and asserts render.lua handles every field.
-      # The `require("render")` short form needs files/usr/lib/lua on the
-      # path; rest of the path is shared with the suite above.
-      - name: Run API → router contract spec
+  # ── Bidirectional contract tests (#634) ──────────────────────────────────
+  # One job, one green/red signal for "the API ↔ router wire contract holds".
+  # Runs the Scala consumer-side round-trip spec (decodes router→api fixtures
+  # via the production decoder) AND the lua consumer-side spec (parses
+  # api→router fixtures via luci.jsonc + render.lua). Separated from
+  # lua-tests so a pure Scala model tweak doesn't re-run the full openwrt
+  # matrix.
+  contract-tests:
+    name: Contract Tests (API ↔ Router)
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+
+    env:
+      WIFIHAVEN_JWT_SECRET: test-jwt-secret-for-ci-only
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Cache Mill / Coursier
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mill
+            ~/.cache/coursier
+            out/
+          key: mill-${{ env.MILL_VERSION }}-${{ hashFiles('build.mill') }}
+          restore-keys: |
+            mill-${{ env.MILL_VERSION }}-
+            mill-
+
+      - name: Install Mill (official launcher)
+        run: |
+          curl -fsSL "https://repo1.maven.org/maven2/com/lihaoyi/mill-dist/${MILL_VERSION}/mill-dist-${MILL_VERSION}-mill.sh" \
+            -o /tmp/mill
+          chmod +x /tmp/mill
+          sudo mv /tmp/mill /usr/local/bin/mill
+          mill --version
+
+      - name: Install Lua + busted + lua-cjson
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks
+          sudo luarocks install busted
+          sudo luarocks install lua-cjson
+
+      - name: Run API → router contract spec (lua consumer)
         working-directory: openwrt
         run: |
           LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
             busted test/contract_spec.lua
+
+      - name: Run router → API contract spec (Scala consumer)
+        run: mill shared.test.testOnly wifihaven.shared.contract.ContractGoldenSpec
+
+      # Drift guard: re-run the generators and fail if the committed fixtures
+      # differ. Catches a contributor who edited a producer (router lua POST
+      # builder or Scala codec) without re-running regen-contract-fixtures.sh.
+      - name: Verify fixtures are in sync with producers
+        run: |
+          bash scripts/regen-contract-fixtures.sh
+          if ! git diff --exit-code shared/contract/; then
+            echo "::error::shared/contract/ is out of sync with producers — run scripts/regen-contract-fixtures.sh and commit the diff."
+            exit 1
+          fi
 
   # ── OPNsense agent: Python unit tests ───────────────────────────────────
   python-tests:
@@ -317,6 +390,7 @@ jobs:
       - migrations-immutable
       - shell-tests
       - lua-tests
+      - contract-tests
       - python-tests
       - render-blueprint
       - frontend

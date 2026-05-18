@@ -2,17 +2,18 @@ package wifihaven.shared.contract
 
 import java.nio.file.{Files, Path, Paths}
 
-// Regenerate every golden contract fixture (#634).
+// Regenerate the API → router golden contract fixtures (#634).
 //
 // Run via:   mill shared.test.runMain wifihaven.shared.contract.ContractGenerate
-// Or the wrapper script: scripts/regen-contract-fixtures.sh
+// Or (with the lua half too): scripts/regen-contract-fixtures.sh
 //
-// Writes both halves of the contract from the *same* in-process Scala values
-// (ContractFixtures) using the production zio-json codecs. The
-// router-to-api/*.json files are intentionally generated from the API's
-// own codec so they start life as a valid round-trip; once committed, any
-// future codec drift that would change the serialized shape will break
-// ContractGoldenSpec's round-trip assertion.
+// Writes shared/contract/api-to-router/*.json from the in-process Scala
+// values in ContractFixtures, serialized through the production zio-json
+// codecs. The router-to-api/*.json fixtures are produced separately by the
+// lua agent — see openwrt/test/contract_gen.lua. Splitting the producers
+// this way means each side's wire drift surfaces as a diff in its own
+// fixture, rather than being smoothed over by the API's codec acting as
+// both producer and consumer.
 //
 // After regenerating, inspect the diff — every change should be intentional
 // (the corresponding consumer code on the other side must be updated in the
@@ -21,18 +22,14 @@ object ContractGenerate {
 
   def main(args: Array[String]): Unit = {
     val root = locateContractDir()
-    println(s"Regenerating contract fixtures under: $root")
+    println(s"Regenerating api-to-router fixtures under: $root")
 
     var n = 0
     for ((name, body) <- ContractFixtures.apiToRouter) {
       writeFile(root.resolve("api-to-router").resolve(name), body)
       n += 1
     }
-    for ((name, body) <- ContractFixtures.routerToApi) {
-      writeFile(root.resolve("router-to-api").resolve(name), body)
-      n += 1
-    }
-    println(s"Wrote $n fixture(s).")
+    println(s"Wrote $n api-to-router fixture(s).")
   }
 
   private def writeFile(path: Path, body: String): Unit = {
