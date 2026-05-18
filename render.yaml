@@ -30,7 +30,7 @@ services:
     image:
       url: ghcr.io/wifihaven/wifihaven-api:latest
     domains:
-      - name: api-staging.wifihaven.net
+      - api-staging.wifihaven.net
     envVars:
       - key: WIFIHAVEN_DB_HOST
         fromDatabase:
@@ -78,7 +78,7 @@ services:
     image:
       url: ghcr.io/wifihaven/wifihaven-api:latest
     domains:
-      - name: api.wifihaven.net
+      - api.wifihaven.net
     envVars:
       - key: WIFIHAVEN_DB_HOST
         fromDatabase:
@@ -126,7 +126,7 @@ services:
     staticPublishPath: ./dist
     rootDir: web
     domains:
-      - name: staging.wifihaven.net
+      - staging.wifihaven.net
     routes:
       - type: rewrite
         source: /*
@@ -147,8 +147,8 @@ services:
     staticPublishPath: ./dist
     rootDir: web
     domains:
-      - name: wifihaven.net
-      - name: www.wifihaven.net
+      - wifihaven.net
+      - www.wifihaven.net
     routes:
       - type: rewrite
         source: /*
