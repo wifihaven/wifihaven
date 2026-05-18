@@ -1,0 +1,44 @@
+{
+  "routerId" : "11111111-2222-3333-4444-555555555555",
+  "events" : [
+    {
+      "type" : "connection_attempt",
+      "mac" : "aa:bb:cc:11:22:33",
+      "host" : {
+        "type" : "fqdn",
+        "value" : "youtube.com"
+      },
+      "destIp" : "142.250.80.46",
+      "allowed" : false,
+      "reason" : "blocked",
+      "ts" : "2026-05-17T14:00:01Z",
+      "eventId" : "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    },
+    {
+      "type" : "connection_attempt",
+      "mac" : "aa:bb:cc:11:22:33",
+      "host" : {
+        "type" : "ipv6",
+        "value" : "2607:f8b0:4005:80a::200e"
+      },
+      "destIp" : "2607:f8b0:4005:80a::200e",
+      "allowed" : true,
+      "reason" : "allow",
+      "ts" : "2026-05-17T14:00:02Z",
+      "eventId" : "11111111-2222-3333-4444-555555555556"
+    },
+    {
+      "type" : "dhcp_lease",
+      "mac" : "aa:bb:cc:11:22:33",
+      "ip" : "192.168.10.50",
+      "hostname" : "kid-ipad",
+      "ts" : "2026-05-17T14:00:03Z"
+    },
+    {
+      "type" : "first_seen_mac",
+      "mac" : "76:2d:95:47:d1:8e",
+      "ip" : "192.168.10.51",
+      "ts" : "2026-05-17T14:00:04Z"
+    }
+  ]
+}

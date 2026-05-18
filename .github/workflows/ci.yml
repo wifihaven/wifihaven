@@ -69,6 +69,13 @@ jobs:
             lua:
               - '.github/workflows/ci.yml'
               - 'openwrt/**'
+              # Bidirectional contract (#634): the lua contract spec consumes
+              # shared/contract/api-to-router/*.json, so a change to the
+              # fixtures — or to the Scala models whose codecs emit them —
+              # must rerun the lua tests even when openwrt/ is untouched.
+              - 'shared/contract/**'
+              - 'shared/src/Models.scala'
+              - 'shared/src/types/**'
             python:
               - '.github/workflows/ci.yml'
               - 'opnsense/**'
@@ -213,6 +220,18 @@ jobs:
         run: |
           LUA_PATH="./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
             busted test/conntrack_spec.lua
+
+      # Bidirectional contract test (#634) — consumer side. Reads the golden
+      # JSON fixtures under shared/contract/api-to-router/ (produced by the
+      # API zio-json codecs) through the same luci.jsonc parser the agent
+      # uses in production, and asserts render.lua handles every field.
+      # The `require("render")` short form needs files/usr/lib/lua on the
+      # path; rest of the path is shared with the suite above.
+      - name: Run API → router contract spec
+        working-directory: openwrt
+        run: |
+          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+            busted test/contract_spec.lua
 
   # ── OPNsense agent: Python unit tests ───────────────────────────────────
   python-tests:
