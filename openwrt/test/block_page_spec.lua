@@ -58,6 +58,54 @@ describe("block_page.parse_reasons", function()
   end)
 end)
 
+describe("block_page.parse_blocked_hosts (#594)", function()
+  local content = table.concat({
+    "aa:bb:cc:11:22:33\ttiktok.com\textra_blocked",
+    "aa:bb:cc:11:22:33\tad.doubleclick.net\tcategory:ads",
+    "de:ad:be:ef:00:01\tpornhub.com\tcategory:adult",
+  }, "\n") .. "\n"
+
+  it("returns 'extra_blocked' for a per-MAC extraBlocked entry", function()
+    assert.equals("extra_blocked",
+      bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", "tiktok.com"))
+  end)
+
+  it("returns 'category:<id>' for a per-MAC blocklist entry", function()
+    assert.equals("category:ads",
+      bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", "ad.doubleclick.net"))
+    assert.equals("category:adult",
+      bp.parse_blocked_hosts(content, "de:ad:be:ef:00:01", "pornhub.com"))
+  end)
+
+  it("matches subdomains via dnsmasq nftset suffix semantics", function()
+    -- entry: tiktok.com → matches m.tiktok.com
+    assert.equals("extra_blocked",
+      bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", "m.tiktok.com"))
+  end)
+
+  it("does NOT cross-match between MACs", function()
+    assert.is_nil(bp.parse_blocked_hosts(content, "de:ad:be:ef:00:01", "tiktok.com"))
+  end)
+
+  it("does NOT match unrelated hosts (no false-positive suffix match)", function()
+    -- "notexample.com" must not match an entry for "example.com"
+    local c = "aa:bb:cc:11:22:33\texample.com\textra_blocked\n"
+    assert.is_nil(bp.parse_blocked_hosts(c, "aa:bb:cc:11:22:33", "notexample.com"))
+  end)
+
+  it("returns nil on nil/empty inputs", function()
+    assert.is_nil(bp.parse_blocked_hosts(nil, "aa:bb:cc:11:22:33", "tiktok.com"))
+    assert.is_nil(bp.parse_blocked_hosts(content, nil, "tiktok.com"))
+    assert.is_nil(bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", nil))
+    assert.is_nil(bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", ""))
+  end)
+
+  it("is case-insensitive on MAC and host", function()
+    assert.equals("extra_blocked",
+      bp.parse_blocked_hosts(content, "AA:BB:CC:11:22:33", "TikTok.com"))
+  end)
+end)
+
 describe("block_page.build_dest_url", function()
   it("emits a fully-formed /blocked URL with host, reason, and mac", function()
     local u = bp.build_dest_url(
@@ -118,6 +166,11 @@ describe("block_page.render_html", function()
     assert.equals("This site is blocked by the household.",   bp.inline_copy_for("ExtraBlocked"))
     assert.equals("This site is blocked.",                    bp.inline_copy_for("Bogus"))
     assert.equals("This site is blocked.",                    bp.inline_copy_for(nil))
+  end)
+
+  it("inline copy names the blocklist for a category:<id> reason (#594)", function()
+    assert.equals("Blocked category: ads.",   bp.inline_copy_for("category:ads"))
+    assert.equals("Blocked category: adult.", bp.inline_copy_for("category:adult"))
   end)
 
   it("escapes the host in the inline page so it can't break out of HTML", function()

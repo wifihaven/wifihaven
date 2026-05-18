@@ -28,9 +28,22 @@ function handle_request(env)
 
   local reasons = read_file("/var/run/wifihaven/blocked_reasons")
   local reason  = mac and block_page.parse_reasons(reasons, mac) or nil
-  -- No MAC-wide reason means the DNAT was triggered by an extraBlocked match,
-  -- not a whole-MAC block. (#576)
-  if mac and not reason then reason = "ExtraBlocked" end
+  -- No MAC-wide reason means the DNAT was triggered by a per-(MAC, host) drop,
+  -- not a whole-MAC block. Look up the host in the per-MAC classifier file to
+  -- distinguish extraBlocked from category-blocklist hits (#594). Falls back
+  -- to "ExtraBlocked" if the classifier file is missing or the lookup misses
+  -- (#576 default).
+  if mac and not reason then
+    local hosts_content = read_file("/var/run/wifihaven/blocked_hosts")
+    local source = block_page.parse_blocked_hosts(hosts_content, mac, host)
+    if source == "extra_blocked" then
+      reason = "ExtraBlocked"
+    elseif source then
+      reason = source  -- e.g. "category:ads"
+    else
+      reason = "ExtraBlocked"
+    end
+  end
 
   local api_url = read_file("/var/run/wifihaven/api_url")
   if api_url then api_url = api_url:gsub("%s+$", "") end

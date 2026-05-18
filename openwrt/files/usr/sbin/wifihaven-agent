@@ -57,8 +57,9 @@ end
 local nft_sets       = {}   -- { hostname -> { ip -> true } }
 local blocked_macs   = {}   -- { mac -> true }          (paused / time-exhausted)
 local blocked_reason = {}   -- { mac -> reason_string }
-local eb_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraBlocked + blocklist)
+local eb_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraBlocked)
 local ea_hosts_by_mac = {}  -- { mac -> { hostname -> true } } (extraAllowed carve-outs)
+local bl_hosts_by_mac = {}  -- { mac -> { hostname -> blocklist_id } } (category blocklist) (#594)
 
 -- ── HTTP helpers (curl, available on all OpenWrt builds) ──────────────────────
 
@@ -190,6 +191,7 @@ os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifi
 
 local BLOCK_PAGE_API_URL_PATH  = "/var/run/wifihaven/api_url"
 local BLOCK_PAGE_REASONS_PATH  = "/var/run/wifihaven/blocked_reasons"
+local BLOCK_PAGE_HOSTS_PATH    = "/var/run/wifihaven/blocked_hosts"  -- #594
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
@@ -202,6 +204,13 @@ local function persist_blocked_reasons()
   local ok, err = render.write_blocked_reasons(blocked_reason, BLOCK_PAGE_REASONS_PATH)
   if not ok then
     log.debug("could not write %s: %s", BLOCK_PAGE_REASONS_PATH, tostring(err))
+  end
+  -- #594: also persist the per-(MAC, host) classification so the block-page
+  -- handler can distinguish extraBlocked from category-blocklist hits.
+  local ok2, err2 = render.write_blocked_hosts(
+    eb_hosts_by_mac, bl_hosts_by_mac, BLOCK_PAGE_HOSTS_PATH)
+  if not ok2 then
+    log.debug("could not write %s: %s", BLOCK_PAGE_HOSTS_PATH, tostring(err2))
   end
 end
 
@@ -234,7 +243,7 @@ do
   local cached = policy.load_snapshot(read_file, log)
   if cached then
     if policy.apply(cached, write_file, run_cmd, log) then
-      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
+      render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
@@ -258,7 +267,7 @@ do
   local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
   if snap then
     if policy.apply(snap, write_file, run_cmd, log) then
-      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
+      render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
       current_etag = etag
       last_snapshot = snap
@@ -332,6 +341,7 @@ conntrack.watch({
   blocked_reason    = blocked_reason,
   eb_hosts_by_mac   = eb_hosts_by_mac,
   ea_hosts_by_mac   = ea_hosts_by_mac,
+  bl_hosts_by_mac   = bl_hosts_by_mac,
   lan_prefix      = lan_prefix,
   max_batch       = max_batch,
   flush_interval  = flush_int,
@@ -368,7 +378,7 @@ conntrack.watch({
         -- apply already emits a clean ruleset (no failover chain), so we
         -- just need to clear the flag below.
         if policy.apply(snap, write_file, run_cmd, log) then
-          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac)
+          render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
           persist_blocked_reasons()
           current_etag = etag
           last_snapshot = snap
