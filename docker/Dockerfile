@@ -44,6 +44,9 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=scala-build /tmp/api.jar /app/api.jar
+# TODO(#601): once the CDN-served Static Sites (#587) are confirmed
+# working in prod, remove the web-build stage and this COPY — the JVM no
+# longer needs to bundle or serve the SPA. Track cleanup in the linked issue.
 COPY --from=web-build /web/dist /app/web
 COPY config/application.conf.example /app/application.conf.example
 COPY docker/entrypoint.sh /app/entrypoint.sh

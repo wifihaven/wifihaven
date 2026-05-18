@@ -1,8 +1,7 @@
-# Render Blueprint — wifihaven staging environment
+# Render Blueprint — wifihaven staging + production environments
 #
-# Scope: this file defines the STAGING environment only. Production is added
-# in a follow-up (#587) and will live alongside these resources in this same
-# blueprint.
+# This file defines both the STAGING and PRODUCTION environments as a Blueprint.
+# Staging was added in #585; production + CDN Static Sites added in #587.
 #
 # Region: `oregon` is a placeholder — operator should reconfirm the region
 # closest to the deployment before launch. Tuning is tracked in #590.
@@ -14,9 +13,11 @@
 # NOT rotate this value — rotating invalidates every admin session AND every
 # router agent token, requiring a full re-pair of every deployed gateway.
 #
-# Tracked under #251 (umbrella render.com deploy effort) / closes #585.
+# Tracked under #251 (umbrella render.com deploy effort).
+# Staging closes #585; production + CDN closes #587.
 
 services:
+  # ── Staging API ────────────────────────────────────────────────────────────
   - type: web
     runtime: image
     name: wifihaven-api-staging
@@ -28,6 +29,8 @@ services:
     healthCheckPath: /api/health
     image:
       url: ghcr.io/wifihaven/wifihaven-api:latest
+    domains:
+      - name: api-staging.wifihaven.app
     envVars:
       - key: WIFIHAVEN_DB_HOST
         fromDatabase:
@@ -52,8 +55,6 @@ services:
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
       # Staging runs DEBUG so issues are visible in the Render log stream.
-      # TODO(#587): when the prod env block is added here, set its
-      # WIFIHAVEN_LOG_LEVEL to INFO (not DEBUG) to avoid PII leakage in logs.
       - key: WIFIHAVEN_LOG_LEVEL
         value: DEBUG
       # Entrypoint warns if WIFIHAVEN_DEBUG is non-empty (mounts debug
@@ -64,8 +65,111 @@ services:
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true
 
+  # ── Production API ─────────────────────────────────────────────────────────
+  - type: web
+    runtime: image
+    name: wifihaven-api-prod
+    plan: free
+    # Reconfirm region before launch — pick the Render region closest to the
+    # operator's house. Tuning tracked in #590.
+    region: oregon
+    numInstances: 1
+    healthCheckPath: /api/health
+    image:
+      url: ghcr.io/wifihaven/wifihaven-api:latest
+    domains:
+      - name: api.wifihaven.app
+    envVars:
+      - key: WIFIHAVEN_DB_HOST
+        fromDatabase:
+          name: wifihaven-pg-prod
+          property: host
+      - key: WIFIHAVEN_DB_PORT
+        fromDatabase:
+          name: wifihaven-pg-prod
+          property: port
+      - key: WIFIHAVEN_DB_NAME
+        fromDatabase:
+          name: wifihaven-pg-prod
+          property: database
+      - key: WIFIHAVEN_DB_USER
+        fromDatabase:
+          name: wifihaven-pg-prod
+          property: user
+      - key: WIFIHAVEN_DB_PASSWORD
+        fromDatabase:
+          name: wifihaven-pg-prod
+          property: password
+      - key: WIFIHAVEN_HTTP_PORT
+        value: 8080
+      # Production uses INFO to avoid PII leakage in logs.
+      # Resolves the TODO from #586 / PR #599.
+      - key: WIFIHAVEN_LOG_LEVEL
+        value: INFO
+      # Keep explicitly empty — debug endpoints must never run in prod.
+      - key: WIFIHAVEN_DEBUG
+        value: ""
+      # Generated ONCE on first apply. Never rotate — see header.
+      - key: WIFIHAVEN_JWT_SECRET
+        generateValue: true
+
+  # ── Staging SPA (CDN Static Site) ─────────────────────────────────────────
+  # Serves the React/Vite bundle from Render's CDN edge.
+  # VITE_API_BASE_URL bakes the staging API origin into the bundle at build
+  # time so the SPA always points at the staging API, never prod.
+  # JVM still bundles the SPA (see TODO(#601) in docker/Dockerfile) as a
+  # fallback while the CDN path is being validated.
+  - type: web
+    runtime: static
+    name: wifihaven-spa-staging
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    rootDir: web
+    domains:
+      - name: staging.wifihaven.app
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://api-staging.wifihaven.app
+
+  # ── Production SPA (CDN Static Site) ──────────────────────────────────────
+  # Serves the React/Vite bundle from Render's CDN edge.
+  # VITE_API_BASE_URL bakes the prod API origin into the bundle at build time.
+  # JVM still bundles the SPA (see TODO(#601) in docker/Dockerfile) as a
+  # fallback while the CDN path is being validated.
+  - type: web
+    runtime: static
+    name: wifihaven-spa-prod
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    rootDir: web
+    domains:
+      - name: wifihaven.app
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://api.wifihaven.app
+
 databases:
+  # ── Staging Postgres ───────────────────────────────────────────────────────
+  # Free plan — staging data is expendable; recreation is a feature (#585).
   - name: wifihaven-pg-staging
     plan: free
+    postgresMajorVersion: 16
+    region: oregon
+
+  # ── Production Postgres ────────────────────────────────────────────────────
+  # Paid plan (basic-256mb) — free PG expires after ~30 days, which would
+  # nuke household data. The basic-256mb tier is the cheapest paid Render
+  # Managed Postgres plan and includes daily backups. Verify in the Render
+  # dashboard after first apply: Databases → wifihaven-pg-prod → Backups tab.
+  - name: wifihaven-pg-prod
+    plan: basic-256mb
     postgresMajorVersion: 16
     region: oregon
