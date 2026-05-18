@@ -7,10 +7,12 @@ name: OpenWRT Package Build
 # This is reverted by #244 once #228 is fixed.
 #
 # This workflow is also invoked from master.yml as a reusable workflow
-# (`workflow_call`) so the openwrt publish path is gated on the same Master
-# CD checks as publish-api (#494). The standalone push/PR/dispatch triggers
-# below are retained for ad-hoc work (direct tag pushes, PR validation,
-# manual runs).
+# (`workflow_call`). After #588, the GitHub Release / openwrt-latest rolling
+# upload only fires when the caller passes `publish_release: true` — that
+# input is set exclusively from Master CD's deploy-production job, after
+# staging smoke has passed. The build itself still runs in CI for PR
+# validation and main-push confidence; only the public artifact promotion
+# is gated.
 on:
   push:
     tags: ["v*"]
@@ -20,6 +22,11 @@ on:
     paths: ["openwrt/**"]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      publish_release:
+        description: "If true, attach packages to the rolling openwrt-latest GitHub Release. Set only from Master CD's deploy-production path."
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -113,9 +120,13 @@ jobs:
             openwrt/wifihaven_*.apk
           generate_release_notes: true
 
-      # Rolling pre-release for #228 live debugging. Reverted by #244.
-      - name: Publish rolling openwrt-latest release (main push)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Rolling pre-release. After #588 this only fires when the caller
+      # explicitly opts in (Master CD's deploy-production job, post-staging-smoke).
+      # Direct main pushes no longer publish — the unconditional reusable-workflow
+      # call from master.yml passes publish_release=false so the build runs for
+      # confidence without promoting an unstaged artifact.
+      - name: Publish rolling openwrt-latest release (gated by caller)
+        if: inputs.publish_release == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: openwrt-latest
