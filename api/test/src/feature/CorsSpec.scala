@@ -20,9 +20,7 @@ object CorsSpec extends ZIOSpecDefault {
 
   private val etagRoute =
     Method.GET / "api" / "router" / "blocklist" / string("id") ->
-      handler { (_: String, _: Request) =>
-        Response.ok.addHeader(Header.ETag.Strong("abc123"))
-      }
+      handler { (_: String, _: Request) => Response.ok.addHeader(Header.ETag.Strong("abc123")) }
 
   private val routes = Cors.wrap(Routes(loginEcho, etagRoute), cfg)
 
@@ -39,11 +37,11 @@ object CorsSpec extends ZIOSpecDefault {
         )
       for {
         resp <- runReq(req)
-        ao    = resp.header(Header.AccessControlAllowOrigin)
-        am    = resp.header(Header.AccessControlAllowMethods)
-        ah    = resp.header(Header.AccessControlAllowHeaders)
-        ma    = resp.header(Header.AccessControlMaxAge)
-        ac    = resp.header(Header.AccessControlAllowCredentials)
+        ao = resp.header(Header.AccessControlAllowOrigin)
+        am = resp.header(Header.AccessControlAllowMethods)
+        ah = resp.header(Header.AccessControlAllowHeaders)
+        ma = resp.header(Header.AccessControlMaxAge)
+        ac = resp.header(Header.AccessControlAllowCredentials)
       } yield assertTrue(
         resp.status == Status.NoContent,
         ao.contains(
@@ -82,11 +80,13 @@ object CorsSpec extends ZIOSpecDefault {
         resp <- runReq(req)
       } yield assertTrue(
         resp.status == Status.Ok,
-        resp.header(Header.AccessControlAllowOrigin).contains(
-          Header.AccessControlAllowOrigin.Specific(
-            Header.Origin.parse(allowedOrigin).toOption.get,
+        resp
+          .header(Header.AccessControlAllowOrigin)
+          .contains(
+            Header.AccessControlAllowOrigin.Specific(
+              Header.Origin.parse(allowedOrigin).toOption.get,
+            ),
           ),
-        ),
         resp.header(Header.AccessControlExposeHeaders).exists {
           case Header.AccessControlExposeHeaders.Some(vs) =>
             vs.exists(_.toString.equalsIgnoreCase("ETag"))

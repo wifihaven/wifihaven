@@ -39,10 +39,10 @@ object Main extends ZIOAppDefault {
       _      <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
       routes <- allRoutes
       withCors = Cors.wrap(routes, cfg.cors)
-      _      <- ZIO
+      _ <- ZIO
         .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
         .when(cfg.cors.origins.nonEmpty)
-      _      <- Server
+      _ <- Server
         .serve(withCors)
         .provide(Server.defaultWithPort(cfg.http.port))
     } yield ()).provide(serverEnv)
