@@ -9,6 +9,9 @@
 set -euo pipefail
 
 BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
+# See scripts/e2e-tests.sh — fake-router rotates the seeded admin password on
+# first boot, so by the time this script runs the DB has the rotated value.
+ADMIN_PASS="${ADMIN_PASS:-fake-router-bootstrap-pw-do-not-use-elsewhere}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 pass() { echo "  ✓ $*"; }
@@ -25,7 +28,7 @@ _py() { python3 -c "$1"; }
 step "Admin login"
 LOGIN=$(curl -fsS -X POST "$BASE/api/auth/login" \
   -H 'content-type: application/json' \
-  -d '{"username":"admin","password":"changeme"}')
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASS\"}")
 ADMIN=$(_py "import sys,json; print(json.loads('$LOGIN'.replace(\"'\",\"'\"))['token'])" 2>/dev/null \
   || echo "$LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 [ -n "$ADMIN" ] || fail "no token in login response: $LOGIN"
