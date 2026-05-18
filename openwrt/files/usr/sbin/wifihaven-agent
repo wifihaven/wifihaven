@@ -21,6 +21,7 @@ local render     = require("wifihaven.render")
 local dns_log    = require("wifihaven.dns_log")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
+local version    = require("wifihaven.version")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -275,6 +276,35 @@ do
   last_policy_run        = mono
   last_usage_run         = mono
   last_activity_sample   = mono
+end
+
+-- ── Wire-schema check (#597) ─────────────────────────────────────────────────
+-- One-shot at startup. GET /api/version and compare the API's wireSchema
+-- against the agent's baked-in version.WIRE_SCHEMA, logging match (info) or
+-- mismatch (warn) loudly. Failure to reach the endpoint is non-fatal — the
+-- agent keeps running on the assumption of compatibility. Full negotiation
+-- is tracked under #376; periodic re-checks are out of scope for #597.
+do
+  local status, body, _hdrs = http_get(api_url .. "/api/version", {})
+  if status == 200 and body and body ~= "" then
+    local ok, parsed = pcall(function()
+      local jsonc = require("luci.jsonc")
+      local p = jsonc.parse(body)
+      if p == nil then error("luci.jsonc.parse returned nil") end
+      return p
+    end)
+    if ok and type(parsed) == "table" then
+      local remote = tonumber(parsed.wireSchema)
+      log.info("api version: apiBuild=%s wireSchema=%s",
+               tostring(parsed.apiBuild), tostring(remote))
+      version.compare_wire_schema(remote, log)
+    else
+      log.warn("api version: response parse failed: %s", tostring(parsed))
+    end
+  else
+    log.warn("api version: GET /api/version failed (status=%s) — skipping wireSchema check",
+             tostring(status))
+  end
 end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd

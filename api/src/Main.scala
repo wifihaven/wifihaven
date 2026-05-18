@@ -82,6 +82,7 @@ object Main extends ZIOAppDefault {
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield HealthRoutes.routes(dbHealthCheck) ++
+      VersionRoutes.routes ++
       AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo, userRepo) ++
       HouseholdSettingsRoutes.routes(auth, hsRepo) ++
