@@ -233,6 +233,10 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Pin wrangler 4 — node_modules transitively pulls wrangler 3.x,
+          # which the action would otherwise pick up. Wrangler 3 rejects
+          # `--config` for Pages projects (#613 follow-up).
+          wranglerVersion: '4'
           workingDirectory: web
           # Project name + build dir come from web/wrangler.staging.toml.
           command: pages deploy --config wrangler.staging.toml --branch=main
@@ -427,6 +431,10 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Pin wrangler 4 — node_modules transitively pulls wrangler 3.x,
+          # which the action would otherwise pick up. Wrangler 3 rejects
+          # `--config` for Pages projects (#613 follow-up).
+          wranglerVersion: '4'
           workingDirectory: web
           # Project name + build dir come from web/wrangler.toml.
           command: pages deploy --config wrangler.toml --branch=main
