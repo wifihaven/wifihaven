@@ -82,14 +82,20 @@ uci set dhcp.@dnsmasq[0].logqueries='1'
 uci set dhcp.@dnsmasq[0].logfacility='/tmp/wifihaven-dnsmasq.log'
 uci commit dhcp
 
-# Block-page listener on 127.0.0.1:8081 (mirrors install.sh, #303).
 # Drop uhttpd's stock LuCI listener — its default config tries to bind
 # 0.0.0.0:80 and 0.0.0.0:443, both of which collide with the LAN-side
 # block-page DNAT target and stop the service from starting at all.
+#
+# #647: this file used to also `uci add uhttpd uhttpd` its own block-page
+# listener section, but the wifihaven package's first-boot script
+# /etc/uci-defaults/95-wifihaven-uhttpd (added in #542, calls
+# setup-uhttpd-block-page.sh) already creates that section *with* the lua
+# handler wiring. Having both add a 127.0.0.1:8081 section meant procd
+# spawned two uhttpd instances racing for the port — whichever bound
+# first won, and when the no-lua section won, the DNAT'd block-page
+# request landed on a directory-listing handler ("Index of /") instead
+# of the rendered block page.
 uci -q delete uhttpd.main
-section=$(uci add uhttpd uhttpd)
-uci set "uhttpd.${section}.listen_http=127.0.0.1:8081"
-uci set "uhttpd.${section}.home=/www/wifihaven"
 uci commit uhttpd
 
 # Without `enable`, OpenWRT has the package but procd never starts it on
