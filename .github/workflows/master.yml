@@ -235,18 +235,20 @@ jobs:
           VITE_API_BASE_URL: https://api-staging.wifihaven.net
         run: npm run build
 
+      - name: Stage wrangler.staging.toml as wrangler.toml
+        working-directory: web
+        # Wrangler 4 rejects `--config` for `pages deploy` entirely (#672).
+        # Pages only reads the default `wrangler.toml`, so swap it in.
+        run: cp wrangler.staging.toml wrangler.toml
+
       - name: Deploy to Cloudflare Pages (staging)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # Pin wrangler 4 — node_modules transitively pulls wrangler 3.x,
-          # which the action would otherwise pick up. Wrangler 3 rejects
-          # `--config` for Pages projects (#613 follow-up).
           wranglerVersion: '4'
           workingDirectory: web
-          # Project name + build dir come from web/wrangler.staging.toml.
-          command: pages deploy --config wrangler.staging.toml --branch=main
+          command: pages deploy --branch=main
 
   # ── 5. Smoke-test staging ─────────────────────────────────────────────────
   # Fast (<2 min) end-user-facing checks against the deployed staging URL.
@@ -449,10 +451,8 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # Pin wrangler 4 — node_modules transitively pulls wrangler 3.x,
-          # which the action would otherwise pick up. Wrangler 3 rejects
-          # `--config` for Pages projects (#613 follow-up).
+          # Wrangler 4 rejects `--config` for `pages deploy` (#672); the
+          # default `wrangler.toml` in web/ already targets the prod project.
           wranglerVersion: '4'
           workingDirectory: web
-          # Project name + build dir come from web/wrangler.toml.
-          command: pages deploy --config wrangler.toml --branch=main
+          command: pages deploy --branch=main
