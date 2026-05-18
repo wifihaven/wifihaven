@@ -6,8 +6,13 @@
 # Region: `oregon` is a placeholder — operator should reconfirm the region
 # closest to the deployment before launch. Tuning is tracked in #590.
 #
-# Image tag: pinned to `:latest` as the bootstrap default, matching today's
-# `deploy/docker-compose.prod.yml`. The CI-driven sha-tag flow lands in #588.
+# Image tags (post-#588):
+#   - staging tracks `:staging` — moved by Master CD's build-image job on
+#     every successful build, before staging smoke runs.
+#   - prod    tracks `:latest`  — moved ONLY by Master CD's retag-latest job,
+#     after staging smoke passes (and, post-#498, manual approval).
+# `autoDeploy: no` on both API services disables Render's poll-the-registry
+# auto-deploy: only the explicit deploy hooks fired by Master CD promote.
 #
 # WIFIHAVEN_JWT_SECRET: `generateValue: true` runs ONCE at first apply. Do
 # NOT rotate this value — rotating invalidates every admin session AND every
@@ -27,8 +32,11 @@ services:
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
+    # Promoted only by Master CD's deploy-staging job firing the staging
+    # deploy hook. Render does NOT poll the registry — see header.
+    autoDeploy: no
     image:
-      url: ghcr.io/wifihaven/wifihaven-api:latest
+      url: ghcr.io/wifihaven/wifihaven-api:staging
     domains:
       - api-staging.wifihaven.net
     envVars:
@@ -78,6 +86,10 @@ services:
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
+    # Promoted only by Master CD's deploy-prod-render job firing the prod
+    # deploy hook, after staging smoke passes. Render does NOT poll the
+    # registry — see header.
+    autoDeploy: no
     image:
       url: ghcr.io/wifihaven/wifihaven-api:latest
     domains:
