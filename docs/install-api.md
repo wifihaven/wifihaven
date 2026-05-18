@@ -203,6 +203,7 @@ Edit `.env` and set each variable. **Never commit this file.** All values:
 | `WIFIHAVEN_JWT_HOURS` | no (default `24`) | Session token lifetime in hours. | Leave default unless you need shorter sessions. |
 | `WIFIHAVEN_API_BIND` | no (default `0.0.0.0`) | Host interface the API port binds to. Set to `127.0.0.1` if you're putting a reverse proxy in front (§7). | `127.0.0.1` for proxied installs, `0.0.0.0` for direct LAN access. |
 | `WIFIHAVEN_API_PORT` | no (default `8080`) | Host port mapped to the API. | Change only if 8080 is taken. |
+| `WIFIHAVEN_ALLOWED_ORIGINS` | no (default empty) | Browser CORS allowlist. Set ONLY if the SPA is served from a different origin than the API (e.g. SPA on `https://wifihaven.example`, API on `https://api.wifihaven.example`). Comma-separated full origins (scheme+host+optional-port, no trailing slash). **Never `*`** — explicit allowlist only. Leave empty for the default single-origin self-hosted install. | `https://wifihaven.example,https://www.wifihaven.example` |
 
 After editing, `chmod 600 .env` so secrets aren't world-readable.
 

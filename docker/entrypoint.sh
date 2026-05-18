@@ -15,6 +15,7 @@ set -euo pipefail
 : "${WIFIHAVEN_JWT_HOURS:=24}"
 : "${WIFIHAVEN_LOG_LEVEL:=INFO}"
 : "${WIFIHAVEN_DEBUG:=}"
+: "${WIFIHAVEN_ALLOWED_ORIGINS:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -41,6 +42,9 @@ wifihaven {
   jwt {
     secret      = "${WIFIHAVEN_JWT_SECRET}"
     expiryHours = ${WIFIHAVEN_JWT_HOURS}
+  }
+  cors {
+    allowedOrigins = "${WIFIHAVEN_ALLOWED_ORIGINS}"
   }
 }
 EOF
