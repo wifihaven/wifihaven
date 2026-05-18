@@ -3,8 +3,10 @@
 This guide covers the split-stack cloud deployment:
 
 - **API + Postgres on Render** (defined in `render.yaml` — Blueprint apply)
-- **SPA on Cloudflare Pages** (built + pushed by CI via Wrangler;
-  see `.github/workflows/deploy-spa.yml`)
+- **SPA on Cloudflare Pages** (built + pushed by CI via Wrangler from
+  the `deploy-spa-staging` / `deploy-spa-prod` jobs in
+  `.github/workflows/master.yml`; gated on the same staging-smoke chain
+  as the API deploy from #588)
 - **DNS on Cloudflare** (NS for `wifihaven.net` points at Cloudflare;
   Cloudflare manages records and edge certs for every hostname)
 
@@ -194,11 +196,11 @@ workaround.
 
 ## 7. Ongoing operations
 
-**Deploys.** Every push to `main` triggers
-`.github/workflows/deploy-spa.yml` which deploys staging then prod.
-Pushes serialize via a `concurrency` group so two quick pushes can't
-race the Wrangler upload. TODO(#588): wire prod behind the same
-staging-smoke gate as the API deploy.
+**Deploys.** Every push to `main` triggers `.github/workflows/master.yml`,
+which runs `deploy-spa-staging` in parallel with `deploy-staging`, then
+gates `deploy-spa-prod` behind `smoke-staging` (same chain as the API
+deploy from #588). Top-of-file comment in `master.yml` has the full
+dependency graph.
 
 **Cert renewal.** Cloudflare auto-renews edge certs for all three Pages
 hostnames (DNS-01 — no path-interception class of bug). Render

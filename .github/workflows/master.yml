@@ -1,11 +1,14 @@
 name: Master CD
 
-# Runs on every push to main. After #588 the flow is:
+# Runs on every push to main. After #588 + #613 the flow is:
 #
 #   ci-tests + bootstrap-smoke + e2e + prod-stack-smoke   (vm-e2e on its own track)
 #     → build-image                  (push sha-<commit> + `staging` tags ONLY; not `:latest`)
 #     → deploy-staging               (curl staging deploy hook; wait for /api/health)
-#     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net)
+#       ‖ deploy-spa-staging         (build + wrangler push to Cloudflare Pages — parallel
+#                                     with deploy-staging, gated on the same test chain)
+#     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net
+#                                     AND staging.wifihaven.net SPA — gates ALL of prod)
 #     → deploy-production            (parallel jobs; all gated on smoke-staging passing):
 #                                       • retag-latest      — promote sha-<commit> → :latest
 #                                                             via `docker buildx imagetools create`
@@ -13,6 +16,8 @@ name: Master CD
 #                                       • publish-openwrt   — reusable openwrt-build.yml with
 #                                                             publish_release: true
 #                                       • deploy-prod-render — curl prod deploy hook + health poll
+#                                       • deploy-spa-prod    — build + wrangler push to
+#                                                             wifihaven Pages project (#613)
 #
 # Gate semantics: the public consumer surface (`:latest`, the openwrt-latest
 # rolling release, the prod Render service) only updates after staging smoke
@@ -195,6 +200,43 @@ jobs:
           echo "Timed out waiting for staging /api/health." >&2
           exit 1
 
+  # ── 4b. Deploy SPA to Cloudflare Pages (staging) ──────────────────────────
+  # Runs in parallel with deploy-staging — SPA build doesn't depend on the
+  # API image. Gated on the same test chain as build-image so a CI failure
+  # blocks both surfaces. smoke-staging waits on this job, so the SPA is
+  # live at staging.wifihaven.net before the cross-origin CORS checks run.
+  deploy-spa-staging:
+    name: Deploy SPA to Cloudflare Pages (staging)
+    needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build SPA (staging)
+        working-directory: web
+        env:
+          VITE_API_BASE_URL: https://api-staging.wifihaven.net
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages (staging)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          # Project name + build dir come from web/wrangler.staging.toml.
+          command: pages deploy --config wrangler.staging.toml --branch=main
+
   # ── 5. Smoke-test staging ─────────────────────────────────────────────────
   # Fast (<2 min) end-user-facing checks against the deployed staging URL.
   # NOT a replica of scripts/e2e-tests.sh — that runs pre-deploy against the
@@ -203,7 +245,7 @@ jobs:
   # SPA cross-origin contract.
   smoke-staging:
     name: Smoke-test staging
-    needs: [deploy-staging]
+    needs: [deploy-staging, deploy-spa-staging]
     runs-on: ubuntu-latest
     steps:
       - name: Health endpoint returns 200 + db ok
@@ -231,6 +273,24 @@ jobs:
           [[ -n "$allow" ]] || { echo "missing Access-Control-Allow-Headers" >&2; exit 1; }
           echo "$allow" | grep -iq 'content-type'
 
+      - name: Staging SPA returns 200 and bakes the staging API URL
+        # Confirms the Cloudflare Pages deploy aliased the new build to
+        # staging.wifihaven.net and the VITE_API_BASE_URL was wired
+        # correctly (a prod-API URL in a staging bundle would silently
+        # break cross-origin auth).
+        run: |
+          body=$(curl --fail --silent --show-error --max-time 10 \
+            https://staging.wifihaven.net/)
+          echo "$body" | head -c 500
+          # The Vite-built index.html references the hashed JS bundle.
+          # Pull it and grep for the staging API origin.
+          js_path=$(echo "$body" | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
+          [[ -n "$js_path" ]] || { echo "could not find JS bundle path" >&2; exit 1; }
+          curl --fail --silent --show-error --max-time 10 \
+            "https://staging.wifihaven.net${js_path}" \
+            | grep -q 'api-staging.wifihaven.net' \
+            || { echo "staging bundle missing api-staging.wifihaven.net" >&2; exit 1; }
+
       - name: Authenticated route reaches the database
         # Hits a route that exercises a DB read. /api/health already checks
         # connectivity, but a 401 from an auth-gated route confirms the
@@ -247,12 +307,12 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════
   # ── DEPLOY-PRODUCTION ── (parallel jobs, all gated on smoke-staging) ────
   # ════════════════════════════════════════════════════════════════════════
-  # Three sibling jobs, each `needs: [smoke-staging]`. They run in parallel.
+  # Four sibling jobs, each `needs: [smoke-staging]`. They run in parallel.
   # If any one of them fails, the others may still complete — the gate that
   # matters (staging smoke) has already passed, and partial promotion is
   # better than rolling back work that's already shipped to one surface.
   #
-  # TODO(#498): add `environment: production` to all three jobs so they
+  # TODO(#498): add `environment: production` to all four jobs so they
   # require manual approval. Until then they auto-fire after smoke passes.
 
   # 6a. Retag sha-<commit> → :latest. No rebuild — `imagetools create`
@@ -333,3 +393,40 @@ jobs:
           done
           echo "Timed out waiting for production /api/health." >&2
           exit 1
+
+  # 6d. Deploy SPA to Cloudflare Pages (prod). Independent of the API
+  # promotion (Render and Cloudflare are separate planes), gated only on
+  # smoke-staging. Cross-origin SPA↔API skew between this job and
+  # deploy-prod-render is bounded to the duration of either job.
+  deploy-spa-prod:
+    name: Deploy SPA to Cloudflare Pages (prod) (deploy-production)
+    needs: [smoke-staging]
+    runs-on: ubuntu-latest
+    # TODO(#498): environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build SPA (prod)
+        working-directory: web
+        env:
+          VITE_API_BASE_URL: https://api.wifihaven.net
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages (prod)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          # Project name + build dir come from web/wrangler.toml.
+          command: pages deploy --config wrangler.toml --branch=main
