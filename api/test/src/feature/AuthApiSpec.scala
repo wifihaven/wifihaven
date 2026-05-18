@@ -69,7 +69,10 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         userRepo <- ZIO.service[UserRepo]
         auth     <- makeAuth
         hash     <- auth.hashPassword("childpass")
-        _        <- userRepo.create("child1", hash, "child")
+        id       <- userRepo.create("child1", hash, "child")
+        // Clear the must_change_password flag so this test exercises login/verify,
+        // not the forced-rotation flow (that is tested in UserCreateSpec, #599).
+        _        <- userRepo.clearMustChangePassword(id)
         resp     <- auth.login("child1", "childpass")
         claims   <- auth.verify(resp.token.value)
       } yield assertTrue(resp.role == UserRole.Child) &&
@@ -81,7 +84,10 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         userRepo <- ZIO.service[UserRepo]
         auth     <- makeAuth
         hash     <- auth.hashPassword("pass")
-        _        <- userRepo.create("viewer", hash, "child")
+        id       <- userRepo.create("viewer", hash, "child")
+        // Clear the must_change_password flag; this test checks role enforcement,
+        // not the forced-rotation flow (#599).
+        _        <- userRepo.clearMustChangePassword(id)
         resp     <- auth.login("viewer", "pass")
         result   <- auth.requireAdmin(resp.token.value).exit
       } yield assertTrue(result.isFailure)

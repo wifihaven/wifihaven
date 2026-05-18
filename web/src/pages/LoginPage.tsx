@@ -15,8 +15,15 @@ export function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await login(username, password)
-      navigate('/dashboard')
+      const { mustChangePassword } = await login(username, password)
+      // #586: server sets must_change_password on the seeded admin row.
+      // Redirect to the account page so the operator is forced to rotate
+      // before reaching any other part of the UI.
+      if (mustChangePassword) {
+        navigate('/account')
+      } else {
+        navigate('/dashboard')
+      }
     } catch {
       setError('Invalid username or password')
     } finally {

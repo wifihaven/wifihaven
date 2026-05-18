@@ -32,7 +32,7 @@ function renderLogin() {
 
 describe('LoginPage', () => {
   it('logs in and navigates to /dashboard on success', async () => {
-    loginMock.mockResolvedValue(undefined)
+    loginMock.mockResolvedValue({ mustChangePassword: false })
     const user = userEvent.setup()
     renderLogin()
 

@@ -1,9 +1,11 @@
 import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 
 export function AccountPage() {
-  const { username, isAdmin } = useAuth()
+  const { username, isAdmin, mustChangePassword, clearMustChangePassword } = useAuth()
+  const navigate = useNavigate()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword]         = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -36,6 +38,12 @@ export function AccountPage() {
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
+      // #586: clear the client-side flag so nav unlocks, then redirect to
+      // the dashboard if this was a forced-change flow.
+      if (mustChangePassword) {
+        clearMustChangePassword()
+        navigate('/dashboard')
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to change password'
       setError(msg.includes('401') || msg.toLowerCase().includes('unauth')
@@ -49,6 +57,13 @@ export function AccountPage() {
   return (
     <div className="space-y-6 max-w-xl">
       <h1 className="text-xl font-bold text-white">Account</h1>
+
+      {/* #586: banner shown when the server-enforced must_change_password flag is set */}
+      {mustChangePassword && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-amber-300 text-sm">
+          <strong>Password change required.</strong> The default password must be changed before you can use the rest of the application.
+        </div>
+      )}
 
       <section className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
         <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">

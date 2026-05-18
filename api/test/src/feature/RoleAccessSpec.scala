@@ -36,7 +36,12 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
-  /** Create a user with a given role and link them to the listed profile ids. */
+  /**
+   * Create a user with a given role and link them to the listed profile ids.
+   *
+   * Clears must_change_password so that these test users are fully operational immediately; the
+   * flag behaviour itself is tested in UserCreateSpec (#599).
+   */
   private def createUser(
       userRepo: UserRepo,
       upRepo: UserProfileRepo,
@@ -48,6 +53,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     for {
       hash <- auth.hashPassword("pass")
       id   <- userRepo.create(username, hash, role)
+      _    <- userRepo.clearMustChangePassword(id)
       _    <- upRepo.setProfilesForUser(id, profileIds)
     } yield id
 

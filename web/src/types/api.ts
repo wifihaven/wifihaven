@@ -240,6 +240,9 @@ export interface LoginResponse {
   token: string
   role: UserRole
   username: string
+  // #586: true when the server has the must_change_password flag set.
+  // The web redirects to /account immediately after login when true.
+  mustChangePassword?: boolean
 }
 
 export interface MeResponse {
