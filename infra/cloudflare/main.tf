@@ -74,6 +74,36 @@ resource "cloudflare_pages_domain" "staging" {
 # TLS at Cloudflare and require additional work for the API to read the real
 # client IP — out of scope.
 
+resource "cloudflare_record" "spa_apex" {
+  zone_id = var.zone_id
+  name    = "wifihaven.net"
+  type    = "CNAME"
+  content = "wifihaven.pages.dev"
+  proxied = true
+  ttl     = 1
+  comment = "Cloudflare Pages wifihaven (#613)"
+}
+
+resource "cloudflare_record" "spa_www" {
+  zone_id = var.zone_id
+  name    = "www"
+  type    = "CNAME"
+  content = "wifihaven.pages.dev"
+  proxied = true
+  ttl     = 1
+  comment = "Cloudflare Pages wifihaven (#613)"
+}
+
+resource "cloudflare_record" "spa_staging" {
+  zone_id = var.zone_id
+  name    = "staging"
+  type    = "CNAME"
+  content = "wifihaven-staging.pages.dev"
+  proxied = true
+  ttl     = 1
+  comment = "Cloudflare Pages wifihaven-staging (#613)"
+}
+
 resource "cloudflare_record" "api_prod" {
   zone_id = var.zone_id
   name    = "api"
