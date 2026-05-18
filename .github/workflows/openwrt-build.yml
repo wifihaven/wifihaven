@@ -1,21 +1,22 @@
 name: OpenWRT Package Build
 
-# Normally, releases happen only on v* tag pushes (#191, #212). For live
-# debugging of #228 we also publish a rolling "openwrt-latest" pre-release
-# on every push to main that touches openwrt/**, so the field router can
-# fetch the updated .apk without us cutting a real tag each iteration.
-# This is reverted by #244 once #228 is fixed.
+# Release flow (post-#498): the rolling "openwrt-latest" GitHub Release is
+# published exclusively from Master CD's deploy-production path, behind the
+# manual-approval gate. There is no standalone `push.tags: ["v*"]` trigger —
+# tag pushes would otherwise fire this workflow ungated and race with the
+# coordinated release from master.yml (see #498).
 #
-# This workflow is also invoked from master.yml as a reusable workflow
-# (`workflow_call`). After #588, the GitHub Release / openwrt-latest rolling
-# upload only fires when the caller passes `publish_release: true` — that
-# input is set exclusively from Master CD's deploy-production job, after
-# staging smoke has passed. The build itself still runs in CI for PR
-# validation and main-push confidence; only the public artifact promotion
-# is gated.
+# Triggers retained:
+#   - push to main (paths: openwrt/**)  — build-only confidence run, no upload
+#   - pull_request (paths: openwrt/**)  — PR validation
+#   - workflow_dispatch                 — one-off debug builds
+#   - workflow_call                     — invoked by master.yml deploy-production
+#                                         with publish_release: true
+#
+# The build itself still runs for PR / main-push validation; only the public
+# artifact promotion (GitHub Release upload) is gated by `publish_release`.
 on:
   push:
-    tags: ["v*"]
     branches: ["main"]
     paths: ["openwrt/**"]
   pull_request:
@@ -111,20 +112,10 @@ jobs:
           path: openwrt/wifihaven_*.apk
           if-no-files-found: error
 
-      - name: Create GitHub release and attach packages (tag)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            openwrt/wifihaven_*.ipk
-            openwrt/wifihaven_*.apk
-          generate_release_notes: true
-
-      # Rolling pre-release. After #588 this only fires when the caller
-      # explicitly opts in (Master CD's deploy-production job, post-staging-smoke).
-      # Direct main pushes no longer publish — the unconditional reusable-workflow
-      # call from master.yml passes publish_release=false so the build runs for
-      # confidence without promoting an unstaged artifact.
+      # Rolling pre-release. Post-#498 this is the ONLY release path — fires
+      # only when the caller passes publish_release=true (Master CD's
+      # deploy-production job, after the manual-approval gate). Direct main
+      # pushes and PR validation runs build for confidence without publishing.
       - name: Publish rolling openwrt-latest release (gated by caller)
         if: inputs.publish_release == true
         uses: softprops/action-gh-release@v2

@@ -9,7 +9,11 @@ name: Master CD
 #                                     with deploy-staging, gated on the same test chain)
 #     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net
 #                                     AND staging.wifihaven.net SPA — gates ALL of prod)
-#     → deploy-production            (parallel jobs; all gated on smoke-staging passing):
+#     → approve-production           (manual-approval gate — GitHub `production`
+#                                     environment; required reviewer must click
+#                                     "Approve and deploy" before any of the four
+#                                     deploy-production jobs run; see #498)
+#     → deploy-production            (parallel jobs; all gated on approve-production):
 #                                       • retag-latest      — promote sha-<commit> → :latest
 #                                                             via `docker buildx imagetools create`
 #                                                             (no rebuild — image already gated)
@@ -19,14 +23,17 @@ name: Master CD
 #                                       • deploy-spa-prod    — build + wrangler push to
 #                                                             wifihaven Pages project (#613)
 #
-# Gate semantics: the public consumer surface (`:latest`, the openwrt-latest
-# rolling release, the prod Render service) only updates after staging smoke
-# passes. A failed smoke leaves all three on the previous version — atomic at
-# the gate.
+# Gate semantics: a failed staging smoke short-circuits before approval is
+# even requested. After smoke passes, a human must approve via the
+# `production` environment. Denial leaves the public consumer surface
+# (`:latest`, the openwrt-latest rolling release, the prod Render service,
+# the prod Cloudflare Pages SPA) on the previous version — all four
+# surfaces are atomic at the gate.
 #
-# TODO(#498): re-add a real manual approval gate via `environment: production`
-# on the three deploy-production jobs. Until that lands, deploy-production
-# fires automatically once smoke-staging is green.
+# TODO(#597): the wire-schema bump (capability negotiation framework) gets
+# coordinated here once #597's mechanism lands — the manual gate is the
+# natural choke point to confirm router-agent and API ship compatible
+# protocol versions in the same release.
 
 on:
   push:
@@ -309,15 +316,30 @@ jobs:
           [[ "$status" == "401" || "$status" == "200" || "$status" == "403" ]]
 
   # ════════════════════════════════════════════════════════════════════════
-  # ── DEPLOY-PRODUCTION ── (parallel jobs, all gated on smoke-staging) ────
+  # ── DEPLOY-PRODUCTION ── (manual-approval gate + parallel jobs) ─────────
   # ════════════════════════════════════════════════════════════════════════
-  # Four sibling jobs, each `needs: [smoke-staging]`. They run in parallel.
-  # If any one of them fails, the others may still complete — the gate that
-  # matters (staging smoke) has already passed, and partial promotion is
-  # better than rolling back work that's already shipped to one surface.
+  # An `approve-production` sentinel job carries `environment: production` so
+  # GitHub pauses the run for manual approval before any consumer-facing
+  # surface is touched. All four deploy-production jobs `needs:
+  # [approve-production]`, so a single approval gates them all atomically;
+  # denial blocks every one of them.
   #
-  # TODO(#498): add `environment: production` to all four jobs so they
-  # require manual approval. Until then they auto-fire after smoke passes.
+  # Why a sentinel job instead of putting `environment:` on each job?
+  # Reusable-workflow caller jobs (publish-openwrt) cannot set `environment:`
+  # at the call site — GitHub disallows it alongside `uses:`. A sentinel
+  # also gives the operator one approval click for the whole release rather
+  # than four.
+
+  approve-production:
+    name: Manual approval (production gate)
+    needs: [smoke-staging]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://api.wifihaven.net
+    steps:
+      - name: Approved
+        run: echo "Production deploy approved — releasing API image + OpenWRT agent + SPA."
 
   # 6a. Retag sha-<commit> → :latest. No rebuild — `imagetools create`
   # operates on the registry-side manifest. The sha image has already been
@@ -326,9 +348,8 @@ jobs:
   # in another tool; buildx is already set up on github-hosted runners.
   retag-latest:
     name: Promote sha → :latest (deploy-production)
-    needs: [smoke-staging]
+    needs: [approve-production]
     runs-on: ubuntu-latest
-    # TODO(#498): environment: production
     permissions:
       contents: read
       packages: write
@@ -357,8 +378,7 @@ jobs:
   # input. See openwrt-build.yml for the gating logic.
   publish-openwrt:
     name: Publish OpenWRT release (deploy-production)
-    needs: [smoke-staging]
-    # TODO(#498): environment: production
+    needs: [approve-production]
     permissions:
       contents: write
     uses: ./.github/workflows/openwrt-build.yml
@@ -372,9 +392,8 @@ jobs:
   # depend on retag-latest to enforce ordering.
   deploy-prod-render:
     name: Deploy production (Render)
-    needs: [smoke-staging, retag-latest]
+    needs: [approve-production, retag-latest]
     runs-on: ubuntu-latest
-    # TODO(#498): environment: production
     steps:
       - name: Trigger Render prod deploy hook
         env:
@@ -404,9 +423,8 @@ jobs:
   # deploy-prod-render is bounded to the duration of either job.
   deploy-spa-prod:
     name: Deploy SPA to Cloudflare Pages (prod) (deploy-production)
-    needs: [smoke-staging]
+    needs: [approve-production]
     runs-on: ubuntu-latest
-    # TODO(#498): environment: production
     steps:
       - uses: actions/checkout@v4
 
