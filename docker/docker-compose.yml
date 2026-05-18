@@ -42,6 +42,10 @@ services:
       WIFIHAVEN_JWT_SECRET: "staging-jwt-secret-do-not-use-in-prod-32ch"
       # #612: allow the Vite dev server and the JVM-bundled SPA on localhost.
       WIFIHAVEN_ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:8080"
+      # #614: dev defaults to serving the bundled SPA at http://localhost:8080/.
+      # Override with `WIFIHAVEN_SERVE_SPA=false docker compose up` to simulate
+      # the Render API-only mode (non-/api/* paths return 404).
+      WIFIHAVEN_SERVE_SPA: ${WIFIHAVEN_SERVE_SPA:-true}
     ports:
       - "0.0.0.0:8080:8080"
     healthcheck:

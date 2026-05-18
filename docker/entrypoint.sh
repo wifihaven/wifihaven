@@ -11,6 +11,7 @@ set -euo pipefail
 : "${WIFIHAVEN_HTTP_HOST:=0.0.0.0}"
 : "${WIFIHAVEN_HTTP_PORT:=8080}"
 : "${WIFIHAVEN_STATIC_DIR:=/app/web}"
+: "${WIFIHAVEN_SERVE_SPA:=true}"
 : "${WIFIHAVEN_JWT_SECRET:=staging-jwt-secret-do-not-use-in-prod-32ch}"
 : "${WIFIHAVEN_JWT_HOURS:=24}"
 : "${WIFIHAVEN_LOG_LEVEL:=INFO}"
@@ -38,6 +39,7 @@ wifihaven {
     host      = "${WIFIHAVEN_HTTP_HOST}"
     port      = ${WIFIHAVEN_HTTP_PORT}
     staticDir = "${WIFIHAVEN_STATIC_DIR}"
+    serveSpa  = ${WIFIHAVEN_SERVE_SPA}
   }
   jwt {
     secret      = "${WIFIHAVEN_JWT_SECRET}"
