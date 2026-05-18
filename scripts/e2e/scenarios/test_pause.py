@@ -77,10 +77,10 @@ def _wait_http_succeeds(client, *, host: str = "example.com", timeout_s: float =
 def _wait_pause_event(debug_api, mac: str, *, timeout_s: float = 30):
     return wait_until(
         lambda: (debug_api.events_for_mac_filtered(
-            mac, allowed=False, reason="paused"
+            mac, allowed=False, reason="Paused"
         ) or None),
         timeout_s=timeout_s, interval_s=2,
-        description=f"allowed=False reason=paused event for {mac}",
+        description=f"allowed=False reason=Paused event for {mac}",
     )
 
 

@@ -119,13 +119,20 @@ def router_restore(name: str) -> Result:
     return run([_vm_script("router-restore.sh"), name], timeout=60)
 
 
-def router_nft_set(set_name: str, *, table: str = "fw4", family: str = "inet") -> list[str]:
+def router_nft_set(set_name: str, *, table: str = "wifihaven", family: str = "inet") -> list[str]:
     """Return the elements of an nftables set on the router.
 
     Used by the enforcement suites (#346) to assert MAC / IP membership in
     sets like `blocked_macs` or per-MAC drop sets without depending on
     log-line parsing. Returns an empty list if the set exists but is empty,
     or if the set is absent.
+
+    The agent emits its runtime ruleset into `table inet wifihaven` (see
+    `add table inet wifihaven` in render.lua and the boot.nft handover in
+    `inet wifihaven_boot`). Earlier this default was `fw4`, which is the
+    OpenWRT firewall4 table — distinct from the agent's runtime table —
+    so every membership probe returned an empty list and Mode A tests in
+    #646 timed out at `_wait_mac_in_blocked_set`.
 
     Implementation detail: `nft -j list set ...` would be cleaner but isn't
     always present on the OpenWRT image; we parse the human-readable form.
