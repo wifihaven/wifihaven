@@ -53,6 +53,12 @@ define Package/wifihaven/install
 
 	$(INSTALL_DIR) $(1)/etc/sysctl.d
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/etc/sysctl.d/99-wifihaven.conf $(1)/etc/sysctl.d/
+
+	$(INSTALL_DIR) $(1)/usr/lib/wifihaven
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh $(1)/usr/lib/wifihaven/
+
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/95-wifihaven-uhttpd $(1)/etc/uci-defaults/
 endef
 
 define Package/wifihaven/postinst
@@ -87,6 +93,11 @@ nft delete table inet familydns_boot 2>/dev/null || true
 # first policy.apply().
 /etc/init.d/wifihaven-boot enable
 /etc/init.d/wifihaven-boot start 2>/dev/null || true
+
+# #542: uhttpd block-page wire-up runs from /etc/uci-defaults/95-wifihaven-uhttpd
+# at first boot — postinst runs during offline-install before procd/uhttpd
+# are up, so a uci-defaults stub is the right idiom here. Nothing for
+# postinst to do for the block-page handler.
 # Install cron entry for the auto-updater (daily, 04:00 router-local).
 # Replace any existing wifihaven-update entry so upgrades migrate the
 # cadence — older packages installed it at "0 */6 * * *".

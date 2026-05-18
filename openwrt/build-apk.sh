@@ -101,6 +101,8 @@ fi
 # before fw4.
 /etc/init.d/wifihaven-boot enable
 /etc/init.d/wifihaven-boot start 2>/dev/null || true
+# #542: uhttpd block-page wire-up runs at first boot from
+# /etc/uci-defaults/95-wifihaven-uhttpd (shipped in data/).
 POSTINSTALL
 chmod 0755 "$WORK/post-install"
 
