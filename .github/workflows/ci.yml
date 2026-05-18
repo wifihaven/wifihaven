@@ -17,9 +17,78 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # ── Path filter: decide which downstream jobs need to run on this PR ─────
+  # On workflow_call (from master.yml) and workflow_dispatch we force every
+  # output to 'true' so the post-merge CD gate and manual runs still execute
+  # the full matrix. On pull_request we let dorny/paths-filter compute deltas
+  # against the PR base. Any change to ci.yml itself also forces everything.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      scala: ${{ steps.filter.outputs.scala || steps.force.outputs.all }}
+      frontend: ${{ steps.filter.outputs.frontend || steps.force.outputs.all }}
+      lua: ${{ steps.filter.outputs.lua || steps.force.outputs.all }}
+      python: ${{ steps.filter.outputs.python || steps.force.outputs.all }}
+      shell: ${{ steps.filter.outputs.shell || steps.force.outputs.all }}
+      render: ${{ steps.filter.outputs.render || steps.force.outputs.all }}
+      migrations: ${{ steps.filter.outputs.migrations || steps.force.outputs.all }}
+    steps:
+      - name: Force full matrix for non-PR triggers
+        id: force
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "all=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            scala:
+              - '.github/workflows/ci.yml'
+              - 'api/**'
+              - 'shared/**'
+              - 'build.mill'
+              - '.scalafmt.conf'
+              - 'config/**'
+              - 'docker/**'
+              - 'deploy/**'
+            frontend:
+              - '.github/workflows/ci.yml'
+              - 'web/**'
+              - 'package.json'
+              - 'package-lock.json'
+            lua:
+              - '.github/workflows/ci.yml'
+              - 'openwrt/**'
+            python:
+              - '.github/workflows/ci.yml'
+              - 'opnsense/**'
+            shell:
+              - '.github/workflows/ci.yml'
+              - 'deploy/**/*.sh'
+              - 'scripts/**'
+              - '**/*.bats'
+              - '**/*.test.sh'
+            render:
+              - '.github/workflows/ci.yml'
+              - 'render.yaml'
+            migrations:
+              - '.github/workflows/ci.yml'
+              - 'api/migrations/**'
+
   # ── Scala: format, compile, test ─────────────────────────────────────────
   scala:
     name: Scala Build & Test
+    needs: changes
+    if: needs.changes.outputs.scala == 'true'
     runs-on: ubuntu-latest
 
     env:
@@ -76,7 +145,8 @@ jobs:
   # ── Migrations: forbid changes to existing files on PRs to main ─────────
   migrations-immutable:
     name: Migrations Immutability Check
-    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main'
+    needs: changes
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' && needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +164,8 @@ jobs:
   # change needed. (web/, node_modules, build outputs are excluded.)
   shell-tests:
     name: Shell Tests
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,6 +192,8 @@ jobs:
   # ── OpenWrt agent: Lua unit tests ───────────────────────────────────────
   lua-tests:
     name: OpenWrt Lua Tests
+    needs: changes
+    if: needs.changes.outputs.lua == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -142,6 +216,8 @@ jobs:
   # ── OPNsense agent: Python unit tests ───────────────────────────────────
   python-tests:
     name: OPNsense Python Tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -161,6 +237,8 @@ jobs:
   # ── render.yaml: YAML parse check ───────────────────────────────────────
   render-blueprint:
     name: Render Blueprint Lint
+    needs: changes
+    if: needs.changes.outputs.render == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -173,6 +251,8 @@ jobs:
   # ── Frontend: type-check, lint, build ────────────────────────────────────
   frontend:
     name: Frontend Build & Lint
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -202,3 +282,38 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # ── Umbrella gating job ──────────────────────────────────────────────────
+  # Branch protection requires this single check. It depends on every
+  # downstream job and passes when each one is either successful or skipped
+  # (i.e. its paths weren't touched on this PR). Any failure or cancellation
+  # in a dependency fails this check.
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - changes
+      - scala
+      - migrations-immutable
+      - shell-tests
+      - lua-tests
+      - python-tests
+      - render-blueprint
+      - frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all required jobs succeeded or were skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          bad = {name: meta["result"] for name, meta in data.items()
+                 if meta["result"] not in ("success", "skipped")}
+          if bad:
+              print(f"Failing jobs: {bad}")
+              sys.exit(1)
+          print("All required jobs succeeded or were skipped.")
+          '
