@@ -27,6 +27,11 @@ from datetime import datetime, timezone, timedelta
 API_BASE        = os.environ.get("API_BASE",        "http://localhost:8080")
 ADMIN_USER      = os.environ.get("ADMIN_USER",      "admin")
 ADMIN_PASS      = os.environ.get("ADMIN_PASS",      "changeme")
+# Post-rotation password used by fake-router only. The API server seeded by
+# #586 forces a password change on first login (mustChangePassword=true in the
+# /api/auth/login response); fake-router rotates ADMIN_PASS → ADMIN_NEW_PASS on
+# fresh DBs and re-logs in with ADMIN_NEW_PASS on subsequent runs.
+ADMIN_NEW_PASS  = os.environ.get("ADMIN_NEW_PASS",  "fake-router-bootstrap-pw-do-not-use-elsewhere")
 SEED            = int(os.environ.get("FAKE_ROUTER_SEED",  "42"))
 POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",     "3"))
 USAGE_INTERVAL  = int(os.environ.get("USAGE_INTERVAL",    "10"))
@@ -98,8 +103,47 @@ def _retry(fn, attempts: int = 30, delay: float = 2.0, label: str = ""):
 
 # ── Provisioning ───────────────────────────────────────────────────────────
 
-def _login() -> str:
-    res = _post("/api/auth/login", {"username": ADMIN_USER, "password": ADMIN_PASS})
+def _login(password: str) -> dict:
+    return _post("/api/auth/login", {"username": ADMIN_USER, "password": password})
+
+
+def _change_password(token: str, current: str, new: str) -> None:
+    # The endpoint returns 200 with an empty body, so we can't go through
+    # _post (which always tries to json.loads the response).
+    data = json.dumps({"currentPassword": current, "newPassword": new}).encode()
+    req = urllib.request.Request(
+        f"{API_BASE}/api/auth/change-password",
+        data=data,
+        headers={"content-type": "application/json", "authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        r.read()
+
+
+def _bootstrap_admin_token() -> str:
+    """Return an admin JWT, rotating the seeded password if needed.
+
+    Idempotent across runs:
+      • Fresh DB: ADMIN_NEW_PASS login → 401; fall back to ADMIN_PASS, observe
+        mustChangePassword=true, rotate, re-login with ADMIN_NEW_PASS.
+      • Already-rotated DB: ADMIN_NEW_PASS login → 200, use that token.
+    """
+    try:
+        res = _login(ADMIN_NEW_PASS)
+        if not res.get("mustChangePassword", False):
+            return res["token"]
+        # Unexpected: server says rotate even though we logged in with the
+        # post-rotation password. Fall through to the seeded-path branch.
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            raise
+
+    res = _login(ADMIN_PASS)
+    if res.get("mustChangePassword", False):
+        _change_password(res["token"], ADMIN_PASS, ADMIN_NEW_PASS)
+        print("[fake-router] rotated admin password", flush=True)
+        res = _login(ADMIN_NEW_PASS)
     return res["token"]
 
 
@@ -193,7 +237,7 @@ def _post_events(router_id: str, router_token: str) -> None:
 def main() -> None:
     print(f"[fake-router] seed={SEED} api={API_BASE}", flush=True)
 
-    admin_token             = _retry(_login, label="login")
+    admin_token             = _retry(_bootstrap_admin_token, label="login")
     router_id, enroll_token = _create_router(admin_token)
     print(f"[fake-router] created router {router_id}", flush=True)
 

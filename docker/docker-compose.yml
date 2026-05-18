@@ -64,6 +64,7 @@ services:
       API_BASE: "http://api:8080"
       ADMIN_USER: "admin"
       ADMIN_PASS: "changeme"
+      ADMIN_NEW_PASS: "fake-router-bootstrap-pw-do-not-use-elsewhere"
       FAKE_ROUTER_SEED: "42"
       POLL_INTERVAL: "3"
       USAGE_INTERVAL: "10"

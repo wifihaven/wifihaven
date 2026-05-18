@@ -12,6 +12,10 @@
 set -euo pipefail
 
 BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
+# fake-router (docker/fake-router.py) rotates the seeded admin password on
+# first run to this value. e2e scripts execute *after* `compose up --wait`,
+# so the DB is always in the post-rotation state by the time we log in.
+ADMIN_PASS="${ADMIN_PASS:-fake-router-bootstrap-pw-do-not-use-elsewhere}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 pass() { echo "  ✓ $*"; }
@@ -29,10 +33,10 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-step "Login as admin/changeme"
+step "Login as admin"
 LOGIN=$(curl -fsS -X POST "$BASE/api/auth/login" \
   -H 'content-type: application/json' \
-  -d '{"username":"admin","password":"changeme"}')
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASS\"}")
 TOKEN=$(echo "$LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 [ -n "$TOKEN" ] || fail "no token in login response: $LOGIN"
 echo "$LOGIN" | grep -q '"role":"admin"' || fail "admin role missing"
