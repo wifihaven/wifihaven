@@ -33,8 +33,14 @@ object Cors {
         Method.DELETE,
         Method.OPTIONS,
       ),
+      // #626: zio-http 3.0.1's CORS middleware intersects the browser's
+      // Access-Control-Request-Headers against this set by case-sensitive
+      // string equality. Browsers normalize header names to lowercase per
+      // the Fetch spec (e.g. `content-type`), so mixed-case entries here
+      // never match and the response Allow-Headers comes back empty. Keep
+      // these lowercase — header names are case-insensitive on the wire.
       allowedHeaders = Header.AccessControlAllowHeaders.Some(
-        NonEmptyChunk("Authorization", "Content-Type", "If-None-Match"),
+        NonEmptyChunk("authorization", "content-type", "if-none-match"),
       ),
       allowCredentials = Header.AccessControlAllowCredentials.DoNotAllow,
       exposedHeaders = Header.AccessControlExposeHeaders.Some(
