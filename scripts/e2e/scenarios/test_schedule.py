@@ -137,7 +137,7 @@ def test_in_window_blocks(
         wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
         _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
-        _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
+        _wait_event(debug_api, mac, reason="Schedule", timeout_s=60)
     finally:
         sid = _schedule_id_from(result or {}, sched_name)
         if sid is not None:
@@ -300,21 +300,21 @@ def test_pause_overrides_schedule(
         wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
         _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
-        _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
+        _wait_event(debug_api, mac, reason="Schedule", timeout_s=60)
 
         # Pause — reason should flip to paused within one poll.
         admin.set_profile_paused(profile_id, True)
         paused = True
         wait_for_etag_change(admin, router.router_id, timeout_s=240)
         _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
-        _wait_event(debug_api, mac, reason="paused", timeout_s=60)
+        _wait_event(debug_api, mac, reason="Paused", timeout_s=60)
 
         # Unpause — schedule still in window, reason should revert.
         admin.set_profile_paused(profile_id, False)
         paused = False
         wait_for_etag_change(admin, router.router_id, timeout_s=240)
         _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
-        _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
+        _wait_event(debug_api, mac, reason="Schedule", timeout_s=60)
     finally:
         if paused:
             try:
@@ -417,7 +417,7 @@ def test_in_then_out_smoke(
         wait_for_etag_change(admin, router.router_id, timeout_s=240)
 
         _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
-        _wait_event(debug_api, mac, reason="schedule", timeout_s=60)
+        _wait_event(debug_api, mac, reason="Schedule", timeout_s=60)
 
         _set_clock_and_sync(admin, router, out_window)
         _wait_mac_in_blocked_set(mac, present=False, timeout_s=180)
