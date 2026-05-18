@@ -663,22 +663,55 @@ describe("render.update_shared", function()
     assert.is_true(eb_hosts_by_mac["aa:bb:cc:11:22:33"]["tiktok.com"])
   end)
 
-  it("populates eb_hosts_by_mac from blocklistIds when _blocklist_hosts is present", function()
+  it("populates bl_hosts_by_mac from blocklistIds when _blocklist_hosts is present (#594)", function()
     local s = snap_one()  -- profile 3 has blocklistIds = { "ads", "adult" }
     s._blocklist_hosts = {
       ads   = { "ad.doubleclick.net", "googleads.g.doubleclick.net" },
       adult = { "pornhub.com" },
     }
     local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
-    local eb_hosts_by_mac, ea_hosts_by_mac = {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac = {}, {}, {}
     render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
-                         eb_hosts_by_mac, ea_hosts_by_mac)
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+    -- Category hosts go into bl_hosts_by_mac tagged with the matching id.
+    local bl = bl_hosts_by_mac["aa:bb:cc:11:22:33"]
+    assert.is_not_nil(bl)
+    assert.equal("ads",   bl["ad.doubleclick.net"])
+    assert.equal("ads",   bl["googleads.g.doubleclick.net"])
+    assert.equal("adult", bl["pornhub.com"])
+    -- extraBlocked host from profile is in eb_hosts_by_mac, NOT bl_.
     local eb = eb_hosts_by_mac["aa:bb:cc:11:22:33"]
     assert.is_not_nil(eb)
-    assert.is_true(eb["ad.doubleclick.net"])
-    assert.is_true(eb["pornhub.com"])
-    -- extraBlocked host from profile is also present
     assert.is_true(eb["tiktok.com"])
+    assert.is_nil(eb["ad.doubleclick.net"])
+    assert.is_nil(bl["tiktok.com"])
+  end)
+
+  it("extraBlocked beats category when the same host appears in both (#594)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.extraBlocked = { "shared.example" }
+    s._blocklist_hosts = { ads = { "shared.example" } }
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac = {}, {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+    assert.is_true(eb_hosts_by_mac["aa:bb:cc:11:22:33"]["shared.example"])
+    -- bl_hosts_by_mac must NOT also contain this host: eb wins for classification.
+    local bl = bl_hosts_by_mac["aa:bb:cc:11:22:33"] or {}
+    assert.is_nil(bl["shared.example"])
+  end)
+
+  it("chooses a deterministic blocklist id when a host is in multiple lists (#594)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = { "zz", "aa" }
+    s._blocklist_hosts = { aa = { "dup.example" }, zz = { "dup.example" } }
+    local nft_sets, blocked_macs, blocked_reason = {}, {}, {}
+    local eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac = {}, {}, {}
+    render.update_shared(s, nft_sets, blocked_macs, blocked_reason,
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+    -- Lower id sorts first, so "aa" wins.
+    assert.equal("aa", bl_hosts_by_mac["aa:bb:cc:11:22:33"]["dup.example"])
   end)
 
   it("populates ea_hosts_by_mac from a profile's extraAllowed list", function()
@@ -1625,6 +1658,53 @@ describe("render.write_blocked_reasons", function()
   it("treats a nil map as empty (no crash, empty output)", function()
     local p = tmp_path()
     local ok = render.write_blocked_reasons(nil, p)
+    assert.is_true(ok)
+    assert.equals("", read_all(p))
+    os.remove(p)
+  end)
+end)
+
+-- ── render.write_blocked_hosts (#594) ────────────────────────────────────────
+--
+-- Persists per-(MAC, host) block source so the block-page handler can name a
+-- category-blocklist hit instead of mis-labelling it as ExtraBlocked.
+describe("render.write_blocked_hosts", function()
+  local function tmp_path()
+    local p = os.tmpname(); os.remove(p); return p
+  end
+  local function read_all(path)
+    local f = io.open(path, "r"); if not f then return nil end
+    local c = f:read("*a"); f:close(); return c
+  end
+
+  it("writes one '<mac>\\t<host>\\t<source>' line per entry, sorted", function()
+    local p = tmp_path()
+    local eb = { ["aa:bb:cc:11:22:33"] = { ["tiktok.com"] = true } }
+    local bl = {
+      ["aa:bb:cc:11:22:33"] = { ["ad.doubleclick.net"] = "ads" },
+      ["de:ad:be:ef:00:01"] = { ["pornhub.com"] = "adult" },
+    }
+    local ok = render.write_blocked_hosts(eb, bl, p)
+    assert.is_true(ok)
+    assert.equals(
+      "aa:bb:cc:11:22:33\tad.doubleclick.net\tcategory:ads\n"
+      .. "aa:bb:cc:11:22:33\ttiktok.com\textra_blocked\n"
+      .. "de:ad:be:ef:00:01\tpornhub.com\tcategory:adult\n",
+      read_all(p))
+    os.remove(p)
+  end)
+
+  it("writes an empty file when nothing is blocked", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_hosts({}, {}, p)
+    assert.is_true(ok)
+    assert.equals("", read_all(p))
+    os.remove(p)
+  end)
+
+  it("treats nil tables as empty", function()
+    local p = tmp_path()
+    local ok = render.write_blocked_hosts(nil, nil, p)
     assert.is_true(ok)
     assert.equals("", read_all(p))
     os.remove(p)

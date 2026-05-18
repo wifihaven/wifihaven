@@ -544,12 +544,14 @@ function M.handle_flow(flow, ctx, batcher)
   -- this MAC using dnsmasq's nftset suffix-match semantics.  The kernel
   -- enforces drops via:
   --   ether saddr <mac> ip daddr @eb_<host> drop
+  --   ether saddr <mac> ip daddr @bl_<id>   drop
   -- We drive this decision off the attributed hostname (hname) matched against
-  -- eb_hosts_by_mac, NOT off nft_sets[host][dst_ip].  The lua nft_sets table
-  -- is never populated in production (only the kernel ipsets are); nft_sets is
-  -- only a partial attribution fallback for site_limits domains.
+  -- eb_hosts_by_mac / bl_hosts_by_mac, NOT off nft_sets[host][dst_ip].  The
+  -- lua nft_sets table is never populated in production (only the kernel
+  -- ipsets are); nft_sets is only a partial attribution fallback for
+  -- site_limits domains.
   --
-  -- Each eb_ drop carries `ip daddr != @ea_<mac>_<host>` exception clauses,
+  -- Each eb_/bl_ drop carries `ip daddr != @ea_<mac>_<host>` exception clauses,
   -- so we must NOT classify as blocked when hname also matches a host in
   -- ea_hosts_by_mac[mac] (#421).
   --
@@ -558,63 +560,73 @@ function M.handle_flow(flow, ctx, batcher)
   -- each extraBlocked host's eb_ set (#579).  This is the slow path: one
   -- `nft get element` call per eb_host per flow.  ctx.exec_fn is injectable
   -- for tests; defaults to os.execute.
+  --
+  -- #594: extraBlocked hits report reason="host"; category-blocklist hits
+  -- report reason="category:<id>" so the block page and connection_event log
+  -- can name the matched list.
+  local function check_ea_carveout(eb_hit_host)
+    local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
+    if not ea_hosts then return false end
+    for ea_host in pairs(ea_hosts) do
+      if hname then
+        if M.host_matches(hname, ea_host) then return true end
+      else
+        if ea_host == eb_hit_host then return true end
+      end
+    end
+    return false
+  end
+
   if allowed and mac then
     local eb_hosts = ctx.eb_hosts_by_mac and ctx.eb_hosts_by_mac[mac]
     if eb_hosts then
-      -- Check whether hname (or any of its parent domains) matches an eb_ host.
-      -- When hname is nil, fall back to nft set membership queries (#579).
       local eb_hit = false
-      local eb_hit_host  -- the eb_ host whose set/name matched (for ea_ check)
+      local eb_hit_host
       for host in pairs(eb_hosts) do
         if hname then
           if M.host_matches(hname, host) then
-            eb_hit = true
-            eb_hit_host = host
-            break
+            eb_hit = true; eb_hit_host = host; break
           end
         else
-          -- Slow-path: no DNS attribution; query the live nft eb_ set.
           if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
-            eb_hit = true
-            eb_hit_host = host
-            break
+            eb_hit = true; eb_hit_host = host; break
           end
         end
       end
+      if eb_hit and not check_ea_carveout(eb_hit_host) then
+        allowed = false
+        reason  = "host"
+      end
+    end
+  end
 
-      if eb_hit then
-        -- Check the extraAllowed carve-out: if hname also matches any host in
-        -- ea_hosts_by_mac[mac], the `ip daddr != @ea_...` clause suppresses the
-        -- nft drop and the flow is allowed.
-        --
-        -- When hname is nil we cannot apply suffix-match semantics; treat any
-        -- ea_ host that exactly matches the eb_ host that fired as a carve-out.
-        -- This is a conservative approximation: it will only suppress the block
-        -- classification when the extraAllowed host is an exact match for the
-        -- extraBlocked host that fired, mirroring the exact situation where
-        -- an admin added the same host to both lists (#421).
-        local ea_hosts = ctx.ea_hosts_by_mac and ctx.ea_hosts_by_mac[mac]
-        local ea_hit = false
-        if ea_hosts then
-          for ea_host in pairs(ea_hosts) do
-            if hname then
-              if M.host_matches(hname, ea_host) then
-                ea_hit = true
-                break
-              end
-            else
-              -- Slow-path: exact match of the ea_ host against the eb_ host.
-              if ea_host == eb_hit_host then
-                ea_hit = true
-                break
-              end
-            end
+  -- #594: per-host category-blocklist check. Same machinery as eb_ above but
+  -- the matched host's blocklist id is carried into the reason string. Skip
+  -- if eb_ already classified the flow as blocked (extraBlocked wins).
+  if allowed and mac then
+    local bl_hosts = ctx.bl_hosts_by_mac and ctx.bl_hosts_by_mac[mac]
+    if bl_hosts then
+      local bl_hit_host
+      local bl_hit_id
+      for host, id in pairs(bl_hosts) do
+        if hname then
+          if M.host_matches(hname, host) then
+            bl_hit_host = host; bl_hit_id = id; break
+          end
+        else
+          -- Slow-path: query the live nft eb_-style set keyed on host. The
+          -- category enforcement uses bl_<id> sets populated at resolve time
+          -- per-host; the per-host eb-style query is still meaningful when
+          -- DNS attribution is missing because the same host saturates both
+          -- the eb_<host> and bl_<id> indexing paths via dnsmasq.
+          if M.nft_eb_hit(flow.dst_ip, host, ctx.exec_fn) then
+            bl_hit_host = host; bl_hit_id = id; break
           end
         end
-        if not ea_hit then
-          allowed = false
-          reason  = "host"
-        end
+      end
+      if bl_hit_host and not check_ea_carveout(bl_hit_host) then
+        allowed = false
+        reason  = "category:" .. tostring(bl_hit_id)
       end
     end
   end
@@ -772,6 +784,7 @@ function M.watch(cfg)
         blocked_reason        = cfg.blocked_reason,
         eb_hosts_by_mac       = cfg.eb_hosts_by_mac,
         ea_hosts_by_mac       = cfg.ea_hosts_by_mac,
+        bl_hosts_by_mac       = cfg.bl_hosts_by_mac,
         exec_fn               = cfg.exec_fn,
         reported_macs         = reported_macs,
         pending_hostname_macs = pending_hostname_macs,

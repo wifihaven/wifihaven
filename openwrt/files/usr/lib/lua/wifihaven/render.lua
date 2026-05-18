@@ -829,23 +829,29 @@ end
 
 -- ---------------------------------------------------------------------------
 -- render.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
---                      eb_hosts_by_mac, ea_hosts_by_mac)
+--                      eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
 -- ---------------------------------------------------------------------------
 -- Rebuilds blocked_macs / blocked_reason in place from each device's
 -- effective BlockRules. nft_sets is left intact — population is driven by
 -- dnsmasq --ipset= callbacks at resolution time (and by dns-tail per #259).
 --
--- Also rebuilds eb_hosts_by_mac and ea_hosts_by_mac when provided:
+-- Also rebuilds eb_hosts_by_mac, ea_hosts_by_mac, and bl_hosts_by_mac when
+-- provided:
 --   eb_hosts_by_mac: { mac -> { hostname -> true } }
---     — the set of hostnames whose nft eb_/bl_ drop rules fire for this MAC
---       (derived from effective extraBlocked and blocklistIds).
+--     — hostnames whose nft eb_ drop rules fire for this MAC (effective
+--       extraBlocked only).
 --   ea_hosts_by_mac: { mac -> { hostname -> true } }
---     — the set of hostnames in the MAC's effective extraAllowed list; a hit
---       in this table suppresses the eb_/bl_ block classification.
--- Both tables are cleared and rebuilt on every call. Callers that do not need
--- per-host block classification may omit them (pass nil).
+--     — hostnames in the MAC's effective extraAllowed list; a hit suppresses
+--       the eb_/bl_ block classification.
+--   bl_hosts_by_mac: { mac -> { hostname -> blocklist_id } }
+--     — hostnames whose nft bl_ drop rules fire for this MAC, tagged with the
+--       blocklist id that matched (used to surface a category-specific reason
+--       on the block page and in connection_event.reason — #594). If multiple
+--       blocklists contain the same host, the first by sorted id wins.
+-- All three tables are cleared and rebuilt on every call. Callers that do not
+-- need per-host block classification may omit them (pass nil).
 function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
-                         eb_hosts_by_mac, ea_hosts_by_mac)
+                         eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
   if blocked_macs then
     for k in pairs(blocked_macs) do blocked_macs[k] = nil end
   end
@@ -857,6 +863,9 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
   end
   if ea_hosts_by_mac then
     for k in pairs(ea_hosts_by_mac) do ea_hosts_by_mac[k] = nil end
+  end
+  if bl_hosts_by_mac then
+    for k in pairs(bl_hosts_by_mac) do bl_hosts_by_mac[k] = nil end
   end
 
   -- Build a blocklist-id → [hosts] lookup so we can expand blocklistIds below.
@@ -882,13 +891,26 @@ function M.update_shared(snapshot, nft_sets, blocked_macs, blocked_reason,
 
       -- Per-blocklist blocklistIds: expand each id to its constituent hosts
       -- using the cached blocklist data attached to the snapshot.
-      if eb_hosts_by_mac and type(r.blocklistIds) == "table" and #r.blocklistIds > 0 then
-        for _, id in ipairs(r.blocklistIds) do
+      -- #594: tag each (mac, host) with the blocklist id that matched so the
+      -- block page and connection_event can name the category. Iterate ids in
+      -- sorted order so the chosen id is deterministic when a host appears in
+      -- multiple lists. extraBlocked (eb_) takes precedence over category
+      -- (bl_) when the same host is in both — populate bl_hosts_by_mac only
+      -- if the host isn't already in eb_hosts_by_mac[mac].
+      if bl_hosts_by_mac and type(r.blocklistIds) == "table" and #r.blocklistIds > 0 then
+        local ids = {}
+        for _, id in ipairs(r.blocklistIds) do ids[#ids + 1] = id end
+        table.sort(ids)
+        for _, id in ipairs(ids) do
           local hosts = bl_hosts[id]
           if type(hosts) == "table" then
-            if not eb_hosts_by_mac[mac] then eb_hosts_by_mac[mac] = {} end
             for _, host in ipairs(hosts) do
-              eb_hosts_by_mac[mac][host] = true
+              local eb_for_mac = eb_hosts_by_mac and eb_hosts_by_mac[mac]
+              local already_eb = eb_for_mac and eb_for_mac[host]
+              if not bl_hosts_by_mac[mac] then bl_hosts_by_mac[mac] = {} end
+              if not already_eb and not bl_hosts_by_mac[mac][host] then
+                bl_hosts_by_mac[mac][host] = id
+              end
             end
           end
         end
@@ -922,6 +944,39 @@ function M.write_blocked_reasons(blocked_reason, path)
   local lines = {}
   for mac, reason in pairs(blocked_reason or {}) do
     table.insert(lines, mac .. "\t" .. tostring(reason))
+  end
+  table.sort(lines)
+  local body = table.concat(lines, "\n")
+  if #lines > 0 then body = body .. "\n" end
+  local tmp = path .. ".tmp"
+  local f, err = io.open(tmp, "w")
+  if not f then return nil, err end
+  f:write(body)
+  f:close()
+  local ok, rerr = os.rename(tmp, path)
+  if not ok then return nil, rerr end
+  return true
+end
+
+-- render.write_blocked_hosts(eb_hosts_by_mac, bl_hosts_by_mac, path) → ok, err
+--
+-- Persist the per-(MAC, host) block source classification so the block-page
+-- handler can distinguish an extraBlocked hit from a category-blocklist hit
+-- (#594). Format: one "<mac>\t<host>\t<source>\n" per (mac, host) entry,
+-- sorted for deterministic output. <source> is "extra_blocked" for an
+-- extraBlocked hit or "category:<blocklist_id>" for a category-blocklist hit.
+-- Written atomically via tmp+rename so the handler never sees a partial file.
+function M.write_blocked_hosts(eb_hosts_by_mac, bl_hosts_by_mac, path)
+  local lines = {}
+  for mac, hosts in pairs(eb_hosts_by_mac or {}) do
+    for host in pairs(hosts) do
+      table.insert(lines, mac .. "\t" .. host .. "\textra_blocked")
+    end
+  end
+  for mac, hosts in pairs(bl_hosts_by_mac or {}) do
+    for host, id in pairs(hosts) do
+      table.insert(lines, mac .. "\t" .. host .. "\tcategory:" .. tostring(id))
+    end
   end
   table.sort(lines)
   local body = table.concat(lines, "\n")

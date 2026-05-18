@@ -40,6 +40,29 @@ function M.parse_reasons(content, mac)
   return nil
 end
 
+-- Parse the per-(MAC, host) classifier file (lines of "<mac>\t<host>\t<source>")
+-- and return the source string for (mac, host), or nil. <source> is
+-- "extra_blocked" or "category:<id>". Lookup uses dnsmasq nftset suffix-match
+-- semantics: the file entry matches when host equals the request host or the
+-- request host is a subdomain of the entry. MAC comparison is
+-- case-insensitive; host comparison is lower-case. (#594)
+function M.parse_blocked_hosts(content, mac, host)
+  if not content or not mac or not host or host == "" then return nil end
+  local mac_target  = mac:lower()
+  local host_target = host:lower()
+  for line in content:gmatch("[^\n]+") do
+    local m, h, s = line:match("^(%S+)\t(%S+)\t(%S+)$")
+    if m and m:lower() == mac_target then
+      local h_lower = h:lower()
+      if host_target == h_lower
+         or host_target:sub(-(#h_lower + 1)) == "." .. h_lower then
+        return s
+      end
+    end
+  end
+  return nil
+end
+
 local function html_escape(s)
   s = tostring(s or "")
   return (s:gsub("&", "&amp;")
@@ -81,7 +104,14 @@ local INLINE_COPY = {
 }
 
 function M.inline_copy_for(reason)
-  return INLINE_COPY[reason or ""] or "This site is blocked."
+  reason = reason or ""
+  -- #594: category-blocklist hits arrive as "category:<id>"; surface the id in
+  -- the inline copy so the user can see which list matched.
+  local cat_id = reason:match("^category:(.+)$")
+  if cat_id then
+    return "Blocked category: " .. cat_id .. "."
+  end
+  return INLINE_COPY[reason] or "This site is blocked."
 end
 
 -- Render the HTML body for the block page. If api_url is set, returns a tiny

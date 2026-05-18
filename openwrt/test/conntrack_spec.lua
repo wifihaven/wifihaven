@@ -585,6 +585,73 @@ describe("handle_flow", function()
     assert.equal(true, ev.allowed)
   end)
 
+  -- ── #594: category blocklist (bl_) hits report a category-specific reason ─
+
+  it("#594: labels connection_attempt with reason='category:<id>' when hname matches a bl_ host", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "ad.doubleclick.net" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,          ev.allowed)
+    assert.equal("category:ads", ev.reason)
+  end)
+
+  it("#594: suffix-match also applies to bl_ hosts", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "tracker.ads.example" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = { [MAC] = { ["ads.example"] = "ads" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,          ev.allowed)
+    assert.equal("category:ads", ev.reason)
+  end)
+
+  it("#594: extraAllowed beats category-blocklist hit (#421 carve-out applies to bl_ too)", function()
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "ad.doubleclick.net" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = {},
+      ea_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = true } },
+      bl_hosts_by_mac = { [MAC] = { ["ad.doubleclick.net"] = "ads" } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(true, ev.allowed)
+  end)
+
+  it("#594: extraBlocked takes precedence over category when both contain the host", function()
+    -- This mirrors render.update_shared's invariant (#594): a host present in
+    -- both extraBlocked and a blocklist is classified as extraBlocked.
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      lookup_hostname = function(ip) if ip == DST_IP then return "shared.example" end end,
+      nft_sets        = {},
+      eb_hosts_by_mac = { [MAC] = { ["shared.example"] = true } },
+      ea_hosts_by_mac = {},
+      bl_hosts_by_mac = {},  -- render.update_shared would suppress this entry
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,  ev.allowed)
+    assert.equal("host", ev.reason)
+  end)
+
   it("does NOT block when eb_hosts_by_mac is absent from ctx", function()
     local b = collecting_batcher()
     local ctx = ctx_with({
