@@ -1,0 +1,12 @@
+#!/bin/sh
+# #542: first-boot wire-up of the uhttpd block-page listener.
+#
+# Postinst runs at offline-install time (Image Builder) before any service
+# is up, so uci writes get partially applied but `/etc/init.d/uhttpd reload`
+# is a no-op. Image-Builder-built routers shipped with an unconfigured
+# block-page listener and served 404 instead of the per-MAC redirect.
+#
+# uci-defaults runs at first boot after procd is up. /etc/init.d/done
+# removes the file after a zero exit; on non-zero, it stays and retries
+# on next boot. Idempotent helper at /usr/lib/wifihaven/.
+sh /usr/lib/wifihaven/setup-uhttpd-block-page.sh
