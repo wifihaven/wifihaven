@@ -64,6 +64,11 @@ services:
       # #612: SPA on https://staging.wifihaven.net calls this API cross-origin.
       - key: WIFIHAVEN_ALLOWED_ORIGINS
         value: "https://staging.wifihaven.net"
+      # #614: SPA is served by the wifihaven-spa-staging Static Site (CDN).
+      # The JVM still bundles a copy as a self-hosted fallback, but the API
+      # origin must not serve it here — non-/api/* paths return 404.
+      - key: WIFIHAVEN_SERVE_SPA
+        value: "false"
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true
@@ -115,6 +120,11 @@ services:
       # #612: SPA on https://wifihaven.net (apex + www) calls this API cross-origin.
       - key: WIFIHAVEN_ALLOWED_ORIGINS
         value: "https://wifihaven.net,https://www.wifihaven.net"
+      # #614: SPA is served by the wifihaven-spa-prod Static Site (CDN).
+      # The JVM still bundles a copy as a self-hosted fallback, but the API
+      # origin must not serve it here — non-/api/* paths return 404.
+      - key: WIFIHAVEN_SERVE_SPA
+        value: "false"
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true

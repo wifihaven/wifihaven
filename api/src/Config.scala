@@ -31,6 +31,7 @@ case class HttpConfig(
     host: String,
     port: Int,
     staticDir: String,
+    serveSpa: Boolean,
 )
 
 case class JwtConfig(

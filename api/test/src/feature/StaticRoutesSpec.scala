@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.routes.StaticRoutes
+import wifihaven.api.routes.{HealthRoutes, StaticRoutes}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -100,6 +100,38 @@ object StaticRoutesSpec extends ZIOSpecDefault {
           ct = resp.header(Header.ContentType).map(_.renderedValue).getOrElse("")
         } yield assertTrue(resp.status.code >= 400 && resp.status.code < 500) &&
           assertTrue(!ct.startsWith("text/html"))
+      }
+    },
+    // #614: the env-gated SPA disable for Render API deployments. Main.scala
+    // composes either `StaticRoutes.routes(...)` or `Routes.empty` based on
+    // `cfg.http.serveSpa`. These tests simulate both modes alongside the
+    // /api/health route to verify the acceptance criteria.
+    test("serveSpa=false: GET / returns 404, /api/health still 200") {
+      withTempDir { dir =>
+        for {
+          _ <- write(dir, "index.html", "<html>spa</html>")
+          serveSpa = false
+          rs       = HealthRoutes.routes(ZIO.unit) ++
+            (if (serveSpa) StaticRoutes.routes(dir.getAbsolutePath) else Routes.empty)
+          root   <- get(rs, "/")
+          health <- get(rs, "/api/health")
+        } yield assertTrue(root.status == Status.NotFound) &&
+          assertTrue(health.status == Status.Ok)
+      }
+    },
+    test("serveSpa=true: GET / returns SPA HTML, /api/health still 200") {
+      withTempDir { dir =>
+        for {
+          _ <- write(dir, "index.html", "<html>spa</html>")
+          serveSpa = true
+          rs       = HealthRoutes.routes(ZIO.unit) ++
+            (if (serveSpa) StaticRoutes.routes(dir.getAbsolutePath) else Routes.empty)
+          root   <- get(rs, "/")
+          body   <- root.body.asString
+          health <- get(rs, "/api/health")
+        } yield assertTrue(root.status == Status.Ok) &&
+          assertTrue(body == "<html>spa</html>") &&
+          assertTrue(health.status == Status.Ok)
       }
     },
     test("rejects path traversal attempts") {

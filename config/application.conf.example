@@ -12,6 +12,11 @@ wifihaven {
     host      = "0.0.0.0"
     port      = 8080
     staticDir = "web/dist"
+    # #614: serve the bundled SPA from this JVM. Default true preserves
+    # local-dev and self-hosted single-origin installs. Set to false on
+    # cloud API deployments where the SPA is served by a CDN (Render
+    # Static Sites / Cloudflare Pages) — non-/api/* paths return 404.
+    serveSpa  = true
   }
 
   jwt {

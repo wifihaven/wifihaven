@@ -49,6 +49,10 @@ services:
       # #612: comma-separated browser origins allowed to call this API. Leave
       # empty for self-hosted single-origin installs (default). Never use "*".
       WIFIHAVEN_ALLOWED_ORIGINS: ${WIFIHAVEN_ALLOWED_ORIGINS:-}
+      # #614: serve the bundled SPA from the JVM. Default true preserves the
+      # self-hosted single-origin install. Set to false only when a CDN
+      # (Render Static Sites / Cloudflare Pages) is the authoritative SPA.
+      WIFIHAVEN_SERVE_SPA: ${WIFIHAVEN_SERVE_SPA:-true}
     ports:
       - "${WIFIHAVEN_API_BIND:-0.0.0.0}:${WIFIHAVEN_API_PORT:-8080}:8080"
     healthcheck:
