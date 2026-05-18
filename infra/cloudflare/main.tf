@@ -74,6 +74,16 @@ resource "cloudflare_pages_domain" "staging" {
 # TLS at Cloudflare and require additional work for the API to read the real
 # client IP — out of scope.
 
+resource "cloudflare_record" "spf" {
+  zone_id = var.zone_id
+  name    = "wifihaven.net"
+  type    = "TXT"
+  content = "\"v=spf1 -all\""
+  proxied = false
+  ttl     = 1
+  comment = "SPF: no mail from this domain (#613)"
+}
+
 resource "cloudflare_record" "spa_apex" {
   zone_id = var.zone_id
   name    = "wifihaven.net"
