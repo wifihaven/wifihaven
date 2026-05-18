@@ -1,0 +1,28 @@
+{
+  "routerId" : "11111111-2222-3333-4444-555555555555",
+  "periodStart" : "2026-05-17T13:55:00Z",
+  "periodEnd" : "2026-05-17T14:00:00Z",
+  "records" : [
+    {
+      "mac" : "aa:bb:cc:11:22:33",
+      "ip" : "192.168.10.50",
+      "host" : {
+        "type" : "fqdn",
+        "value" : "khanacademy.org"
+      },
+      "activeSeconds" : 240,
+      "bytesIn" : 1048576,
+      "bytesOut" : 0
+    },
+    {
+      "mac" : "76:2d:95:47:d1:8e",
+      "host" : {
+        "type" : "ipv4",
+        "value" : "192.168.10.99"
+      },
+      "activeSeconds" : 60,
+      "bytesIn" : 4096,
+      "bytesOut" : 0
+    }
+  ]
+}

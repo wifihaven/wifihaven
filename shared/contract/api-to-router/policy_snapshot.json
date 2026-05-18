@@ -1,0 +1,70 @@
+{
+  "etag" : "\"sha256:abc123def4567890\"",
+  "generatedAt" : "2026-05-17T14:00:00Z",
+  "devices" : {
+    "aa:bb:cc:11:22:33" : {
+      "profileId" : 3,
+      "name" : "kid-ipad"
+    },
+    "de:ad:be:ef:00:01" : {
+      "profileId" : 4,
+      "name" : "parent-phone"
+    },
+    "12:34:56:78:9a:bc" : {
+      "name" : "unknown-device",
+      "rules" : {
+        "blocked" : true,
+        "blockReason" : "Manual",
+        "extraBlocked" : [],
+        "extraAllowed" : [
+          "school.example.org"
+        ],
+        "blocklistIds" : [],
+        "blockIpOnly" : false
+      }
+    }
+  },
+  "profiles" : {
+    "3" : {
+      "name" : "kids",
+      "rules" : {
+        "blocked" : false,
+        "extraBlocked" : [
+          "tiktok.com"
+        ],
+        "extraAllowed" : [
+          "khanacademy.org"
+        ],
+        "blocklistIds" : [
+          "ads",
+          "adult"
+        ],
+        "blockIpOnly" : false
+      },
+      "failureMode" : "block-all"
+    },
+    "4" : {
+      "name" : "adults",
+      "rules" : {
+        "blocked" : false,
+        "extraBlocked" : [],
+        "extraAllowed" : [],
+        "blocklistIds" : [
+          "ads"
+        ],
+        "blockIpOnly" : true
+      },
+      "failureMode" : "last-known-good"
+    }
+  },
+  "blocklists" : {
+    "ads" : {
+      "version" : "2026.05.01",
+      "url" : "/api/blocklists/ads"
+    },
+    "adult" : {
+      "version" : "2026.05.01",
+      "url" : "https://example.org/lists/adult.txt"
+    }
+  }
+}
