@@ -1,0 +1,5 @@
+# Cloudflare Pages reads this Netlify-style file from the publish dir.
+# SPA catch-all: any path that isn't a real file is rewritten to /index.html
+# so React Router can handle it client-side. 200 (rewrite, not 302) preserves
+# the request URL in the browser address bar.
+/*    /index.html   200

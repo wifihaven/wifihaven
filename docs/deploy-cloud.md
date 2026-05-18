@@ -1,0 +1,259 @@
+# Cloud deploy — operator guide (Render + Cloudflare)
+
+This guide covers the split-stack cloud deployment:
+
+- **API + Postgres on Render** (defined in `render.yaml` — Blueprint apply)
+- **SPA on Cloudflare Pages** (built + pushed by CI via Wrangler;
+  see `.github/workflows/deploy-spa.yml`)
+- **DNS on Cloudflare** (NS for `wifihaven.net` points at Cloudflare;
+  Cloudflare manages records and edge certs for every hostname)
+
+The SPA moved off Render Static Sites in #613 — Render's catch-all SPA
+rewrite kept eating `/.well-known/acme-challenge/*` (#609) which broke
+Let's Encrypt issuance. Cloudflare Pages uses DNS-01 challenges, so the
+class of bug doesn't exist. CI is also already building the SPA, so
+having Render rebuild it was wasted work.
+
+Custom domain layout (unchanged from the pre-#613 setup):
+
+| Hostname                       | Where it lives                    |
+|--------------------------------|-----------------------------------|
+| `wifihaven.net` (apex)         | Cloudflare Pages: `wifihaven`     |
+| `www.wifihaven.net`            | Cloudflare Pages: `wifihaven`     |
+| `staging.wifihaven.net`        | Cloudflare Pages: `wifihaven-staging` |
+| `api.wifihaven.net`            | Render: `wifihaven-api-prod`      |
+| `api-staging.wifihaven.net`    | Render: `wifihaven-api-staging`   |
+
+---
+
+## 1. DNS: move NS for `wifihaven.net` to Cloudflare
+
+Cloudflare Pages works best when the apex zone is hosted on Cloudflare —
+Pages can then manage custom-domain hostnames and certs end-to-end without
+manual CNAMEs, and the API hostnames pick up Cloudflare's DDoS protection
+for free.
+
+1. Create a free Cloudflare account at https://dash.cloudflare.com/sign-up.
+2. **Add site** → enter `wifihaven.net` → choose the Free plan.
+3. Cloudflare scans existing DNS records. Verify the scan picked up any
+   records you care about (none should exist yet for a fresh setup).
+4. Cloudflare assigns two nameservers (e.g.
+   `xxx.ns.cloudflare.com` / `yyy.ns.cloudflare.com`).
+5. At Google Domains (current registrar), edit `wifihaven.net` → DNS →
+   **Use custom name servers** → paste both Cloudflare NS values → save.
+6. Propagation: typically minutes; allow up to 48 h. Cloudflare emails when
+   it sees the change.
+
+Once the zone is active on Cloudflare, add these records in the Cloudflare
+DNS UI (proxy / orange-cloud status as noted):
+
+| Type  | Name           | Target                                    | Proxy           |
+|-------|----------------|-------------------------------------------|-----------------|
+| CNAME | `api`          | shown in Render → `wifihaven-api-prod`    | DNS-only (grey) |
+| CNAME | `api-staging`  | shown in Render → `wifihaven-api-staging` | DNS-only (grey) |
+
+The Pages hostnames (apex, `www`, `staging`) are added through the Pages
+project's **Custom domains** tab (see §3) — Cloudflare wires the DNS
+records automatically when the apex zone is on the same account.
+
+API CNAMEs are intentionally **DNS-only** (grey cloud): proxying through
+Cloudflare's edge would terminate TLS at Cloudflare and require additional
+config for the API to read the real client IP. Out of scope for now.
+
+---
+
+## 2. Apply the Render Blueprint (API + Postgres)
+
+`render.yaml` defines four resources (no Static Sites — those moved to
+Cloudflare):
+
+- `wifihaven-api-staging` (Web Service, free)
+- `wifihaven-api-prod` (Web Service, free)
+- `wifihaven-pg-staging` (Postgres, free)
+- `wifihaven-pg-prod` (Postgres, paid — `basic-256mb`)
+
+1. https://dashboard.render.com/ → **Blueprints** → connect the
+   `wifihaven/wifihaven` repo if not already connected.
+2. **New Blueprint Instance** → select this repo → Render reads
+   `render.yaml` from the default branch.
+3. Review the preview, then **Apply**. Wait for all four resources to
+   reach **Live** / **Available**.
+
+> If staging resources from #585 already exist, Render updates them
+> in-place rather than recreating them.
+
+Add Render's CNAME targets to Cloudflare DNS for `api` and `api-staging`
+(see §1). Render's **Custom Domains** tab for each service shows the
+exact target. Render issues Let's Encrypt certs automatically once DNS
+resolves.
+
+---
+
+## 3. Create the Cloudflare Pages projects
+
+Two projects, mirroring the prod/staging split on the API side:
+
+1. Cloudflare dash → **Workers & Pages** → **Create application** →
+   **Pages** → **Direct Upload** (NOT "Connect to Git" — CI does the
+   build and pushes the artifact via Wrangler).
+2. Project name: `wifihaven-staging`. Click **Create project**. Skip the
+   sample upload — the first real deploy comes from CI.
+3. Repeat for `wifihaven` (prod).
+
+For each project, **Custom domains** tab → **Set up a custom domain**:
+
+- `wifihaven` (prod): add `wifihaven.net` and `www.wifihaven.net`.
+- `wifihaven-staging`: add `staging.wifihaven.net`.
+
+Cloudflare auto-issues edge certs (DNS-01 challenge — no path
+interception). Verify the cert status flips to **Active** in the UI.
+
+Apex + `www` behavior: both serve the same bundle. If you want
+`www → apex` canonical redirect, add a Cloudflare Page Rule or a
+Bulk Redirect later. Optional.
+
+---
+
+## 4. Repo secrets
+
+CI needs two secrets to push to Pages:
+
+| Secret name              | Value                                                |
+|--------------------------|------------------------------------------------------|
+| `CLOUDFLARE_API_TOKEN`   | Cloudflare → My Profile → API Tokens → **Create Token** → custom token with scope `Account / Cloudflare Pages / Edit`. |
+| `CLOUDFLARE_ACCOUNT_ID`  | Cloudflare dash → any zone → right sidebar → Account ID. |
+
+Set both at https://github.com/wifihaven/wifihaven/settings/secrets/actions.
+
+---
+
+## 5. First deploy walkthrough
+
+After §1-§4 are done, the first SPA deploy fires on the next push to
+`main` (or trigger it manually via the **Deploy SPA (Cloudflare Pages)**
+workflow → **Run workflow**).
+
+1. CI runs `npm ci && VITE_API_BASE_URL=... npm run build` for each env.
+2. CI runs `wrangler pages deploy web/dist --project-name=<name>`.
+3. Cloudflare assigns a deployment URL like
+   `https://<hash>.wifihaven.pages.dev`, then aliases the configured
+   custom domains to the new deployment.
+
+Verify:
+
+```sh
+# Prod API + SPA
+curl -sS https://api.wifihaven.net/api/health
+curl -sS -o /dev/null -w "%{http_code}\n" https://wifihaven.net/
+curl -sS -o /dev/null -w "%{http_code}\n" https://www.wifihaven.net/
+
+# Staging API + SPA
+curl -sS https://api-staging.wifihaven.net/api/health
+curl -sS -o /dev/null -w "%{http_code}\n" https://staging.wifihaven.net/
+```
+
+All five should return 200. Inspect the prod SPA HTML (`view-source`) and
+search for `api.wifihaven.net` to confirm the right `VITE_API_BASE_URL`
+got baked in.
+
+Login flow end-to-end on staging exercises the CORS allowlist from #612.
+
+---
+
+## 6. SPA → API wiring (how it works)
+
+The Vite build bakes the API origin into the bundle at build time via
+`VITE_API_BASE_URL`, set per env by the CI workflow:
+
+- prod build  → `VITE_API_BASE_URL=https://api.wifihaven.net`
+- staging build → `VITE_API_BASE_URL=https://api-staging.wifihaven.net`
+
+The browser then makes cross-origin XHRs from the Cloudflare-served SPA
+to the Render-served API. CORS is required on the API for this to work —
+see `WIFIHAVEN_ALLOWED_ORIGINS` in `render.yaml` and the work in #612.
+
+`web/public/_redirects` ships with the bundle and tells Cloudflare Pages
+to rewrite any non-file path to `/index.html` (200, not 302), so React
+Router can take over client-side. Same Netlify-style syntax that Render
+used; works as the canonical config on Cloudflare instead of as a
+workaround.
+
+---
+
+## 7. Ongoing operations
+
+**Deploys.** Every push to `main` triggers
+`.github/workflows/deploy-spa.yml` which deploys staging then prod.
+Pushes serialize via a `concurrency` group so two quick pushes can't
+race the Wrangler upload. TODO(#588): wire prod behind the same
+staging-smoke gate as the API deploy.
+
+**Cert renewal.** Cloudflare auto-renews edge certs for all three Pages
+hostnames (DNS-01 — no path-interception class of bug). Render
+auto-renews Let's Encrypt for the two API hostnames. No operator action
+needed.
+
+**Rollback.** Cloudflare Pages → project → **Deployments** → pick a
+prior deployment → **Rollback to this deployment**. The custom domain
+aliases swap instantly.
+
+---
+
+## 8. Production Postgres — daily backup verification
+
+`wifihaven-pg-prod` is on the `basic-256mb` paid plan which includes
+daily backups. Verify after first apply:
+
+1. Render dashboard → **Databases** → `wifihaven-pg-prod`.
+2. **Backups** tab. Confirm a backup is shown (the first runs within
+   24 h of creation) and the schedule reads **Daily**.
+
+If the Backups tab shows no schedule, contact Render support — the
+`basic-256mb` plan should include daily backups by default. Do not run
+prod on the free PG tier (it expires after ~30 days).
+
+---
+
+## 9. Passwords — 1Password
+
+| Item name                              | What to store                                 |
+|----------------------------------------|-----------------------------------------------|
+| `WifiHaven — Prod Admin Password`      | Admin password set via `POST /auth/change-password` on first login to `https://api.wifihaven.net` |
+| `WifiHaven — Prod RO Postgres URL`     | `wifihaven_ro` connection string for `wifihaven-pg-prod` (see `docs/render-readonly-role.md`) |
+| `WifiHaven — Staging Admin Password`   | (already stored from #586; rotate if needed)   |
+| `WifiHaven — Staging RO Postgres URL`  | (already stored from #586; rotate if needed)   |
+| `WifiHaven — Cloudflare API Token`     | The token written to `CLOUDFLARE_API_TOKEN` (Pages:Edit scope) |
+
+**First admin login**: the prod API ships with default `admin/changeme`,
+force-expired on first login (#586). Open `https://wifihaven.net/` in a
+browser, log in, the UI redirects to `/account` to set a new password.
+Store it in 1Password immediately.
+
+---
+
+## 10. Set the `wifihaven_ro` role password (prod)
+
+Same as `docs/render-readonly-role.md`, but for `wifihaven-pg-prod`:
+
+1. Render dashboard → `wifihaven-pg-prod` → **PSQL Command**.
+2. Run:
+   ```sql
+   ALTER ROLE wifihaven_ro PASSWORD '<strong-random-password>';
+   ```
+3. Build the connection string (replace `user` with `wifihaven_ro`).
+4. Store in 1Password as `WifiHaven — Prod RO Postgres URL`.
+
+---
+
+## 11. Deferred items
+
+- **CI deploy hook for API** (#588): API redeploys still trigger from the
+  Render dashboard (or Render's git connection) until #588 lands. After
+  #588, prod SPA deploy gates on the same staging-smoke chain — see the
+  TODO in `.github/workflows/deploy-spa.yml`.
+- **Disable SPA serving on Render API** (#614): now that the SPA is on
+  Cloudflare, the JVM image's bundled SPA fallback is dead weight. Land
+  #614 to remove it.
+- **Region tuning** (#590): `oregon` is a placeholder — confirm the
+  Render region closest to the operator's physical location before
+  traffic goes live.
