@@ -52,14 +52,15 @@ jobs:
         with:
           filters: |
             scala:
+              # Narrowed: Scala job only compiles + tests Scala. Docker
+              # images, deploy scripts, and config/ (example file only) do
+              # not feed into compile or test, so they shouldn't trigger
+              # a ~minutes-long EmbeddedPostgres run.
               - '.github/workflows/ci.yml'
               - 'api/**'
               - 'shared/**'
               - 'build.mill'
               - '.scalafmt.conf'
-              - 'config/**'
-              - 'docker/**'
-              - 'deploy/**'
             frontend:
               - '.github/workflows/ci.yml'
               - 'web/**'
