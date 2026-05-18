@@ -120,7 +120,126 @@ allowed browsing, blocking, pause, schedule, time limits, usage reporting,
 unknown-device autocreation — follow [docs/manual-qa.md](manual-qa.md)
 with one connected device.
 
-## 4. (Optional) Auto-update
+## 4. Enrolling against the cloud API
+
+This section is for the **new main-house router** being brought up against the
+production cloud API (`https://api.wifihaven.net`) for the first time. It is
+not a migration or rollover guide — the existing OpenWRT box stays put as a
+dev router pointed at the local API (see [§4.1](#41-dev-vs-prod-router-pattern)
+and [#584](https://github.com/wifihaven/wifihaven/issues/584)).
+
+The enrollment flow is the same as the rest of this doc; the only difference
+is which `api_url` you point the router at and where you generate the
+enrollment token. The one-shot script in [§2](#2-install-with-the-one-shot-script-recommended)
+handles this if you answer the prompts with the cloud values below; the
+explicit steps here are useful if you'd rather run the manual UCI path or
+script the install into your own provisioning system.
+
+### Prereqs
+
+- An OpenWRT 23.05.x / 24.10+ router with the WifiHaven `.ipk` / `.apk`
+  installed (see [§M1](#m1-download-the-matching-package) and
+  [§M2](#m2-install)). The agent does **not** need to be started yet —
+  enrollment runs first.
+- Admin access to the cloud SPA at `https://wifihaven.net`. If the cloud
+  side isn't deployed yet, see [`deploy-cloud.md`](deploy-cloud.md).
+
+### Steps
+
+1. **SSH into the new router as root.**
+
+2. **Point the agent at the cloud API and set the LAN prefix.** Leave
+   `router_id` and `router_token` empty for now — they'll come from the
+   admin UI in the next step.
+
+   ```sh
+   uci set wifihaven.@wifihaven[0].api_url='https://api.wifihaven.net'
+   # Override only if the new router's LAN isn't 192.168.1.0/24:
+   # uci set wifihaven.@wifihaven[0].lan_prefix='10.0.0.'
+   uci commit wifihaven
+   ```
+
+   See the warning in [§M3](#m3-configure-the-api-url-and-lan-prefix) before
+   skipping the `lan_prefix` override — a wrong value silently mis-attributes
+   every flow.
+
+3. **Generate an enrollment token in the admin UI.** Open
+   `https://wifihaven.net` → **Routers → Add router**. Enter a display name
+   for the router (e.g. `main-house`) and submit. The UI returns a one-time
+   `enrollmentToken` (`et_…`); copy it.
+
+4. **Exchange the enrollment token for router credentials.** On the router:
+
+   ```sh
+   curl -s -X POST https://api.wifihaven.net/api/router/register \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "enrollmentToken": "et_<from-admin-ui>",
+       "platformVersion": "23.05.5",
+       "agentVersion":    "0.1.0"
+     }'
+   # → {"routerId":"<id>","routerToken":"rt_<token>"}
+   ```
+
+5. **Persist credentials and start the agent.**
+
+   ```sh
+   uci set wifihaven.@wifihaven[0].router_id='<id>'
+   uci set wifihaven.@wifihaven[0].router_token='rt_<token>'
+   uci commit wifihaven
+   /etc/init.d/wifihaven enable
+   /etc/init.d/wifihaven start
+   ```
+
+6. **Verify.** Tail the log:
+
+   ```sh
+   logread -f | grep wifihaven
+   ```
+
+   You should see `[wifihaven] policy snapshot fetched, etag=…` within ~60s.
+   Then check `https://wifihaven.net` → **Routers** — the new router should
+   appear with a recent `last_seen_at`. If you've never set up the local
+   block page on this router, also walk [§M6](#m6-set-up-the-local-block-page).
+
+### 4.1 Dev vs prod router pattern
+
+Two routers in the same operator's environment will run with different
+`api_url` values; this is by design and matches the topology in
+[#584](https://github.com/wifihaven/wifihaven/issues/584):
+
+| Role | `api_url` | Notes |
+|---|---|---|
+| Prod router (new main-house box) | `https://api.wifihaven.net` | Cloud-hosted API on Render; the SPA at `https://wifihaven.net` is what household admins use. |
+| Dev router (existing OpenWRT box) | `http://192.168.10.43:8080` | Points at the on-prem dev API behind the prod router. Used for shakeout and integration testing. |
+
+Each router enrolls independently against its own API — there is no shared
+state between the two installs, and the `routerToken` issued by one API
+is meaningless to the other.
+
+The UCI default at
+[`openwrt/files/etc/config/wifihaven`](../openwrt/files/etc/config/wifihaven)
+ships with `api_url='http://192.168.1.1:8080'`. That is intentionally the
+safe default for someone bringing up a fresh on-prem install on the LAN —
+cloud users override it per the steps above.
+
+### Common issues
+
+- **TLS / certificate errors on `/api/router/register`.** Almost always
+  router clock skew: a freshly flashed OpenWRT box can boot with
+  `1970-01-01` and reject the cloud cert. Confirm the router has reached
+  an NTP server (`date` should show the real date; check
+  `/etc/init.d/sysntpd status`) and retry.
+- **`register` returns 400 / "enrollment token expired or invalid".** The
+  token is single-use and short-lived — generate a fresh one in the admin
+  UI and re-run step 4.
+- **Policy poll returns 401 in `logread`.** The persisted `router_id` /
+  `router_token` doesn't match what the API has on file (typo, copied the
+  wrong pair, or the cloud DB was reset). Generate a new enrollment token
+  in the admin UI and re-run steps 3–5; the router will overwrite its
+  stored credentials.
+
+## 5. (Optional) Auto-update
 
 Routers running unattended should pull new agent releases automatically. The
 auto-update cron job is tracked in
