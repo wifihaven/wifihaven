@@ -46,6 +46,9 @@ services:
       WIFIHAVEN_HTTP_PORT: "8080"
       WIFIHAVEN_JWT_SECRET: ${WIFIHAVEN_JWT_SECRET:?WIFIHAVEN_JWT_SECRET required (>=32 chars)}
       WIFIHAVEN_JWT_HOURS: ${WIFIHAVEN_JWT_HOURS:-24}
+      # #612: comma-separated browser origins allowed to call this API. Leave
+      # empty for self-hosted single-origin installs (default). Never use "*".
+      WIFIHAVEN_ALLOWED_ORIGINS: ${WIFIHAVEN_ALLOWED_ORIGINS:-}
     ports:
       - "${WIFIHAVEN_API_BIND:-0.0.0.0}:${WIFIHAVEN_API_PORT:-8080}:8080"
     healthcheck:

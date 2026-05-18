@@ -9,6 +9,7 @@ case class AppConfig(
     db: DbConfig,
     http: HttpConfig,
     jwt: JwtConfig,
+    cors: CorsConfig,
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -36,6 +37,17 @@ case class JwtConfig(
     secret: String,
     expiryHours: Int,
 )
+
+// #612: cross-origin browser access for the split SPA.
+// `allowedOrigins` is a comma-separated list of full origins (scheme+host+
+// optional-port), matched exactly. Empty disables CORS entirely — the
+// self-hosted single-origin path stays header-clean. Never `*`.
+case class CorsConfig(
+    allowedOrigins: String,
+) {
+  val origins: List[String] =
+    allowedOrigins.split(",").iterator.map(_.trim).filter(_.nonEmpty).toList
+}
 
 object AppConfig {
   private[api] def envTruthy(v: Option[String]): Boolean =

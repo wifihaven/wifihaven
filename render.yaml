@@ -61,6 +61,9 @@ services:
       # endpoints on loopback). Keep explicitly empty in staging.
       - key: WIFIHAVEN_DEBUG
         value: ""
+      # #612: SPA on https://staging.wifihaven.net calls this API cross-origin.
+      - key: WIFIHAVEN_ALLOWED_ORIGINS
+        value: "https://staging.wifihaven.net"
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true
@@ -109,6 +112,9 @@ services:
       # Keep explicitly empty — debug endpoints must never run in prod.
       - key: WIFIHAVEN_DEBUG
         value: ""
+      # #612: SPA on https://wifihaven.net (apex + www) calls this API cross-origin.
+      - key: WIFIHAVEN_ALLOWED_ORIGINS
+        value: "https://wifihaven.net,https://www.wifihaven.net"
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true
