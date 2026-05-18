@@ -64,4 +64,7 @@ if [ "${WAIT_FOR_POSTGRES:-1}" = "1" ]; then
 fi
 
 cd /app
-exec java -Xms256m -Xmx512m -Dconfig.file=/app/config/application.conf -jar /app/api.jar
+# JVM_HEAP_OPTS lets the deploy env override heap sizing (e.g. Render Hobby's
+# ~512 MB cap needs -Xmx384m for OS + JIT + native headroom). Defaults match
+# the historical baseline for self-hosted compose installs.
+exec java ${JVM_HEAP_OPTS:--Xms256m -Xmx512m} -Dconfig.file=/app/config/application.conf -jar /app/api.jar

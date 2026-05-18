@@ -5,8 +5,10 @@
 # and `docs/deploy-cloud.md`. Do NOT add Static Site blocks back here — the
 # SPA hosting boundary is intentionally split.
 #
-# Region: `oregon` is a placeholder — operator should reconfirm the region
-# closest to the deployment before launch. Tuning is tracked in #590.
+# Region: `oregon` (us-west). Operator is on the US West Coast — Oregon is
+# the lowest-RTT US Render region. The OpenWRT agent polls every 5 s, so
+# region choice affects steady-state load on both ends. Revisit if the
+# operator relocates.
 #
 # Image tags (post-#588):
 #   - staging tracks `:staging` — moved by Master CD's build-image job on
@@ -29,8 +31,6 @@ services:
     runtime: image
     name: wifihaven-api-staging
     plan: free
-    # Reconfirm region before launch — pick the Render region closest to the
-    # operator's house. Tuning tracked in #590.
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
@@ -64,6 +64,10 @@ services:
           property: password
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
+      # #590: Render Hobby caps at ~512 MB. Leave headroom for OS + JIT +
+      # native heap; bump or move to `plan: pro` if OOM appears in logs.
+      - key: JVM_HEAP_OPTS
+        value: "-Xms256m -Xmx384m"
       # Staging runs DEBUG so issues are visible in the Render log stream.
       - key: WIFIHAVEN_LOG_LEVEL
         value: DEBUG
@@ -88,8 +92,6 @@ services:
     runtime: image
     name: wifihaven-api-prod
     plan: free
-    # Reconfirm region before launch — pick the Render region closest to the
-    # operator's house. Tuning tracked in #590.
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
@@ -124,6 +126,10 @@ services:
           property: password
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
+      # #590: Render Hobby caps at ~512 MB. Leave headroom for OS + JIT +
+      # native heap; bump or move to `plan: pro` if OOM appears in logs.
+      - key: JVM_HEAP_OPTS
+        value: "-Xms256m -Xmx384m"
       # Production uses INFO to avoid PII leakage in logs.
       # Resolves the TODO from #586 / PR #599.
       - key: WIFIHAVEN_LOG_LEVEL
