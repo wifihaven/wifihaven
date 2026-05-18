@@ -213,6 +213,53 @@ local function maybe_populate_eb(line)
   end
 end
 
+-- #544: backfill newly-declared eb_<sanhost> sets from the in-memory
+-- dns_log cache. The on-the-fly maybe_populate_eb() above only fires for
+-- replies *received after* the set exists. But sets appear out-of-band:
+-- render.lua rewrites the nft table whenever a profile gains an
+-- extraBlocked host, and the test_extra_blocked_is_per_profile_scoped
+-- scenario applies extraBlocked AFTER the client has already resolved the
+-- host (via fixture-time DNS warmup). Without a backfill, the eb_ set
+-- stays empty until the client re-resolves — which the per-profile test
+-- never triggers, because it asserts set population in isolation from any
+-- HTTP probe. Mirror the #523 shape: on each refresh cycle, diff the new
+-- eb_sanhosts vs the old; for every host that just appeared, sweep the
+-- dns_log cache for matching hostnames (subdomain semantics, same label
+-- walk as maybe_populate_eb) and emit nft add elements. v4 only — the
+-- dns_log cache stores parse_reply_line answers, which are v4 by design
+-- (#472 conntrack flows are v4); eb6_ continues to populate from live
+-- AAAA replies via maybe_populate_eb.
+local function backfill_eb_sets(new_eb4, old_eb4)
+  local newly = {}
+  for sanhost in pairs(new_eb4) do
+    if not old_eb4[sanhost] then newly[sanhost] = true end
+  end
+  if not next(newly) then return 0 end
+  local added = 0
+  cache.for_each_entry(function(ip, hostname, _ts)
+    if type(hostname) ~= "string" or hostname == "" then return end
+    local n = hostname
+    while n and n ~= "" do
+      local sanhost = sanitize_host(n)
+      if newly[sanhost] then
+        nft_add_element("eb_" .. sanhost, ip)
+        added = added + 1
+        log.debug("dns-tail: eb backfill eb_%s { %s } name=%s",
+                  sanhost, ip, hostname)
+        return
+      end
+      local dot = n:find("%.")
+      if not dot then return end
+      n = n:sub(dot + 1)
+    end
+  end)
+  if added > 0 then
+    log.info("dns-tail: eb backfill added %d element(s) across %d new set(s)",
+             added, (function() local c = 0; for _ in pairs(newly) do c = c + 1 end; return c end)())
+  end
+  return added
+end
+
 log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s)",
          (function() local n = 0; for _ in pairs(ip_to_mac) do n = n + 1 end; return n end)(),
          (function() local n = 0; for _ in pairs(bio_sanmacs) do n = n + 1 end; return n end)(),
@@ -268,7 +315,13 @@ while true do
     last_lease_refresh = now
   end
   if (now - last_bio_refresh) >= bio_refresh_seconds then
+    local prev_eb = eb_sanhosts
     bio_sanmacs, eb_sanhosts, eb6_sanhosts = refresh_nft_sets()
+    -- #544: any eb_<sanhost> that just appeared gets backfilled from the
+    -- in-memory reply cache so per-profile extraBlocked enforcement is hot
+    -- without waiting for the client to re-resolve.
+    local n = backfill_eb_sets(eb_sanhosts, prev_eb)
+    if n > 0 then eb_adds_total = eb_adds_total + n end
     last_bio_refresh = now
   end
 
