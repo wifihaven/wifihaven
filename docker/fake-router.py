@@ -215,14 +215,38 @@ def _post_events(router_id: str, router_token: str) -> None:
             "hostname": HOSTNAMES[0],
             "ts":       ts,
         },
+        # connection_attempt carries `host` as a HostId tagged union (#391), not
+        # the legacy `hostname` string. Cover all three on-wire shapes the real
+        # OpenWRT agent emits so e2e catches future drift:
+        #   1) DNS-attributed flow — host.type=fqdn
+        #   2) Unattributed flow (DoH / hard-coded IP) — host.type=ipv4
+        #   3) Block verdict echo — allowed=false, reason=blocked
         {
-            "type":     "connection_attempt",
-            "mac":      MACS[1],
-            "hostname": "youtube.com",
-            "destIp":   "142.250.80.14",
-            "allowed":  True,
-            "reason":   "allow",
-            "ts":       ts,
+            "type":    "connection_attempt",
+            "mac":     MACS[1],
+            "host":    {"type": "fqdn", "value": "youtube.com"},
+            "destIp":  "142.250.80.14",
+            "allowed": True,
+            "reason":  "allow",
+            "ts":      ts,
+        },
+        {
+            "type":    "connection_attempt",
+            "mac":     MACS[1],
+            "host":    {"type": "ipv4", "value": "203.0.113.7"},
+            "destIp":  "203.0.113.7",
+            "allowed": True,
+            "reason":  "allow",
+            "ts":      ts,
+        },
+        {
+            "type":    "connection_attempt",
+            "mac":     MACS[2],
+            "host":    {"type": "fqdn", "value": "ads.example.com"},
+            "destIp":  "198.51.100.42",
+            "allowed": False,
+            "reason":  "blocked",
+            "ts":      ts,
         },
     ]
     _post(

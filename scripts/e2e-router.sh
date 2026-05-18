@@ -157,7 +157,15 @@ print((d or {}).get('lastSeenIp') or '')
 pass "last_seen_ip=192.168.1.20"
 
 # ── 5. Events ingest ───────────────────────────────────────────────────────
-step "Events ingest (dhcp_lease + connection_attempt)"
+#
+# connection_attempt carries `host` as a HostId tagged union (#391). The real
+# OpenWRT agent (openwrt/files/usr/lib/lua/wifihaven/conntrack.lua build_event)
+# emits three on-wire shapes; each must round-trip 2xx so the next time the
+# wire contract drifts we catch it here instead of in production logs:
+#   1) host.type=fqdn  — DNS-attributed flow
+#   2) host.type=ipv4  — unattributed flow (DoH / hard-coded IP)
+#   3) allowed=false + reason=blocked — block-verdict echo (#456)
+step "Events ingest (dhcp_lease + connection_attempt × 3 shapes)"
 EVTS=$(cat <<EOF
 {
   "routerId": "$RID",
@@ -175,6 +183,24 @@ EVTS=$(cat <<EOF
       "allowed": true,
       "reason":  "allow",
       "ts":      "$NOW"
+    },
+    {
+      "type":    "connection_attempt",
+      "mac":     "$MAC",
+      "host":    {"type":"ipv4","value":"203.0.113.7"},
+      "destIp":  "203.0.113.7",
+      "allowed": true,
+      "reason":  "allow",
+      "ts":      "$NOW"
+    },
+    {
+      "type":    "connection_attempt",
+      "mac":     "$MAC",
+      "host":    {"type":"fqdn","value":"ads.example.com"},
+      "destIp":  "198.51.100.42",
+      "allowed": false,
+      "reason":  "blocked",
+      "ts":      "$NOW"
     }
   ]
 }
@@ -183,7 +209,34 @@ EOF
 curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
   -H 'content-type: application/json' \
   -d "$EVTS" >/dev/null
-pass "dhcp_lease + connection_attempt posted"
+pass "dhcp_lease + 3 connection_attempt shapes posted"
+
+# Reject the legacy bare-string `hostname` form so this regression cannot
+# silently come back — old agents writing `hostname` instead of `host` will
+# 400 now, not be silently dropped.
+LEGACY_EVTS=$(cat <<EOF
+{
+  "routerId": "$RID",
+  "events": [
+    {
+      "type": "connection_attempt",
+      "mac":  "$MAC",
+      "hostname": "youtube.com",
+      "destIp":   "142.250.80.14",
+      "allowed":  true,
+      "reason":   "allow",
+      "ts":       "$NOW"
+    }
+  ]
+}
+EOF
+)
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
+  -H 'content-type: application/json' -d "$LEGACY_EVTS")
+case "$CODE" in
+  4*) pass "legacy hostname-on-connection_attempt rejected ($CODE)" ;;
+  *)  fail "legacy hostname-on-connection_attempt unexpectedly accepted ($CODE)" ;;
+esac
 
 # ── 6. Paused profile reflected immediately in snapshot ───────────────────
 #
