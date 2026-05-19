@@ -70,7 +70,7 @@ jobs:
     name: bootstrap-host.sh smoke (Ubuntu container)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build + run bootstrap test image
         run: |
           docker build -f docker/bootstrap-test.Dockerfile -t wifihaven-bootstrap-test .
@@ -80,7 +80,7 @@ jobs:
     name: Live e2e against staging stack
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build + start staging stack
         run: |
@@ -107,7 +107,7 @@ jobs:
     name: deploy/docker-compose.prod.yml smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Run prod-stack smoke
         run: scripts/smoke-prod.sh
 
@@ -127,7 +127,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up QEMU (for linux/arm64 emulation)
         uses: docker/setup-qemu-action@v3
@@ -217,9 +217,9 @@ jobs:
     needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
@@ -337,7 +337,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Admin API smoke against staging
         env:
           E2E_BASE_URL: ${{ env.STAGING_API_URL }}
@@ -469,9 +469,9 @@ jobs:
     needs: [approve-production]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'

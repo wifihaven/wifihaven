@@ -12,7 +12,7 @@ on:
 env:
   MILL_VERSION: "1.1.5"
   # Opt into Node.js 24 now (forced default June 2026 anyway). Silences the
-  # Node 20 deprecation warnings emitted by actions/checkout@v4, setup-java@v4,
+  # Node 20 deprecation warnings emitted by actions/checkout@v6, setup-java@v4,
   # setup-node@v4, cache@v4, codeql-action@v4 etc.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -45,7 +45,7 @@ jobs:
             echo "all=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: github.event_name == 'pull_request'
 
       - uses: dorny/paths-filter@v3
@@ -132,16 +132,16 @@ jobs:
       WIFIHAVEN_JWT_SECRET: test-jwt-secret-for-ci-only
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: "21"
           distribution: "temurin"
 
       - name: Cache Mill / Coursier
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.mill
@@ -186,7 +186,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' && needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -205,7 +205,7 @@ jobs:
     if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Discover and run *.test.sh
         run: |
@@ -233,7 +233,7 @@ jobs:
     if: needs.changes.outputs.lua == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Lua + busted + lua-cjson
         run: |
@@ -267,16 +267,16 @@ jobs:
       WIFIHAVEN_JWT_SECRET: test-jwt-secret-for-ci-only
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: "21"
           distribution: "temurin"
 
       - name: Cache Mill / Coursier
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.mill
@@ -329,10 +329,10 @@ jobs:
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -372,7 +372,7 @@ jobs:
     if: needs.changes.outputs.render == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Parse render.yaml
         # Ruby ships preinstalled on ubuntu-latest. Catches YAML regressions
@@ -390,10 +390,10 @@ jobs:
         working-directory: web
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"

@@ -51,7 +51,7 @@ jobs:
       # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
       # left root-owned files under scripts/vm/.cache/imagebuilder/ (older
       # versions of the script only chowned bin/ and build_dir/ — see the
-      # broadened trap in this same change). actions/checkout@v4 cleans the
+      # broadened trap in this same change). actions/checkout@v6 cleans the
       # workspace and fails with EACCES on those files. The runner has no
       # NOPASSWD sudo (only /usr/sbin/ip per docs/ops/kvm-runner.md), so we
       # use docker — which runs as root — to chown the cache back to the
@@ -71,7 +71,7 @@ jobs:
             ' || true
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Preflight (kvm/qemu/docker)
         run: |
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-vm-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

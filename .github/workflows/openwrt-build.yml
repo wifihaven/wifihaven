@@ -40,7 +40,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Derive version
         id: ver
@@ -99,14 +99,14 @@ jobs:
           "$apk_bin" adbdump "$apk_file"
 
       - name: Upload .ipk artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wifihaven-ipk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
           path: openwrt/wifihaven_*.ipk
           if-no-files-found: error
 
       - name: Upload .apk artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wifihaven-apk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
           path: openwrt/wifihaven_*.apk
