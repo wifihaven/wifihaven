@@ -6,9 +6,17 @@
 #
 # Env:
 #   E2E_BASE_URL  default http://127.0.0.1:8080
+#   E2E_SPA_URL   default $E2E_BASE_URL — separate when SPA is on a different
+#                 host (post-#613: Cloudflare Pages serves the SPA, Render
+#                 serves the API). In-compose they coincide.
 set -euo pipefail
 
 BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
+# Post-SPA-split (#613) the API host no longer serves SPA fallback, so
+# `/blocked` 404s on api-staging.wifihaven.net. Point that check at the SPA
+# host explicitly; default to BASE so the in-compose stack (which serves
+# both API and SPA from the same port) keeps working unchanged.
+SPA_BASE="${E2E_SPA_URL:-$BASE}"
 # See scripts/e2e-tests.sh — fake-router rotates the seeded admin password on
 # first boot, so by the time this script runs the DB has the rotated value.
 # Against deployed staging (Gate 1 / #653) overridden from STAGING_ADMIN_PASS.
@@ -329,10 +337,12 @@ case "$SCHED_REASON" in
 esac
 
 # ── 8. /blocked page renders 200 for each reason ─────────────────────────
-step "GET /blocked — SPA renders 200 for each block reason"
+# Hits the SPA host (#613 split it from the API host). In-compose, SPA_BASE
+# defaults to BASE so the same docker-compose path keeps working unchanged.
+step "GET /blocked — SPA renders 200 for each block reason ($SPA_BASE)"
 for REASON in "paused" "time_limit" "schedule" "category:adult" "extra_blocked"; do
   CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-    "$BASE/blocked?mac=$MAC&host=youtube.com&reason=$REASON")
+    "$SPA_BASE/blocked?mac=$MAC&host=youtube.com&reason=$REASON")
   [ "$CODE" = "200" ] || fail "/blocked?reason=$REASON returned $CODE (expected 200)"
   pass "/blocked?reason=$REASON → 200"
 done

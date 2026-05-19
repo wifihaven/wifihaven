@@ -347,6 +347,9 @@ jobs:
       - name: Router API smoke against staging
         env:
           E2E_BASE_URL: ${{ env.STAGING_API_URL }}
+          # Post-#613 the SPA is on Cloudflare Pages, not the API host —
+          # so the `/blocked` SPA-route check has to hit the SPA host.
+          E2E_SPA_URL: https://staging.wifihaven.net
           ADMIN_PASS: ${{ secrets.STAGING_ADMIN_PASS }}
           RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
         run: scripts/e2e-router.sh
