@@ -139,7 +139,7 @@ execution is unprivileged:
 | `/dev/kvm` read/write | runner user is in the `kvm` group |
 | docker socket | runner user is in the `docker` group |
 | attach taps to `fdns-lan0` | `cap_net_admin` on `qemu-bridge-helper` (`setcap`) + `/etc/qemu/bridge.conf` allowlists the bridge |
-| `ip link add/set …` for the LAN bridge | NOPASSWD sudo rule in `/etc/sudoers.d/familydns-vm`, scoped to `/usr/sbin/ip` only |
+| `ip link add/set …` for the LAN bridge | NOPASSWD sudo rule in `/etc/sudoers.d/wifihaven-vm`, scoped to `/usr/sbin/ip` only |
 | outbound HTTPS to GitHub | none (standard outbound) |
 
 All of these are part of the one-time host bootstrap in

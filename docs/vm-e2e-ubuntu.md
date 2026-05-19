@@ -81,8 +81,8 @@ password each run. Grant a narrow `NOPASSWD` rule for `ip` only:
 ```bash
 sudo bash -c "
   echo '$USER ALL=(root) NOPASSWD: /usr/sbin/ip, /sbin/ip' \
-    > /etc/sudoers.d/familydns-vm
-  chmod 0440 /etc/sudoers.d/familydns-vm
+    > /etc/sudoers.d/wifihaven-vm
+  chmod 0440 /etc/sudoers.d/wifihaven-vm
 "
 ```
 
