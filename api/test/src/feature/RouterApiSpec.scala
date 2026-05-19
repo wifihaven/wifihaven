@@ -267,17 +267,17 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         ps      <- makePolicyService
         (_, et) <- seedRouter("gw")
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
-        regResp <- doRegister(routes, et)
-        regBody <- regResp.body.asString
-        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
-        r1      <- routes.runZIO(
+        regResp   <- doRegister(routes, et)
+        regBody   <- regResp.body.asString
+        reg       <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        r1        <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
-        b1      <- r1.body.asString
-        s1      <- ZIO.fromEither(b1.fromJson[PolicySnapshot])
-        r2      <- routes.runZIO(
+        b1        <- r1.body.asString
+        s1        <- ZIO.fromEither(b1.fromJson[PolicySnapshot])
+        r2        <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
@@ -286,7 +286,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         // #688: Render's proxy weakens the response ETag to W/"…" before it
         // reaches the agent, so the agent echoes back the weakened form. Per
         // RFC 7232 §2.3.2 If-None-Match uses weak comparison — must still 304.
-        rWeak   <- routes.runZIO(
+        rWeak     <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
@@ -300,20 +300,20 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
             .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk("W/" + s1.etag.value))),
         )
         // A different ETag must still 200.
-        rDiff   <- routes.runZIO(
+        rDiff     <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
             .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk("\"sha256:deadbeef\""))),
         )
-        _       <- pr.setPaused(kid, true)
-        r3      <- routes.runZIO(
+        _         <- pr.setPaused(kid, true)
+        r3        <- routes.runZIO(
           Request
             .get(URL.decode("/api/router/policy").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
         )
-        b3      <- r3.body.asString
-        s3      <- ZIO.fromEither(b3.fromJson[PolicySnapshot])
+        b3        <- r3.body.asString
+        s3        <- ZIO.fromEither(b3.fromJson[PolicySnapshot])
       } yield assertTrue(r1.status == Status.Ok) &&
         assertTrue(r2.status == Status.NotModified) &&
         assertTrue(rWeak.status == Status.NotModified) &&
@@ -461,7 +461,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         )
         body    <- ok.body.asString
         etag1 = ok.header(Header.ETag).map(_.renderedValue)
-        notMod <- routes.runZIO(
+        notMod     <- routes.runZIO(
           Request
             .get(URL.decode("/api/blocklists/test_ads").toOption.get)
             .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
