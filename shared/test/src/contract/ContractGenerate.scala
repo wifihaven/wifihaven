@@ -30,12 +30,15 @@ object ContractGenerate {
       n += 1
     }
     println(s"Wrote $n api-to-router fixture(s).")
-    // Force exit so the mill `runMain` subprocess returns 0 even if a
-    // transitive dependency leaves a non-daemon thread alive past main
-    // (#674). ContractGoldenSpec exercises the same codecs inside the test
-    // runner without issue, so the hang is specific to the forked
-    // `runMain` JVM's shutdown. TODO(#675): remove once root cause found.
-    System.exit(0)
+    Console.out.flush()
+    // Force-halt the JVM so the mill `runMain` subprocess returns 0
+    // (#674). `System.exit(0)` was insufficient on CI's Linux runner —
+    // the subprocess kept returning non-zero, meaning a shutdown hook
+    // (logback / zio / ServiceLoader cleanup) is throwing or
+    // exit-coding the JVM after `main` returns cleanly. `halt` skips
+    // shutdown hooks entirely and forces an immediate exit-0.
+    // TODO(#675): remove once the offending shutdown hook is identified.
+    Runtime.getRuntime.halt(0)
   }
 
   private def writeFile(path: Path, body: String): Unit = {
