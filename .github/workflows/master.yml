@@ -327,7 +327,11 @@ jobs:
   # publish-openwrt — Gate 2 (#654) owns the OpenWRT side.
   api-smoke-staging:
     name: Gate 1 — API contract smoke (staging)
-    needs: [smoke-staging]
+    # Runs in parallel with smoke-staging — both `needs: [deploy-staging]`,
+    # both feed approve-production. smoke-staging covers the SPA bundle +
+    # CORS plane; this job covers the admin + router API plane. Either
+    # going red still blocks prod via approve-production's `needs:`.
+    needs: [deploy-staging]
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
