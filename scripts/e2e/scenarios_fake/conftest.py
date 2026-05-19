@@ -99,7 +99,7 @@ class _FakeServer:
                 self._loop = loop
                 loop.run_until_complete(self._start_async(ready))
                 loop.run_forever()
-            except BaseException as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 err.append(e)
                 ready.set()
 

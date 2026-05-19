@@ -72,7 +72,6 @@ def test_pause_blocks_via_fake_api(router, client, fake_api):
         mac=mac,
         paused=False,
     )
-    last_id_before_initial = fake_api.latest_fetch_id()
     initial_etag = fake_api.serve_snapshot(initial)
 
     # 2. Wait for the agent to fetch + apply the initial snapshot.
