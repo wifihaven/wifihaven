@@ -25,7 +25,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Read pinned OpenWRT version
         id: ver
@@ -38,7 +38,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Cache Image Builder download
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: scripts/vm/.cache/downloads
           key: openwrt-ib-${{ steps.ver.outputs.openwrt_version }}-${{ steps.ver.outputs.tarball }}
@@ -56,7 +56,7 @@ jobs:
           file scripts/vm/.cache/openwrt-wifihaven.img
 
       - name: Upload image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: openwrt-wifihaven-${{ steps.ver.outputs.openwrt_version }}-${{ github.sha }}
           path: scripts/vm/.cache/openwrt-wifihaven.img
