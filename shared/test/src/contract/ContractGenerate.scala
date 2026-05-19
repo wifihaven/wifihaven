@@ -30,6 +30,12 @@ object ContractGenerate {
       n += 1
     }
     println(s"Wrote $n api-to-router fixture(s).")
+    // Force exit so the mill `runMain` subprocess returns 0 even if a
+    // transitive dependency leaves a non-daemon thread alive past main
+    // (#674). ContractGoldenSpec exercises the same codecs inside the test
+    // runner without issue, so the hang is specific to the forked
+    // `runMain` JVM's shutdown. TODO(#675): remove once root cause found.
+    System.exit(0)
   }
 
   private def writeFile(path: Path, body: String): Unit = {
