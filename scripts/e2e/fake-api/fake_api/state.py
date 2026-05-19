@@ -33,6 +33,15 @@ class UsageRecord:
 
 
 @dataclass
+class PolicyFetchRecord:
+    id: int
+    if_none_match: str | None
+    since_query: str | None
+    served_etag: str
+    status: int  # 200 or 304
+
+
+@dataclass
 class State:
     initial_snapshot: dict[str, Any]
     snapshot: dict[str, Any]
@@ -41,9 +50,11 @@ class State:
     registers: list[RegisterRecord] = field(default_factory=list)
     events: list[EventRecord] = field(default_factory=list)
     usage: list[UsageRecord] = field(default_factory=list)
+    policy_fetches: list[PolicyFetchRecord] = field(default_factory=list)
     clock_base: str | None = None
     _next_event_id: int = 1
     _next_usage_id: int = 1
+    _next_policy_fetch_id: int = 1
 
     @classmethod
     def fresh(cls) -> "State":
@@ -74,6 +85,27 @@ class State:
         self.events.append(EventRecord(id=rec_id, body=body))
         return rec_id
 
+    def record_policy_fetch(
+        self,
+        *,
+        if_none_match: str | None,
+        since_query: str | None,
+        served_etag: str,
+        status: int,
+    ) -> int:
+        rec_id = self._next_policy_fetch_id
+        self._next_policy_fetch_id += 1
+        self.policy_fetches.append(
+            PolicyFetchRecord(
+                id=rec_id,
+                if_none_match=if_none_match,
+                since_query=since_query,
+                served_etag=served_etag,
+                status=status,
+            )
+        )
+        return rec_id
+
     def record_usage(self, body: dict[str, Any]) -> int:
         rec_id = self._next_usage_id
         self._next_usage_id += 1
@@ -85,6 +117,8 @@ class State:
         self.registers.clear()
         self.events.clear()
         self.usage.clear()
+        self.policy_fetches.clear()
         self._next_event_id = 1
         self._next_usage_id = 1
+        self._next_policy_fetch_id = 1
         self.clock_base = None

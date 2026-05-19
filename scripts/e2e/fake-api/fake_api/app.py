@@ -59,13 +59,27 @@ async def get_policy(request: web.Request) -> web.Response:
         return unauth
     state: State = request.app[STATE_KEY]
     etag = state.etag
+    if_none_header = request.headers.get("If-None-Match")
+    since_query = request.query.get("since")
     # Header takes precedence over ?since= (matches the Scala route's
     # `.orElse(req.url.queryParam("since"))`).
-    if_none = request.headers.get("If-None-Match") or request.query.get("since")
+    if_none = if_none_header or since_query
     if if_none is not None and if_none == etag:
+        state.record_policy_fetch(
+            if_none_match=if_none_header,
+            since_query=since_query,
+            served_etag=etag,
+            status=304,
+        )
         resp = web.Response(status=304)
         resp.headers["ETag"] = etag
         return resp
+    state.record_policy_fetch(
+        if_none_match=if_none_header,
+        since_query=since_query,
+        served_etag=etag,
+        status=200,
+    )
     resp = web.json_response(state.snapshot)
     resp.headers["ETag"] = etag
     return resp
@@ -159,6 +173,38 @@ async def test_get_register(request: web.Request) -> web.Response:
     )
 
 
+async def test_get_policy_fetches(request: web.Request) -> web.Response:
+    """Return captured policy-fetch metadata.
+
+    Added by #683 so qemu scenarios can wait for "agent has fetched the
+    current snapshot's etag" without polling an admin API.
+    """
+    state: State = request.app[STATE_KEY]
+    since_id = request.query.get("since_id")
+    fetches = state.policy_fetches
+    if since_id is not None:
+        try:
+            cutoff = int(since_id)
+        except ValueError:
+            raise web.HTTPBadRequest(reason="since_id must be an integer")
+        fetches = [f for f in fetches if f.id > cutoff]
+    return web.json_response(
+        {
+            "count": len(state.policy_fetches),
+            "fetches": [
+                {
+                    "id": f.id,
+                    "ifNoneMatch": f.if_none_match,
+                    "sinceQuery": f.since_query,
+                    "servedEtag": f.served_etag,
+                    "status": f.status,
+                }
+                for f in fetches
+            ],
+        }
+    )
+
+
 async def test_post_reset(request: web.Request) -> web.Response:
     state: State = request.app[STATE_KEY]
     state.reset()
@@ -190,6 +236,7 @@ def make_app(state: State | None = None) -> web.Application:
     app.router.add_get("/test/events", test_get_events)
     app.router.add_get("/test/usage", test_get_usage)
     app.router.add_get("/test/register", test_get_register)
+    app.router.add_get("/test/policy_fetches", test_get_policy_fetches)
     app.router.add_post("/test/reset", test_post_reset)
     app.router.add_post("/test/clock", test_post_clock)
     return app
