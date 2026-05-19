@@ -8,14 +8,21 @@
 # thin wrapper that sets up the venv and shells out to pytest.
 #
 # Usage:
-#   scripts/e2e-vm.sh                            # run all scenarios
+#   scripts/e2e-vm.sh                            # run live-mode scenarios (default)
+#   scripts/e2e-vm.sh --mode=fake                # run fake-API mode scenarios (#683)
 #   scripts/e2e-vm.sh --only blocked-domain      # run a single scenario
 #   scripts/e2e-vm.sh --keep                     # leave VMs + stack up after run
 #   scripts/e2e-vm.sh -- -k allowed              # passthrough to pytest
 #
-# Environment overrides (read by conftest.py):
-#   E2E_VM_API_PORT         API stack host port (default 18080)
-#   E2E_VM_KEEP_STACK=1     don't tear down docker compose
+# Modes:
+#   live  (default) — boot docker-compose API stack, exercise live scenarios.
+#   fake            — boot in-process fake API shim, exercise fake-mode
+#                     scenarios under scripts/e2e/scenarios_fake/ (Gate 2).
+#
+# Environment overrides (read by conftest.py / conftest_fake.py):
+#   E2E_VM_API_PORT         API stack host port (default 18080; live mode)
+#   WH_FAKE_API_PORT        fake API host port (default 18090; fake mode)
+#   E2E_VM_KEEP_STACK=1     don't tear down docker compose (live mode)
 #   E2E_VM_KEEP=1           don't tear down VMs (router + clients)
 #   E2E_VM_SKIP_STACK=1     assume stack already up at $E2E_VM_API_PORT
 #   E2E_VM_SKIP_VMS=1       skip VM-dependent tests (CI sanity mode)
@@ -30,6 +37,7 @@ VENV_DIR="${REPO_ROOT}/.e2e-vm-venv"
 
 ONLY=""
 SMOKE=0
+MODE="live"
 PYTEST_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +47,10 @@ while [[ $# -gt 0 ]]; do
       ONLY="${1#--only=}"; shift ;;
     --smoke)
       SMOKE=1; shift ;;
+    --mode)
+      MODE="$2"; shift 2 ;;
+    --mode=*)
+      MODE="${1#--mode=}"; shift ;;
     --keep)
       export E2E_VM_KEEP=1 E2E_VM_KEEP_STACK=1; shift ;;
     --skip-vms)
@@ -53,6 +65,11 @@ while [[ $# -gt 0 ]]; do
       PYTEST_ARGS+=("$1"); shift ;;
   esac
 done
+
+case "${MODE}" in
+  live|fake) ;;
+  *) echo "unknown --mode: ${MODE} (valid: live, fake)" >&2; exit 2 ;;
+esac
 
 # --only <name> maps to pytest's marker selection. Supported names match the
 # markers defined in scripts/e2e/pytest.ini.
@@ -102,7 +119,7 @@ fi
 
 # ── prerequisite checks ──────────────────────────────────────────────────────
 
-if [[ "${E2E_VM_SKIP_STACK:-0}" != "1" ]]; then
+if [[ "${MODE}" == "live" && "${E2E_VM_SKIP_STACK:-0}" != "1" ]]; then
   command -v docker >/dev/null || { echo "docker not found" >&2; exit 1; }
 fi
 if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" ]]; then
@@ -123,6 +140,10 @@ fi
 cd "${E2E_DIR}"
 
 CMD=( "${VENV_DIR}/bin/pytest" )
+case "${MODE}" in
+  live) CMD+=( "scenarios" ) ;;
+  fake) CMD+=( "scenarios_fake" ) ;;
+esac
 if [[ -n "${MARK}" ]]; then
   CMD+=( -m "${MARK}" )
 fi

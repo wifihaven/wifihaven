@@ -12,6 +12,11 @@ set -e
 PASS=0; FAIL=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/install.sh"
+# #542: the uhttpd block-page wiring is now in a shared helper that both
+# install.sh (manual installer) and the package postinst (.ipk/.apk + the
+# OpenWRT Makefile) invoke, so they can't drift. Several greps below run
+# against the helper for that reason.
+UHTTPD_HELPER="$ROOT/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh"
 
 check() {
   if [ "$2" = "ok" ]; then
@@ -22,6 +27,7 @@ check() {
 }
 
 [ -f "$SCRIPT" ] || { printf "MISSING: %s\n" "$SCRIPT"; exit 1; }
+[ -f "$UHTTPD_HELPER" ] || { printf "MISSING: %s\n" "$UHTTPD_HELPER"; exit 1; }
 
 # #287: confdir must be set so dnsmasq actually loads
 # /tmp/dnsmasq.d/wifihaven.conf (the agent's rendered profile/NXDOMAIN config).
@@ -83,40 +89,64 @@ grep -qE "Router name|router_name|routerName" "$SCRIPT" \
            "install.sh still references router-name input" \
   || check "install.sh does not prompt for router name" ok
 
-# #303: block-page uhttpd listener must have home=/www/wifihaven (not /www).
-# When nft prerouting DNAT redirects http://<anything>/ to 127.0.0.1:8081,
-# uhttpd serves home/index.html — with home=/www that's the LuCI redirect
-# page, not the block page (which lives at /www/wifihaven/index.html).
-grep -q "home=/www/wifihaven" "$SCRIPT" \
+# #303 + #437 + #542: block-page uhttpd UCI lives in the shared helper.
+# install.sh must invoke it (not inline the UCI calls — that was #542's
+# drift bug between install.sh and the package postinst).
+
+grep -q "setup-uhttpd-block-page.sh" "$SCRIPT" \
+  && check "install.sh invokes setup-uhttpd-block-page.sh helper" ok \
+  || check "install.sh invokes setup-uhttpd-block-page.sh helper" \
+           "install.sh no longer wires uhttpd directly; must call the helper"
+
+# Helper itself must wire the right values. These were the inline asserts
+# pre-#542; they live on the helper now.
+grep -q "home=/www/wifihaven" "$UHTTPD_HELPER" \
   && check "block-page uhttpd home is /www/wifihaven" ok \
   || check "block-page uhttpd home is /www/wifihaven" "expected home=/www/wifihaven"
 
-# #303: the installer must not leave a bare home=/www behind. Use a regex
-# that excludes /www/<anything> so home=/www/wifihaven doesn't match.
-if grep -Eq "home=/www([^/a-z]|\$)" "$SCRIPT"; then
-  check "no leftover home=/www in block-page section" "found bare home=/www"
+if grep -Eq "home=/www([^/a-z]|\$)" "$UHTTPD_HELPER"; then
+  check "no leftover home=/www in helper" "found bare home=/www"
 else
-  check "no leftover home=/www in block-page section" ok
+  check "no leftover home=/www in helper" ok
 fi
 
-# #303: installer must idempotently fix an existing listener whose home is
-# still the pre-#303 value (uci set + commit + uhttpd reload on upgrade).
-grep -q "Updating block-page uhttpd home" "$SCRIPT" \
-  && check "upgrades existing block-page listener to new home" ok \
-  || check "upgrades existing block-page listener to new home" "missing upgrade path"
+grep -q "updating block-page uhttpd home" "$UHTTPD_HELPER" \
+  && check "helper has upgrade path for existing block-page listener" ok \
+  || check "helper has upgrade path for existing block-page listener" \
+           "missing upgrade path"
 
-# #437: the block-page listener must dispatch every request through the lua
-# handler (uhttpd-mod-lua) so the page can resolve the requesting device's
-# MAC and render reason-specific copy. Without these UCI options the
-# pre-#437 static index.html (now removed) would be served as a 404.
-grep -q "lua_prefix=" "$SCRIPT" \
-  && check "configures lua_prefix on block-page listener" ok \
-  || check "configures lua_prefix on block-page listener" "missing lua_prefix"
+grep -q "lua_prefix=" "$UHTTPD_HELPER" \
+  && check "helper configures lua_prefix on block-page listener" ok \
+  || check "helper configures lua_prefix on block-page listener" "missing lua_prefix"
 
-grep -q "/www/wifihaven/handler.lua" "$SCRIPT" \
-  && check "configures lua_handler pointing at /www/wifihaven/handler.lua" ok \
-  || check "configures lua_handler pointing at /www/wifihaven/handler.lua" \
+grep -q "/www/wifihaven/handler.lua" "$UHTTPD_HELPER" \
+  && check "helper configures lua_handler pointing at handler.lua" ok \
+  || check "helper configures lua_handler pointing at handler.lua" \
            "missing lua_handler wiring"
+
+# #542: the uci-defaults stub runs the helper at first boot. uci-defaults
+# is the right idiom for postinst-style work that needs the live system
+# (procd, running uhttpd, mounted /etc/config) — postinst itself fires at
+# offline-install time when none of those exist. /etc/init.d/done runs
+# every file in /etc/uci-defaults/ at first boot and deletes any that
+# exit zero.
+UHTTPD_DEFAULTS_STUB="$ROOT/files/etc/uci-defaults/95-wifihaven-uhttpd"
+[ -f "$UHTTPD_DEFAULTS_STUB" ] \
+  && check "/etc/uci-defaults/95-wifihaven-uhttpd shipped in package" ok \
+  || check "/etc/uci-defaults/95-wifihaven-uhttpd shipped in package" \
+           "missing first-boot trigger for uhttpd block-page setup"
+
+grep -q "setup-uhttpd-block-page.sh" "$UHTTPD_DEFAULTS_STUB" \
+  && check "uci-defaults stub invokes setup-uhttpd-block-page.sh" ok \
+  || check "uci-defaults stub invokes setup-uhttpd-block-page.sh" \
+           "stub doesn't call the helper"
+
+# Makefile must ship the uci-defaults stub so Image-Builder-installed routers
+# pick it up at first boot.
+grep -q "95-wifihaven-uhttpd" "$ROOT/Makefile" \
+  && check "Makefile installs the uci-defaults stub" ok \
+  || check "Makefile installs the uci-defaults stub" \
+           "Package/wifihaven/install doesn't ship 95-wifihaven-uhttpd"
 
 # #437: the new handler ships at this path; ensure the file exists in tree.
 [ -f "$ROOT/files/www/wifihaven/handler.lua" ] \

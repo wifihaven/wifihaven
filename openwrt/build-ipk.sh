@@ -42,6 +42,8 @@ cat > "$WORK/ctrl/postinst" <<'POSTINST'
 # before fw4.
 /etc/init.d/wifihaven-boot enable
 /etc/init.d/wifihaven-boot start 2>/dev/null || true
+# #542: uhttpd block-page wire-up runs at first boot from
+# /etc/uci-defaults/95-wifihaven-uhttpd (shipped in data/).
 # Install cron entry for the auto-updater (daily, 04:00 router-local).
 # Replace any existing wifihaven-update entry so upgrades migrate the
 # cadence — older packages installed it at "0 */6 * * *".
