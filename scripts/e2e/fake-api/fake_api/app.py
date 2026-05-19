@@ -1,0 +1,195 @@
+"""aiohttp application factory for the fake WifiHaven router API.
+
+Production-shaped endpoints (`/api/router/*`) mirror the surface that the
+OpenWRT lua agent (`openwrt/files/usr/lib/lua/wifihaven/policy.lua`, etc.)
+hits against the real Scala API (`api/src/routes/RouterRoutes.scala`).
+Test-control endpoints (`/test/*`) let pytest scenarios drive the fake.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+from aiohttp import web
+
+from .state import State
+
+STATE_KEY = web.AppKey("state", State)
+
+
+def _bearer_token(request: web.Request) -> str | None:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    tok = auth[len("Bearer ") :].strip()
+    return tok or None
+
+
+def _require_bearer(request: web.Request) -> web.Response | None:
+    if _bearer_token(request) is None:
+        return web.json_response(
+            {"error": "Missing router token"}, status=401
+        )
+    return None
+
+
+async def _read_json(request: web.Request) -> dict[str, Any]:
+    try:
+        return await request.json()
+    except Exception as e:  # noqa: BLE001
+        raise web.HTTPBadRequest(reason=f"invalid JSON: {e}")
+
+
+# --- Production endpoints ----------------------------------------------------
+
+
+async def post_register(request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    state: State = request.app[STATE_KEY]
+    state.record_register(body=body, headers=dict(request.headers))
+    return web.json_response(
+        {"routerId": state.router_id, "routerToken": state.router_token}
+    )
+
+
+async def get_policy(request: web.Request) -> web.Response:
+    unauth = _require_bearer(request)
+    if unauth is not None:
+        return unauth
+    state: State = request.app[STATE_KEY]
+    etag = state.etag
+    # Header takes precedence over ?since= (matches the Scala route's
+    # `.orElse(req.url.queryParam("since"))`).
+    if_none = request.headers.get("If-None-Match") or request.query.get("since")
+    if if_none is not None and if_none == etag:
+        resp = web.Response(status=304)
+        resp.headers["ETag"] = etag
+        return resp
+    resp = web.json_response(state.snapshot)
+    resp.headers["ETag"] = etag
+    return resp
+
+
+async def post_events(request: web.Request) -> web.Response:
+    unauth = _require_bearer(request)
+    if unauth is not None:
+        return unauth
+    body = await _read_json(request)
+    state: State = request.app[STATE_KEY]
+    state.record_event_batch(body)
+    return web.json_response({"ok": True})
+
+
+async def post_usage(request: web.Request) -> web.Response:
+    unauth = _require_bearer(request)
+    if unauth is not None:
+        return unauth
+    body = await _read_json(request)
+    state: State = request.app[STATE_KEY]
+    state.record_usage(body)
+    return web.json_response({"ok": True})
+
+
+# --- Test-control endpoints --------------------------------------------------
+
+
+async def test_post_snapshot(request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    state: State = request.app[STATE_KEY]
+    state.replace_snapshot(body)
+    return web.json_response({"ok": True, "etag": state.etag})
+
+
+async def test_get_events(request: web.Request) -> web.Response:
+    state: State = request.app[STATE_KEY]
+    since_id = request.query.get("since_id")
+    mac = request.query.get("mac")
+
+    batches = state.events
+    if since_id is not None:
+        try:
+            cutoff = int(since_id)
+        except ValueError:
+            raise web.HTTPBadRequest(reason="since_id must be an integer")
+        batches = [b for b in batches if b.id > cutoff]
+
+    flat: list[dict[str, Any]] = []
+    for b in batches:
+        for ev in b.body.get("events", []) or []:
+            ev_copy = copy.deepcopy(ev)
+            ev_copy["_batchId"] = b.id
+            flat.append(ev_copy)
+    if mac is not None:
+        flat = [e for e in flat if e.get("mac") == mac]
+
+    return web.json_response(
+        {
+            "batches": [{"id": b.id, "body": b.body} for b in batches],
+            "events": flat,
+        }
+    )
+
+
+async def test_get_usage(request: web.Request) -> web.Response:
+    state: State = request.app[STATE_KEY]
+    since_id = request.query.get("since_id")
+    reports = state.usage
+    if since_id is not None:
+        try:
+            cutoff = int(since_id)
+        except ValueError:
+            raise web.HTTPBadRequest(reason="since_id must be an integer")
+        reports = [r for r in reports if r.id > cutoff]
+    return web.json_response(
+        {"reports": [{"id": r.id, "body": r.body} for r in reports]}
+    )
+
+
+async def test_get_register(request: web.Request) -> web.Response:
+    state: State = request.app[STATE_KEY]
+    return web.json_response(
+        {
+            "routerId": state.router_id,
+            "routerToken": state.router_token,
+            "requests": [
+                {"body": r.body, "headers": r.headers} for r in state.registers
+            ],
+        }
+    )
+
+
+async def test_post_reset(request: web.Request) -> web.Response:
+    state: State = request.app[STATE_KEY]
+    state.reset()
+    return web.json_response({"ok": True, "etag": state.etag})
+
+
+async def test_post_clock(request: web.Request) -> web.Response:
+    # Cosmetic per the #654 roll-up: stamps `generatedAt` on snapshots
+    # loaded after this call. Not load-bearing for v1 since /test/snapshot
+    # is the primary control surface and callers can stamp generatedAt
+    # themselves in the body they POST.
+    body = await _read_json(request)
+    state: State = request.app[STATE_KEY]
+    state.clock_base = body.get("now")
+    return web.json_response({"ok": True, "now": state.clock_base})
+
+
+# --- App factory -------------------------------------------------------------
+
+
+def make_app(state: State | None = None) -> web.Application:
+    app = web.Application()
+    app[STATE_KEY] = state if state is not None else State.fresh()
+    app.router.add_post("/api/router/register", post_register)
+    app.router.add_get("/api/router/policy", get_policy)
+    app.router.add_post("/api/router/events", post_events)
+    app.router.add_post("/api/router/usage", post_usage)
+    app.router.add_post("/test/snapshot", test_post_snapshot)
+    app.router.add_get("/test/events", test_get_events)
+    app.router.add_get("/test/usage", test_get_usage)
+    app.router.add_get("/test/register", test_get_register)
+    app.router.add_post("/test/reset", test_post_reset)
+    app.router.add_post("/test/clock", test_post_clock)
+    return app
