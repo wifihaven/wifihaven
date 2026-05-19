@@ -34,6 +34,7 @@ jobs:
       render: ${{ steps.filter.outputs.render || steps.force.outputs.all }}
       migrations: ${{ steps.filter.outputs.migrations || steps.force.outputs.all }}
       contract: ${{ steps.filter.outputs.contract || steps.force.outputs.all }}
+      fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for non-PR triggers
         id: force
@@ -99,6 +100,14 @@ jobs:
             python:
               - '.github/workflows/ci.yml'
               - 'opnsense/**'
+            # Gate-2 (#654) fake API shim. Separate from `python:` so a
+            # pure opnsense tweak doesn't run the aiohttp suite (and vice
+            # versa). Also tracks the contract golden the fake loads as
+            # its initial snapshot — a fixture regen should re-run these.
+            fake-api:
+              - '.github/workflows/ci.yml'
+              - 'scripts/e2e/fake-api/**'
+              - 'shared/contract/api-to-router/policy_snapshot.json'
             shell:
               - '.github/workflows/ci.yml'
               - 'deploy/**/*.sh'
@@ -334,6 +343,28 @@ jobs:
         working-directory: opnsense
         run: python -m pytest test/ -v
 
+  # ── Gate-2 fake API shim: aiohttp service unit tests (#682) ─────────────
+  fake-api-tests:
+    name: Fake API Shim Tests
+    needs: changes
+    if: needs.changes.outputs.fake-api == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fake-api + test deps
+        working-directory: scripts/e2e/fake-api
+        run: pip install -e '.[test]'
+
+      - name: Run pytest
+        working-directory: scripts/e2e/fake-api
+        run: pytest -v
+
   # ── render.yaml: YAML parse check ───────────────────────────────────────
   render-blueprint:
     name: Render Blueprint Lint
@@ -399,6 +430,7 @@ jobs:
       - lua-tests
       - contract-tests
       - python-tests
+      - fake-api-tests
       - render-blueprint
       - frontend
     runs-on: ubuntu-latest
