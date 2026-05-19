@@ -7,7 +7,7 @@ the other side's production parser:
 
 | Directory | Producer (authoritative) | Consumer (asserts shape) |
 | --- | --- | --- |
-| `api-to-router/` | API zio-json codecs (`shared/src/Models.scala`) via `ContractGenerate.scala` | `openwrt/test/contract_spec.lua` via `luci.jsonc` + `render.lua` |
+| `api-to-router/` | API zio-json codecs (`shared/src/Models.scala`) via `ContractGoldenSpec` in regenerate mode (`WIFIHAVEN_REGEN_CONTRACT=1`) | `openwrt/test/contract_spec.lua` via `luci.jsonc` + `render.lua` |
 | `router-to-api/` | OpenWRT agent's production POST-body builders (`conntrack.build_event`, `conntrack.build_first_seen_mac_event`, `conntrack.build_dhcp_lease_event`, `usage.build_report`) via `openwrt/test/contract_gen.lua` | `shared/test/src/contract/ContractGoldenSpec.scala` via the production decoder |
 
 The two producers are deliberately split: an API-generated router→api fixture
@@ -44,8 +44,9 @@ After an intentional codec change on either side:
 
 That runs both generators:
 
-* `mill shared.test.runMain wifihaven.shared.contract.ContractGenerate` —
-  writes `api-to-router/*.json` from Scala values.
+* `WIFIHAVEN_REGEN_CONTRACT=1 mill shared.test.testOnly wifihaven.shared.contract.ContractGoldenSpec`
+  — writes `api-to-router/*.json` from Scala values. (The env var flips
+  `assertGoldenMatches` from comparison to write-through.)
 * `lua openwrt/test/contract_gen.lua` — writes `router-to-api/*.json` by
   calling the agent's production POST-body builders directly.
 

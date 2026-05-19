@@ -4,9 +4,13 @@
 # Two producers, two directions:
 #
 #   * api-to-router/*.json  — produced by the API's zio-json codecs via
-#     the Scala main `wifihaven.shared.contract.ContractGenerate`. Drift
-#     in Models.scala flips the diff; the lua consumer (openwrt/test/
-#     contract_spec.lua) then catches stale-schema breakage.
+#     `ContractGoldenSpec` run in regenerate mode
+#     (`WIFIHAVEN_REGEN_CONTRACT=1`). Drift in Models.scala flips the
+#     diff; the lua consumer (openwrt/test/contract_spec.lua) then
+#     catches stale-schema breakage. (We use the test runner rather
+#     than a `runMain` main because mill's runMain forked-JVM exits
+#     non-zero on Linux CI after `main` returns — #674. The test
+#     runner exits cleanly on the same classpath.)
 #
 #   * router-to-api/*.json  — produced by the OpenWRT agent's OWN
 #     production POST-body builders (conntrack.build_event,
@@ -23,7 +27,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "→ api-to-router (Scala codec generator)"
-mill shared.test.runMain wifihaven.shared.contract.ContractGenerate "$@"
+WIFIHAVEN_REGEN_CONTRACT=1 \
+  mill shared.test.testOnly wifihaven.shared.contract.ContractGoldenSpec "$@"
 
 echo "→ router-to-api (lua agent generator)"
 (
