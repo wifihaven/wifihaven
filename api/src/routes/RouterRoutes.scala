@@ -61,7 +61,7 @@ object RouterRoutes {
             _ <- routerRepo
               .touch(router.id, Some(snap.etag))
               .mapError(ErrorMapper.dbErrorToResponse)
-            notMod = ifNoneMatch.contains(snap.etag.value)
+            notMod = ifNoneMatch.exists(etagWeakEquals(_, snap.etag.value))
             // #481: 200s (etag changed) are diagnostic gold for snapshot-propagation
             // failures — log them at INFO so they survive the default log level.
             // 304s stay at DEBUG to keep the steady-state poll cadence quiet.
@@ -97,7 +97,7 @@ object RouterRoutes {
                 _ => Response.notFound(s"unknown blocklist: $id"),
                 { case (etag, body) =>
                   val ifNone = req.header(Header.IfNoneMatch).map(_.renderedValue)
-                  if ifNone.contains(etag.value) then
+                  if ifNone.exists(etagWeakEquals(_, etag.value)) then
                     Response
                       .status(Status.NotModified)
                       .addHeader(Header.ETag.Strong(stripQuotes(etag.value)))
@@ -143,6 +143,15 @@ object RouterRoutes {
 
   private def stripQuotes(s: String): String =
     if s.startsWith("\"") && s.endsWith("\"") then s.drop(1).dropRight(1) else s
+
+  // RFC 7232 §2.3.2: If-None-Match uses weak comparison; W/"x" matches "x".
+  // Render weakens our outgoing ETag to W/"..." (#688), so the client echoes
+  // back the weakened form, which won't string-equal what we stored.
+  private def etagWeakEquals(a: String, b: String): Boolean =
+    stripWeakPrefix(a) == stripWeakPrefix(b)
+
+  private def stripWeakPrefix(s: String): String =
+    if s.startsWith("W/") then s.drop(2) else s
 
   private def newToken(prefix: String): String = {
     val bytes = new Array[Byte](32)
