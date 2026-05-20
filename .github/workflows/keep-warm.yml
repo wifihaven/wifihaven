@@ -1,0 +1,28 @@
+name: Keep environments warm
+
+on:
+  schedule:
+    # Offset cron avoids the "top of every 10 min" stampede on GHA shared
+    # runners — :00/:10/:20/... are the most-contested and most-frequently-
+    # dropped slots. Offsetting trades a tiny bit of phase for substantially
+    # more reliable firing. Still well under the 15-min Hobby idle-suspend
+    # threshold.
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping ${{ matrix.env }} health endpoint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: staging
+            url: https://api-staging.wifihaven.net/api/health
+          - env: prod
+            url: https://api.wifihaven.net/api/health
+    steps:
+      - name: Hit ${{ matrix.env }} health endpoint
+        run: |
+          curl -fsS --max-time 30 ${{ matrix.url }}

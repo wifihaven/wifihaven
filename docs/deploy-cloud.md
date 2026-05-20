@@ -89,6 +89,16 @@ Add Render's CNAME targets to Cloudflare DNS for `api` and `api-staging`
 exact target. Render issues Let's Encrypt certs automatically once DNS
 resolves.
 
+> The default `wifihaven-api-{staging,prod}.onrender.com` URLs are
+> **not** a supported endpoint and are being disabled at the Render
+> level (Settings → Custom Domains → *Block public access to onrender
+> subdomain*). The custom domain is the only entry point — clients,
+> health checks, and ops tooling should hit `api.wifihaven.net` /
+> `api-staging.wifihaven.net`. The CNAME targets in
+> `infra/cloudflare/terraform.tfvars` still reference the onrender
+> hostname because Render routes by Host header; blocking direct
+> public access to `*.onrender.com` does not affect CNAME routing.
+
 ---
 
 ## 3. Apply the Cloudflare Terraform
