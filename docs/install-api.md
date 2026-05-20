@@ -100,6 +100,77 @@ and §8 (firewall).
 
 ---
 
+## Wiping and reinstalling from scratch
+
+`install.sh` is a first-install tool: it refuses to run against a host
+that already has WifiHaven on it (see the "Re-running it…" note above —
+that path keeps your data). If you instead want to start over with a
+clean database, you have to tear the old install down first. Reasons
+operators do this:
+
+- **Dev or pre-prod validation.** You want to rehearse the install flow
+  end-to-end against a host that's already been provisioned once.
+- **Irrecoverable schema or data corruption.** Restoring from a backup
+  isn't an option and you'd rather start clean than dig.
+- **Secrets rotation that needs a fresh DB.** The `WIFIHAVEN_DB_PASSWORD`
+  and `WIFIHAVEN_JWT_SECRET` in `.env` are paired to the existing pgdata
+  volume; you can't rotate them in place without re-encrypting / reseeding
+  Postgres. A wipe is the simplest way.
+
+> ⚠  **This permanently destroys every household profile, every device,
+> the full query and connection-event history, the admin user, and any
+> other admin/parent accounts you've created. There is no undo.** Take a
+> `pg_dump` first (see §10) if there's any chance you'll want the data
+> back.
+
+Why `install.sh` insists on a clean slate rather than reusing the volume:
+re-running the installer regenerates a new `WIFIHAVEN_DB_PASSWORD` and
+`WIFIHAVEN_JWT_SECRET`, and those wouldn't match the credentials baked
+into the existing `pgdata` volume — the API would fail to authenticate to
+Postgres on startup, and every previously-issued session token would be
+invalid. Refusing is correct behavior, not a bug to work around.
+
+### Recipe
+
+These commands run from the host where the API stack is installed.
+Substitute your install dir for `$HOME/.wifihaven` if you set
+`WIFIHAVEN_PREFIX` to something else (e.g. `/opt/wifihaven` on a
+system-wide install — in that case prefix the commands with `sudo`).
+
+```sh
+cd "$HOME/.wifihaven"
+./stop.sh -v          # docker compose down -v — stops containers AND removes the pgdata volume
+rm .env               # let the installer regenerate fresh credentials
+```
+
+Then re-run the same one-liner you used for the first install (or
+`bash install.sh` from the install dir if you have a local copy):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh | bash
+```
+
+After it comes back up, the seeded admin account is `admin / changeme`
+again — rotate it the same way you did on first install (§6).
+
+### If the installer complains about a leftover pgdata volume
+
+If you removed `.env` but the `pgdata` volume is still around — most
+commonly because a previous install aborted partway through, or because
+`.env` was deleted by hand without `stop.sh -v` — the installer will
+refuse with a different message naming the volume (e.g.
+`wifihaven_pgdata`). The fix is the same shape: confirm the volume has
+nothing you want to keep, then remove it and re-run.
+
+```sh
+docker volume inspect wifihaven_pgdata     # confirm what's in it
+docker volume rm wifihaven_pgdata          # PERMANENTLY DELETES the data
+```
+
+Same warning applies — there is no undo.
+
+---
+
 ## 1. Prerequisites
 
 - A Linux host (any distro). A small VPS, a home server, or a cloud VM all
