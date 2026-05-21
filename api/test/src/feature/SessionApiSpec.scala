@@ -46,8 +46,19 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         .addHeader(Header.Authorization.Bearer(token)),
     )
 
-  // Recent base time so default `hours=24` filter includes seeded rows.
-  private def baseInstant = Instant.now().minusSeconds(2 * 3600)
+  // Recent base time so default `hours=24` filter includes seeded rows. The stitching layer
+  // intentionally splits sessions at midnight UTC to align with the daily `time_usage` bucket
+  // (see Sessions.scala and SessionsSpec "sessions split at midnight (UTC)…"). To keep this
+  // feature spec testing contiguity rather than the date boundary, snap the base time backward
+  // when `now - 2h` plus the longest cross-row span any test uses would cross midnight UTC.
+  private val MaxTestSpanSeconds = 6 * 3600L
+  private def baseInstant: Instant = {
+    val raw    = Instant.now().minusSeconds(2 * 3600)
+    val rawDay = raw.atZone(ZoneOffset.UTC).toLocalDate
+    val endDay = raw.plusSeconds(MaxTestSpanSeconds).atZone(ZoneOffset.UTC).toLocalDate
+    if (rawDay == endDay) raw
+    else rawDay.atTime(23, 59).toInstant(ZoneOffset.UTC).minusSeconds(MaxTestSpanSeconds)
+  }
 
   private def insertReport(
       routerId: RouterId,
@@ -95,6 +106,14 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kid      <- pr.create("Kids", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
         t0 = baseInstant
+        // Sanity: this case asserts contiguity stitching, NOT date-boundary behavior.
+        // Both rows must land on the same UTC day (see baseInstant doc) — otherwise the
+        // stitcher will (correctly) split them and the assertions below would fail.
+        _  = {
+          val d0 = t0.atZone(ZoneOffset.UTC).toLocalDate
+          val d1 = t0.plusSeconds(540).atZone(ZoneOffset.UTC).toLocalDate
+          assert(d0 == d1, s"baseInstant must not straddle midnight UTC: $d0 vs $d1")
+        }
         _ <- insertReport(routerId, mac1, "youtube.com", t0, activeSeconds = 300)
         _ <- insertReport(routerId, mac1, "youtube.com", t0.plusSeconds(300), activeSeconds = 240)
         auth  <- makeAuth
