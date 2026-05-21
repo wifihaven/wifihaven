@@ -109,6 +109,29 @@ jobs:
           chmod +x openwrt/build-apk.sh
           openwrt/build-apk.sh
 
+      - name: Build luci-app-wifihaven .apk
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+          PKG_RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          chmod +x openwrt/luci/build-apk.sh
+          openwrt/luci/build-apk.sh
+
+      - name: Verify luci-app-wifihaven .apk contents
+        run: |
+          apk_file=$(ls openwrt/luci/luci-app-wifihaven_*.apk)
+          apk_bin="$HOME/.cache/wifihaven-apk-tools/build/src/apk"
+          echo "Package: $apk_file"
+          ls -lh "$apk_file"
+          "$apk_bin" adbdump "$apk_file"
+
+      - name: Upload luci-app-wifihaven .apk artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: luci-app-wifihaven-apk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
+          path: openwrt/luci/luci-app-wifihaven_*.apk
+          if-no-files-found: error
+
       - name: Verify .apk contents
         run: |
           apk_file=$(ls openwrt/wifihaven_*.apk)
@@ -153,3 +176,4 @@ jobs:
             openwrt/wifihaven_*.ipk
             openwrt/wifihaven_*.apk
             openwrt/luci/luci-app-wifihaven_*.ipk
+            openwrt/luci/luci-app-wifihaven_*.apk

@@ -153,10 +153,10 @@ releases_json=$(curl -fsSL "$RELEASES_API")
 # release between cleanup passes (#569). Fail loud on zero or multiple
 # matches — a future surprise (e.g. unexpected per-arch variants of an
 # _all package) should not silently install whichever sorts first.
-pkg_urls=$(echo "$releases_json" \
-  | jsonfilter -e '@.assets[*].browser_download_url' \
-  | grep -E '/wifihaven_[^/]*\.'"${PKG_EXT}"'$')
-pkg_count=$(printf '%s\n' "$pkg_urls" | grep -c .)
+asset_urls=$(echo "$releases_json" | jsonfilter -e '@.assets[*].browser_download_url')
+
+pkg_urls=$(printf '%s\n' "$asset_urls" | grep -E '/wifihaven_[^/]*\.'"${PKG_EXT}"'$' || true)
+pkg_count=$(printf '%s\n' "$pkg_urls" | grep -c . || true)
 case "$pkg_count" in
   0) err "could not find a wifihaven_*.${PKG_EXT} asset in the latest release at $RELEASES_API" ;;
   1) pkg_url=$pkg_urls ;;
@@ -167,12 +167,35 @@ pkg_path="/tmp/wifihaven.${PKG_EXT}"
 info "Downloading $pkg_url"
 curl -fsSL -o "$pkg_path" "$pkg_url"
 
-# Install the package.
+# Optional: LuCI web UI package. Older releases (pre-#750) don't ship it, so
+# missing is fine — just skip. Multiple matches are still a release-bundling
+# bug worth surfacing.
+luci_pkg_path=""
+luci_urls=$(printf '%s\n' "$asset_urls" | grep -E '/luci-app-wifihaven_[^/]*\.'"${PKG_EXT}"'$' || true)
+luci_count=$(printf '%s\n' "$luci_urls" | grep -c . || true)
+case "$luci_count" in
+  0) info "no luci-app-wifihaven_*.${PKG_EXT} in release — skipping (older release?)" ;;
+  1)
+    luci_pkg_path="/tmp/luci-app-wifihaven.${PKG_EXT}"
+    info "Downloading $luci_urls"
+    curl -fsSL -o "$luci_pkg_path" "$luci_urls"
+    ;;
+  *) err "expected at most one luci-app-wifihaven_*.${PKG_EXT} asset in $RELEASES_API, found $luci_count:
+$luci_urls" ;;
+esac
+
+# Install the package(s). Install the base agent first so the LuCI package's
+# `Depends: wifihaven` resolves against the just-installed local file.
 if [ "$PKG_MGR" = apk ]; then
   # apk installs a local file directly; no repo refresh needed since the .apk
   # carries its own dependency metadata and the runtime deps are in base.
   info "Installing $pkg_path..."
   apk add --allow-untrusted "$pkg_path"
+  if [ -n "$luci_pkg_path" ]; then
+    info "Installing $luci_pkg_path..."
+    apk add --allow-untrusted "$luci_pkg_path" \
+      || info "luci-app-wifihaven install failed (luci-base not present?) — continuing without web UI"
+  fi
 else
   # opkg needs the package index refreshed before installing a local .ipk so
   # that runtime deps (e.g. dnsmasq-full bits) can be resolved against the
@@ -181,6 +204,11 @@ else
   opkg update >/dev/null
   info "Installing $pkg_path..."
   opkg install "$pkg_path"
+  if [ -n "$luci_pkg_path" ]; then
+    info "Installing $luci_pkg_path..."
+    opkg install "$luci_pkg_path" \
+      || info "luci-app-wifihaven install failed (luci-base not present?) — continuing without web UI"
+  fi
 fi
 
 # Write base UCI config before enrolling so a re-run after a failed enroll
