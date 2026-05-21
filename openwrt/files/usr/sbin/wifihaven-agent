@@ -21,6 +21,7 @@ local render     = require("wifihaven.render")
 local dns_log    = require("wifihaven.dns_log")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
+local paths      = require("wifihaven.paths")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -189,9 +190,9 @@ os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifi
 -- render.write_blocked_reasons after every snapshot apply) to look up the
 -- per-MAC reason for the current device.
 
-local BLOCK_PAGE_API_URL_PATH  = "/var/run/wifihaven/api_url"
-local BLOCK_PAGE_REASONS_PATH  = "/var/run/wifihaven/blocked_reasons"
-local BLOCK_PAGE_HOSTS_PATH    = "/var/run/wifihaven/blocked_hosts"  -- #594
+local BLOCK_PAGE_API_URL_PATH  = paths.block_page_api_url
+local BLOCK_PAGE_REASONS_PATH  = paths.block_page_reasons
+local BLOCK_PAGE_HOSTS_PATH    = paths.block_page_hosts  -- #594
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
@@ -319,7 +320,7 @@ end
 -- Drop the memoization. The cache file lives on tmpfs and is at most a few
 -- kilobytes, so reading it once per outbound flow costs microseconds —
 -- well below the cost of the conntrack -E line that triggered the lookup.
-local dns_cache_path = "/tmp/wifihaven-dns-cache.txt"
+local dns_cache_path = paths.dns_cache
 local dns_cache_ttl  = 3600
 
 local function lookup_hostname(dst_ip)

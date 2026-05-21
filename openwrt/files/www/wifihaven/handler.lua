@@ -9,6 +9,7 @@
 -- without uhttpd in the loop.
 
 local block_page = require("wifihaven.block_page")
+local paths      = require("wifihaven.paths")
 
 local function read_file(path)
   local f = io.open(path, "r")
@@ -26,7 +27,7 @@ function handle_request(env)
   local arp = read_file("/proc/net/arp")
   local mac = block_page.parse_arp(arp, remote)
 
-  local reasons = read_file("/var/run/wifihaven/blocked_reasons")
+  local reasons = read_file(paths.block_page_reasons)
   local reason  = mac and block_page.parse_reasons(reasons, mac) or nil
   -- No MAC-wide reason means the DNAT was triggered by a per-(MAC, host) drop,
   -- not a whole-MAC block. Look up the host in the per-MAC classifier file to
@@ -34,7 +35,7 @@ function handle_request(env)
   -- to "ExtraBlocked" if the classifier file is missing or the lookup misses
   -- (#576 default).
   if mac and not reason then
-    local hosts_content = read_file("/var/run/wifihaven/blocked_hosts")
+    local hosts_content = read_file(paths.block_page_hosts)
     local source = block_page.parse_blocked_hosts(hosts_content, mac, host)
     if source == "extra_blocked" then
       reason = "ExtraBlocked"
@@ -45,7 +46,7 @@ function handle_request(env)
     end
   end
 
-  local api_url = read_file("/var/run/wifihaven/api_url")
+  local api_url = read_file(paths.block_page_api_url)
   if api_url then api_url = api_url:gsub("%s+$", "") end
 
   local body = block_page.render_html(api_url, host, mac, reason)
