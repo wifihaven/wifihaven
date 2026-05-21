@@ -81,7 +81,7 @@ class PolicyServiceLive(
           if mins == 0 then acc else acc.updated(pat, mins)
         }
         val exemptPats = pSiteLims.filter(_.exemptFromDaily).map(_.domainPattern)
-        val perMacTot  = Presence.totalMinutesByMac(pPresence, exemptPats)
+        val perMacTot  = Presence.totalMinutesByMac(pPresence, exemptPats, settings.heartbeatFilter)
         val totalMins  = devicesIn.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
         val extMins    = exts.getOrElse(p.id, 0)
 
@@ -192,7 +192,8 @@ class PolicyServiceLive(
                         }
                         val exemptPats =
                           stlims.filter(_.exemptFromDaily).map(_.domainPattern)
-                        val perMacTot  = Presence.totalMinutesByMac(pPres, exemptPats)
+                        val perMacTot  =
+                          Presence.totalMinutesByMac(pPres, exemptPats, settings.heartbeatFilter)
                         val totalMins  = devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
                         timeLimitBlockFromDb(
                           h,

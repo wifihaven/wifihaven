@@ -478,16 +478,23 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
 
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
   def get: Task[HouseholdSettings] =
-    sql"SELECT daily_reset_time, daily_reset_tz FROM household_settings WHERE id=1"
-      .query[(LocalTime, ZoneId)]
+    sql"""SELECT daily_reset_time, daily_reset_tz,
+                 heartbeat_filter_enabled, heartbeat_bytes_threshold, heartbeat_active_fraction_pct
+            FROM household_settings WHERE id=1"""
+      .query[(LocalTime, ZoneId, Boolean, Int, Int)]
       .unique
-      .map(HouseholdSettings.apply)
+      .map { case (t, z, hbEnabled, hbBytes, hbFrac) =>
+        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbFrac))
+      }
       .transact(xa)
 
   def update(s: HouseholdSettings): Task[Unit] =
     sql"""UPDATE household_settings
             SET daily_reset_time=${s.dailyResetTime},
                 daily_reset_tz=${s.dailyResetTz},
+                heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
+                heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
+                heartbeat_active_fraction_pct=${s.heartbeatFilter.activeFractionPct},
                 updated_at=NOW()
           WHERE id=1""".update.run.transact(xa).unit
 
@@ -857,16 +864,20 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .transact(xa)
 
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
-    type Row = (MacAddress, Instant, HostId, Int)
+    type Row = (MacAddress, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
-        val q   = fr"""SELECT mac, period_start, host_type, host_value, active_seconds
+        val q   = fr"""SELECT mac, period_start, host_type, host_value,
+                              active_seconds, bytes_in, bytes_out, period_start, period_end
                        FROM traffic_reports
                        WHERE date = $date AND """ ++ Fragments.in(fr"mac", nel)
         q.query[Row]
-          .map((m, ps, h, s) => wifihaven.api.presence.PresenceRow(m, ps, h, s))
+          .map { case (m, ps, host, secs, bin, bout, pStart, pEnd) =>
+            val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
+            wifihaven.api.presence.PresenceRow(m, ps, host, secs, bin + bout, periodSeconds)
+          }
           .to[List]
           .transact(xa)
     }

@@ -1,17 +1,23 @@
 package wifihaven.api.presence
 
+import wifihaven.shared.HeartbeatFilter
 import wifihaven.shared.types.*
 import java.time.Instant
 
 /**
  * One bucket-host tuple from traffic_reports, used to compute presence-based minutes (one count per
  * (mac, period_start), regardless of how many hosts the device touched in that window).
+ *
+ * `bytes` is `bytes_in + bytes_out` for the row and `periodSeconds` is `period_end - period_start`;
+ * both exist solely to feed the #714 heartbeat filter and are ignored by all other consumers.
  */
 case class PresenceRow(
     mac: MacAddress,
     periodStart: Instant,
     host: HostId,
     activeSeconds: Int,
+    bytes: Long,
+    periodSeconds: Int,
 )
 
 /**
@@ -54,10 +60,13 @@ object Presence {
   def totalSecondsByMac(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
   ): Map[MacAddress, Long] = {
     def isExempt(h: HostId) =
       h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
-    rows
+    rows.iterator
+      .filterNot(r => isHeartbeat(r, filter))
+      .toList
       .groupBy(r => (r.mac, r.periodStart))
       .toList
       .collect {
@@ -75,8 +84,54 @@ object Presence {
   def totalMinutesByMac(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
   ): Map[MacAddress, Int] =
-    totalSecondsByMac(rows, exemptPatterns).view.mapValues(s => (s / 60).toInt).toMap
+    totalSecondsByMac(rows, exemptPatterns, filter).view.mapValues(s => (s / 60).toInt).toMap
+
+  /**
+   * #714 heartbeat classification, applied ONLY inside `totalSecondsByMac`/`totalMinutesByMac`.
+   * Per-site (`patternMinutesByMac`) and per-host (`hostMinutes`) breakdowns intentionally do not
+   * filter — heartbeats keep counting for per-site time for now; the operator wants to evaluate
+   * that separately. A row is classified as a heartbeat if the filter is enabled AND EITHER:
+   *
+   *   - total bytes < `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few
+   *     hundred), OR
+   *   - `activeSeconds * 100 / periodSeconds` < `activeFractionPct` (heartbeats land in one sample
+   *     in the period; real interactive use lights up many).
+   *
+   * Rows with `periodSeconds <= 0` are never classified as heartbeats — defensive against bad
+   * router clocks; treat as active.
+   */
+  def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
+    filter.enabled && (
+      row.bytes < filter.bytesThreshold ||
+        (row.periodSeconds > 0 &&
+          row.activeSeconds.toLong * 100 < filter.activeFractionPct.toLong * row.periodSeconds.toLong)
+    )
+
+  /**
+   * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the
+   * classification verdict and the specific reasons it tripped, so the operator can tune thresholds
+   * against real prod data.
+   */
+  case class Classified(
+      row: PresenceRow,
+      classified: String,
+      reasons: List[String],
+  )
+
+  def classifyRows(rows: List[PresenceRow], filter: HeartbeatFilter): List[Classified] =
+    rows.map { r =>
+      val rsns  = scala.collection.mutable.ListBuffer.empty[String]
+      if filter.enabled then {
+        if r.bytes < filter.bytesThreshold then rsns += s"bytes<${filter.bytesThreshold}"
+        if r.periodSeconds > 0 &&
+          r.activeSeconds.toLong * 100 < filter.activeFractionPct.toLong * r.periodSeconds.toLong
+        then rsns += s"activeFraction<${filter.activeFractionPct}%"
+      }
+      val label = if filter.enabled && rsns.nonEmpty then "heartbeat" else "active"
+      Classified(r, label, rsns.toList)
+    }
 
   /**
    * Per-(mac, pattern) minutes, counting each bucket once per device per pattern when any host in

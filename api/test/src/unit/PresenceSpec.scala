@@ -1,6 +1,7 @@
 package wifihaven.api.unit
 
 import wifihaven.api.presence.{Presence, PresenceRow}
+import wifihaven.shared.HeartbeatFilter
 import wifihaven.shared.types.*
 import zio.test.*
 
@@ -15,11 +16,25 @@ object PresenceSpec extends ZIOSpecDefault {
   private val base               = Instant.parse("2026-05-13T00:00:00Z")
   private def b(i: Int): Instant = base.plusSeconds(i * 300L)
 
-  private def row(mac: MacAddress, bucket: Int, host: String, secs: Int = 300) =
-    PresenceRow(mac, b(bucket), HostId.Fqdn(Hostname.unsafe(host)), secs)
+  private def row(
+      mac: MacAddress,
+      bucket: Int,
+      host: String,
+      secs: Int = 300,
+      bytes: Long = 1_000_000L,
+      periodSeconds: Int = 300,
+  ) =
+    PresenceRow(mac, b(bucket), HostId.Fqdn(Hostname.unsafe(host)), secs, bytes, periodSeconds)
 
-  private def ipRow(mac: MacAddress, bucket: Int, ip: String, secs: Int = 300) =
-    PresenceRow(mac, b(bucket), HostId.IPv4(IpAddress.unsafe(ip)), secs)
+  private def ipRow(
+      mac: MacAddress,
+      bucket: Int,
+      ip: String,
+      secs: Int = 300,
+      bytes: Long = 1_000_000L,
+      periodSeconds: Int = 300,
+  ) =
+    PresenceRow(mac, b(bucket), HostId.IPv4(IpAddress.unsafe(ip)), secs, bytes, periodSeconds)
 
   def spec = suite("Presence")(
     suite("totalMinutesByMac")(
@@ -147,6 +162,70 @@ object PresenceSpec extends ZIOSpecDefault {
         assertTrue(
           Presence.totalMinutesByMac(rows, List("*")) == Map(mac1 -> 5),
         )
+      },
+    ),
+    suite("heartbeat filter (#714)")(
+      test("filter off: low-byte rows still count toward the daily total") {
+        val rows = List(row(mac1, 0, "apns.apple.com", secs = 60, bytes = 60L, periodSeconds = 60))
+        assertTrue(Presence.totalMinutesByMac(rows, Nil, HeartbeatFilter.Off) == Map(mac1 -> 1))
+      },
+      test("filter on: bucket with only sub-threshold-bytes rows collapses to 0") {
+        // APNs keepalive: 60s period, ~60 bytes total, lights up only the one sample.
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        val rows = List(
+          row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60),
+        )
+        assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int])
+      },
+      test("filter on: mixed bucket (heartbeat + real traffic) keeps the bucket's minutes") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        val rows = List(
+          row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60),
+          row(mac1, 0, "youtube.com", secs = 60, bytes = 500_000L, periodSeconds = 60),
+        )
+        // Heartbeat row dropped; real row keeps the 60s bucket alive → 1 min.
+        assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map(mac1 -> 1))
+      },
+      test("filter on, low-fraction-only heuristic still trips") {
+        // Above the byte floor, but only 2s of 60s active → drop.
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 100, activeFractionPct = 20)
+        val rows = List(
+          row(mac1, 0, "rcs.google.com", secs = 2, bytes = 5_000L, periodSeconds = 60),
+        )
+        assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int])
+      },
+      test("filter on: bytes-only heuristic still trips when active fraction is high") {
+        // Active the whole minute, but tiny payload (e.g. NTP-like) → drop.
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        val rows = List(
+          row(mac1, 0, "time.apple.com", secs = 60, bytes = 200L, periodSeconds = 60),
+        )
+        assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int])
+      },
+      test("filter on, but periodSeconds=0 (bad clock): never classified heartbeat by fraction") {
+        // Defensive: with periodSeconds=0 the fraction rule is short-circuited so we don't divide
+        // by zero or accidentally classify every such row as a heartbeat. Bytes-check still runs.
+        val f = HeartbeatFilter(enabled = true, bytesThreshold = 100, activeFractionPct = 50)
+        val passingRow = row(mac1, 0, "x.example.com", secs = 30, bytes = 1_000L, periodSeconds = 0)
+        val droppedRow = row(mac2, 0, "y.example.com", secs = 30, bytes = 5L, periodSeconds = 0)
+        assertTrue(!Presence.isHeartbeat(passingRow, f)) &&
+        assertTrue(Presence.isHeartbeat(droppedRow, f))
+      },
+      test("classifyRows surfaces both heuristics' reasons when both trip") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        val rows = List(row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60))
+        val out  = Presence.classifyRows(rows, f)
+        val reasons = out.head.reasons
+        assertTrue(out.length == 1) &&
+        assertTrue(out.head.classified == "heartbeat") &&
+        assertTrue(reasons.exists(_.startsWith("bytes<"))) &&
+        assertTrue(reasons.exists(_.startsWith("activeFraction<")))
+      },
+      test("classifyRows reports rows as active when filter is disabled") {
+        val rows = List(row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60))
+        val out  = Presence.classifyRows(rows, HeartbeatFilter.Off)
+        assertTrue(out.head.classified == "active") &&
+        assertTrue(out.head.reasons.isEmpty)
       },
     ),
     suite("hostMinutes")(

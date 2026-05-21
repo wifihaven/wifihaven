@@ -1,7 +1,7 @@
 package wifihaven.api.unit
 
 import wifihaven.api.policy.PolicyService
-import wifihaven.shared.{HouseholdSettings, Schedule}
+import wifihaven.shared.{HeartbeatFilter, HouseholdSettings, Schedule}
 import wifihaven.shared.types.*
 import zio.test.*
 
@@ -152,27 +152,27 @@ object SchedulingSpec extends ZIOSpecDefault {
     ),
     suite("nextDailyResetAfter")(
       test("00:00 LA in standard time (PST, Jan 15 2026) → 08:00Z next day") {
-        val settings = HouseholdSettings(LocalTime.of(0, 0), LA)
+        val settings = HouseholdSettings(LocalTime.of(0, 0), LA, HeartbeatFilter.Off)
         val now      = Instant.parse("2026-01-15T20:00:00Z") // Jan 15 12:00 PST
         // Next 00:00 PST = 2026-01-16 00:00 PST = 2026-01-16 08:00Z
         val expected = Instant.parse("2026-01-16T08:00:00Z")
         assertTrue(PolicyService.nextDailyResetAfter(settings, now) == expected)
       },
       test("00:00 LA in daylight time (PDT, Jun 15 2026) → 07:00Z next day") {
-        val settings = HouseholdSettings(LocalTime.of(0, 0), LA)
+        val settings = HouseholdSettings(LocalTime.of(0, 0), LA, HeartbeatFilter.Off)
         val now      = Instant.parse("2026-06-15T19:00:00Z") // Jun 15 12:00 PDT
         // Next 00:00 PDT = 2026-06-16 00:00 PDT = 2026-06-16 07:00Z
         val expected = Instant.parse("2026-06-16T07:00:00Z")
         assertTrue(PolicyService.nextDailyResetAfter(settings, now) == expected)
       },
       test("at exactly the reset Instant: returns NEXT day's reset (strict-after)") {
-        val settings = HouseholdSettings(LocalTime.of(0, 0), UTC)
+        val settings = HouseholdSettings(LocalTime.of(0, 0), UTC, HeartbeatFilter.Off)
         val now      = Instant.parse("2026-05-13T00:00:00Z")
         val expected = Instant.parse("2026-05-14T00:00:00Z")
         assertTrue(PolicyService.nextDailyResetAfter(settings, now) == expected)
       },
       test("reset later in the day, before reset → today's reset") {
-        val settings = HouseholdSettings(LocalTime.of(3, 0), UTC)
+        val settings = HouseholdSettings(LocalTime.of(3, 0), UTC, HeartbeatFilter.Off)
         val now      = Instant.parse("2026-05-13T01:00:00Z")
         val expected = Instant.parse("2026-05-13T03:00:00Z")
         assertTrue(PolicyService.nextDailyResetAfter(settings, now) == expected)
