@@ -176,5 +176,72 @@ grep -q "uhttpd-mod-lua" "$ROOT/build-apk.sh" \
   || check "build-apk.sh depends pulls in uhttpd-mod-lua" \
            "missing uhttpd-mod-lua dep in build-apk.sh"
 
+# #704: ensure_dnsmasq_full apk branch must use `apk info -e`, not
+# `apk list -I`.  On apk-tools v3 (OpenWRT 24.10+) `apk list -I` exits 0
+# with empty stdout when the package is absent, so the old check always
+# returned early and left plain dnsmasq installed.
+#
+# Canary A — the probe must be `apk info -e`, not `apk list -I`:
+grep -q "apk info -e dnsmasq-full" "$SCRIPT" \
+  && check "#704 ensure_dnsmasq_full uses apk info -e for dnsmasq-full check" ok \
+  || check "#704 ensure_dnsmasq_full uses apk info -e for dnsmasq-full check" \
+           "apk branch still uses 'apk list -I dnsmasq-full' — exits 0 when absent on apk-tools v3"
+
+grep -q "apk info -e dnsmasq " "$SCRIPT" \
+  && check "#704 ensure_dnsmasq_full uses apk info -e for dnsmasq check" ok \
+  || check "#704 ensure_dnsmasq_full uses apk info -e for dnsmasq check" \
+           "apk branch still uses 'apk list -I dnsmasq' — exits 0 when absent on apk-tools v3"
+
+# Canary B — regression guard: the old broken form must NOT appear:
+if grep -q "apk list -I dnsmasq-full" "$SCRIPT"; then
+  check "#704 broken apk list -I form removed from dnsmasq-full check" \
+        "'apk list -I dnsmasq-full' still present — reverts #704 fix"
+else
+  check "#704 broken apk list -I form removed from dnsmasq-full check" ok
+fi
+
+if grep -q "apk list -I dnsmasq " "$SCRIPT"; then
+  check "#704 broken apk list -I form removed from dnsmasq check" \
+        "'apk list -I dnsmasq ' still present — reverts #704 fix"
+else
+  check "#704 broken apk list -I form removed from dnsmasq check" ok
+fi
+
+# Canary C — functional simulation: verify ensure_dnsmasq_full installs
+# dnsmasq-full when only plain dnsmasq is present, using stub apk/err
+# functions that replicate the apk-tools v3 exit-code behaviour.
+# Pre-fix, `apk list -I dnsmasq-full` exited 0 even when absent, causing
+# an early return before the swap.  Post-fix, `apk info -e dnsmasq-full`
+# exits nonzero on absence, so the function proceeds to del+add.
+#
+# Side-effects are recorded in a temp file because install.sh suppresses
+# stdout from apk calls (>/dev/null).
+_sim_log=$(mktemp)
+trap 'rm -f "$_sim_log"' EXIT
+sh -c "
+  set -eu
+  err() { printf 'error: %s\n' \"\$*\" >&2; exit 1; }
+  info() { true; }
+  apk() {
+    _cmd=\"\$*\"
+    case \"\$_cmd\" in
+      'info -e dnsmasq-full') return 1;;   # not installed — apk-tools v3 exits nonzero
+      'info -e dnsmasq')      return 0;;   # plain dnsmasq IS installed
+      'del dnsmasq')          printf 'del-dnsmasq\n' >> '${_sim_log}';;
+      'add dnsmasq-full')     printf 'add-dnsmasq-full\n' >> '${_sim_log}';;
+      *)                      true;;
+    esac
+  }
+  PKG_MGR=apk
+  $(sed -n '/^ensure_dnsmasq_full()/,/^}/p' "$SCRIPT")
+  ensure_dnsmasq_full
+" 2>/dev/null || true
+if grep -q "add-dnsmasq-full" "$_sim_log"; then
+  check "#704 ensure_dnsmasq_full installs dnsmasq-full when only dnsmasq present (apk-tools v3)" ok
+else
+  check "#704 ensure_dnsmasq_full installs dnsmasq-full when only dnsmasq present (apk-tools v3)" \
+        "function returned early without installing dnsmasq-full (sim log: $(cat "$_sim_log"))"
+fi
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

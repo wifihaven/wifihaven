@@ -82,8 +82,11 @@ fi
 # detect and swap rather than relying on package-level depends.
 ensure_dnsmasq_full() {
   if [ "$PKG_MGR" = apk ]; then
-    apk list -I dnsmasq-full >/dev/null 2>&1 && return 0
-    if apk list -I dnsmasq >/dev/null 2>&1; then
+    # apk list -I exits 0 with empty stdout when a package is not installed
+    # (apk-tools v3, OpenWRT 24.10+).  Use `apk info -e` instead — it exits
+    # nonzero on miss, making it safe to use as a boolean probe (#704).
+    apk info -e dnsmasq-full >/dev/null 2>&1 && return 0
+    if apk info -e dnsmasq >/dev/null 2>&1; then
       info "Replacing dnsmasq with dnsmasq-full (required for nftset support)"
       apk del dnsmasq >/dev/null
     else
