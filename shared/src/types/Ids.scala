@@ -10,18 +10,20 @@ import java.util.UUID
  * and as a string when used as a JSON object key (matching `Map[Long, _]`'s default rendering).
  */
 
-opaque type ProfileId         = Long
-opaque type DeviceId          = Long
-opaque type ScheduleId        = Long
-opaque type TimeLimitId       = Long
-opaque type SiteTimeLimitId   = Long
-opaque type TimeExtensionId   = Long
-opaque type UserId            = Long
-opaque type BlockEventId      = Long
-opaque type ConnectionEventId = Long
-opaque type QueryLogId        = Long
-opaque type TrafficReportId   = Long
-opaque type TimeUsageId       = Long
+opaque type ProfileId             = Long
+opaque type DeviceId              = Long
+opaque type ScheduleId            = Long
+opaque type TimeLimitId           = Long
+opaque type SiteTimeLimitId       = Long
+opaque type TimeExtensionId       = Long
+opaque type UserId                = Long
+opaque type BlockEventId          = Long
+opaque type ConnectionEventId     = Long
+opaque type QueryLogId            = Long
+opaque type TrafficReportId       = Long
+opaque type TimeUsageId           = Long
+opaque type AppId                 = Long
+opaque type AppPolicyAssignmentId = Long
 
 object ProfileId {
   def apply(l: Long): ProfileId            = l
@@ -101,6 +103,21 @@ object TimeUsageId {
   def apply(l: Long): TimeUsageId            = l
   extension (t: TimeUsageId) def value: Long = t
   given JsonCodec[TimeUsageId]               = JsonCodec.long
+}
+
+object AppId {
+  def apply(l: Long): AppId            = l
+  extension (a: AppId) def value: Long = a
+  given JsonCodec[AppId]               = JsonCodec.long
+  given JsonFieldEncoder[AppId]        = JsonFieldEncoder.long
+  given JsonFieldDecoder[AppId]        = JsonFieldDecoder.long
+  given Ordering[AppId]                = Ordering.Long
+}
+
+object AppPolicyAssignmentId {
+  def apply(l: Long): AppPolicyAssignmentId            = l
+  extension (a: AppPolicyAssignmentId) def value: Long = a
+  given JsonCodec[AppPolicyAssignmentId]               = JsonCodec.long
 }
 
 /** UUID-backed router identifier. */

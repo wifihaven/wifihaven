@@ -30,6 +30,16 @@ object Hostname {
 
   def unsafe(s: String): Hostname = s
 
+  /**
+   * Strip a leading `*.` (the "apex + subdomains" wildcard form per #105 design) then parse as a
+   * normal Hostname. `foo.com` and `*.foo.com` are equivalent on input; both canonicalize to the
+   * apex `foo.com`.
+   */
+  def canonicalize(input: String): Either[String, Hostname] = {
+    val stripped = if input.startsWith("*.") then input.drop(2) else input
+    parse(stripped)
+  }
+
   extension (h: Hostname) def value: String = h
 
   given Ordering[Hostname]         = Ordering.String

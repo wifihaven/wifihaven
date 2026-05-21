@@ -95,6 +95,51 @@ object FailureMode {
   )
 }
 
+enum AppMode {
+  case Blocked, Allowed, TimeLimited
+}
+
+object AppMode {
+  def asString(m: AppMode): String      = m match {
+    case Blocked     => "blocked"
+    case Allowed     => "allowed"
+    case TimeLimited => "time_limited"
+  }
+  def parse(s: String): Option[AppMode] = s match {
+    case "blocked"      => Some(Blocked)
+    case "allowed"      => Some(Allowed)
+    case "time_limited" => Some(TimeLimited)
+    case _              => None
+  }
+  given JsonCodec[AppMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown appMode: $s"),
+    asString,
+  )
+}
+
+case class App(
+    id: AppId,
+    name: String,
+    slug: String,
+    templateId: Option[String],
+    icon: Option[String],
+    createdAt: String,
+) derives JsonCodec
+
+case class AppHost(
+    appId: AppId,
+    host: Hostname,
+) derives JsonCodec
+
+case class AppPolicyAssignment(
+    id: AppPolicyAssignmentId,
+    appId: AppId,
+    profileId: ProfileId,
+    mode: AppMode,
+    dailyMinutes: Option[Int],
+    exemptFromDaily: Boolean = true,
+) derives JsonCodec
+
 case class Profile(
     id: ProfileId,
     name: String,

@@ -99,6 +99,44 @@ trait SiteTimeLimitRepo {
   def replaceForProfile(pid: ProfileId, limits: List[SiteTimeLimitRequest]): Task[Unit]
 }
 
+case class AppInsert(
+    name: String,
+    slug: String,
+    templateId: Option[String] = None,
+    icon: Option[String] = None,
+)
+
+case class AppUpdate(
+    name: String,
+    slug: String,
+    templateId: Option[String],
+    icon: Option[String],
+)
+
+case class AssignmentUpsert(
+    appId: AppId,
+    profileId: ProfileId,
+    mode: AppMode,
+    dailyMinutes: Option[Int],
+    exemptFromDaily: Boolean = true,
+)
+
+trait AppRepo {
+  def insertApp(a: AppInsert): Task[AppId]
+  def getApp(id: AppId): Task[Option[App]]
+  def listApps: Task[List[App]]
+  def updateApp(id: AppId, u: AppUpdate): Task[Unit]
+  def deleteApp(id: AppId): Task[Unit]
+
+  def listHosts(appId: AppId): Task[List[Hostname]]
+  def setHosts(appId: AppId, hosts: List[Hostname]): Task[Unit]
+
+  def upsertAssignment(a: AssignmentUpsert): Task[AppPolicyAssignmentId]
+  def deleteAssignment(appId: AppId, profileId: ProfileId): Task[Unit]
+  def listAssignmentsByProfile(profileId: ProfileId): Task[List[AppPolicyAssignment]]
+  def listAssignmentsByApp(appId: AppId): Task[List[AppPolicyAssignment]]
+}
+
 trait DeviceRepo {
   def listAll: Task[List[Device]]
   def findByMac(mac: MacAddress): Task[Option[Device]]
@@ -1312,6 +1350,88 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .map(_.toMap)
 }
 
+class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
+  private type R = (AppId, String, String, Option[String], Option[String], Instant)
+  private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6.toString)
+
+  def insertApp(a: AppInsert) =
+    sql"INSERT INTO apps(name,slug,template_id,icon) VALUES(${a.name},${a.slug},${a.templateId},${a.icon}) RETURNING id"
+      .query[AppId]
+      .unique
+      .transact(xa)
+
+  def getApp(id: AppId) =
+    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE id=$id"
+      .query[R]
+      .map(toApp)
+      .option
+      .transact(xa)
+
+  def listApps =
+    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps ORDER BY id"
+      .query[R]
+      .map(toApp)
+      .to[List]
+      .transact(xa)
+
+  def updateApp(id: AppId, u: AppUpdate) =
+    sql"""UPDATE apps SET name=${u.name}, slug=${u.slug},
+                         template_id=${u.templateId}, icon=${u.icon}
+          WHERE id=$id""".update.run.transact(xa).unit
+
+  def deleteApp(id: AppId) =
+    sql"DELETE FROM apps WHERE id=$id".update.run.transact(xa).unit
+
+  def listHosts(appId: AppId) =
+    sql"SELECT host FROM app_hosts WHERE app_id=$appId ORDER BY host"
+      .query[Hostname]
+      .to[List]
+      .transact(xa)
+
+  def setHosts(appId: AppId, hosts: List[Hostname]) = {
+    val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
+    val ins =
+      hosts.distinct.map(h => sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h)".update.run)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+  }
+
+  def upsertAssignment(a: AssignmentUpsert) =
+    sql"""INSERT INTO app_policy_assignments(app_id,profile_id,mode,daily_minutes,exempt_from_daily)
+          VALUES(${a.appId},${a.profileId},${a.mode},${a.dailyMinutes},${a.exemptFromDaily})
+          ON CONFLICT(app_id,profile_id) DO UPDATE SET
+            mode=EXCLUDED.mode,
+            daily_minutes=EXCLUDED.daily_minutes,
+            exempt_from_daily=EXCLUDED.exempt_from_daily
+          RETURNING id"""
+      .query[AppPolicyAssignmentId]
+      .unique
+      .transact(xa)
+
+  def deleteAssignment(appId: AppId, profileId: ProfileId) =
+    sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
+      .transact(xa)
+      .unit
+
+  private type AR = (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean)
+  private def toAssignment(r: AR) = AppPolicyAssignment(r._1, r._2, r._3, r._4, r._5, r._6)
+
+  def listAssignmentsByProfile(profileId: ProfileId) =
+    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+          FROM app_policy_assignments WHERE profile_id=$profileId ORDER BY id"""
+      .query[AR]
+      .map(toAssignment)
+      .to[List]
+      .transact(xa)
+
+  def listAssignmentsByApp(appId: AppId) =
+    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+          FROM app_policy_assignments WHERE app_id=$appId ORDER BY id"""
+      .query[AR]
+      .map(toAssignment)
+      .to[List]
+      .transact(xa)
+}
+
 object Repos {
   val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
   val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
@@ -1328,6 +1448,7 @@ object Repos {
   val trafficReportRepo     = ZLayer.fromFunction(TrafficReportRepoLive(_))
   val blockEventRepo        = ZLayer.fromFunction(BlockEventRepoLive(_))
   val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
+  val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ appRepo
 }

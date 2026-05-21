@@ -2,7 +2,7 @@ package wifihaven.api.db
 
 import doobie.*
 import doobie.postgres.implicits.*
-import wifihaven.shared.{FailureMode, MacBlockReason, UserRole}
+import wifihaven.shared.{AppMode, FailureMode, MacBlockReason, UserRole}
 import wifihaven.shared.types.*
 
 import java.time.ZoneId
@@ -19,18 +19,20 @@ import java.time.ZoneId
 object TypeMeta {
 
   // ── Long-backed identifiers ────────────────────────────────────────────
-  given Meta[ProfileId]         = Meta[Long].imap(ProfileId(_))(_.value)
-  given Meta[DeviceId]          = Meta[Long].imap(DeviceId(_))(_.value)
-  given Meta[ScheduleId]        = Meta[Long].imap(ScheduleId(_))(_.value)
-  given Meta[TimeLimitId]       = Meta[Long].imap(TimeLimitId(_))(_.value)
-  given Meta[SiteTimeLimitId]   = Meta[Long].imap(SiteTimeLimitId(_))(_.value)
-  given Meta[TimeExtensionId]   = Meta[Long].imap(TimeExtensionId(_))(_.value)
-  given Meta[UserId]            = Meta[Long].imap(UserId(_))(_.value)
-  given Meta[BlockEventId]      = Meta[Long].imap(BlockEventId(_))(_.value)
-  given Meta[ConnectionEventId] = Meta[Long].imap(ConnectionEventId(_))(_.value)
-  given Meta[QueryLogId]        = Meta[Long].imap(QueryLogId(_))(_.value)
-  given Meta[TrafficReportId]   = Meta[Long].imap(TrafficReportId(_))(_.value)
-  given Meta[TimeUsageId]       = Meta[Long].imap(TimeUsageId(_))(_.value)
+  given Meta[ProfileId]             = Meta[Long].imap(ProfileId(_))(_.value)
+  given Meta[DeviceId]              = Meta[Long].imap(DeviceId(_))(_.value)
+  given Meta[ScheduleId]            = Meta[Long].imap(ScheduleId(_))(_.value)
+  given Meta[TimeLimitId]           = Meta[Long].imap(TimeLimitId(_))(_.value)
+  given Meta[SiteTimeLimitId]       = Meta[Long].imap(SiteTimeLimitId(_))(_.value)
+  given Meta[TimeExtensionId]       = Meta[Long].imap(TimeExtensionId(_))(_.value)
+  given Meta[UserId]                = Meta[Long].imap(UserId(_))(_.value)
+  given Meta[BlockEventId]          = Meta[Long].imap(BlockEventId(_))(_.value)
+  given Meta[ConnectionEventId]     = Meta[Long].imap(ConnectionEventId(_))(_.value)
+  given Meta[QueryLogId]            = Meta[Long].imap(QueryLogId(_))(_.value)
+  given Meta[TrafficReportId]       = Meta[Long].imap(TrafficReportId(_))(_.value)
+  given Meta[TimeUsageId]           = Meta[Long].imap(TimeUsageId(_))(_.value)
+  given Meta[AppId]                 = Meta[Long].imap(AppId(_))(_.value)
+  given Meta[AppPolicyAssignmentId] = Meta[Long].imap(AppPolicyAssignmentId(_))(_.value)
 
   // ── UUID-backed ────────────────────────────────────────────────────────
   given Meta[RouterId] = Meta[java.util.UUID].imap(RouterId(_))(_.value)
@@ -68,6 +70,14 @@ object TypeMeta {
         throw new IllegalStateException(s"DB has unknown failureMode: $s"),
       ),
   )(FailureMode.asString)
+
+  given Meta[AppMode] = Meta[String].imap(s =>
+    AppMode
+      .parse(s)
+      .getOrElse(
+        throw new IllegalStateException(s"DB has unknown appMode: $s"),
+      ),
+  )(AppMode.asString)
 
   given Meta[MacBlockReason] = Meta[String].imap(s =>
     MacBlockReason
