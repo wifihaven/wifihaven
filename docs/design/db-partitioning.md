@@ -104,6 +104,53 @@ a partition rollover is due, the next startup catches up — and writes
 that arrive without a target partition fail loudly (which is fine; the
 router retries idempotently).
 
+### Horizontal-scaling safety
+
+Today `numInstances: 1` (see `render.yaml`), but the design must not paint
+into a corner if prod ever scales out. Two concrete races to address:
+
+1. **CREATE TABLE IF NOT EXISTS** is technically idempotent at the SQL
+   level, but concurrent runs of partition-creation from N instances
+   produce N redundant catalog lookups + N log lines per partition per
+   day, and worse, **two instances racing on `CREATE TABLE … PARTITION
+   OF`** can produce a `tuple concurrently updated` error on `pg_class`
+   even though the `IF NOT EXISTS` guard is present — Postgres holds
+   `AccessExclusiveLock` on the parent during the attach step. One
+   instance gets it, the others retry or fail.
+2. **DETACH/DROP** in the retention sweep (#812) is **not** safe to run
+   concurrently — second runner sees the partition gone and errors, or
+   worse, races mid-DETACH.
+
+**Choice: Postgres session-scoped advisory locks.** At job entry:
+
+```sql
+SELECT pg_try_advisory_lock(<stable-int-key>);
+```
+
+If `false`, another instance is running the job — skip this tick, log
+at DEBUG, return. If `true`, hold the lock for the duration of the run
+and release at the end (or let session close release it). Separate
+lock keys for create-future vs retention-drop so they can interleave
+across instances if one is slow.
+
+Why advisory locks over alternatives:
+- **Leader-election table** (`scheduled_jobs(name, holder, leased_until)`)
+  works but adds schema, requires a heartbeat to handle dead leaders,
+  and is more code for what is a one-line need.
+- **Designate via env var** ("only instance #0 runs the job") is fragile
+  — relies on Render's instance ordering being stable across restarts,
+  which it isn't.
+- **External cron** (Render Cron Job) sidesteps the coordination
+  question but reintroduces the operational surface we rejected above.
+
+Advisory locks are session-scoped: if an instance crashes mid-run,
+Postgres releases the lock when the TCP connection drops. No stale-leader
+problem.
+
+This applies equally to the create-future job (#808) and the retention
+sweep (#812). Both pull from the same lock-key constant module so the
+two functions can hold independent locks but the convention is shared.
+
 ## Backfill / migration
 
 **Choice: detach-and-reattach.** Create a new empty partitioned parent,
@@ -234,3 +281,6 @@ burn-in period (suggest 2 weeks) before the cleanup migration.
 3. **Historical-data resplit.** Recommendation: skip. The omnibus
    pre-partition blob is fine left alone; retention will eventually
    drop it whole.
+4. **Horizontal-scaling readiness.** Today `numInstances: 1`, but
+   advisory-lock-gating both jobs (per above) means scaling out doesn't
+   need code changes — confirmed safe by design rather than by config.
