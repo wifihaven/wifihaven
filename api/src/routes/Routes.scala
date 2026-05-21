@@ -387,6 +387,112 @@ object TimeRoutes {
       cache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
   ): Routes[Any, Response] =
     Routes(
+      // #777 — collapsed accordion summary. One batched presence query over ALL devices
+      // returns per-profile usedMins / dailyLimitMins / extensionMins / remainingMins. Used
+      // by the SPA to render the unexpanded list without fanning out the full rollup.
+      Method.GET / "api" / "time" / "status" / "summary"                ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
+            date    = LocalDate.parse(dateStr)
+            allProfiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices    <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allLimits     <- timeLimitRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allSiteLimits <- siteTimeLimitRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            extsByPid     <- extRepo
+              .snapshotAllByProfile(date)
+              .mapError(ErrorMapper.dbErrorToResponse)
+            settings      <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible       <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            devicesByPid = allDevices.groupBy(_.profileId)
+            allMacs      = visible.iterator
+              .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
+              .map(_.mac)
+              .toList
+              .distinct
+            presence <- (if allMacs.isEmpty then ZIO.succeed(Nil)
+                         else trafficRepo.listPresenceRows(allMacs, date))
+              .mapError(ErrorMapper.dbErrorToResponse)
+            limitByPid  = allLimits.iterator.map(l => l.profileId -> l.dailyMinutes).toMap
+            exemptByPid = allSiteLimits.iterator
+              .filter(_.exemptFromDaily)
+              .toList
+              .groupBy(_.profileId)
+              .view
+              .mapValues(_.map(_.domainPattern))
+              .toMap
+            summaries   = visible.map { p =>
+              val devices   = devicesByPid.getOrElse(Some(p.id), Nil)
+              val macSet    = devices.map(_.mac).toSet
+              val pRows     = presence.filter(r => macSet.contains(r.mac))
+              val exempts   = exemptByPid.getOrElse(p.id, Nil)
+              val perMac    = wifihaven.api.presence.Presence
+                .totalMinutesByMac(pRows, exempts, settings.heartbeatFilter)
+              val used      = devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+              val limit     = limitByPid.get(p.id)
+              val extMins   = extsByPid.getOrElse(p.id, 0)
+              val remaining = limit.map(l => (l + extMins - used).max(0))
+              ProfileTimeSummary(
+                p.id,
+                p.name,
+                date.toString,
+                limit,
+                used,
+                extMins,
+                remaining,
+              )
+            }
+          } yield Response
+            .json(summaries.toJson)
+            .addHeader(cacheControlFor(isTodayMode = !date.isBefore(today)))
+        },
+      // #777 — weekly variant of the summary endpoint. Single presence query over the trailing
+      // 7-day range, per-mac bucket-deduped totals summed per profile.
+      Method.GET / "api" / "time" / "status" / "summary" / "week"       ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
+            toStr = req.url.queryParam("to").getOrElse(today.toString)
+            to    = LocalDate.parse(toStr)
+            from  = to.minusDays(6)
+            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allLimits   <- timeLimitRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            devicesByPid = allDevices.groupBy(_.profileId)
+            allMacs      = visible.iterator
+              .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
+              .map(_.mac)
+              .toList
+              .distinct
+            presence <- (if allMacs.isEmpty then ZIO.succeed(Nil)
+                         else trafficRepo.listPresenceRows(allMacs, from, to))
+              .mapError(ErrorMapper.dbErrorToResponse)
+            limitByPid = allLimits.iterator.map(l => l.profileId -> l.dailyMinutes).toMap
+            summaries  = visible.map { p =>
+              val devices = devicesByPid.getOrElse(Some(p.id), Nil)
+              val macSet  = devices.map(_.mac).toSet
+              val pRows   = presence.filter(r => macSet.contains(r.mac))
+              val perMac  = wifihaven.api.presence.Presence
+                .totalMinutesByMac(pRows, Nil, settings.heartbeatFilter)
+              val total   = devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+              ProfileTimeSummaryWeek(
+                p.id,
+                p.name,
+                from.toString,
+                to.toString,
+                limitByPid.get(p.id),
+                total,
+              )
+            }
+          } yield Response
+            .json(summaries.toJson)
+            .addHeader(cacheControlFor(isTodayMode = !to.isBefore(today)))
+        },
       Method.GET / "api" / "time" / "status"                            ->
         handler { (req: Request) =>
           for {

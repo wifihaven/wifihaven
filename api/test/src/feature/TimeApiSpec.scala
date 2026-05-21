@@ -941,6 +941,141 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
       },
     ) @@ TestAspect.sequential,
 
+    // ── #777 collapsed accordion summary endpoint ───────────────────────────
+    suite("GET /api/time/status/summary")(
+      test("returns headline totals per profile across all visible profiles") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          adultsId    <- profileRepo
+            .create("Adults", Nil)
+            .flatMap(pid =>
+              profileRepo
+                .update(
+                  Profile(
+                    pid,
+                    "Adults",
+                    Nil,
+                    Nil,
+                    Nil,
+                    paused = false,
+                    FailureMode.LastKnownGood,
+                    blockIpOnly = false,
+                  ),
+                )
+                .as(pid),
+            )
+          _           <- tlRepo.upsert(kidsId, 60)
+          // Adults has no daily limit.
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "Laptop", adultsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // 45 min for kids, 20 min for adults. The summary should sum these
+          // independently per profile from a single presence query.
+          _               <- seedTraffic(routerId, mac1, "minecraft.net", today, 45)
+          _               <- seedTraffic(routerId, mac2, "wikipedia.org", today, 20)
+          // 15 min extension on the kids profile → remaining = 60 + 15 - 45 = 30.
+          _               <- extRepo.grantForProfile(kidsId, today, 15, "admin", None)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/summary").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummary]])
+          kids   = list.find(_.profileId == kidsId).get
+          adults = list.find(_.profileId == adultsId).get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // The V1 migration seeds default Kids+Adults profiles; my seeds are additional.
+          // Just assert mine are present with the right numbers.
+          assertTrue(list.exists(_.profileId == kidsId)) &&
+          assertTrue(list.exists(_.profileId == adultsId)) &&
+          assertTrue(kids.usedMins == 45) &&
+          assertTrue(kids.dailyLimitMins.contains(60)) &&
+          assertTrue(kids.extensionMins == 15) &&
+          assertTrue(kids.remainingMins.contains(30)) &&
+          assertTrue(adults.usedMins == 20) &&
+          assertTrue(adults.dailyLimitMins.isEmpty) &&
+          assertTrue(adults.remainingMins.isEmpty)
+      },
+      test("weekly summary returns totals over the trailing 7 days") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          _               <- seedTraffic(routerId, mac1, "minecraft.net", today.minusDays(2), 30)
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today, 25)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/summary/week").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummaryWeek]])
+          kids = list.find(_.profileId == kidsId).get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(kids.totalMins == 55) &&
+          assertTrue(kids.dailyLimitMins.contains(120)) &&
+          assertTrue(kids.from == today.minusDays(6).toString) &&
+          assertTrue(kids.to == today.toString)
+      },
+    ) @@ TestAspect.sequential,
+
     // ── #723 weekly view ────────────────────────────────────────────────────
     suite("GET /api/time/status/week")(
       test("per-day totals match a Today view computed for each date") {

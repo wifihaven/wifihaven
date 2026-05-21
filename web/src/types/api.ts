@@ -214,6 +214,29 @@ export interface HostUsage {
   usedMins: number
 }
 
+// #777 — collapsed-accordion payload: just the headline numbers, no per-device /
+// per-host / per-bucket arrays. The server computes the whole list in a single
+// batched presence query, so page load is `1 summary + N on-demand` instead of
+// `N rollups`.
+export interface ProfileTimeSummary {
+  profileId: number
+  profileName: string
+  date: string
+  dailyLimitMins?: number | null
+  usedMins: number
+  extensionMins: number
+  remainingMins?: number | null
+}
+
+export interface ProfileTimeSummaryWeek {
+  profileId: number
+  profileName: string
+  from: string
+  to: string
+  dailyLimitMins?: number | null
+  totalMins: number
+}
+
 export interface ProfileTimeStatus {
   profileId: number
   profileName: string

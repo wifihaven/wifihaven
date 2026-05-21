@@ -1,13 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
   Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { api } from '@/api/client'
-import { useTimeStatusToday, useTimeStatusWeek, useInvalidators } from '@/api/queries'
+import {
+  useInvalidators,
+  useTimeStatusProfileToday,
+  useTimeStatusProfileWeek,
+  useTimeStatusSummary,
+  useTimeStatusSummaryWeek,
+} from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
-import type { ProfileTimeBucket, ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
+import type {
+  ProfileTimeBucket, ProfileTimeStatus, ProfileTimeStatusWeek,
+  ProfileTimeSummary, ProfileTimeSummaryWeek,
+} from '@/types/api'
 import { PageLoader } from './DashboardPage'
 // #723 weekly card matches the visual tokens used by the #721/#722 hourly chart
 // (UsageHourlyBarChart). The shared component bakes in an `hour`-shaped X-axis
@@ -91,27 +100,68 @@ export function formatMins(n: number): string {
 
 type Window = 'today' | 'week'
 
+// #777 — remember which profile rows are expanded across navigations. Kept in
+// localStorage so the operator's expansion choices persist across page mounts;
+// keyed per-tab so Today and Week don't share state.
+const STORAGE_KEY = 'timepage:expanded:v1'
+
+function loadExpanded(): { today: number[]; week: number[] } {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return { today: [], week: [] }
+    const v = JSON.parse(raw)
+    return {
+      today: Array.isArray(v?.today) ? v.today.filter((x: unknown) => typeof x === 'number') : [],
+      week: Array.isArray(v?.week) ? v.week.filter((x: unknown) => typeof x === 'number') : [],
+    }
+  } catch {
+    return { today: [], week: [] }
+  }
+}
+
 export function TimePage() {
   const { isAdmin }   = useAuth()
   const invalidators  = useInvalidators()
   const [window, setWindow] = useState<Window>('today')
-  // #803: only the active window is enabled, so switching tabs doesn't
-  // pay for the inactive query, but a quick switch back within the
-  // per-endpoint stale window serves cached data without a network hit.
-  const todayQuery = useTimeStatusToday({ enabled: window === 'today' })
-  // #794: pass the offset that aligns hourly buckets to the viewer's local
-  // midnight so the chart can attribute each bucket to one local day without
-  // straddling. The offset is part of the cache key (queries.ts).
-  const weekQuery  = useTimeStatusWeek(
-    undefined,
-    localBucketOffsetMin(),
-    { enabled: window === 'week' },
-  )
-  const statuses     = todayQuery.data ?? []
-  const weekStatuses = weekQuery.data  ?? []
+  // #777 — fetch only the lightweight summary on page load. Per-profile detail is
+  // fetched lazily when a row is expanded.
+  const todaySummaryQuery = useTimeStatusSummary({ enabled: window === 'today' })
+  const weekSummaryQuery  = useTimeStatusSummaryWeek(undefined, { enabled: window === 'week' })
+  const summaries     = todaySummaryQuery.data ?? []
+  const weekSummaries = weekSummaryQuery.data  ?? []
   const loading =
-    (window === 'today' && todayQuery.isPending) ||
-    (window === 'week'  && weekQuery.isPending)
+    (window === 'today' && todaySummaryQuery.isPending) ||
+    (window === 'week'  && weekSummaryQuery.isPending)
+
+  const [expanded, setExpanded] = useState<{ today: Set<number>; week: Set<number> }>(() => {
+    const v = loadExpanded()
+    return { today: new Set(v.today), week: new Set(v.week) }
+  })
+  // Once summaries are first loaded, auto-expand the first row if nothing is expanded yet
+  // (issue's "one profile expanded by default" rule — avoids an empty-looking page).
+  useEffect(() => {
+    if (window !== 'today' || summaries.length === 0 || expanded.today.size > 0) return
+    setExpanded(e => ({ ...e, today: new Set([summaries[0].profileId]) }))
+  }, [window, summaries, expanded.today.size])
+  useEffect(() => {
+    if (window !== 'week' || weekSummaries.length === 0 || expanded.week.size > 0) return
+    setExpanded(e => ({ ...e, week: new Set([weekSummaries[0].profileId]) }))
+  }, [window, weekSummaries, expanded.week.size])
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        today: [...expanded.today], week: [...expanded.week],
+      }))
+    } catch { /* private mode etc. — best-effort */ }
+  }, [expanded])
+
+  const toggle = (tab: Window, pid: number) => setExpanded(e => {
+    const next = new Set(e[tab])
+    if (next.has(pid)) next.delete(pid)
+    else next.add(pid)
+    return { ...e, [tab]: next }
+  })
+
   const [extProfileId, setExtProfileId] = useState<number | null>(null)
   const [extMins, setExtMins]   = useState(30)
   const [extNote, setExtNote]   = useState('')
@@ -140,8 +190,8 @@ export function TimePage() {
   const granting = grantMutation.isPending
 
   const profileName = (id: number) =>
-    statuses.find(s => s.profileId === id)?.profileName
-      ?? weekStatuses.find(s => s.profileId === id)?.profileName
+    summaries.find(s => s.profileId === id)?.profileName
+      ?? weekSummaries.find(s => s.profileId === id)?.profileName
       ?? ''
 
   return (
@@ -170,24 +220,31 @@ export function TimePage() {
         ))}
       </div>
 
-      {window === 'today' && statuses.length === 0 && (
+      {window === 'today' && summaries.length === 0 && (
         <p className="text-gray-500 text-sm">No profiles found.</p>
       )}
-      {window === 'week' && weekStatuses.length === 0 && (
+      {window === 'week' && weekSummaries.length === 0 && (
         <p className="text-gray-500 text-sm">No profiles found.</p>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {window === 'today' && statuses.map(s => (
-          <ProfileTimeCard
+      <div className="space-y-3">
+        {window === 'today' && summaries.map(s => (
+          <ProfileAccordionRow
             key={s.profileId}
-            status={s}
+            summary={s}
+            expanded={expanded.today.has(s.profileId)}
+            onToggle={() => toggle('today', s.profileId)}
             isAdmin={isAdmin}
             onGrant={() => setExtProfileId(s.profileId)}
           />
         ))}
-        {window === 'week' && weekStatuses.map(s => (
-          <ProfileTimeWeekCard key={s.profileId} status={s} />
+        {window === 'week' && weekSummaries.map(s => (
+          <ProfileAccordionWeekRow
+            key={s.profileId}
+            summary={s}
+            expanded={expanded.week.has(s.profileId)}
+            onToggle={() => toggle('week', s.profileId)}
+          />
         ))}
       </div>
 
@@ -371,6 +428,125 @@ function ProfileTimeCard({
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// #777 — collapsed accordion row for the Today tab. The header shows the headline
+// numbers from the lightweight summary; the heavy per-profile fetch fires only on
+// first expand and stays cached via TanStack so collapse/re-expand is free.
+function ProfileAccordionRow({
+  summary, expanded, onToggle, isAdmin, onGrant,
+}: {
+  summary: ProfileTimeSummary
+  expanded: boolean
+  onToggle: () => void
+  isAdmin: boolean
+  onGrant: () => void
+}) {
+  const hasLimit = summary.dailyLimitMins != null
+  const overLimit = hasLimit && summary.remainingMins != null && summary.remainingMins <= 0
+  // Detail is only queried after the row has been expanded once. `enabled` flips
+  // permanently to true after that; re-collapse keeps the query in cache.
+  const [everExpanded, setEverExpanded] = useState(expanded)
+  useEffect(() => { if (expanded) setEverExpanded(true) }, [expanded])
+  const detail = useTimeStatusProfileToday(summary.profileId, { enabled: everExpanded })
+
+  return (
+    <div
+      data-testid={`time-row-${summary.profileId}`}
+      className={`bg-gray-900 rounded-2xl border ${overLimit ? 'border-red-500/40' : 'border-gray-800'}`}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        data-testid={`time-row-toggle-${summary.profileId}`}
+        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+          <span className="font-semibold text-white text-lg truncate">{summary.profileName}</span>
+        </div>
+        <div className="flex items-center gap-3 shrink-0 text-xs">
+          <span className="text-gray-400 font-mono">{formatMins(summary.usedMins)} used</span>
+          {hasLimit && (
+            <span className={overLimit ? 'text-red-400' : 'text-gray-500'}>
+              {summary.remainingMins != null && summary.remainingMins > 0
+                ? `${formatMins(summary.remainingMins)} left`
+                : 'Limit reached'}
+            </span>
+          )}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-5 pb-5 border-t border-gray-800 pt-4">
+          {detail.isPending && (
+            <p className="text-xs text-gray-500" data-testid={`time-row-loading-${summary.profileId}`}>
+              Loading…
+            </p>
+          )}
+          {detail.data && (
+            <ProfileTimeCard status={detail.data} isAdmin={isAdmin} onGrant={onGrant} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// #777 — weekly accordion row sibling.
+function ProfileAccordionWeekRow({
+  summary, expanded, onToggle,
+}: {
+  summary: ProfileTimeSummaryWeek
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const [everExpanded, setEverExpanded] = useState(expanded)
+  useEffect(() => { if (expanded) setEverExpanded(true) }, [expanded])
+  const detail = useTimeStatusProfileWeek(
+    summary.profileId,
+    undefined,
+    localBucketOffsetMin(),
+    { enabled: everExpanded },
+  )
+
+  return (
+    <div
+      data-testid={`time-week-row-${summary.profileId}`}
+      className="bg-gray-900 rounded-2xl border border-gray-800"
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        data-testid={`time-week-row-toggle-${summary.profileId}`}
+        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+          <span className="font-semibold text-white text-lg truncate">{summary.profileName}</span>
+        </div>
+        <div className="flex items-center gap-3 shrink-0 text-xs">
+          <span className="text-gray-400 font-mono">{formatMins(summary.totalMins)} this week</span>
+          {summary.dailyLimitMins != null && (
+            <span className="text-gray-600">Daily limit: {formatMins(summary.dailyLimitMins)}</span>
+          )}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-5 pb-5 border-t border-gray-800 pt-4">
+          {detail.isPending && (
+            <p className="text-xs text-gray-500" data-testid={`time-week-row-loading-${summary.profileId}`}>
+              Loading…
+            </p>
+          )}
+          {detail.data && <ProfileTimeWeekCard status={detail.data} />}
         </div>
       )}
     </div>

@@ -1,6 +1,6 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
-  DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
+  DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   QueryLog, RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
@@ -63,10 +63,11 @@ async function req<T>(
   return res.json() as Promise<T>
 }
 
-function weekQuery(to?: string, bucketOffsetMin?: number): string {
+function weekQuery(to?: string, bucketOffsetMin?: number, profileId?: number): string {
   const parts: string[] = []
   if (to !== undefined) parts.push(`to=${to}`)
   if (bucketOffsetMin !== undefined) parts.push(`bucketOffsetMin=${bucketOffsetMin}`)
+  if (profileId !== undefined) parts.push(`profileId=${profileId}`)
   return parts.length === 0 ? '' : `?${parts.join('&')}`
 }
 
@@ -121,10 +122,23 @@ export const api = {
 
   // ── Time ───────────────────────────────────────────────────────────────
   time: {
-    statusAll: (date?: string) =>
-      req<ProfileTimeStatus[]>('GET', `/time/status${date ? `?date=${date}` : ''}`),
-    statusAllWeek: (to?: string, bucketOffsetMin?: number) =>
-      req<ProfileTimeStatusWeek[]>('GET', `/time/status/week${weekQuery(to, bucketOffsetMin)}`),
+    statusAll: (date?: string, profileId?: number) => {
+      const qs = new URLSearchParams()
+      if (date) qs.set('date', date)
+      if (profileId !== undefined) qs.set('profileId', String(profileId))
+      const tail = qs.toString()
+      return req<ProfileTimeStatus[]>('GET', `/time/status${tail ? `?${tail}` : ''}`)
+    },
+    // #777 lightweight per-profile summary used by the collapsed accordion.
+    summaryAll: (date?: string) =>
+      req<ProfileTimeSummary[]>('GET', `/time/status/summary${date ? `?date=${date}` : ''}`),
+    summaryAllWeek: (to?: string) =>
+      req<ProfileTimeSummaryWeek[]>('GET', `/time/status/summary/week${to ? `?to=${to}` : ''}`),
+    statusAllWeek: (to?: string, bucketOffsetMin?: number, profileId?: number) =>
+      req<ProfileTimeStatusWeek[]>(
+        'GET',
+        `/time/status/week${weekQuery(to, bucketOffsetMin, profileId)}`,
+      ),
     // Colons in MAC addresses are valid URL path chars (sub-delims); zio-http
     // does NOT auto-decode percent-encoded colons in path segments, so
     // `encodeURIComponent` would turn the MAC into a 404. Send raw.
