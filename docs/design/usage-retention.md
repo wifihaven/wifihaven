@@ -8,41 +8,54 @@ with [#793](https://github.com/wifihaven/wifihaven/issues/793) (partitioning) an
 
 | Tier | Source | Grain | Retention | Mechanism |
 | ---- | ------ | ----- | --------- | --------- |
-| Raw | `traffic_reports` | 5-min × (router, mac, host) | **35 days** | router writes; sweep drops via `DROP PARTITION` if [#793](https://github.com/wifihaven/wifihaven/issues/793) lands, plain `DELETE` otherwise |
-| Hourly | new `traffic_hourly` | 1 h × (router, mac, host) | **13 months** | API-side ZIO cron, every 5 min, UPSERT from raw |
-| Daily | new `traffic_daily` | 1 day × (router, mac, host) | **forever** (cap at 5 y if it ever becomes a problem) | API-side ZIO cron, daily at 00:15 local, UPSERT from raw |
+| Raw | `traffic_reports` | 5-min × (router, mac, host) | **30 days** | router writes; sweep drops via `DROP PARTITION` if [#793](https://github.com/wifihaven/wifihaven/issues/793) lands, plain `DELETE` otherwise |
+| Events | `connection_events` | per-DNS-decision row | **30 days** | sweep `DELETE` (or `DROP PARTITION` if #793 partitions it too) |
+| Hourly | new `traffic_hourly` | 1 h × (router, mac, host) | **3 months** | API-side ZIO cron, every 5 min, UPSERT from raw |
+| Daily | new `traffic_daily` | 1 day × (router, mac, host) | **6 months** | API-side ZIO cron, daily at 00:15 local, UPSERT from raw |
 | Quota | existing `time_usage` | 1 day × (mac, host) bucket-deduped wall-clock | unchanged (forever) | unchanged — written at ingest |
+| Sessions | `/api/sessions` (stitched from `traffic_reports`) | per-host session | **deferred** — see [#817](https://github.com/wifihaven/wifihaven/issues/817) | no separate retention until data-quality issues are fixed |
 
 `/api/usage/series` picks the tier by window width: `≤ 6 h → raw`, `≤ 14 d → hourly`,
-`> 14 d → daily`. SPA date pickers expose the 35-day horizon for 5-min mode and the
-full history for daily mode.
+`> 14 d → daily`. SPA date pickers expose the 30-day horizon for 5-min mode, 3 months
+for hourly, 6 months for daily.
 
-## 1. Raw retention — 35 days
+**Sessions retention is intentionally out of scope.** The session-stitching surface
+(`/api/sessions`) has known data-quality problems (tracker [#817](https://github.com/wifihaven/wifihaven/issues/817)). Until those are
+resolved we do not separately retain or sweep sessions — they remain a derived view
+over whatever `traffic_reports` rows still exist (so the 30-day raw retention does
+implicitly bound them, but we make no correctness claim about sessions over time).
+
+## 1. Raw retention — 30 days
 
 `traffic_reports` is the 5-minute, per-(router, mac, host) fact table the router posts
 into ([V2__openwrt.sql](../../api/resources/db/migration/V2__openwrt.sql)). It is the
 only growth-unbounded table in the schema.
 
-**Chosen:** 35 days. Reasons:
+**Chosen:** 30 days. Reasons:
 
 - The series endpoint only serves 5-min raw for windows ≤ 6 h (see #5 below). Beyond
   that, every user surface reads the hourly rollup. So *user-facing* demand for raw
-  is "the last few days," not "the last year."
-- 35 days (not 30) gives a one-week buffer for week-shaped queries and live-debug
-  forensics — when the operator goes investigating a heartbeat-filter regression or
-  a missing Presence row, they want the raw rows from a few weeks back, not a heap of
-  daily aggregates.
+  is "the last few days," not "the last month."
 - At household scale (~30 devices × ~50 hosts/day × 288 5-min buckets) the raw table
-  is ~430 k rows/day → ~15 M rows at 35 d. With the indexes from
+  is ~430 k rows/day → ~13 M rows at 30 d. With the indexes from
   [V25](../../api/resources/db/migration/V25__indexes_for_hot_read_paths.sql) this is
-  still index-scannable on `basic-256mb` Postgres. Two months in we'd be at ~30 M and
-  feeling it; the 35-day horizon keeps the working set stable indefinitely.
+  still index-scannable on `basic-256mb` Postgres.
 
 **Operator override:** the retention horizon is a single config knob
-(`usage.rawRetentionDays`, default 35) so a paying-customer SKU could lengthen it
+(`usage.rawRetentionDays`, default 30) so a paying-customer SKU could lengthen it
 without code changes if the use case ever appears.
 
-## 2. Hourly rollup — 13 months
+### 1a. `connection_events` retention — 30 days
+
+`connection_events` is the per-DNS-decision event log (one row per decision the router
+makes, keyed by `(router_id, mac, dest_ip, ts)`). At household scale it grows faster
+than `traffic_reports` per active hour, but slower per device-day. **Retention: 30
+days**, same horizon as raw traffic for the same reason — anything older than that is
+served by aggregates, not the event log. The sweep deletes (or drops the partition,
+if [#793](https://github.com/wifihaven/wifihaven/issues/793) covers it) in the same
+job that handles `traffic_reports`.
+
+## 2. Hourly rollup — 3 months
 
 A new `traffic_hourly` table:
 
@@ -63,11 +76,12 @@ CREATE INDEX idx_traffic_hourly_bucket          ON traffic_hourly(bucket_start D
 CREATE INDEX idx_traffic_hourly_mac_bucket      ON traffic_hourly(mac, bucket_start DESC);
 ```
 
-**Retention 13 months** — year-over-year answers ("how much YouTube did the kid use
-*last May*?") cost ~720 rows per (mac, host). At ~50 hosts/device × ~30 devices ×
-8760 hr/y ≈ 13 M rows/year. Cheap.
+**Retention 3 months** — hourly resolution exists to answer "what did the network
+look like over the last quarter," not for year-over-year forensics. The daily tier
+handles longer horizons. At ~50 hosts/device × ~30 devices × 24 hr/d × 90 d
+≈ 3.2 M rows. Comfortable on `basic-256mb`.
 
-## 3. Daily rollup — forever
+## 3. Daily rollup — 6 months
 
 A new `traffic_daily` with the same shape, `bucket_start` is `DATE` in the router's
 local zone (matches `time_usage.date` convention):
@@ -89,10 +103,11 @@ CREATE INDEX idx_traffic_daily_date     ON traffic_daily(date DESC);
 CREATE INDEX idx_traffic_daily_mac_date ON traffic_daily(mac, date DESC);
 ```
 
-**No retention.** ~1.5 k rows/day × 365 = ~550 k rows/year — *all* historical years.
-The table never grows beyond what a basic Postgres handles. If we ever cross
-~5 M rows we add a 5-year sweep, but until then "forever" is the right answer for
-"how much TV did we watch in 2027".
+**Retention 6 months.** ~1.5 k rows/day × 180 d ≈ 270 k rows. Trivial. Six months
+covers seasonal comparisons (school year vs summer) without committing to
+indefinite-history semantics that we'd then have to either honor or migrate away
+from. If a year-over-year use case appears, lengthening the horizon is a one-line
+config change — but until then we keep the working set bounded.
 
 ## 4. Rollup mechanism — pre-computed table via API-side ZIO cron
 
@@ -216,22 +231,27 @@ revisit if pgstat shows the autovacuum cost is real.
 
 ## 11. User-facing implications — date picker UX
 
-- **Daily-granularity view:** date picker open to the full retention horizon of
-  `traffic_daily` (effectively unbounded).
-- **Hourly view:** picker limited to last 13 months.
-- **5-minute view:** picker limited to last 35 days. Older dates are greyed out
-  with tooltip "5-minute resolution is kept for 35 days. Switch to hourly to see
+- **Daily-granularity view:** picker limited to last 6 months.
+- **Hourly view:** picker limited to last 3 months.
+- **5-minute view:** picker limited to last 30 days. Older dates are greyed out
+  with tooltip "5-minute resolution is kept for 30 days. Switch to hourly to see
   this date."
 - The SPA auto-promotes the granularity when the user expands the window past a
   threshold (see #5), so the constraint is rarely hit explicitly.
 
+## 12. Sessions — out of scope for retention
+
+`/api/sessions` stitches per-host sessions out of `traffic_reports` and has known
+data-quality problems (tracker [#817](https://github.com/wifihaven/wifihaven/issues/817)). Until
+those land, no separate sessions retention policy applies — sessions remain a
+derived view bounded only by the 30-day raw retention, and we explicitly make no
+correctness or persistence claim about them. Revisit once #817 is closed.
+
 ## Open operator questions
 
-1. **Daily rollup horizon — actually forever?** "Forever" is fine until ~5 M rows
-   (~10 y at current scale). If you'd rather cap it now ("5 y is plenty for a
-   household") say so and the sweep gains a 5-y `DELETE` on `traffic_daily`.
-2. **Raw retention knob — config or hard-coded?** Filed as config in the policy;
-   confirm you want it operator-tunable rather than a constant.
-3. **Daily-rollup local zone.** `traffic_daily.date` should follow `time_usage.date`
+1. **Raw retention knob — config or hard-coded?** Filed as config in the policy
+   (`usage.rawRetentionDays`, default 30); confirm you want it operator-tunable
+   rather than a constant.
+2. **Daily-rollup local zone.** `traffic_daily.date` should follow `time_usage.date`
    convention (router-local, midnight reset). Confirm — alternative is UTC, which
-   makes year-over-year queries simpler but desynchronizes from the quota table.
+   makes cross-tier joins simpler but desynchronizes from the quota table.
