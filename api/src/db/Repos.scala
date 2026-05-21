@@ -291,8 +291,8 @@ trait ConnectionEventRepo {
   /**
    * #720 backfill: look up the most recent fqdn-typed connection_event with the given (router_id,
    * dest_ip) whose `ts` is at-or-after `since`. Returns the resolved hostname if any. Used at
-   * ingest time to attach a resolution to a fresh ipv4/ipv6-typed event whose agent-side DNS
-   * cache lost the race.
+   * ingest time to attach a resolution to a fresh ipv4/ipv6-typed event whose agent-side DNS cache
+   * lost the race.
    */
   def findRecentFqdnFor(
       routerId: RouterId,

@@ -782,7 +782,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         cRepo    <- ZIO.service[ConnectionEventRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
-        evIp = RouterEvent(
+        evIp   = RouterEvent(
           "connection_attempt",
           mac = Some(MacAddress.unsafe(knownMac)),
           host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
@@ -802,8 +802,18 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           ts = "2026-05-07T14:01:05Z",
           eventId = Some(UUID.randomUUID()),
         )
-        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evIp)).toJson, Some(tk))
-        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evFqdn)).toJson, Some(tk))
+        _    <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(id, List(evIp)).toJson,
+          Some(tk),
+        )
+        _    <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(id, List(evFqdn)).toJson,
+          Some(tk),
+        )
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(rows.size == 2) &&
         // both rows now surface as the resolved fqdn (the ipv4 row via
@@ -829,7 +839,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           ts = "2026-05-07T14:01:00Z",
           eventId = Some(UUID.randomUUID()),
         )
-        evIp = RouterEvent(
+        evIp   = RouterEvent(
           "connection_attempt",
           mac = Some(MacAddress.unsafe(knownMac)),
           host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
@@ -839,8 +849,18 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           ts = "2026-05-07T14:01:05Z",
           eventId = Some(UUID.randomUUID()),
         )
-        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evFqdn)).toJson, Some(tk))
-        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evIp)).toJson, Some(tk))
+        _    <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(id, List(evFqdn)).toJson,
+          Some(tk),
+        )
+        _    <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(id, List(evIp)).toJson,
+          Some(tk),
+        )
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(rows.size == 2) &&
         assertTrue(rows.forall(_.host == HostId.Fqdn(Hostname.unsafe("neverssl.com"))))
@@ -871,7 +891,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           ts = "2026-05-07T14:01:00Z",
           eventId = Some(UUID.randomUUID()),
         )
-        evIpB = RouterEvent(
+        evIpB   = RouterEvent(
           "connection_attempt",
           mac = Some(MacAddress.unsafe(knownMac)),
           host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
@@ -881,14 +901,26 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           ts = "2026-05-07T14:01:05Z",
           eventId = Some(UUID.randomUUID()),
         )
-        _     <- post(routes, "/api/router/events", RouterEventsRequest(idA, List(evFqdnA)).toJson, Some(tkA))
-        _     <- post(routes, "/api/router/events", RouterEventsRequest(idB, List(evIpB)).toJson, Some(tkB))
+        _     <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(idA, List(evFqdnA)).toJson,
+          Some(tkA),
+        )
+        _     <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(idB, List(evIpB)).toJson,
+          Some(tkB),
+        )
         rowsB <- cRepo.listForRouter(idB, 100)
       } yield assertTrue(rowsB.size == 1) &&
         // router B's ipv4 row must NOT inherit router A's fqdn
         assertTrue(rowsB.head.host == HostId.IPv4(IpAddress.unsafe("34.223.124.45")))
     },
-    test("events: fqdn arriving outside the backfill window does not attribute the earlier ipv4 row") {
+    test(
+      "events: fqdn arriving outside the backfill window does not attribute the earlier ipv4 row",
+    ) {
       // The backfill is for the conntrack/dns-tail race window — not a
       // long-running cache. A fqdn observed 10 minutes after an ipv4 event
       // for the same dest_ip is too late and must not retroactively
@@ -899,7 +931,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         cRepo    <- ZIO.service[ConnectionEventRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
-        evIp = RouterEvent(
+        evIp   = RouterEvent(
           "connection_attempt",
           mac = Some(MacAddress.unsafe(knownMac)),
           host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
@@ -920,8 +952,18 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           ts = "2026-05-07T14:11:00Z",
           eventId = Some(UUID.randomUUID()),
         )
-        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evIp)).toJson, Some(tk))
-        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evFqdn)).toJson, Some(tk))
+        _    <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(id, List(evIp)).toJson,
+          Some(tk),
+        )
+        _    <- post(
+          routes,
+          "/api/router/events",
+          RouterEventsRequest(id, List(evFqdn)).toJson,
+          Some(tk),
+        )
         rows <- cRepo.listForRouter(id, 100)
       } yield assertTrue(rows.size == 2) &&
         // ipv4 row stays unresolved (the late fqdn doesn't reach it)
