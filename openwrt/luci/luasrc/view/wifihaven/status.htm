@@ -1,0 +1,41 @@
+<%+header%>
+
+<h2><%:WifiHaven Status%></h2>
+
+<div class="cbi-section">
+  <p>
+    <%:Read-only overview of the WifiHaven agent. Populated fields are stubs in this scaffold (see #748).%>
+  </p>
+
+  <table class="cbi-section-table">
+    <tr class="cbi-section-table-titles">
+      <th class="cbi-section-table-cell"><%:Field%></th>
+      <th class="cbi-section-table-cell"><%:Value%></th>
+    </tr>
+    <tr class="cbi-section-table-row">
+      <td><%:Agent service%></td>
+      <td><code>/etc/init.d/wifihaven status</code></td>
+    </tr>
+    <tr class="cbi-section-table-row">
+      <td><%:Last policy poll%></td>
+      <td><em><%:not yet wired%></em></td>
+    </tr>
+    <tr class="cbi-section-table-row">
+      <td><%:Last usage POST%></td>
+      <td><em><%:not yet wired%></em></td>
+    </tr>
+    <tr class="cbi-section-table-row">
+      <td><%:Usage retry queue depth%></td>
+      <td><em><%:not yet wired%></em></td>
+    </tr>
+  </table>
+
+  <p>
+    <%:Edit cadence and connection settings under the%>
+    <a href="<%=luci.dispatcher.build_url('admin', 'services', 'wifihaven', 'settings')%>"><%:Settings%></a>
+    <%:tab. After saving, restart the agent:%>
+    <code>/etc/init.d/wifihaven restart</code>.
+  </p>
+</div>
+
+<%+footer%>

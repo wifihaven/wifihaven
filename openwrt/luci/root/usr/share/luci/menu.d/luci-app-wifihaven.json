@@ -1,0 +1,30 @@
+{
+  "admin/services/wifihaven": {
+    "title": "WifiHaven",
+    "order": 60,
+    "action": {
+      "type": "alias",
+      "path": "admin/services/wifihaven/status"
+    },
+    "depends": {
+      "acl": ["luci-app-wifihaven"],
+      "uci": { "wifihaven": true }
+    }
+  },
+  "admin/services/wifihaven/status": {
+    "title": "Status",
+    "order": 10,
+    "action": {
+      "type": "template",
+      "path": "wifihaven/status"
+    }
+  },
+  "admin/services/wifihaven/settings": {
+    "title": "Settings",
+    "order": 20,
+    "action": {
+      "type": "cbi",
+      "path": "wifihaven/settings"
+    }
+  }
+}
