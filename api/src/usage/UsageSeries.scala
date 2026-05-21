@@ -53,8 +53,13 @@ object UsageSeries {
       for (h <- hosts) perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
     }
 
+    // Drop hosts whose proportional day-total floors to 0 — they'd render
+    // as "host.com 0m" in the legend and as invisible stacks. Whatever
+    // seconds they did accrue still land in otherMins via the per-bucket
+    // residual fold below.
     val ordered = perHostDaySecs.toList
       .map { case (h, s) => (h, (s / 60).toInt) }
+      .filter { case (_, m) => m > 0 }
       .sortBy { case (h, m) => (-m, h.value) }
 
     val topHostIds = ordered.take(topN).map(_._1).toSet
