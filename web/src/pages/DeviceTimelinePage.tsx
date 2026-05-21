@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import {
-  Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer,
-  Tooltip, XAxis, YAxis,
-} from 'recharts'
 import { api } from '@/api/client'
 import type { UsageBucket, UsageSeriesResponse } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+import {
+  HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
+} from '@/components/usage/UsageHourlyBarChart'
 
 // #721 — per-device daily timeline. Hourly stacked-bar chart of minutes-of-use
 // for a single device on a chosen day. Hosts beyond topN collapse into "Other";
@@ -15,18 +14,6 @@ import { PageLoader } from './DashboardPage'
 const TOP_N = 5
 const DEFAULT_TZ =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-
-const HOST_COLORS = [
-  '#10b981', // emerald
-  '#3b82f6', // blue
-  '#a855f7', // purple
-  '#f59e0b', // amber
-  '#ec4899', // pink
-  '#14b8a6', // teal
-  '#f97316', // orange
-  '#8b5cf6', // violet
-]
-const OTHER_COLOR = '#4b5563' // gray-600
 
 function todayISO(): string {
   const d = new Date()
@@ -46,22 +33,19 @@ function addDays(iso: string, n: number): string {
   return `${yy}-${mm}-${dd}`
 }
 
-interface ChartRow {
-  hour: string
-  total: number
-  [hostKey: string]: number | string
-}
-
 function buildChartData(
   buckets: UsageBucket[],
   hostKeys: string[],
-): ChartRow[] {
+) {
   return buckets.map(b => {
-    const row: ChartRow = { hour: String(b.hour).padStart(2, '0'), total: b.totalMins }
+    const row: Record<string, number | string> = {
+      hour: String(b.hour).padStart(2, '0'),
+      total: b.totalMins,
+    }
     for (const k of hostKeys) row[k] = 0
     for (const ph of b.perHost) row[ph.host.value] = ph.mins
-    row['__other'] = b.otherMins
-    return row
+    row[OTHER_KEY] = b.otherMins
+    return row as { hour: string; total: number; [k: string]: number | string }
   })
 }
 
@@ -92,12 +76,17 @@ export function DeviceTimelinePage() {
   }
 
   const chart = useMemo(() => {
-    if (!data) return { rows: [] as ChartRow[], hostKeys: [] as string[] }
+    if (!data) return { rows: [], series: [] as ChartSeries[] }
     // Belt-and-suspenders: skip hosts that floor to 0m in the legend/stack.
     // The server already filters these out, but rendering an invisible bar
     // with a "0m" legend entry looks broken if anything slips through.
     const hostKeys = data.topHosts.filter(h => h.dayMins > 0).map(h => h.host.value)
-    return { rows: buildChartData(data.buckets, hostKeys), hostKeys }
+    const series: ChartSeries[] = hostKeys.map((k, i) => ({
+      key: k,
+      name: k,
+      color: HOST_COLORS[i % HOST_COLORS.length],
+    }))
+    return { rows: buildChartData(data.buckets, hostKeys), series }
   }, [data])
 
   if (loading && !data) return <PageLoader />
@@ -162,57 +151,12 @@ export function DeviceTimelinePage() {
             No usage recorded on {date}.
           </div>
         ) : (
-          <div data-testid="device-timeline-chart" className="h-72 -ml-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chart.rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
-                <XAxis
-                  dataKey="hour"
-                  tick={{ fill: '#6b7280', fontSize: 11 }}
-                  axisLine={{ stroke: '#374151' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fill: '#6b7280', fontSize: 11 }}
-                  axisLine={{ stroke: '#374151' }}
-                  tickLine={false}
-                  width={32}
-                  unit="m"
-                />
-                <Tooltip
-                  cursor={{ fill: '#1f293780' }}
-                  contentStyle={{
-                    background: '#0a0f1c',
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                    fontSize: 12,
-                  }}
-                  labelFormatter={(h) => `${String(h)}:00 – ${String(h)}:59`}
-                  // Hide 0m rows entirely — they're noise for sparse devices
-                  // where multiple background hosts each accrue sub-minute
-                  // shares within an hour and floor to zero.
-                  formatter={(v, n) => {
-                    if (Number(v) === 0) return null as unknown as [string, string]
-                    return [`${String(v)}m`, n === '__other' ? 'Other' : String(n)]
-                  }}
-                />
-                <Legend
-                  iconType="square"
-                  wrapperStyle={{ fontSize: 12, color: '#9ca3af', paddingTop: 8 }}
-                  formatter={(n: string) => (n === '__other' ? 'Other' : n)}
-                />
-                {chart.hostKeys.map((k, i) => (
-                  <Bar
-                    key={k}
-                    dataKey={k}
-                    stackId="hosts"
-                    fill={HOST_COLORS[i % HOST_COLORS.length]}
-                  />
-                ))}
-                <Bar dataKey="__other" stackId="hosts" fill={OTHER_COLOR} name="Other" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <UsageHourlyBarChart
+            rows={chart.rows}
+            series={chart.series}
+            showLegend
+            testId="device-timeline-chart"
+          />
         )}
       </div>
 

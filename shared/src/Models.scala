@@ -378,13 +378,29 @@ case class UsageBucket(
     perHost: List[UsageBucketHost],
     otherMins: Int,
 ) derives JsonCodec
+
+// #722 — profile-mode adds parallel per-device aggregates so the SPA can
+// toggle stack-by-device vs stack-by-host without a second round-trip.
+case class UsageDeviceTotal(deviceMac: MacAddress, deviceName: String, dayMins: Int) derives JsonCodec
+case class UsageBucketDevice(deviceMac: MacAddress, deviceName: String, mins: Int) derives JsonCodec
+case class UsageDeviceBucket(
+    hour: Int,
+    totalMins: Int,
+    perDevice: List[UsageBucketDevice],
+    otherMins: Int,
+) derives JsonCodec
+
 case class UsageSeriesResponse(
-    deviceMac: MacAddress,
-    deviceName: String,
+    deviceMac: Option[MacAddress] = None,
+    deviceName: Option[String] = None,
+    profileId: Option[ProfileId] = None,
+    profileName: Option[String] = None,
     date: String,
     tz: String,
     topHosts: List[UsageHostTotal],
     buckets: List[UsageBucket],
+    topDevices: List[UsageDeviceTotal] = Nil,
+    bucketsByDevice: List[UsageDeviceBucket] = Nil,
 ) derives JsonCodec
 
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
