@@ -1,4 +1,4 @@
--- V21__time_usage_resolved_fqdn_index.sql
+-- V22__time_usage_resolved_fqdn_index.sql
 -- Stop-gap read-side FQDN join for time_usage / traffic_reports (#731).
 --
 -- PR #728 added resolved_host_value to connection_events so the connection

@@ -26,17 +26,21 @@
 --     → list of { mac, dst_ip, bytes, packets }
 --     Input: JSON from `nft -j list set inet wifihaven mac_ip_tracking`
 --
---   usage.build_report(counters, nft_sets, period_start, period_end, router_id
---                      [, leases [, lookup_hostname [, tracker]]])
+--   usage.build_report(counters, nft_sets, period_start, period_end, router_id,
+--                      leases, lookup_hostname, tracker,
+--                      sample_seconds, bucket_seconds)
 --     → report table ready for JSON encoding and POST /api/router/usage
 --     nft_sets:        { hostname → { ip → true } }  (maintained by render.update_shared + dnsmasq)
 --     leases:          { mac → ip }  (optional; populates the ip field on each record)
 --     lookup_hostname: fn(dst_ip) → string|nil  (optional; consulted before
 --                      falling back to "unknown" — same dnsmasq-query-log
 --                      cache the conntrack path uses, see #287)
---     tracker:         opaque tracker from usage.new_tracker(), fed every 60 s
---                      via usage.tracker_sample() during the bucket; supplies
---                      real per-minute activeSeconds (issue #295).
+--     tracker:         opaque tracker from usage.new_tracker(), fed every
+--                      sample_seconds via usage.tracker_sample() during the
+--                      bucket; supplies real activeSeconds (issue #295).
+--     sample_seconds:  cadence at which the agent feeds the tracker.
+--     bucket_seconds:  length of the usage reporting window; activeSeconds
+--                      is capped at this.
 --
 --   usage.new_tracker() / usage.tracker_sample(t, counters) / usage.tracker_reset(t)
 --     Per-minute activity sampler — see comment above the function.
@@ -137,42 +141,35 @@ end
 -- network?" sampling.  See #295 (#516).
 -- ---------------------------------------------------------------------------
 -- The nftables set element counters in `mac_ip_tracking` are reset to 0 once
--- per 5-min bucket.  The agent calls `tracker_sample` every SECONDS_PER_SAMPLE
--- seconds with the currently-parsed counters; each call that observes byte
--- growth bumps the (mac, dst_ip)'s active-sample count.  At end-of-bucket
--- `build_report` multiplies that count by SECONDS_PER_SAMPLE (capped at 300)
--- to produce `activeSeconds`, and the agent resets the tracker for the next
+-- per bucket.  The agent calls `tracker_sample` every `sample_seconds` with
+-- the currently-parsed counters; each call that observes byte growth bumps
+-- the (mac, dst_ip)'s active-sample count.  At end-of-bucket `build_report`
+-- multiplies that count by `sample_seconds` (capped at `bucket_seconds`) to
+-- produce `activeSeconds`, and the agent resets the tracker for the next
 -- bucket.
 --
--- Wire format is unchanged — `activeSeconds` is still an integer.  10s
--- granularity is fine enough that summing activeSeconds across buckets is
--- accurate to within ~10 s of real wall-clock active time, which is what
--- the time-limit test (#516) and Presence aggregation need.  Increasing
--- the sample frequency to every 10 s (from 60 s) trades a small amount of
--- router CPU (nftables counter reads are cheap) for accuracy.
-local SECONDS_PER_SAMPLE = 10
-local BUCKET_SECONDS     = 300
+-- Wire format is unchanged — `activeSeconds` is still an integer.
 
 local function tracker_key(mac, dst_ip) return mac .. "|" .. dst_ip end
 
 function M.new_tracker()
-  return { last = {}, active_minutes = {} }
+  return { last = {}, active_samples = {} }
 end
 
 -- Compare each counter to its previous byte total; an increase counts as one
--- active minute.  A counter that went DOWN is treated as a fresh start
+-- active sample.  A counter that went DOWN is treated as a fresh start
 -- (element expired and reappeared, or counters reset out-of-band); we still
--- count it as an active minute if the new value is > 0.
+-- count it as an active sample if the new value is > 0.
 function M.tracker_sample(tracker, counters)
   for _, c in ipairs(counters or {}) do
     local key  = tracker_key(c.mac, c.dst_ip)
     local prev = tracker.last[key] or 0
     if c.bytes > prev then
-      tracker.active_minutes[key] = (tracker.active_minutes[key] or 0) + 1
+      tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
       tracker.last[key] = c.bytes
     elseif c.bytes < prev then
       if c.bytes > 0 then
-        tracker.active_minutes[key] = (tracker.active_minutes[key] or 0) + 1
+        tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
       end
       tracker.last[key] = c.bytes
     end
@@ -181,34 +178,34 @@ end
 
 function M.tracker_reset(tracker)
   tracker.last           = {}
-  tracker.active_minutes = {}
+  tracker.active_samples = {}
 end
 
 -- ---------------------------------------------------------------------------
--- usage.build_report(counters, nft_sets, period_start, period_end, router_id
---                    [, leases [, lookup_hostname [, tracker]]])
+-- usage.build_report(counters, nft_sets, period_start, period_end, router_id,
+--                    leases, lookup_hostname, tracker,
+--                    sample_seconds, bucket_seconds)
 -- ---------------------------------------------------------------------------
--- activeSeconds:
---   * With a tracker: SECONDS_PER_SAMPLE × active_samples[(mac, dst_ip)],
---     capped at 300.  A counter present in `counters` but missing from the
---     tracker (e.g. set element first appeared after the last sample) falls
---     back to one active sample when bytes > 0.
---   * Without a tracker (legacy / back-compat): bytes > 0 → 300, else 0.
-function M.build_report(counters, nft_sets, period_start, period_end, router_id, leases, lookup_hostname, tracker)
+-- activeSeconds: sample_seconds × active_samples[(mac, dst_ip)], capped at
+-- bucket_seconds.  A counter present in `counters` but missing from the
+-- tracker (e.g. set element first appeared after the last sample) falls back
+-- to one active sample when bytes > 0.
+function M.build_report(counters, nft_sets, period_start, period_end, router_id,
+                        leases, lookup_hostname, tracker,
+                        sample_seconds, bucket_seconds)
   local records = {}
 
   for _, c in ipairs(counters or {}) do
-    local host = host_for_ip(c.dst_ip, nft_sets, lookup_hostname)
+    local host    = host_for_ip(c.dst_ip, nft_sets, lookup_hostname)
+    local samples = tracker.active_samples[tracker_key(c.mac, c.dst_ip)] or 0
     local active_seconds
-    if tracker then
-      local minutes = tracker.active_minutes[tracker_key(c.mac, c.dst_ip)]
-      if minutes then
-        active_seconds = math.min(SECONDS_PER_SAMPLE * minutes, BUCKET_SECONDS)
-      else
-        active_seconds = (c.bytes > 0) and SECONDS_PER_SAMPLE or 0
-      end
+    if samples > 0 then
+      active_seconds = math.min(sample_seconds * samples, bucket_seconds)
+    elseif c.bytes > 0 then
+      -- Set element first appeared after the final sample tick: credit one sample.
+      active_seconds = sample_seconds
     else
-      active_seconds = (c.bytes > 0) and BUCKET_SECONDS or 0
+      active_seconds = 0
     end
     local rec = {
       mac           = c.mac,

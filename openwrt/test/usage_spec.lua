@@ -101,23 +101,39 @@ describe("usage.build_report", function()
   }
 
   local P_START  = "2026-05-08T14:00:00Z"
-  local P_END    = "2026-05-08T14:05:00Z"
+  local P_END    = "2026-05-08T14:01:00Z"
   local ROUTER   = "9c1f2e8a-0000-0000-0000-000000000001"
+  local SAMPLE_S = 10
+  local BUCKET_S = 60
+
+  -- Build a tracker pre-populated so that every counter in `counters` resolves
+  -- to a full bucket of activeSeconds via the normal sample_seconds × samples
+  -- path. Keeps these tests focused on attribution / shape, not activity math.
+  local function full_tracker(counters)
+    local t = usage.new_tracker()
+    for _, c in ipairs(counters) do
+      t.active_samples[c.mac .. "|" .. c.dst_ip] = BUCKET_S / SAMPLE_S
+    end
+    return t
+  end
 
   it("sets routerId, periodStart, periodEnd on the top-level report", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     assert.equal(ROUTER,  r.routerId)
     assert.equal(P_START, r.periodStart)
     assert.equal(P_END,   r.periodEnd)
   end)
 
   it("produces one record per (mac, host) pair", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     assert.equal(2, #r.records)
   end)
 
   it("attributes bytes to the hostname the dst_ip resolved to (via nft_sets)", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     local by_host = {}
     for _, rec in ipairs(r.records) do by_host[rec.host.value] = rec end
     assert.equal("fqdn",             by_host["youtube.com"].host.type)
@@ -130,7 +146,8 @@ describe("usage.build_report", function()
   -- the dst_ip literal tagged as ipv4 or ipv6.
   it("falls back to dst_ip with type='ipv4' when dst_ip is not in any nft_set", function()
     local unk = { { mac = "aa:bb:cc:11:22:33", dst_ip = "9.9.9.9", bytes = 100, packets = 3 } }
-    local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(unk), SAMPLE_S, BUCKET_S)
     assert.equal(1, #r.records)
     assert.equal("ipv4",   r.records[1].host.type)
     assert.equal("9.9.9.9", r.records[1].host.value)
@@ -138,7 +155,8 @@ describe("usage.build_report", function()
 
   it("falls back to dst_ip with type='ipv6' for an IPv6 dst_ip with no attribution", function()
     local unk = { { mac = "aa:bb:cc:11:22:33", dst_ip = "2001:db8::1", bytes = 100, packets = 3 } }
-    local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(unk), SAMPLE_S, BUCKET_S)
     assert.equal(1, #r.records)
     assert.equal("ipv6",       r.records[1].host.type)
     assert.equal("2001:db8::1", r.records[1].host.value)
@@ -155,7 +173,8 @@ describe("usage.build_report", function()
       if ip == "140.82.114.6" then return "api.github.com" end
       return nil
     end
-    local r = usage.build_report(counters, {}, P_START, P_END, ROUTER, nil, lookup)
+    local r = usage.build_report(counters, {}, P_START, P_END, ROUTER,
+                                 nil, lookup, full_tracker(counters), SAMPLE_S, BUCKET_S)
     assert.equal("fqdn",          r.records[1].host.type)
     assert.equal("api.github.com", r.records[1].host.value)
   end)
@@ -170,7 +189,8 @@ describe("usage.build_report", function()
     }
     local sets = { ["site_limit.example"] = { ["1.2.3.4"] = true } }
     local lookup = function(_) return "actual.example" end
-    local r = usage.build_report(counters, sets, P_START, P_END, ROUTER, nil, lookup)
+    local r = usage.build_report(counters, sets, P_START, P_END, ROUTER,
+                                 nil, lookup, full_tracker(counters), SAMPLE_S, BUCKET_S)
     assert.equal("fqdn",           r.records[1].host.type)
     assert.equal("actual.example", r.records[1].host.value)
   end)
@@ -181,20 +201,23 @@ describe("usage.build_report", function()
     }
     local sets = { ["youtube.com"] = { ["1.2.3.4"] = true } }
     local lookup = function(_) return nil end
-    local r = usage.build_report(counters, sets, P_START, P_END, ROUTER, nil, lookup)
+    local r = usage.build_report(counters, sets, P_START, P_END, ROUTER,
+                                 nil, lookup, full_tracker(counters), SAMPLE_S, BUCKET_S)
     assert.equal("fqdn",        r.records[1].host.type)
     assert.equal("youtube.com", r.records[1].host.value)
   end)
 
-  it("sets activeSeconds = 300 (full period) for any counter with bytes > 0 (legacy, no tracker)", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+  it("sets activeSeconds = bucket_seconds when the tracker observed a full bucket", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     for _, rec in ipairs(r.records) do
-      assert.equal(300, rec.activeSeconds)
+      assert.equal(BUCKET_S, rec.activeSeconds)
     end
   end)
 
   it("includes the mac address on each record", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     for _, rec in ipairs(r.records) do
       assert.truthy(rec.mac and #rec.mac > 0)
     end
@@ -206,7 +229,8 @@ describe("usage.build_report", function()
       ["aa:bb:cc:11:22:33"] = "192.168.1.42",
       ["de:ad:be:ef:00:01"] = "192.168.1.10",
     }
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER, leases)
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 leases, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     local by_mac = {}
     for _, rec in ipairs(r.records) do by_mac[rec.mac] = rec end
     assert.equal("192.168.1.42", by_mac["aa:bb:cc:11:22:33"].ip)
@@ -214,7 +238,8 @@ describe("usage.build_report", function()
   end)
 
   it("ip field is nil (not present) when leases table is not provided", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     -- no leases arg → ip field should be absent or nil on each record
     for _, rec in ipairs(r.records) do
       assert.is_nil(rec.ip)
@@ -223,7 +248,8 @@ describe("usage.build_report", function()
 
   it("JSON-encodes cleanly with all required API fields present", function()
     local json = require("cjson")
-    local r    = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER)
+    local r    = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                    nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     local dec  = json.decode(json.encode(r))
     assert.not_nil(dec.routerId)
     assert.not_nil(dec.periodStart)
@@ -239,7 +265,8 @@ describe("usage.build_report", function()
   end)
 
   it("handles an empty counters list (zero records)", function()
-    local r = usage.build_report({}, NF_SETS, P_START, P_END, ROUTER)
+    local r = usage.build_report({}, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, usage.new_tracker(), SAMPLE_S, BUCKET_S)
     assert.equal(0, #r.records)
   end)
 
@@ -247,14 +274,11 @@ end)
 
 -- ── tracker (sub-minute activity sampler, #295, #516) ────────────────────
 --
--- The router scrapes nft counters every SECONDS_PER_SAMPLE (10 s) within a
--- 5-min bucket and feeds them to a tracker; the tracker remembers how many
+-- The router scrapes nft counters every sample_seconds (10 s) within the
+-- usage bucket and feeds them to a tracker; the tracker remembers how many
 -- distinct samples each (mac, dst_ip) saw counter growth, which build_report
 -- converts into activeSeconds.  Counter reset / set-element expiry (bytes
 -- goes DOWN) is treated as a fresh start so we don't double-count.
--- The tracker field is still named `active_minutes` for back-compat — it's
--- a sample count, not a minute count, since #516 dropped the sample
--- interval from 60s to 10s.
 
 describe("usage.tracker", function()
 
@@ -265,14 +289,14 @@ describe("usage.tracker", function()
   it("new_tracker returns an empty tracker", function()
     local t = usage.new_tracker()
     assert.is_table(t)
-    assert.is_table(t.active_minutes)
-    assert.is_nil(next(t.active_minutes))
+    assert.is_table(t.active_samples)
+    assert.is_nil(next(t.active_samples))
   end)
 
   it("counts a single sample with bytes > 0 (from 0 baseline) as 1 active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
-    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
   it("counts each subsequent sample with growth as another active sample", function()
@@ -280,7 +304,7 @@ describe("usage.tracker", function()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  100) })
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  500) })
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 1200) })
-    assert.equal(3, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(3, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
   it("does NOT count a sample where bytes are unchanged (no active sample)", function()
@@ -288,21 +312,21 @@ describe("usage.tracker", function()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- +1
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- no growth
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })  -- no growth
-    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
   it("treats a counter decrease (reset / element-expire-and-reappear) as a fresh active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })  -- +1
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",  50) })  -- reset, bytes>0 → +1
-    assert.equal(2, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(2, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
   it("does not count a counter decrease to 0 as an active sample", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })  -- +1
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4",   0) })  -- decrease to 0 → no
-    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
   it("tracks each (mac, dst_ip) independently", function()
@@ -315,8 +339,8 @@ describe("usage.tracker", function()
       s("aa:bb:cc:11:22:33", "1.2.3.4", 100),     -- no growth
       s("de:ad:be:ef:00:01", "8.8.8.8", 999),     -- growth
     })
-    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
-    assert.equal(2, t.active_minutes["de:ad:be:ef:00:01|8.8.8.8"])
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(2, t.active_samples["de:ad:be:ef:00:01|8.8.8.8"])
   end)
 
   it("tracks each dst_ip independently for the same mac", function()
@@ -329,18 +353,18 @@ describe("usage.tracker", function()
       s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
       s("aa:bb:cc:11:22:33", "5.6.7.8", 800),
     })
-    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
-    assert.equal(2, t.active_minutes["aa:bb:cc:11:22:33|5.6.7.8"])
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(2, t.active_samples["aa:bb:cc:11:22:33|5.6.7.8"])
   end)
 
   it("tracker_reset clears all state", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
     usage.tracker_reset(t)
-    assert.is_nil(next(t.active_minutes))
+    assert.is_nil(next(t.active_samples))
     -- After reset, the next sample starts from a fresh 0 baseline.
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 50) })
-    assert.equal(1, t.active_minutes["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
 end)
@@ -351,57 +375,60 @@ describe("usage.build_report with tracker", function()
   local P_START  = "2026-05-08T14:00:00Z"
   local P_END    = "2026-05-08T14:05:00Z"
   local ROUTER   = "9c1f2e8a-0000-0000-0000-000000000001"
+  local SAMPLE_S = 10
+  local BUCKET_S = 300
 
   local function s(mac, dst_ip, bytes)
     return { mac = mac, dst_ip = dst_ip, bytes = bytes, packets = 0 }
   end
 
-  it("uses 10 * active_samples from the tracker (1 sample → 10s)", function()
+  it("uses sample_seconds * active_samples from the tracker (1 sample → 10s)", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) })
     local r = usage.build_report(
       { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
-      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
     assert.equal(10, r.records[1].activeSeconds)
   end)
 
-  it("reports 300s when all 30 samples (5 min @ 10s) were active", function()
+  it("reports bucket_seconds when all 30 samples (5 min @ 10s) were active", function()
     local t = usage.new_tracker()
     for i = 1, 30 do
       usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100 * i) })
     end
     local r = usage.build_report(
       { s("aa:bb:cc:11:22:33", "1.2.3.4", 3000) },
-      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
-    assert.equal(300, r.records[1].activeSeconds)
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.equal(BUCKET_S, r.records[1].activeSeconds)
   end)
 
-  it("caps activeSeconds at 300 even if the tracker recorded more than the bucket (drift)", function()
+  it("caps activeSeconds at bucket_seconds even if the tracker recorded more (drift)", function()
     local t = usage.new_tracker()
     for i = 1, 35 do
       usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100 * i) })
     end
     local r = usage.build_report(
       { s("aa:bb:cc:11:22:33", "1.2.3.4", 3500) },
-      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
-    assert.equal(300, r.records[1].activeSeconds)
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.equal(BUCKET_S, r.records[1].activeSeconds)
   end)
 
-  it("falls back to one sample (10s) when bytes > 0 but tracker has no entry (entry appeared after last sample)", function()
+  it("falls back to one sample (sample_seconds) when bytes > 0 but tracker has no entry", function()
     local t = usage.new_tracker()
     -- tracker has seen device A but not B
     usage.tracker_sample(t, { s("aa:bb:cc:11:22:33", "1.2.3.4", 100) })
     local r = usage.build_report(
       { s("de:ad:be:ef:00:01", "9.9.9.9", 200) },
-      NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
-    assert.equal(10, r.records[1].activeSeconds)
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.equal(SAMPLE_S, r.records[1].activeSeconds)
   end)
 
-  it("retains legacy 300 behavior when no tracker is passed (back-compat)", function()
+  it("activeSeconds = 0 when tracker has no entry and bytes = 0", function()
+    local t = usage.new_tracker()
     local r = usage.build_report(
-      { s("aa:bb:cc:11:22:33", "1.2.3.4", 500) },
-      NF_SETS, P_START, P_END, ROUTER)
-    assert.equal(300, r.records[1].activeSeconds)
+      { s("aa:bb:cc:11:22:33", "1.2.3.4", 0) },
+      NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.equal(0, r.records[1].activeSeconds)
   end)
 
   it("assigns activeSeconds per (mac, dst_ip) independently from the same tracker", function()
@@ -418,7 +445,7 @@ describe("usage.build_report with tracker", function()
     local r = usage.build_report({
       s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
       s("de:ad:be:ef:00:01", "8.8.8.8", 400),
-    }, NF_SETS, P_START, P_END, ROUTER, nil, nil, t)
+    }, NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
     local by_mac = {}
     for _, rec in ipairs(r.records) do by_mac[rec.mac] = rec end
     assert.equal(10, by_mac["aa:bb:cc:11:22:33"].activeSeconds)

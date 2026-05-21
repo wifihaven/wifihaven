@@ -5,7 +5,7 @@ wifihaven {
     database = "wifihaven"
     user     = "wifihaven"
     password = "changeme"
-    poolSize = 10
+    poolSize = 5
   }
 
   http {
@@ -30,16 +30,5 @@ wifihaven {
     # default for self-hosted single-origin installs). Never use "*".
     # Example: "https://wifihaven.example,https://www.wifihaven.example"
     allowedOrigins = ""
-  }
-
-  dns {
-    cacheRefreshSeconds = 60
-    port                = 53
-    location            = "home"
-    upstreamPrimary     = "1.1.1.1"
-    upstreamSecondary   = "8.8.8.8"
-    upstreamPort        = 53
-    logBatchSize        = 500
-    logFlushSeconds     = 5
   }
 }

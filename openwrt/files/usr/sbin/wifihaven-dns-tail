@@ -10,6 +10,7 @@ local uci       = require("uci")
 local dns_log   = require("wifihaven.dns_log")
 local conntrack = require("wifihaven.conntrack")
 local log       = require("wifihaven.log")
+local paths     = require("wifihaven.paths")
 
 local cursor = uci.cursor()
 local function uci_get(opt, default)
@@ -18,7 +19,7 @@ end
 
 local debug_opt   = uci_get("debug", "0")
 local source_path = "/tmp/wifihaven-dnsmasq.log"
-local cache_path  = "/tmp/wifihaven-dns-cache.txt"
+local cache_path  = paths.dns_cache
 local tmp_path    = cache_path .. ".tmp"
 local leases_path = "/tmp/dhcp.leases"
 local nft_table   = "inet wifihaven"

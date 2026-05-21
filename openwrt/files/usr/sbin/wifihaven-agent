@@ -3,7 +3,7 @@
 --
 -- Three concurrent responsibilities (cooperative timer loop):
 --   1. Policy timer  (60 s)  — GET /api/router/policy; rewrite dnsmasq + nft config
---   2. Usage timer   (5 min) — scrape nft counters; POST /api/router/usage
+--   2. Usage timer   (60 s)  — scrape nft counters; POST /api/router/usage
 --   3. Event watcher (async) — watch conntrack NEW flows; POST /api/router/events
 --
 -- Module layout:
@@ -21,6 +21,7 @@ local render     = require("wifihaven.render")
 local dns_log    = require("wifihaven.dns_log")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
+local paths      = require("wifihaven.paths")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -189,9 +190,9 @@ os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifi
 -- render.write_blocked_reasons after every snapshot apply) to look up the
 -- per-MAC reason for the current device.
 
-local BLOCK_PAGE_API_URL_PATH  = "/var/run/wifihaven/api_url"
-local BLOCK_PAGE_REASONS_PATH  = "/var/run/wifihaven/blocked_reasons"
-local BLOCK_PAGE_HOSTS_PATH    = "/var/run/wifihaven/blocked_hosts"  -- #594
+local BLOCK_PAGE_API_URL_PATH  = paths.block_page_api_url
+local BLOCK_PAGE_REASONS_PATH  = paths.block_page_reasons
+local BLOCK_PAGE_HOSTS_PATH    = paths.block_page_hosts  -- #594
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
@@ -288,7 +289,7 @@ end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
 -- read at flush time) and reused by both the per-minute sampler and the
--- 5-min usage timer below.
+-- 60 s usage timer below.
 local function read_nft_counters()
   local pipe = io.popen("nft -j list set inet wifihaven mac_ip_tracking 2>/dev/null", "r")
   if not pipe then return nil end
@@ -319,7 +320,7 @@ end
 -- Drop the memoization. The cache file lives on tmpfs and is at most a few
 -- kilobytes, so reading it once per outbound flow costs microseconds —
 -- well below the cost of the conntrack -E line that triggered the lookup.
-local dns_cache_path = "/tmp/wifihaven-dns-cache.txt"
+local dns_cache_path = paths.dns_cache
 local dns_cache_ttl  = 3600
 
 local function lookup_hostname(dst_ip)
@@ -471,7 +472,8 @@ conntrack.watch({
         last_activity_sample = mono
         local report = usage.build_report(
           counters, nft_sets, period_start, period_end, router_id,
-          nil, lookup_hostname, activity_tracker)
+          nil, lookup_hostname, activity_tracker,
+          activity_sample_int, usage_int)
         log.debug("usage timer: %d counter(s), %d record(s) prepared",
                   #counters, report.records and #report.records or 0)
         -- Retry queue's next_attempt_at math runs on the monotonic clock so

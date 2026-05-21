@@ -478,16 +478,23 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
 
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
   def get: Task[HouseholdSettings] =
-    sql"SELECT daily_reset_time, daily_reset_tz FROM household_settings WHERE id=1"
-      .query[(LocalTime, ZoneId)]
+    sql"""SELECT daily_reset_time, daily_reset_tz,
+                 heartbeat_filter_enabled, heartbeat_bytes_threshold, heartbeat_active_fraction_pct
+            FROM household_settings WHERE id=1"""
+      .query[(LocalTime, ZoneId, Boolean, Int, Int)]
       .unique
-      .map(HouseholdSettings.apply)
+      .map { case (t, z, hbEnabled, hbBytes, hbFrac) =>
+        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbFrac))
+      }
       .transact(xa)
 
   def update(s: HouseholdSettings): Task[Unit] =
     sql"""UPDATE household_settings
             SET daily_reset_time=${s.dailyResetTime},
                 daily_reset_tz=${s.dailyResetTz},
+                heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
+                heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
+                heartbeat_active_fraction_pct=${s.heartbeatFilter.activeFractionPct},
                 updated_at=NOW()
           WHERE id=1""".update.run.transact(xa).unit
 
@@ -669,7 +676,7 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
   // The LATERAL subquery promotes ipv4-typed time_usage rows to their resolved
   // fqdn by looking up the most recent connection_events row for the same
   // (mac, dest_ip) that has a resolved_host_value. The partial index added in
-  // V21 (idx_conn_events_mac_dest_resolved) keeps the join cheap.
+  // V22 (idx_conn_events_mac_dest_resolved) keeps the join cheap.
   def listForDevice(mac: MacAddress, d: LocalDate)                                              =
     sql"""SELECT tu.id,
                  tu.device_mac,
@@ -966,7 +973,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
-    type Row = (MacAddress, Instant, HostId, Int)
+    type Row = (MacAddress, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
@@ -977,7 +984,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                            THEN 'fqdn' ELSE tr.host_type END,
                       COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
                                tr.host_value),
-                      tr.active_seconds
+                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
                FROM traffic_reports tr
                LEFT JOIN LATERAL (
                  SELECT resolved_host_value
@@ -991,7 +998,10 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                ) ce ON tr.host_type IN ('ipv4','ipv6')
                WHERE tr.date = $date AND """ ++ Fragments.in(fr"tr.mac", nel)
         q.query[Row]
-          .map((m, ps, h, s) => wifihaven.api.presence.PresenceRow(m, ps, h, s))
+          .map { case (m, ps, host, secs, bin, bout, pStart, pEnd) =>
+            val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
+            wifihaven.api.presence.PresenceRow(m, ps, host, secs, bin + bout, periodSeconds)
+          }
           .to[List]
           .transact(xa)
     }
