@@ -140,12 +140,12 @@ describe('DeviceTimelinePage', () => {
         totalMins: 65,
         // #794: UTC-hour buckets — SPA re-buckets to local days. Hours under TZ=UTC (vitest
         // default) map 1:1 back to the original calendar days here.
-        perHour: [
-          { hourStart: '2026-05-14T08:00:00Z', usedMins: 10 },
-          { hourStart: '2026-05-15T08:00:00Z', usedMins: 20 },
-          { hourStart: '2026-05-17T08:00:00Z', usedMins: 5 },
-          { hourStart: '2026-05-19T08:00:00Z', usedMins: 15 },
-          { hourStart: '2026-05-20T08:00:00Z', usedMins: 15 },
+        perBucket: [
+          { bucketStart: '2026-05-14T08:00:00Z', usedMins: 10 },
+          { bucketStart: '2026-05-15T08:00:00Z', usedMins: 20 },
+          { bucketStart: '2026-05-17T08:00:00Z', usedMins: 5 },
+          { bucketStart: '2026-05-19T08:00:00Z', usedMins: 15 },
+          { bucketStart: '2026-05-20T08:00:00Z', usedMins: 15 },
         ],
         hostUsage: [
           { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 40 },
@@ -166,8 +166,9 @@ describe('DeviceTimelinePage', () => {
       await user.click(screen.getByTestId('device-timeline-window-week'))
 
       await waitFor(() => expect(weekMock).toHaveBeenCalled())
-      // Date picker doubles as the `to` anchor in week mode.
-      expect(weekMock.mock.calls[0]).toEqual([MAC, '2026-05-20'])
+      // Date picker doubles as the `to` anchor in week mode. The third arg is the local
+      // bucket-offset minute (#794); under vitest's TZ=UTC env that snaps to 0.
+      expect(weekMock.mock.calls[0]).toEqual([MAC, '2026-05-20', 0])
       expect(await screen.findByTestId('device-timeline-week-chart')).toBeInTheDocument()
       // #791: 65m -> "1:05"
       expect(screen.getByText(/1:05 total/)).toBeInTheDocument()
@@ -182,7 +183,7 @@ describe('DeviceTimelinePage', () => {
       weekMock.mockResolvedValue({
         ...richWeek('2026-05-20'),
         totalMins: 0,
-        perHour: [],
+        perBucket: [],
         hostUsage: [],
       })
       renderPage([`/devices/${MAC}/timeline?date=2026-05-20&window=week`])

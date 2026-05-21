@@ -11,7 +11,7 @@ import { PageLoader } from './DashboardPage'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from '@/components/usage/UsageHourlyBarChart'
-import { bucketPerHourByLocalDay, formatMins } from './TimePage'
+import { groupBucketsByLocalDay, formatMins, localBucketOffsetMin } from './TimePage'
 
 // #721 — per-device daily (hourly) timeline.
 // #723 — Today/Week toggle: Week renders the trailing-7-day per-device
@@ -76,7 +76,7 @@ export function DeviceTimelinePage() {
     setError(null)
     const p = window === 'today'
       ? api.usage.series({ mac, date, tz: DEFAULT_TZ, topN: TOP_N }).then(d => { setDayData(d); setWeekData(null) })
-      : api.time.statusDeviceWeek(mac, date).then(d => { setWeekData(d); setDayData(null) })
+      : api.time.statusDeviceWeek(mac, date, localBucketOffsetMin()).then(d => { setWeekData(d); setDayData(null) })
     p.catch(e => setError(e.message ?? 'Failed to load')).finally(() => setLoading(false))
   }, [mac, date, window])
 
@@ -102,7 +102,7 @@ export function DeviceTimelinePage() {
 
   const weekChart = useMemo(() => {
     if (!weekData) return []
-    return bucketPerHourByLocalDay(weekData.perHour, weekData.to)
+    return groupBucketsByLocalDay(weekData.perBucket, weekData.to)
   }, [weekData])
 
   if (loading && !dayData && !weekData) return <PageLoader />

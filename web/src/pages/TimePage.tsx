@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
-import type { ProfileTimeHourTotal, ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
+import type { ProfileTimeBucket, ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 // #723 weekly card matches the visual tokens used by the #721/#722 hourly chart
 // (UsageHourlyBarChart). The shared component bakes in an `hour`-shaped X-axis
@@ -19,27 +19,47 @@ import { HOST_COLORS } from '@/components/usage/UsageHourlyBarChart'
 // produced visually clipped labels like "00m" for "200m" / "60m" for "260m".
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-// #794: collapse UTC-hour buckets into local-day buckets ending at `toDate` (inclusive). The
-// server returns `perHour` with sparse entries (omitted zero hours), so we bin each hour into
-// whichever local-time day the user perceived it on and then build a contiguous 7-day window
-// anchored at `toDate`. Returns rows ordered chronologically with `date: YYYY-MM-DD` in local
-// time (used as the chart's X-axis category) and the local weekday label.
-export function bucketPerHourByLocalDay(
-  perHour: ProfileTimeHourTotal[],
+/**
+ * #794: minute-past-the-UTC-hour where the household's local midnight falls. We ask the server
+ * to align its hourly bucket grid to this offset so each returned bucket lives entirely within
+ * one local-tz day. Real-world tz offsets are all multiples of 15 minutes; we snap to 0/15/30/45.
+ *
+ * Example: India (+5:30) — local midnight is at 18:30 prev-UTC-day. getUTCMinutes() returns 30.
+ * US Pacific — local midnight is at 07:00 / 08:00 UTC, getUTCMinutes() returns 0.
+ * Nepal (+5:45) — local midnight at 18:15 UTC, getUTCMinutes() returns 15.
+ */
+export function localBucketOffsetMin(now: Date = new Date()): 0 | 15 | 30 | 45 {
+  const localMidnight = new Date(
+    now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0,
+  )
+  // Snap to the nearest 15-min multiple just in case the host happens to expose a sub-minute
+  // offset (shouldn't happen for any real tz, but be defensive).
+  const raw = localMidnight.getUTCMinutes()
+  const snapped = (Math.round(raw / 15) * 15) % 60
+  return (snapped as 0 | 15 | 30 | 45)
+}
+
+/**
+ * #794: group hourly UTC buckets into local-day buckets ending at `toDate` (inclusive). Each
+ * bucket lives fully within one local-tz day if the caller fetched with the right
+ * `bucketOffsetMin`, so we can just attribute the whole bucket to whatever local date
+ * `bucketStart` falls on. Returns 7 rows ordered chronologically with `date: YYYY-MM-DD` in
+ * local time and the weekday label.
+ */
+export function groupBucketsByLocalDay(
+  perBucket: ProfileTimeBucket[],
   toDate: string,
 ): { date: string; label: string; usedMins: number }[] {
   const byLocalDate = new Map<string, number>()
-  for (const h of perHour) {
-    const dt = new Date(h.hourStart) // parsed as UTC, rendered in local
+  for (const b of perBucket) {
+    const dt = new Date(b.bucketStart) // parsed as UTC, rendered in local
     const y = dt.getFullYear()
     const m = String(dt.getMonth() + 1).padStart(2, '0')
     const d = String(dt.getDate()).padStart(2, '0')
     const localDate = `${y}-${m}-${d}`
-    byLocalDate.set(localDate, (byLocalDate.get(localDate) ?? 0) + h.usedMins)
+    byLocalDate.set(localDate, (byLocalDate.get(localDate) ?? 0) + b.usedMins)
   }
-  // Build seven contiguous local days ending on toDate. `toDate` is the server-supplied UTC
-  // anchor; treat it as a calendar day in local time so the rightmost bar tracks "today" for
-  // the viewer regardless of the server's UTC clock.
+  // Build seven contiguous local days ending on toDate.
   const end = new Date(`${toDate}T00:00:00`)
   const out: { date: string; label: string; usedMins: number }[] = []
   for (let i = 6; i >= 0; i--) {
@@ -87,7 +107,9 @@ export function TimePage() {
         const data = await api.time.statusAll()
         setStatuses(data)
       } else {
-        const data = await api.time.statusAllWeek()
+        // #794: pass the offset that aligns hourly buckets to the viewer's local midnight, so
+        // the chart can attribute each bucket to one local day without straddling.
+        const data = await api.time.statusAllWeek(undefined, localBucketOffsetMin())
         setWeekStatuses(data)
       }
     } finally {
@@ -351,7 +373,7 @@ function ProfileTimeCard({
 }
 
 function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
-  const chartData = bucketPerHourByLocalDay(status.perHour, status.to)
+  const chartData = groupBucketsByLocalDay(status.perBucket, status.to)
   return (
     <div data-testid={`time-week-card-${status.profileId}`} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
       <div className="flex items-start justify-between gap-2">

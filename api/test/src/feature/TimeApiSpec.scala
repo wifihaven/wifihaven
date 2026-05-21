@@ -916,10 +916,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
           kids  = list.find(_.profileId == kidsId).get
-          // #794: perHour is UTC-hour buckets. seedTraffic places buckets at midnight UTC of
-          // each seeded date, so per-day rollup in UTC matches the seed dates exactly.
-          byDay = kids.perHour
-            .groupBy(_.hourStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
+          // #794: perBucket is hourly UTC buckets (default offset=0). seedTraffic places buckets
+          // at midnight UTC of each seeded date, so per-day rollup in UTC matches the seeded
+          // dates exactly.
+          byDay = kids.perBucket
+            .groupBy(_.bucketStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
             .view
             .mapValues(_.map(_.usedMins).sum)
             .toMap
@@ -1052,11 +1053,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(shiftedKids.to == anchor.toString) &&
           assertTrue(shiftedKids.from == anchor.minusDays(6).toString)
       },
-      test("perHour bucket carries the UTC hour of period_start (#794)") {
-        // The server stays tz-agnostic — it emits UTC-hour buckets and the SPA does any
-        // household-local re-bucketing. Seed a single 5-min bucket whose period_start lands at
-        // 2026-05-21T05:30Z; the perHour entry must carry hourStart=2026-05-21T05:00Z (the
-        // truncated UTC hour), not a date-shaped value or a tz-shifted instant.
+      test("bucketOffsetMin shifts the hourly grid alignment (#794)") {
+        // Default alignment (offset=0) puts a 05:30Z period_start into the 05:00Z hourly slot.
+        // Caller-supplied offset=30 (half-hour zones like India) puts the same period_start into
+        // the 04:30Z slot, since the grid is now {…, 04:30, 05:30, 06:30, …}. Verifying both
+        // confirms server-side alignment is driven by the query param, not a fixed UTC hour.
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -1104,21 +1105,74 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             hsRepo,
             clock,
           )
-          resp <- routes.runZIO(
+          // offset=0 — buckets at :00 of each UTC hour. 05:30Z period_start → 05:00Z slot.
+          respDefault <- routes.runZIO(
             Request
               .get(URL.decode("/api/time/status/week?to=2026-05-21").toOption.get)
               .addHeader(Header.Authorization.Bearer(token)),
           )
-          body <- resp.body.asString
-          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
-          kids = list.find(_.profileId == kidsId).get
-        } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(kids.perHour.length == 1) &&
+          bodyDefault <- respDefault.body.asString
+          listDefault <- ZIO.fromEither(bodyDefault.fromJson[List[ProfileTimeStatusWeek]])
+          kidsDefault = listDefault.find(_.profileId == kidsId).get
+          // offset=30 — buckets at :30 of each UTC hour. 05:30Z period_start → 05:30Z slot.
+          respHalf <- routes.runZIO(
+            Request
+              .get(
+                URL.decode("/api/time/status/week?to=2026-05-21&bucketOffsetMin=30").toOption.get,
+              )
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          bodyHalf <- respHalf.body.asString
+          listHalf <- ZIO.fromEither(bodyHalf.fromJson[List[ProfileTimeStatusWeek]])
+          kidsHalf = listHalf.find(_.profileId == kidsId).get
+        } yield assertTrue(respDefault.status == Status.Ok) &&
+          assertTrue(kidsDefault.perBucket.length == 1) &&
           assertTrue(
-            kids.perHour.head.hourStart == java.time.Instant.parse("2026-05-21T05:00:00Z"),
+            kidsDefault.perBucket.head.bucketStart ==
+              java.time.Instant.parse("2026-05-21T05:00:00Z"),
           ) &&
-          assertTrue(kids.perHour.head.usedMins == 5) &&
-          assertTrue(kids.totalMins == 5)
+          assertTrue(kidsDefault.perBucket.head.usedMins == 5) &&
+          assertTrue(kidsDefault.totalMins == 5) &&
+          assertTrue(respHalf.status == Status.Ok) &&
+          assertTrue(kidsHalf.perBucket.length == 1) &&
+          assertTrue(
+            kidsHalf.perBucket.head.bucketStart ==
+              java.time.Instant.parse("2026-05-21T05:30:00Z"),
+          ) &&
+          assertTrue(kidsHalf.perBucket.head.usedMins == 5)
+      },
+      test("bucketOffsetMin rejects values outside 0/15/30/45") {
+        for {
+          _               <- cleanDb
+          profileRepo     <- ZIO.service[ProfileRepo]
+          tlRepo          <- ZIO.service[TimeLimitRepo]
+          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          deviceRepo      <- ZIO.service[DeviceRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
+          extRepo         <- ZIO.service[TimeExtensionRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          auth            <- makeAuth
+          token           <- auth.login("admin", "changeme").map(_.token.value)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/week?bucketOffsetMin=22").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+        } yield assertTrue(resp.status == Status.BadRequest)
       },
     ) @@ TestAspect.sequential,
 
@@ -1170,8 +1224,8 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp   <- routes.runZIO(req)
           body   <- resp.body.asString
           status <- ZIO.fromEither(body.fromJson[DeviceTimeStatusWeek])
-          byDay = status.perHour
-            .groupBy(_.hourStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
+          byDay = status.perBucket
+            .groupBy(_.bucketStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
             .view
             .mapValues(_.map(_.usedMins).sum)
             .toMap

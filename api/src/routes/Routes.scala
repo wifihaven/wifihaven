@@ -409,16 +409,18 @@ object TimeRoutes {
           for {
             claims <- requireAuth(req, auth)
             today  <- clock.today
-            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today (UTC). The SPA
-            // is responsible for any household-local re-bucketing of the returned per-hour data
-            // (#794) — server stays tz-agnostic.
+            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today (UTC).
+            // ?bucketOffsetMin=N sets the minute-past-the-hour where the hourly grid starts,
+            // so each bucket falls fully within one local day on the caller's side (#794).
+            // Accepts 0/15/30/45; defaults to 0 (whole-hour grid, fine for UTC-aligned zones).
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
-            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            bucketOffsetMin <- parseBucketOffsetMin(req)
+            allProfiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices      <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings        <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
               .foreach(visible) { p =>
@@ -430,6 +432,7 @@ object TimeRoutes {
                   timeLimitRepo,
                   trafficRepo,
                   settings.heartbeatFilter,
+                  bucketOffsetMin,
                 )
               }
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -443,13 +446,14 @@ object TimeRoutes {
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
-            device   <- deviceRepo
+            bucketOffsetMin <- parseBucketOffsetMin(req)
+            device          <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            status   <- buildDeviceTimeStatusWeek(
+            _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            settings        <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            status          <- buildDeviceTimeStatusWeek(
               device,
               from,
               to,
@@ -457,6 +461,7 @@ object TimeRoutes {
               timeLimitRepo,
               trafficRepo,
               settings.heartbeatFilter,
+              bucketOffsetMin,
             )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
@@ -638,6 +643,7 @@ object TimeRoutes {
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
+      bucketOffsetMin: Int,
   ): Task[ProfileTimeStatusWeek] = {
     val macs = devices.map(_.mac)
     for {
@@ -660,7 +666,7 @@ object TimeRoutes {
         .toList
         .sortBy(hu => (-hu.usedMins, hu.host.value))
         .take(10)
-      perHour         = bucketHourly(presence, heartbeatFilter)
+      perBucket       = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
     } yield ProfileTimeStatusWeek(
       profile.id,
       profile.name,
@@ -668,7 +674,7 @@ object TimeRoutes {
       to.toString,
       tl.map(_.dailyMinutes),
       totalUsed,
-      perHour,
+      perBucket,
       deviceSummaries,
       hostUsage,
     )
@@ -683,6 +689,7 @@ object TimeRoutes {
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
+      bucketOffsetMin: Int,
   ): Task[DeviceTimeStatusWeek] = {
     val pid  = device.profileId
     val macs = List(device.mac)
@@ -703,7 +710,7 @@ object TimeRoutes {
         .toList
         .sortBy(hu => (-hu.usedMins, hu.host.value))
         .take(10)
-      perHour   = bucketHourly(presence, heartbeatFilter)
+      perBucket = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
     } yield DeviceTimeStatusWeek(
       device.mac,
       device.name,
@@ -713,35 +720,63 @@ object TimeRoutes {
       pid,
       tl.map(_.dailyMinutes),
       totalUsed,
-      perHour,
+      perBucket,
       hostUsage,
     )
   }
 
   /**
-   * Roll the range's presence rows up to UTC-hour buckets (#794). Each `period_start` falls in
-   * exactly one UTC hour, so we group by hour, run `Presence.totalMinutesByMac` on the rows in that
-   * hour to apply per-mac bucket-dedup and the heartbeat filter, and sum across macs. Empty hours
-   * are omitted to keep the payload small; the SPA fills gaps with zero when it re-buckets by local
-   * day. Returned list is sorted by `hourStart` ascending.
+   * Parse the `bucketOffsetMin` query param (#794). Accepts the four real-world tz-alignment minute
+   * offsets: 0 (UTC / whole-hour zones), 15 (+5:45-style), 30 (+5:30-style), 45 (+12:45). Defaults
+   * to 0 when absent. Any other value is a 400 — keeps the bucket grid well-defined and prevents
+   * the SPA from accidentally requesting a misaligned grid.
    */
-  private def bucketHourly(
+  private def parseBucketOffsetMin(req: Request): IO[Response, Int] =
+    req.url.queryParam("bucketOffsetMin") match {
+      case None      => ZIO.succeed(0)
+      case Some(raw) =>
+        raw.toIntOption match {
+          case Some(n) if Set(0, 15, 30, 45).contains(n) => ZIO.succeed(n)
+          case _                                         =>
+            ZIO.fail(Response.badRequest(s"bucketOffsetMin must be one of 0/15/30/45, got: $raw"))
+        }
+    }
+
+  /**
+   * Roll the range's presence rows up to hourly UTC buckets aligned at `offsetMin` minutes past the
+   * hour (#794). Caller passes the offset that makes each bucket fall fully within one local day (0
+   * for whole-hour zones, 30 for half-hour zones, 15/45 for the quarter-hour zones). Each 5-min
+   * `period_start` falls in exactly one hour slot of the chosen grid; per-slot minutes go through
+   * `Presence.totalMinutesByMac` for per-mac bucket-dedup + heartbeat filter, then sum across macs.
+   * Empty slots are omitted (the SPA fills gaps with zero when grouping by local day). Returned
+   * list is sorted by `bucketStart` ascending.
+   */
+  private def bucketHourlyAligned(
       presence: List[wifihaven.api.presence.PresenceRow],
       heartbeatFilter: HeartbeatFilter,
-  ): List[ProfileTimeHourTotal] =
+      offsetMin: Int,
+  ): List[ProfileTimeBucket] = {
+    val hourSeconds   = 3600L
+    val offsetSeconds = offsetMin.toLong * 60L
     presence
-      .groupBy(_.periodStart.truncatedTo(java.time.temporal.ChronoUnit.HOURS))
+      .groupBy { r =>
+        val s    = r.periodStart.getEpochSecond
+        val slot =
+          java.lang.Math.floorDiv(s - offsetSeconds, hourSeconds) * hourSeconds + offsetSeconds
+        java.time.Instant.ofEpochSecond(slot)
+      }
       .iterator
-      .map { case (hourStart, rows) =>
+      .map { case (bucketStart, rows) =>
         val mins = wifihaven.api.presence.Presence
           .totalMinutesByMac(rows, Nil, heartbeatFilter)
           .values
           .sum
-        ProfileTimeHourTotal(hourStart, mins)
+        ProfileTimeBucket(bucketStart, mins)
       }
       .filter(_.usedMins > 0)
       .toList
-      .sortBy(_.hourStart)
+      .sortBy(_.bucketStart)
+  }
 
   private def buildDeviceTimeStatus(
       device: Device,

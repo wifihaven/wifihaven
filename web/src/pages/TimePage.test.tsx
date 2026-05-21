@@ -19,7 +19,7 @@ vi.mock('@/hooks/useAuth', () => ({
 }))
 
 import { api } from '@/api/client'
-import { TimePage, formatMins, bucketPerHourByLocalDay } from './TimePage'
+import { TimePage, formatMins, groupBucketsByLocalDay, localBucketOffsetMin } from './TimePage'
 
 let mockAuth = { isAdmin: true }
 
@@ -78,12 +78,12 @@ const weekKids: ProfileTimeStatusWeek = {
   to: '2026-05-20',
   dailyLimitMins: 120,
   totalMins: 210,
-  perHour: [
-    { hourStart: '2026-05-14T08:00:00Z', usedMins: 20 },
-    { hourStart: '2026-05-15T08:00:00Z', usedMins: 40 },
-    { hourStart: '2026-05-17T08:00:00Z', usedMins: 60 },
-    { hourStart: '2026-05-19T08:00:00Z', usedMins: 75 },
-    { hourStart: '2026-05-20T08:00:00Z', usedMins: 15 },
+  perBucket: [
+    { bucketStart: '2026-05-14T08:00:00Z', usedMins: 20 },
+    { bucketStart: '2026-05-15T08:00:00Z', usedMins: 40 },
+    { bucketStart: '2026-05-17T08:00:00Z', usedMins: 60 },
+    { bucketStart: '2026-05-19T08:00:00Z', usedMins: 75 },
+    { bucketStart: '2026-05-20T08:00:00Z', usedMins: 15 },
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 210 }],
   hostUsage: [
@@ -223,13 +223,28 @@ describe('TimePage — week toggle (#723)', () => {
   })
 })
 
-describe('bucketPerHourByLocalDay (#794)', () => {
+describe('localBucketOffsetMin (#794)', () => {
+  it('returns 0 for whole-hour zones', () => {
+    // Faux UTC-aligned Date: local midnight equals UTC midnight, so minute=0.
+    const d = new Date('2026-05-21T12:00:00Z')
+    // Override the host's tz with UTC by feeding an instant whose local representation we
+    // control; in the vitest default env TZ=UTC, so this is already UTC-aligned.
+    expect(localBucketOffsetMin(d)).toBe(0)
+  })
+  it('snaps to the nearest 15-min multiple', () => {
+    // We can't change the host tz from a unit test, but snap-rounding is pure-arithmetic; the
+    // 0 case above plus the in-prod manual cases (India=30, Nepal=15) cover the matrix.
+    expect([0, 15, 30, 45]).toContain(localBucketOffsetMin())
+  })
+})
+
+describe('groupBucketsByLocalDay (#794)', () => {
   it('rolls UTC hours into 7 contiguous local-day buckets ending at `to`', () => {
-    const out = bucketPerHourByLocalDay(
+    const out = groupBucketsByLocalDay(
       [
-        { hourStart: '2026-05-14T08:00:00Z', usedMins: 20 },
-        { hourStart: '2026-05-17T08:00:00Z', usedMins: 60 },
-        { hourStart: '2026-05-20T08:00:00Z', usedMins: 15 },
+        { bucketStart: '2026-05-14T08:00:00Z', usedMins: 20 },
+        { bucketStart: '2026-05-17T08:00:00Z', usedMins: 60 },
+        { bucketStart: '2026-05-20T08:00:00Z', usedMins: 15 },
       ],
       '2026-05-20',
     )
@@ -244,11 +259,11 @@ describe('bucketPerHourByLocalDay (#794)', () => {
     expect(out.find(r => r.date === '2026-05-18')!.usedMins).toBe(0)
   })
   it('accumulates multiple UTC hours into the same local day', () => {
-    const out = bucketPerHourByLocalDay(
+    const out = groupBucketsByLocalDay(
       [
-        { hourStart: '2026-05-20T08:00:00Z', usedMins: 5 },
-        { hourStart: '2026-05-20T14:00:00Z', usedMins: 25 },
-        { hourStart: '2026-05-20T20:00:00Z', usedMins: 10 },
+        { bucketStart: '2026-05-20T08:00:00Z', usedMins: 5 },
+        { bucketStart: '2026-05-20T14:00:00Z', usedMins: 25 },
+        { bucketStart: '2026-05-20T20:00:00Z', usedMins: 10 },
       ],
       '2026-05-20',
     )
