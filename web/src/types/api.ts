@@ -24,14 +24,25 @@ export interface Schedule {
   tz: string          // IANA timezone, e.g. "America/Los_Angeles"
 }
 
+// #714 — server-side heartbeat filter for device/profile screen-time totals.
+// Rows classified as heartbeats are excluded from rollups; the filter is
+// household-wide.
+export interface HeartbeatFilter {
+  enabled: boolean
+  bytesThreshold: number       // bytes/min floor (rows below are heartbeats)
+  activeFractionPct: number    // 0–100 active-seconds-fraction floor
+}
+
 export interface HouseholdSettings {
   dailyResetTime: string  // "HH:mm" wall-clock time in `dailyResetTz`
   dailyResetTz: string    // IANA timezone
+  heartbeatFilter: HeartbeatFilter
 }
 
 export interface UpdateHouseholdSettingsRequest {
   dailyResetTime: string
   dailyResetTz: string
+  heartbeatFilter: HeartbeatFilter
 }
 
 export interface TimeLimit {

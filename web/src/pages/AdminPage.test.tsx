@@ -12,30 +12,43 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
+import type { HeartbeatFilter, HouseholdSettings } from '@/types/api'
 import { AdminPage } from './AdminPage'
+
+const DEFAULT_HF: HeartbeatFilter = {
+  enabled: false,
+  bytesThreshold: 2048,
+  activeFractionPct: 20,
+}
 
 beforeEach(() => {
   vi.resetAllMocks()
   // Server-of-record: simulates the live API. `update` mutates this and
   // `get` reads from it, so tests exercise the real round-trip the UI does
   // (PUT, then re-GET to refresh the summary — #571).
-  let stored: { dailyResetTime: string; dailyResetTz: string } = {
+  let stored: HouseholdSettings = {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
+    heartbeatFilter: { ...DEFAULT_HF },
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-    async () => ({ ...stored }),
+    async () => ({ ...stored, heartbeatFilter: { ...stored.heartbeatFilter } }),
   )
   ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-    async (next: { dailyResetTime: string; dailyResetTz: string }) => {
-      stored = { ...next }
+    async (next: HouseholdSettings) => {
+      stored = { ...next, heartbeatFilter: { ...next.heartbeatFilter } }
     },
   )
 })
 
 // Per-test override helper for the initial server state.
-function seedServer(s: { dailyResetTime: string; dailyResetTz: string }) {
-  (api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...s })
+function seedServer(s: Partial<HouseholdSettings>) {
+  (api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    dailyResetTime: '00:00',
+    dailyResetTz: 'America/Los_Angeles',
+    heartbeatFilter: { ...DEFAULT_HF },
+    ...s,
+  })
 }
 
 describe('AdminPage — daily reset card', () => {
@@ -86,6 +99,7 @@ describe('AdminPage — daily reset card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '06:00',
         dailyResetTz: 'America/Los_Angeles',
+        heartbeatFilter: DEFAULT_HF,
       }),
     )
     const summary = await screen.findByTestId('household-summary')
@@ -130,6 +144,7 @@ describe('AdminPage — daily reset card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'America/New_York',
+        heartbeatFilter: DEFAULT_HF,
       }),
     )
   })
@@ -159,6 +174,7 @@ describe('AdminPage — daily reset card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Denver',
+        heartbeatFilter: DEFAULT_HF,
       }),
     )
   })
@@ -181,6 +197,7 @@ describe('AdminPage — daily reset card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'Europe/London',
+        heartbeatFilter: DEFAULT_HF,
       }),
     )
   })
@@ -196,6 +213,7 @@ describe('AdminPage — daily reset card', () => {
         (api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
           dailyResetTime: next.dailyResetTime,
           dailyResetTz: 'America/Los_Angeles',
+          heartbeatFilter: { ...DEFAULT_HF },
         })
       },
     )
@@ -227,5 +245,121 @@ describe('AdminPage — daily reset card', () => {
     // Still in editing state
     expect(screen.getByTestId('household-reset-time')).toBeInTheDocument()
     expect(screen.queryByTestId('household-summary')).not.toBeInTheDocument()
+  })
+})
+
+describe('AdminPage — heartbeat filter card', () => {
+  it('summary shows "Disabled" when filter is off', async () => {
+    render(<AdminPage />)
+    const summary = await screen.findByTestId('heartbeat-filter-summary')
+    expect(summary).toHaveTextContent(/Disabled/i)
+  })
+
+  it('summary shows thresholds when filter is enabled', async () => {
+    seedServer({
+      heartbeatFilter: { enabled: true, bytesThreshold: 4096, activeFractionPct: 30 },
+    })
+    render(<AdminPage />)
+    const summary = await screen.findByTestId('heartbeat-filter-summary')
+    expect(summary).toHaveTextContent(/Enabled/i)
+    expect(summary).toHaveTextContent('4096')
+    expect(summary).toHaveTextContent('30%')
+  })
+
+  it('clicking Edit opens the form pre-filled with current values', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('heartbeat-filter-summary')
+    await user.click(screen.getByTestId('heartbeat-filter-edit'))
+
+    const enabled = screen.getByTestId('heartbeat-filter-enabled') as HTMLInputElement
+    const bytes = screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement
+    const fraction = screen.getByTestId('heartbeat-filter-fraction') as HTMLInputElement
+    expect(enabled.checked).toBe(false)
+    expect(bytes.value).toBe('2048')
+    expect(fraction.value).toBe('20')
+  })
+
+  it('toggle + save sends the right body and the summary reflects the GET reconcile', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('heartbeat-filter-summary')
+    await user.click(screen.getByTestId('heartbeat-filter-edit'))
+
+    await user.click(screen.getByTestId('heartbeat-filter-enabled'))
+    await user.click(screen.getByTestId('heartbeat-filter-save'))
+
+    await waitFor(() =>
+      expect(api.household.update).toHaveBeenCalledWith({
+        dailyResetTime: '00:00',
+        dailyResetTz: 'America/Los_Angeles',
+        heartbeatFilter: { enabled: true, bytesThreshold: 2048, activeFractionPct: 20 },
+      }),
+    )
+    const summary = await screen.findByTestId('heartbeat-filter-summary')
+    expect(summary).toHaveTextContent(/Enabled/i)
+    expect(summary).toHaveTextContent('2048')
+  })
+
+  it('threshold edits round-trip via update + re-GET', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('heartbeat-filter-summary')
+    await user.click(screen.getByTestId('heartbeat-filter-edit'))
+
+    await user.click(screen.getByTestId('heartbeat-filter-enabled'))
+    const bytes = screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement
+    await user.clear(bytes)
+    await user.type(bytes, '8192')
+    const fraction = screen.getByTestId('heartbeat-filter-fraction') as HTMLInputElement
+    await user.clear(fraction)
+    await user.type(fraction, '40')
+
+    await user.click(screen.getByTestId('heartbeat-filter-save'))
+
+    await waitFor(() =>
+      expect(api.household.update).toHaveBeenCalledWith({
+        dailyResetTime: '00:00',
+        dailyResetTz: 'America/Los_Angeles',
+        heartbeatFilter: { enabled: true, bytesThreshold: 8192, activeFractionPct: 40 },
+      }),
+    )
+    const summary = await screen.findByTestId('heartbeat-filter-summary')
+    expect(summary).toHaveTextContent('8192')
+    expect(summary).toHaveTextContent('40%')
+  })
+
+  it('cancel discards local changes', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('heartbeat-filter-summary')
+    await user.click(screen.getByTestId('heartbeat-filter-edit'))
+
+    const bytes = screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement
+    await user.clear(bytes)
+    await user.type(bytes, '9999')
+    await user.click(screen.getByTestId('heartbeat-filter-cancel'))
+
+    expect(api.household.update).not.toHaveBeenCalled()
+    const summary = await screen.findByTestId('heartbeat-filter-summary')
+    expect(summary).toHaveTextContent(/Disabled/i)
+
+    // Re-opening edit shows server value, not the dirty form.
+    await user.click(screen.getByTestId('heartbeat-filter-edit'))
+    expect((screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement).value).toBe('2048')
+  })
+
+  it('disables Save and shows a validation error when the active fraction is out of range', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('heartbeat-filter-summary')
+    await user.click(screen.getByTestId('heartbeat-filter-edit'))
+
+    const fraction = screen.getByTestId('heartbeat-filter-fraction') as HTMLInputElement
+    await user.clear(fraction)
+    await user.type(fraction, '150')
+
+    expect(screen.getByTestId('heartbeat-filter-validation')).toBeInTheDocument()
+    expect(screen.getByTestId('heartbeat-filter-save')).toBeDisabled()
   })
 })
