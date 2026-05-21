@@ -265,6 +265,18 @@ trait TrafficReportRepo {
       macs: List[MacAddress],
       date: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
+   * Range variant of [[listPresenceRows]] — inclusive `from`..`to`. Used by the #723 weekly profile
+   * screen-time view to compute range-deduped per-mac / per-host totals AND per-day breakdown from
+   * one query. Rows carry their `date` so the caller can group per-day without deriving it from
+   * `periodStart`.
+   */
+  def listPresenceRows(
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
 }
 
 trait BlockEventRepo {
@@ -971,15 +983,21 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .to[List]
       .transact(xa)
 
+  def listPresenceRows(macs: List[MacAddress], date: LocalDate) =
+    listPresenceRowsBetween(macs, date, date)
+
+  def listPresenceRows(macs: List[MacAddress], from: LocalDate, to: LocalDate) =
+    listPresenceRowsBetween(macs, from, to)
+
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
-    type Row = (MacAddress, Instant, HostId, Int, Long, Long, Instant, Instant)
+  private def listPresenceRowsBetween(macs: List[MacAddress], from: LocalDate, to: LocalDate) = {
+    type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         val q   =
-          fr"""SELECT tr.mac, tr.period_start,
+          fr"""SELECT tr.mac, tr.date, tr.period_start,
                       CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
                            THEN 'fqdn' ELSE tr.host_type END,
                       COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
@@ -992,15 +1010,15 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                  WHERE mac          = tr.mac
                    AND dest_ip      = tr.host_value
                    AND resolved_host_value IS NOT NULL
-                   AND ts >= $date::TIMESTAMPTZ
-                   AND ts <  ($date::DATE + INTERVAL '1 day')::TIMESTAMPTZ
+                   AND ts >= tr.date::TIMESTAMPTZ
+                   AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
                  ORDER BY ts DESC LIMIT 1
                ) ce ON tr.host_type IN ('ipv4','ipv6')
-               WHERE tr.date = $date AND """ ++ Fragments.in(fr"tr.mac", nel)
+               WHERE tr.date BETWEEN $from AND $to AND """ ++ Fragments.in(fr"tr.mac", nel)
         q.query[Row]
-          .map { case (m, ps, host, secs, bin, bout, pStart, pEnd) =>
+          .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
             val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
-            wifihaven.api.presence.PresenceRow(m, ps, host, secs, bin + bout, periodSeconds)
+            wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
           }
           .to[List]
           .transact(xa)

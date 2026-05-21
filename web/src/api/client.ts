@@ -1,6 +1,6 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
-  DeviceTimeStatus, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus,
+  DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
   QueryLog, RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
@@ -116,8 +116,15 @@ export const api = {
   time: {
     statusAll: (date?: string) =>
       req<ProfileTimeStatus[]>('GET', `/time/status${date ? `?date=${date}` : ''}`),
+    statusAllWeek: (to?: string) =>
+      req<ProfileTimeStatusWeek[]>('GET', `/time/status/week${to ? `?to=${to}` : ''}`),
+    // Colons in MAC addresses are valid URL path chars (sub-delims); zio-http
+    // does NOT auto-decode percent-encoded colons in path segments, so
+    // `encodeURIComponent` would turn the MAC into a 404. Send raw.
+    statusDeviceWeek: (mac: string, to?: string) =>
+      req<DeviceTimeStatusWeek>('GET', `/time/status/${mac}/week${to ? `?to=${to}` : ''}`),
     statusDevice: (mac: string, date?: string) =>
-      req<DeviceTimeStatus>('GET', `/time/status/${encodeURIComponent(mac)}${date ? `?date=${date}` : ''}`),
+      req<DeviceTimeStatus>('GET', `/time/status/${mac}${date ? `?date=${date}` : ''}`),
     grantExtension: (data: GrantExtensionRequest) =>
       req<{ id: number; grantedMinutes: number }>('POST', '/time/extend', data),
     listExtensions: (profileId: number) =>

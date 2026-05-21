@@ -73,6 +73,11 @@ object DbFailureSpec extends ZIOSpecDefault {
     def listForRouter(r: RouterId, l: Int)                               = throwing
     def listSessionRows(f: SessionFilter)                                = throwing
     def listPresenceRows(macs: List[MacAddress], d: java.time.LocalDate) = throwing
+    def listPresenceRows(
+        macs: List[MacAddress],
+        from: java.time.LocalDate,
+        to: java.time.LocalDate,
+    ) = throwing
   }
 
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {

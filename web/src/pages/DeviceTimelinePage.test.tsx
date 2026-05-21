@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import type { UsageSeriesResponse } from '@/types/api'
+import type { DeviceTimeStatusWeek, UsageSeriesResponse } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
     usage: {
       series: vi.fn(),
+    },
+    time: {
+      statusDeviceWeek: vi.fn(),
     },
   },
 }))
@@ -121,5 +125,67 @@ describe('DeviceTimelinePage', () => {
     renderPage([`/devices/${MAC}/timeline?date=2026-05-15`])
     await waitFor(() => expect(mock).toHaveBeenCalled())
     expect(mock.mock.calls[0][0]).toMatchObject({ mac: MAC, date: '2026-05-15' })
+  })
+
+  describe('week toggle (#723)', () => {
+    function richWeek(to: string): DeviceTimeStatusWeek {
+      return {
+        deviceMac: MAC,
+        deviceName: "Kid's iPad",
+        from: '2026-05-14',
+        to,
+        profileName: 'Kids',
+        profileId: 1,
+        dailyLimitMins: 120,
+        totalMins: 65,
+        perDay: [
+          { date: '2026-05-14', usedMins: 10 },
+          { date: '2026-05-15', usedMins: 20 },
+          { date: '2026-05-16', usedMins: 0 },
+          { date: '2026-05-17', usedMins: 5 },
+          { date: '2026-05-18', usedMins: 0 },
+          { date: '2026-05-19', usedMins: 15 },
+          { date: '2026-05-20', usedMins: 15 },
+        ],
+        hostUsage: [
+          { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 40 },
+          { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 25 },
+        ],
+      }
+    }
+
+    it('clicking Week swaps to the per-device weekly endpoint and renders', async () => {
+      const seriesMock = api.usage.series as unknown as ReturnType<typeof vi.fn>
+      const weekMock = api.time.statusDeviceWeek as unknown as ReturnType<typeof vi.fn>
+      seriesMock.mockResolvedValue(emptyDayResponse('2026-05-20'))
+      weekMock.mockResolvedValue(richWeek('2026-05-20'))
+
+      const user = userEvent.setup()
+      renderPage([`/devices/${MAC}/timeline?date=2026-05-20`])
+      await waitFor(() => expect(seriesMock).toHaveBeenCalled())
+      await user.click(screen.getByTestId('device-timeline-window-week'))
+
+      await waitFor(() => expect(weekMock).toHaveBeenCalled())
+      // Date picker doubles as the `to` anchor in week mode.
+      expect(weekMock.mock.calls[0]).toEqual([MAC, '2026-05-20'])
+      expect(await screen.findByTestId('device-timeline-week-chart')).toBeInTheDocument()
+      expect(screen.getByText(/65m total/)).toBeInTheDocument()
+      // Top-host list re-renders with weekly per-host totals.
+      expect(screen.getByTestId('device-timeline-host-youtube.com')).toHaveTextContent('40m')
+    })
+
+    it('week mode renders empty state when the trailing window has no usage', async () => {
+      const seriesMock = api.usage.series as unknown as ReturnType<typeof vi.fn>
+      const weekMock = api.time.statusDeviceWeek as unknown as ReturnType<typeof vi.fn>
+      seriesMock.mockResolvedValue(emptyDayResponse('2026-05-20'))
+      weekMock.mockResolvedValue({
+        ...richWeek('2026-05-20'),
+        totalMins: 0,
+        perDay: richWeek('2026-05-20').perDay.map(d => ({ ...d, usedMins: 0 })),
+        hostUsage: [],
+      })
+      renderPage([`/devices/${MAC}/timeline?date=2026-05-20&window=week`])
+      expect(await screen.findByTestId('device-timeline-week-empty')).toBeInTheDocument()
+    })
   })
 })

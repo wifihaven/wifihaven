@@ -5,7 +5,7 @@ import wifihaven.shared.HeartbeatFilter
 import wifihaven.shared.types.*
 import zio.test.*
 
-import java.time.Instant
+import java.time.{Instant, LocalDate}
 
 object PresenceSpec extends ZIOSpecDefault {
 
@@ -14,6 +14,7 @@ object PresenceSpec extends ZIOSpecDefault {
 
   /** Bucket index → Instant; arbitrary epoch base since the values are opaque to Presence. */
   private val base               = Instant.parse("2026-05-13T00:00:00Z")
+  private val baseDate           = LocalDate.parse("2026-05-13")
   private def b(i: Int): Instant = base.plusSeconds(i * 300L)
 
   private def row(
@@ -24,7 +25,15 @@ object PresenceSpec extends ZIOSpecDefault {
       bytes: Long = 1_000_000L,
       periodSeconds: Int = 300,
   ) =
-    PresenceRow(mac, b(bucket), HostId.Fqdn(Hostname.unsafe(host)), secs, bytes, periodSeconds)
+    PresenceRow(
+      mac,
+      baseDate,
+      b(bucket),
+      HostId.Fqdn(Hostname.unsafe(host)),
+      secs,
+      bytes,
+      periodSeconds,
+    )
 
   private def ipRow(
       mac: MacAddress,
@@ -34,7 +43,15 @@ object PresenceSpec extends ZIOSpecDefault {
       bytes: Long = 1_000_000L,
       periodSeconds: Int = 300,
   ) =
-    PresenceRow(mac, b(bucket), HostId.IPv4(IpAddress.unsafe(ip)), secs, bytes, periodSeconds)
+    PresenceRow(
+      mac,
+      baseDate,
+      b(bucket),
+      HostId.IPv4(IpAddress.unsafe(ip)),
+      secs,
+      bytes,
+      periodSeconds,
+    )
 
   def spec = suite("Presence")(
     suite("totalMinutesByMac")(

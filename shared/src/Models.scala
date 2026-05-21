@@ -355,6 +355,44 @@ case class ProfileTimeStatus(
     hostUsage: List[HostUsage],
 ) derives JsonCodec
 
+case class ProfileTimeDayTotal(date: String, usedMins: Int) derives JsonCodec
+
+/**
+ * Weekly screen-time roll-up (#723) — sibling shape to [[ProfileTimeStatus]]. `totalMins`,
+ * `devices` and `hostUsage` are bucket-deduped across the full `from`..`to` range, so totals can be
+ * lower than naively summing `perDay.usedMins` (a device touching the same 5-min bucket on two
+ * hosts still only counts once for the range). `dailyLimitMins` is informational — the daily cap
+ * does not weekly-aggregate.
+ */
+case class ProfileTimeStatusWeek(
+    profileId: ProfileId,
+    profileName: String,
+    from: String,
+    to: String,
+    dailyLimitMins: Option[Int],
+    totalMins: Int,
+    perDay: List[ProfileTimeDayTotal],
+    devices: List[DeviceUsageSummary],
+    hostUsage: List[HostUsage],
+) derives JsonCodec
+
+/**
+ * Per-device weekly screen-time roll-up. Mirrors [[ProfileTimeStatusWeek]] but scoped to a single
+ * MAC across the `from`..`to` range with the same bucket-dedup semantics.
+ */
+case class DeviceTimeStatusWeek(
+    deviceMac: MacAddress,
+    deviceName: String,
+    from: String,
+    to: String,
+    profileName: String,
+    profileId: Option[ProfileId],
+    dailyLimitMins: Option[Int],
+    totalMins: Int,
+    perDay: List[ProfileTimeDayTotal],
+    hostUsage: List[HostUsage],
+) derives JsonCodec
+
 case class ProfileDetail(
     profile: Profile,
     schedules: List[Schedule],
