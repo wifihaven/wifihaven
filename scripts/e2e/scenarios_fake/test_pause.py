@@ -22,7 +22,7 @@ from lib.traffic import http_get
 from lib.vm import router_nft_set
 from lib.wait import wait_until
 
-from .snapshot_builder import snapshot_with_assigned_device
+from .snapshot_builder import SnapshotBuilder, snapshot_with_assigned_device
 
 pytestmark = pytest.mark.pause
 
@@ -105,9 +105,90 @@ def test_pause_blocks_via_fake_api(router, client, fake_api):
     def _has_paused_event():
         evs = fake_api.events_for_mac(mac, allowed=False, reason="paused")
         return evs or None
+    # The agent batches connection_events and POSTs them on its own cadence
+    # (~10-15s per flush). A 60s window raced the flush in #684 validation
+    # even though the underlying behavior was correct; bumping to 120s gives
+    # at least one full event-report cycle of headroom.
     wait_until(
         _has_paused_event,
-        timeout_s=60,
+        timeout_s=120,
         interval_s=2,
         description=f"paused event for {mac} in fake",
     )
+
+
+# ── A3 — paused profile + new device added in second snapshot ──────────────
+
+
+_A_PROFILE_ID = 101
+
+
+def _snapshot_with_two_devices(
+    *, etag: str, mac_a: str, mac_b: str | None, paused: bool,
+) -> dict:
+    b = SnapshotBuilder()
+    b.add_profile(
+        id=_A_PROFILE_ID, name="e2e-pause-extras",
+        blocked=paused, block_reason="Paused" if paused else None,
+    )
+    b.add_device(mac=mac_a, name="e2e-pause-a", profile_id=_A_PROFILE_ID)
+    if mac_b is not None:
+        b.add_device(mac=mac_b, name="e2e-pause-b", profile_id=_A_PROFILE_ID)
+    return b.build(etag=etag)
+
+
+def test_pause_then_add_device_blocks_new_mac(router, client, fake_api):
+    """A3: with the profile paused, adding a second device to the snapshot
+    puts the new MAC into blocked_macs within one poll. No second client VM
+    needed — we only need the nft set to grow."""
+    mac_a = client.mac
+    mac_b = "02:e2:e2:a3:00:42"
+
+    e1 = fake_api.serve_snapshot(
+        _snapshot_with_two_devices(
+            etag='"sha256:a3-paused-only-a"', mac_a=mac_a, mac_b=None, paused=True,
+        ),
+    )
+    fake_api.wait_for_etag_served(etag=e1, timeout_s=240)
+    _wait_mac_in_blocked_set(mac_a, present=True, timeout_s=180)
+
+    e2 = fake_api.serve_snapshot(
+        _snapshot_with_two_devices(
+            etag='"sha256:a3-paused-add-b"', mac_a=mac_a, mac_b=mac_b, paused=True,
+        ),
+    )
+    fake_api.wait_for_etag_served(etag=e2, timeout_s=240)
+    _wait_mac_in_blocked_set(mac_b, present=True, timeout_s=180)
+
+
+# ── A4 — reassign off paused profile unblocks MAC ─────────────────────────
+
+
+_PAUSED_PID = 102
+_OPEN_PID = 103
+
+
+def test_reassign_off_paused_profile_unblocks_mac(router, client, fake_api):
+    """A4: device on paused profile → reassigned to an unpaused profile →
+    MAC clears blocked_macs within one poll."""
+    mac = client.mac
+
+    def _snap(*, etag: str, profile_id: int) -> dict:
+        return (
+            SnapshotBuilder()
+            .add_profile(
+                id=_PAUSED_PID, name="e2e-a4-paused",
+                blocked=True, block_reason="Paused",
+            )
+            .add_profile(id=_OPEN_PID, name="e2e-a4-open")
+            .add_device(mac=mac, name="e2e-a4-dev", profile_id=profile_id)
+            .build(etag=etag)
+        )
+
+    e1 = fake_api.serve_snapshot(_snap(etag='"sha256:a4-paused"', profile_id=_PAUSED_PID))
+    fake_api.wait_for_etag_served(etag=e1, timeout_s=240)
+    _wait_mac_in_blocked_set(mac, present=True, timeout_s=180)
+
+    e2 = fake_api.serve_snapshot(_snap(etag='"sha256:a4-open"', profile_id=_OPEN_PID))
+    fake_api.wait_for_etag_served(etag=e2, timeout_s=240)
+    _wait_mac_in_blocked_set(mac, present=False, timeout_s=180)
