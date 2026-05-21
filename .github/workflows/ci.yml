@@ -112,6 +112,8 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'deploy/**/*.sh'
               - 'scripts/**'
+              - 'openwrt/install.sh'
+              - 'openwrt/test/**'
               - '**/*.bats'
               - '**/*.test.sh'
             render:
