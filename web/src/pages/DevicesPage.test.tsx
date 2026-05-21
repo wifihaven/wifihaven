@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { Device, ProfileDetail } from '@/types/api'
+import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -25,11 +26,11 @@ import { api } from '@/api/client'
 import { DevicesPage } from './DevicesPage'
 
 function renderPage(initialEntries: string[] = ['/devices']) {
-  return render(
+  return render(withQuery(
     <MemoryRouter initialEntries={initialEntries}>
       <DevicesPage />
     </MemoryRouter>,
-  )
+  ))
 }
 
 let mockAuth = { isAdmin: true }

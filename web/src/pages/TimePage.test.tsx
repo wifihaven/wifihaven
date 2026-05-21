@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
+import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -102,7 +103,7 @@ beforeEach(() => {
 
 describe('TimePage — list', () => {
   it('renders cards with usage, remaining, extensions, and site usage', async () => {
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     expect(await screen.findByText("Kid's iPad")).toBeInTheDocument()
     // #791: usedMins=90 → "1:30 used"; remainingMins=30 stays "30m left"
     expect(screen.getByText('1:30 used')).toBeInTheDocument()
@@ -118,7 +119,7 @@ describe('TimePage — list', () => {
   })
 
   it('renders top-host breakdown when hostUsage is present (#262)', async () => {
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     expect(await screen.findByTestId('time-host-1-youtube.com')).toHaveTextContent('youtube.com')
     expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('35m')
     expect(screen.getByTestId('time-host-1-khan-academy.org')).toHaveTextContent('khan-academy.org')
@@ -129,7 +130,7 @@ describe('TimePage — list', () => {
   })
 
   it('omits the top-host section when hostUsage is empty (#262)', async () => {
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     // overLimit profile (id=2) has hostUsage: [] — no time-host-* testids for it
     await screen.findByTestId('time-card-2')
     expect(screen.queryByTestId(/^time-host-2-/)).not.toBeInTheDocument()
@@ -139,7 +140,7 @@ describe('TimePage — list', () => {
 describe('TimePage — grant extension', () => {
   it('opens modal, picks 45m preset, types note, and calls grantExtension', async () => {
     const user = userEvent.setup()
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     await screen.findByTestId('time-card-1')
 
     // Click first "+ Time" button (Kids profile)
@@ -166,7 +167,7 @@ describe('TimePage — grant extension', () => {
 
   it('passes null note when blank', async () => {
     const user = userEvent.setup()
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     await screen.findByTestId('time-card-1')
     const grantButtons = screen.getAllByRole('button', { name: /\+ Time/ })
     await user.click(grantButtons[0])
@@ -183,7 +184,7 @@ describe('TimePage — grant extension', () => {
 
 describe('TimePage — week toggle (#723)', () => {
   it('defaults to Today and only fetches the today endpoint', async () => {
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     await screen.findByTestId('time-card-1')
     expect(api.time.statusAll).toHaveBeenCalledTimes(1)
     expect(api.time.statusAllWeek).not.toHaveBeenCalled()
@@ -191,7 +192,7 @@ describe('TimePage — week toggle (#723)', () => {
 
   it('clicking Week fetches the weekly endpoint and renders chart + totals', async () => {
     const user = userEvent.setup()
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     await screen.findByTestId('time-card-1')
     await user.click(screen.getByTestId('time-window-week'))
     expect(await screen.findByTestId('time-week-card-1')).toBeInTheDocument()
@@ -209,16 +210,17 @@ describe('TimePage — week toggle (#723)', () => {
       .toHaveAttribute('href', '/devices/aa%3Abb%3Acc%3Add%3Aee%3A01/timeline')
   })
 
-  it('toggling back to Today does not refetch unnecessarily on a second click', async () => {
+  it('toggling back to Today serves the cached response without refetching (#803)', async () => {
     const user = userEvent.setup()
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     await screen.findByTestId('time-card-1')
     await user.click(screen.getByTestId('time-window-week'))
     await screen.findByTestId('time-week-card-1')
     await user.click(screen.getByTestId('time-window-today'))
     await screen.findByTestId('time-card-1')
-    // Today and Week each fetched once on the first switch to that window.
-    expect(api.time.statusAll).toHaveBeenCalledTimes(2)
+    // #803: the SPA-side cache holds the Today response across the round-trip
+    // to Week, so the second view is served from cache. Each endpoint hit once.
+    expect(api.time.statusAll).toHaveBeenCalledTimes(1)
     expect(api.time.statusAllWeek).toHaveBeenCalledTimes(1)
   })
 })
@@ -293,7 +295,7 @@ describe('formatMins (#791)', () => {
 describe('TimePage — role gating', () => {
   it('hides "+ Time" button for non-admins', async () => {
     mockAuth = { isAdmin: false }
-    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
     await screen.findByTestId('time-card-1')
     expect(screen.queryByRole('button', { name: /\+ Time/ })).not.toBeInTheDocument()
   })

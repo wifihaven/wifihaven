@@ -16,6 +16,7 @@ vi.mock('@/api/client', () => ({
 
 import { api } from '@/api/client'
 import { DashboardPage, NowSection } from './DashboardPage'
+import { withQuery } from '@/test/queryWrapper'
 
 const stats: DashboardStats = {
   totalToday: 1234,
@@ -82,7 +83,7 @@ beforeEach(() => {
 
 describe('DashboardPage', () => {
   it('renders stat cards, top-blocked, per-device, and recent queries', async () => {
-    render(<DashboardPage />)
+    render(withQuery(<DashboardPage />))
     expect(await screen.findByText('1234')).toBeInTheDocument()
     expect(screen.getByText('56')).toBeInTheDocument()
     expect(screen.getByText('78')).toBeInTheDocument()
@@ -99,12 +100,12 @@ describe('DashboardPage', () => {
 
   it('shows empty state when no blocked queries', async () => {
     mockStats().mockResolvedValue({ ...stats, topBlocked: [] })
-    render(<DashboardPage />)
+    render(withQuery(<DashboardPage />))
     expect(await screen.findByText(/No blocked queries yet/)).toBeInTheDocument()
   })
 
   it('recent activity Time column renders in viewer local time (not UTC slice)', async () => {
-    render(<DashboardPage />)
+    render(withQuery(<DashboardPage />))
     await screen.findByText('example.com')
     const expected = new Date(recent.ts).toLocaleTimeString()
     expect(screen.getByText(expected)).toBeInTheDocument()
@@ -112,7 +113,7 @@ describe('DashboardPage', () => {
 
   it('renders Now section above stat cards', async () => {
     mockNow().mockResolvedValue(liveNow)
-    render(<DashboardPage />)
+    render(withQuery(<DashboardPage />))
     await screen.findByText('1234')
     await waitFor(() => expect(screen.getByTestId('now-profile-1')).toBeInTheDocument())
     const nowHeading = screen.getByText('Now')
@@ -125,7 +126,7 @@ describe('DashboardPage', () => {
 describe('NowSection', () => {
   it('renders one card per profile in id order, idle profiles dimmed', async () => {
     mockNow().mockResolvedValue(liveNow)
-    render(<NowSection />)
+    render(withQuery(<NowSection />))
     const kids   = await screen.findByTestId('now-profile-1')
     const adults = screen.getByTestId('now-profile-2')
     expect(kids).toBeInTheDocument()
@@ -135,7 +136,7 @@ describe('NowSection', () => {
 
   it('shows device name, last-seen, current session, and top hosts', async () => {
     mockNow().mockResolvedValue(liveNow)
-    render(<NowSection />)
+    render(withQuery(<NowSection />))
     await screen.findByTestId('now-device-aa:bb:cc:dd:ee:01')
     expect(screen.getByText('iPhone')).toBeInTheDocument()
     expect(screen.getByText('30s ago')).toBeInTheDocument()
@@ -150,7 +151,7 @@ describe('NowSection', () => {
       ...liveNow,
       profiles: [{ ...liveNow.profiles[0], paused: true }],
     })
-    render(<NowSection />)
+    render(withQuery(<NowSection />))
     expect(await screen.findByText('Paused')).toBeInTheDocument()
   })
 
@@ -158,7 +159,7 @@ describe('NowSection', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       mockNow().mockResolvedValue(emptyNow)
-      render(<NowSection />)
+      render(withQuery(<NowSection />))
       await waitFor(() => expect(mockNow()).toHaveBeenCalledTimes(1))
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
       expect(mockNow()).toHaveBeenCalledTimes(2)
@@ -173,7 +174,7 @@ describe('NowSection', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       mockNow().mockResolvedValueOnce(liveNow).mockRejectedValue(new Error('boom'))
-      render(<NowSection />)
+      render(withQuery(<NowSection />))
       await waitFor(() => expect(screen.getByTestId('now-profile-1')).toBeInTheDocument())
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
       expect(screen.getByTestId('now-profile-1')).toBeInTheDocument()
@@ -185,7 +186,7 @@ describe('NowSection', () => {
 
   it('renders empty-profiles message when API returns no profiles', async () => {
     mockNow().mockResolvedValue(emptyNow)
-    render(<NowSection />)
+    render(withQuery(<NowSection />))
     expect(await screen.findByText(/No profiles configured yet/)).toBeInTheDocument()
   })
 })

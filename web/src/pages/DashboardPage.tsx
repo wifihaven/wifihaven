@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '@/api/client'
+import { useDashboardNow } from '@/api/queries'
 import type {
-  DashboardNow,
   DashboardNowDevice,
   DashboardNowProfile,
   DashboardStats,
   QueryLog,
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
-
-const NOW_POLL_MS = 10_000
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
@@ -89,23 +87,13 @@ export function DashboardPage() {
 }
 
 // ── "Now" section — live snapshot, polls every 10s ───────────────────────────
+//
+// #803: TanStack Query handles the polling cadence + last-known-good fallback
+// (it keeps the previous `data` reference when a refetch errors), so the
+// imperative setInterval / try-catch from before is gone.
 
 export function NowSection() {
-  const [data, setData] = useState<DashboardNow | null>(null)
-  const dataRef = useRef<DashboardNow | null>(null)
-  dataRef.current = data
-
-  useEffect(() => {
-    let cancelled = false
-    const tick = () => {
-      api.dashboard.now()
-        .then(d => { if (!cancelled) setData(d) })
-        .catch(() => { /* keep showing previous snapshot on transient errors */ })
-    }
-    tick()
-    const id = setInterval(tick, NOW_POLL_MS)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  const { data = null } = useDashboardNow()
 
   return (
     <section data-testid="now-section" className="space-y-3">

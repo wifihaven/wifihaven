@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { useProfiles, useDevices, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type {
   Device, FailureMode, HouseholdSettings, ProfileDetail, ScheduleRequest,
@@ -80,11 +82,18 @@ function formToRequest(f: FormState): UpsertProfileRequest {
 
 export function ProfilesPage() {
   const { isAdmin } = useAuth()
-  const [profiles, setProfiles] = useState<ProfileDetail[]>([])
+  const invalidators = useInvalidators()
+  const profilesQuery = useProfiles()
+  const devicesQuery  = useDevices()
+  const profiles = profilesQuery.data ?? []
+  const devices  = devicesQuery.data  ?? []
   const [categories, setCategories] = useState<string[]>([])
-  const [devices, setDevices] = useState<Device[]>([])
   const [allUsers, setAllUsers] = useState<User[]>([])
-  const [loading, setLoading] = useState(true)
+  // Aux fetches (blocklists/users/household) aren't part of the #803 hot
+  // loop — keep them as one-shot useEffect state. They only need to load
+  // once when the page mounts.
+  const [auxLoading, setAuxLoading] = useState(true)
+  const loading = profilesQuery.isPending || devicesQuery.isPending || auxLoading
   const [editingId, setEditingId] = useState<number | 'new' | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
   const [saving, setSaving] = useState(false)
@@ -132,24 +141,28 @@ export function ProfilesPage() {
     return m
   }, [allUsers])
 
-  async function reload() {
-    const [p, cats, devs, users, hs] = await Promise.all([
-      api.profiles.list(),
+  async function loadAux() {
+    const [cats, users, hs] = await Promise.all([
       api.blocklists.counts().catch(() => []),
-      api.devices.list().catch(() => [] as Device[]),
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
       api.household.get().catch(() => null),
     ])
-    setProfiles(p)
     setCategories(cats.map(c => c.category))
-    setDevices(devs)
     setAllUsers(users)
     setHousehold(hs)
   }
 
   useEffect(() => {
-    reload().finally(() => setLoading(false))
+    loadAux().finally(() => setAuxLoading(false))
   }, [])
+
+  // After a profile mutation, refetch user→profile links too so the
+  // "linked users" badges stay in sync.
+  async function refetchAux() {
+    if (!isAdmin) return
+    const users = await api.users.list().catch(() => [] as User[])
+    setAllUsers(users)
+  }
 
   function startNew() {
     setForm(emptyForm())
@@ -163,6 +176,28 @@ export function ProfilesPage() {
     setError(null)
   }
 
+  const updateMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: UpsertProfileRequest }) =>
+      api.profiles.update(id, body),
+    onSuccess: () => Promise.all([invalidators.profileMutated(), refetchAux()]),
+  })
+
+  const createMutation = useMutation({
+    mutationFn: (body: UpsertProfileRequest) => api.profiles.create(body),
+    onSuccess: () => Promise.all([invalidators.profileMutated(), refetchAux()]),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => api.profiles.delete(id),
+    onSuccess: () => Promise.all([invalidators.profileMutated(), refetchAux()]),
+  })
+
+  const setUsersMutation = useMutation({
+    mutationFn: ({ id, userIds }: { id: number; userIds: number[] }) =>
+      api.profiles.setUsers(id, userIds),
+    onSuccess: () => Promise.all([invalidators.profiles(), refetchAux()]),
+  })
+
   async function togglePause(pd: ProfileDetail) {
     // #406: setting `paused` explicitly via the full-profile PUT is
     // idempotent under concurrent clicks. The old POST /pause endpoint was
@@ -170,8 +205,7 @@ export function ProfilesPage() {
     // #423 tracks adding PATCH so we don't have to send the whole profile.
     const body = formToRequest(detailToForm(pd))
     body.paused = !pd.profile.paused
-    await api.profiles.update(pd.profile.id, body)
-    await reload()
+    await updateMutation.mutateAsync({ id: pd.profile.id, body })
   }
 
   async function save() {
@@ -180,10 +214,9 @@ export function ProfilesPage() {
     setError(null)
     try {
       const body = formToRequest(form)
-      if (editingId === 'new') await api.profiles.create(body)
-      else if (typeof editingId === 'number') await api.profiles.update(editingId, body)
+      if (editingId === 'new') await createMutation.mutateAsync(body)
+      else if (typeof editingId === 'number') await updateMutation.mutateAsync({ id: editingId, body })
       setEditingId(null)
-      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save')
     } finally {
@@ -203,9 +236,8 @@ export function ProfilesPage() {
     setSaving(true)
     setError(null)
     try {
-      await api.profiles.setUsers(editingUsersFor, userPick)
+      await setUsersMutation.mutateAsync({ id: editingUsersFor, userIds: userPick })
       setEditingUsersFor(null)
-      await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to update user links')
     } finally {
@@ -216,8 +248,7 @@ export function ProfilesPage() {
   async function del(id: number, name: string) {
     if (!confirm(`Delete profile "${name}"? Devices using it will need a new profile.`)) return
     try {
-      await api.profiles.delete(id)
-      await reload()
+      await deleteMutation.mutateAsync(id)
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Failed to delete')
     }

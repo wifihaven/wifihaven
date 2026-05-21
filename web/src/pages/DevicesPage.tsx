@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { useDevices, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
-import type { Device, ProfileDetail } from '@/types/api'
+import type { Device } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 // Apply the LogsPage click-through highlight (#298): when the URL carries
@@ -29,30 +31,37 @@ function useHighlightFromQuery(devices: Device[]) {
 
 export function DevicesPage() {
   const { isAdmin } = useAuth()
-  const [devices,  setDevices]  = useState<Device[]>([])
-  const [profiles, setProfiles] = useState<ProfileDetail[]>([])
-  const [loading,  setLoading]  = useState(true)
+  const devicesQuery  = useDevices()
+  const profilesQuery = useProfiles()
+  const invalidators  = useInvalidators()
+  const devices  = devicesQuery.data  ?? []
+  const profiles = profilesQuery.data ?? []
+  const loading  = devicesQuery.isPending || profilesQuery.isPending
   const [editing,  setEditing]  = useState<Device | null>(null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const highlightMac = useHighlightFromQuery(devices)
 
-  useEffect(() => {
-    Promise.all([api.devices.list(), api.profiles.list()])
-      .then(([d, p]) => { setDevices(d); setProfiles(p) })
-      .finally(() => setLoading(false))
-  }, [])
+  const upsertMutation = useMutation({
+    mutationFn: (body: { mac: string; name: string; profileId: number }) =>
+      api.devices.upsert(body),
+    onSuccess: () => {
+      setEditing(null)
+      return invalidators.deviceMutated()
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (mac: string) => api.devices.delete(mac),
+    onSuccess: () => invalidators.deviceMutated(),
+  })
 
   async function save() {
-    await api.devices.upsert(form)
-    const d = await api.devices.list()
-    setDevices(d)
-    setEditing(null)
+    await upsertMutation.mutateAsync(form)
   }
 
   async function del(mac: string) {
     if (!confirm('Remove this device?')) return
-    await api.devices.delete(mac)
-    setDevices(d => d.filter(x => x.mac !== mac))
+    await deleteMutation.mutateAsync(mac)
   }
 
   function addUnknown(mac: string) {
