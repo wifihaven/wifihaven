@@ -366,6 +366,13 @@ the user resolved. See [`../docs/architecture.md` §7.2](../docs/architecture.md
 Both allowed and blocked flows are reported so the admin UI shows a
 complete connection timeline, not just block events.
 
+## Tuning
+
+The cadence knobs in `/etc/config/wifihaven` (`policy_poll_interval`,
+`usage_report_interval`, `activity_sample_int`, `event_batch_size`,
+`event_flush_interval`) are documented with trade-offs and suggested
+ranges in [`docs/router-tuning.md`](../docs/router-tuning.md).
+
 ## Architecture reference
 
 See [`docs/architecture.md`](../docs/architecture.md) for the full design —

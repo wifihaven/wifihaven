@@ -22,3 +22,9 @@ config wifihaven 'wifihaven'
 
 	# How often (seconds) to POST usage counters
 	option usage_report_interval '60'
+
+	# How often (seconds) to sample per-MAC activity for activeSeconds
+	# accounting. Must evenly divide usage_report_interval to avoid partial
+	# buckets at report boundaries (e.g. 10 with usage_report_interval=60
+	# yields 6 samples per report). See docs/router-tuning.md.
+	option activity_sample_int '10'

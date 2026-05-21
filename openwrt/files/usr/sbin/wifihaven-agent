@@ -38,11 +38,21 @@ local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
 local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
+local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local debug_opt     = uci_get("debug",                            "0")
 
 log.init({ debug = debug_opt })
-log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds",
-         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int)
+log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds activity_sample_int=%ds",
+         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, activity_sample_int)
+
+-- activity_sample_int should evenly divide usage_report_interval, or the last
+-- partial bucket at report flush time is shorter than the others. Warn and
+-- continue — a misconfig here degrades activeSeconds accuracy slightly but
+-- isn't worth crashing the agent over.
+if activity_sample_int <= 0 or usage_int % activity_sample_int ~= 0 then
+  log.warn("activity_sample_int=%d does not evenly divide usage_report_interval=%d; activeSeconds accuracy will degrade. See docs/router-tuning.md.",
+           activity_sample_int, usage_int)
+end
 
 if router_token == "" then
   log.err("router_token not set — run enrollment first")
@@ -229,7 +239,6 @@ local in_failover_render  = false
 local last_policy_run     = 0
 local last_usage_run      = 0
 local last_activity_sample = 0
-local activity_sample_int  = 10                 -- 10s activity granularity (#295, #516)
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
