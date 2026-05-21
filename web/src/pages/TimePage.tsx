@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
   Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { api } from '@/api/client'
+import { useTimeStatusToday, useTimeStatusWeek, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type { ProfileTimeBucket, ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -91,48 +93,51 @@ type Window = 'today' | 'week'
 
 export function TimePage() {
   const { isAdmin }   = useAuth()
+  const invalidators  = useInvalidators()
   const [window, setWindow] = useState<Window>('today')
-  const [statuses, setStatuses] = useState<ProfileTimeStatus[]>([])
-  const [weekStatuses, setWeekStatuses] = useState<ProfileTimeStatusWeek[]>([])
-  const [loading, setLoading]   = useState(true)
+  // #803: only the active window is enabled, so switching tabs doesn't
+  // pay for the inactive query, but a quick switch back within the
+  // per-endpoint stale window serves cached data without a network hit.
+  const todayQuery = useTimeStatusToday({ enabled: window === 'today' })
+  // #794: pass the offset that aligns hourly buckets to the viewer's local
+  // midnight so the chart can attribute each bucket to one local day without
+  // straddling. The offset is part of the cache key (queries.ts).
+  const weekQuery  = useTimeStatusWeek(
+    undefined,
+    localBucketOffsetMin(),
+    { enabled: window === 'week' },
+  )
+  const statuses     = todayQuery.data ?? []
+  const weekStatuses = weekQuery.data  ?? []
+  const loading =
+    (window === 'today' && todayQuery.isPending) ||
+    (window === 'week'  && weekQuery.isPending)
   const [extProfileId, setExtProfileId] = useState<number | null>(null)
   const [extMins, setExtMins]   = useState(30)
   const [extNote, setExtNote]   = useState('')
-  const [granting, setGranting] = useState(false)
 
-  async function load(win: Window = window) {
-    setLoading(true)
-    try {
-      if (win === 'today') {
-        const data = await api.time.statusAll()
-        setStatuses(data)
-      } else {
-        // #794: pass the offset that aligns hourly buckets to the viewer's local midnight, so
-        // the chart can attribute each bucket to one local day without straddling.
-        const data = await api.time.statusAllWeek(undefined, localBucketOffsetMin())
-        setWeekStatuses(data)
-      }
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load(window) }, [window])
-
-  async function grantExtension(profileId: number) {
-    setGranting(true)
-    try {
-      await api.time.grantExtension({ profileId, extraMinutes: extMins, note: extNote || null })
+  const grantMutation = useMutation({
+    mutationFn: (vars: { profileId: number; extraMinutes: number; note: string | null }) =>
+      api.time.grantExtension(vars),
+    onSuccess: () => {
       setExtProfileId(null)
       setExtMins(30)
       setExtNote('')
-      await load('today')
-    } finally {
-      setGranting(false)
-    }
+      return invalidators.timeStatus()
+    },
+  })
+
+  async function grantExtension(profileId: number) {
+    await grantMutation.mutateAsync({
+      profileId,
+      extraMinutes: extMins,
+      note: extNote || null,
+    })
   }
 
   if (loading) return <PageLoader />
+
+  const granting = grantMutation.isPending
 
   const profileName = (id: number) =>
     statuses.find(s => s.profileId === id)?.profileName
