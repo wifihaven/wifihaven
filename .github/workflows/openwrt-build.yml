@@ -73,6 +73,28 @@ jobs:
           echo "--- data ---"
           ar p "$ipk" data.tar.gz | tar tz
 
+      - name: Build luci-app-wifihaven .ipk
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+          PKG_RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          chmod +x openwrt/luci/build-ipk.sh
+          openwrt/luci/build-ipk.sh
+
+      - name: Verify luci-app-wifihaven .ipk contents
+        run: |
+          ipk=$(ls openwrt/luci/luci-app-wifihaven_*.ipk)
+          echo "Package: $ipk"
+          ls -lh "$ipk"
+          ar p "$ipk" data.tar.gz | tar tz
+
+      - name: Upload luci-app-wifihaven .ipk artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: luci-app-wifihaven-ipk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
+          path: openwrt/luci/luci-app-wifihaven_*.ipk
+          if-no-files-found: error
+
       - name: Install apk-tools build deps
         run: |
           sudo apt-get update
@@ -130,3 +152,4 @@ jobs:
           files: |
             openwrt/wifihaven_*.ipk
             openwrt/wifihaven_*.apk
+            openwrt/luci/luci-app-wifihaven_*.ipk
