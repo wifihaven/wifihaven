@@ -27,6 +27,7 @@ object SessionRoutes {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      clock: Clock,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "sessions" ->
@@ -53,7 +54,8 @@ object SessionRoutes {
             // Build the macs filter from the intersection of the device, profile,
             // and mac query params with the user's visibility scope.
             macs = computeMacs(macParam, deviceIdP, profileIdP.map(ProfileId(_)), visibleDevs)
-            effectiveSince = since.orElse(Some(Instant.now().minusSeconds(hours.toLong * 3600L)))
+            now <- clock.instant
+            effectiveSince = since.orElse(Some(now.minusSeconds(hours.toLong * 3600L)))
             filter         = SessionFilter(
               macs = Some(macs),
               host = host,
