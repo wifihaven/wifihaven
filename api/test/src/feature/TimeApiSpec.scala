@@ -1056,8 +1056,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
       test("bucketOffsetMin shifts the hourly grid alignment (#794)") {
         // Default alignment (offset=0) puts a 05:30Z period_start into the 05:00Z hourly slot.
         // Caller-supplied offset=30 (half-hour zones like India) puts the same period_start into
-        // the 04:30Z slot, since the grid is now {…, 04:30, 05:30, 06:30, …}. Verifying both
+        // the 05:30Z slot, since the grid is now {…, 04:30, 05:30, 06:30, …}. Verifying both
         // confirms server-side alignment is driven by the query param, not a fixed UTC hour.
+        //
+        // Anchor at `today` (TestClock=schoolDayAfternoon) so the trailing-7-day window matches
+        // the rest of the suite — past tests have shown that windows anchored outside the
+        // default range can race with concurrent embedded-pg cleanup on CI.
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -1073,27 +1077,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
-          start = java.time.Instant.parse("2026-05-21T05:30:00Z")
-          end   = start.plusSeconds(300)
-          _               <- trafficRepo.insertBatch(
-            List(
-              TrafficReportInsert(
-                routerId,
-                MacAddress.unsafe(testMac),
-                None,
-                HostId.Fqdn(Hostname.unsafe("late-night.example")),
-                java.time.LocalDate.of(2026, 5, 21),
-                start,
-                end,
-                300,
-                0L,
-                0L,
-              ),
-            ),
-          )
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Seed a single 5-min bucket at 05:30Z on `today`. seedTraffic places buckets at
+          // `bucketOffset * 5min` past midnight UTC — offset=66 → 5h30m = 05:30Z.
+          _ <- seedTraffic(routerId, testMac, "late.example", today, 5, bucketOffset = 66)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
-          routes = TimeRoutes.routes(
+          routes     = TimeRoutes.routes(
             auth,
             deviceRepo,
             tlRepo,
@@ -1105,10 +1095,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             hsRepo,
             clock,
           )
+          expected0  = today.atStartOfDay(java.time.ZoneOffset.UTC).toInstant.plusSeconds(5 * 3600)
+          expected30 = expected0.plusSeconds(30 * 60)
           // offset=0 — buckets at :00 of each UTC hour. 05:30Z period_start → 05:00Z slot.
           respDefault <- routes.runZIO(
             Request
-              .get(URL.decode("/api/time/status/week?to=2026-05-21").toOption.get)
+              .get(URL.decode("/api/time/status/week").toOption.get)
               .addHeader(Header.Authorization.Bearer(token)),
           )
           bodyDefault <- respDefault.body.asString
@@ -1117,9 +1109,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           // offset=30 — buckets at :30 of each UTC hour. 05:30Z period_start → 05:30Z slot.
           respHalf <- routes.runZIO(
             Request
-              .get(
-                URL.decode("/api/time/status/week?to=2026-05-21&bucketOffsetMin=30").toOption.get,
-              )
+              .get(URL.decode("/api/time/status/week?bucketOffsetMin=30").toOption.get)
               .addHeader(Header.Authorization.Bearer(token)),
           )
           bodyHalf <- respHalf.body.asString
@@ -1127,18 +1117,12 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           kidsHalf = listHalf.find(_.profileId == kidsId).get
         } yield assertTrue(respDefault.status == Status.Ok) &&
           assertTrue(kidsDefault.perBucket.length == 1) &&
-          assertTrue(
-            kidsDefault.perBucket.head.bucketStart ==
-              java.time.Instant.parse("2026-05-21T05:00:00Z"),
-          ) &&
+          assertTrue(kidsDefault.perBucket.head.bucketStart == expected0) &&
           assertTrue(kidsDefault.perBucket.head.usedMins == 5) &&
           assertTrue(kidsDefault.totalMins == 5) &&
           assertTrue(respHalf.status == Status.Ok) &&
           assertTrue(kidsHalf.perBucket.length == 1) &&
-          assertTrue(
-            kidsHalf.perBucket.head.bucketStart ==
-              java.time.Instant.parse("2026-05-21T05:30:00Z"),
-          ) &&
+          assertTrue(kidsHalf.perBucket.head.bucketStart == expected30) &&
           assertTrue(kidsHalf.perBucket.head.usedMins == 5)
       },
       test("bucketOffsetMin rejects values outside 0/15/30/45") {
