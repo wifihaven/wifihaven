@@ -79,8 +79,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           start,
           end,
           300,
-          0L,
-          0L,
+          // #789: real-traffic byte volume so the default heartbeat filter (10KB floor) keeps
+          // these rows in the rollup.
+          500_000L,
+          500_000L,
         )
       }.toList
       tr.insertBatch(inserts).as(bucketOffset + buckets)
@@ -512,6 +514,76 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(kids.devices.length == 2) &&               // both devices in breakdown
           assertTrue(kids.devices.map(_.deviceName).toSet == Set("iPad", "iPhone"))
       },
+      // #795: per-profile scope so the SPA can fetch one card's worth of data
+      // instead of fanning out N sub-rollups. The filter is applied before the
+      // per-profile loop runs, so only the requested profile's queries fire.
+      test("?profileId=N narrows the response to one profile") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          adultsId    <- profileRepo
+            .create("Adults", Nil)
+            .flatMap(pid =>
+              profileRepo
+                .update(
+                  Profile(
+                    pid,
+                    "Adults",
+                    Nil,
+                    Nil,
+                    Nil,
+                    paused = false,
+                    FailureMode.LastKnownGood,
+                    blockIpOnly = false,
+                  ),
+                )
+                .as(pid),
+            )
+          _           <- tlRepo.upsert(kidsId, 60)
+          _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:01", "iPad", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:02", "iPhone", adultsId)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode(s"/api/time/status?profileId=${kidsId.value}").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          // Bad-input case: 400, not silently-ignored.
+          bad  <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status?profileId=not-a-number").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(list.length == 1) &&
+          assertTrue(list.head.profileId == kidsId) &&
+          assertTrue(bad.status == Status.BadRequest)
+      },
       test("two devices on same profile share a combined usage pool") {
         for {
           _           <- cleanDb
@@ -833,7 +905,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             HouseholdSettings(
               java.time.LocalTime.of(0, 0),
               java.time.ZoneId.of("UTC"),
-              HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20),
+              HeartbeatFilter(enabled = true, bytesThreshold = 2048),
             ),
           )
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -864,7 +936,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(out.rows.length == 2) &&
           assertTrue(apns.classified == "heartbeat") &&
           assertTrue(apns.reasons.exists(_.startsWith("bytes<"))) &&
-          assertTrue(apns.reasons.exists(_.startsWith("activeFraction<"))) &&
           assertTrue(yt.classified == "active") &&
           assertTrue(yt.reasons.isEmpty)
       },
@@ -934,6 +1005,66 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(kids.totalMins == 70) &&                        // 20+35+15
           assertTrue(kids.devices.head.usedMins == 70) &&
           assertTrue(kids.dailyLimitMins.contains(120))
+      },
+      // #795: same scoping for the week endpoint.
+      test("?profileId=N narrows the weekly response to one profile") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          adultsId    <- profileRepo
+            .create("Adults", Nil)
+            .flatMap(pid =>
+              profileRepo
+                .update(
+                  Profile(
+                    pid,
+                    "Adults",
+                    Nil,
+                    Nil,
+                    Nil,
+                    paused = false,
+                    FailureMode.LastKnownGood,
+                    blockIpOnly = false,
+                  ),
+                )
+                .as(pid),
+            )
+          _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:01", "iPad", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, "aa:bb:cc:dd:ee:02", "iPhone", adultsId)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode(s"/api/time/status/week?profileId=${kidsId.value}").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(list.length == 1) &&
+          assertTrue(list.head.profileId == kidsId)
       },
       test("per-host weekly totals are bucket-deduped across the range") {
         // Two devices on the same profile both hit youtube.com on multiple days. The host

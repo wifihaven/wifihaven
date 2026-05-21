@@ -96,21 +96,15 @@ object Presence {
    * #714 heartbeat classification, applied ONLY inside `totalSecondsByMac`/`totalMinutesByMac`.
    * Per-site (`patternMinutesByMac`) and per-host (`hostMinutes`) breakdowns intentionally do not
    * filter — heartbeats keep counting for per-site time for now; the operator wants to evaluate
-   * that separately. A row is classified as a heartbeat if the filter is enabled AND EITHER:
-   *
-   *   - total bytes < `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few
-   *     hundred), OR
-   *   - `activeSeconds * 100 / periodSeconds` < `activeFractionPct` (heartbeats land in one sample
-   *     in the period; real interactive use lights up many).
-   *
-   * Rows with `periodSeconds <= 0` are never classified as heartbeats — defensive against bad
-   * router clocks; treat as active.
+   * that separately. A row is classified as a heartbeat if the filter is enabled and total bytes
+   * are below `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few hundred).
    */
   def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
     filter.enabled && (
       row.bytes < filter.bytesThreshold ||
-        (row.periodSeconds > 0 &&
-          row.activeSeconds.toLong * 100 < filter.activeFractionPct.toLong * row.periodSeconds.toLong)
+        row.host.asFqdn.exists(fqdn =>
+          filter.heartbeatHostPatterns.exists(p => matchesPattern(fqdn.value, p)),
+        )
     )
 
   /**
@@ -129,9 +123,11 @@ object Presence {
       val rsns  = scala.collection.mutable.ListBuffer.empty[String]
       if filter.enabled then {
         if r.bytes < filter.bytesThreshold then rsns += s"bytes<${filter.bytesThreshold}"
-        if r.periodSeconds > 0 &&
-          r.activeSeconds.toLong * 100 < filter.activeFractionPct.toLong * r.periodSeconds.toLong
-        then rsns += s"activeFraction<${filter.activeFractionPct}%"
+        for {
+          fqdn <- r.host.asFqdn
+          p    <- filter.heartbeatHostPatterns
+          if matchesPattern(fqdn.value, p)
+        } rsns += s"host:$p"
       }
       val label = if filter.enabled && rsns.nonEmpty then "heartbeat" else "active"
       Classified(r, label, rsns.toList)

@@ -187,15 +187,15 @@ object PresenceSpec extends ZIOSpecDefault {
         assertTrue(Presence.totalMinutesByMac(rows, Nil, HeartbeatFilter.Off) == Map(mac1 -> 1))
       },
       test("filter on: bucket with only sub-threshold-bytes rows collapses to 0") {
-        // APNs keepalive: 60s period, ~60 bytes total, lights up only the one sample.
-        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        // APNs keepalive: 60s period, ~60 bytes total.
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
         val rows = List(
           row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60),
         )
         assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int])
       },
       test("filter on: mixed bucket (heartbeat + real traffic) keeps the bucket's minutes") {
-        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
         val rows = List(
           row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60),
           row(mac1, 0, "youtube.com", secs = 60, bytes = 500_000L, periodSeconds = 60),
@@ -203,46 +203,71 @@ object PresenceSpec extends ZIOSpecDefault {
         // Heartbeat row dropped; real row keeps the 60s bucket alive → 1 min.
         assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map(mac1 -> 1))
       },
-      test("filter on, low-fraction-only heuristic still trips") {
-        // Above the byte floor, but only 2s of 60s active → drop.
-        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 100, activeFractionPct = 20)
+      test("filter on: above the byte floor passes regardless of active fraction") {
+        // #789: with the fraction knob removed, a low active-fraction row whose bytes are above
+        // the threshold counts as active. (Previously, a 2s/60s row tripped the fraction floor.)
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 100)
         val rows = List(
           row(mac1, 0, "rcs.google.com", secs = 2, bytes = 5_000L, periodSeconds = 60),
         )
-        assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int])
+        assertTrue(!Presence.isHeartbeat(rows.head, f))
       },
-      test("filter on: bytes-only heuristic still trips when active fraction is high") {
-        // Active the whole minute, but tiny payload (e.g. NTP-like) → drop.
-        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+      test("filter on: tiny-payload rows drop even when active the whole minute") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
         val rows = List(
           row(mac1, 0, "time.apple.com", secs = 60, bytes = 200L, periodSeconds = 60),
         )
         assertTrue(Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int])
       },
-      test("filter on, but periodSeconds=0 (bad clock): never classified heartbeat by fraction") {
-        // Defensive: with periodSeconds=0 the fraction rule is short-circuited so we don't divide
-        // by zero or accidentally classify every such row as a heartbeat. Bytes-check still runs.
-        val f = HeartbeatFilter(enabled = true, bytesThreshold = 100, activeFractionPct = 50)
-        val passingRow = row(mac1, 0, "x.example.com", secs = 30, bytes = 1_000L, periodSeconds = 0)
-        val droppedRow = row(mac2, 0, "y.example.com", secs = 30, bytes = 5L, periodSeconds = 0)
-        assertTrue(!Presence.isHeartbeat(passingRow, f)) &&
-        assertTrue(Presence.isHeartbeat(droppedRow, f))
-      },
-      test("classifyRows surfaces both heuristics' reasons when both trip") {
-        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+      test("classifyRows surfaces the bytes reason when a row trips the threshold") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
         val rows = List(row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60))
         val out  = Presence.classifyRows(rows, f)
         val reasons = out.head.reasons
         assertTrue(out.length == 1) &&
         assertTrue(out.head.classified == "heartbeat") &&
-        assertTrue(reasons.exists(_.startsWith("bytes<"))) &&
-        assertTrue(reasons.exists(_.startsWith("activeFraction<")))
+        assertTrue(reasons.exists(_.startsWith("bytes<")))
       },
       test("classifyRows reports rows as active when filter is disabled") {
         val rows = List(row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60))
         val out  = Presence.classifyRows(rows, HeartbeatFilter.Off)
         assertTrue(out.head.classified == "active") &&
         assertTrue(out.head.reasons.isEmpty)
+      },
+      test("#788 host pattern match classifies as heartbeat even when bytes pass") {
+        // Row that would otherwise pass the bytes floor — only the FQDN allowlist trips it.
+        // Confirms host-pattern path is OR'd in correctly.
+        val f = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 2048,
+          heartbeatHostPatterns = List("*.push.apple.com"),
+        )
+        val r =
+          row(mac1, 0, "api-push.push.apple.com", secs = 200, bytes = 50_000L, periodSeconds = 300)
+        assertTrue(Presence.isHeartbeat(r, f)) &&
+        assertTrue(Presence.totalMinutesByMac(List(r), Nil, f) == Map.empty[MacAddress, Int])
+      },
+      test("#788 classifyRows surfaces host:<pattern> reason for FQDN match") {
+        val f    = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 2048,
+          heartbeatHostPatterns = List("*.push.apple.com", "time.apple.com"),
+        )
+        val rows = List(
+          row(mac1, 0, "courier.push.apple.com", secs = 200, bytes = 50_000L, periodSeconds = 300),
+        )
+        val out  = Presence.classifyRows(rows, f)
+        assertTrue(out.head.classified == "heartbeat") &&
+        assertTrue(out.head.reasons == List("host:*.push.apple.com"))
+      },
+      test("#788 host pattern only matches FQDNs, not IP literals") {
+        val f = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 0,
+          heartbeatHostPatterns = List("*.push.apple.com"),
+        )
+        val r = ipRow(mac1, 0, "17.57.146.1", secs = 200, bytes = 50_000L, periodSeconds = 300)
+        assertTrue(!Presence.isHeartbeat(r, f))
       },
     ),
     suite("hostMinutes")(

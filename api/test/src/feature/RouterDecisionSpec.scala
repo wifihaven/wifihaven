@@ -70,8 +70,9 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           start,
           end,
           300,
-          0L,
-          0L,
+          // #789: above the default heartbeat-filter byte floor (10 KB) so rows aren't dropped.
+          500_000L,
+          500_000L,
         )
       }.toList
       tr.insertBatch(inserts).as(bucketOffset + buckets)

@@ -29,8 +29,8 @@ export interface Schedule {
 // household-wide.
 export interface HeartbeatFilter {
   enabled: boolean
-  bytesThreshold: number       // bytes/min floor (rows below are heartbeats)
-  activeFractionPct: number    // 0–100 active-seconds-fraction floor
+  bytesThreshold: number          // bytes/min floor (rows below are heartbeats)
+  heartbeatHostPatterns: string[] // #788 FQDN allowlist; *.foo.com / foo.com semantics
 }
 
 export interface HouseholdSettings {
