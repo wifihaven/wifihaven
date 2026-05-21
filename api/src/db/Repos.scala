@@ -267,15 +267,19 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
-   * Range variant of [[listPresenceRows]] — inclusive `from`..`to`. Used by the #723 weekly profile
-   * screen-time view to compute range-deduped per-mac / per-host totals AND per-day breakdown from
-   * one query. Rows carry their `date` so the caller can group per-day without deriving it from
-   * `periodStart`.
+   * Range variant of [[listPresenceRows]] — inclusive `from`..`to`, interpreted in household-local
+   * timezone `tz` (#794). Used by the #723 weekly profile screen-time view to compute range-deduped
+   * per-mac / per-host totals AND per-day breakdown from one query. The `date` column on each row
+   * is computed as `(period_start AT TIME ZONE $tz)::date`, so per-day grouping in the caller
+   * aligns with household-perceived day boundaries (not UTC). The legacy stored
+   * `traffic_reports.date` column is intentionally bypassed here — see RouterIngestRoutes for why
+   * it's UTC-bucketed.
    */
   def listPresenceRows(
       macs: List[MacAddress],
       from: LocalDate,
       to: LocalDate,
+      tz: java.time.ZoneId,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 }
 
@@ -984,13 +988,25 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .transact(xa)
 
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) =
-    listPresenceRowsBetween(macs, date, date)
+    // Single-date variant kept UTC-bucketed for now: callers (today view, heartbeat-explain,
+    // PolicyService) pass an already-household-tz-resolved date and rely on tr.date matching
+    // for the indexed equality lookup. #794's TZ fix is read-side only for the range variant.
+    listPresenceRowsLegacyByStoredDate(macs, date, date)
 
-  def listPresenceRows(macs: List[MacAddress], from: LocalDate, to: LocalDate) =
-    listPresenceRowsBetween(macs, from, to)
+  def listPresenceRows(
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+      tz: java.time.ZoneId,
+  ) =
+    listPresenceRowsInTz(macs, from, to, tz)
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  private def listPresenceRowsBetween(macs: List[MacAddress], from: LocalDate, to: LocalDate) = {
+  private def listPresenceRowsLegacyByStoredDate(
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+  ) = {
     type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
@@ -1015,6 +1031,59 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                  ORDER BY ts DESC LIMIT 1
                ) ce ON tr.host_type IN ('ipv4','ipv6')
                WHERE tr.date BETWEEN $from AND $to AND """ ++ Fragments.in(fr"tr.mac", nel)
+        q.query[Row]
+          .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
+            val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
+            wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
+          }
+          .to[List]
+          .transact(xa)
+    }
+  }
+
+  // #794: range variant buckets by household tz instead of the UTC-resolved `tr.date` column.
+  // We filter on `period_start` (indexed by `idx_traffic_reports_period_start`) using the
+  // half-open Instant window [from-midnight-tz, (to+1)-midnight-tz), so the planner keeps using
+  // the time index. The returned `date` is computed dynamically via `AT TIME ZONE`, so rows
+  // group by the day the user perceives them on — not the UTC day they were stored under.
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
+  private def listPresenceRowsInTz(
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+      tz: java.time.ZoneId,
+  ) = {
+    type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
+    macs match {
+      case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
+      case ms  =>
+        val nel        = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
+        val fromInst   = from.atStartOfDay(tz).toInstant
+        val toInstExcl = to.plusDays(1).atStartOfDay(tz).toInstant
+        val tzId       = tz.getId
+        val q          =
+          fr"""SELECT tr.mac,
+                      ((tr.period_start AT TIME ZONE $tzId)::date) AS bucket_date,
+                      tr.period_start,
+                      CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                           THEN 'fqdn' ELSE tr.host_type END,
+                      COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                               tr.host_value),
+                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
+               FROM traffic_reports tr
+               LEFT JOIN LATERAL (
+                 SELECT resolved_host_value
+                 FROM connection_events
+                 WHERE mac          = tr.mac
+                   AND dest_ip      = tr.host_value
+                   AND resolved_host_value IS NOT NULL
+                   AND ts >= tr.date::TIMESTAMPTZ
+                   AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+                 ORDER BY ts DESC LIMIT 1
+               ) ce ON tr.host_type IN ('ipv4','ipv6')
+               WHERE tr.period_start >= $fromInst
+                 AND tr.period_start <  $toInstExcl
+                 AND """ ++ Fragments.in(fr"tr.mac", nel)
         q.query[Row]
           .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
             val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt

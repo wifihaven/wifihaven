@@ -1047,6 +1047,87 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(shiftedKids.to == anchor.toString) &&
           assertTrue(shiftedKids.from == anchor.minusDays(6).toString)
       },
+      test("per-day buckets follow household timezone, not UTC (#794)") {
+        // Household tz = America/Los_Angeles (UTC-7 in May). Seed a 5-min bucket whose
+        // period_start is 2026-05-21T05:30:00Z — that is 2026-05-20T22:30:00 in LA local
+        // time. Under the old UTC-bucketed code path the row landed under 2026-05-21;
+        // under the #794 household-tz bucketing it must land under 2026-05-20 because
+        // that's the calendar day the user actually saw the activity on. Anchor the
+        // window at 2026-05-21 so both dates fall inside the trailing 7 days.
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // Flip household tz to LA so the AT TIME ZONE math in the read query reshapes
+          // the date column.
+          current     <- hsRepo.get
+          _           <- hsRepo.update(
+            current.copy(dailyResetTz = java.time.ZoneId.of("America/Los_Angeles")),
+          )
+          // Insert a single 5-min bucket straddling midnight LA on 2026-05-21 05:30:00Z
+          // = 2026-05-20 22:30:00 LA.
+          start = java.time.Instant.parse("2026-05-21T05:30:00Z")
+          end   = start.plusSeconds(300)
+          _               <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("late-night.example")),
+                // tr.date column is intentionally still UTC-bucketed at insert time
+                // (#794 is a read-side fix). Use the UTC date to mirror what
+                // RouterIngestRoutes would have stored.
+                java.time.LocalDate.of(2026, 5, 21),
+                start,
+                end,
+                300,
+                0L,
+                0L,
+              ),
+            ),
+          )
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          // Anchor the window at 2026-05-21 LA-local — covers 2026-05-15..21.
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/week?to=2026-05-21").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
+          kids  = list.find(_.profileId == kidsId).get
+          byDay = kids.perDay.map(d => d.date -> d.usedMins).toMap
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // The 5m bucket buckets under LA-local 2026-05-20, not UTC 2026-05-21.
+          assertTrue(byDay.getOrElse("2026-05-20", 0) == 5) &&
+          assertTrue(byDay.getOrElse("2026-05-21", 0) == 0) &&
+          assertTrue(kids.totalMins == 5)
+      },
     ) @@ TestAspect.sequential,
 
     // ── per-device weekly variant ───────────────────────────────────────────

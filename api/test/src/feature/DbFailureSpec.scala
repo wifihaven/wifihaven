@@ -77,6 +77,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         macs: List[MacAddress],
         from: java.time.LocalDate,
         to: java.time.LocalDate,
+        tz: java.time.ZoneId,
     ) = throwing
   }
 

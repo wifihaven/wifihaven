@@ -13,6 +13,19 @@ import { PageLoader } from './DashboardPage'
 // the same axis/grid/tooltip styling for visual cohesion.
 import { HOST_COLORS } from '@/components/usage/UsageHourlyBarChart'
 
+// #791: render minute totals compactly. Under 60 → "Xm" (e.g. "13m");
+// 60 and above → "H:MM" (e.g. "3:15", "10:21"). The previous code path
+// emitted "{n}m" everywhere, which combined with the 32px Y-axis width
+// produced visually clipped labels like "00m" for "200m" / "60m" for "260m".
+export function formatMins(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0m'
+  const mins = Math.round(n)
+  if (mins < 60) return `${mins}m`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return `${h}:${m.toString().padStart(2, '0')}`
+}
+
 type Window = 'today' | 'week'
 
 export function TimePage() {
@@ -209,10 +222,10 @@ function ProfileTimeCard({
       {hasLimit ? (
         <div>
           <div className="flex justify-between text-xs text-gray-500 mb-1.5">
-            <span>{status.usedMins}m used</span>
+            <span>{formatMins(status.usedMins)} used</span>
             <span>
               {status.remainingMins != null && status.remainingMins > 0
-                ? `${status.remainingMins}m left`
+                ? `${formatMins(status.remainingMins)} left`
                 : <span className="text-red-400">Limit reached</span>
               }
             </span>
@@ -224,9 +237,9 @@ function ProfileTimeCard({
             />
           </div>
           <div className="flex justify-between text-xs text-gray-600 mt-1">
-            <span>Limit: {status.dailyLimitMins}m</span>
+            <span>Limit: {formatMins(status.dailyLimitMins ?? 0)}</span>
             {status.extensionMins > 0 && (
-              <span className="text-yellow-500">+{status.extensionMins}m extended</span>
+              <span className="text-yellow-500">+{formatMins(status.extensionMins)} extended</span>
             )}
           </div>
         </div>
@@ -245,7 +258,7 @@ function ProfileTimeCard({
               className="flex justify-between text-xs bg-gray-800/50 hover:bg-gray-800 rounded-lg px-3 py-2 transition-colors"
             >
               <span className="text-gray-300">{d.deviceName}</span>
-              <span className="text-gray-500 font-mono">{d.usedMins}m</span>
+              <span className="text-gray-500 font-mono">{formatMins(d.usedMins)}</span>
             </Link>
           ))}
         </div>
@@ -261,7 +274,7 @@ function ProfileTimeCard({
               className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
             >
               <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
-              <span className="text-gray-500 font-mono shrink-0 ml-2">{hu.usedMins}m</span>
+              <span className="text-gray-500 font-mono shrink-0 ml-2">{formatMins(hu.usedMins)}</span>
             </div>
           ))}
         </div>
@@ -275,7 +288,7 @@ function ProfileTimeCard({
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-gray-300 font-medium">{su.label}</span>
                 <span className={su.remainingMins <= 0 ? 'text-red-400' : 'text-gray-500'}>
-                  {su.remainingMins <= 0 ? 'Limit reached' : `${su.remainingMins}m left`}
+                  {su.remainingMins <= 0 ? 'Limit reached' : `${formatMins(su.remainingMins)} left`}
                 </span>
               </div>
               <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
@@ -286,7 +299,7 @@ function ProfileTimeCard({
               </div>
               <div className="flex justify-between text-xs text-gray-600 mt-1">
                 <span className="font-mono">{su.domainPattern}</span>
-                <span>{su.usedMins}m / {su.limitMins}m</span>
+                <span>{formatMins(su.usedMins)} / {formatMins(su.limitMins)}</span>
               </div>
             </div>
           ))}
@@ -322,9 +335,9 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
 
       <div>
         <div className="flex justify-between text-xs text-gray-500 mb-1.5">
-          <span>{status.totalMins}m used this week</span>
+          <span>{formatMins(status.totalMins)} used this week</span>
           {status.dailyLimitMins != null && (
-            <span className="text-gray-600">Daily limit: {status.dailyLimitMins}m</span>
+            <span className="text-gray-600">Daily limit: {formatMins(status.dailyLimitMins)}</span>
           )}
         </div>
         <div className="h-48 -ml-2" data-testid={`time-week-chart-${status.profileId}`}>
@@ -341,8 +354,8 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
                 tick={{ fill: '#6b7280', fontSize: 11 }}
                 axisLine={{ stroke: '#374151' }}
                 tickLine={false}
-                width={32}
-                unit="m"
+                width={44}
+                tickFormatter={(v: number) => formatMins(v)}
               />
               <Tooltip
                 cursor={{ fill: '#1f293780' }}
@@ -353,7 +366,7 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
                   fontSize: 12,
                 }}
                 labelFormatter={(_, payload) => String(payload?.[0]?.payload?.date ?? '')}
-                formatter={(v) => [`${String(v)}m`, 'Used']}
+                formatter={(v) => [formatMins(Number(v)), 'Used']}
               />
               <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
             </BarChart>
@@ -372,7 +385,7 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
               className="flex justify-between text-xs bg-gray-800/50 hover:bg-gray-800 rounded-lg px-3 py-2 transition-colors"
             >
               <span className="text-gray-300">{d.deviceName}</span>
-              <span className="text-gray-500 font-mono">{d.usedMins}m</span>
+              <span className="text-gray-500 font-mono">{formatMins(d.usedMins)}</span>
             </Link>
           ))}
         </div>
@@ -388,7 +401,7 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
               className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
             >
               <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
-              <span className="text-gray-500 font-mono shrink-0 ml-2">{hu.usedMins}m</span>
+              <span className="text-gray-500 font-mono shrink-0 ml-2">{formatMins(hu.usedMins)}</span>
             </div>
           ))}
         </div>
