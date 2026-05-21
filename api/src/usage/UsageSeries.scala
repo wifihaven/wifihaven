@@ -72,15 +72,23 @@ object UsageSeries {
           if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
           else other += share
       }
+      // Floor per-host minutes (consistent with how the daily cap reports
+      // wall-clock minutes) and drop hosts that round to zero — keeps the
+      // legend useful for sparse heartbeat traffic. The flooring residual,
+      // including the 0-min hosts, lands in otherMins so the invariant
+      // sum(perHost.mins) + otherMins == totalMins holds for the chart.
       val perHostList = perHost.iterator
         .map { case (h, s) => UsageBucketHost(h, (s / 60).toInt) }
+        .filter(_.mins > 0)
         .toList
         .sortBy(u => rank.getOrElse(u.host, Int.MaxValue))
+      val totalMins   = (total / 60).toInt
+      val perHostSum  = perHostList.iterator.map(_.mins).sum
       UsageBucket(
         hour = hr,
-        totalMins = (total / 60).toInt,
+        totalMins = totalMins,
         perHost = perHostList,
-        otherMins = (other / 60).toInt,
+        otherMins = (totalMins - perHostSum).max(0),
       )
     }.toList
 
