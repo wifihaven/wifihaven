@@ -781,53 +781,55 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         // #714: explain endpoint surfaces every traffic_reports row that feeds Presence with the
         // current heartbeat-filter verdict, so the operator can tune thresholds against real data.
         for {
-          _              <- cleanDb
-          profileRepo    <- ZIO.service[ProfileRepo]
-          tlRepo         <- ZIO.service[TimeLimitRepo]
-          stlRepo        <- ZIO.service[SiteTimeLimitRepo]
-          schedRepo      <- ZIO.service[ScheduleRepo]
-          deviceRepo     <- ZIO.service[DeviceRepo]
-          trafficRepo    <- ZIO.service[TrafficReportRepo]
-          extRepo        <- ZIO.service[TimeExtensionRepo]
-          hsRepoSvc      <- ZIO.service[HouseholdSettingsRepo]
-          auth           <- makeAuth
-          token          <- auth.login("admin", "changeme").map(_.token.value)
-          kidsId         <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
-          _              <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
-          routerId       <- seedRouter
-          today           = TestClock.schoolDayAfternoon.toLocalDate
-          today0          = today.atStartOfDay(ZoneOffset.UTC).toInstant
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          hsRepoSvc   <- ZIO.service[HouseholdSettingsRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today  = TestClock.schoolDayAfternoon.toLocalDate
+          today0 = today.atStartOfDay(ZoneOffset.UTC).toInstant
           // Two rows on the same device today:
           //   - apns.apple.com: 60-byte heartbeat, 5s active within 60s
           //   - youtube.com:    500_000 bytes, 60s active within 60s
-          _              <- trafficRepo.insertBatch(List(
-            TrafficReportInsert(
-              routerId,
-              MacAddress.unsafe(testMac),
-              None,
-              HostId.Fqdn(Hostname.unsafe("apns.apple.com")),
-              today,
-              today0,
-              today0.plusSeconds(60),
-              5,
-              30L,
-              30L,
+          _               <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("apns.apple.com")),
+                today,
+                today0,
+                today0.plusSeconds(60),
+                5,
+                30L,
+                30L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                today0.plusSeconds(120),
+                today0.plusSeconds(180),
+                60,
+                250_000L,
+                250_000L,
+              ),
             ),
-            TrafficReportInsert(
-              routerId,
-              MacAddress.unsafe(testMac),
-              None,
-              HostId.Fqdn(Hostname.unsafe("youtube.com")),
-              today,
-              today0.plusSeconds(120),
-              today0.plusSeconds(180),
-              60,
-              250_000L,
-              250_000L,
-            ),
-          ))
+          )
           // Flip the filter on with the production defaults so the explain output reflects them.
-          _              <- hsRepoSvc.update(
+          _               <- hsRepoSvc.update(
             HouseholdSettings(
               java.time.LocalTime.of(0, 0),
               java.time.ZoneId.of("UTC"),
@@ -852,11 +854,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           req    = Request
             .get(URL.decode(s"/api/time/heartbeat-explain/$testMac").toOption.get)
             .addHeader(Header.Authorization.Bearer(token))
-          resp   <- routes.runZIO(req)
-          body   <- resp.body.asString
-          out    <- ZIO.fromEither(body.fromJson[HeartbeatExplainResponse])
-          apns    = out.rows.find(_.host.value == "apns.apple.com").get
-          yt      = out.rows.find(_.host.value == "youtube.com").get
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[HeartbeatExplainResponse])
+          apns = out.rows.find(_.host.value == "apns.apple.com").get
+          yt   = out.rows.find(_.host.value == "youtube.com").get
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(out.filter.enabled) &&
           assertTrue(out.rows.length == 2) &&

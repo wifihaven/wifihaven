@@ -376,7 +376,7 @@ object TimeRoutes {
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "time" / "status"                                 ->
+      Method.GET / "api" / "time" / "status"                            ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)
@@ -404,20 +404,20 @@ object TimeRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(statuses.toJson)
         },
-      Method.GET / "api" / "time" / "status" / string("mac")                 ->
+      Method.GET / "api" / "time" / "status" / string("mac")            ->
         handler { (mac: String, req: Request) =>
           for {
             claims <- requireAuth(req, auth)
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            device <- deviceRepo
+            device   <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
             settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            status <- buildDeviceTimeStatus(
+            status   <- buildDeviceTimeStatus(
               device,
               date,
               profileRepo,
@@ -430,7 +430,7 @@ object TimeRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
         },
-      Method.GET / "api" / "time" / "heartbeat-explain" / string("mac")      ->
+      Method.GET / "api" / "time" / "heartbeat-explain" / string("mac") ->
         handler { (mac: String, req: Request) =>
           // #714: per-row classification of `traffic_reports` rows that feed into
           // Presence.totalSecondsByMac for this device on `date` (default = today).
@@ -443,11 +443,11 @@ object TimeRoutes {
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            device <- deviceRepo
+            device   <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
             settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             rows     <- trafficRepo
               .listPresenceRows(List(device.mac), date)
@@ -475,7 +475,7 @@ object TimeRoutes {
             ).toJson,
           )
         },
-      Method.POST / "api" / "time" / "extend"                        ->
+      Method.POST / "api" / "time" / "extend"                           ->
         handler { (req: Request) =>
           for {
             claims <- requireWriter(req, auth)
@@ -490,7 +490,7 @@ object TimeRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
         },
-      Method.GET / "api" / "time" / "extensions" / long("profileId") ->
+      Method.GET / "api" / "time" / "extensions" / long("profileId")    ->
         handler { (profileId: Long, req: Request) =>
           val pid = ProfileId(profileId)
           for {

@@ -205,16 +205,16 @@ object PresenceSpec extends ZIOSpecDefault {
       test("filter on, but periodSeconds=0 (bad clock): never classified heartbeat by fraction") {
         // Defensive: with periodSeconds=0 the fraction rule is short-circuited so we don't divide
         // by zero or accidentally classify every such row as a heartbeat. Bytes-check still runs.
-        val f          = HeartbeatFilter(enabled = true, bytesThreshold = 100, activeFractionPct = 50)
+        val f = HeartbeatFilter(enabled = true, bytesThreshold = 100, activeFractionPct = 50)
         val passingRow = row(mac1, 0, "x.example.com", secs = 30, bytes = 1_000L, periodSeconds = 0)
         val droppedRow = row(mac2, 0, "y.example.com", secs = 30, bytes = 5L, periodSeconds = 0)
         assertTrue(!Presence.isHeartbeat(passingRow, f)) &&
         assertTrue(Presence.isHeartbeat(droppedRow, f))
       },
       test("classifyRows surfaces both heuristics' reasons when both trip") {
-        val f      = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
-        val rows   = List(row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60))
-        val out    = Presence.classifyRows(rows, f)
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20)
+        val rows = List(row(mac1, 0, "apns.apple.com", secs = 5, bytes = 60L, periodSeconds = 60))
+        val out  = Presence.classifyRows(rows, f)
         val reasons = out.head.reasons
         assertTrue(out.length == 1) &&
         assertTrue(out.head.classified == "heartbeat") &&

@@ -112,8 +112,8 @@ object Presence {
 
   /**
    * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the
-   * classification verdict and the specific reasons it tripped, so the operator can tune
-   * thresholds against real prod data.
+   * classification verdict and the specific reasons it tripped, so the operator can tune thresholds
+   * against real prod data.
    */
   case class Classified(
       row: PresenceRow,
@@ -123,7 +123,7 @@ object Presence {
 
   def classifyRows(rows: List[PresenceRow], filter: HeartbeatFilter): List[Classified] =
     rows.map { r =>
-      val rsns = scala.collection.mutable.ListBuffer.empty[String]
+      val rsns  = scala.collection.mutable.ListBuffer.empty[String]
       if filter.enabled then {
         if r.bytes < filter.bytesThreshold then rsns += s"bytes<${filter.bytesThreshold}"
         if r.periodSeconds > 0 &&
