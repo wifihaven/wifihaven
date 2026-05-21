@@ -66,13 +66,6 @@ function HeartbeatFilterCard({
     if (!Number.isFinite(form.bytesThreshold) || form.bytesThreshold < 0) {
       return 'Bytes threshold must be ≥ 0.'
     }
-    if (
-      !Number.isFinite(form.activeFractionPct)
-      || form.activeFractionPct < 0
-      || form.activeFractionPct > 100
-    ) {
-      return 'Active fraction must be between 0 and 100.'
-    }
     return null
   })()
 
@@ -87,7 +80,6 @@ function HeartbeatFilterCard({
         heartbeatFilter: {
           enabled: form.enabled,
           bytesThreshold: Math.trunc(form.bytesThreshold),
-          activeFractionPct: Math.trunc(form.activeFractionPct),
         },
       })
       const fresh = await api.household.get()
@@ -128,8 +120,6 @@ function HeartbeatFilterCard({
               <span className="font-medium text-white">Enabled</span>
               {' — bytes ≥ '}
               <span className="font-mono text-gray-200">{hf.bytesThreshold}</span>
-              {', active fraction ≥ '}
-              <span className="font-mono text-gray-200">{hf.activeFractionPct}%</span>
             </>
           ) : (
             <span className="font-medium text-white">Disabled</span>
@@ -139,8 +129,8 @@ function HeartbeatFilterCard({
         <div className="space-y-3">
           <p className="text-xs text-gray-400">
             Excludes low-traffic background "heartbeat" rows from device/profile screen-time
-            totals. A row is classified as a heartbeat when both its bytes/minute and active
-            fraction are below the configured floors.
+            totals. A row is classified as a heartbeat when its bytes/minute is below the
+            configured floor.
           </p>
           {error && (
             <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
@@ -175,19 +165,6 @@ function HeartbeatFilterCard({
                 value={form.bytesThreshold}
                 onChange={e => setForm({ ...form, bytesThreshold: Number(e.target.value) })}
                 data-testid="heartbeat-filter-bytes"
-                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-32"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Active fraction (%)</label>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={form.activeFractionPct}
-                onChange={e => setForm({ ...form, activeFractionPct: Number(e.target.value) })}
-                data-testid="heartbeat-filter-fraction"
                 className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-32"
               />
             </div>

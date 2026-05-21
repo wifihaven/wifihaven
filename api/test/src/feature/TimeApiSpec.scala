@@ -79,8 +79,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           start,
           end,
           300,
-          0L,
-          0L,
+          // #789: real-traffic byte volume so the default heartbeat filter (10KB floor) keeps
+          // these rows in the rollup.
+          500_000L,
+          500_000L,
         )
       }.toList
       tr.insertBatch(inserts).as(bucketOffset + buckets)
@@ -833,7 +835,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             HouseholdSettings(
               java.time.LocalTime.of(0, 0),
               java.time.ZoneId.of("UTC"),
-              HeartbeatFilter(enabled = true, bytesThreshold = 2048, activeFractionPct = 20),
+              HeartbeatFilter(enabled = true, bytesThreshold = 2048),
             ),
           )
           userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -864,7 +866,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(out.rows.length == 2) &&
           assertTrue(apns.classified == "heartbeat") &&
           assertTrue(apns.reasons.exists(_.startsWith("bytes<"))) &&
-          assertTrue(apns.reasons.exists(_.startsWith("activeFraction<"))) &&
           assertTrue(yt.classified == "active") &&
           assertTrue(yt.reasons.isEmpty)
       },

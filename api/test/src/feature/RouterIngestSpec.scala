@@ -593,14 +593,15 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         //    same bearer authenticates against both ingest and policy routes).
         (id, tk) <- seedRouter(rRepo)
         policy = RouterRoutes.routes(rRepo, ps, RouterAuthLive(rRepo), ber)
-        // 4. POST /api/router/usage with 90 active seconds
+        // 4. POST /api/router/usage with 90 active seconds. Bytes are well above the
+        //    default heartbeat filter threshold (#789: 10 KB) so the row isn't dropped.
         rec    = UsageRecord(
           MacAddress.unsafe(knownMac),
           Some(IpAddress.unsafe("192.168.1.42")),
           HostId.Fqdn(Hostname.unsafe("youtube.com")),
           90L,
-          0L,
-          0L,
+          100_000L,
+          100_000L,
         )
         body   = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
         ingestResp <- post(ingest, "/api/router/usage", body, Some(tk))
