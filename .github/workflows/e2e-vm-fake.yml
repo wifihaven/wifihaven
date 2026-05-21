@@ -20,6 +20,9 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: e2e-vm
   cancel-in-progress: false
