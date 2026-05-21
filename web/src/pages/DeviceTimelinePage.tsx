@@ -93,7 +93,10 @@ export function DeviceTimelinePage() {
 
   const chart = useMemo(() => {
     if (!data) return { rows: [] as ChartRow[], hostKeys: [] as string[] }
-    const hostKeys = data.topHosts.map(h => h.host.value)
+    // Belt-and-suspenders: skip hosts that floor to 0m in the legend/stack.
+    // The server already filters these out, but rendering an invisible bar
+    // with a "0m" legend entry looks broken if anything slips through.
+    const hostKeys = data.topHosts.filter(h => h.dayMins > 0).map(h => h.host.value)
     return { rows: buildChartData(data.buckets, hostKeys), hostKeys }
   }, [data])
 
@@ -213,7 +216,7 @@ export function DeviceTimelinePage() {
             Top hosts
           </h2>
           <ul className="space-y-1.5">
-            {data.topHosts.map((h, i) => {
+            {data.topHosts.filter(h => h.dayMins > 0).map((h, i) => {
               const isIp = h.host.type !== 'fqdn'
               return (
                 <li
