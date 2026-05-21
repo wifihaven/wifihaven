@@ -462,7 +462,14 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
-  -- Per-flow accounting set.
+  -- Per-flow accounting sets. Two sets, one per direction, both keyed on
+  -- (device_mac, remote_ip) so usage.lua can join them into a single record
+  -- carrying bytesIn and bytesOut (#717). The set for the device→remote
+  -- direction matches `ether saddr (mac) . ip daddr (remote)`; the reverse
+  -- direction matches `ether daddr (mac) . ip saddr (remote)`. The chain
+  -- below updates both atomically per packet, so a row's bytesIn/bytesOut
+  -- always cover the same window and the agent's per-bucket nft reset
+  -- zeroes both in lock-step.
   ind("set mac_ip_tracking {")
   ind2("type ether_addr . ipv4_addr")
   ind2("flags dynamic,timeout")
@@ -471,10 +478,21 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
-  -- Accounting chain: forward hook, low priority; updates tracking set per packet.
+  ind("set mac_ip_tracking_rx {")
+  ind2("type ether_addr . ipv4_addr")
+  ind2("flags dynamic,timeout")
+  ind2("timeout 6h")
+  ind2("counter")
+  ind("}")
+  emit("")
+
+  -- Accounting chain: forward hook, low priority; updates both tracking sets
+  -- per packet. Both updates happen in the same rule walk so a single
+  -- forwarded packet bumps exactly one element on exactly one set.
   ind("chain wifihaven_account {")
   ind2("type filter hook forward priority 1; policy accept;")
-  ind2("update @mac_ip_tracking { ether saddr . ip daddr } counter")
+  ind2("update @mac_ip_tracking    { ether saddr . ip daddr } counter")
+  ind2("update @mac_ip_tracking_rx { ether daddr . ip saddr } counter")
   ind("}")
   emit("")
 

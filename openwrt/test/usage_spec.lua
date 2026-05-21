@@ -85,6 +85,52 @@ describe("usage.parse_nft_counters", function()
 
 end)
 
+-- ── merge_counters (#717) ─────────────────────────────────────────────────
+--
+-- The agent reads the two per-direction nft sets — `mac_ip_tracking` (tx,
+-- device→remote) and `mac_ip_tracking_rx` (rx, remote→device) — and joins
+-- them on (mac, dst_ip) before passing to the tracker and build_report.
+
+describe("usage.merge_counters", function()
+
+  it("joins matching (mac, dst_ip) into one record with both directions populated", function()
+    local tx = { { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 100, packets = 3 } }
+    local rx = { { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 900, packets = 7 } }
+    local merged = usage.merge_counters(tx, rx)
+    assert.equal(1, #merged)
+    assert.equal(100, merged[1].bytes)
+    assert.equal(3,   merged[1].packets)
+    assert.equal(900, merged[1].bytes_out)
+    assert.equal(7,   merged[1].packets_out)
+  end)
+
+  it("emits records for tx-only and rx-only (mac, dst_ip) pairs with the missing side zeroed", function()
+    local tx = { { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 100, packets = 1 } }
+    local rx = { { mac = "de:ad:be:ef:00:01", dst_ip = "8.8.8.8", bytes = 200, packets = 2 } }
+    local merged = usage.merge_counters(tx, rx)
+    assert.equal(2, #merged)
+    local by_mac = {}
+    for _, c in ipairs(merged) do by_mac[c.mac] = c end
+    assert.equal(100, by_mac["aa:bb:cc:11:22:33"].bytes)
+    assert.equal(0,   by_mac["aa:bb:cc:11:22:33"].bytes_out)
+    assert.equal(0,   by_mac["de:ad:be:ef:00:01"].bytes)
+    assert.equal(200, by_mac["de:ad:be:ef:00:01"].bytes_out)
+  end)
+
+  it("treats nil tx or rx as empty (single-direction snapshot during a render swap)", function()
+    local rx = { { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 500, packets = 4 } }
+    local merged = usage.merge_counters(nil, rx)
+    assert.equal(1, #merged)
+    assert.equal(0,   merged[1].bytes)
+    assert.equal(500, merged[1].bytes_out)
+  end)
+
+  it("returns an empty list when both sides are empty", function()
+    assert.equal(0, #usage.merge_counters({}, {}))
+  end)
+
+end)
+
 -- ── build_report ──────────────────────────────────────────────────────────
 
 describe("usage.build_report", function()
@@ -140,6 +186,41 @@ describe("usage.build_report", function()
     assert.equal("youtube.com",      by_host["youtube.com"].host.value)
     assert.equal("aa:bb:cc:11:22:33", by_host["youtube.com"].mac)
     assert.equal(50000,               by_host["youtube.com"].bytesIn)
+  end)
+
+  -- #717: bytesOut must be wired through from the merged counter's
+  -- bytes_out field (the rx nft set), not hard-coded to 0.
+  it("populates bytesOut from c.bytes_out (download direction, #717)", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4",
+        bytes = 50000, packets = 100, bytes_out = 4000000, packets_out = 3500 },
+    }
+    local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(counters), SAMPLE_S, BUCKET_S)
+    assert.equal(50000,    r.records[1].bytesIn)
+    assert.equal(4000000,  r.records[1].bytesOut)
+  end)
+
+  it("defaults bytesOut to 0 when c.bytes_out is missing (tx-only snapshot)", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
+    for _, rec in ipairs(r.records) do
+      assert.equal(0, rec.bytesOut)
+    end
+  end)
+
+  it("credits one sample when bytes=0 but bytes_out>0 (rx-only flow first appearing post-tick)", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4",
+        bytes = 0, packets = 0, bytes_out = 1234, packets_out = 5 },
+    }
+    -- Empty tracker → falls through to the post-tick path. That path
+    -- previously gated on `c.bytes > 0`; with #717 it must also treat
+    -- bytes_out > 0 as activity.
+    local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, usage.new_tracker(), SAMPLE_S, BUCKET_S)
+    assert.equal(SAMPLE_S, r.records[1].activeSeconds)
+    assert.equal(1234,     r.records[1].bytesOut)
   end)
 
   -- #391: the "unknown" sentinel is gone. When DNS attribution misses we emit
@@ -355,6 +436,20 @@ describe("usage.tracker", function()
     })
     assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
     assert.equal(2, t.active_samples["aa:bb:cc:11:22:33|5.6.7.8"])
+  end)
+
+  -- #717: counter total is bytes + bytes_out, so a download-only flow still
+  -- counts as active even when bytes (tx) stays at 0 across samples.
+  it("counts activity from bytes_out growth alone (rx-only flow, #717)", function()
+    local function rx_only(mac, dst_ip, bytes_out)
+      return { mac = mac, dst_ip = dst_ip, bytes = 0, packets = 0,
+               bytes_out = bytes_out, packets_out = 0 }
+    end
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, { rx_only("aa:bb:cc:11:22:33", "1.2.3.4",  500) })
+    usage.tracker_sample(t, { rx_only("aa:bb:cc:11:22:33", "1.2.3.4", 1500) })
+    usage.tracker_sample(t, { rx_only("aa:bb:cc:11:22:33", "1.2.3.4", 1500) })  -- no growth
+    assert.equal(2, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
   end)
 
   it("tracker_reset clears all state", function()

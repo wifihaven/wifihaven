@@ -12,7 +12,7 @@
       },
       "activeSeconds" : 240,
       "bytesIn" : 1048576,
-      "bytesOut" : 0
+      "bytesOut" : 8388608
     },
     {
       "mac" : "76:2d:95:47:d1:8e",
@@ -22,7 +22,7 @@
       },
       "activeSeconds" : 60,
       "bytesIn" : 4096,
-      "bytesOut" : 0
+      "bytesOut" : 16384
     }
   ]
 }
