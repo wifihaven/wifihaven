@@ -1,20 +1,19 @@
-"""Minimal snapshot dict builders for the fake-API canary scenario (#683).
+"""Typed snapshot builder for fake-mode scenarios (#684).
 
-Just enough to construct the two snapshots `test_pause` needs. The full
-typed builder lives in #684.
+Produces dicts that match `shared/contract/api-to-router/policy_snapshot.json`
+verbatim. The fake's `POST /test/snapshot` accepts any dict and serves it back
+to the agent as-is, so all the shape rules live here, not in the fake.
 
-The wire shape matches `shared/contract/api-to-router/policy_snapshot.json`
-verbatim — the same fixture the fake loads on startup.
+Design: dicts + a couple of asserts. No pydantic / no jsonschema — the contract
+golden is already enforced upstream by `contract-tests` against the Scala codec,
+so this builder only has to faithfully reproduce that shape.
 """
 from __future__ import annotations
 
 from typing import Any
 
 
-def _default_blocklists() -> dict[str, Any]:
-    return {
-        "ads": {"version": "2026.05.01", "url": "/api/blocklists/ads"},
-    }
+_DEFAULT_GENERATED_AT = "2026-05-19T00:00:00Z"
 
 
 def profile_rules(
@@ -26,25 +25,146 @@ def profile_rules(
     blocklist_ids: list[str] | None = None,
     block_ip_only: bool = False,
 ) -> dict[str, Any]:
-    """Build the per-profile BlockRules wire shape.
+    """Build the BlockRules wire shape.
 
-    `block_reason` mirrors the `MacBlockReason` enum the Scala API emits —
-    `"Paused"`, `"Schedule"`, `"TimeLimit"`, `"Manual"`. Required when
-    `blocked=true` so the router agent (`render.lua::update_shared`) tags
-    `blocked_reason[mac]` with a meaningful value rather than the generic
-    fallback `"blocked"` — both the block-page renderer and the event
+    `block_reason` mirrors the `MacBlockReason` enum the Scala API emits
+    (`"Paused"`, `"Schedule"`, `"TimeLimit"`, `"Manual"`). Required when
+    `blocked=True` so the router agent tags `blocked_reason[mac]` with a
+    meaningful value — both the block-page renderer and the connection-event
     `reason` field key off this string.
     """
     rules: dict[str, Any] = {
         "blocked": blocked,
-        "extraBlocked": extra_blocked or [],
-        "extraAllowed": extra_allowed or [],
-        "blocklistIds": blocklist_ids or [],
+        "extraBlocked": list(extra_blocked or []),
+        "extraAllowed": list(extra_allowed or []),
+        "blocklistIds": list(blocklist_ids or []),
         "blockIpOnly": block_ip_only,
     }
     if block_reason is not None:
         rules["blockReason"] = block_reason
     return rules
+
+
+class SnapshotBuilder:
+    """Accumulator that produces a policy-snapshot dict ready for /test/snapshot.
+
+    Usage:
+        b = SnapshotBuilder()
+        b.add_profile(id=3, name="kids", extra_blocked=["tiktok.com"])
+        b.add_device(mac="aa:bb:cc:11:22:33", profile_id=3, name="kid-ipad")
+        b.add_blocklist(id="ads")
+        snap = b.build(etag='"sha256:abc"')
+    """
+
+    def __init__(self, *, generated_at: str = _DEFAULT_GENERATED_AT) -> None:
+        self._generated_at = generated_at
+        self._profiles: dict[str, dict[str, Any]] = {}
+        self._devices: dict[str, dict[str, Any]] = {}
+        self._blocklists: dict[str, dict[str, Any]] = {}
+
+    def add_profile(
+        self,
+        *,
+        id: int,
+        name: str,
+        blocked: bool = False,
+        block_reason: str | None = None,
+        extra_blocked: list[str] | None = None,
+        extra_allowed: list[str] | None = None,
+        blocklist_ids: list[str] | None = None,
+        block_ip_only: bool = False,
+        failure_mode: str = "block-all",
+    ) -> "SnapshotBuilder":
+        if blocked and block_reason is None:
+            # Mirrors render.lua's fallback: without a reason the block-page +
+            # event-reason both degrade to the literal "blocked". For tests
+            # that want enforcement (`blocked=True`) we require an explicit
+            # MacBlockReason so the agent-emitted reason is matchable.
+            raise AssertionError(
+                "add_profile(blocked=True) requires block_reason "
+                "('Paused' | 'Schedule' | 'TimeLimit' | 'Manual')"
+            )
+        self._profiles[str(id)] = {
+            "name": name,
+            "rules": profile_rules(
+                blocked=blocked,
+                block_reason=block_reason,
+                extra_blocked=extra_blocked,
+                extra_allowed=extra_allowed,
+                blocklist_ids=blocklist_ids,
+                block_ip_only=block_ip_only,
+            ),
+            "failureMode": failure_mode,
+        }
+        return self
+
+    def add_device(
+        self,
+        *,
+        mac: str,
+        name: str = "e2e-dev",
+        profile_id: int | None = None,
+        rules: dict[str, Any] | None = None,
+    ) -> "SnapshotBuilder":
+        """Add a device entry.
+
+        Exactly one of `profile_id` (assigned device, inherits profile rules)
+        or `rules` (per-MAC override, e.g. unknown-device branch in the
+        contract golden's `12:34:56:78:9a:bc` row) must be set.
+        """
+        if (profile_id is None) == (rules is None):
+            raise AssertionError(
+                "add_device requires exactly one of profile_id= or rules="
+            )
+        entry: dict[str, Any] = {"name": name}
+        if profile_id is not None:
+            entry["profileId"] = profile_id
+        else:
+            entry["rules"] = dict(rules)  # type: ignore[arg-type]
+        self._devices[mac] = entry
+        return self
+
+    def add_blocklist(
+        self,
+        *,
+        id: str,
+        version: str = "2026.05.01",
+        url: str | None = None,
+    ) -> "SnapshotBuilder":
+        self._blocklists[id] = {
+            "version": version,
+            "url": url if url is not None else f"/api/blocklists/{id}",
+        }
+        return self
+
+    def build(self, *, etag: str) -> dict[str, Any]:
+        # Self-consistency: every device's profileId must reference a profile
+        # we declared. The agent tolerates dangling IDs (treats them as
+        # default-allow), but the tests don't — a typo here means hours
+        # chasing a phantom failure.
+        for mac, dev in self._devices.items():
+            pid = dev.get("profileId")
+            if pid is not None and str(pid) not in self._profiles:
+                raise AssertionError(
+                    f"device {mac} references unknown profileId={pid}; "
+                    f"declared profiles: {sorted(self._profiles)}"
+                )
+        return {
+            "etag": etag,
+            "generatedAt": self._generated_at,
+            "devices": dict(self._devices),
+            "profiles": dict(self._profiles),
+            "blocklists": dict(self._blocklists),
+        }
+
+
+# ── Convenience helpers kept for the #683 canary (test_pause) ───────────────
+
+
+def _default_blocklists() -> dict[str, Any]:
+    return {
+        "ads": {"version": "2026.05.01", "url": "/api/blocklists/ads"},
+    }
 
 
 def snapshot_with_assigned_device(
@@ -55,29 +175,16 @@ def snapshot_with_assigned_device(
     profile_id: int = 100,
     profile_name: str = "e2e-profile",
     paused: bool = False,
-    generated_at: str = "2026-05-19T00:00:00Z",
+    generated_at: str = _DEFAULT_GENERATED_AT,
 ) -> dict[str, Any]:
-    """Snapshot with one device assigned to one profile.
-
-    `paused=True` flips the profile's `rules.blocked` to true, mirroring how
-    the live admin pause toggle propagates at wire level (per the answer to
-    the design checkpoint in #683).
-    """
-    return {
-        "etag": etag,
-        "generatedAt": generated_at,
-        "devices": {
-            mac: {"profileId": profile_id, "name": device_name},
-        },
-        "profiles": {
-            str(profile_id): {
-                "name": profile_name,
-                "rules": profile_rules(
-                    blocked=paused,
-                    block_reason="Paused" if paused else None,
-                ),
-                "failureMode": "block-all",
-            },
-        },
-        "blocklists": _default_blocklists(),
-    }
+    """Single-device snapshot used by the #683 pause canary."""
+    b = SnapshotBuilder(generated_at=generated_at)
+    b.add_profile(
+        id=profile_id,
+        name=profile_name,
+        blocked=paused,
+        block_reason="Paused" if paused else None,
+    )
+    b.add_device(mac=mac, name=device_name, profile_id=profile_id)
+    b.add_blocklist(id="ads")
+    return b.build(etag=etag)
