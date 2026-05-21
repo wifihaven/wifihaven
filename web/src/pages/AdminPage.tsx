@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/api/client'
-import type { HouseholdSettings } from '@/types/api'
+import type { HeartbeatFilter, HouseholdSettings } from '@/types/api'
 import { TimezonePicker } from '@/components/TimezonePicker'
 import { PageLoader } from './DashboardPage'
 
@@ -34,6 +34,186 @@ export function AdminPage() {
       </div>
 
       {hs && <DailyResetCard value={hs} onSaved={setHs} />}
+      {hs && <HeartbeatFilterCard value={hs} onSaved={setHs} />}
+    </div>
+  )
+}
+
+function HeartbeatFilterCard({
+  value, onSaved,
+}: {
+  value: HouseholdSettings
+  onSaved: (next: HouseholdSettings) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [form, setForm] = useState<HeartbeatFilter>(value.heartbeatFilter)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function startEdit() {
+    setForm(value.heartbeatFilter)
+    setError(null)
+    setEditing(true)
+  }
+
+  function cancel() {
+    setForm(value.heartbeatFilter)
+    setError(null)
+    setEditing(false)
+  }
+
+  const validationError: string | null = (() => {
+    if (!Number.isFinite(form.bytesThreshold) || form.bytesThreshold < 0) {
+      return 'Bytes threshold must be ≥ 0.'
+    }
+    if (
+      !Number.isFinite(form.activeFractionPct)
+      || form.activeFractionPct < 0
+      || form.activeFractionPct > 100
+    ) {
+      return 'Active fraction must be between 0 and 100.'
+    }
+    return null
+  })()
+
+  async function save() {
+    if (validationError) return
+    setSaving(true)
+    setError(null)
+    try {
+      await api.household.update({
+        dailyResetTime: value.dailyResetTime,
+        dailyResetTz: value.dailyResetTz,
+        heartbeatFilter: {
+          enabled: form.enabled,
+          bytesThreshold: Math.trunc(form.bytesThreshold),
+          activeFractionPct: Math.trunc(form.activeFractionPct),
+        },
+      })
+      const fresh = await api.household.get()
+      onSaved(fresh)
+      setEditing(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const hf = value.heartbeatFilter
+
+  return (
+    <div
+      data-testid="heartbeat-filter-card"
+      className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-bold text-white">Heartbeat filter</h2>
+        {!editing && (
+          <button
+            type="button"
+            onClick={startEdit}
+            data-testid="heartbeat-filter-edit"
+            className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+
+      {!editing ? (
+        <p data-testid="heartbeat-filter-summary" className="text-sm text-gray-300">
+          {hf.enabled ? (
+            <>
+              <span className="font-medium text-white">Enabled</span>
+              {' — bytes ≥ '}
+              <span className="font-mono text-gray-200">{hf.bytesThreshold}</span>
+              {', active fraction ≥ '}
+              <span className="font-mono text-gray-200">{hf.activeFractionPct}%</span>
+            </>
+          ) : (
+            <span className="font-medium text-white">Disabled</span>
+          )}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-gray-400">
+            Excludes low-traffic background "heartbeat" rows from device/profile screen-time
+            totals. A row is classified as a heartbeat when both its bytes/minute and active
+            fraction are below the configured floors.
+          </p>
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+              {error}
+            </div>
+          )}
+          {validationError && (
+            <div
+              data-testid="heartbeat-filter-validation"
+              className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm rounded-xl px-4 py-2"
+            >
+              {validationError}
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-sm text-gray-200">
+            <input
+              type="checkbox"
+              checked={form.enabled}
+              onChange={e => setForm({ ...form, enabled: e.target.checked })}
+              data-testid="heartbeat-filter-enabled"
+              className="h-4 w-4"
+            />
+            Filter enabled
+          </label>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Bytes/min threshold</label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={form.bytesThreshold}
+                onChange={e => setForm({ ...form, bytesThreshold: Number(e.target.value) })}
+                data-testid="heartbeat-filter-bytes"
+                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-32"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Active fraction (%)</label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={form.activeFractionPct}
+                onChange={e => setForm({ ...form, activeFractionPct: Number(e.target.value) })}
+                data-testid="heartbeat-filter-fraction"
+                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-32"
+              />
+            </div>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              onClick={cancel}
+              disabled={saving}
+              data-testid="heartbeat-filter-cancel"
+              className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm font-medium disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || validationError !== null}
+              data-testid="heartbeat-filter-save"
+              className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-sm font-semibold disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -68,6 +248,7 @@ function DailyResetCard({
       await api.household.update({
         dailyResetTime: form.dailyResetTime,
         dailyResetTz: form.dailyResetTz,
+        heartbeatFilter: value.heartbeatFilter,
       })
       // Re-read from the server so the summary reflects what was actually
       // persisted, not just the local form. Without this, a server that
