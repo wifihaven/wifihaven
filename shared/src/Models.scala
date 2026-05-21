@@ -242,20 +242,16 @@ case class UpdateHouseholdSettingsRequest(
 /**
  * #714: knobs for the server-side heartbeat filter applied at the Presence aggregation stage. The
  * filter drops a `traffic_reports` row from per-device/per-profile screen-time totals (NOT from
- * `time_usage`-derived per-site totals) when EITHER heuristic flags it as a heartbeat — total bytes
- * below `bytesThreshold`, OR `activeSeconds / periodSeconds` below `activeFractionPct`. Defaults to
- * OFF so the operator can validate against real data via the `/api/time/heartbeat-explain/{mac}`
- * debug surface before flipping it on.
+ * `time_usage`-derived per-site totals) when total bytes fall below `bytesThreshold`.
  */
 case class HeartbeatFilter(
     enabled: Boolean,
     bytesThreshold: Int,
-    activeFractionPct: Int,
 ) derives JsonCodec
 
 object HeartbeatFilter {
   val Off: HeartbeatFilter =
-    HeartbeatFilter(enabled = false, bytesThreshold = 0, activeFractionPct = 0)
+    HeartbeatFilter(enabled = false, bytesThreshold = 0)
 }
 
 /**

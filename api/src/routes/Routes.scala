@@ -491,8 +491,8 @@ object TimeRoutes {
           // Presence.totalSecondsByMac for this device on `date` (default = today).
           // The classification reflects current household_settings — i.e. the same
           // verdict the live screen-time calculation is using right now. Operators
-          // tune `heartbeat_bytes_threshold` / `heartbeat_active_fraction_pct`
-          // against this surface before flipping `heartbeat_filter_enabled` on.
+          // tune `heartbeat_bytes_threshold` against this surface before flipping
+          // `heartbeat_filter_enabled` on.
           for {
             claims <- requireAuth(req, auth)
             today  <- clock.today

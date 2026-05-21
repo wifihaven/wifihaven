@@ -30,7 +30,6 @@ export interface Schedule {
 export interface HeartbeatFilter {
   enabled: boolean
   bytesThreshold: number       // bytes/min floor (rows below are heartbeats)
-  activeFractionPct: number    // 0–100 active-seconds-fraction floor
 }
 
 export interface HouseholdSettings {

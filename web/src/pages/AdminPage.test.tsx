@@ -18,7 +18,6 @@ import { AdminPage } from './AdminPage'
 const DEFAULT_HF: HeartbeatFilter = {
   enabled: false,
   bytesThreshold: 2048,
-  activeFractionPct: 20,
 }
 
 beforeEach(() => {
@@ -257,13 +256,12 @@ describe('AdminPage — heartbeat filter card', () => {
 
   it('summary shows thresholds when filter is enabled', async () => {
     seedServer({
-      heartbeatFilter: { enabled: true, bytesThreshold: 4096, activeFractionPct: 30 },
+      heartbeatFilter: { enabled: true, bytesThreshold: 4096 },
     })
     render(<AdminPage />)
     const summary = await screen.findByTestId('heartbeat-filter-summary')
     expect(summary).toHaveTextContent(/Enabled/i)
     expect(summary).toHaveTextContent('4096')
-    expect(summary).toHaveTextContent('30%')
   })
 
   it('clicking Edit opens the form pre-filled with current values', async () => {
@@ -274,10 +272,8 @@ describe('AdminPage — heartbeat filter card', () => {
 
     const enabled = screen.getByTestId('heartbeat-filter-enabled') as HTMLInputElement
     const bytes = screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement
-    const fraction = screen.getByTestId('heartbeat-filter-fraction') as HTMLInputElement
     expect(enabled.checked).toBe(false)
     expect(bytes.value).toBe('2048')
-    expect(fraction.value).toBe('20')
   })
 
   it('toggle + save sends the right body and the summary reflects the GET reconcile', async () => {
@@ -293,7 +289,7 @@ describe('AdminPage — heartbeat filter card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Los_Angeles',
-        heartbeatFilter: { enabled: true, bytesThreshold: 2048, activeFractionPct: 20 },
+        heartbeatFilter: { enabled: true, bytesThreshold: 2048 },
       }),
     )
     const summary = await screen.findByTestId('heartbeat-filter-summary')
@@ -311,9 +307,6 @@ describe('AdminPage — heartbeat filter card', () => {
     const bytes = screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement
     await user.clear(bytes)
     await user.type(bytes, '8192')
-    const fraction = screen.getByTestId('heartbeat-filter-fraction') as HTMLInputElement
-    await user.clear(fraction)
-    await user.type(fraction, '40')
 
     await user.click(screen.getByTestId('heartbeat-filter-save'))
 
@@ -321,12 +314,11 @@ describe('AdminPage — heartbeat filter card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Los_Angeles',
-        heartbeatFilter: { enabled: true, bytesThreshold: 8192, activeFractionPct: 40 },
+        heartbeatFilter: { enabled: true, bytesThreshold: 8192 },
       }),
     )
     const summary = await screen.findByTestId('heartbeat-filter-summary')
     expect(summary).toHaveTextContent('8192')
-    expect(summary).toHaveTextContent('40%')
   })
 
   it('cancel discards local changes', async () => {
@@ -349,17 +341,4 @@ describe('AdminPage — heartbeat filter card', () => {
     expect((screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement).value).toBe('2048')
   })
 
-  it('disables Save and shows a validation error when the active fraction is out of range', async () => {
-    const user = userEvent.setup()
-    render(<AdminPage />)
-    await screen.findByTestId('heartbeat-filter-summary')
-    await user.click(screen.getByTestId('heartbeat-filter-edit'))
-
-    const fraction = screen.getByTestId('heartbeat-filter-fraction') as HTMLInputElement
-    await user.clear(fraction)
-    await user.type(fraction, '150')
-
-    expect(screen.getByTestId('heartbeat-filter-validation')).toBeInTheDocument()
-    expect(screen.getByTestId('heartbeat-filter-save')).toBeDisabled()
-  })
 })

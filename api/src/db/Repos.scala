@@ -491,12 +491,12 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
   def get: Task[HouseholdSettings] =
     sql"""SELECT daily_reset_time, daily_reset_tz,
-                 heartbeat_filter_enabled, heartbeat_bytes_threshold, heartbeat_active_fraction_pct
+                 heartbeat_filter_enabled, heartbeat_bytes_threshold
             FROM household_settings WHERE id=1"""
-      .query[(LocalTime, ZoneId, Boolean, Int, Int)]
+      .query[(LocalTime, ZoneId, Boolean, Int)]
       .unique
-      .map { case (t, z, hbEnabled, hbBytes, hbFrac) =>
-        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbFrac))
+      .map { case (t, z, hbEnabled, hbBytes) =>
+        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes))
       }
       .transact(xa)
 
@@ -506,7 +506,6 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                 daily_reset_tz=${s.dailyResetTz},
                 heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
                 heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
-                heartbeat_active_fraction_pct=${s.heartbeatFilter.activeFractionPct},
                 updated_at=NOW()
           WHERE id=1""".update.run.transact(xa).unit
 
