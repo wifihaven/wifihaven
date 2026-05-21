@@ -284,8 +284,12 @@ export interface UsageSeriesResponse {
   bucketsByDevice?: UsageDeviceBucket[]
 }
 
-export interface ProfileTimeDayTotal {
-  date: string
+// #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`
+// (one of 0/15/30/45 — minute past the UTC hour where the grid starts). The SPA picks the
+// offset so each bucket falls fully within one local-tz day, then groups by local day for the
+// chart. `bucketStart` is an ISO-8601 instant. Empty buckets are omitted — chart code fills gaps.
+export interface ProfileTimeBucket {
+  bucketStart: string
   usedMins: number
 }
 
@@ -296,7 +300,7 @@ export interface ProfileTimeStatusWeek {
   to: string
   dailyLimitMins?: number | null
   totalMins: number
-  perDay: ProfileTimeDayTotal[]
+  perBucket: ProfileTimeBucket[]
   devices: DeviceUsageSummary[]
   hostUsage: HostUsage[]
 }
@@ -310,7 +314,7 @@ export interface DeviceTimeStatusWeek {
   profileId?: number | null
   dailyLimitMins?: number | null
   totalMins: number
-  perDay: ProfileTimeDayTotal[]
+  perBucket: ProfileTimeBucket[]
   hostUsage: HostUsage[]
 }
 

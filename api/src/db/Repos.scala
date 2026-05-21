@@ -268,9 +268,9 @@ trait TrafficReportRepo {
 
   /**
    * Range variant of [[listPresenceRows]] — inclusive `from`..`to`. Used by the #723 weekly profile
-   * screen-time view to compute range-deduped per-mac / per-host totals AND per-day breakdown from
-   * one query. Rows carry their `date` so the caller can group per-day without deriving it from
-   * `periodStart`.
+   * screen-time view to compute range-deduped per-mac / per-host totals AND per-period breakdown
+   * from one query. Bucketing is UTC end-to-end (storage AND read); household-local-time
+   * re-bucketing for the chart happens in the SPA against the UTC `periodStart` instants (#794).
    */
   def listPresenceRows(
       macs: List[MacAddress],
@@ -991,7 +991,11 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     listPresenceRowsBetween(macs, from, to)
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  private def listPresenceRowsBetween(macs: List[MacAddress], from: LocalDate, to: LocalDate) = {
+  private def listPresenceRowsBetween(
+      macs: List[MacAddress],
+      from: LocalDate,
+      to: LocalDate,
+  ) = {
     type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])

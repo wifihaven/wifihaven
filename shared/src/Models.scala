@@ -352,14 +352,29 @@ case class ProfileTimeStatus(
     hostUsage: List[HostUsage],
 ) derives JsonCodec
 
-case class ProfileTimeDayTotal(date: String, usedMins: Int) derives JsonCodec
+/**
+ * One UTC hourly bucket of presence minutes (#794). `bucketStart` is an ISO-8601 instant; buckets
+ * are exactly 1 hour wide. The grid alignment is set by the caller via the `bucketOffsetMin` query
+ * param (one of 0/15/30/45 — the minute past the UTC hour where the grid starts), so the SPA can
+ * shift the grid so each bucket falls fully within one local-tz day:
+ *
+ *   - whole-hour-offset zones (UTC, US, EU): `bucketOffsetMin=0` → buckets at 00:00Z, 01:00Z, …
+ *   - half-hour-offset zones (India +5:30, Newfoundland -3:30): `bucketOffsetMin=30` → 00:30Z,
+ *     01:30Z, …
+ *   - quarter-hour-offset zones (Nepal +5:45, Chatham +12:45): `bucketOffsetMin=15` or `45`.
+ *
+ * The server stays tz-agnostic — it doesn't know the household's tz, just emits the grid the caller
+ * asked for.
+ */
+case class ProfileTimeBucket(bucketStart: java.time.Instant, usedMins: Int) derives JsonCodec
 
 /**
  * Weekly screen-time roll-up (#723) — sibling shape to [[ProfileTimeStatus]]. `totalMins`,
  * `devices` and `hostUsage` are bucket-deduped across the full `from`..`to` range, so totals can be
- * lower than naively summing `perDay.usedMins` (a device touching the same 5-min bucket on two
+ * lower than naively summing `perBucket.usedMins` (a device touching the same 5-min bucket on two
  * hosts still only counts once for the range). `dailyLimitMins` is informational — the daily cap
- * does not weekly-aggregate.
+ * does not weekly-aggregate. `perBucket` is hourly UTC buckets aligned to `bucketOffsetMin` (#794);
+ * the SPA groups by local day.
  */
 case class ProfileTimeStatusWeek(
     profileId: ProfileId,
@@ -368,7 +383,7 @@ case class ProfileTimeStatusWeek(
     to: String,
     dailyLimitMins: Option[Int],
     totalMins: Int,
-    perDay: List[ProfileTimeDayTotal],
+    perBucket: List[ProfileTimeBucket],
     devices: List[DeviceUsageSummary],
     hostUsage: List[HostUsage],
 ) derives JsonCodec
@@ -386,7 +401,7 @@ case class DeviceTimeStatusWeek(
     profileId: Option[ProfileId],
     dailyLimitMins: Option[Int],
     totalMins: Int,
-    perDay: List[ProfileTimeDayTotal],
+    perBucket: List[ProfileTimeBucket],
     hostUsage: List[HostUsage],
 ) derives JsonCodec
 

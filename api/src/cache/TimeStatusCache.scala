@@ -32,12 +32,15 @@ trait TimeStatusCache {
   )(load: => Task[wifihaven.shared.ProfileTimeStatus]): Task[wifihaven.shared.ProfileTimeStatus]
 
   /**
-   * Look up a weekly ProfileTimeStatusWeek by (profileId, from, to); on miss, compute via `load`.
+   * Look up a weekly ProfileTimeStatusWeek by (profileId, from, to, bucketOffsetMin); on miss,
+   * compute via `load`. `bucketOffsetMin` participates in the key because the per-day bucket grid
+   * (#794) shifts with it — different offsets must not collide.
    */
   def getOrLoadWeekly(
       profileId: ProfileId,
       from: LocalDate,
       to: LocalDate,
+      bucketOffsetMin: Int,
       today: LocalDate,
   )(
       load: => Task[wifihaven.shared.ProfileTimeStatusWeek],
@@ -101,8 +104,12 @@ object TimeStatusCache {
 
   private sealed trait Key
   private final case class DailyKey(profileId: ProfileId, date: LocalDate) extends Key
-  private final case class WeeklyKey(profileId: ProfileId, from: LocalDate, to: LocalDate)
-      extends Key
+  private final case class WeeklyKey(
+      profileId: ProfileId,
+      from: LocalDate,
+      to: LocalDate,
+      bucketOffsetMin: Int,
+  ) extends Key
 
   private final class Live(
       todayTtl: zio.Duration,
@@ -138,13 +145,18 @@ object TimeStatusCache {
         profileId: ProfileId,
         from: LocalDate,
         to: LocalDate,
+        bucketOffsetMin: Int,
         today: LocalDate,
     )(
         load: => Task[wifihaven.shared.ProfileTimeStatusWeek],
     ): Task[wifihaven.shared.ProfileTimeStatusWeek] =
       // A weekly window includes today (and so needs the short TTL) iff `to` is today or later.
       // Anything strictly in the past is immutable.
-      getOrLoad(WeeklyKey(profileId, from, to), isTodayMode = !to.isBefore(today), load)
+      getOrLoad(
+        WeeklyKey(profileId, from, to, bucketOffsetMin),
+        isTodayMode = !to.isBefore(today),
+        load,
+      )
 
     private def getOrLoad[V <: AnyRef](
         key: Key,

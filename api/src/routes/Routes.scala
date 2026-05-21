@@ -438,16 +438,20 @@ object TimeRoutes {
           for {
             claims <- requireAuth(req, auth)
             today  <- clock.today
-            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today.
+            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today (UTC).
+            // ?bucketOffsetMin=N sets the minute-past-the-hour where the hourly grid starts,
+            // so each bucket falls fully within one local day on the caller's side (#794).
+            // Accepts 0/15/30/45; defaults to 0 (whole-hour grid, fine for UTC-aligned zones).
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
+            bucketOffsetMin <- parseBucketOffsetMin(req)
             // #795: same single-profile narrowing as the daily endpoint.
-            profileIdOpt <- parseProfileIdParam(req)
-            allProfiles  <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allDevices   <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings     <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            profileIdOpt    <- parseProfileIdParam(req)
+            allProfiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices      <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings        <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
             scoped       = profileIdOpt match {
               case Some(pid) => visible.filter(_.id == pid)
               case None      => visible
@@ -455,10 +459,12 @@ object TimeRoutes {
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
               .foreach(scoped) { p =>
-                // #802: weekly cache keyed by (profileId, from, to). Same TTL logic — short
-                // TTL if `to` straddles today, long TTL for fully-past windows.
+                // #802: weekly cache keyed by (profileId, from, to, bucketOffsetMin). Same TTL
+                // logic — short TTL if `to` straddles today, long TTL for fully-past windows.
+                // bucketOffsetMin is in the key because different offsets yield different
+                // per-day buckets (#794), so they must not collide.
                 cache
-                  .getOrLoadWeekly(p.id, from, to, today) {
+                  .getOrLoadWeekly(p.id, from, to, bucketOffsetMin, today) {
                     buildProfileTimeStatusWeek(
                       p,
                       devicesByPid.getOrElse(Some(p.id), Nil),
@@ -467,6 +473,7 @@ object TimeRoutes {
                       timeLimitRepo,
                       trafficRepo,
                       settings.heartbeatFilter,
+                      bucketOffsetMin,
                     )
                   }
               }
@@ -484,13 +491,14 @@ object TimeRoutes {
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
-            device   <- deviceRepo
+            bucketOffsetMin <- parseBucketOffsetMin(req)
+            device          <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            status   <- buildDeviceTimeStatusWeek(
+            _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            settings        <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            status          <- buildDeviceTimeStatusWeek(
               device,
               from,
               to,
@@ -498,6 +506,7 @@ object TimeRoutes {
               timeLimitRepo,
               trafficRepo,
               settings.heartbeatFilter,
+              bucketOffsetMin,
             )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
@@ -701,6 +710,7 @@ object TimeRoutes {
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
+      bucketOffsetMin: Int,
   ): Task[ProfileTimeStatusWeek] = {
     val macs = devices.map(_.mac)
     for {
@@ -723,19 +733,7 @@ object TimeRoutes {
         .toList
         .sortBy(hu => (-hu.usedMins, hu.host.value))
         .take(10)
-      byDay           = presence.groupBy(_.date)
-      perDay          = Iterator
-        .iterate(from)(_.plusDays(1))
-        .takeWhile(!_.isAfter(to))
-        .map { d =>
-          val rows = byDay.getOrElse(d, Nil)
-          val mins = wifihaven.api.presence.Presence
-            .totalMinutesByMac(rows, Nil, heartbeatFilter)
-            .values
-            .sum
-          ProfileTimeDayTotal(d.toString, mins)
-        }
-        .toList
+      perBucket       = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
     } yield ProfileTimeStatusWeek(
       profile.id,
       profile.name,
@@ -743,7 +741,7 @@ object TimeRoutes {
       to.toString,
       tl.map(_.dailyMinutes),
       totalUsed,
-      perDay,
+      perBucket,
       deviceSummaries,
       hostUsage,
     )
@@ -758,6 +756,7 @@ object TimeRoutes {
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
+      bucketOffsetMin: Int,
   ): Task[DeviceTimeStatusWeek] = {
     val pid  = device.profileId
     val macs = List(device.mac)
@@ -778,19 +777,7 @@ object TimeRoutes {
         .toList
         .sortBy(hu => (-hu.usedMins, hu.host.value))
         .take(10)
-      byDay     = presence.groupBy(_.date)
-      perDay    = Iterator
-        .iterate(from)(_.plusDays(1))
-        .takeWhile(!_.isAfter(to))
-        .map { d =>
-          val rows = byDay.getOrElse(d, Nil)
-          val mins = wifihaven.api.presence.Presence
-            .totalMinutesByMac(rows, Nil, heartbeatFilter)
-            .values
-            .sum
-          ProfileTimeDayTotal(d.toString, mins)
-        }
-        .toList
+      perBucket = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
     } yield DeviceTimeStatusWeek(
       device.mac,
       device.name,
@@ -800,9 +787,62 @@ object TimeRoutes {
       pid,
       tl.map(_.dailyMinutes),
       totalUsed,
-      perDay,
+      perBucket,
       hostUsage,
     )
+  }
+
+  /**
+   * Parse the `bucketOffsetMin` query param (#794). Accepts the four real-world tz-alignment minute
+   * offsets: 0 (UTC / whole-hour zones), 15 (+5:45-style), 30 (+5:30-style), 45 (+12:45). Defaults
+   * to 0 when absent. Any other value is a 400 — keeps the bucket grid well-defined and prevents
+   * the SPA from accidentally requesting a misaligned grid.
+   */
+  private def parseBucketOffsetMin(req: Request): IO[Response, Int] =
+    req.url.queryParam("bucketOffsetMin") match {
+      case None      => ZIO.succeed(0)
+      case Some(raw) =>
+        raw.toIntOption match {
+          case Some(n) if Set(0, 15, 30, 45).contains(n) => ZIO.succeed(n)
+          case _                                         =>
+            ZIO.fail(Response.badRequest(s"bucketOffsetMin must be one of 0/15/30/45, got: $raw"))
+        }
+    }
+
+  /**
+   * Roll the range's presence rows up to hourly UTC buckets aligned at `offsetMin` minutes past the
+   * hour (#794). Caller passes the offset that makes each bucket fall fully within one local day (0
+   * for whole-hour zones, 30 for half-hour zones, 15/45 for the quarter-hour zones). Each 5-min
+   * `period_start` falls in exactly one hour slot of the chosen grid; per-slot minutes go through
+   * `Presence.totalMinutesByMac` for per-mac bucket-dedup + heartbeat filter, then sum across macs.
+   * Empty slots are omitted (the SPA fills gaps with zero when grouping by local day). Returned
+   * list is sorted by `bucketStart` ascending.
+   */
+  private def bucketHourlyAligned(
+      presence: List[wifihaven.api.presence.PresenceRow],
+      heartbeatFilter: HeartbeatFilter,
+      offsetMin: Int,
+  ): List[ProfileTimeBucket] = {
+    val hourSeconds   = 3600L
+    val offsetSeconds = offsetMin.toLong * 60L
+    presence
+      .groupBy { r =>
+        val s    = r.periodStart.getEpochSecond
+        val slot =
+          java.lang.Math.floorDiv(s - offsetSeconds, hourSeconds) * hourSeconds + offsetSeconds
+        java.time.Instant.ofEpochSecond(slot)
+      }
+      .iterator
+      .map { case (bucketStart, rows) =>
+        val mins = wifihaven.api.presence.Presence
+          .totalMinutesByMac(rows, Nil, heartbeatFilter)
+          .values
+          .sum
+        ProfileTimeBucket(bucketStart, mins)
+      }
+      .filter(_.usedMins > 0)
+      .toList
+      .sortBy(_.bucketStart)
   }
 
   private def buildDeviceTimeStatus(
