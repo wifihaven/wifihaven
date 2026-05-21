@@ -236,12 +236,11 @@ local function build_usage_report()
     return nil
   end
   local leases = { ["aa:bb:cc:11:22:33"] = "192.168.10.50" }
-  -- usage.lua: active_seconds = SECONDS_PER_SAMPLE (10) × samples, capped at 300.
-  -- Pick 24 → 240s for the first record; the second has no tracker entry so
-  -- it falls back to a single SECONDS_PER_SAMPLE sample (10s) when bytes > 0.
-  -- We pin the second to exactly 60s by stamping 6 samples for it too.
+  -- usage.lua: active_seconds = sample_seconds (10) × samples, capped at bucket_seconds.
+  -- Pick 24 → 240s for the first record; pin the second to 60s with 6 samples.
   local tracker = {
-    active_minutes = {
+    last = {},
+    active_samples = {
       ["aa:bb:cc:11:22:33|151.101.65.69"] = 24,
       ["76:2d:95:47:d1:8e|192.168.10.99"] = 6,
     },
@@ -254,7 +253,9 @@ local function build_usage_report()
     "11111111-2222-3333-4444-555555555555",
     leases,
     lookup,
-    tracker
+    tracker,
+    10,   -- sample_seconds
+    300   -- bucket_seconds
   )
   -- Stamp ordering on each record (production order matches usage.lua's
   -- table literal: mac, host, activeSeconds, bytesIn, bytesOut, ip).
