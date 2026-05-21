@@ -188,7 +188,13 @@ export function DeviceTimelinePage() {
                     fontSize: 12,
                   }}
                   labelFormatter={(h) => `${String(h)}:00 – ${String(h)}:59`}
-                  formatter={(v, n) => [`${String(v)}m`, n === '__other' ? 'Other' : String(n)]}
+                  // Hide 0m rows entirely — they're noise for sparse devices
+                  // where multiple background hosts each accrue sub-minute
+                  // shares within an hour and floor to zero.
+                  formatter={(v, n) => {
+                    if (Number(v) === 0) return null as unknown as [string, string]
+                    return [`${String(v)}m`, n === '__other' ? 'Other' : String(n)]
+                  }}
                 />
                 <Legend
                   iconType="square"
