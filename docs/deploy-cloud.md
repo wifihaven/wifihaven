@@ -70,7 +70,7 @@ config for the API to read the real client IP. Out of scope for now.
 Cloudflare):
 
 - `wifihaven-api-staging` (Web Service, free)
-- `wifihaven-api-prod` (Web Service, free)
+- `wifihaven-api-prod` (Web Service, paid — `standard`; bumped from free in #786)
 - `wifihaven-pg-staging` (Postgres, free)
 - `wifihaven-pg-prod` (Postgres, paid — `basic-256mb`)
 

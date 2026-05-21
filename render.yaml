@@ -91,7 +91,7 @@ services:
   - type: web
     runtime: image
     name: wifihaven-api-prod
-    plan: free
+    plan: standard
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
@@ -126,10 +126,13 @@ services:
           property: password
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
-      # #590: Render Hobby caps at ~512 MB. Leave headroom for OS + JIT +
-      # native heap; bump or move to `plan: pro` if OOM appears in logs.
+      # #786 / #785: bumped to `plan: standard` (2 GB / 1 CPU, $25/mo) after
+      # prod started flapping under household load on free's 512 MB cap.
+      # Heap sized to leave ~600 MB for OS + JIT + native; revisit if OOM
+      # appears in logs or if growing dataset pushes `traffic_reports`
+      # working set past the new ceiling.
       - key: JVM_HEAP_OPTS
-        value: "-Xms256m -Xmx384m"
+        value: "-Xms512m -Xmx1400m"
       # Production uses INFO to avoid PII leakage in logs.
       # Resolves the TODO from #586 / PR #599.
       - key: WIFIHAVEN_LOG_LEVEL
