@@ -9,7 +9,7 @@ import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-
 import { api } from '@/api/client'
 import type {
   DashboardNow, Device, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
-  ProfileTimeSummary, ProfileTimeSummaryWeek,
+  ProfileTimeSummary, ProfileTimeSummaryWeek, UsageSeriesResponse,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -40,6 +40,9 @@ export const qk = {
     ['time', 'status', 'week', to ?? 'current', bucketOffsetMin, 'profile', profileId] as const,
   timeStatusSummaryToday: () => ['time', 'status', 'summary', 'today'] as const,
   timeStatusSummaryWeek: (to?: string) => ['time', 'status', 'summary', 'week', to ?? 'current'] as const,
+  // #776 — hourly chart on the Today card.
+  usageSeriesProfile: (profileId: number, date: string, tz: string) =>
+    ['usage', 'series', 'profile', profileId, date, tz] as const,
 }
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>
@@ -150,6 +153,22 @@ export function useTimeStatusProfileWeek(
     queryKey: qk.timeStatusProfileWeek(profileId, to, bucketOffsetMin),
     queryFn: () => api.time.statusAllWeek(to, bucketOffsetMin, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusWeek,
+    ...opts,
+  })
+}
+
+// #776: hourly chart on the Today card. Same data path as ProfileTimelinePage
+// (`/api/usage/series?profileId=…`) — per-card fetch keyed by profile + date.
+export function useUsageSeriesProfileToday(
+  profileId: number,
+  date: string,
+  tz: string,
+  opts?: QueryOpts<UsageSeriesResponse>,
+) {
+  return useQuery({
+    queryKey: qk.usageSeriesProfile(profileId, date, tz),
+    queryFn: () => api.usage.series({ profileId, date, tz }),
+    staleTime: STALE.timeStatusToday,
     ...opts,
   })
 }

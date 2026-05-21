@@ -11,6 +11,7 @@ import {
   useTimeStatusProfileWeek,
   useTimeStatusSummary,
   useTimeStatusSummaryWeek,
+  useUsageSeriesProfileToday,
 } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type {
@@ -99,6 +100,9 @@ export function formatMins(n: number): string {
 }
 
 type Window = 'today' | 'week'
+
+const DEFAULT_TZ =
+  Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
 // #777 — remember which profile rows are expanded across navigations. Kept in
 // localStorage so the operator's expansion choices persist across page mounts;
@@ -324,6 +328,16 @@ function ProfileTimeCard({
     : 0
   const overLimit = hasLimit && status.remainingMins != null && status.remainingMins <= 0
 
+  // #776: hourly chart on the Today card (was previously only on the dedicated
+  // /time/:profileId/timeline route from #722). Reuses /api/usage/series; the
+  // card stays passive if the fetch is still in flight or returned no data.
+  const seriesQuery = useUsageSeriesProfileToday(status.profileId, status.date, DEFAULT_TZ)
+  const hourlyRows  = (seriesQuery.data?.buckets ?? []).map(b => ({
+    hour: String(b.hour).padStart(2, '0'),
+    usedMins: b.totalMins,
+  }))
+  const hasHourly   = hourlyRows.some(r => r.usedMins > 0)
+
   return (
     <div data-testid={`time-card-${status.profileId}`} className={`bg-gray-900 rounded-2xl border p-5 space-y-4 ${overLimit ? 'border-red-500/40' : 'border-gray-800'}`}>
       <div className="flex items-start justify-between gap-2">
@@ -371,6 +385,48 @@ function ProfileTimeCard({
       ) : (
         <p className="text-xs text-gray-600">No time limit set for this profile</p>
       )}
+
+      <div className="h-40 -ml-2" data-testid={`time-today-chart-${status.profileId}`}>
+        {hasHourly ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={hourlyRows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
+              <XAxis
+                dataKey="hour"
+                tick={{ fill: '#6b7280', fontSize: 11 }}
+                axisLine={{ stroke: '#374151' }}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fill: '#6b7280', fontSize: 11 }}
+                axisLine={{ stroke: '#374151' }}
+                tickLine={false}
+                width={44}
+                tickFormatter={(v: number) => formatMins(v)}
+              />
+              <Tooltip
+                cursor={{ fill: '#1f293780' }}
+                contentStyle={{
+                  background: '#0a0f1c',
+                  border: '1px solid #374151',
+                  borderRadius: '8px',
+                  fontSize: 12,
+                }}
+                labelFormatter={(h) => `${h}:00 – ${h}:59`}
+                formatter={(v) => [formatMins(Number(v)), 'Used']}
+              />
+              <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <div
+            data-testid={`time-today-chart-empty-${status.profileId}`}
+            className="h-full flex items-center justify-center text-gray-600 text-xs border border-dashed border-gray-800 rounded-xl ml-2"
+          >
+            {seriesQuery.isPending ? 'Loading hourly usage…' : 'No usage recorded yet today.'}
+          </div>
+        )}
+      </div>
 
       {status.devices.length > 0 && (
         <div className="space-y-1">
