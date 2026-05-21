@@ -1,5 +1,6 @@
 package wifihaven.api.routes
 
+import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.shared.Clock
 import zio.{Clock as _, *}
@@ -31,11 +32,12 @@ object DebugRoutes {
       timeUsageRepo: TimeUsageRepo,
       trafficRepo: TrafficReportRepo,
       clock: Clock,
+      timeStatusCache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
   ): Routes[Any, Response] =
     if !enabled then Routes.empty
     else
       Routes(
-        Method.GET / "api" / "debug" / "devices"    -> handler { (req: Request) =>
+        Method.GET / "api" / "debug" / "devices"                -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/devices") {
             deviceRepo.listAll
               .mapBoth(
@@ -44,7 +46,7 @@ object DebugRoutes {
               )
           }
         },
-        Method.GET / "api" / "debug" / "events"     -> handler { (req: Request) =>
+        Method.GET / "api" / "debug" / "events"                 -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/events") {
             val limit = req.url
               .queryParam("limit")
@@ -59,7 +61,27 @@ object DebugRoutes {
               )
           }
         },
-        Method.GET / "api" / "debug" / "time_usage" -> handler { (req: Request) =>
+        Method.GET / "api" / "debug" / "cache-stats"            -> handler { (req: Request) =>
+          guardLoopback(req, "/api/debug/cache-stats") {
+            timeStatusCache.snapshot.map { s =>
+              Response.json(
+                CacheStatsResponse(
+                  hits = s.hits,
+                  misses = s.misses,
+                  hitRate = s.hitRate,
+                  todaySize = s.todaySize,
+                  pastSize = s.pastSize,
+                ).toJson,
+              )
+            }
+          }
+        },
+        Method.POST / "api" / "debug" / "cache-stats" / "reset" -> handler { (req: Request) =>
+          guardLoopback(req, "/api/debug/cache-stats/reset") {
+            timeStatusCache.invalidateAll.as(Response.ok)
+          }
+        },
+        Method.GET / "api" / "debug" / "time_usage"             -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/time_usage") {
             for {
               today <- clock.today
@@ -101,6 +123,14 @@ object DebugRoutes {
           }
         },
       )
+
+  private case class CacheStatsResponse(
+      hits: Long,
+      misses: Long,
+      hitRate: Double,
+      todaySize: Long,
+      pastSize: Long,
+  ) derives JsonCodec
 
   private case class TimeUsageRow(
       mac: String,

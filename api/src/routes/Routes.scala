@@ -1,6 +1,7 @@
 package wifihaven.api.routes
 
 import wifihaven.api.auth.*
+import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -363,6 +364,15 @@ object DeviceRoutes {
 // ── Time routes ────────────────────────────────────────────────────────────
 
 object TimeRoutes {
+  // #802: cache-control freshness windows mirror the in-process TimeStatusCache TTLs
+  // (today=30s, past=1h). SPAs and intermediaries can use these to skip refetches when
+  // the local copy is fresh; mutating endpoints don't depend on these for correctness.
+  private val TodayMaxAgeSeconds: Long = 30L
+  private val PastMaxAgeSeconds: Long  = 3600L
+
+  // #802: emit a hit-rate summary every N requests. Cheap heuristic — no scheduler.
+  private val StatsLogEveryNRequests = 100
+
   def routes(
       auth: AuthService,
       deviceRepo: DeviceRepo,
@@ -374,6 +384,7 @@ object TimeRoutes {
       userProfileRepo: UserProfileRepo,
       hsRepo: HouseholdSettingsRepo,
       clock: Clock,
+      cache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "time" / "status"                            ->
@@ -399,19 +410,28 @@ object TimeRoutes {
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
               .foreach(scoped) { p =>
-                buildProfileTimeStatus(
-                  p,
-                  devicesByPid.getOrElse(Some(p.id), Nil),
-                  date,
-                  timeLimitRepo,
-                  siteTimeLimitRepo,
-                  trafficRepo,
-                  extRepo,
-                  settings.heartbeatFilter,
-                )
+                // #802: in-process cache keyed by (profileId, date). Cache miss falls through
+                // to the same builder as before; hit returns the prior render without hitting
+                // the DB. The cache layer chooses TTL (today vs past) based on `today`.
+                cache
+                  .getOrLoadDaily(p.id, date, today) {
+                    buildProfileTimeStatus(
+                      p,
+                      devicesByPid.getOrElse(Some(p.id), Nil),
+                      date,
+                      timeLimitRepo,
+                      siteTimeLimitRepo,
+                      trafficRepo,
+                      extRepo,
+                      settings.heartbeatFilter,
+                    )
+                  }
               }
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(statuses.toJson)
+            _        <- logCacheStatsPeriodically(cache)
+          } yield Response
+            .json(statuses.toJson)
+            .addHeader(cacheControlFor(isTodayMode = !date.isBefore(today)))
         },
       Method.GET / "api" / "time" / "status" / "week"                   ->
         handler { (req: Request) =>
@@ -435,18 +455,26 @@ object TimeRoutes {
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
               .foreach(scoped) { p =>
-                buildProfileTimeStatusWeek(
-                  p,
-                  devicesByPid.getOrElse(Some(p.id), Nil),
-                  from,
-                  to,
-                  timeLimitRepo,
-                  trafficRepo,
-                  settings.heartbeatFilter,
-                )
+                // #802: weekly cache keyed by (profileId, from, to). Same TTL logic — short
+                // TTL if `to` straddles today, long TTL for fully-past windows.
+                cache
+                  .getOrLoadWeekly(p.id, from, to, today) {
+                    buildProfileTimeStatusWeek(
+                      p,
+                      devicesByPid.getOrElse(Some(p.id), Nil),
+                      from,
+                      to,
+                      timeLimitRepo,
+                      trafficRepo,
+                      settings.heartbeatFilter,
+                    )
+                  }
               }
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(statuses.toJson)
+            _        <- logCacheStatsPeriodically(cache)
+          } yield Response
+            .json(statuses.toJson)
+            .addHeader(cacheControlFor(isTodayMode = !to.isBefore(today)))
         },
       Method.GET / "api" / "time" / "status" / string("mac") / "week"   ->
         handler { (mac: String, req: Request) =>
@@ -573,6 +601,28 @@ object TimeRoutes {
           } yield Response.json(exts.toJson)
         },
     )
+
+  // #802: Cache-Control header derived from whether the response covers today.
+  // Today: short max-age so the SPA picks up bucket churn within the cache window.
+  // Past:  long max-age — past data is logically immutable.
+  // `private` because mutating endpoints (POST /api/time/extend) don't need it and we
+  // want to avoid intermediary caching for the JWT-authenticated traffic.
+  private def cacheControlFor(isTodayMode: Boolean): Header.CacheControl =
+    if isTodayMode then Header.CacheControl.MaxAge(TodayMaxAgeSeconds.toInt)
+    else Header.CacheControl.MaxAge(PastMaxAgeSeconds.toInt)
+
+  // #802: emit a one-line stats log every N (hits+misses), no scheduler needed. Sampled
+  // by the cache itself so concurrent callers don't race on a counter the route holds.
+  private def logCacheStatsPeriodically(cache: TimeStatusCache): UIO[Unit] =
+    cache.snapshot.flatMap { s =>
+      ZIO
+        .logInfo(
+          f"time-status cache: hits=${s.hits} misses=${s.misses} hitRate=${s.hitRate * 100}%.1f%% " +
+            s"todaySize=${s.todaySize} pastSize=${s.pastSize}",
+        )
+        .when(s.total > 0 && s.total % StatsLogEveryNRequests == 0)
+        .unit
+    }
 
   private def buildProfileTimeStatus(
       profile: Profile,
