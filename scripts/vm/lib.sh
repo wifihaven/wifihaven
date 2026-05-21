@@ -67,10 +67,27 @@ ensure_openwrt_image() {
 }
 
 # Create the qcow2 overlay backed by the raw OpenWRT image (idempotent).
+#
+# If the overlay already exists but its recorded backing-file path does not
+# match ${WH_ROUTER_BASE_IMG}, recreate it. Otherwise an operator who points
+# WH_ROUTER_IMAGE_PATH at a freshly built image would silently keep booting
+# the old one (see issue #756).
 ensure_router_overlay() {
   require_cmd qemu-img
+  if [[ -f "${WH_ROUTER_OVERLAY}" ]]; then
+    local current
+    current="$(qemu-img info -U --output=json "${WH_ROUTER_OVERLAY}" \
+      | sed -n 's/.*"backing-filename":[[:space:]]*"\([^"]*\)".*/\1/p' \
+      | head -n1)"
+    if [[ "${current}" != "${WH_ROUTER_BASE_IMG}" ]]; then
+      log "overlay backing-file mismatch: have '${current}', want '${WH_ROUTER_BASE_IMG}' — recreating"
+      rm -f "${WH_ROUTER_OVERLAY}"
+    else
+      log "reusing overlay ${WH_ROUTER_OVERLAY} (backing ${current})"
+    fi
+  fi
   if [[ ! -f "${WH_ROUTER_OVERLAY}" ]]; then
-    log "creating qcow2 overlay ${WH_ROUTER_OVERLAY}"
+    log "creating qcow2 overlay ${WH_ROUTER_OVERLAY} (backing ${WH_ROUTER_BASE_IMG})"
     qemu-img create -q -f qcow2 -F raw -b "${WH_ROUTER_BASE_IMG}" \
       "${WH_ROUTER_OVERLAY}" "${WH_ROUTER_DISK_SIZE}"
   fi
