@@ -31,21 +31,21 @@ object UsageRoutes {
             macRaw <- ZIO
               .fromOption(req.url.queryParam("mac"))
               .orElseFail(Response.badRequest("mac is required"))
-            mac      = MacAddress.unsafe(normalizeMac(macRaw))
-            dateStr  = req.url.queryParam("date").getOrElse(today.toString)
-            date    <- ZIO
+            mac     = MacAddress.unsafe(normalizeMac(macRaw))
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
+            date <- ZIO
               .attempt(LocalDate.parse(dateStr))
               .orElseFail(Response.badRequest(s"invalid date: $dateStr"))
-            tzStr    = req.url.queryParam("tz").getOrElse("UTC")
-            zone    <- ZIO
+            tzStr = req.url.queryParam("tz").getOrElse("UTC")
+            zone <- ZIO
               .attempt(ZoneId.of(tzStr))
               .orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
-            topN     = req.url
-                         .queryParam("topN")
-                         .flatMap(_.toIntOption)
-                         .getOrElse(5)
-                         .max(1)
-                         .min(20)
+            topN = req.url
+              .queryParam("topN")
+              .flatMap(_.toIntOption)
+              .getOrElse(5)
+              .max(1)
+              .min(20)
             device  <- deviceRepo
               .findByMac(mac)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -64,11 +64,11 @@ object UsageRoutes {
               .listPresenceRows(List(mac), date.minusDays(1))
               .mapError(ErrorMapper.dbErrorToResponse)
             // Keep only the rows whose period_start falls on `date` in `zone`.
-            inDay   = (rowsPrv ++ rowsD ++ rowsNxt).filter { r =>
+            inDay               = (rowsPrv ++ rowsD ++ rowsNxt).filter { r =>
               r.periodStart.atZone(zone).toLocalDate == date
             }
             (topHosts, buckets) = UsageSeries.build(inDay, zone, topN)
-            resp = UsageSeriesResponse(
+            resp                = UsageSeriesResponse(
               deviceMac = mac,
               deviceName = device.name,
               date = date.toString,

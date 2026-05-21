@@ -23,11 +23,14 @@ object UsageSeries {
   /**
    * Build the per-hour timeline for one device.
    *
-   * @param rows         PresenceRow values for the day, single mac.
-   * @param date         The local-calendar date the operator requested.
-   * @param zone         Local zone for hour bucketing (UTC bars are useless for parents).
-   * @param topN         Number of named-host stacks to expose; the long tail collapses to
-   *                     `otherMins`.
+   * @param rows
+   *   PresenceRow values for the day, single mac.
+   * @param date
+   *   The local-calendar date the operator requested.
+   * @param zone
+   *   Local zone for hour bucketing (UTC bars are useless for parents).
+   * @param topN
+   *   Number of named-host stacks to expose; the long tail collapses to `otherMins`.
    */
   def build(
       rows: List[PresenceRow],
@@ -36,9 +39,9 @@ object UsageSeries {
   ): (List[UsageHostTotal], List[UsageBucket]) = {
     // Group rows into 5-min buckets. activeSeconds is identical for every row
     // in a bucket (the router emits one batch per window) so .head is fine.
-    val fiveMin = rows.groupBy(r => (r.periodStart)).toList.map { case (ps, bucket) =>
-      val hour = ps.atZone(zone).getHour
-      val secs = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
+    val fiveMin = rows.groupBy(r => r.periodStart).toList.map { case (ps, bucket) =>
+      val hour  = ps.atZone(zone).getHour
+      val secs  = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
       val hosts = bucket.iterator.map(_.host).toSet.toList
       (hour, secs, hosts)
     }
@@ -60,7 +63,7 @@ object UsageSeries {
     // Stable host ordering within each bucket: top-host daily rank.
     val rank = topHosts.iterator.map(_.host).zipWithIndex.toMap
 
-    val byHour = fiveMin.groupBy(_._1)
+    val byHour  = fiveMin.groupBy(_._1)
     val buckets = (0 until 24).map { hr =>
       val hrBuckets = byHour.getOrElse(hr, Nil)
       val total     = hrBuckets.iterator.map((_, s, _) => s.toLong).sum
@@ -82,8 +85,8 @@ object UsageSeries {
         .filter(_.mins > 0)
         .toList
         .sortBy(u => rank.getOrElse(u.host, Int.MaxValue))
-      val totalMins   = (total / 60).toInt
-      val perHostSum  = perHostList.iterator.map(_.mins).sum
+      val totalMins = (total / 60).toInt
+      val perHostSum = perHostList.iterator.map(_.mins).sum
       UsageBucket(
         hour = hr,
         totalMins = totalMins,
