@@ -63,6 +63,13 @@ async function req<T>(
   return res.json() as Promise<T>
 }
 
+function weekQuery(to?: string, bucketOffsetMin?: number): string {
+  const parts: string[] = []
+  if (to !== undefined) parts.push(`to=${to}`)
+  if (bucketOffsetMin !== undefined) parts.push(`bucketOffsetMin=${bucketOffsetMin}`)
+  return parts.length === 0 ? '' : `?${parts.join('&')}`
+}
+
 // ── Auth ───────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -116,13 +123,13 @@ export const api = {
   time: {
     statusAll: (date?: string) =>
       req<ProfileTimeStatus[]>('GET', `/time/status${date ? `?date=${date}` : ''}`),
-    statusAllWeek: (to?: string) =>
-      req<ProfileTimeStatusWeek[]>('GET', `/time/status/week${to ? `?to=${to}` : ''}`),
+    statusAllWeek: (to?: string, bucketOffsetMin?: number) =>
+      req<ProfileTimeStatusWeek[]>('GET', `/time/status/week${weekQuery(to, bucketOffsetMin)}`),
     // Colons in MAC addresses are valid URL path chars (sub-delims); zio-http
     // does NOT auto-decode percent-encoded colons in path segments, so
     // `encodeURIComponent` would turn the MAC into a 404. Send raw.
-    statusDeviceWeek: (mac: string, to?: string) =>
-      req<DeviceTimeStatusWeek>('GET', `/time/status/${mac}/week${to ? `?to=${to}` : ''}`),
+    statusDeviceWeek: (mac: string, to?: string, bucketOffsetMin?: number) =>
+      req<DeviceTimeStatusWeek>('GET', `/time/status/${mac}/week${weekQuery(to, bucketOffsetMin)}`),
     statusDevice: (mac: string, date?: string) =>
       req<DeviceTimeStatus>('GET', `/time/status/${mac}${date ? `?date=${date}` : ''}`),
     grantExtension: (data: GrantExtensionRequest) =>

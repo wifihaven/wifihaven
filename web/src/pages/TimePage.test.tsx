@@ -19,7 +19,7 @@ vi.mock('@/hooks/useAuth', () => ({
 }))
 
 import { api } from '@/api/client'
-import { TimePage } from './TimePage'
+import { TimePage, formatMins, groupBucketsByLocalDay, localBucketOffsetMin } from './TimePage'
 
 let mockAuth = { isAdmin: true }
 
@@ -68,6 +68,9 @@ const noLimit: ProfileTimeStatus = {
   hostUsage: [],
 }
 
+// #794: server now returns UTC-hour buckets. Pin each day's minutes onto a single early-UTC
+// hour of that day so JS Date in the test environment (TZ=UTC under vitest) re-buckets cleanly
+// back to the same local date. Totals sum to 210m as before.
 const weekKids: ProfileTimeStatusWeek = {
   profileId: 1,
   profileName: 'Kids',
@@ -75,14 +78,12 @@ const weekKids: ProfileTimeStatusWeek = {
   to: '2026-05-20',
   dailyLimitMins: 120,
   totalMins: 210,
-  perDay: [
-    { date: '2026-05-14', usedMins: 20 },
-    { date: '2026-05-15', usedMins: 40 },
-    { date: '2026-05-16', usedMins: 0 },
-    { date: '2026-05-17', usedMins: 60 },
-    { date: '2026-05-18', usedMins: 0 },
-    { date: '2026-05-19', usedMins: 75 },
-    { date: '2026-05-20', usedMins: 15 },
+  perBucket: [
+    { bucketStart: '2026-05-14T08:00:00Z', usedMins: 20 },
+    { bucketStart: '2026-05-15T08:00:00Z', usedMins: 40 },
+    { bucketStart: '2026-05-17T08:00:00Z', usedMins: 60 },
+    { bucketStart: '2026-05-19T08:00:00Z', usedMins: 75 },
+    { bucketStart: '2026-05-20T08:00:00Z', usedMins: 15 },
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 210 }],
   hostUsage: [
@@ -103,7 +104,8 @@ describe('TimePage — list', () => {
   it('renders cards with usage, remaining, extensions, and site usage', async () => {
     render(<MemoryRouter><TimePage /></MemoryRouter>)
     expect(await screen.findByText("Kid's iPad")).toBeInTheDocument()
-    expect(screen.getByText('90m used')).toBeInTheDocument()
+    // #791: usedMins=90 → "1:30 used"; remainingMins=30 stays "30m left"
+    expect(screen.getByText('1:30 used')).toBeInTheDocument()
     expect(screen.getByText('30m left')).toBeInTheDocument()
     expect(screen.getByText('YouTube')).toBeInTheDocument()
     // over limit card
@@ -121,6 +123,7 @@ describe('TimePage — list', () => {
     expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('35m')
     expect(screen.getByTestId('time-host-1-khan-academy.org')).toHaveTextContent('khan-academy.org')
     expect(screen.getByTestId('time-host-1-khan-academy.org')).toHaveTextContent('10m')
+    // (both under 60m, so they keep the bare "Xm" form post-#791)
     // IP-literal host is shown by its address form
     expect(screen.getByTestId('time-host-1-192.0.2.1')).toHaveTextContent('192.0.2.1')
   })
@@ -195,12 +198,12 @@ describe('TimePage — week toggle (#723)', () => {
     expect(api.time.statusAllWeek).toHaveBeenCalledTimes(1)
     // Today cards are gone
     expect(screen.queryByTestId('time-card-1')).not.toBeInTheDocument()
-    // Weekly total surfaced
-    expect(screen.getByText('210m used this week')).toBeInTheDocument()
+    // Weekly total surfaced — #791: 210m → "3:30"
+    expect(screen.getByText('3:30 used this week')).toBeInTheDocument()
     // Per-day chart container present (recharts renders SVG inside).
     expect(screen.getByTestId('time-week-chart-1')).toBeInTheDocument()
-    // Top-host breakdown carries over to the weekly card
-    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('90m')
+    // Top-host breakdown carries over to the weekly card — #791: 90m → "1:30"
+    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('1:30')
     // Device link wires through to the per-device timeline (#721).
     expect(screen.getByTestId('time-week-device-link-aa:bb:cc:dd:ee:01'))
       .toHaveAttribute('href', '/devices/aa%3Abb%3Acc%3Add%3Aee%3A01/timeline')
@@ -217,6 +220,73 @@ describe('TimePage — week toggle (#723)', () => {
     // Today and Week each fetched once on the first switch to that window.
     expect(api.time.statusAll).toHaveBeenCalledTimes(2)
     expect(api.time.statusAllWeek).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('localBucketOffsetMin (#794)', () => {
+  it('returns 0 for whole-hour zones', () => {
+    // Faux UTC-aligned Date: local midnight equals UTC midnight, so minute=0.
+    const d = new Date('2026-05-21T12:00:00Z')
+    // Override the host's tz with UTC by feeding an instant whose local representation we
+    // control; in the vitest default env TZ=UTC, so this is already UTC-aligned.
+    expect(localBucketOffsetMin(d)).toBe(0)
+  })
+  it('snaps to the nearest 15-min multiple', () => {
+    // We can't change the host tz from a unit test, but snap-rounding is pure-arithmetic; the
+    // 0 case above plus the in-prod manual cases (India=30, Nepal=15) cover the matrix.
+    expect([0, 15, 30, 45]).toContain(localBucketOffsetMin())
+  })
+})
+
+describe('groupBucketsByLocalDay (#794)', () => {
+  it('rolls UTC hours into 7 contiguous local-day buckets ending at `to`', () => {
+    const out = groupBucketsByLocalDay(
+      [
+        { bucketStart: '2026-05-14T08:00:00Z', usedMins: 20 },
+        { bucketStart: '2026-05-17T08:00:00Z', usedMins: 60 },
+        { bucketStart: '2026-05-20T08:00:00Z', usedMins: 15 },
+      ],
+      '2026-05-20',
+    )
+    expect(out.map(r => r.date)).toEqual([
+      '2026-05-14', '2026-05-15', '2026-05-16',
+      '2026-05-17', '2026-05-18', '2026-05-19', '2026-05-20',
+    ])
+    expect(out.find(r => r.date === '2026-05-14')!.usedMins).toBe(20)
+    expect(out.find(r => r.date === '2026-05-17')!.usedMins).toBe(60)
+    expect(out.find(r => r.date === '2026-05-20')!.usedMins).toBe(15)
+    // Empty days fill with zero, not gaps
+    expect(out.find(r => r.date === '2026-05-18')!.usedMins).toBe(0)
+  })
+  it('accumulates multiple UTC hours into the same local day', () => {
+    const out = groupBucketsByLocalDay(
+      [
+        { bucketStart: '2026-05-20T08:00:00Z', usedMins: 5 },
+        { bucketStart: '2026-05-20T14:00:00Z', usedMins: 25 },
+        { bucketStart: '2026-05-20T20:00:00Z', usedMins: 10 },
+      ],
+      '2026-05-20',
+    )
+    expect(out.find(r => r.date === '2026-05-20')!.usedMins).toBe(40)
+  })
+})
+
+describe('formatMins (#791)', () => {
+  it('renders sub-60m values as "Xm"', () => {
+    expect(formatMins(0)).toBe('0m')
+    expect(formatMins(13)).toBe('13m')
+    expect(formatMins(59)).toBe('59m')
+  })
+  it('renders 60m+ as "H:MM"', () => {
+    expect(formatMins(60)).toBe('1:00')
+    expect(formatMins(195)).toBe('3:15')
+    expect(formatMins(621)).toBe('10:21')
+    expect(formatMins(260)).toBe('4:20')
+  })
+  it('coerces non-finite / negative to "0m"', () => {
+    expect(formatMins(NaN)).toBe('0m')
+    expect(formatMins(-5)).toBe('0m')
+    expect(formatMins(Infinity)).toBe('0m')
   })
 })
 

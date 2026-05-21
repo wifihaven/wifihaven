@@ -987,16 +987,22 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
           kids  = list.find(_.profileId == kidsId).get
-          byDay = kids.perDay.map(d => d.date -> d.usedMins).toMap
+          // #794: perBucket is hourly UTC buckets (default offset=0). seedTraffic places buckets
+          // at midnight UTC of each seeded date, so per-day rollup in UTC matches the seeded
+          // dates exactly.
+          byDay = kids.perBucket
+            .groupBy(_.bucketStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
+            .view
+            .mapValues(_.map(_.usedMins).sum)
+            .toMap
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(kids.from == today.minusDays(6).toString) &&
           assertTrue(kids.to == today.toString) &&
-          assertTrue(kids.perDay.length == 7) &&                 // all 7 days present
-          assertTrue(byDay(today.minusDays(6).toString) == 20) &&
-          assertTrue(byDay(today.minusDays(3).toString) == 35) &&
-          assertTrue(byDay(today.toString) == 15) &&
-          assertTrue(byDay(today.minusDays(5).toString) == 0) && // empty days are 0
-          assertTrue(kids.totalMins == 70) &&                    // 20+35+15
+          assertTrue(byDay.getOrElse(today.minusDays(6), 0) == 20) &&
+          assertTrue(byDay.getOrElse(today.minusDays(3), 0) == 35) &&
+          assertTrue(byDay.getOrElse(today, 0) == 15) &&
+          assertTrue(byDay.getOrElse(today.minusDays(5), 0) == 0) && // empty days omitted
+          assertTrue(kids.totalMins == 70) &&                        // 20+35+15
           assertTrue(kids.devices.head.usedMins == 70) &&
           assertTrue(kids.dailyLimitMins.contains(120))
       },
@@ -1178,6 +1184,111 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(shiftedKids.to == anchor.toString) &&
           assertTrue(shiftedKids.from == anchor.minusDays(6).toString)
       },
+      test("bucketOffsetMin shifts the hourly grid alignment (#794)") {
+        // Default alignment (offset=0) puts a 05:30Z period_start into the 05:00Z hourly slot.
+        // Caller-supplied offset=30 (half-hour zones like India) puts the same period_start into
+        // the 05:30Z slot, since the grid is now {…, 04:30, 05:30, 06:30, …}. Verifying both
+        // confirms server-side alignment is driven by the query param, not a fixed UTC hour.
+        //
+        // Anchor at `today` (TestClock=schoolDayAfternoon) so the trailing-7-day window matches
+        // the rest of the suite — past tests have shown that windows anchored outside the
+        // default range can race with concurrent embedded-pg cleanup on CI.
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          hsRepo      <- ZIO.service[HouseholdSettingsRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Seed a single 5-min bucket at 05:30Z on `today`. seedTraffic places buckets at
+          // `bucketOffset * 5min` past midnight UTC — offset=66 → 5h30m = 05:30Z.
+          _ <- seedTraffic(routerId, testMac, "late.example", today, 5, bucketOffset = 66)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes     = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          expected0  = today.atStartOfDay(java.time.ZoneOffset.UTC).toInstant.plusSeconds(5 * 3600)
+          expected30 = expected0.plusSeconds(30 * 60)
+          // offset=0 — buckets at :00 of each UTC hour. 05:30Z period_start → 05:00Z slot.
+          respDefault <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/week").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          bodyDefault <- respDefault.body.asString
+          listDefault <- ZIO.fromEither(bodyDefault.fromJson[List[ProfileTimeStatusWeek]])
+          kidsDefault = listDefault.find(_.profileId == kidsId).get
+          // offset=30 — buckets at :30 of each UTC hour. 05:30Z period_start → 05:30Z slot.
+          respHalf <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/week?bucketOffsetMin=30").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          bodyHalf <- respHalf.body.asString
+          listHalf <- ZIO.fromEither(bodyHalf.fromJson[List[ProfileTimeStatusWeek]])
+          kidsHalf = listHalf.find(_.profileId == kidsId).get
+        } yield assertTrue(respDefault.status == Status.Ok) &&
+          assertTrue(kidsDefault.perBucket.length == 1) &&
+          assertTrue(kidsDefault.perBucket.head.bucketStart == expected0) &&
+          assertTrue(kidsDefault.perBucket.head.usedMins == 5) &&
+          assertTrue(kidsDefault.totalMins == 5) &&
+          assertTrue(respHalf.status == Status.Ok) &&
+          assertTrue(kidsHalf.perBucket.length == 1) &&
+          assertTrue(kidsHalf.perBucket.head.bucketStart == expected30) &&
+          assertTrue(kidsHalf.perBucket.head.usedMins == 5)
+      },
+      test("bucketOffsetMin rejects values outside 0/15/30/45") {
+        for {
+          _               <- cleanDb
+          profileRepo     <- ZIO.service[ProfileRepo]
+          tlRepo          <- ZIO.service[TimeLimitRepo]
+          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          deviceRepo      <- ZIO.service[DeviceRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
+          extRepo         <- ZIO.service[TimeExtensionRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          auth            <- makeAuth
+          token           <- auth.login("admin", "changeme").map(_.token.value)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/week?bucketOffsetMin=22").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+        } yield assertTrue(resp.status == Status.BadRequest)
+      },
     ) @@ TestAspect.sequential,
 
     // ── per-device weekly variant ───────────────────────────────────────────
@@ -1228,14 +1339,17 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp   <- routes.runZIO(req)
           body   <- resp.body.asString
           status <- ZIO.fromEither(body.fromJson[DeviceTimeStatusWeek])
-          byDay = status.perDay.map(d => d.date -> d.usedMins).toMap
+          byDay = status.perBucket
+            .groupBy(_.bucketStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
+            .view
+            .mapValues(_.map(_.usedMins).sum)
+            .toMap
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(status.deviceMac == MacAddress.unsafe(mac1)) &&
-          assertTrue(status.perDay.length == 7) &&
           assertTrue(status.totalMins == 35) && // only mac1
-          assertTrue(byDay(today.toString) == 20) &&
-          assertTrue(byDay(today.minusDays(2).toString) == 15) &&
-          assertTrue(byDay(today.minusDays(1).toString) == 0) &&
+          assertTrue(byDay.getOrElse(today, 0) == 20) &&
+          assertTrue(byDay.getOrElse(today.minusDays(2), 0) == 15) &&
+          assertTrue(byDay.getOrElse(today.minusDays(1), 0) == 0) &&
           assertTrue(
             status.hostUsage.map(_.host.value).toSet == Set("minecraft.net", "youtube.com"),
           ) &&
