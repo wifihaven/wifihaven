@@ -225,6 +225,10 @@ case class ConnectionEventInsert(
     // gen_random_uuid() so older agents that don't ship an eventId keep
     // inserting cleanly (one fresh UUID per replay, no dedup possible).
     eventId: Option[java.util.UUID] = None,
+    // #720: server-side FQDN attribution looked up from prior fqdn-typed
+    // events sharing (router_id, dest_ip). NULL when host is already fqdn
+    // or when no sibling resolution was found within the lookup window.
+    resolvedHost: Option[Hostname] = None,
 )
 
 trait RouterRepo {
@@ -283,6 +287,31 @@ trait ConnectionEventRepo {
    * detect devices that produced at least one connection attempt in the recent window.
    */
   def lastSeenByMacSince(since: Instant): Task[Map[MacAddress, Instant]]
+
+  /**
+   * #720 backfill: look up the most recent fqdn-typed connection_event with the given (router_id,
+   * dest_ip) whose `ts` is at-or-after `since`. Returns the resolved hostname if any. Used at
+   * ingest time to attach a resolution to a fresh ipv4/ipv6-typed event whose agent-side DNS cache
+   * lost the race.
+   */
+  def findRecentFqdnFor(
+      routerId: RouterId,
+      destIp: IpAddress,
+      since: Instant,
+  ): Task[Option[Hostname]]
+
+  /**
+   * #720 backfill: patch the `resolved_host_value` column on existing ipv4/ipv6-typed rows for the
+   * given (router_id, dest_ip) that landed at-or-after `since` and don't yet carry a resolution.
+   * Called when a fqdn-typed event lands and "teaches" the API the IP→hostname mapping
+   * retroactively. Returns the row count actually updated.
+   */
+  def backfillResolvedFor(
+      routerId: RouterId,
+      destIp: IpAddress,
+      fqdn: Hostname,
+      since: Instant,
+  ): Task[Int]
 }
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
@@ -921,41 +950,90 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // retry-queue replays (#330). NULL → server-generated via gen_random_uuid()
   // (older agents pre-eventId support). ON CONFLICT DO NOTHING collapses
   // replays; updateMany returns count of rows actually inserted.
+  // #720: resolved_host_value carries an API-side FQDN attribution for
+  // ipv4/ipv6-typed events; ingest sets it from sibling fqdn events.
   def insertBatch(events: List[ConnectionEventInsert]) =
     Update[ConnectionEventInsert](
-      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id) " +
-        "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid())) " +
+      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id,resolved_host_value) " +
+        "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid()),?) " +
         "ON CONFLICT (event_id) DO NOTHING",
     ).updateMany(events).transact(xa)
 
+  // #720: read paths coalesce a populated resolved_host_value into the host
+  // tuple so callers see ('fqdn', resolved) instead of ('ipv4', literal-ip).
+  // The raw columns remain untouched on disk; this is purely a render-time
+  // promotion. Done in SQL so doobie's tuple decoder receives the already-
+  // resolved values.
+  private val selectCols: Fragment =
+    fr"""id,
+         router_id,
+         mac,
+         CASE WHEN resolved_host_value IS NOT NULL THEN 'fqdn' ELSE host_type END AS host_type,
+         COALESCE(resolved_host_value, host_value) AS host_value,
+         dest_ip,
+         allowed,
+         reason,
+         ts::TEXT"""
+
   def recent(limit: Int) =
-    sql"SELECT id,router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts::TEXT FROM connection_events ORDER BY ts DESC LIMIT $limit"
+    (fr"SELECT" ++ selectCols ++ fr"FROM connection_events ORDER BY ts DESC LIMIT $limit")
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
 
   def listForMac(mac: MacAddress, limit: Int) =
-    sql"SELECT id,router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit"
+    (fr"SELECT" ++ selectCols ++ fr"FROM connection_events WHERE mac=$mac ORDER BY ts DESC LIMIT $limit")
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
 
   def listForRouter(routerId: RouterId, limit: Int) =
-    sql"SELECT id,router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts::TEXT FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit"
+    (fr"SELECT" ++ selectCols ++ fr"FROM connection_events WHERE router_id=$routerId ORDER BY ts DESC LIMIT $limit")
       .query[R]
       .map(toC)
       .to[List]
       .transact(xa)
 
+  def findRecentFqdnFor(routerId: RouterId, destIp: IpAddress, since: Instant) =
+    sql"""SELECT host_value FROM connection_events
+          WHERE router_id = $routerId
+            AND dest_ip   = $destIp
+            AND host_type = 'fqdn'
+            AND ts >= $since
+          ORDER BY ts DESC
+          LIMIT 1"""
+      .query[Hostname]
+      .option
+      .transact(xa)
+
+  def backfillResolvedFor(
+      routerId: RouterId,
+      destIp: IpAddress,
+      fqdn: Hostname,
+      since: Instant,
+  ) =
+    sql"""UPDATE connection_events
+          SET resolved_host_value = ${fqdn.value}
+          WHERE router_id = $routerId
+            AND dest_ip   = $destIp
+            AND host_type IN ('ipv4','ipv6')
+            AND resolved_host_value IS NULL
+            AND ts >= $since""".update.run.transact(xa)
+
   // ── Dashboard / log API ──────────────────────────────────────────────────
 
   def query(f: LogFilter) = {
     // location is sourced from routers.name until routers.location lands (#136)
+    // #720: coalesce resolved_host_value into the returned host tuple so
+    // race-loser ipv4 rows show up under their resolved FQDN in the log UI
+    // and in domain ILIKE filters.
     val base  =
       fr"""SELECT ce.id, ce.mac, d.name, d.profile_id, p.name,
-                  ce.host_type, ce.host_value, 1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
+                  CASE WHEN ce.resolved_host_value IS NOT NULL THEN 'fqdn' ELSE ce.host_type END,
+                  COALESCE(ce.resolved_host_value, ce.host_value),
+                  1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac    = ce.mac
            LEFT JOIN profiles p ON p.id     = d.profile_id
@@ -966,7 +1044,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val byDev = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
     val byPid = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
     val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
-    val byDom = f.domain.fold(fr"")(d => fr"AND ce.host_value ILIKE ${s"%$d%"}")
+    val byDom = f.domain.fold(fr"")(d =>
+      // #720: domain filter has to look through the resolution too — otherwise
+      // a search for "youtube.com" would miss race-loser ipv4 rows we just
+      // attributed.
+      fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
+    )
     val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
     (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
       fr"ORDER BY ce.ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
@@ -1010,10 +1093,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           .query[Int]
           .unique
           .transact(xa)
-      top <- sql"""SELECT host_type, host_value, COUNT(*)::INT
+      top <- sql"""SELECT CASE WHEN resolved_host_value IS NOT NULL THEN 'fqdn' ELSE host_type END,
+                          COALESCE(resolved_host_value, host_value),
+                          COUNT(*)::INT
                    FROM connection_events
                    WHERE NOT allowed AND ts > NOW()-INTERVAL '24 hours'
-                   GROUP BY host_type, host_value ORDER BY COUNT(*) DESC LIMIT 10"""
+                   GROUP BY 1, 2 ORDER BY COUNT(*) DESC LIMIT 10"""
         .query[(HostId, Int)]
         .map(DomainCount.apply)
         .to[List]
@@ -1035,10 +1120,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     } yield DashboardStats(tt, bt, th, bh, top, dev)
 
   def topBlocked(hours: Int, lim: Int) =
-    sql"""SELECT host_type, host_value, COUNT(*)::INT
+    sql"""SELECT CASE WHEN resolved_host_value IS NOT NULL THEN 'fqdn' ELSE host_type END,
+                 COALESCE(resolved_host_value, host_value),
+                 COUNT(*)::INT
           FROM connection_events
           WHERE NOT allowed AND ts > NOW() - make_interval(hours => $hours)
-          GROUP BY host_type, host_value ORDER BY COUNT(*) DESC LIMIT $lim"""
+          GROUP BY 1, 2 ORDER BY COUNT(*) DESC LIMIT $lim"""
       .query[(HostId, Int)]
       .map(DomainCount.apply)
       .to[List]

@@ -7,7 +7,7 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
-import java.time.{Instant, ZoneOffset}
+import java.time.{Duration, Instant, ZoneOffset}
 
 /**
  * Router-side ingest endpoints. See docs/architecture-openwrt.md §5.4 / §5.5.
@@ -178,6 +178,14 @@ object RouterIngestRoutes {
       }
   }
 
+  /**
+   * #720: how far back the API will look for a sibling fqdn-typed event to attribute an
+   * ipv4/ipv6-typed event to. Matches the spirit of #583 Option 4 — a small race window, not a
+   * long-running IP→host cache. Five minutes covers the conntrack/dns-tail jitter (and any client
+   * DNS TTL skew) without inviting attribution across reused-IP cloud endpoints.
+   */
+  private val fqdnBackfillWindow: Duration = Duration.ofMinutes(5)
+
   private def handleEvents(
       routerId: RouterId,
       events: List[RouterEvent],
@@ -198,23 +206,59 @@ object RouterIngestRoutes {
       validated <- ZIO.foreach(connInserts)(e =>
         ZIO.fromEither(e).mapError(m => Response.badRequest(m)),
       )
+      // #720: for each ipv4/ipv6-typed insert with a dest_ip, consult the
+      // existing connection_events for a sibling fqdn-typed event we can
+      // attribute it to. This handles the "fqdn observed first, ipv4 race-
+      // loser arrives later" arrival order at insert time.
+      enriched  <- ZIO.foreach(validated)(attachResolvedHost(_, connEventRepo))
       // #338: ON CONFLICT DO NOTHING on event_id dedups replays from the
       // retry queue (#330). Insert returns count of new rows; the diff is
       // duplicates collapsed on conflict.
       inserted  <- connEventRepo
-        .insertBatch(validated)
+        .insertBatch(enriched)
         .mapError(ErrorMapper.dbErrorToResponse)
-        .when(validated.nonEmpty)
+        .when(enriched.nonEmpty)
         .map(_.getOrElse(0))
       _         <- ZIO
         .logInfo(
-          s"router events: router=$routerId dedup'd ${validated.size - inserted} of " +
-            s"${validated.size} connection_attempt events (replay)",
+          s"router events: router=$routerId dedup'd ${enriched.size - inserted} of " +
+            s"${enriched.size} connection_attempt events (replay)",
         )
-        .when(inserted < validated.size)
+        .when(inserted < enriched.size)
+      // #720: for each fqdn-typed event we just persisted, patch prior
+      // unresolved ipv4/ipv6 rows in the same window. This handles the
+      // reverse arrival order ("ipv4 race-loser observed first, fqdn lands
+      // moments later").
+      _         <- ZIO.foreachDiscard(enriched)(backfillFromFqdn(_, connEventRepo))
       _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo))
     } yield ()
   }
+
+  private def attachResolvedHost(
+      ev: ConnectionEventInsert,
+      connEventRepo: ConnectionEventRepo,
+  ): IO[Response, ConnectionEventInsert] =
+    (ev.host, ev.destIp) match {
+      case (HostId.IPv4(_) | HostId.IPv6(_), Some(destIp)) =>
+        connEventRepo
+          .findRecentFqdnFor(ev.routerId, destIp, ev.ts.minus(fqdnBackfillWindow))
+          .mapError(ErrorMapper.dbErrorToResponse)
+          .map(h => ev.copy(resolvedHost = h))
+      case _                                               => ZIO.succeed(ev)
+    }
+
+  private def backfillFromFqdn(
+      ev: ConnectionEventInsert,
+      connEventRepo: ConnectionEventRepo,
+  ): IO[Response, Unit] =
+    (ev.host, ev.destIp) match {
+      case (HostId.Fqdn(name), Some(destIp)) =>
+        connEventRepo
+          .backfillResolvedFor(ev.routerId, destIp, name, ev.ts.minus(fqdnBackfillWindow))
+          .mapError(ErrorMapper.dbErrorToResponse)
+          .unit
+      case _                                 => ZIO.unit
+    }
 
   /**
    * Default name for a device whose DHCP lease did not provide a hostname (option 12) — e.g. iOS

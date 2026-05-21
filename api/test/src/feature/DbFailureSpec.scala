@@ -104,14 +104,17 @@ object DbFailureSpec extends ZIOSpecDefault {
   }
 
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
-    def insertBatch(es: List[ConnectionEventInsert]) = throwing
-    def recent(l: Int)                               = throwing
-    def listForMac(mac: MacAddress, l: Int)          = throwing
-    def listForRouter(r: RouterId, l: Int)           = throwing
-    def query(f: LogFilter)                          = throwing
-    def stats                                        = throwing
-    def topBlocked(h: Int, l: Int)                   = throwing
-    def lastSeenByMacSince(since: Instant)           = throwing
+    def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
+    def recent(l: Int)                                                                  = throwing
+    def listForMac(mac: MacAddress, l: Int)                                             = throwing
+    def listForRouter(r: RouterId, l: Int)                                              = throwing
+    def query(f: LogFilter)                                                             = throwing
+    def stats                                                                           = throwing
+    def topBlocked(h: Int, l: Int)                                                      = throwing
+    def lastSeenByMacSince(since: Instant)                                              = throwing
+    def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant)                   = throwing
+    def backfillResolvedFor(r: RouterId, ip: IpAddress, fqdn: Hostname, since: Instant) =
+      throwing
   }
 
   private def jsonField(body: String, key: String): Option[String] =
