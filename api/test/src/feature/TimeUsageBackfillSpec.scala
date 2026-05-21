@@ -26,8 +26,7 @@ import zio.test.*
 import java.time.{Instant, LocalDate}
 import java.util.UUID
 
-object TimeUsageBackfillSpec
-    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres] {
+object TimeUsageBackfillSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres] {
 
   override val bootstrap = TestDatabase.layer
 
@@ -35,10 +34,10 @@ object TimeUsageBackfillSpec
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
-  private val testDate   = LocalDate.of(2026, 5, 7)
-  private val mac1       = MacAddress.unsafe("aa:bb:cc:11:22:33")
-  private val mac2       = MacAddress.unsafe("aa:bb:cc:44:55:66")
-  private val destIp     = IpAddress.unsafe("34.223.124.45")
+  private val testDate     = LocalDate.of(2026, 5, 7)
+  private val mac1         = MacAddress.unsafe("aa:bb:cc:11:22:33")
+  private val mac2         = MacAddress.unsafe("aa:bb:cc:44:55:66")
+  private val destIp       = IpAddress.unsafe("34.223.124.45")
   private val resolvedFqdn = Hostname.unsafe("neverssl.com")
 
   // Timestamp within testDate (UTC)
@@ -77,9 +76,10 @@ object TimeUsageBackfillSpec
     } yield ()
 
   def spec = suite("TimeUsage read-side FQDN coalesce (#731 stop-gap)")(
-
     // ── 1. ipv4 row + matching resolved connection_event → promoted to fqdn ──
-    test("listForDevice: ipv4 time_usage row with matching resolved connection_event reads as fqdn") {
+    test(
+      "listForDevice: ipv4 time_usage row with matching resolved connection_event reads as fqdn",
+    ) {
       for {
         _     <- cleanDb
         tu    <- ZIO.service[TimeUsageRepo]
@@ -162,8 +162,8 @@ object TimeUsageBackfillSpec
         )
         // connection_event from the day *before* testDate — outside the same-day window
         staleTs = testDate.minusDays(1).atTime(23, 59).toInstant(java.time.ZoneOffset.UTC)
-        _     <- seedResolvedEvent(cRepo, rRepo, mac1, destIp, resolvedFqdn, staleTs)
-        rows  <- tu.listForDevice(mac1, testDate)
+        _    <- seedResolvedEvent(cRepo, rRepo, mac1, destIp, resolvedFqdn, staleTs)
+        rows <- tu.listForDevice(mac1, testDate)
       } yield assertTrue(rows.size == 1) &&
         assertTrue(rows.head.host == HostId.IPv4(destIp))
     },
@@ -229,14 +229,14 @@ object TimeUsageBackfillSpec
     // overlap for the stop-gap period. #730 eliminates it at ingest time.
     test("listForDevice: promoted ipv4 row and native fqdn row both appear (documented overlap)") {
       for {
-        _    <- cleanDb
-        tu   <- ZIO.service[TimeUsageRepo]
+        _     <- cleanDb
+        tu    <- ZIO.service[TimeUsageRepo]
         cRepo <- ZIO.service[ConnectionEventRepo]
         rRepo <- ZIO.service[RouterRepo]
         // ipv4 time_usage row (race-loser)
-        _    <- tu.incrementSecondsAndBytes(mac1, HostId.IPv4(destIp), testDate, 60L, 100L, 50L)
+        _     <- tu.incrementSecondsAndBytes(mac1, HostId.IPv4(destIp), testDate, 60L, 100L, 50L)
         // genuine fqdn time_usage row (agent resolved on a later flow)
-        _    <- tu.incrementSecondsAndBytes(
+        _     <- tu.incrementSecondsAndBytes(
           mac1,
           HostId.Fqdn(resolvedFqdn),
           testDate,
@@ -244,8 +244,8 @@ object TimeUsageBackfillSpec
           200L,
           80L,
         )
-        _    <- seedResolvedEvent(cRepo, rRepo, mac1, destIp, resolvedFqdn, tsOnDay(14))
-        rows <- tu.listForDevice(mac1, testDate)
+        _     <- seedResolvedEvent(cRepo, rRepo, mac1, destIp, resolvedFqdn, tsOnDay(14))
+        rows  <- tu.listForDevice(mac1, testDate)
       } yield {
         // Both rows should be present; after promotion they both show as the fqdn.
         // A GROUP BY rollup will see two entries for the same fqdn — this is the
@@ -254,6 +254,5 @@ object TimeUsageBackfillSpec
         assertTrue(rows.forall(_.host == HostId.Fqdn(resolvedFqdn)))
       }
     },
-
   ) @@ TestAspect.sequential
 }
