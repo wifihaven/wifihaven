@@ -3,6 +3,10 @@ name: Master CD
 # Runs on every push to main. After #588 + #613 the flow is:
 #
 #   ci-tests + bootstrap-smoke + e2e + prod-stack-smoke   (vm-e2e on its own track)
+#     ‖ gate-2-router-fake-api       (#686: qemu router + fake API on the
+#                                     self-hosted KVM runner; gates
+#                                     publish-openwrt only, runs in parallel
+#                                     with the staging chain after ci-tests)
 #     → build-image                  (push sha-<commit> + `staging` tags ONLY; not `:latest`)
 #     → deploy-staging               (curl staging deploy hook; wait for /api/health)
 #       ‖ deploy-spa-staging         (build + wrangler push to Cloudflare Pages — parallel
@@ -415,13 +419,31 @@ jobs:
           echo "Promoting $src → $dst"
           docker buildx imagetools create -t "$dst" "$src"
 
+  # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
+  # against an in-process fake API serving snapshot fixtures. Gates
+  # publish-openwrt only — API publish is unaffected (Gate 1 covers that
+  # via api-smoke-staging, Gate 3 will cover thin integration once #655
+  # lands). Runs on the self-hosted KVM runner; concurrency=e2e-vm
+  # serializes against the existing live-mode VM e2e workflow on the same
+  # host. Gated on ci-tests to avoid burning runner cycles when lint/unit
+  # is broken.
+  gate-2-router-fake-api:
+    name: Gate 2 — router fake-API e2e
+    needs: [ci-tests]
+    uses: ./.github/workflows/e2e-vm-fake.yml
+    secrets: inherit
+
   # 6b. Publish the openwrt rolling release. The build runs anyway via the
   # standalone openwrt-build.yml triggers for PRs and main pushes — what's
   # gated is the GitHub Release upload, controlled by the publish_release
   # input. See openwrt-build.yml for the gating logic.
+  #
+  # Gated on Gate 2 (#686): a Gate-2-red main does not publish OpenWRT.
+  # `approve-production` keeps the manual atomic-publish semantics for
+  # router+API tandem release; Gate 2 sits before it on the OpenWRT leg.
   publish-openwrt:
     name: Publish OpenWRT release (deploy-production)
-    needs: [approve-production]
+    needs: [approve-production, gate-2-router-fake-api]
     permissions:
       contents: write
     uses: ./.github/workflows/openwrt-build.yml
