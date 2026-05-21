@@ -383,13 +383,22 @@ object TimeRoutes {
             today  <- clock.today
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            // #795: ?profileId=N narrows the rollup to a single profile so the
+            // SPA can fetch one card's worth of data instead of fanning out N
+            // sub-rollups. Auth scope still applies — child tokens can only
+            // request profiles they're already entitled to see.
+            profileIdOpt <- parseProfileIdParam(req)
+            allProfiles  <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices   <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings     <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            scoped       = profileIdOpt match {
+              case Some(pid) => visible.filter(_.id == pid)
+              case None      => visible
+            }
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
-              .foreach(visible) { p =>
+              .foreach(scoped) { p =>
                 buildProfileTimeStatus(
                   p,
                   devicesByPid.getOrElse(Some(p.id), Nil),
@@ -413,13 +422,19 @@ object TimeRoutes {
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
-            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            // #795: same single-profile narrowing as the daily endpoint.
+            profileIdOpt <- parseProfileIdParam(req)
+            allProfiles  <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices   <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings     <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            scoped       = profileIdOpt match {
+              case Some(pid) => visible.filter(_.id == pid)
+              case None      => visible
+            }
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
-              .foreach(visible) { p =>
+              .foreach(scoped) { p =>
                 buildProfileTimeStatusWeek(
                   p,
                   devicesByPid.getOrElse(Some(p.id), Nil),
@@ -1047,3 +1062,15 @@ def requireProfileAccess(
 
 def normalizeMac(mac: String): String =
   mac.toLowerCase.replace("-", ":").trim
+
+// #795: parse a ?profileId=N query parameter, used by the per-profile-scoped
+// hot read endpoints. Returns None when the param is absent (callers fall back
+// to "all visible profiles"); returns a 400 when present but unparseable.
+def parseProfileIdParam(req: Request): IO[Response, Option[ProfileId]] =
+  req.url.queryParam("profileId") match {
+    case None    => ZIO.succeed(None)
+    case Some(s) =>
+      s.toLongOption
+        .map(l => ZIO.succeed(Some(ProfileId(l))))
+        .getOrElse(ZIO.fail(Response.badRequest(s"invalid profileId: $s")))
+  }
