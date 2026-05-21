@@ -132,9 +132,35 @@ config change — but until then we keep the working set bounded.
 
 **Daily job** — at 00:15 router-local each day, same pattern at day granularity.
 
-**Single household, single API instance** → no distributed lock needed. Track
-`last_run_at`, `last_error`, `rows_upserted` in a small `rollup_runs` table; expose
-via admin debug endpoint.
+**Multi-instance safety via Postgres advisory locks.** Each job wraps its execution
+in `SELECT pg_try_advisory_lock($key)` (session-scoped) and bails out immediately if
+the lock can't be acquired — that tick is being handled by another instance. Two
+fixed integer keys (chosen now and reserved in code, never reused):
+
+- `0x726c7570_68720001` — `RollupHourlyJob`
+- `0x726c7570_64790001` — `RollupDailyJob`
+- `0x726c7570_73770001` — `RetentionSweepJob` (see §9)
+
+Why advisory locks rather than alternatives:
+
+| Option | Verdict |
+| ------ | ------- |
+| **`pg_try_advisory_lock`** | **Chosen.** No new tables, no leases to refresh, auto-released on connection close (no stale-lock cleanup), zero contention because losers skip the tick. |
+| Row-level `SELECT … FOR UPDATE SKIP LOCKED` on a `cron_ticks` table | Works but adds a write path and a heartbeat to think about. Equivalent guarantees, more moving parts. |
+| Kubernetes/Render-level leader election | We don't have a primitive for it on Render's plan; coupling to deploy platform is the same trap as `pg_cron`. |
+| Trust UPSERT idempotency, run on every instance | The UPSERTs *are* idempotent so this is safe for correctness, but two instances racing each other on the same hour is wasted I/O on the cheapest Postgres plan, and the `rollup_runs` table becomes noisy. Reject. |
+
+The UPSERT remains idempotent, so the advisory lock is a load-shedding optimization,
+not a correctness gate — if it ever fails open (lost the lock mid-job, instance crash
+mid-transaction), the next tick re-rolls cleanly.
+
+**Observability.** A `rollup_runs (job, instance_id, started_at, finished_at, status,
+error, rows_upserted)` table records each successful or failed run.
+`instance_id` is the process's hostname + PID so logs and DB rows correlate.
+The "I skipped because another instance had the lock" case writes a row with
+`status='skipped_locked'` only on the *first* skip per tick interval — successive
+skips within the same interval don't spam the table. Admin endpoint
+`GET /api/admin/rollup-status` returns the last N rows.
 
 ## 5. Granularities
 
@@ -195,21 +221,26 @@ quota system continues to write `time_usage` exactly as it does today.
 ## 9. Operationalization
 
 - **Scheduling:** ZIO fiber forked from `Main.scala` next to the existing
-  `ScheduleRepo` wiring. Two fibers: `RollupHourlyJob` (every 5 min),
-  `RollupDailyJob` (every 1 h — checks each tick whether 00:15 local has passed
-  for any router and not yet been rolled).
-- **Failure visibility:** `rollup_runs (job, started_at, finished_at, status,
-  error, rows_upserted)`. Latest N rows readable from
+  `ScheduleRepo` wiring. Three fibers: `RollupHourlyJob` (every 5 min),
+  `RollupDailyJob` (every 1 h — checks each tick whether 00:15 local has passed for
+  any router and not yet been rolled), `RetentionSweepJob` (every 1 h — runs once
+  per local day at 03:00).
+- **Multi-instance safety:** every fiber's tick begins with
+  `SELECT pg_try_advisory_lock($key)`; on `false`, the tick is a no-op (logged once
+  per interval per §4). Lock is `pg_advisory_unlock`'d in a `ZIO.acquireRelease`
+  ensure block — and auto-released by Postgres if the connection drops mid-job, so
+  a crashing instance can't wedge the lock. The next tick on any instance picks up.
+- **Failure visibility:** `rollup_runs (job, instance_id, started_at, finished_at,
+  status, error, rows_upserted, rows_deleted)`. Latest N rows readable from
   `GET /api/admin/rollup-status` (admin-only).
-- **Retries:** idempotent UPSERT means a crash mid-job is safe; the next tick
-  re-processes any hours whose source rows changed since `rolled_at`.
-- **Sweep job (raw retention):** same pattern — runs daily at 03:00 router-local.
-  If [#793](https://github.com/wifihaven/wifihaven/issues/793) lands with daily
-  partitions, this is a `DROP TABLE traffic_reports_YYYYMMDD` for every partition
-  whose date is `< NOW() - usage.rawRetentionDays`. Otherwise it's
-  `DELETE FROM traffic_reports WHERE period_start < $cutoff` with a `LIMIT
-  100_000` batch loop. The sweep also runs `DELETE FROM traffic_hourly WHERE
-  bucket_start < NOW() - INTERVAL '13 months'`.
+- **Retries:** idempotent UPSERT means a crash mid-job is safe; the next tick (on
+  any instance) re-processes any hours whose source rows changed since `rolled_at`.
+- **Sweep job (retention):** same advisory-lock pattern — runs daily at 03:00
+  router-local. If [#793](https://github.com/wifihaven/wifihaven/issues/793) lands
+  with daily partitions, this is a `DROP TABLE …_YYYYMMDD` per expired partition.
+  Otherwise it's batched `DELETE WHERE <time-col> < $cutoff` with a 100 k row chunk
+  loop. Covers `traffic_reports`, `connection_events`, `traffic_hourly`,
+  `traffic_daily` per the table at the top of this doc.
 
 ## 10. Coordination with #793
 
