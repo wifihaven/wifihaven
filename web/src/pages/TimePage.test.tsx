@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import type { ProfileTimeStatus } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
@@ -75,7 +76,7 @@ beforeEach(() => {
 
 describe('TimePage — list', () => {
   it('renders cards with usage, remaining, extensions, and site usage', async () => {
-    render(<TimePage />)
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
     expect(await screen.findByText("Kid's iPad")).toBeInTheDocument()
     expect(screen.getByText('90m used')).toBeInTheDocument()
     expect(screen.getByText('30m left')).toBeInTheDocument()
@@ -90,7 +91,7 @@ describe('TimePage — list', () => {
   })
 
   it('renders top-host breakdown when hostUsage is present (#262)', async () => {
-    render(<TimePage />)
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
     expect(await screen.findByTestId('time-host-1-youtube.com')).toHaveTextContent('youtube.com')
     expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('35m')
     expect(screen.getByTestId('time-host-1-khan-academy.org')).toHaveTextContent('khan-academy.org')
@@ -100,7 +101,7 @@ describe('TimePage — list', () => {
   })
 
   it('omits the top-host section when hostUsage is empty (#262)', async () => {
-    render(<TimePage />)
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
     // overLimit profile (id=2) has hostUsage: [] — no time-host-* testids for it
     await screen.findByTestId('time-card-2')
     expect(screen.queryByTestId(/^time-host-2-/)).not.toBeInTheDocument()
@@ -110,7 +111,7 @@ describe('TimePage — list', () => {
 describe('TimePage — grant extension', () => {
   it('opens modal, picks 45m preset, types note, and calls grantExtension', async () => {
     const user = userEvent.setup()
-    render(<TimePage />)
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
     await screen.findByTestId('time-card-1')
 
     // Click first "+ Time" button (Kids profile)
@@ -137,7 +138,7 @@ describe('TimePage — grant extension', () => {
 
   it('passes null note when blank', async () => {
     const user = userEvent.setup()
-    render(<TimePage />)
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
     await screen.findByTestId('time-card-1')
     const grantButtons = screen.getAllByRole('button', { name: /\+ Time/ })
     await user.click(grantButtons[0])
@@ -155,7 +156,7 @@ describe('TimePage — grant extension', () => {
 describe('TimePage — role gating', () => {
   it('hides "+ Time" button for non-admins', async () => {
     mockAuth = { isAdmin: false }
-    render(<TimePage />)
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
     await screen.findByTestId('time-card-1')
     expect(screen.queryByRole('button', { name: /\+ Time/ })).not.toBeInTheDocument()
   })

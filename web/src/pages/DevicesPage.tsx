@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type { Device, ProfileDetail } from '@/types/api'
@@ -84,10 +84,10 @@ export function DevicesPage() {
           ? <p className="p-6 text-gray-500 text-sm">No devices yet.</p>
           : knownDevices.map(d => (
               <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-emerald-500/60 ring-inset' : ''}`}>
-                <div className="flex-1 min-w-0">
+                <Link to={`/devices/${encodeURIComponent(d.mac)}/timeline`} className="flex-1 min-w-0 hover:text-emerald-400 transition-colors" data-testid={`device-timeline-link-${d.mac}`}>
                   <p className="font-medium text-white truncate">{d.name}</p>
                   <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
-                </div>
+                </Link>
                 <div className="hidden sm:block text-sm">
                   <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded-lg text-xs">
                     {d.profileName ?? 'No profile'}
