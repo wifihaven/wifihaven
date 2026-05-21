@@ -112,6 +112,9 @@ object DbFailureSpec extends ZIOSpecDefault {
     def stats                                        = throwing
     def topBlocked(h: Int, l: Int)                   = throwing
     def lastSeenByMacSince(since: Instant)           = throwing
+    def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant) = throwing
+    def backfillResolvedFor(r: RouterId, ip: IpAddress, fqdn: Hostname, since: Instant) =
+      throwing
   }
 
   private def jsonField(body: String, key: String): Option[String] =

@@ -770,5 +770,165 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         d <- dRepo.findByMac(MacAddress.unsafe(knownMac))
       } yield assertTrue(d.exists(_.name == "kid-ipad"))
     },
+    // ── #720: defense-in-depth API-side FQDN backfill ──────────────────────
+    test("events: ipv4-typed event is backfilled when a sibling fqdn event lands later") {
+      // Race-loser arrives first as ipv4. A subsequent fqdn event for the
+      // same (router_id, dest_ip) within the window teaches the API the
+      // mapping; the earlier row's host should now read as the resolved
+      // fqdn via SELECT-side coalesce.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        evIp = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(false),
+          reason = Some("blocked"),
+          ts = "2026-05-07T14:01:00Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        evFqdn = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.Fqdn(Hostname.unsafe("neverssl.com"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(false),
+          reason = Some("blocked"),
+          ts = "2026-05-07T14:01:05Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evIp)).toJson, Some(tk))
+        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evFqdn)).toJson, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(rows.size == 2) &&
+        // both rows now surface as the resolved fqdn (the ipv4 row via
+        // resolved_host_value coalesce; the fqdn row natively)
+        assertTrue(rows.forall(_.host == HostId.Fqdn(Hostname.unsafe("neverssl.com"))))
+    },
+    test("events: ipv4-typed event picks up resolution from a prior fqdn event") {
+      // Reverse arrival order: fqdn event first, ipv4 event arrives later.
+      // The ipv4 row is inserted with resolved_host_value already populated.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        evFqdn = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.Fqdn(Hostname.unsafe("neverssl.com"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:01:00Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        evIp = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:01:05Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evFqdn)).toJson, Some(tk))
+        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evIp)).toJson, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(rows.size == 2) &&
+        assertTrue(rows.forall(_.host == HostId.Fqdn(Hostname.unsafe("neverssl.com"))))
+    },
+    test("events: different routers with same dest_ip do not cross-attribute") {
+      // Per-router isolation: a fqdn observation on router A must NOT
+      // resolve an ipv4 event on router B. Reused-IP cloud endpoints
+      // would otherwise produce wrong attributions across households.
+      for {
+        _      <- cleanDb
+        rRepo  <- ZIO.service[RouterRepo]
+        cRepo  <- ZIO.service[ConnectionEventRepo]
+        routes <- buildRoutes
+        // seedRouter only seeds one — manually seed two
+        tkA = "ROUTER_TOKEN_A"
+        tkB = "ROUTER_TOKEN_B"
+        idA <- rRepo.create("router-a", Sha256Hex.unsafe("a" * 64))
+        _   <- rRepo.completeEnrollment(idA, Sha256Hex.unsafe(RouterAuth.sha256Hex(tkA)))
+        idB <- rRepo.create("router-b", Sha256Hex.unsafe("b" * 64))
+        _   <- rRepo.completeEnrollment(idB, Sha256Hex.unsafe(RouterAuth.sha256Hex(tkB)))
+        evFqdnA = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.Fqdn(Hostname.unsafe("not-neverssl.example"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:01:00Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        evIpB = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:01:05Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        _     <- post(routes, "/api/router/events", RouterEventsRequest(idA, List(evFqdnA)).toJson, Some(tkA))
+        _     <- post(routes, "/api/router/events", RouterEventsRequest(idB, List(evIpB)).toJson, Some(tkB))
+        rowsB <- cRepo.listForRouter(idB, 100)
+      } yield assertTrue(rowsB.size == 1) &&
+        // router B's ipv4 row must NOT inherit router A's fqdn
+        assertTrue(rowsB.head.host == HostId.IPv4(IpAddress.unsafe("34.223.124.45")))
+    },
+    test("events: fqdn arriving outside the backfill window does not attribute the earlier ipv4 row") {
+      // The backfill is for the conntrack/dns-tail race window — not a
+      // long-running cache. A fqdn observed 10 minutes after an ipv4 event
+      // for the same dest_ip is too late and must not retroactively
+      // re-label what is more plausibly a fresh-DNS-resolution flow.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        evIp = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:01:00Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        // 10 minutes later — outside the 5-minute window
+        evFqdn = RouterEvent(
+          "connection_attempt",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          host = Some(HostId.Fqdn(Hostname.unsafe("neverssl.com"))),
+          destIp = Some(IpAddress.unsafe("34.223.124.45")),
+          allowed = Some(true),
+          reason = Some("allow"),
+          ts = "2026-05-07T14:11:00Z",
+          eventId = Some(UUID.randomUUID()),
+        )
+        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evIp)).toJson, Some(tk))
+        _    <- post(routes, "/api/router/events", RouterEventsRequest(id, List(evFqdn)).toJson, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(rows.size == 2) &&
+        // ipv4 row stays unresolved (the late fqdn doesn't reach it)
+        assertTrue(
+          rows.exists(r => r.host == HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
+        ) &&
+        assertTrue(rows.exists(_.host == HostId.Fqdn(Hostname.unsafe("neverssl.com"))))
+    },
   ) @@ TestAspect.sequential
 }
