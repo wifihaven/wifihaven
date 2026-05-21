@@ -30,7 +30,7 @@ object UsageRoutes {
           for {
             claims <- requireAuth(req, auth)
             today  <- clock.today
-            macOpt        = req.url.queryParam("mac").map(s => MacAddress.unsafe(normalizeMac(s)))
+            macOpt = req.url.queryParam("mac").map(s => MacAddress.unsafe(normalizeMac(s)))
             profileIdOpt <- ZIO
               .fromEither(
                 req.url.queryParam("profileId") match {
@@ -42,7 +42,7 @@ object UsageRoutes {
                 },
               )
               .mapError(Response.badRequest)
-            _      <- ZIO
+            _            <- ZIO
               .fail(Response.badRequest("exactly one of mac or profileId is required"))
               .when(macOpt.isDefined == profileIdOpt.isDefined)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
@@ -60,8 +60,29 @@ object UsageRoutes {
               .max(1)
               .min(20)
             resp <- (macOpt, profileIdOpt) match {
-              case (Some(mac), _) => buildForDevice(mac, date, zone, topN, claims, deviceRepo, trafficRepo, userProfileRepo)
-              case (_, Some(pid)) => buildForProfile(pid, date, zone, topN, claims, profileRepo, deviceRepo, trafficRepo, userProfileRepo)
+              case (Some(mac), _) =>
+                buildForDevice(
+                  mac,
+                  date,
+                  zone,
+                  topN,
+                  claims,
+                  deviceRepo,
+                  trafficRepo,
+                  userProfileRepo,
+                )
+              case (_, Some(pid)) =>
+                buildForProfile(
+                  pid,
+                  date,
+                  zone,
+                  topN,
+                  claims,
+                  profileRepo,
+                  deviceRepo,
+                  trafficRepo,
+                  userProfileRepo,
+                )
               case _              => ZIO.fail(Response.badRequest("unreachable"))
             }
           } yield Response.json(resp.toJson)
@@ -79,12 +100,12 @@ object UsageRoutes {
       userProfileRepo: UserProfileRepo,
   ): IO[Response, UsageSeriesResponse] =
     for {
-      device  <- deviceRepo
+      device <- deviceRepo
         .findByMac(mac)
         .mapError(ErrorMapper.dbErrorToResponse)
         .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-      _       <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-      rows    <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
+      _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+      rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
       (topHosts, buckets) = UsageSeries.build(rows, zone, topN)
     } yield UsageSeriesResponse(
       deviceMac = Some(mac),
@@ -113,10 +134,10 @@ object UsageRoutes {
         .mapError(ErrorMapper.dbErrorToResponse)
         .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
       all     <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      devices  = all.filter(_.profileId.contains(pid))
-      macs     = devices.map(_.mac)
+      devices   = all.filter(_.profileId.contains(pid))
+      macs      = devices.map(_.mac)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
-      rows    <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
+      rows <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
       (topHosts, bucketsByHost, topDevices, bucketsByDevice) =
         UsageSeries.buildProfile(rows, nameByMac, zone, topN)
     } yield UsageSeriesResponse(
@@ -142,9 +163,11 @@ object UsageRoutes {
     else
       for {
         d   <- trafficRepo.listPresenceRows(macs, date).mapError(ErrorMapper.dbErrorToResponse)
-        nxt <- trafficRepo.listPresenceRows(macs, date.plusDays(1)).mapError(ErrorMapper.dbErrorToResponse)
-        prv <- trafficRepo.listPresenceRows(macs, date.minusDays(1)).mapError(ErrorMapper.dbErrorToResponse)
-      } yield (prv ++ d ++ nxt).filter { r =>
-        r.periodStart.atZone(zone).toLocalDate == date
-      }
+        nxt <- trafficRepo
+          .listPresenceRows(macs, date.plusDays(1))
+          .mapError(ErrorMapper.dbErrorToResponse)
+        prv <- trafficRepo
+          .listPresenceRows(macs, date.minusDays(1))
+          .mapError(ErrorMapper.dbErrorToResponse)
+      } yield (prv ++ d ++ nxt).filter { r => r.periodStart.atZone(zone).toLocalDate == date }
 }

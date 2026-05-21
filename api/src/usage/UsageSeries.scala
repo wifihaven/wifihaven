@@ -109,8 +109,8 @@ object UsageSeries {
    * Returns four parallel views of the same activity:
    *   - `topHosts` / `bucketsByHost` — proportionally allocated within each (mac, period_start)
    *     bucket, same semantics as the per-device build above.
-   *   - `topDevices` / `bucketsByDevice` — minutes attributed to whichever device's mac the
-   *     bucket belongs to (one bucket → one device); `sum(perDevice) + otherMins == totalMins`.
+   *   - `topDevices` / `bucketsByDevice` — minutes attributed to whichever device's mac the bucket
+   *     belongs to (one bucket → one device); `sum(perDevice) + otherMins == totalMins`.
    *
    * Profile total semantics match `Routes.buildProfileTimeStatus`: per-mac bucket-deduped minutes
    * are summed across devices (overlap is not deduped at the profile level). Per-host stacks use
@@ -146,9 +146,9 @@ object UsageSeries {
       .map { case (h, s) => (h, (s / 60).toInt) }
       .filter { case (_, m) => m > 0 }
       .sortBy { case (h, m) => (-m, h.value) }
-    val topHostIds   = orderedHosts.take(topN).map(_._1).toSet
-    val topHosts     = orderedHosts.take(topN).map((h, m) => UsageHostTotal(h, m))
-    val hostRank     = topHosts.iterator.map(_.host).zipWithIndex.toMap
+    val topHostIds = orderedHosts.take(topN).map(_._1).toSet
+    val topHosts = orderedHosts.take(topN).map((h, m) => UsageHostTotal(h, m))
+    val hostRank = topHosts.iterator.map(_.host).zipWithIndex.toMap
 
     // ── Per-device day totals (one bucket → one device) ───────────────────
     val perDeviceDaySecs = scala.collection.mutable.Map.empty[MacAddress, Long]
@@ -174,7 +174,7 @@ object UsageSeries {
       val totalMins = (totalSecs / 60).toInt
 
       // Per-host stack within the hour (even-share within each 5-min bucket).
-      val perHost = scala.collection.mutable.Map.empty[HostId, Double]
+      val perHost   = scala.collection.mutable.Map.empty[HostId, Double]
       var hostOther = 0.0
       for ((_, _, secs, hosts) <- hrBuckets if hosts.nonEmpty) {
         val share = secs.toDouble / hosts.size
@@ -187,7 +187,7 @@ object UsageSeries {
         .filter(_.mins > 0)
         .toList
         .sortBy(u => hostRank.getOrElse(u.host, Int.MaxValue))
-      val perHostSum  = perHostList.iterator.map(_.mins).sum
+      val perHostSum = perHostList.iterator.map(_.mins).sum
       bucketsByHost += UsageBucket(
         hour = hr,
         totalMins = totalMins,
@@ -199,7 +199,8 @@ object UsageSeries {
       val perDevice = scala.collection.mutable.Map.empty[MacAddress, Long]
       var devOther  = 0L
       for ((_, mac, secs, _) <- hrBuckets)
-        if (topDeviceMacs.contains(mac)) perDevice.updateWith(mac)(p => Some(p.getOrElse(0L) + secs.toLong))
+        if (topDeviceMacs.contains(mac))
+          perDevice.updateWith(mac)(p => Some(p.getOrElse(0L) + secs.toLong))
         else devOther += secs.toLong
       val perDeviceList = perDevice.iterator
         .map { case (mac, s) =>

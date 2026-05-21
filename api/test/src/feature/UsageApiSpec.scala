@@ -85,7 +85,10 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       profileRepo     <- ZIO.service[ProfileRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
-    } yield (UsageRoutes.routes(auth, deviceRepo, trafficRepo, userProfileRepo, profileRepo, clock), auth)
+    } yield (
+      UsageRoutes.routes(auth, deviceRepo, trafficRepo, userProfileRepo, profileRepo, clock),
+      auth,
+    )
 
   def spec = suite("Usage API")(
     suite("GET /api/usage/series")(
@@ -256,7 +259,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           resp <- routes.runZIO(req)
         } yield assertTrue(resp.status == Status.BadRequest)
       },
-      test("profileId mode: aggregates across the profile's devices, both stacks sum to totalMins") {
+      test(
+        "profileId mode: aggregates across the profile's devices, both stacks sum to totalMins",
+      ) {
         val macA = "aa:bb:cc:dd:ee:0a"
         val macB = "aa:bb:cc:dd:ee:0b"
         for {
@@ -279,7 +284,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           (routes, auth) = rb
           token <- auth.login("admin", "changeme").map(_.token.value)
           req = Request
-            .get(URL.decode(s"/api/usage/series?profileId=${kidsId.value}&date=$today").toOption.get)
+            .get(
+              URL.decode(s"/api/usage/series?profileId=${kidsId.value}&date=$today").toOption.get,
+            )
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
           body <- resp.body.asString
