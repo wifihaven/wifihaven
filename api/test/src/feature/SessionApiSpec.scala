@@ -46,8 +46,11 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         .addHeader(Header.Authorization.Bearer(token)),
     )
 
-  // Recent base time so default `hours=24` filter includes seeded rows.
-  private def baseInstant = Instant.now().minusSeconds(2 * 3600)
+  // Base time anchored on the injected TestClock (Monday 14:00 UTC) so the seeded rows
+  // stay deterministic regardless of when CI runs. `-2h` keeps rows within the default
+  // hours=24 filter while sitting well clear of midnight UTC on both sides.
+  private val baseInstantZIO: URIO[Clock, Instant] =
+    Clock.instant.map(_.minusSeconds(2 * 3600))
 
   private def insertReport(
       routerId: RouterId,
@@ -94,12 +97,13 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo   <- ZIO.service[UserProfileRepo]
         kid      <- pr.create("Kids", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
-        t0 = baseInstant
-        _ <- insertReport(routerId, mac1, "youtube.com", t0, activeSeconds = 300)
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
+        _        <- insertReport(routerId, mac1, "youtube.com", t0, activeSeconds = 300)
         _ <- insertReport(routerId, mac1, "youtube.com", t0.plusSeconds(300), activeSeconds = 240)
         auth  <- makeAuth
         token <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, "/api/sessions", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[SessionPage])
@@ -124,13 +128,14 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo   <- ZIO.service[UserProfileRepo]
         kid      <- pr.create("Kids", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
-        t0 = baseInstant
-        _ <- insertReport(routerId, mac1, "youtube.com", t0, activeSeconds = 300)
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
+        _        <- insertReport(routerId, mac1, "youtube.com", t0, activeSeconds = 300)
         // one empty period (t0+300..t0+600), then a fresh session
         _ <- insertReport(routerId, mac1, "youtube.com", t0.plusSeconds(600), activeSeconds = 300)
         auth  <- makeAuth
         token <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, "/api/sessions", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[SessionPage])
@@ -150,11 +155,13 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         kid      <- pr.create("Kids", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
         _        <- TestLayers.seedDevice(dr, mac2, "Phone", kid)
-        _        <- insertReport(routerId, mac1, "youtube.com", baseInstant)
-        _        <- insertReport(routerId, mac2, "tiktok.com", baseInstant)
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
+        _        <- insertReport(routerId, mac1, "youtube.com", t0)
+        _        <- insertReport(routerId, mac2, "tiktok.com", t0)
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, s"/api/sessions?mac=$mac1", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[SessionPage])
@@ -174,12 +181,14 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo   <- ZIO.service[UserProfileRepo]
         kid      <- pr.create("Kids", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
-        _        <- insertReport(routerId, mac1, "youtube.com", baseInstant)
-        _        <- insertReport(routerId, mac1, "tiktok.com", baseInstant)
-        _        <- insertReport(routerId, mac1, "www.YOUTUBE.com", baseInstant.plusSeconds(3600))
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
+        _        <- insertReport(routerId, mac1, "youtube.com", t0)
+        _        <- insertReport(routerId, mac1, "tiktok.com", t0)
+        _        <- insertReport(routerId, mac1, "www.YOUTUBE.com", t0.plusSeconds(3600))
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, "/api/sessions?host=youtube", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[SessionPage])
@@ -200,11 +209,13 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         adults   <- pr.create("Adults", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kids)
         _        <- TestLayers.seedDevice(dr, mac2, "Phone", adults)
-        _        <- insertReport(routerId, mac1, "youtube.com", baseInstant)
-        _        <- insertReport(routerId, mac2, "news.com", baseInstant)
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
+        _        <- insertReport(routerId, mac1, "youtube.com", t0)
+        _        <- insertReport(routerId, mac2, "news.com", t0)
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, s"/api/sessions?profileId=$kids", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[SessionPage])
@@ -223,13 +234,15 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         upRepo   <- ZIO.service[UserProfileRepo]
         kid      <- pr.create("Kids", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
         _        <- ZIO.foreachDiscard(0 until 5)(i =>
           // Five distinct, non-contiguous periods → five sessions.
-          insertReport(routerId, mac1, s"host$i.com", baseInstant.plusSeconds(i.toLong * 3600)),
+          insertReport(routerId, mac1, s"host$i.com", t0.plusSeconds(i.toLong * 3600)),
         )
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         r1 <- getJson(routes, "/api/sessions?limit=2", token)
         b1 <- r1.body.asString
         p1 <- ZIO.fromEither(b1.fromJson[SessionPage])
@@ -253,9 +266,10 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         pr     <- ZIO.service[ProfileRepo]
         tr     <- ZIO.service[TrafficReportRepo]
         upRepo <- ZIO.service[UserProfileRepo]
+        clock  <- ZIO.service[Clock]
         auth   <- makeAuth
         token  <- auth.login("admin", "changeme").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, "/api/sessions?limit=9999", token)
       } yield assertTrue(resp.status == Status.Ok)
     },
@@ -267,8 +281,9 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         pr     <- ZIO.service[ProfileRepo]
         tr     <- ZIO.service[TrafficReportRepo]
         upRepo <- ZIO.service[UserProfileRepo]
+        clock  <- ZIO.service[Clock]
         auth   <- makeAuth
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- routes.runZIO(Request.get(URL.decode("/api/sessions").toOption.get))
       } yield assertTrue(resp.status == Status.Unauthorized)
     },
@@ -286,15 +301,17 @@ object SessionApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         adults   <- pr.create("Adults", Nil)
         _        <- TestLayers.seedDevice(dr, mac1, "iPad", kids)
         _        <- TestLayers.seedDevice(dr, mac2, "Phone", adults)
-        _        <- insertReport(routerId, mac1, "youtube.com", baseInstant)
-        _        <- insertReport(routerId, mac2, "news.com", baseInstant)
+        clock    <- ZIO.service[Clock]
+        t0       <- baseInstantZIO
+        _        <- insertReport(routerId, mac1, "youtube.com", t0)
+        _        <- insertReport(routerId, mac2, "news.com", t0)
         auth     <- makeAuth
         hash     <- auth.hashPassword("pass")
         childId  <- userRepo.create("alice", hash, "child")
         _        <- userRepo.clearMustChangePassword(childId)
         _        <- upRepo.setProfilesForUser(childId, List(kids))
         token    <- auth.login("alice", "pass").map(_.token.value)
-        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo)
+        routes = SessionRoutes.routes(auth, tr, dr, pr, upRepo, clock)
         resp <- getJson(routes, "/api/sessions", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[SessionPage])
