@@ -239,7 +239,7 @@ Every router agent must:
 1. **Enroll** once: exchange a one-time enrollment token for a long-lived bearer token.
 2. **Poll policy** every ~60 s, render the snapshot into the platform's native
    enforcement config, and reload atomically.
-3. **Report usage** every ~5 min: scrape platform-native traffic counters,
+3. **Report usage** every ~60 s: scrape platform-native traffic counters,
    attribute bytes to `(mac, hostname)` pairs, POST to `/api/router/usage`.
 4. **Stream events**: forward DHCP lease events and DNS query events to
    `/api/router/events`.
@@ -448,7 +448,7 @@ refetches when the version changes.
 
 ### 6.4 `POST /api/router/usage`
 
-Sent every 5 minutes. Idempotent on
+Sent every 60 s (configurable via `usage_report_interval`). Idempotent on
 `(routerId, periodStart, mac, host.type, host.value)` so retries are safe.
 
 **Request**
@@ -457,13 +457,13 @@ Sent every 5 minutes. Idempotent on
 {
   "routerId": "9c1f2e8a-...",
   "periodStart": "2026-05-02T14:00:00Z",
-  "periodEnd":   "2026-05-02T14:05:00Z",
+  "periodEnd":   "2026-05-02T14:01:00Z",
   "records": [
     {
       "mac": "aa:bb:cc:11:22:33",
       "ip":  "192.168.1.42",
       "host": { "type": "fqdn", "value": "youtube.com" },
-      "activeSeconds": 240,
+      "activeSeconds": 50,
       "bytesIn":  38123412,
       "bytesOut": 921000
     },
@@ -471,7 +471,7 @@ Sent every 5 minutes. Idempotent on
       "mac": "aa:bb:cc:11:22:33",
       "ip":  "192.168.1.42",
       "host": { "type": "ipv4", "value": "1.2.3.4" },
-      "activeSeconds": 60,
+      "activeSeconds": 30,
       "bytesIn":  120000,
       "bytesOut": 4000
     }
@@ -631,7 +631,7 @@ openwrt/
   does not re-read `conf-dir` files, so `reload` would leave new
   `dhcp-host=` / `nftset=` directives silently inactive (#328). On `304`:
   do nothing.
-- **Usage timer (5 min)** — scrape nftables counters, correlate with dnsmasq
+- **Usage timer (60 s)** — scrape nftables counters, correlate with dnsmasq
   query log + DHCP leases, POST to `/api/router/usage`. On 200, reset counters;
   on failure, retain and retry (endpoint is idempotent).
 - **Event watcher** — dnsmasq `--dhcp-script` hook for DHCP events; log tail
@@ -645,9 +645,9 @@ emits the affected MAC with `blocked = true, blockReason = TimeLimit` in
 the next snapshot. When a per-site limit is exhausted, the relevant host
 is added to that MAC's `extraBlocked`. **The agent does no time arithmetic.**
 
-Per-MAC usage is reported to the API every 5 minutes via
+Per-MAC usage is reported to the API every 60 s via
 `POST /api/router/usage` (§6.4); the API accumulates and decides. Worst-case
-overshoot is one usage-report interval (~5 min) plus one policy-poll interval
+overshoot is one usage-report interval (~60 s) plus one policy-poll interval
 (~60 s).
 
 ### 7.6 Block-page redirect

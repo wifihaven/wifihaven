@@ -350,7 +350,7 @@ code, and recent fix PRs):
 - Flash-cache snapshot for boot recovery (#309)
 - Boot-time default-deny skeleton (#308)
 - Smoke-probe post-reload to verify external tool actually applied (#328)
-- Usage POST every 5min, with exponential-backoff retry queue (#309)
+- Usage POST every 60s, with exponential-backoff retry queue (#309)
 - Events POST with cap-and-drop retry queue (#330)
 - Monotonic-clock scheduler immune to wall-clock jumps (#336)
 - Failover state machine with poll-age tracking (#311 / #321 / #331)
