@@ -230,11 +230,54 @@ case class ScheduleRequest(
 case class HouseholdSettings(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
+    heartbeatFilter: HeartbeatFilter,
 ) derives JsonCodec
 
 case class UpdateHouseholdSettingsRequest(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
+    heartbeatFilter: HeartbeatFilter,
+) derives JsonCodec
+
+/**
+ * #714: knobs for the server-side heartbeat filter applied at the Presence aggregation stage.
+ * The filter drops a `traffic_reports` row from per-device/per-profile screen-time totals (NOT
+ * from `time_usage`-derived per-site totals) when EITHER heuristic flags it as a heartbeat —
+ * total bytes below `bytesThreshold`, OR `activeSeconds / periodSeconds` below
+ * `activeFractionPct`. Defaults to OFF so the operator can validate against real data via the
+ * `/api/time/heartbeat-explain/{mac}` debug surface before flipping it on.
+ */
+case class HeartbeatFilter(
+    enabled: Boolean,
+    bytesThreshold: Int,
+    activeFractionPct: Int,
+) derives JsonCodec
+
+object HeartbeatFilter {
+  val Off: HeartbeatFilter = HeartbeatFilter(enabled = false, bytesThreshold = 0, activeFractionPct = 0)
+}
+
+/**
+ * #714: response body for `GET /api/time/heartbeat-explain/{mac}?date=`. Returns the live filter
+ * config alongside per-row classification so the operator can tune thresholds against real data
+ * before flipping `heartbeat_filter_enabled` on.
+ */
+case class HeartbeatExplainResponse(
+    mac: MacAddress,
+    date: String,
+    filter: HeartbeatFilter,
+    rows: List[HeartbeatExplainRow],
+) derives JsonCodec
+
+case class HeartbeatExplainRow(
+    mac: MacAddress,
+    periodStart: String,
+    host: HostId,
+    activeSeconds: Int,
+    periodSeconds: Int,
+    bytes: Long,
+    classified: String,
+    reasons: List[String],
 ) derives JsonCodec
 
 case class SiteTimeLimitRequest(

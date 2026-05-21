@@ -372,10 +372,11 @@ object TimeRoutes {
       extRepo: TimeExtensionRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      hsRepo: HouseholdSettingsRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "time" / "status"                         ->
+      Method.GET / "api" / "time" / "status"                                 ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)
@@ -384,6 +385,7 @@ object TimeRoutes {
             date    = LocalDate.parse(dateStr)
             allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
@@ -396,12 +398,13 @@ object TimeRoutes {
                   siteTimeLimitRepo,
                   trafficRepo,
                   extRepo,
+                  settings.heartbeatFilter,
                 )
               }
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(statuses.toJson)
         },
-      Method.GET / "api" / "time" / "status" / string("mac")         ->
+      Method.GET / "api" / "time" / "status" / string("mac")                 ->
         handler { (mac: String, req: Request) =>
           for {
             claims <- requireAuth(req, auth)
@@ -413,6 +416,7 @@ object TimeRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             status <- buildDeviceTimeStatus(
               device,
               date,
@@ -421,9 +425,55 @@ object TimeRoutes {
               siteTimeLimitRepo,
               trafficRepo,
               extRepo,
+              settings.heartbeatFilter,
             )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
+        },
+      Method.GET / "api" / "time" / "heartbeat-explain" / string("mac")      ->
+        handler { (mac: String, req: Request) =>
+          // #714: per-row classification of `traffic_reports` rows that feed into
+          // Presence.totalSecondsByMac for this device on `date` (default = today).
+          // The classification reflects current household_settings — i.e. the same
+          // verdict the live screen-time calculation is using right now. Operators
+          // tune `heartbeat_bytes_threshold` / `heartbeat_active_fraction_pct`
+          // against this surface before flipping `heartbeat_filter_enabled` on.
+          for {
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
+            date    = LocalDate.parse(dateStr)
+            device <- deviceRepo
+              .findByMac(MacAddress.unsafe(normalizeMac(mac)))
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            rows     <- trafficRepo
+              .listPresenceRows(List(device.mac), date)
+              .mapError(ErrorMapper.dbErrorToResponse)
+            classified = wifihaven.api.presence.Presence
+              .classifyRows(rows, settings.heartbeatFilter)
+              .map { c =>
+                HeartbeatExplainRow(
+                  mac = c.row.mac,
+                  periodStart = c.row.periodStart.toString,
+                  host = c.row.host,
+                  activeSeconds = c.row.activeSeconds,
+                  periodSeconds = c.row.periodSeconds,
+                  bytes = c.row.bytes,
+                  classified = c.classified,
+                  reasons = c.reasons,
+                )
+              }
+          } yield Response.json(
+            HeartbeatExplainResponse(
+              mac = device.mac,
+              date = date.toString,
+              filter = settings.heartbeatFilter,
+              rows = classified,
+            ).toJson,
+          )
         },
       Method.POST / "api" / "time" / "extend"                        ->
         handler { (req: Request) =>
@@ -462,6 +512,7 @@ object TimeRoutes {
       stlRepo: SiteTimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       extRepo: TimeExtensionRepo,
+      heartbeatFilter: HeartbeatFilter,
   ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
     for {
@@ -473,7 +524,7 @@ object TimeRoutes {
       // Included sites (exemptFromDaily=false) count against the daily cap.
       exemptPats      = stls.filter(_.exemptFromDaily).map(_.domainPattern)
       perMacTotal     = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, exemptPats)
+        .totalMinutesByMac(presence, exemptPats, heartbeatFilter)
       perMacPat       = wifihaven.api.presence.Presence
         .patternMinutesByMac(presence, stls.map(_.domainPattern))
       totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
@@ -524,6 +575,7 @@ object TimeRoutes {
       stlRepo: SiteTimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       extRepo: TimeExtensionRepo,
+      heartbeatFilter: HeartbeatFilter,
   ): Task[DeviceTimeStatus] = {
     val pid = device.profileId
     for {
@@ -538,7 +590,7 @@ object TimeRoutes {
       // Included sites (exemptFromDaily=false) count against the daily cap.
       exemptPats = stls.filter(_.exemptFromDaily).map(_.domainPattern)
       totalUsed  = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, exemptPats)
+        .totalMinutesByMac(presence, exemptPats, heartbeatFilter)
         .getOrElse(device.mac, 0)
       perPat     = wifihaven.api.presence.Presence
         .patternMinutesByMac(presence, stls.map(_.domainPattern))
@@ -656,7 +708,7 @@ object HouseholdSettingsRoutes {
               .fromEither(body.fromJson[UpdateHouseholdSettingsRequest])
               .mapError(e => Response.badRequest(e))
             _    <- repo
-              .update(HouseholdSettings(upd.dailyResetTime, upd.dailyResetTz))
+              .update(HouseholdSettings(upd.dailyResetTime, upd.dailyResetTz, upd.heartbeatFilter))
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },

@@ -95,6 +95,7 @@ object Main extends ZIOAppDefault {
         extRepo,
         profileRepo,
         upRepo,
+        hsRepo,
         clock,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
