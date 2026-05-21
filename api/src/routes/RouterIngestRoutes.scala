@@ -11,7 +11,7 @@ import java.time.{Duration, Instant, ZoneOffset}
 
 /**
  * Router-side ingest endpoints. See docs/architecture-openwrt.md §5.4 / §5.5.
- *   - `POST /api/router/usage` — periodic 5-minute traffic + time rollups.
+ *   - `POST /api/router/usage` — periodic ~60 s traffic + time rollups.
  *   - `POST /api/router/events` — DHCP lease + first-seen-MAC + connection_attempt events.
  *
  * Both require a router bearer token resolved via [[RouterAuth]].
@@ -148,7 +148,7 @@ object RouterIngestRoutes {
     val date    = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
     // A batch carries one record per (mac, dst_ip) but time_usage is keyed
     // by (mac, hostname, date), and activeSeconds is the bucket duration
-    // (the 5-min window — same value on every record that saw bytes>0). Two
+    // (the report window, ~60 s — same value on every record that saw bytes>0). Two
     // records with the same (mac, hostname) describe the *same* window of
     // active time, not two windows back-to-back, so the seconds delta is
     // the max of activeSeconds, not the sum. Bytes still sum because they

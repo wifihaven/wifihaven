@@ -3,7 +3,7 @@
 --
 -- Three concurrent responsibilities (cooperative timer loop):
 --   1. Policy timer  (60 s)  — GET /api/router/policy; rewrite dnsmasq + nft config
---   2. Usage timer   (5 min) — scrape nft counters; POST /api/router/usage
+--   2. Usage timer   (60 s)  — scrape nft counters; POST /api/router/usage
 --   3. Event watcher (async) — watch conntrack NEW flows; POST /api/router/events
 --
 -- Module layout:
@@ -288,7 +288,7 @@ end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
 -- read at flush time) and reused by both the per-minute sampler and the
--- 5-min usage timer below.
+-- 60 s usage timer below.
 local function read_nft_counters()
   local pipe = io.popen("nft -j list set inet wifihaven mac_ip_tracking 2>/dev/null", "r")
   if not pipe then return nil end

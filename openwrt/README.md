@@ -45,7 +45,7 @@ The agent runs three co-operative responsibilities in a single process:
 | Timer | Interval | What it does |
 |---|---|---|
 | Policy | 60 s | `GET /api/router/policy?since=<etag>`; on 200 atomically rewrites `/tmp/dnsmasq.d/wifihaven.conf` and `/tmp/nftables.d/wifihaven.nft`, then reloads dnsmasq + nft |
-| Usage | 5 min | Scrapes nftables counters, builds per-(mac, hostname) records, `POST /api/router/usage`, resets counters on success |
+| Usage | 60 s | Scrapes nftables counters, builds per-(mac, hostname) records, `POST /api/router/usage`, resets counters on success |
 | Events | per-flow | Watches `conntrack -E -e NEW`; batches `connection_attempt` events to `POST /api/router/events` |
 
 Policy decisions (drop, DNAT to block page) are enforced in-kernel by
