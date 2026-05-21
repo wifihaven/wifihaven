@@ -18,6 +18,7 @@ import { AdminPage } from './AdminPage'
 const DEFAULT_HF: HeartbeatFilter = {
   enabled: false,
   bytesThreshold: 2048,
+  heartbeatHostPatterns: [],
 }
 
 beforeEach(() => {
@@ -256,7 +257,7 @@ describe('AdminPage — heartbeat filter card', () => {
 
   it('summary shows thresholds when filter is enabled', async () => {
     seedServer({
-      heartbeatFilter: { enabled: true, bytesThreshold: 4096 },
+      heartbeatFilter: { enabled: true, bytesThreshold: 4096, heartbeatHostPatterns: [] },
     })
     render(<AdminPage />)
     const summary = await screen.findByTestId('heartbeat-filter-summary')
@@ -289,7 +290,7 @@ describe('AdminPage — heartbeat filter card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Los_Angeles',
-        heartbeatFilter: { enabled: true, bytesThreshold: 2048 },
+        heartbeatFilter: { enabled: true, bytesThreshold: 2048, heartbeatHostPatterns: [] },
       }),
     )
     const summary = await screen.findByTestId('heartbeat-filter-summary')
@@ -314,7 +315,7 @@ describe('AdminPage — heartbeat filter card', () => {
       expect(api.household.update).toHaveBeenCalledWith({
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Los_Angeles',
-        heartbeatFilter: { enabled: true, bytesThreshold: 8192 },
+        heartbeatFilter: { enabled: true, bytesThreshold: 8192, heartbeatHostPatterns: [] },
       }),
     )
     const summary = await screen.findByTestId('heartbeat-filter-summary')

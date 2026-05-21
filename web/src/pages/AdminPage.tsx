@@ -80,6 +80,9 @@ function HeartbeatFilterCard({
         heartbeatFilter: {
           enabled: form.enabled,
           bytesThreshold: Math.trunc(form.bytesThreshold),
+          heartbeatHostPatterns: form.heartbeatHostPatterns
+            .map(p => p.trim())
+            .filter(p => p.length > 0),
         },
       })
       const fresh = await api.household.get()
@@ -114,17 +117,26 @@ function HeartbeatFilterCard({
       </div>
 
       {!editing ? (
-        <p data-testid="heartbeat-filter-summary" className="text-sm text-gray-300">
-          {hf.enabled ? (
-            <>
-              <span className="font-medium text-white">Enabled</span>
-              {' — bytes ≥ '}
-              <span className="font-mono text-gray-200">{hf.bytesThreshold}</span>
-            </>
-          ) : (
-            <span className="font-medium text-white">Disabled</span>
-          )}
-        </p>
+        <div className="space-y-1">
+          <p data-testid="heartbeat-filter-summary" className="text-sm text-gray-300">
+            {hf.enabled ? (
+              <>
+                <span className="font-medium text-white">Enabled</span>
+                {' — bytes ≥ '}
+                <span className="font-mono text-gray-200">{hf.bytesThreshold}</span>
+              </>
+            ) : (
+              <span className="font-medium text-white">Disabled</span>
+            )}
+          </p>
+          <p
+            data-testid="heartbeat-filter-hosts-summary"
+            className="text-xs text-gray-500"
+          >
+            {hf.heartbeatHostPatterns.length} host pattern
+            {hf.heartbeatHostPatterns.length === 1 ? '' : 's'}
+          </p>
+        </div>
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-gray-400">
@@ -168,6 +180,28 @@ function HeartbeatFilterCard({
                 className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-32"
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">
+              Host allowlist (one pattern per line — `*.foo.com` or `foo.com`)
+            </label>
+            <textarea
+              value={form.heartbeatHostPatterns.join('\n')}
+              onChange={e =>
+                setForm({
+                  ...form,
+                  heartbeatHostPatterns: e.target.value.split(/\r?\n/),
+                })
+              }
+              data-testid="heartbeat-filter-hosts"
+              rows={8}
+              spellCheck={false}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-xs font-mono w-full"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Rows whose host matches any pattern are classified as heartbeats regardless of
+              bytes / active fraction.
+            </p>
           </div>
           <div className="flex gap-3 pt-1">
             <button

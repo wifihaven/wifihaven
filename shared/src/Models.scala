@@ -247,11 +247,36 @@ case class UpdateHouseholdSettingsRequest(
 case class HeartbeatFilter(
     enabled: Boolean,
     bytesThreshold: Int,
+    heartbeatHostPatterns: List[String] = Nil,
 ) derives JsonCodec
 
 object HeartbeatFilter {
   val Off: HeartbeatFilter =
-    HeartbeatFilter(enabled = false, bytesThreshold = 0)
+    HeartbeatFilter(enabled = false, bytesThreshold = 0, heartbeatHostPatterns = Nil)
+
+  /**
+   * #788: default seed list of FQDN patterns to ship at install. These are well-known
+   * background/heartbeat hosts (APNs, RCS, Apple iCloud Private Relay, time sync, captive portal
+   * probes) that can occasionally burst >10 KB and slip past the byte floor.
+   */
+  val DefaultHostPatterns: List[String] = List(
+    "*.push.apple.com",
+    "*.apple-dns.net",
+    "*.akadns.net",
+    "*.ess.apple.com",
+    "time.apple.com",
+    "gdmf.apple.com",
+    "pancake.apple.com",
+    "mask.icloud.com",
+    "mask-h2.icloud.com",
+    "mask-api.icloud.com",
+    "*.rcs.telephony.goog",
+    "mtalk.google.com",
+    "connectivitycheck.gstatic.com",
+    "captive.apple.com",
+    "*.ntp.org",
+    "time.cloudflare.com",
+  )
 }
 
 /**

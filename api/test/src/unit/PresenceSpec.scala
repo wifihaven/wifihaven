@@ -234,6 +234,41 @@ object PresenceSpec extends ZIOSpecDefault {
         assertTrue(out.head.classified == "active") &&
         assertTrue(out.head.reasons.isEmpty)
       },
+      test("#788 host pattern match classifies as heartbeat even when bytes pass") {
+        // Row that would otherwise pass the bytes floor — only the FQDN allowlist trips it.
+        // Confirms host-pattern path is OR'd in correctly.
+        val f = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 2048,
+          heartbeatHostPatterns = List("*.push.apple.com"),
+        )
+        val r =
+          row(mac1, 0, "api-push.push.apple.com", secs = 200, bytes = 50_000L, periodSeconds = 300)
+        assertTrue(Presence.isHeartbeat(r, f)) &&
+        assertTrue(Presence.totalMinutesByMac(List(r), Nil, f) == Map.empty[MacAddress, Int])
+      },
+      test("#788 classifyRows surfaces host:<pattern> reason for FQDN match") {
+        val f    = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 2048,
+          heartbeatHostPatterns = List("*.push.apple.com", "time.apple.com"),
+        )
+        val rows = List(
+          row(mac1, 0, "courier.push.apple.com", secs = 200, bytes = 50_000L, periodSeconds = 300),
+        )
+        val out  = Presence.classifyRows(rows, f)
+        assertTrue(out.head.classified == "heartbeat") &&
+        assertTrue(out.head.reasons == List("host:*.push.apple.com"))
+      },
+      test("#788 host pattern only matches FQDNs, not IP literals") {
+        val f = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 0,
+          heartbeatHostPatterns = List("*.push.apple.com"),
+        )
+        val r = ipRow(mac1, 0, "17.57.146.1", secs = 200, bytes = 50_000L, periodSeconds = 300)
+        assertTrue(!Presence.isHeartbeat(r, f))
+      },
     ),
     suite("hostMinutes")(
       test("empty rows yields empty map") {
