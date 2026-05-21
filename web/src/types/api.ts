@@ -237,13 +237,40 @@ export interface UsageBucket {
   otherMins: number
 }
 
-export interface UsageSeriesResponse {
+// #722 — profile-mode adds parallel per-device aggregates so the SPA can
+// toggle stack-by-device vs stack-by-host on the same payload.
+export interface UsageDeviceTotal {
   deviceMac: string
   deviceName: string
+  dayMins: number
+}
+
+export interface UsageBucketDevice {
+  deviceMac: string
+  deviceName: string
+  mins: number
+}
+
+export interface UsageDeviceBucket {
+  hour: number
+  totalMins: number
+  perDevice: UsageBucketDevice[]
+  otherMins: number
+}
+
+export interface UsageSeriesResponse {
+  // device-mode fields (mac=)
+  deviceMac?: string
+  deviceName?: string
+  // profile-mode fields (profileId=)
+  profileId?: number
+  profileName?: string
   date: string
   tz: string
   topHosts: UsageHostTotal[]
   buckets: UsageBucket[]
+  topDevices?: UsageDeviceTotal[]
+  bucketsByDevice?: UsageDeviceBucket[]
 }
 
 export interface TimeExtension {

@@ -82,9 +82,13 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       deviceRepo      <- ZIO.service[DeviceRepo]
       trafficRepo     <- ZIO.service[TrafficReportRepo]
       userProfileRepo <- ZIO.service[UserProfileRepo]
+      profileRepo     <- ZIO.service[ProfileRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
-    } yield (UsageRoutes.routes(auth, deviceRepo, trafficRepo, userProfileRepo, clock), auth)
+    } yield (
+      UsageRoutes.routes(auth, deviceRepo, trafficRepo, userProfileRepo, profileRepo, clock),
+      auth,
+    )
 
   def spec = suite("Usage API")(
     suite("GET /api/usage/series")(
@@ -242,6 +246,98 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
         } yield assertTrue(resp.status == Status.NotFound)
+      },
+      test("rejects requests with both mac and profileId") {
+        for {
+          _  <- cleanDb
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode("/api/usage/series?mac=aa:bb:cc:dd:ee:01&profileId=1").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.BadRequest)
+      },
+      test(
+        "profileId mode: aggregates across the profile's devices, both stacks sum to totalMins",
+      ) {
+        val macA = "aa:bb:cc:dd:ee:0a"
+        val macB = "aa:bb:cc:dd:ee:0b"
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Hour 14: macA sole on youtube + macA two-host bucket (5+5min=10),
+          // and macB on google.com for one 5-min bucket. Profile total = 15m.
+          _  <- insertRow(routerId, macA, "youtube.com", today, 14, 0)
+          _  <- insertRow(routerId, macA, "youtube.com", today, 14, 5)
+          _  <- insertRow(routerId, macA, "google.com", today, 14, 5)
+          _  <- insertRow(routerId, macB, "google.com", today, 14, 10)
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL.decode(s"/api/usage/series?profileId=${kidsId.value}&date=$today").toOption.get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+          h14H = out.buckets(14)
+          h14D = out.bucketsByDevice(14)
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.profileId.contains(kidsId)) &&
+          assertTrue(out.profileName.contains("Kids")) &&
+          assertTrue(out.deviceMac.isEmpty) &&
+          assertTrue(out.buckets.length == 24 && out.bucketsByDevice.length == 24) &&
+          assertTrue(h14H.totalMins == 15 && h14D.totalMins == 15) &&
+          // Per-device stack: macA 10m + macB 5m, no Other.
+          assertTrue(h14D.perDevice.length == 2 && h14D.otherMins == 0) &&
+          assertTrue(h14D.perDevice.iterator.map(_.mins).sum + h14D.otherMins == 15) &&
+          // Per-host stack invariant: sum(perHost.mins) + otherMins == totalMins.
+          assertTrue(h14H.perHost.iterator.map(_.mins).sum + h14H.otherMins == 15) &&
+          // Day totals reconcile.
+          assertTrue(out.topDevices.iterator.map(_.dayMins).sum == 15)
+      },
+      test("profileId mode: rejects unknown profile with 404") {
+        for {
+          _  <- cleanDb
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode("/api/usage/series?profileId=99999").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.NotFound)
+      },
+      test("profileId mode: empty profile (no devices) returns 24 zero buckets") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode(s"/api/usage/series?profileId=${kidsId.value}").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.buckets.length == 24 && out.bucketsByDevice.length == 24) &&
+          assertTrue(out.buckets.forall(_.totalMins == 0)) &&
+          assertTrue(out.topHosts.isEmpty && out.topDevices.isEmpty)
       },
     ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential

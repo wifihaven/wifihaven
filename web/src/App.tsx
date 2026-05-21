@@ -8,6 +8,7 @@ import { DevicesPage } from '@/pages/DevicesPage'
 import { DeviceTimelinePage } from '@/pages/DeviceTimelinePage'
 import { ProfilesPage } from '@/pages/ProfilesPage'
 import { TimePage } from '@/pages/TimePage'
+import { ProfileTimelinePage } from '@/pages/ProfileTimelinePage'
 import { LogsPage } from '@/pages/LogsPage'
 import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
@@ -50,6 +51,7 @@ function AppRoutes() {
         <Route path="devices/:mac/timeline" element={<RequirePwChanged><DeviceTimelinePage /></RequirePwChanged>} />
         <Route path="profiles"  element={<RequirePwChanged><ProfilesPage /></RequirePwChanged>} />
         <Route path="time"      element={<RequirePwChanged><TimePage /></RequirePwChanged>} />
+        <Route path="time/:profileId/timeline" element={<RequirePwChanged><ProfileTimelinePage /></RequirePwChanged>} />
         <Route path="logs"      element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />

@@ -126,11 +126,19 @@ export const api = {
 
   // ── Usage (#716) ───────────────────────────────────────────────────────
   usage: {
-    series: (params: { mac: string; date?: string; tz?: string; topN?: number }) => {
-      const qs = new URLSearchParams({ mac: params.mac })
-      if (params.date) qs.set('date', params.date)
-      if (params.tz)   qs.set('tz', params.tz)
-      if (params.topN) qs.set('topN', String(params.topN))
+    series: (params: {
+      mac?: string
+      profileId?: number
+      date?: string
+      tz?: string
+      topN?: number
+    }) => {
+      const qs = new URLSearchParams()
+      if (params.mac)       qs.set('mac', params.mac)
+      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      if (params.date)      qs.set('date', params.date)
+      if (params.tz)        qs.set('tz', params.tz)
+      if (params.topN)      qs.set('topN', String(params.topN))
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
     },
   },
