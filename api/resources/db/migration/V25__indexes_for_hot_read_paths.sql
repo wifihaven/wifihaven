@@ -1,0 +1,51 @@
+-- V23__indexes_for_hot_read_paths.sql
+-- Indexes for the hot read paths flagged by the #785 slow-query incident and
+-- the #786 memory bump (which cushioned the symptom but didn't cure the
+-- underlying slowness). Sibling of the per-profile-scope work in #795 — the
+-- two land together because filters without indexes still seq-scan and
+-- indexes without filters never get used.
+--
+-- Scope: traffic_reports only. The remaining candidates from #796
+-- (time_usage profile_id, connection_events device_id) do not match the
+-- actual schema:
+--   * time_usage has no profile_id column — it is keyed by device_mac and
+--     already covered by idx_time_usage_mac_date (V1).
+--   * connection_events has no device_id column — it is keyed by mac and
+--     already covered by idx_conn_events_mac_ts (V4) and the partial
+--     idx_conn_events_mac_dest_resolved (V22) for the read-side FQDN join.
+--
+-- Justification: EXPLAIN ANALYZE on `/api/sessions` against dev-shaped data
+-- showed a Parallel Seq Scan on traffic_reports for `mac IN (...) AND
+-- period_end > $since`, because the only existing mac-keyed index is
+-- (mac, date) — useful for the per-day presence query but not for the
+-- per-period_start range scan that sessions/usage need. A composite
+-- (mac, period_start) lets the planner index-scan a single device's recent
+-- buckets without touching unrelated rows. On prod (weeks of data, dozens of
+-- macs) this is the difference between O(rows-for-mac-in-window) and
+-- O(rows-for-all-macs-across-all-time).
+--
+-- The other suggested traffic_reports index — (period_start) alone — already
+-- exists as idx_traffic_reports_period_start (V2), so no new index needed
+-- for range scans without a mac filter.
+--
+-- Lock behavior: a plain CREATE INDEX takes ACCESS EXCLUSIVE on
+-- traffic_reports for the duration of the build. At current prod volume
+-- (~weeks of 5-minute rollups, ~tens of macs) the build is a few seconds
+-- and router posts retry idempotently, so the brief writer block is
+-- acceptable. We deliberately did NOT use CREATE INDEX CONCURRENTLY here
+-- because Flyway 10's `executeInTransaction=false` override hangs against
+-- the ARM-emulated embedded Postgres used by the test harness — and the
+-- migration must run cleanly in tests.
+--
+-- If/when prod data outgrows the few-seconds-block budget, an operator
+-- can pre-apply the index out-of-band before the merge that ships this
+-- file lands. Flyway will then no-op thanks to IF NOT EXISTS:
+--
+--   psql $PROD_URL -c 'CREATE INDEX CONCURRENTLY IF NOT EXISTS
+--     idx_traffic_reports_mac_period_start ON traffic_reports(mac, period_start);'
+--   psql $PROD_URL -c 'ANALYZE traffic_reports;'
+--
+-- After that, the Flyway migration only updates flyway_schema_history.
+
+CREATE INDEX IF NOT EXISTS idx_traffic_reports_mac_period_start
+  ON traffic_reports(mac, period_start);
