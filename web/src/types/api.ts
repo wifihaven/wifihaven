@@ -284,8 +284,11 @@ export interface UsageSeriesResponse {
   bucketsByDevice?: UsageDeviceBucket[]
 }
 
-export interface ProfileTimeDayTotal {
-  date: string
+// #794: server returns UTC-hour buckets; the SPA does household-local re-bucketing for the
+// weekly chart. `hourStart` is an ISO-8601 instant (UTC, minute=0, second=0). Hours with zero
+// presence are omitted — the chart code fills in gaps.
+export interface ProfileTimeHourTotal {
+  hourStart: string
   usedMins: number
 }
 
@@ -296,7 +299,7 @@ export interface ProfileTimeStatusWeek {
   to: string
   dailyLimitMins?: number | null
   totalMins: number
-  perDay: ProfileTimeDayTotal[]
+  perHour: ProfileTimeHourTotal[]
   devices: DeviceUsageSummary[]
   hostUsage: HostUsage[]
 }
@@ -310,7 +313,7 @@ export interface DeviceTimeStatusWeek {
   profileId?: number | null
   dailyLimitMins?: number | null
   totalMins: number
-  perDay: ProfileTimeDayTotal[]
+  perHour: ProfileTimeHourTotal[]
   hostUsage: HostUsage[]
 }
 

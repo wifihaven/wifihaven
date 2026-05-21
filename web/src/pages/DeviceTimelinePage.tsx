@@ -11,6 +11,7 @@ import { PageLoader } from './DashboardPage'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from '@/components/usage/UsageHourlyBarChart'
+import { bucketPerHourByLocalDay, formatMins } from './TimePage'
 
 // #721 — per-device daily (hourly) timeline.
 // #723 — Today/Week toggle: Week renders the trailing-7-day per-device
@@ -22,8 +23,6 @@ const DEFAULT_TZ =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
 type Window = 'today' | 'week'
-
-const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 function todayISO(): string {
   const d = new Date()
@@ -103,10 +102,7 @@ export function DeviceTimelinePage() {
 
   const weekChart = useMemo(() => {
     if (!weekData) return []
-    return weekData.perDay.map(d => {
-      const dt = new Date(`${d.date}T00:00:00`)
-      return { date: d.date, label: WEEKDAY[dt.getDay()], usedMins: d.usedMins }
-    })
+    return bucketPerHourByLocalDay(weekData.perHour, weekData.to)
   }, [weekData])
 
   if (loading && !dayData && !weekData) return <PageLoader />
@@ -183,8 +179,8 @@ export function DeviceTimelinePage() {
           </h2>
           <span className="text-xs text-gray-500 font-mono">
             {window === 'today'
-              ? `${dayTotal}m total · ${dayData?.tz ?? ''}`
-              : `${weekData?.totalMins ?? 0}m total · ${weekData?.from ?? ''} → ${weekData?.to ?? ''}`}
+              ? `${formatMins(dayTotal)} total · ${dayData?.tz ?? ''}`
+              : `${formatMins(weekData?.totalMins ?? 0)} total · ${weekData?.from ?? ''} → ${weekData?.to ?? ''}`}
           </span>
         </div>
 
@@ -227,8 +223,8 @@ export function DeviceTimelinePage() {
                     tick={{ fill: '#6b7280', fontSize: 11 }}
                     axisLine={{ stroke: '#374151' }}
                     tickLine={false}
-                    width={32}
-                    unit="m"
+                    width={44}
+                    tickFormatter={(v: number) => formatMins(v)}
                   />
                   <Tooltip
                     cursor={{ fill: '#1f293780' }}
@@ -239,7 +235,7 @@ export function DeviceTimelinePage() {
                       fontSize: 12,
                     }}
                     labelFormatter={(_, payload) => String(payload?.[0]?.payload?.date ?? '')}
-                    formatter={(v) => [`${String(v)}m`, 'Used']}
+                    formatter={(v) => [formatMins(Number(v)), 'Used']}
                   />
                   <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
                 </BarChart>
@@ -282,7 +278,7 @@ export function DeviceTimelinePage() {
                       )}
                     </span>
                   </span>
-                  <span className="text-gray-500 font-mono shrink-0 ml-2">{h.mins}m</span>
+                  <span className="text-gray-500 font-mono shrink-0 ml-2">{formatMins(h.mins)}</span>
                 </li>
               )
             })}

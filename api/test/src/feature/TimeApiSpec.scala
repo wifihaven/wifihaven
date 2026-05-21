@@ -916,16 +916,21 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
           kids  = list.find(_.profileId == kidsId).get
-          byDay = kids.perDay.map(d => d.date -> d.usedMins).toMap
+          // #794: perHour is UTC-hour buckets. seedTraffic places buckets at midnight UTC of
+          // each seeded date, so per-day rollup in UTC matches the seed dates exactly.
+          byDay = kids.perHour
+            .groupBy(_.hourStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
+            .view
+            .mapValues(_.map(_.usedMins).sum)
+            .toMap
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(kids.from == today.minusDays(6).toString) &&
           assertTrue(kids.to == today.toString) &&
-          assertTrue(kids.perDay.length == 7) &&                 // all 7 days present
-          assertTrue(byDay(today.minusDays(6).toString) == 20) &&
-          assertTrue(byDay(today.minusDays(3).toString) == 35) &&
-          assertTrue(byDay(today.toString) == 15) &&
-          assertTrue(byDay(today.minusDays(5).toString) == 0) && // empty days are 0
-          assertTrue(kids.totalMins == 70) &&                    // 20+35+15
+          assertTrue(byDay.getOrElse(today.minusDays(6), 0) == 20) &&
+          assertTrue(byDay.getOrElse(today.minusDays(3), 0) == 35) &&
+          assertTrue(byDay.getOrElse(today, 0) == 15) &&
+          assertTrue(byDay.getOrElse(today.minusDays(5), 0) == 0) && // empty days omitted
+          assertTrue(kids.totalMins == 70) &&                        // 20+35+15
           assertTrue(kids.devices.head.usedMins == 70) &&
           assertTrue(kids.dailyLimitMins.contains(120))
       },
@@ -1047,13 +1052,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(shiftedKids.to == anchor.toString) &&
           assertTrue(shiftedKids.from == anchor.minusDays(6).toString)
       },
-      test("per-day buckets follow household timezone, not UTC (#794)") {
-        // Household tz = America/Los_Angeles (UTC-7 in May). Seed a 5-min bucket whose
-        // period_start is 2026-05-21T05:30:00Z — that is 2026-05-20T22:30:00 in LA local
-        // time. Under the old UTC-bucketed code path the row landed under 2026-05-21;
-        // under the #794 household-tz bucketing it must land under 2026-05-20 because
-        // that's the calendar day the user actually saw the activity on. Anchor the
-        // window at 2026-05-21 so both dates fall inside the trailing 7 days.
+      test("perHour bucket carries the UTC hour of period_start (#794)") {
+        // The server stays tz-agnostic — it emits UTC-hour buckets and the SPA does any
+        // household-local re-bucketing. Seed a single 5-min bucket whose period_start lands at
+        // 2026-05-21T05:30Z; the perHour entry must carry hourStart=2026-05-21T05:00Z (the
+        // truncated UTC hour), not a date-shaped value or a tz-shifted instant.
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -1069,14 +1072,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
-          // Flip household tz to LA so the AT TIME ZONE math in the read query reshapes
-          // the date column.
-          current     <- hsRepo.get
-          _           <- hsRepo.update(
-            current.copy(dailyResetTz = java.time.ZoneId.of("America/Los_Angeles")),
-          )
-          // Insert a single 5-min bucket straddling midnight LA on 2026-05-21 05:30:00Z
-          // = 2026-05-20 22:30:00 LA.
           start = java.time.Instant.parse("2026-05-21T05:30:00Z")
           end   = start.plusSeconds(300)
           _               <- trafficRepo.insertBatch(
@@ -1086,9 +1081,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
                 MacAddress.unsafe(testMac),
                 None,
                 HostId.Fqdn(Hostname.unsafe("late-night.example")),
-                // tr.date column is intentionally still UTC-bucketed at insert time
-                // (#794 is a read-side fix). Use the UTC date to mirror what
-                // RouterIngestRoutes would have stored.
                 java.time.LocalDate.of(2026, 5, 21),
                 start,
                 end,
@@ -1112,7 +1104,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             hsRepo,
             clock,
           )
-          // Anchor the window at 2026-05-21 LA-local — covers 2026-05-15..21.
           resp <- routes.runZIO(
             Request
               .get(URL.decode("/api/time/status/week?to=2026-05-21").toOption.get)
@@ -1120,12 +1111,13 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           )
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
-          kids  = list.find(_.profileId == kidsId).get
-          byDay = kids.perDay.map(d => d.date -> d.usedMins).toMap
+          kids = list.find(_.profileId == kidsId).get
         } yield assertTrue(resp.status == Status.Ok) &&
-          // The 5m bucket buckets under LA-local 2026-05-20, not UTC 2026-05-21.
-          assertTrue(byDay.getOrElse("2026-05-20", 0) == 5) &&
-          assertTrue(byDay.getOrElse("2026-05-21", 0) == 0) &&
+          assertTrue(kids.perHour.length == 1) &&
+          assertTrue(
+            kids.perHour.head.hourStart == java.time.Instant.parse("2026-05-21T05:00:00Z"),
+          ) &&
+          assertTrue(kids.perHour.head.usedMins == 5) &&
           assertTrue(kids.totalMins == 5)
       },
     ) @@ TestAspect.sequential,
@@ -1178,14 +1170,17 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           resp   <- routes.runZIO(req)
           body   <- resp.body.asString
           status <- ZIO.fromEither(body.fromJson[DeviceTimeStatusWeek])
-          byDay = status.perDay.map(d => d.date -> d.usedMins).toMap
+          byDay = status.perHour
+            .groupBy(_.hourStart.atZone(java.time.ZoneOffset.UTC).toLocalDate)
+            .view
+            .mapValues(_.map(_.usedMins).sum)
+            .toMap
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(status.deviceMac == MacAddress.unsafe(mac1)) &&
-          assertTrue(status.perDay.length == 7) &&
           assertTrue(status.totalMins == 35) && // only mac1
-          assertTrue(byDay(today.toString) == 20) &&
-          assertTrue(byDay(today.minusDays(2).toString) == 15) &&
-          assertTrue(byDay(today.minusDays(1).toString) == 0) &&
+          assertTrue(byDay.getOrElse(today, 0) == 20) &&
+          assertTrue(byDay.getOrElse(today.minusDays(2), 0) == 15) &&
+          assertTrue(byDay.getOrElse(today.minusDays(1), 0) == 0) &&
           assertTrue(
             status.hostUsage.map(_.host.value).toSet == Set("minecraft.net", "youtube.com"),
           ) &&

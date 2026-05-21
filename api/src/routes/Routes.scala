@@ -407,18 +407,18 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / "week"                   ->
         handler { (req: Request) =>
           for {
-            claims      <- requireAuth(req, auth)
-            now         <- clock.instant
-            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today in household tz
-            // (#794) so the chart's "today" bar matches the user's wall clock.
-            today = now.atZone(settings.dailyResetTz).toLocalDate
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
+            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today (UTC). The SPA
+            // is responsible for any household-local re-bucketing of the returned per-hour data
+            // (#794) — server stays tz-agnostic.
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
-            visible <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             devicesByPid = allDevices.groupBy(_.profileId)
             statuses <- ZIO
               .foreach(visible) { p =>
@@ -430,7 +430,6 @@ object TimeRoutes {
                   timeLimitRepo,
                   trafficRepo,
                   settings.heartbeatFilter,
-                  settings.dailyResetTz,
                 )
               }
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -439,19 +438,18 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / string("mac") / "week"   ->
         handler { (mac: String, req: Request) =>
           for {
-            claims   <- requireAuth(req, auth)
-            now      <- clock.instant
-            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            today = now.atZone(settings.dailyResetTz).toLocalDate
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
-            device <- deviceRepo
+            device   <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            status <- buildDeviceTimeStatusWeek(
+            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            status   <- buildDeviceTimeStatusWeek(
               device,
               from,
               to,
@@ -459,7 +457,6 @@ object TimeRoutes {
               timeLimitRepo,
               trafficRepo,
               settings.heartbeatFilter,
-              settings.dailyResetTz,
             )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
@@ -641,12 +638,11 @@ object TimeRoutes {
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
-      tz: java.time.ZoneId,
   ): Task[ProfileTimeStatusWeek] = {
     val macs = devices.map(_.mac)
     for {
       tl       <- tlRepo.findForProfile(profile.id)
-      presence <- trafficRepo.listPresenceRows(macs, from, to, tz)
+      presence <- trafficRepo.listPresenceRows(macs, from, to)
       // Range aggregates: bucket-dedup across the full range, no exempt-pattern filtering
       // (weekly view is informational). Heartbeat filter applied for symmetry with the daily
       // view (#714). Per-FQDN attribution caveats from #715 still apply.
@@ -664,19 +660,7 @@ object TimeRoutes {
         .toList
         .sortBy(hu => (-hu.usedMins, hu.host.value))
         .take(10)
-      byDay           = presence.groupBy(_.date)
-      perDay          = Iterator
-        .iterate(from)(_.plusDays(1))
-        .takeWhile(!_.isAfter(to))
-        .map { d =>
-          val rows = byDay.getOrElse(d, Nil)
-          val mins = wifihaven.api.presence.Presence
-            .totalMinutesByMac(rows, Nil, heartbeatFilter)
-            .values
-            .sum
-          ProfileTimeDayTotal(d.toString, mins)
-        }
-        .toList
+      perHour         = bucketHourly(presence, heartbeatFilter)
     } yield ProfileTimeStatusWeek(
       profile.id,
       profile.name,
@@ -684,7 +668,7 @@ object TimeRoutes {
       to.toString,
       tl.map(_.dailyMinutes),
       totalUsed,
-      perDay,
+      perHour,
       deviceSummaries,
       hostUsage,
     )
@@ -699,7 +683,6 @@ object TimeRoutes {
       tlRepo: TimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       heartbeatFilter: HeartbeatFilter,
-      tz: java.time.ZoneId,
   ): Task[DeviceTimeStatusWeek] = {
     val pid  = device.profileId
     val macs = List(device.mac)
@@ -708,7 +691,7 @@ object TimeRoutes {
       profile  <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      presence <- trafficRepo.listPresenceRows(macs, from, to, tz)
+      presence <- trafficRepo.listPresenceRows(macs, from, to)
       perMac    = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
       totalUsed = perMac.getOrElse(device.mac, 0)
@@ -720,19 +703,7 @@ object TimeRoutes {
         .toList
         .sortBy(hu => (-hu.usedMins, hu.host.value))
         .take(10)
-      byDay     = presence.groupBy(_.date)
-      perDay    = Iterator
-        .iterate(from)(_.plusDays(1))
-        .takeWhile(!_.isAfter(to))
-        .map { d =>
-          val rows = byDay.getOrElse(d, Nil)
-          val mins = wifihaven.api.presence.Presence
-            .totalMinutesByMac(rows, Nil, heartbeatFilter)
-            .values
-            .sum
-          ProfileTimeDayTotal(d.toString, mins)
-        }
-        .toList
+      perHour   = bucketHourly(presence, heartbeatFilter)
     } yield DeviceTimeStatusWeek(
       device.mac,
       device.name,
@@ -742,10 +713,35 @@ object TimeRoutes {
       pid,
       tl.map(_.dailyMinutes),
       totalUsed,
-      perDay,
+      perHour,
       hostUsage,
     )
   }
+
+  /**
+   * Roll the range's presence rows up to UTC-hour buckets (#794). Each `period_start` falls in
+   * exactly one UTC hour, so we group by hour, run `Presence.totalMinutesByMac` on the rows in that
+   * hour to apply per-mac bucket-dedup and the heartbeat filter, and sum across macs. Empty hours
+   * are omitted to keep the payload small; the SPA fills gaps with zero when it re-buckets by local
+   * day. Returned list is sorted by `hourStart` ascending.
+   */
+  private def bucketHourly(
+      presence: List[wifihaven.api.presence.PresenceRow],
+      heartbeatFilter: HeartbeatFilter,
+  ): List[ProfileTimeHourTotal] =
+    presence
+      .groupBy(_.periodStart.truncatedTo(java.time.temporal.ChronoUnit.HOURS))
+      .iterator
+      .map { case (hourStart, rows) =>
+        val mins = wifihaven.api.presence.Presence
+          .totalMinutesByMac(rows, Nil, heartbeatFilter)
+          .values
+          .sum
+        ProfileTimeHourTotal(hourStart, mins)
+      }
+      .filter(_.usedMins > 0)
+      .toList
+      .sortBy(_.hourStart)
 
   private def buildDeviceTimeStatus(
       device: Device,

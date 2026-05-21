@@ -19,7 +19,7 @@ vi.mock('@/hooks/useAuth', () => ({
 }))
 
 import { api } from '@/api/client'
-import { TimePage, formatMins } from './TimePage'
+import { TimePage, formatMins, bucketPerHourByLocalDay } from './TimePage'
 
 let mockAuth = { isAdmin: true }
 
@@ -68,6 +68,9 @@ const noLimit: ProfileTimeStatus = {
   hostUsage: [],
 }
 
+// #794: server now returns UTC-hour buckets. Pin each day's minutes onto a single early-UTC
+// hour of that day so JS Date in the test environment (TZ=UTC under vitest) re-buckets cleanly
+// back to the same local date. Totals sum to 210m as before.
 const weekKids: ProfileTimeStatusWeek = {
   profileId: 1,
   profileName: 'Kids',
@@ -75,14 +78,12 @@ const weekKids: ProfileTimeStatusWeek = {
   to: '2026-05-20',
   dailyLimitMins: 120,
   totalMins: 210,
-  perDay: [
-    { date: '2026-05-14', usedMins: 20 },
-    { date: '2026-05-15', usedMins: 40 },
-    { date: '2026-05-16', usedMins: 0 },
-    { date: '2026-05-17', usedMins: 60 },
-    { date: '2026-05-18', usedMins: 0 },
-    { date: '2026-05-19', usedMins: 75 },
-    { date: '2026-05-20', usedMins: 15 },
+  perHour: [
+    { hourStart: '2026-05-14T08:00:00Z', usedMins: 20 },
+    { hourStart: '2026-05-15T08:00:00Z', usedMins: 40 },
+    { hourStart: '2026-05-17T08:00:00Z', usedMins: 60 },
+    { hourStart: '2026-05-19T08:00:00Z', usedMins: 75 },
+    { hourStart: '2026-05-20T08:00:00Z', usedMins: 15 },
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 210 }],
   hostUsage: [
@@ -219,6 +220,39 @@ describe('TimePage — week toggle (#723)', () => {
     // Today and Week each fetched once on the first switch to that window.
     expect(api.time.statusAll).toHaveBeenCalledTimes(2)
     expect(api.time.statusAllWeek).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('bucketPerHourByLocalDay (#794)', () => {
+  it('rolls UTC hours into 7 contiguous local-day buckets ending at `to`', () => {
+    const out = bucketPerHourByLocalDay(
+      [
+        { hourStart: '2026-05-14T08:00:00Z', usedMins: 20 },
+        { hourStart: '2026-05-17T08:00:00Z', usedMins: 60 },
+        { hourStart: '2026-05-20T08:00:00Z', usedMins: 15 },
+      ],
+      '2026-05-20',
+    )
+    expect(out.map(r => r.date)).toEqual([
+      '2026-05-14', '2026-05-15', '2026-05-16',
+      '2026-05-17', '2026-05-18', '2026-05-19', '2026-05-20',
+    ])
+    expect(out.find(r => r.date === '2026-05-14')!.usedMins).toBe(20)
+    expect(out.find(r => r.date === '2026-05-17')!.usedMins).toBe(60)
+    expect(out.find(r => r.date === '2026-05-20')!.usedMins).toBe(15)
+    // Empty days fill with zero, not gaps
+    expect(out.find(r => r.date === '2026-05-18')!.usedMins).toBe(0)
+  })
+  it('accumulates multiple UTC hours into the same local day', () => {
+    const out = bucketPerHourByLocalDay(
+      [
+        { hourStart: '2026-05-20T08:00:00Z', usedMins: 5 },
+        { hourStart: '2026-05-20T14:00:00Z', usedMins: 25 },
+        { hourStart: '2026-05-20T20:00:00Z', usedMins: 10 },
+      ],
+      '2026-05-20',
+    )
+    expect(out.find(r => r.date === '2026-05-20')!.usedMins).toBe(40)
   })
 })
 

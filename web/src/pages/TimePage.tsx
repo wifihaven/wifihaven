@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
-import type { ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
+import type { ProfileTimeHourTotal, ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 // #723 weekly card matches the visual tokens used by the #721/#722 hourly chart
 // (UsageHourlyBarChart). The shared component bakes in an `hour`-shaped X-axis
@@ -17,6 +17,47 @@ import { HOST_COLORS } from '@/components/usage/UsageHourlyBarChart'
 // 60 and above → "H:MM" (e.g. "3:15", "10:21"). The previous code path
 // emitted "{n}m" everywhere, which combined with the 32px Y-axis width
 // produced visually clipped labels like "00m" for "200m" / "60m" for "260m".
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+// #794: collapse UTC-hour buckets into local-day buckets ending at `toDate` (inclusive). The
+// server returns `perHour` with sparse entries (omitted zero hours), so we bin each hour into
+// whichever local-time day the user perceived it on and then build a contiguous 7-day window
+// anchored at `toDate`. Returns rows ordered chronologically with `date: YYYY-MM-DD` in local
+// time (used as the chart's X-axis category) and the local weekday label.
+export function bucketPerHourByLocalDay(
+  perHour: ProfileTimeHourTotal[],
+  toDate: string,
+): { date: string; label: string; usedMins: number }[] {
+  const byLocalDate = new Map<string, number>()
+  for (const h of perHour) {
+    const dt = new Date(h.hourStart) // parsed as UTC, rendered in local
+    const y = dt.getFullYear()
+    const m = String(dt.getMonth() + 1).padStart(2, '0')
+    const d = String(dt.getDate()).padStart(2, '0')
+    const localDate = `${y}-${m}-${d}`
+    byLocalDate.set(localDate, (byLocalDate.get(localDate) ?? 0) + h.usedMins)
+  }
+  // Build seven contiguous local days ending on toDate. `toDate` is the server-supplied UTC
+  // anchor; treat it as a calendar day in local time so the rightmost bar tracks "today" for
+  // the viewer regardless of the server's UTC clock.
+  const end = new Date(`${toDate}T00:00:00`)
+  const out: { date: string; label: string; usedMins: number }[] = []
+  for (let i = 6; i >= 0; i--) {
+    const day = new Date(end)
+    day.setDate(end.getDate() - i)
+    const y = day.getFullYear()
+    const m = String(day.getMonth() + 1).padStart(2, '0')
+    const d = String(day.getDate()).padStart(2, '0')
+    const localDate = `${y}-${m}-${d}`
+    out.push({
+      date: localDate,
+      label: WEEKDAY[day.getDay()],
+      usedMins: byLocalDate.get(localDate) ?? 0,
+    })
+  }
+  return out
+}
+
 export function formatMins(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '0m'
   const mins = Math.round(n)
@@ -309,17 +350,8 @@ function ProfileTimeCard({
   )
 }
 
-const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
 function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
-  const chartData = status.perDay.map(d => {
-    const dt = new Date(`${d.date}T00:00:00`)
-    return {
-      date: d.date,
-      label: WEEKDAY[dt.getDay()],
-      usedMins: d.usedMins,
-    }
-  })
+  const chartData = bucketPerHourByLocalDay(status.perHour, status.to)
   return (
     <div data-testid={`time-week-card-${status.profileId}`} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
       <div className="flex items-start justify-between gap-2">
