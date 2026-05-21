@@ -665,24 +665,90 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       .option
       .transact(xa)
       .map(_.getOrElse((0L, 0L, 0L)))
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
+  // The LATERAL subquery promotes ipv4-typed time_usage rows to their resolved
+  // fqdn by looking up the most recent connection_events row for the same
+  // (mac, dest_ip) that has a resolved_host_value. The partial index added in
+  // V21 (idx_conn_events_mac_dest_resolved) keeps the join cheap.
   def listForDevice(mac: MacAddress, d: LocalDate)                                              =
-    sql"SELECT id,device_mac,host_type,host_value,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac=$mac AND date=$d ORDER BY seconds_used DESC"
+    sql"""SELECT tu.id,
+                 tu.device_mac,
+                 CASE WHEN tu.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                      THEN 'fqdn' ELSE tu.host_type END,
+                 COALESCE(CASE WHEN tu.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                          tu.host_value),
+                 tu.date::TEXT,
+                 (COALESCE(tu.seconds_used,0)/60)::INT,
+                 tu.last_seen_at::TEXT
+          FROM time_usage tu
+          LEFT JOIN LATERAL (
+            SELECT resolved_host_value
+            FROM connection_events
+            WHERE mac          = tu.device_mac
+              AND dest_ip      = tu.host_value
+              AND resolved_host_value IS NOT NULL
+              AND ts >= $d::TIMESTAMPTZ
+              AND ts <  ($d::DATE + INTERVAL '1 day')::TIMESTAMPTZ
+            ORDER BY ts DESC LIMIT 1
+          ) ce ON tu.host_type IN ('ipv4','ipv6')
+          WHERE tu.device_mac = $mac AND tu.date = $d
+          ORDER BY tu.seconds_used DESC"""
       .query[(TimeUsageId, MacAddress, HostId, String, Int, String)]
       .map(TimeUsage.apply)
       .to[List]
       .transact(xa)
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listForDeviceMacs(macs: List[MacAddress], d: LocalDate)                                   =
     if macs.isEmpty then ZIO.succeed(Nil)
     else {
       val arr = macs.map(_.value).toArray
-      sql"SELECT id,device_mac,host_type,host_value,date::TEXT,(COALESCE(seconds_used,0)/60)::INT,last_seen_at::TEXT FROM time_usage WHERE device_mac = ANY($arr) AND date=$d ORDER BY device_mac,seconds_used DESC"
+      sql"""SELECT tu.id,
+                   tu.device_mac,
+                   CASE WHEN tu.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                        THEN 'fqdn' ELSE tu.host_type END,
+                   COALESCE(CASE WHEN tu.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                            tu.host_value),
+                   tu.date::TEXT,
+                   (COALESCE(tu.seconds_used,0)/60)::INT,
+                   tu.last_seen_at::TEXT
+            FROM time_usage tu
+            LEFT JOIN LATERAL (
+              SELECT resolved_host_value
+              FROM connection_events
+              WHERE mac          = tu.device_mac
+                AND dest_ip      = tu.host_value
+                AND resolved_host_value IS NOT NULL
+                AND ts >= $d::TIMESTAMPTZ
+                AND ts <  ($d::DATE + INTERVAL '1 day')::TIMESTAMPTZ
+              ORDER BY ts DESC LIMIT 1
+            ) ce ON tu.host_type IN ('ipv4','ipv6')
+            WHERE tu.device_mac = ANY($arr) AND tu.date = $d
+            ORDER BY tu.device_mac, tu.seconds_used DESC"""
         .query[(TimeUsageId, MacAddress, HostId, String, Int, String)]
         .map(TimeUsage.apply)
         .to[List]
         .transact(xa)
     }
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def snapshotAll(d: LocalDate)                                                                 =
-    sql"SELECT device_mac,host_type,host_value,(COALESCE(seconds_used,0)/60)::INT FROM time_usage WHERE date=$d"
+    sql"""SELECT tu.device_mac,
+                 CASE WHEN tu.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                      THEN 'fqdn' ELSE tu.host_type END,
+                 COALESCE(CASE WHEN tu.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                          tu.host_value),
+                 (COALESCE(tu.seconds_used,0)/60)::INT
+          FROM time_usage tu
+          LEFT JOIN LATERAL (
+            SELECT resolved_host_value
+            FROM connection_events
+            WHERE mac          = tu.device_mac
+              AND dest_ip      = tu.host_value
+              AND resolved_host_value IS NOT NULL
+              AND ts >= $d::TIMESTAMPTZ
+              AND ts <  ($d::DATE + INTERVAL '1 day')::TIMESTAMPTZ
+            ORDER BY ts DESC LIMIT 1
+          ) ce ON tu.host_type IN ('ipv4','ipv6')
+          WHERE tu.date = $d"""
       .query[(MacAddress, HostId, Int)]
       .to[List]
       .transact(xa)
@@ -843,28 +909,87 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     Update[TrafficReportInsert](
       "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
     ).updateMany(reports).transact(xa)
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
+  // Promotes ipv4/ipv6-typed traffic_reports rows to their resolved fqdn at
+  // SELECT time via the same LATERAL join used in TimeUsageRepoLive.
   def listForDevice(mac: MacAddress, date: LocalDate) =
-    sql"SELECT id,router_id,mac,ip,host_type,host_value,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE mac=$mac AND date=$date ORDER BY period_start"
+    sql"""SELECT tr.id, tr.router_id, tr.mac, tr.ip,
+                 CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                      THEN 'fqdn' ELSE tr.host_type END,
+                 COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                          tr.host_value),
+                 tr.date::TEXT, tr.period_start::TEXT, tr.period_end::TEXT,
+                 tr.active_seconds, tr.bytes_in, tr.bytes_out
+          FROM traffic_reports tr
+          LEFT JOIN LATERAL (
+            SELECT resolved_host_value
+            FROM connection_events
+            WHERE mac          = tr.mac
+              AND dest_ip      = tr.host_value
+              AND resolved_host_value IS NOT NULL
+              AND ts >= $date::TIMESTAMPTZ
+              AND ts <  ($date::DATE + INTERVAL '1 day')::TIMESTAMPTZ
+            ORDER BY ts DESC LIMIT 1
+          ) ce ON tr.host_type IN ('ipv4','ipv6')
+          WHERE tr.mac = $mac AND tr.date = $date
+          ORDER BY tr.period_start"""
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listForRouter(routerId: RouterId, limit: Int)   =
-    sql"SELECT id,router_id,mac,ip,host_type,host_value,date::TEXT,period_start::TEXT,period_end::TEXT,active_seconds,bytes_in,bytes_out FROM traffic_reports WHERE router_id=$routerId ORDER BY period_start DESC LIMIT $limit"
+    sql"""SELECT tr.id, tr.router_id, tr.mac, tr.ip,
+                 CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                      THEN 'fqdn' ELSE tr.host_type END,
+                 COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                          tr.host_value),
+                 tr.date::TEXT, tr.period_start::TEXT, tr.period_end::TEXT,
+                 tr.active_seconds, tr.bytes_in, tr.bytes_out
+          FROM traffic_reports tr
+          LEFT JOIN LATERAL (
+            SELECT resolved_host_value
+            FROM connection_events
+            WHERE mac          = tr.mac
+              AND dest_ip      = tr.host_value
+              AND resolved_host_value IS NOT NULL
+              AND ts >= tr.date::TIMESTAMPTZ
+              AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+            ORDER BY ts DESC LIMIT 1
+          ) ce ON tr.host_type IN ('ipv4','ipv6')
+          WHERE tr.router_id = $routerId
+          ORDER BY tr.period_start DESC LIMIT $limit"""
       .query[R]
       .map(toT)
       .to[List]
       .transact(xa)
 
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) = {
     type Row = (MacAddress, Instant, HostId, Int)
     macs match {
       case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
       case ms  =>
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
-        val q   = fr"""SELECT mac, period_start, host_type, host_value, active_seconds
-                       FROM traffic_reports
-                       WHERE date = $date AND """ ++ Fragments.in(fr"mac", nel)
+        val q   =
+          fr"""SELECT tr.mac, tr.period_start,
+                      CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                           THEN 'fqdn' ELSE tr.host_type END,
+                      COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                               tr.host_value),
+                      tr.active_seconds
+               FROM traffic_reports tr
+               LEFT JOIN LATERAL (
+                 SELECT resolved_host_value
+                 FROM connection_events
+                 WHERE mac          = tr.mac
+                   AND dest_ip      = tr.host_value
+                   AND resolved_host_value IS NOT NULL
+                   AND ts >= $date::TIMESTAMPTZ
+                   AND ts <  ($date::DATE + INTERVAL '1 day')::TIMESTAMPTZ
+                 ORDER BY ts DESC LIMIT 1
+               ) ce ON tr.host_type IN ('ipv4','ipv6')
+               WHERE tr.date = $date AND """ ++ Fragments.in(fr"tr.mac", nel)
         q.query[Row]
           .map((m, ps, h, s) => wifihaven.api.presence.PresenceRow(m, ps, h, s))
           .to[List]
@@ -872,24 +997,41 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     }
   }
 
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listSessionRows(f: SessionFilter) = {
     type Row = (RouterId, MacAddress, HostId, LocalDate, Instant, Instant, Int, Long, Long)
-    val base    = fr"""SELECT router_id, mac, host_type, host_value, date, period_start, period_end,
-                              active_seconds, bytes_in, bytes_out
-                       FROM traffic_reports
-                       WHERE 1=1"""
+    val base    =
+      fr"""SELECT tr.router_id, tr.mac,
+                  CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                       THEN 'fqdn' ELSE tr.host_type END,
+                  COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                           tr.host_value),
+                  tr.date, tr.period_start, tr.period_end,
+                  tr.active_seconds, tr.bytes_in, tr.bytes_out
+           FROM traffic_reports tr
+           LEFT JOIN LATERAL (
+             SELECT resolved_host_value
+             FROM connection_events
+             WHERE mac          = tr.mac
+               AND dest_ip      = tr.host_value
+               AND resolved_host_value IS NOT NULL
+               AND ts >= tr.date::TIMESTAMPTZ
+               AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+             ORDER BY ts DESC LIMIT 1
+           ) ce ON tr.host_type IN ('ipv4','ipv6')
+           WHERE 1=1"""
     val byMacs  = f.macs match {
       case None      => fr""
       case Some(Nil) => fr"AND FALSE"
       case Some(ms)  =>
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
-        fr"AND " ++ Fragments.in(fr"mac", nel)
+        fr"AND " ++ Fragments.in(fr"tr.mac", nel)
     }
-    val byHost  = f.host.fold(fr"")(h => fr"AND host_value ILIKE ${s"%$h%"}")
-    val bySince = f.since.fold(fr"")(s => fr"AND period_end > $s")
-    val byUntil = f.until.fold(fr"")(u => fr"AND period_start < $u")
+    val byHost  = f.host.fold(fr"")(h => fr"AND tr.host_value ILIKE ${s"%$h%"}")
+    val bySince = f.since.fold(fr"")(s => fr"AND tr.period_end > $s")
+    val byUntil = f.until.fold(fr"")(u => fr"AND tr.period_start < $u")
     val sql_    = base ++ byMacs ++ byHost ++ bySince ++ byUntil ++
-      fr"ORDER BY router_id, mac, host_type, host_value, date, period_start"
+      fr"ORDER BY tr.router_id, tr.mac, tr.host_type, tr.host_value, tr.date, tr.period_start"
     sql_
       .query[Row]
       .map { r =>
