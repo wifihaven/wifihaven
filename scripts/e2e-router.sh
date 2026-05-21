@@ -147,9 +147,19 @@ curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
   -d "$USAGE_BODY" >/dev/null
 pass "usage posted (90 active seconds)"
 
-# Snapshot must now show the profile as blocked with reason=TimeLimit.
-curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap2.json"
-REASON=$(_py "
+# Snapshot must show the profile as blocked with reason=TimeLimit.
+#
+# Poll with a short timeout (#780): against the in-compose stack the snapshot
+# reflects the write on the very next request, but against deployed staging the
+# Render rollover window can briefly serve a stale instance between the POST
+# and the read. Match the wait-with-timeout pattern from
+# scripts/e2e/scenarios/test_time_limit.py rather than asserting on a single
+# read — the read path itself is unchanged, we just give it a few tries.
+REASON=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap2.json"
+  REASON=$(_py "
 import json
 snap = json.load(open('$TMP/snap2.json'))
 p = snap['profiles'].get('$PID')
@@ -158,20 +168,31 @@ if p is None:
 r = p['rules']
 print(('blocked=' + str(r['blocked']) + ' reason=' + str(r.get('blockReason'))))
 ")
+  [ "$REASON" = "blocked=True reason=TimeLimit" ] && break
+  sleep 1
+done
 echo "  · $REASON"
 case "$REASON" in
   "blocked=True reason=TimeLimit") pass "blockReason=TimeLimit after 90s usage" ;;
   *) fail "expected blocked=True reason=TimeLimit, got: $REASON" ;;
 esac
 
-# Device last_seen_ip should be updated.
-curl -fsS "${AUTH[@]}" "$BASE/api/devices" >"$TMP/devices.json"
-LAST_IP=$(_py "
+# Device last_seen_ip should be updated. Same poll pattern — the touch is in
+# the same transaction as the usage insert, but the read may still hit a
+# transient stale instance during a Render rollover.
+LAST_IP=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" "$BASE/api/devices" >"$TMP/devices.json"
+  LAST_IP=$(_py "
 import json
 devs = json.load(open('$TMP/devices.json'))
 d = next((d for d in devs if d['mac'] == '$MAC'), None)
 print((d or {}).get('lastSeenIp') or '')
 ")
+  [ "$LAST_IP" = "192.168.1.20" ] && break
+  sleep 1
+done
 [ "$LAST_IP" = "192.168.1.20" ] || fail "expected lastSeenIp=192.168.1.20, got '$LAST_IP'"
 pass "last_seen_ip=192.168.1.20"
 
