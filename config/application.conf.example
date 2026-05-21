@@ -31,15 +31,4 @@ wifihaven {
     # Example: "https://wifihaven.example,https://www.wifihaven.example"
     allowedOrigins = ""
   }
-
-  dns {
-    cacheRefreshSeconds = 60
-    port                = 53
-    location            = "home"
-    upstreamPrimary     = "1.1.1.1"
-    upstreamSecondary   = "8.8.8.8"
-    upstreamPort        = 53
-    logBatchSize        = 500
-    logFlushSeconds     = 5
-  }
 }
