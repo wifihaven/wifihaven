@@ -216,6 +216,36 @@ export interface ProfileTimeStatus {
   hostUsage: HostUsage[]
 }
 
+// #716 / #721 — per-device hourly usage timeline. `totalMins` is the device's
+// bucket-deduplicated wall-clock minutes for the hour (matches the daily cap).
+// `perHost.mins + otherMins == totalMins` — per-host minutes are proportionally
+// allocated within each 5-min bucket (sketch of #715 proposal 2).
+export interface UsageHostTotal {
+  host: HostId
+  dayMins: number
+}
+
+export interface UsageBucketHost {
+  host: HostId
+  mins: number
+}
+
+export interface UsageBucket {
+  hour: number
+  totalMins: number
+  perHost: UsageBucketHost[]
+  otherMins: number
+}
+
+export interface UsageSeriesResponse {
+  deviceMac: string
+  deviceName: string
+  date: string
+  tz: string
+  topHosts: UsageHostTotal[]
+  buckets: UsageBucket[]
+}
+
 export interface TimeExtension {
   id: number
   profileId: number | null

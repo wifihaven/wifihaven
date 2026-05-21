@@ -362,6 +362,31 @@ case class ProfileDetail(
     siteTimeLimits: List[SiteTimeLimit],
 ) derives JsonCodec
 
+// #716 / #721 — per-device hourly usage timeline. The endpoint returns 24
+// buckets for the requested local date (in the requested `tz`, UTC by
+// default). Each bucket's `totalMins` is the device's bucket-deduplicated
+// wall-clock minutes — the same number the daily cap sees. Per-host minutes
+// are proportionally allocated within each 5-min sub-bucket so the stack of
+// `perHost.mins + otherMins` sums to `totalMins` — a sketch of #715
+// proposal 2 (bytes-weighted is a follow-up). Hosts beyond `topN` are
+// collapsed into `otherMins`.
+case class UsageHostTotal(host: HostId, dayMins: Int) derives JsonCodec
+case class UsageBucketHost(host: HostId, mins: Int) derives JsonCodec
+case class UsageBucket(
+    hour: Int,
+    totalMins: Int,
+    perHost: List[UsageBucketHost],
+    otherMins: Int,
+) derives JsonCodec
+case class UsageSeriesResponse(
+    deviceMac: MacAddress,
+    deviceName: String,
+    date: String,
+    tz: String,
+    topHosts: List[UsageHostTotal],
+    buckets: List[UsageBucket],
+) derives JsonCodec
+
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec

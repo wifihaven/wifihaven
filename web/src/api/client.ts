@@ -3,7 +3,7 @@ import type {
   DeviceTimeStatus, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus,
   QueryLog, RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
-  User,
+  UsageSeriesResponse, User,
 } from '@/types/api'
 
 // VITE_API_BASE_URL is empty by default (relative path — SPA served from the
@@ -122,6 +122,17 @@ export const api = {
       req<{ id: number; grantedMinutes: number }>('POST', '/time/extend', data),
     listExtensions: (profileId: number) =>
       req<TimeExtension[]>('GET', `/time/extensions/${profileId}`),
+  },
+
+  // ── Usage (#716) ───────────────────────────────────────────────────────
+  usage: {
+    series: (params: { mac: string; date?: string; tz?: string; topN?: number }) => {
+      const qs = new URLSearchParams({ mac: params.mac })
+      if (params.date) qs.set('date', params.date)
+      if (params.tz)   qs.set('tz', params.tz)
+      if (params.topN) qs.set('topN', String(params.topN))
+      return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
+    },
   },
 
   // ── Logs ───────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useAuth } from '@/hooks/useAuth'
 import type { ProfileTimeStatus } from '@/types/api'
@@ -186,10 +187,15 @@ function ProfileTimeCard({
         <div className="space-y-1">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Devices</p>
           {status.devices.map(d => (
-            <div key={d.deviceMac} className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2">
+            <Link
+              key={d.deviceMac}
+              to={`/devices/${encodeURIComponent(d.deviceMac)}/timeline`}
+              data-testid={`time-device-link-${d.deviceMac}`}
+              className="flex justify-between text-xs bg-gray-800/50 hover:bg-gray-800 rounded-lg px-3 py-2 transition-colors"
+            >
               <span className="text-gray-300">{d.deviceName}</span>
               <span className="text-gray-500 font-mono">{d.usedMins}m</span>
-            </div>
+            </Link>
           ))}
         </div>
       )}

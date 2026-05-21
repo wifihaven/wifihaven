@@ -5,6 +5,7 @@ import { Layout } from '@/components/layout/Layout'
 import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DevicesPage } from '@/pages/DevicesPage'
+import { DeviceTimelinePage } from '@/pages/DeviceTimelinePage'
 import { ProfilesPage } from '@/pages/ProfilesPage'
 import { TimePage } from '@/pages/TimePage'
 import { LogsPage } from '@/pages/LogsPage'
@@ -46,6 +47,7 @@ function AppRoutes() {
         <Route index element={<RequirePwChanged><Navigate to="/dashboard" replace /></RequirePwChanged>} />
         <Route path="dashboard" element={<RequirePwChanged><DashboardPage /></RequirePwChanged>} />
         <Route path="devices"   element={<RequirePwChanged><DevicesPage /></RequirePwChanged>} />
+        <Route path="devices/:mac/timeline" element={<RequirePwChanged><DeviceTimelinePage /></RequirePwChanged>} />
         <Route path="profiles"  element={<RequirePwChanged><ProfilesPage /></RequirePwChanged>} />
         <Route path="time"      element={<RequirePwChanged><TimePage /></RequirePwChanged>} />
         <Route path="logs"      element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />

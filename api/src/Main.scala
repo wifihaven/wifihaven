@@ -100,6 +100,7 @@ object Main extends ZIOAppDefault {
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
       SessionRoutes.routes(auth, trafficRepo, deviceRepo, profileRepo, upRepo) ++
+      UsageRoutes.routes(auth, deviceRepo, trafficRepo, upRepo, clock) ++
       DashboardNowRoutes.routes(
         auth,
         trafficRepo,
