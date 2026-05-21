@@ -2,17 +2,21 @@ package wifihaven.api.presence
 
 import wifihaven.shared.HeartbeatFilter
 import wifihaven.shared.types.*
-import java.time.Instant
+import java.time.{Instant, LocalDate}
 
 /**
  * One bucket-host tuple from traffic_reports, used to compute presence-based minutes (one count per
- * (mac, period_start), regardless of how many hosts the device touched in that window).
+ * (mac, period_start), regardless of how many hosts the device touched in that window). `date` is
+ * the local calendar day the bucket was attributed to by the agent (`traffic_reports.date`) —
+ * carried alongside `periodStart` so range queries can be grouped per-day without a tz-derivation
+ * step (see #723 weekly view).
  *
  * `bytes` is `bytes_in + bytes_out` for the row and `periodSeconds` is `period_end - period_start`;
  * both exist solely to feed the #714 heartbeat filter and are ignored by all other consumers.
  */
 case class PresenceRow(
     mac: MacAddress,
+    date: LocalDate,
     periodStart: Instant,
     host: HostId,
     activeSeconds: Int,

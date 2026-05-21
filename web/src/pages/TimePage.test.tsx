@@ -2,12 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { ProfileTimeStatus } from '@/types/api'
+import type { ProfileTimeStatus, ProfileTimeStatusWeek } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
     time: {
       statusAll: vi.fn(),
+      statusAllWeek: vi.fn(),
       grantExtension: vi.fn(),
     },
   },
@@ -67,10 +68,34 @@ const noLimit: ProfileTimeStatus = {
   hostUsage: [],
 }
 
+const weekKids: ProfileTimeStatusWeek = {
+  profileId: 1,
+  profileName: 'Kids',
+  from: '2026-05-14',
+  to: '2026-05-20',
+  dailyLimitMins: 120,
+  totalMins: 210,
+  perDay: [
+    { date: '2026-05-14', usedMins: 20 },
+    { date: '2026-05-15', usedMins: 40 },
+    { date: '2026-05-16', usedMins: 0 },
+    { date: '2026-05-17', usedMins: 60 },
+    { date: '2026-05-18', usedMins: 0 },
+    { date: '2026-05-19', usedMins: 75 },
+    { date: '2026-05-20', usedMins: 15 },
+  ],
+  devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 210 }],
+  hostUsage: [
+    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 90 },
+    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 30 },
+  ],
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   mockAuth = { isAdmin: true }
   ;(api.time.statusAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([limited, overLimit, noLimit])
+  ;(api.time.statusAllWeek as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([weekKids])
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 45 })
 })
 
@@ -150,6 +175,48 @@ describe('TimePage — grant extension', () => {
         note: null,
       })
     )
+  })
+})
+
+describe('TimePage — week toggle (#723)', () => {
+  it('defaults to Today and only fetches the today endpoint', async () => {
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    await screen.findByTestId('time-card-1')
+    expect(api.time.statusAll).toHaveBeenCalledTimes(1)
+    expect(api.time.statusAllWeek).not.toHaveBeenCalled()
+  })
+
+  it('clicking Week fetches the weekly endpoint and renders chart + totals', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    await screen.findByTestId('time-card-1')
+    await user.click(screen.getByTestId('time-window-week'))
+    expect(await screen.findByTestId('time-week-card-1')).toBeInTheDocument()
+    expect(api.time.statusAllWeek).toHaveBeenCalledTimes(1)
+    // Today cards are gone
+    expect(screen.queryByTestId('time-card-1')).not.toBeInTheDocument()
+    // Weekly total surfaced
+    expect(screen.getByText('210m used this week')).toBeInTheDocument()
+    // Per-day chart container present (recharts renders SVG inside).
+    expect(screen.getByTestId('time-week-chart-1')).toBeInTheDocument()
+    // Top-host breakdown carries over to the weekly card
+    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('90m')
+    // Device link wires through to the per-device timeline (#721).
+    expect(screen.getByTestId('time-week-device-link-aa:bb:cc:dd:ee:01'))
+      .toHaveAttribute('href', '/devices/aa%3Abb%3Acc%3Add%3Aee%3A01/timeline')
+  })
+
+  it('toggling back to Today does not refetch unnecessarily on a second click', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter><TimePage /></MemoryRouter>)
+    await screen.findByTestId('time-card-1')
+    await user.click(screen.getByTestId('time-window-week'))
+    await screen.findByTestId('time-week-card-1')
+    await user.click(screen.getByTestId('time-window-today'))
+    await screen.findByTestId('time-card-1')
+    // Today and Week each fetched once on the first switch to that window.
+    expect(api.time.statusAll).toHaveBeenCalledTimes(2)
+    expect(api.time.statusAllWeek).toHaveBeenCalledTimes(1)
   })
 })
 

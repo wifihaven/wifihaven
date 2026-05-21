@@ -1,19 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
+import {
+  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
 import { api } from '@/api/client'
-import type { UsageBucket, UsageSeriesResponse } from '@/types/api'
+import type {
+  DeviceTimeStatusWeek, UsageBucket, UsageSeriesResponse,
+} from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from '@/components/usage/UsageHourlyBarChart'
 
-// #721 — per-device daily timeline. Hourly stacked-bar chart of minutes-of-use
-// for a single device on a chosen day. Hosts beyond topN collapse into "Other";
-// bare-IP rows render (italic) so the operator can spot the FQDN gap (#718).
+// #721 — per-device daily (hourly) timeline.
+// #723 — Today/Week toggle: Week renders the trailing-7-day per-device
+// bar chart from /api/time/status/{mac}/week. The date picker acts as
+// the `to` anchor in Week mode.
 
 const TOP_N = 5
 const DEFAULT_TZ =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+type Window = 'today' | 'week'
+
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 function todayISO(): string {
   const d = new Date()
@@ -54,45 +64,60 @@ export function DeviceTimelinePage() {
   const [params, setParams] = useSearchParams()
 
   const initialDate = params.get('date') ?? todayISO()
+  const initialWindow = (params.get('window') === 'week' ? 'week' : 'today') as Window
   const [date, setDate] = useState<string>(initialDate)
-  const [data, setData] = useState<UsageSeriesResponse | null>(null)
+  const [window, setWindow] = useState<Window>(initialWindow)
+  const [dayData, setDayData] = useState<UsageSeriesResponse | null>(null)
+  const [weekData, setWeekData] = useState<DeviceTimeStatusWeek | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
     setError(null)
-    api.usage.series({ mac, date, tz: DEFAULT_TZ, topN: TOP_N })
-      .then(setData)
-      .catch(e => setError(e.message ?? 'Failed to load'))
-      .finally(() => setLoading(false))
-  }, [mac, date])
+    const p = window === 'today'
+      ? api.usage.series({ mac, date, tz: DEFAULT_TZ, topN: TOP_N }).then(d => { setDayData(d); setWeekData(null) })
+      : api.time.statusDeviceWeek(mac, date).then(d => { setWeekData(d); setDayData(null) })
+    p.catch(e => setError(e.message ?? 'Failed to load')).finally(() => setLoading(false))
+  }, [mac, date, window])
 
-  function setDateAndPush(next: string) {
-    setDate(next)
+  function pushParams(next: { date?: string; window?: Window }) {
     const sp = new URLSearchParams(params)
-    sp.set('date', next)
+    if (next.date)   sp.set('date', next.date)
+    if (next.window) sp.set('window', next.window)
     setParams(sp, { replace: true })
   }
+  function setDateAndPush(next: string)     { setDate(next);     pushParams({ date: next }) }
+  function setWindowAndPush(next: Window)   { setWindow(next);   pushParams({ window: next }) }
 
-  const chart = useMemo(() => {
-    if (!data) return { rows: [], series: [] as ChartSeries[] }
-    // Belt-and-suspenders: skip hosts that floor to 0m in the legend/stack.
-    // The server already filters these out, but rendering an invisible bar
-    // with a "0m" legend entry looks broken if anything slips through.
-    const hostKeys = data.topHosts.filter(h => h.dayMins > 0).map(h => h.host.value)
+  const dayChart = useMemo(() => {
+    if (!dayData) return { rows: [], series: [] as ChartSeries[] }
+    const hostKeys = dayData.topHosts.filter(h => h.dayMins > 0).map(h => h.host.value)
     const series: ChartSeries[] = hostKeys.map((k, i) => ({
       key: k,
       name: k,
       color: HOST_COLORS[i % HOST_COLORS.length],
     }))
-    return { rows: buildChartData(data.buckets, hostKeys), series }
-  }, [data])
+    return { rows: buildChartData(dayData.buckets, hostKeys), series }
+  }, [dayData])
 
-  if (loading && !data) return <PageLoader />
+  const weekChart = useMemo(() => {
+    if (!weekData) return []
+    return weekData.perDay.map(d => {
+      const dt = new Date(`${d.date}T00:00:00`)
+      return { date: d.date, label: WEEKDAY[dt.getDay()], usedMins: d.usedMins }
+    })
+  }, [weekData])
 
-  const dayTotal = data?.buckets.reduce((a, b) => a + b.totalMins, 0) ?? 0
-  const isEmpty  = dayTotal === 0
+  if (loading && !dayData && !weekData) return <PageLoader />
+
+  const dayTotal = dayData?.buckets.reduce((a, b) => a + b.totalMins, 0) ?? 0
+  const dayEmpty = window === 'today' && dayTotal === 0
+  const weekEmpty = window === 'week' && (weekData?.totalMins ?? 0) === 0
+  const titleName = dayData?.deviceName ?? weekData?.deviceName ?? mac
+  const hosts = window === 'today'
+    ? (dayData?.topHosts.filter(h => h.dayMins > 0) ?? []).map(h => ({ host: h.host, mins: h.dayMins }))
+    : (weekData?.hostUsage ?? []).map(h => ({ host: h.host, mins: h.usedMins }))
 
   return (
     <div className="space-y-6">
@@ -102,11 +127,29 @@ export function DeviceTimelinePage() {
             ← Devices
           </Link>
           <h1 className="text-xl font-bold text-white truncate" data-testid="device-timeline-name">
-            {data?.deviceName ?? mac}
+            {titleName}
           </h1>
           <p className="text-xs text-gray-500 font-mono">{mac}</p>
         </div>
         <div className="flex items-center gap-2">
+          <div role="tablist" className="inline-flex rounded-xl bg-gray-900 border border-gray-800 p-1">
+            {(['today', 'week'] as const).map(w => (
+              <button
+                key={w}
+                role="tab"
+                aria-selected={window === w}
+                data-testid={`device-timeline-window-${w}`}
+                onClick={() => setWindowAndPush(w)}
+                className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
+                  window === w
+                    ? 'bg-emerald-500 text-black'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {w === 'today' ? 'Today' : 'Week'}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => setDateAndPush(addDays(date, -1))}
             className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-3 py-2 rounded-lg"
@@ -136,37 +179,83 @@ export function DeviceTimelinePage() {
       <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-            Hourly minutes
+            {window === 'today' ? 'Hourly minutes' : 'Daily minutes (trailing 7 days)'}
           </h2>
           <span className="text-xs text-gray-500 font-mono">
-            {dayTotal}m total · {data?.tz}
+            {window === 'today'
+              ? `${dayTotal}m total · ${dayData?.tz ?? ''}`
+              : `${weekData?.totalMins ?? 0}m total · ${weekData?.from ?? ''} → ${weekData?.to ?? ''}`}
           </span>
         </div>
 
-        {isEmpty ? (
-          <div
-            data-testid="device-timeline-empty"
-            className="h-64 flex items-center justify-center text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl"
-          >
-            No usage recorded on {date}.
-          </div>
+        {window === 'today' ? (
+          dayEmpty ? (
+            <div
+              data-testid="device-timeline-empty"
+              className="h-64 flex items-center justify-center text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl"
+            >
+              No usage recorded on {date}.
+            </div>
+          ) : (
+            <UsageHourlyBarChart
+              rows={dayChart.rows}
+              series={dayChart.series}
+              showLegend
+              testId="device-timeline-chart"
+            />
+          )
         ) : (
-          <UsageHourlyBarChart
-            rows={chart.rows}
-            series={chart.series}
-            showLegend
-            testId="device-timeline-chart"
-          />
+          weekEmpty ? (
+            <div
+              data-testid="device-timeline-week-empty"
+              className="h-64 flex items-center justify-center text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl"
+            >
+              No usage recorded in this 7-day window.
+            </div>
+          ) : (
+            <div className="h-72 -ml-2" data-testid="device-timeline-week-chart">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={weekChart} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#1f2937" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: '#6b7280', fontSize: 11 }}
+                    axisLine={{ stroke: '#374151' }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fill: '#6b7280', fontSize: 11 }}
+                    axisLine={{ stroke: '#374151' }}
+                    tickLine={false}
+                    width={32}
+                    unit="m"
+                  />
+                  <Tooltip
+                    cursor={{ fill: '#1f293780' }}
+                    contentStyle={{
+                      background: '#0a0f1c',
+                      border: '1px solid #374151',
+                      borderRadius: '8px',
+                      fontSize: 12,
+                    }}
+                    labelFormatter={(_, payload) => String(payload?.[0]?.payload?.date ?? '')}
+                    formatter={(v) => [`${String(v)}m`, 'Used']}
+                  />
+                  <Bar dataKey="usedMins" fill={HOST_COLORS[0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )
         )}
       </div>
 
-      {data && data.topHosts.length > 0 && (
+      {hosts.length > 0 && (
         <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
             Top hosts
           </h2>
           <ul className="space-y-1.5">
-            {data.topHosts.filter(h => h.dayMins > 0).map((h, i) => {
+            {hosts.map((h, i) => {
               const isIp = h.host.type !== 'fqdn'
               return (
                 <li
@@ -193,15 +282,17 @@ export function DeviceTimelinePage() {
                       )}
                     </span>
                   </span>
-                  <span className="text-gray-500 font-mono shrink-0 ml-2">{h.dayMins}m</span>
+                  <span className="text-gray-500 font-mono shrink-0 ml-2">{h.mins}m</span>
                 </li>
               )
             })}
           </ul>
-          <p className="text-[11px] text-gray-600 mt-3">
-            Per-host minutes are proportional within each 5-minute window. The stack sums to
-            the device's wall-clock minutes for that hour.
-          </p>
+          {window === 'today' && (
+            <p className="text-[11px] text-gray-600 mt-3">
+              Per-host minutes are proportional within each 5-minute window. The stack sums to
+              the device's wall-clock minutes for that hour.
+            </p>
+          )}
         </div>
       )}
     </div>

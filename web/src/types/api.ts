@@ -273,6 +273,36 @@ export interface UsageSeriesResponse {
   bucketsByDevice?: UsageDeviceBucket[]
 }
 
+export interface ProfileTimeDayTotal {
+  date: string
+  usedMins: number
+}
+
+export interface ProfileTimeStatusWeek {
+  profileId: number
+  profileName: string
+  from: string
+  to: string
+  dailyLimitMins?: number | null
+  totalMins: number
+  perDay: ProfileTimeDayTotal[]
+  devices: DeviceUsageSummary[]
+  hostUsage: HostUsage[]
+}
+
+export interface DeviceTimeStatusWeek {
+  deviceMac: string
+  deviceName: string
+  from: string
+  to: string
+  profileName: string
+  profileId?: number | null
+  dailyLimitMins?: number | null
+  totalMins: number
+  perDay: ProfileTimeDayTotal[]
+  hostUsage: HostUsage[]
+}
+
 export interface TimeExtension {
   id: number
   profileId: number | null

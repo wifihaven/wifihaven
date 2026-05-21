@@ -869,5 +869,280 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(yt.reasons.isEmpty)
       },
     ) @@ TestAspect.sequential,
+
+    // ── #723 weekly view ────────────────────────────────────────────────────
+    suite("GET /api/time/status/week")(
+      test("per-day totals match a Today view computed for each date") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Seed distinct minute counts on three days within the week; the other
+          // four days are intentionally empty (must surface as 0m bars).
+          _               <- seedTraffic(routerId, testMac, "minecraft.net", today.minusDays(6), 20)
+          _               <- seedTraffic(routerId, testMac, "youtube.com", today.minusDays(3), 35)
+          _               <- seedTraffic(routerId, testMac, "khan-academy.org", today, 15)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status/week").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
+          kids  = list.find(_.profileId == kidsId).get
+          byDay = kids.perDay.map(d => d.date -> d.usedMins).toMap
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(kids.from == today.minusDays(6).toString) &&
+          assertTrue(kids.to == today.toString) &&
+          assertTrue(kids.perDay.length == 7) &&                 // all 7 days present
+          assertTrue(byDay(today.minusDays(6).toString) == 20) &&
+          assertTrue(byDay(today.minusDays(3).toString) == 35) &&
+          assertTrue(byDay(today.toString) == 15) &&
+          assertTrue(byDay(today.minusDays(5).toString) == 0) && // empty days are 0
+          assertTrue(kids.totalMins == 70) &&                    // 20+35+15
+          assertTrue(kids.devices.head.usedMins == 70) &&
+          assertTrue(kids.dailyLimitMins.contains(120))
+      },
+      test("per-host weekly totals are bucket-deduped across the range") {
+        // Two devices on the same profile both hit youtube.com on multiple days. The host
+        // total must be the sum of bucket-deduped per-day contributions (presence semantics
+        // applied per-mac at the bucket level, summed across days), not a naive sum of
+        // per-day per-device minutes that would double-count anything.
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // mac1: youtube 20m today + 15m yesterday → 35m total on youtube
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today, 20)
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today.minusDays(1), 15)
+          // mac2: youtube 10m today + 5m two days ago → 15m total on youtube
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 10)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today.minusDays(2), 5)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status/week").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatusWeek]])
+          kids = list.find(_.profileId == kidsId).get
+          yt   = kids.hostUsage.find(_.host.value == "youtube.com").get
+        } yield assertTrue(yt.usedMins == 50) && // 35 + 15 across both macs
+          assertTrue(kids.totalMins == 50) &&
+          assertTrue(
+            kids.devices.find(_.deviceMac == MacAddress.unsafe(mac1)).get.usedMins == 35,
+          ) &&
+          assertTrue(
+            kids.devices.find(_.deviceMac == MacAddress.unsafe(mac2)).get.usedMins == 15,
+          )
+      },
+      test("?to= anchors a trailing 7-day window") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today  = TestClock.schoolDayAfternoon.toLocalDate
+          anchor = today.minusDays(10) // outside the default trailing-week window
+          _               <- seedTraffic(routerId, testMac, "minecraft.net", anchor, 25)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          // Default window (anchor=today): outside-range traffic must NOT appear.
+          dflt     <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/week").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          dfltBody <- dflt.body.asString
+          dfltList <- ZIO.fromEither(dfltBody.fromJson[List[ProfileTimeStatusWeek]])
+          dfltKids = dfltList.find(_.profileId == kidsId).get
+          // Anchored window covering the seeded day.
+          shifted     <- routes.runZIO(
+            Request
+              .get(URL.decode(s"/api/time/status/week?to=${anchor.toString}").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          shiftedBody <- shifted.body.asString
+          shiftedList <- ZIO.fromEither(shiftedBody.fromJson[List[ProfileTimeStatusWeek]])
+          shiftedKids = shiftedList.find(_.profileId == kidsId).get
+        } yield assertTrue(dfltKids.totalMins == 0) &&
+          assertTrue(shiftedKids.totalMins == 25) &&
+          assertTrue(shiftedKids.to == anchor.toString) &&
+          assertTrue(shiftedKids.from == anchor.minusDays(6).toString)
+      },
+    ) @@ TestAspect.sequential,
+
+    // ── per-device weekly variant ───────────────────────────────────────────
+    suite("GET /api/time/status/{mac}/week")(
+      test("per-day totals scoped to one device, per-host across the range") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          mac1 = testMac
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // mac1: 20m today + 15m two days ago. mac2: noise that must NOT
+          // leak into mac1's per-device weekly.
+          _               <- seedTraffic(routerId, mac1, "minecraft.net", today, 20)
+          _               <- seedTraffic(routerId, mac1, "youtube.com", today.minusDays(2), 15)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 30)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode(s"/api/time/status/$mac1/week").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp   <- routes.runZIO(req)
+          body   <- resp.body.asString
+          status <- ZIO.fromEither(body.fromJson[DeviceTimeStatusWeek])
+          byDay = status.perDay.map(d => d.date -> d.usedMins).toMap
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(status.deviceMac == MacAddress.unsafe(mac1)) &&
+          assertTrue(status.perDay.length == 7) &&
+          assertTrue(status.totalMins == 35) && // only mac1
+          assertTrue(byDay(today.toString) == 20) &&
+          assertTrue(byDay(today.minusDays(2).toString) == 15) &&
+          assertTrue(byDay(today.minusDays(1).toString) == 0) &&
+          assertTrue(
+            status.hostUsage.map(_.host.value).toSet == Set("minecraft.net", "youtube.com"),
+          ) &&
+          assertTrue(status.dailyLimitMins.contains(120)) &&
+          assertTrue(status.profileName == "Kids")
+      },
+      test("404 when device not found") {
+        for {
+          _               <- cleanDb
+          profileRepo     <- ZIO.service[ProfileRepo]
+          tlRepo          <- ZIO.service[TimeLimitRepo]
+          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          deviceRepo      <- ZIO.service[DeviceRepo]
+          trafficRepo     <- ZIO.service[TrafficReportRepo]
+          extRepo         <- ZIO.service[TimeExtensionRepo]
+          auth            <- makeAuth
+          token           <- auth.login("admin", "changeme").map(_.token.value)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          req    = Request
+            .get(URL.decode("/api/time/status/aa:bb:cc:dd:ee:ff/week").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.NotFound)
+      },
+    ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential
 }
