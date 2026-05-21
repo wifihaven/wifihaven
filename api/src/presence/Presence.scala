@@ -100,7 +100,12 @@ object Presence {
    * are below `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few hundred).
    */
   def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
-    filter.enabled && row.bytes < filter.bytesThreshold
+    filter.enabled && (
+      row.bytes < filter.bytesThreshold ||
+        row.host.asFqdn.exists(fqdn =>
+          filter.heartbeatHostPatterns.exists(p => matchesPattern(fqdn.value, p)),
+        )
+    )
 
   /**
    * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the
@@ -118,6 +123,11 @@ object Presence {
       val rsns  = scala.collection.mutable.ListBuffer.empty[String]
       if filter.enabled then {
         if r.bytes < filter.bytesThreshold then rsns += s"bytes<${filter.bytesThreshold}"
+        for {
+          fqdn <- r.host.asFqdn
+          p    <- filter.heartbeatHostPatterns
+          if matchesPattern(fqdn.value, p)
+        } rsns += s"host:$p"
       }
       val label = if filter.enabled && rsns.nonEmpty then "heartbeat" else "active"
       Classified(r, label, rsns.toList)

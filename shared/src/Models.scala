@@ -247,11 +247,12 @@ case class UpdateHouseholdSettingsRequest(
 case class HeartbeatFilter(
     enabled: Boolean,
     bytesThreshold: Int,
+    heartbeatHostPatterns: List[String] = Nil,
 ) derives JsonCodec
 
 object HeartbeatFilter {
   val Off: HeartbeatFilter =
-    HeartbeatFilter(enabled = false, bytesThreshold = 0)
+    HeartbeatFilter(enabled = false, bytesThreshold = 0, heartbeatHostPatterns = Nil)
 }
 
 /**
