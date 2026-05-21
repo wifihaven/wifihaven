@@ -3,6 +3,7 @@ package wifihaven.api
 import doobie.*
 import doobie.implicits.*
 import wifihaven.api.auth.*
+import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
@@ -55,7 +56,8 @@ object Main extends ZIOAppDefault {
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
       Clock.live >+>
       AuthService.layer >+>
-      PolicyService.layer
+      PolicyService.layer >+>
+      TimeStatusCache.live()
 
   private def allRoutes =
     for {
@@ -78,6 +80,7 @@ object Main extends ZIOAppDefault {
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
+      timeCache   <- ZIO.service[TimeStatusCache]
       xa          <- ZIO.service[Transactor[Task]]
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
@@ -97,6 +100,7 @@ object Main extends ZIOAppDefault {
         upRepo,
         hsRepo,
         clock,
+        timeCache,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
       SessionRoutes.routes(auth, trafficRepo, deviceRepo, profileRepo, upRepo, clock) ++
@@ -121,6 +125,14 @@ object Main extends ZIOAppDefault {
         deviceRepo,
         connRepo,
       ) ++
-      DebugRoutes.routes(cfg.debugEnabled, deviceRepo, connRepo, usageRepo, trafficRepo, clock) ++
+      DebugRoutes.routes(
+        cfg.debugEnabled,
+        deviceRepo,
+        connRepo,
+        usageRepo,
+        trafficRepo,
+        clock,
+        timeCache,
+      ) ++
       (if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty)
 }
