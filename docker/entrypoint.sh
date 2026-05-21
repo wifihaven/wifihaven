@@ -8,6 +8,7 @@ set -euo pipefail
 : "${WIFIHAVEN_DB_NAME:=wifihaven}"
 : "${WIFIHAVEN_DB_USER:=wifihaven}"
 : "${WIFIHAVEN_DB_PASSWORD:=wifihaven}"
+: "${WIFIHAVEN_DB_POOL_SIZE:=5}"
 : "${WIFIHAVEN_HTTP_HOST:=0.0.0.0}"
 : "${WIFIHAVEN_HTTP_PORT:=8080}"
 : "${WIFIHAVEN_STATIC_DIR:=/app/web}"
@@ -33,7 +34,7 @@ wifihaven {
     database = "${WIFIHAVEN_DB_NAME}"
     user     = "${WIFIHAVEN_DB_USER}"
     password = "${WIFIHAVEN_DB_PASSWORD}"
-    poolSize = 5
+    poolSize = ${WIFIHAVEN_DB_POOL_SIZE}
   }
   http {
     host      = "${WIFIHAVEN_HTTP_HOST}"

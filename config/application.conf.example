@@ -5,7 +5,7 @@ wifihaven {
     database = "wifihaven"
     user     = "wifihaven"
     password = "changeme"
-    poolSize = 10
+    poolSize = 5
   }
 
   http {
