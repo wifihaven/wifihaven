@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type {
   ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
+  UsageSeriesResponse,
 } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
 
@@ -15,6 +16,9 @@ vi.mock('@/api/client', () => ({
       summaryAll: vi.fn(),
       summaryAllWeek: vi.fn(),
       grantExtension: vi.fn(),
+    },
+    usage: {
+      series: vi.fn(),
     },
   },
 }))
@@ -109,6 +113,34 @@ const weekSummaries: ProfileTimeSummaryWeek[] = [
   { profileId: 2, profileName: 'Teens',  from: '2026-05-14', to: '2026-05-20', dailyLimitMins: 60,  totalMins: 50 },
 ]
 
+// #776: hourly chart on Today card consumes `/api/usage/series?profileId=…`.
+// Pin a small response with two non-zero hours for the limited profile so the
+// chart renders, and zero-usage for the other profiles so we can also exercise
+// the empty state.
+const seriesLimited: UsageSeriesResponse = {
+  profileId: 1,
+  profileName: 'Kids',
+  date: '2026-05-07',
+  tz: 'UTC',
+  topHosts: [],
+  buckets: Array.from({ length: 24 }, (_, h) => ({
+    hour: h,
+    totalMins: h === 9 ? 30 : h === 14 ? 60 : 0,
+    perHost: [],
+    otherMins: 0,
+  })),
+}
+const seriesEmpty = (profileId: number): UsageSeriesResponse => ({
+  profileId,
+  profileName: '',
+  date: '2026-05-07',
+  tz: 'UTC',
+  topHosts: [],
+  buckets: Array.from({ length: 24 }, (_, h) => ({
+    hour: h, totalMins: 0, perHost: [], otherMins: 0,
+  })),
+})
+
 beforeEach(() => {
   vi.resetAllMocks()
   localStorage.clear()
@@ -131,6 +163,10 @@ beforeEach(() => {
   ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(summaries)
   ;(api.time.summaryAllWeek as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(weekSummaries)
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 45 })
+  ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    ({ profileId }: { profileId: number }) =>
+      Promise.resolve(profileId === 1 ? seriesLimited : seriesEmpty(profileId)),
+  )
 })
 
 describe('TimePage — accordion (#777)', () => {
@@ -206,6 +242,42 @@ describe('TimePage — expanded card content', () => {
     expect(screen.getByText('+30m extended')).toBeInTheDocument()
     expect(screen.getByText('Laptop')).toBeInTheDocument()
     expect(screen.getByText(/No time limit set/)).toBeInTheDocument()
+  })
+})
+
+describe('TimePage — today hourly chart (#776)', () => {
+  it('renders an hourly chart inside the auto-expanded Today card', async () => {
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    expect(await screen.findByTestId('time-today-chart-1')).toBeInTheDocument()
+    // /api/usage/series is fetched lazily for the expanded profile only.
+    await waitFor(() => expect(api.usage.series).toHaveBeenCalledWith(
+      expect.objectContaining({ profileId: 1, date: '2026-05-07' }),
+    ))
+  })
+
+  it('falls back to a sensible empty state when expanding a profile with no usage today', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-row-3')
+    await user.click(screen.getByTestId('time-row-toggle-3'))
+    // Profile 3 (Adults) returned all-zero buckets — empty state, not a blank chart.
+    await waitFor(() =>
+      expect(screen.getByTestId('time-today-chart-empty-3')).toHaveTextContent(/No usage/i),
+    )
+  })
+
+  it('does not fetch hourly series until a profile row is expanded', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-row-2')
+    // Auto-expand of profile 1 triggers one usage.series call; collapsed profiles 2/3 do not.
+    await waitFor(() => expect(api.usage.series).toHaveBeenCalledTimes(1))
+    expect(api.usage.series).toHaveBeenCalledWith(expect.objectContaining({ profileId: 1 }))
+    // Toggling to Week never fetches usage.series at all.
+    ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockClear()
+    await user.click(screen.getByTestId('time-window-week'))
+    await screen.findByTestId('time-week-row-1')
+    expect(api.usage.series).not.toHaveBeenCalled()
   })
 })
 
