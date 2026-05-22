@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { Device, ProfileDetail, QueryLog, Session, SessionPage } from '@/types/api'
+import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, Session, SessionPage } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
   api: {
     sessions: { list:  vi.fn() },
-    logs:     { query: vi.fn() },
+    logs:     { query: vi.fn(), series: vi.fn() },
     devices:  { list:  vi.fn() },
     profiles: { list:  vi.fn() },
   },
@@ -76,6 +76,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   ;(api.sessions.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(page)
   ;(api.logs.query    as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([log1])
+  ;(api.logs.series   as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.devices.list  as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(devices)
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(profileDetails)
 })
@@ -163,6 +164,79 @@ describe('LogsPage — Connection events tab', () => {
     await screen.findByText('example.com')
     const expected = new Date(log1.ts).toLocaleTimeString()
     expect(screen.getByText(expected)).toBeInTheDocument()
+  })
+})
+
+describe('LogsPage — Connection events aggregation (#847)', () => {
+  const aggRow: ConnectionEventAggRow = {
+    group: 'youtube.com',
+    windowStart: '2026-05-22 14:00:00',
+    countSucceeded: 12,
+    countBlocked: 3,
+    lastSeen: '2026-05-22T14:30:00Z',
+    topDevice: "Kid's iPad",
+  }
+
+  it('Raw is the default; clicking a bucket switches to /series with same filters', async () => {
+    (api.logs.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aggRow])
+    const user = userEvent.setup()
+    renderAt('/logs?profileId=1')
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    await screen.findByText('example.com')
+    // No series call while bucket=off
+    expect(api.logs.series).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('ce-bucket-1h'))
+    await waitFor(() => {
+      expect(api.logs.series).toHaveBeenLastCalledWith(expect.objectContaining({
+        bucket: '1h',
+        groupBy: 'domain',
+        profileId: 1,
+      }))
+    })
+    // The aggregated row renders
+    expect(await screen.findByTestId('ce-agg-table')).toBeInTheDocument()
+    expect(screen.getByText('12')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+  })
+
+  it('switching back to Raw reverts to /api/logs and stops calling /series', async () => {
+    const user = userEvent.setup()
+    renderAt()
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    await user.click(screen.getByTestId('ce-bucket-10m'))
+    await waitFor(() => expect(api.logs.series).toHaveBeenCalled())
+
+    const seriesCallsBefore = (api.logs.series as ReturnType<typeof vi.fn>).mock.calls.length
+    await user.click(screen.getByTestId('ce-bucket-off'))
+    await screen.findByTestId('ce-raw-table')
+    // No new /series calls after switching back
+    expect((api.logs.series as ReturnType<typeof vi.fn>).mock.calls.length).toBe(seriesCallsBefore)
+  })
+
+  it('Group-by selector is hidden in Raw mode and visible when bucketed', async () => {
+    const user = userEvent.setup()
+    renderAt()
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    expect(screen.queryByTestId('ce-groupby')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('ce-bucket-1d'))
+    expect(await screen.findByTestId('ce-groupby')).toBeInTheDocument()
+  })
+
+  it('apex and app group-by options are disabled (gated)', async () => {
+    const user = userEvent.setup()
+    renderAt()
+    await screen.findByText('youtube.com')
+    await user.click(screen.getByTestId('logs-tab-raw'))
+    await user.click(screen.getByTestId('ce-bucket-1h'))
+    const sel = await screen.findByTestId('ce-groupby') as HTMLSelectElement
+    const apex = sel.querySelector('option[value="apex"]') as HTMLOptionElement
+    const app  = sel.querySelector('option[value="app"]')  as HTMLOptionElement
+    expect(apex.disabled).toBe(true)
+    expect(app.disabled).toBe(true)
   })
 })
 
