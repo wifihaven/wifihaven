@@ -9,6 +9,7 @@ import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-
 import { api } from '@/api/client'
 import type {
   DashboardNow, Device, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
+  ProfileTimeSummary, ProfileTimeSummaryWeek,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -31,6 +32,14 @@ export const qk = {
   timeStatusDate: (date: string) => ['time', 'status', 'date', date] as const,
   timeStatusWeek: (to?: string, bucketOffsetMin?: number) =>
     ['time', 'status', 'week', to ?? 'current', bucketOffsetMin ?? 0] as const,
+  // #777 — per-profile detail (today/week) cached on first expand so collapse-then-
+  // re-expand within the same page mount doesn't refetch.
+  timeStatusProfileToday: (profileId: number) =>
+    ['time', 'status', 'today', 'profile', profileId] as const,
+  timeStatusProfileWeek: (profileId: number, to: string | undefined, bucketOffsetMin: number) =>
+    ['time', 'status', 'week', to ?? 'current', bucketOffsetMin, 'profile', profileId] as const,
+  timeStatusSummaryToday: () => ['time', 'status', 'summary', 'today'] as const,
+  timeStatusSummaryWeek: (to?: string) => ['time', 'status', 'summary', 'week', to ?? 'current'] as const,
 }
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>
@@ -90,6 +99,56 @@ export function useTimeStatusWeek(
   return useQuery({
     queryKey: qk.timeStatusWeek(to, bucketOffsetMin),
     queryFn: () => api.time.statusAllWeek(to, bucketOffsetMin),
+    staleTime: STALE.timeStatusWeek,
+    ...opts,
+  })
+}
+
+// #777 — summary endpoints: lightweight rollups for the collapsed accordion view.
+export function useTimeStatusSummary(opts?: QueryOpts<ProfileTimeSummary[]>) {
+  return useQuery({
+    queryKey: qk.timeStatusSummaryToday(),
+    queryFn: () => api.time.summaryAll(),
+    staleTime: STALE.timeStatusToday,
+    ...opts,
+  })
+}
+
+export function useTimeStatusSummaryWeek(
+  to?: string,
+  opts?: QueryOpts<ProfileTimeSummaryWeek[]>,
+) {
+  return useQuery({
+    queryKey: qk.timeStatusSummaryWeek(to),
+    queryFn: () => api.time.summaryAllWeek(to),
+    staleTime: STALE.timeStatusWeek,
+    ...opts,
+  })
+}
+
+// #777 — per-profile detail, fetched only when the accordion row is expanded.
+// The query stays cached for the page mount so collapse + re-expand doesn't refetch.
+export function useTimeStatusProfileToday(
+  profileId: number,
+  opts?: QueryOpts<ProfileTimeStatus | undefined>,
+) {
+  return useQuery({
+    queryKey: qk.timeStatusProfileToday(profileId),
+    queryFn: () => api.time.statusAll(undefined, profileId).then(rows => rows[0]),
+    staleTime: STALE.timeStatusToday,
+    ...opts,
+  })
+}
+
+export function useTimeStatusProfileWeek(
+  profileId: number,
+  to: string | undefined,
+  bucketOffsetMin: number,
+  opts?: QueryOpts<ProfileTimeStatusWeek | undefined>,
+) {
+  return useQuery({
+    queryKey: qk.timeStatusProfileWeek(profileId, to, bucketOffsetMin),
+    queryFn: () => api.time.statusAllWeek(to, bucketOffsetMin, profileId).then(rows => rows[0]),
     staleTime: STALE.timeStatusWeek,
     ...opts,
   })

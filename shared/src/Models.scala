@@ -339,6 +339,35 @@ case class DeviceUsageSummary(
 
 case class HostUsage(host: HostId, usedMins: Int) derives JsonCodec
 
+/**
+ * #777 lightweight per-profile rollup for the collapsed accordion on the screen-time page. Just the
+ * headline numbers; no per-host / per-device / per-bucket arrays. The endpoint computes the whole
+ * list in a single batched presence query instead of fanning out per-profile, so the page load is
+ * `1 summary + N on-demand` rather than `N rollups`.
+ */
+case class ProfileTimeSummary(
+    profileId: ProfileId,
+    profileName: String,
+    date: String,
+    dailyLimitMins: Option[Int],
+    usedMins: Int,
+    extensionMins: Int,
+    remainingMins: Option[Int],
+) derives JsonCodec
+
+/**
+ * #777 weekly sibling of [[ProfileTimeSummary]]. Just `totalMins` over the trailing 7 days; the
+ * per-bucket chart and per-host breakdown still come from the heavyweight endpoint on expand.
+ */
+case class ProfileTimeSummaryWeek(
+    profileId: ProfileId,
+    profileName: String,
+    from: String,
+    to: String,
+    dailyLimitMins: Option[Int],
+    totalMins: Int,
+) derives JsonCodec
+
 case class ProfileTimeStatus(
     profileId: ProfileId,
     profileName: String,
