@@ -1,60 +1,67 @@
-name: Master CD
+name: Master API/UI CD
 
-# Runs on every push to main. After #588 + #613 the flow is:
+# API + SPA deployment pipeline. Split off from the unified Master CD in
+# #871 — see master-router.yml for the router half and the split rationale.
 #
-#   ci-tests + bootstrap-smoke + e2e + prod-stack-smoke   (vm-e2e on its own track)
-#     ‖ gate-2-router-fake-api       (#686: qemu router + fake API on the
-#                                     self-hosted KVM runner; gates
-#                                     publish-openwrt only, runs in parallel
-#                                     with the staging chain after ci-tests)
+# Flow (unchanged from the pre-split unified workflow, minus the router
+# leg):
+#
+#   ci-tests + bootstrap-smoke + e2e + prod-stack-smoke
 #     → build-image                  (push sha-<commit> + `staging` tags ONLY; not `:latest`)
 #     → deploy-staging               (curl staging deploy hook; wait for /api/health)
 #       ‖ deploy-spa-staging         (build + wrangler push to Cloudflare Pages — parallel
 #                                     with deploy-staging, gated on the same test chain)
 #     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net
-#                                     AND staging.wifihaven.net SPA — gates ALL of prod)
+#                                     AND staging.wifihaven.net SPA)
+#     → api-smoke-staging            (Gate 1 — admin + router API contract smoke against staging)
 #     → approve-production           (manual-approval gate — GitHub `production`
 #                                     environment; required reviewer must click
-#                                     "Approve and deploy" before any of the four
-#                                     deploy-production jobs run; see #498)
+#                                     "Approve and deploy" before the deploy-production
+#                                     jobs run; see #498)
 #     → deploy-production            (parallel jobs; all gated on approve-production):
-#                                       • retag-latest      — promote sha-<commit> → :latest
-#                                                             via `docker buildx imagetools create`
-#                                                             (no rebuild — image already gated)
-#                                       • publish-openwrt   — reusable openwrt-build.yml with
-#                                                             publish_release: true
+#                                       • retag-latest       — promote sha-<commit> → :latest
+#                                                              via `docker buildx imagetools create`
 #                                       • deploy-prod-render — curl prod deploy hook + health poll
 #                                       • deploy-spa-prod    — build + wrangler push to
-#                                                             wifihaven Pages project (#613)
+#                                                              wifihaven Pages project (#613)
 #
-# Gate semantics: a failed staging smoke short-circuits before approval is
-# even requested. After smoke passes, a human must approve via the
-# `production` environment. Denial leaves the public consumer surface
-# (`:latest`, the openwrt-latest rolling release, the prod Render service,
-# the prod Cloudflare Pages SPA) on the previous version — all four
-# surfaces are atomic at the gate.
+# OpenWRT release lives on master-router.yml. shared/** wire-schema changes
+# fire BOTH pipelines until #597 (capability negotiation) lands — the
+# `production` environment serializes approval prompts so tandem releases
+# stay coordinated.
 #
 # TODO(#597): the wire-schema bump (capability negotiation framework) gets
-# coordinated here once #597's mechanism lands — the manual gate is the
-# natural choke point to confirm router-agent and API ship compatible
-# protocol versions in the same release.
+# coordinated across both pipelines once #597's mechanism lands.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'api/**'
+      - 'web/**'
+      - 'config/**'
+      - 'deploy/**'
+      - 'docker/**'
+      - 'infra/**'
+      - 'scripts/**'
+      - 'shared/**'
+      - '.github/workflows/master-api-ui.yml'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
-# Cancel-in-progress is scoped to the build/gate portion only — if a new
-# main push lands while an older run is still in build/staging, dropping
-# the older run is fine. We do NOT want cancel-in-progress applying to the
-# deploy-production jobs: cancelling mid-promotion can leave one of the
-# three sub-jobs done and the others not, producing a partial release.
-# Splitting the concurrency group by job name (via the job-level
-# `concurrency` field) is more surgical than narrowing the top-level group,
-# so we keep this group covering build/staging and let prod jobs run free.
+# Workflow-level concurrency scoped to THIS pipeline's group name — api/ui
+# pushes pre-empt earlier api/ui pushes; router pushes (on master-router.yml,
+# in a different group) cannot cancel an api/ui run. The original #871 bug
+# was a unified group cancelling across both surfaces; the split fixes that.
 concurrency:
-  group: master-${{ github.ref }}
+  group: master-api-ui-${{ github.ref }}
   cancel-in-progress: true
+
+# Default GITHUB_TOKEN to minimum privilege at the workflow level — jobs
+# that need more (build-image, retag-latest → packages: write) override
+# locally.
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
@@ -329,8 +336,7 @@ jobs:
   # pause → Paused, schedule → Schedule, HostId variants, etag round-trip,
   # legacy `hostname` rejection) plus 401 / 4xx negatives per endpoint.
   # Blocks API publish (retag-latest, deploy-prod-render) and the SPA prod
-  # deploy by sitting on `approve-production`'s `needs:`. Does NOT block
-  # publish-openwrt — Gate 2 (#654) owns the OpenWRT side.
+  # deploy by sitting on `approve-production`'s `needs:`.
   api-smoke-staging:
     name: Gate 1 — API contract smoke (staging)
     # Runs in parallel with smoke-staging — both `needs: [deploy-staging]`,
@@ -363,19 +369,14 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════
   # An `approve-production` sentinel job carries `environment: production` so
   # GitHub pauses the run for manual approval before any consumer-facing
-  # surface is touched. All four deploy-production jobs `needs:
-  # [approve-production]`, so a single approval gates them all atomically;
+  # surface is touched. All three deploy-production jobs `needs:
+  # [approve-production]`, so a single approval gates them atomically;
   # denial blocks every one of them.
   #
-  # publish-openwrt is deliberately NOT gated on api-smoke-staging — that
-  # gate covers the API side only; Gate 2 (#654) will guard the OpenWRT
-  # publish once it lands.
-  #
-  # Why a sentinel job instead of putting `environment:` on each job?
-  # Reusable-workflow caller jobs (publish-openwrt) cannot set `environment:`
-  # at the call site — GitHub disallows it alongside `uses:`. A sentinel
-  # also gives the operator one approval click for the whole release rather
-  # than four.
+  # The router pipeline (master-router.yml) has its own approve-production
+  # job pointing at the same `production` environment, so GitHub serializes
+  # approval prompts across the two pipelines when shared/** changes fire
+  # both sides.
 
   approve-production:
     name: Manual approval (production gate)
@@ -386,7 +387,7 @@ jobs:
       url: https://api.wifihaven.net
     steps:
       - name: Approved
-        run: echo "Production deploy approved — releasing API image + OpenWRT agent + SPA."
+        run: echo "Production deploy approved — releasing API image + SPA."
 
   # 6a. Retag sha-<commit> → :latest. No rebuild — `imagetools create`
   # operates on the registry-side manifest. The sha image has already been
@@ -418,38 +419,6 @@ jobs:
           dst="${REGISTRY}/${IMAGE_NAME}:latest"
           echo "Promoting $src → $dst"
           docker buildx imagetools create -t "$dst" "$src"
-
-  # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
-  # against an in-process fake API serving snapshot fixtures. Gates
-  # publish-openwrt only — API publish is unaffected (Gate 1 covers that
-  # via api-smoke-staging, Gate 3 will cover thin integration once #655
-  # lands). Runs on the self-hosted KVM runner; concurrency=e2e-vm
-  # serializes against the existing live-mode VM e2e workflow on the same
-  # host. Gated on ci-tests to avoid burning runner cycles when lint/unit
-  # is broken.
-  gate-2-router-fake-api:
-    name: Gate 2 — router fake-API e2e
-    needs: [ci-tests]
-    uses: ./.github/workflows/e2e-vm-fake.yml
-    secrets: inherit
-
-  # 6b. Publish the openwrt rolling release. The build runs anyway via the
-  # standalone openwrt-build.yml triggers for PRs and main pushes — what's
-  # gated is the GitHub Release upload, controlled by the publish_release
-  # input. See openwrt-build.yml for the gating logic.
-  #
-  # Gated on Gate 2 (#686): a Gate-2-red main does not publish OpenWRT.
-  # `approve-production` keeps the manual atomic-publish semantics for
-  # router+API tandem release; Gate 2 sits before it on the OpenWRT leg.
-  publish-openwrt:
-    name: Publish OpenWRT release (deploy-production)
-    needs: [approve-production, gate-2-router-fake-api]
-    permissions:
-      contents: write
-    uses: ./.github/workflows/openwrt-build.yml
-    with:
-      publish_release: true
-    secrets: inherit
 
   # 6c. Trigger the Render prod deploy hook + wait for healthy. Prod tracks
   # the `:latest` tag, so this must run after retag-latest has moved the

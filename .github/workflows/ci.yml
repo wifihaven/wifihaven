@@ -4,9 +4,10 @@ on:
   pull_request:
     # Run on PRs targeting any branch
   workflow_call:
-    # Invoked by master.yml on push to main so the CD pipeline gates publish
-    # on the same test matrix PRs run. Direct push: main is intentionally
-    # omitted — main coverage flows through master.yml (issue #190).
+    # Invoked by master-api-ui.yml and master-router.yml on push to main so
+    # the CD pipelines gate publish on the same test matrix PRs run. Direct
+    # push:main is intentionally omitted — main coverage flows through the
+    # two Master CD workflows (issue #190).
   workflow_dispatch:
 
 env:
@@ -18,7 +19,7 @@ env:
 
 jobs:
   # ── Path filter: decide which downstream jobs need to run on this PR ─────
-  # On workflow_call (from master.yml) and workflow_dispatch we force every
+  # On workflow_call (from the Master CD workflows) and workflow_dispatch we force every
   # output to 'true' so the post-merge CD gate and manual runs still execute
   # the full matrix. On pull_request we let dorny/paths-filter compute deltas
   # against the PR base. Any change to ci.yml itself also forces everything.

@@ -5,8 +5,8 @@ This guide covers the split-stack cloud deployment:
 - **API + Postgres on Render** (defined in `render.yaml` — Blueprint apply)
 - **SPA on Cloudflare Pages** (built + pushed by CI via Wrangler from
   the `deploy-spa-staging` / `deploy-spa-prod` jobs in
-  `.github/workflows/master.yml`; gated on the same staging-smoke chain
-  as the API deploy from #588)
+  `.github/workflows/master-api-ui.yml`; gated on the same staging-smoke
+  chain as the API deploy from #588)
 - **DNS on Cloudflare** (NS for `wifihaven.net` points at Cloudflare;
   Cloudflare manages records and edge certs for every hostname)
 
@@ -208,11 +208,13 @@ workaround.
 
 ## 7. Ongoing operations
 
-**Deploys.** Every push to `main` triggers `.github/workflows/master.yml`,
-which runs `deploy-spa-staging` in parallel with `deploy-staging`, then
-gates `deploy-spa-prod` behind `smoke-staging` (same chain as the API
-deploy from #588). Top-of-file comment in `master.yml` has the full
-dependency graph.
+**Deploys.** A push to `main` that touches API/UI paths triggers
+`.github/workflows/master-api-ui.yml`, which runs `deploy-spa-staging` in
+parallel with `deploy-staging`, then gates `deploy-spa-prod` behind
+`smoke-staging` (same chain as the API deploy from #588). Router-side
+pushes go to `master-router.yml` instead; the two pipelines are
+independent (split in #871). Top-of-file comments in each workflow have
+the full dependency graphs.
 
 **Cert renewal.** Cloudflare auto-renews edge certs for all three Pages
 hostnames (DNS-01 — no path-interception class of bug). Render
