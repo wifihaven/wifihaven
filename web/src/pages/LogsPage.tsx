@@ -222,7 +222,6 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId, 
     let cancelled = false
     setLoading(true)
     setError(null)
-    if (bucket === 'raw') return
     api.logs.series({
       bucket,
       groupBy,
