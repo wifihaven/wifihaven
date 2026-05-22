@@ -1559,6 +1559,152 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .map(_.toMap)
 }
 
+// ── #761: apps ────────────────────────────────────────────────────────────
+//
+// CRUD over the apps / app_hosts / app_policy_assignments tables. No business
+// logic here: slug derivation, host canonicalization, template seeding, and
+// snapshot expansion all live in #762 / #763. Repo just round-trips rows.
+
+trait AppRepo {
+  def listAll: Task[List[App]]
+  def findById(id: AppId): Task[Option[App]]
+  def findBySlug(slug: String): Task[Option[App]]
+  def create(
+      name: String,
+      slug: String,
+      templateId: Option[AppTemplateId],
+      icon: Option[String],
+  ): Task[AppId]
+  def update(a: App): Task[Unit]
+  def delete(id: AppId): Task[Unit]
+
+  /**
+   * Replace the full set of hosts for an app. Wipes prior rows; canonicalization is the caller's
+   * responsibility.
+   */
+  def setHosts(appId: AppId, hosts: List[Hostname]): Task[Unit]
+  def getHosts(appId: AppId): Task[List[Hostname]]
+
+  /** Upsert a (app, profile) assignment. Existing row at that key is overwritten. */
+  def upsertAssignment(
+      appId: AppId,
+      profileId: ProfileId,
+      mode: AppMode,
+      dailyMinutes: Option[Int],
+      exemptFromDaily: Boolean,
+  ): Task[AppPolicyAssignmentId]
+  def deleteAssignment(appId: AppId, profileId: ProfileId): Task[Unit]
+  def listAssignmentsForApp(appId: AppId): Task[List[AppPolicyAssignment]]
+  def listAssignmentsForProfile(profileId: ProfileId): Task[List[AppPolicyAssignment]]
+}
+
+class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
+  private type R = (AppId, String, String, Option[AppTemplateId], Option[String], Instant)
+  private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6)
+
+  def listAll =
+    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps ORDER BY id"
+      .query[R]
+      .map(toApp)
+      .to[List]
+      .transact(xa)
+
+  def findById(id: AppId) =
+    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE id=$id"
+      .query[R]
+      .map(toApp)
+      .option
+      .transact(xa)
+
+  def findBySlug(slug: String) =
+    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE slug=$slug"
+      .query[R]
+      .map(toApp)
+      .option
+      .transact(xa)
+
+  def create(
+      name: String,
+      slug: String,
+      templateId: Option[AppTemplateId],
+      icon: Option[String],
+  ) =
+    sql"INSERT INTO apps(name,slug,template_id,icon) VALUES($name,$slug,$templateId,$icon) RETURNING id"
+      .query[AppId]
+      .unique
+      .transact(xa)
+
+  def update(a: App) =
+    sql"""UPDATE apps SET
+            name=${a.name},
+            slug=${a.slug},
+            template_id=${a.templateId},
+            icon=${a.icon}
+          WHERE id=${a.id}""".update.run.transact(xa).unit
+
+  def delete(id: AppId) =
+    sql"DELETE FROM apps WHERE id=$id".update.run.transact(xa).unit
+
+  def setHosts(appId: AppId, hosts: List[Hostname]) = {
+    val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
+    val ins = hosts.distinct.map(h =>
+      sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h) ON CONFLICT DO NOTHING".update.run,
+    )
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+  }
+
+  def getHosts(appId: AppId) =
+    sql"SELECT host FROM app_hosts WHERE app_id=$appId ORDER BY host"
+      .query[Hostname]
+      .to[List]
+      .transact(xa)
+
+  def upsertAssignment(
+      appId: AppId,
+      profileId: ProfileId,
+      mode: AppMode,
+      dailyMinutes: Option[Int],
+      exemptFromDaily: Boolean,
+  ) =
+    sql"""INSERT INTO app_policy_assignments
+            (app_id, profile_id, mode, daily_minutes, exempt_from_daily)
+          VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes, $exemptFromDaily)
+          ON CONFLICT (app_id, profile_id) DO UPDATE SET
+            mode = EXCLUDED.mode,
+            daily_minutes = EXCLUDED.daily_minutes,
+            exempt_from_daily = EXCLUDED.exempt_from_daily
+          RETURNING id"""
+      .query[AppPolicyAssignmentId]
+      .unique
+      .transact(xa)
+
+  def deleteAssignment(appId: AppId, profileId: ProfileId) =
+    sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
+      .transact(xa)
+      .unit
+
+  private type AR =
+    (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean)
+  private def toAssignment(r: AR) =
+    AppPolicyAssignment(r._1, r._2, r._3, r._4, r._5, r._6)
+
+  def listAssignmentsForApp(appId: AppId) =
+    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+          FROM app_policy_assignments WHERE app_id=$appId ORDER BY id"""
+      .query[AR]
+      .map(toAssignment)
+      .to[List]
+      .transact(xa)
+
+  def listAssignmentsForProfile(profileId: ProfileId) =
+    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+          FROM app_policy_assignments WHERE profile_id=$profileId ORDER BY id"""
+      .query[AR]
+      .map(toAssignment)
+      .to[List]
+      .transact(xa)
+}
+
 object Repos {
   val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
   val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
@@ -1575,6 +1721,7 @@ object Repos {
   val trafficReportRepo     = ZLayer.fromFunction(TrafficReportRepoLive(_))
   val blockEventRepo        = ZLayer.fromFunction(BlockEventRepoLive(_))
   val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
+  val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ appRepo
 }
