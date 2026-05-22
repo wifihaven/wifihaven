@@ -171,4 +171,38 @@ object Presence {
     }
     accum.view.mapValues(s => (s / 60).toInt).toMap
   }
+
+  /**
+   * #715: per-host seconds attributed by byte share within each (mac, period_start) bucket. Each
+   * bucket's wall-clock duration is split across the hosts present in proportion to their share of
+   * the bucket's total bytes (bytes_in + bytes_out). Summing across hosts within one mac's bucket ≈
+   * the bucket duration, so this is a much fairer "wall-clock attention" number than
+   * [[hostMinutes]] (which credits every host the device touched with the bucket's full duration).
+   *
+   * Note: when a bucket carries multiple rows for the same host (e.g. two ipv4-typed rows resolving
+   * to the same fqdn via the read-side LATERAL join), their bytes are summed before the share is
+   * computed so the same host doesn't get a double weight. If the bucket has zero total bytes (an
+   * edge case — the agent only emits records with bytes>0), the bucket is skipped entirely.
+   */
+  def proportionalHostSeconds(rows: List[PresenceRow]): Map[HostId, Double] = {
+    val accum = scala.collection.mutable.Map.empty[HostId, Double]
+    for ((_, bucket) <- rows.groupBy(r => (r.mac, r.periodStart))) {
+      val secs   = bucketSeconds(bucket).toDouble
+      val byHost = bucket.iterator
+        .map(r => r.host -> r.bytes)
+        .toList
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      val total  = byHost.valuesIterator.sum
+      if (secs > 0.0 && total > 0L)
+        for ((h, b) <- byHost) {
+          val share = b.toDouble / total.toDouble
+          accum.updateWith(h)(prev => Some(prev.getOrElse(0.0) + secs * share))
+        }
+    }
+    accum.toMap
+  }
+
+  /** Convenience: floor-divided minute view of [[proportionalHostSeconds]]. */
+  def proportionalHostMinutes(rows: List[PresenceRow]): Map[HostId, Int] =
+    proportionalHostSeconds(rows).view.mapValues(s => (s / 60).toInt).toMap
 }

@@ -148,8 +148,8 @@ describe('DeviceTimelinePage', () => {
           { bucketStart: '2026-05-20T08:00:00Z', usedMins: 15 },
         ],
         hostUsage: [
-          { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 40 },
-          { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 25 },
+          { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 40, proportionalMins: 38 },
+          { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 25, proportionalMins: 23 },
         ],
       }
     }
@@ -172,8 +172,10 @@ describe('DeviceTimelinePage', () => {
       expect(await screen.findByTestId('device-timeline-week-chart')).toBeInTheDocument()
       // #791: 65m -> "1:05"
       expect(screen.getByText(/1:05 total/)).toBeInTheDocument()
-      // Top-host list re-renders with weekly per-host totals.
-      expect(screen.getByTestId('device-timeline-host-youtube.com')).toHaveTextContent('40m')
+      // Top-host list re-renders with weekly per-host totals. The proportional number
+      // is what we show first; bucket-presence comes after in parens (#715).
+      expect(screen.getByTestId('device-timeline-host-youtube.com')).toHaveTextContent('38m')
+      expect(screen.getByTestId('device-timeline-host-youtube.com')).toHaveTextContent('(40m)')
     })
 
     it('week mode renders empty state when the trailing window has no usage', async () => {

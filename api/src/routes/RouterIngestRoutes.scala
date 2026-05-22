@@ -145,7 +145,7 @@ object RouterIngestRoutes {
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
   ): IO[Response, Unit] = {
-    val date    = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
+    val date      = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
     // A batch carries one record per (mac, dst_ip) but time_usage is keyed
     // by (mac, hostname, date), and activeSeconds is the bucket duration
     // (the report window, ~60 s — same value on every record that saw bytes>0). Two
@@ -153,7 +153,20 @@ object RouterIngestRoutes {
     // active time, not two windows back-to-back, so the seconds delta is
     // the max of activeSeconds, not the sum. Bytes still sum because they
     // count distinct flows.
-    val grouped = records
+    // Per-mac aggregates needed for #715 proportional attribution: bucket duration
+    // (one batch == one period, so max activeSeconds across the mac is the bucket
+    // duration) and total bytes across the mac in this batch (denominator for the
+    // bytes-share weight).
+    val perMacAgg = records
+      .groupBy(_.mac)
+      .view
+      .mapValues { rs =>
+        val bucketSecs = rs.map(_.activeSeconds).maxOption.getOrElse(0L)
+        val totalBytes = rs.map(r => r.bytesIn + r.bytesOut).sum
+        (bucketSecs, totalBytes)
+      }
+      .toMap
+    val grouped   = records
       .groupBy(r => (r.mac, r.host))
       .view
       .mapValues { rs =>
@@ -165,8 +178,19 @@ object RouterIngestRoutes {
       }
       .toList
     ZIO.foreachDiscard(grouped) { case ((mac, host), (secs, bIn, bOut)) =>
+      // #715: bytes-share weighted attribution within the batch. `bucketSecs` is
+      // the wall-clock duration of the bucket; the share is this host's
+      // (bytes_in + bytes_out) over the mac's total bytes in the batch. When the
+      // mac has zero bytes (shouldn't happen — the agent only emits a record
+      // when it saw bytes>0), fall back to crediting full bucket seconds so the
+      // row still moves and matches `seconds_used`.
+      val (bucketSecs, totalBytes) = perMacAgg.getOrElse(mac, (secs, bIn + bOut))
+      val hostBytes                = bIn + bOut
+      val proportionalSecs         =
+        if (totalBytes > 0L) (bucketSecs.toDouble * hostBytes.toDouble / totalBytes.toDouble).round
+        else bucketSecs
       timeUsageRepo
-        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut)
+        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut, proportionalSecs)
         .mapError(ErrorMapper.dbErrorToResponse)
     } *>
       // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).

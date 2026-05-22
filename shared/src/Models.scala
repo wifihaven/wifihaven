@@ -337,7 +337,19 @@ case class DeviceUsageSummary(
     usedMins: Int,
 ) derives JsonCodec
 
-case class HostUsage(host: HostId, usedMins: Int) derives JsonCodec
+/**
+ * #715: per-host time-on-site has two parallel numbers.
+ *   - `usedMins` is bucket-presence: every host the device touched in a 5-min bucket is credited
+ *     with that bucket's full duration. Sums across hosts can wildly exceed wall-clock time when a
+ *     device polls many endpoints; useful only for "did this host show up at all today".
+ *   - `proportionalMins` is the same bucket duration weighted by this host's byte share of the
+ *     bucket (bytes_in + bytes_out). Summing across hosts within a mac ≈ the device's wall-clock
+ *     minutes, so this is the right number to drive per-app screen-time UI.
+ *
+ * The daily-cap math (which already collapses each bucket once per device) reads neither field —
+ * adding `proportionalMins` is additive and does not affect cap arithmetic.
+ */
+case class HostUsage(host: HostId, usedMins: Int, proportionalMins: Int) derives JsonCodec
 
 /**
  * #777 lightweight per-profile rollup for the collapsed accordion on the screen-time page. Just the

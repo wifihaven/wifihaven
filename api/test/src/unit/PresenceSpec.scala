@@ -340,5 +340,90 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    // #715: byte-share-weighted per-host attribution. Same input as hostMinutes,
+    // but each bucket's wall-clock duration is split across hosts by byte share
+    // instead of credited in full to each host.
+    suite("proportionalHostMinutes (#715)")(
+      test("80/20 byte split in a single bucket yields a 4:1 minute attribution") {
+        val rows = List(
+          row(mac1, 0, "youtube.com", secs = 300, bytes = 800L),
+          row(mac1, 0, "icloud.com", secs = 300, bytes = 200L),
+        )
+        // bucket = 300s. youtube 800/1000 → 240s = 4m. icloud 200/1000 → 60s = 1m.
+        assertTrue(
+          Presence.proportionalHostMinutes(rows) == Map(
+            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 4,
+            HostId.Fqdn(Hostname.unsafe("icloud.com"))  -> 1,
+          ),
+        )
+      },
+      test("ten polling hosts + one heavy host: heavy host dominates proportional minutes") {
+        // Reproduces the prod shape in #715: device shows ~60 used mins, but a
+        // bucket-presence breakdown lists 10 hosts at 50–80m each because each
+        // one was touched in every bucket. With byte-share weighting, ~all of
+        // the attributed minutes go to the host that actually moved bytes.
+        val heavy   = "youtube.com"
+        val pollers = (0 until 10).map(i => s"poll-$i.example.com").toList
+        val rows    = (0 until 12).toList.flatMap { b =>
+          val heavyRow = row(mac1, b, heavy, secs = 300, bytes = 5_000_000L)
+          val pollRows = pollers.map(p => row(mac1, b, p, secs = 300, bytes = 200L))
+          heavyRow :: pollRows
+        }
+        val out     = Presence.proportionalHostMinutes(rows)
+        // 12 buckets × 5min = 60 wall-clock minutes for the mac. youtube gets
+        // 5_000_000 / (5_000_000 + 10 * 200) ≈ 99.96% of each bucket → ~59 mins.
+        // Each poller gets ~1/(2 500) of each bucket → 0m after the floor /60.
+        assertTrue(out(HostId.Fqdn(Hostname.unsafe(heavy))) == 59) &&
+        // Bucket-presence still shows every poller at 12 × 5 = 60 minutes.
+        assertTrue(
+          pollers.forall(p => Presence.hostMinutes(rows)(HostId.Fqdn(Hostname.unsafe(p))) == 60),
+        ) &&
+        // …but proportionally every poller is below the per-minute floor.
+        assertTrue(pollers.forall(p => out.getOrElse(HostId.Fqdn(Hostname.unsafe(p)), 0) == 0))
+      },
+      test("bucket with zero total bytes contributes nothing") {
+        // Defensive: in the wild the agent only emits rows with bytes > 0, but
+        // we guard the divide-by-zero so test fixtures with bytes=0 don't blow
+        // up. Such a bucket simply doesn't attribute to any host proportionally
+        // — bucket-presence (hostMinutes) is the right view for that case.
+        val rows = List(
+          row(mac1, 0, "a.com", secs = 300, bytes = 0L),
+          row(mac1, 0, "b.com", secs = 300, bytes = 0L),
+        )
+        assertTrue(Presence.proportionalHostMinutes(rows).isEmpty) &&
+        assertTrue(Presence.hostMinutes(rows).valuesIterator.toSet == Set(5))
+      },
+      test("multiple rows for the same host in one bucket collapse before splitting") {
+        // Two ipv4-typed rows resolving to the same fqdn via the read-side
+        // LATERAL join. Bytes for the host must sum before computing share —
+        // otherwise the host would lose weight to itself.
+        val rows = List(
+          row(mac1, 0, "youtube.com", secs = 300, bytes = 400L),
+          row(mac1, 0, "youtube.com", secs = 300, bytes = 400L), // same host
+          row(mac1, 0, "icloud.com", secs = 300, bytes = 200L),
+        )
+        // youtube collapses to 800. share = 800/1000 → 240s = 4m.
+        assertTrue(
+          Presence.proportionalHostMinutes(rows) == Map(
+            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 4,
+            HostId.Fqdn(Hostname.unsafe("icloud.com"))  -> 1,
+          ),
+        )
+      },
+      test("sums proportional seconds across buckets and macs") {
+        val rows = List(
+          // bucket 0: mac1 splits youtube 50/50 with poll → 2.5m each
+          row(mac1, 0, "youtube.com", secs = 300, bytes = 500L),
+          row(mac1, 0, "poll.com", secs = 300, bytes = 500L),
+          // bucket 1: mac1 alone on youtube → 5m
+          row(mac1, 1, "youtube.com", secs = 300, bytes = 1_000L),
+          // bucket 2: mac2 alone on poll → 5m
+          row(mac2, 2, "poll.com", secs = 300, bytes = 1_000L),
+        )
+        val out  = Presence.proportionalHostMinutes(rows)
+        assertTrue(out(HostId.Fqdn(Hostname.unsafe("youtube.com"))) == 7) && // 2.5 + 5 = 7.5 → 7
+        assertTrue(out(HostId.Fqdn(Hostname.unsafe("poll.com"))) == 7)       // 2.5 + 5 = 7.5 → 7
+      },
+    ),
   )
 }

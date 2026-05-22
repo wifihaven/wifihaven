@@ -88,12 +88,14 @@ object DbFailureSpec extends ZIOSpecDefault {
         s: Long,
         bi: Long,
         bo: Long,
+        proportional: Long,
     ) = throwing
-    def getSecondsUsed(mac: MacAddress, host: HostId, date: java.time.LocalDate)     = throwing
-    def getSecondsAndBytes(mac: MacAddress, host: HostId, date: java.time.LocalDate) = throwing
-    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                    = throwing
-    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)         = throwing
-    def snapshotAll(date: java.time.LocalDate)                                       = throwing
+    def getSecondsUsed(mac: MacAddress, host: HostId, date: java.time.LocalDate)         = throwing
+    def getSecondsAndBytes(mac: MacAddress, host: HostId, date: java.time.LocalDate)     = throwing
+    def getProportionalSeconds(mac: MacAddress, host: HostId, date: java.time.LocalDate) = throwing
+    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                        = throwing
+    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)             = throwing
+    def snapshotAll(date: java.time.LocalDate)                                           = throwing
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
