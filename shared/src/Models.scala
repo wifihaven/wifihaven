@@ -95,6 +95,35 @@ object FailureMode {
   )
 }
 
+// #751: per-profile knob controlling how the profile's screen-time total
+// handles two devices on the same profile being active in the same 5-min
+// bucket.
+//   Sum   — current behavior: per-device bucket-deduped minutes are added.
+//           Two siblings on the same profile both active for a bucket count
+//           as two buckets.
+//   Dedup — the per-device active-bucket sets are unioned before counting,
+//           so overlap counts once at the profile level. Right for "one
+//           profile = one human with multiple devices".
+enum CrossDeviceOverlapMode {
+  case Sum, Dedup
+}
+
+object CrossDeviceOverlapMode {
+  def asString(m: CrossDeviceOverlapMode): String      = m match {
+    case Sum   => "sum"
+    case Dedup => "dedup"
+  }
+  def parse(s: String): Option[CrossDeviceOverlapMode] = s.toLowerCase match {
+    case "sum"   => Some(Sum)
+    case "dedup" => Some(Dedup)
+    case _       => None
+  }
+  given JsonCodec[CrossDeviceOverlapMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown crossDeviceOverlapMode: $s"),
+    asString,
+  )
+}
+
 case class Profile(
     id: ProfileId,
     name: String,
@@ -104,6 +133,7 @@ case class Profile(
     paused: Boolean,
     failureMode: FailureMode = FailureMode.LastKnownGood,
     blockIpOnly: Boolean = false,
+    crossDeviceOverlapMode: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
 ) derives JsonCodec
 
 case class Schedule(
@@ -128,6 +158,52 @@ case class SiteTimeLimit(
     domainPattern: String,
     dailyMinutes: Int,
     label: String,
+    exemptFromDaily: Boolean = true,
+) derives JsonCodec
+
+// #761: app concept. An App is a household-scoped named bundle of host
+// patterns (apex form — subdomain match is inherent to the wire). See #105
+// design comment §2. Wire stays unchanged — apps are an API-side bundling
+// concept that #763 will expand into the existing per-MAC BlockRules buckets.
+enum AppMode {
+  case Blocked, Allowed, TimeLimited
+}
+
+object AppMode {
+  def asString(m: AppMode): String      = m match {
+    case Blocked     => "blocked"
+    case Allowed     => "allowed"
+    case TimeLimited => "time_limited"
+  }
+  def parse(s: String): Option[AppMode] = s match {
+    case "blocked"      => Some(Blocked)
+    case "allowed"      => Some(Allowed)
+    case "time_limited" => Some(TimeLimited)
+    case _              => None
+  }
+  given JsonCodec[AppMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown app mode: $s"),
+    asString,
+  )
+}
+
+case class App(
+    id: AppId,
+    name: String,
+    slug: String,
+    templateId: Option[AppTemplateId],
+    icon: Option[String],
+    createdAt: java.time.Instant,
+) derives JsonCodec
+
+case class AppHost(appId: AppId, host: Hostname) derives JsonCodec
+
+case class AppPolicyAssignment(
+    id: AppPolicyAssignmentId,
+    appId: AppId,
+    profileId: ProfileId,
+    mode: AppMode,
+    dailyMinutes: Option[Int],
     exemptFromDaily: Boolean = true,
 ) derives JsonCodec
 
@@ -233,6 +309,7 @@ case class UpsertProfileRequest(
     siteTimeLimits: List[SiteTimeLimitRequest],
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,
+    crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(

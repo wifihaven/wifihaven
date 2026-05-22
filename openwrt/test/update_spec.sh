@@ -35,15 +35,33 @@ grep -q 'command -v apk' "$SCRIPT" && grep -q 'command -v opkg' "$SCRIPT" \
   && check "detects both apk and opkg package managers" ok \
   || check "detects both apk and opkg package managers" "missing apk/opkg detection"
 
-# 4. Rolling-release mode: compares release published_at stamp instead of semver.
-#    Reverts to semver compare alongside #244.
-grep -q '@.published_at' "$SCRIPT" \
-  && check "uses release published_at as freshness signal" ok \
-  || check "uses release published_at as freshness signal" "missing published_at compare"
+# 4. Rolling-release mode: compares the matched asset's sha256 digest. GitHub
+#    does NOT bump published_at on rolling-asset replacement (see #870), so
+#    keying off published_at means routers never auto-update. Reverts to semver
+#    compare alongside #244.
+grep -q '@.assets\[.*\].digest' "$SCRIPT" \
+  && check "uses asset digest as freshness signal" ok \
+  || check "uses asset digest as freshness signal" "missing assets[*].digest extraction"
 
-grep -q 'last_update_stamp' "$SCRIPT" \
-  && check "persists last-applied stamp under /var/lib/wifihaven" ok \
-  || check "persists last-applied stamp under /var/lib/wifihaven" "missing stamp file"
+grep -q '@.published_at' "$SCRIPT" \
+  && check "does not key off release published_at (#870)" "still references @.published_at" \
+  || check "does not key off release published_at (#870)" ok
+
+grep -q 'last_update_digest' "$SCRIPT" \
+  && check "persists last-applied digest under /var/lib/wifihaven" ok \
+  || check "persists last-applied digest under /var/lib/wifihaven" "missing digest file"
+
+# 4b. Same-digest → no install: when STAMP_FILE matches LATEST_STAMP, exit 0
+#     before downloading or invoking the package manager.
+awk '/LAST_STAMP=.*STAMP_FILE/,/^fi/' "$SCRIPT" | grep -q 'exit 0' \
+  && check "same digest short-circuits before install" ok \
+  || check "same digest short-circuits before install" "no exit 0 in digest-match branch"
+
+# 4c. Different-digest → install: the digest is written to STAMP_FILE only
+#     after a successful install, so a failed install retries next run.
+awk '/^esac/,0' "$SCRIPT" | grep -q "STAMP_FILE" \
+  && check "different digest writes STAMP_FILE after install" ok \
+  || check "different digest writes STAMP_FILE after install" "stamp not written post-install"
 
 # 4c. Installs via apk add --allow-untrusted on apk path
 grep -q 'apk add --allow-untrusted' "$SCRIPT" \

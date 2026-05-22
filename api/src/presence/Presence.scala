@@ -93,6 +93,41 @@ object Presence {
     totalSecondsByMac(rows, exemptPatterns, filter).view.mapValues(s => (s / 60).toInt).toMap
 
   /**
+   * #751: profile-scoped active-bucket union across multiple macs. Each `period_start` instant
+   * counts once regardless of how many of the profile's devices were active in it — the right
+   * semantic when one profile = one human with multiple devices. A bucket counts iff at least one
+   * (mac, host) row in the bucket is non-heartbeat AND non-exempt; its contribution is the max
+   * `activeSeconds` across all macs present in that bucket (the longest-active device sets the
+   * wall-clock floor). Use [[totalSecondsByMac]] + sum when the operator wants per-device totals
+   * added (the `sum` mode).
+   */
+  def dedupedTotalSeconds(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+  ): Long = {
+    def isExempt(h: HostId) =
+      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
+    rows.iterator
+      .filterNot(r => isHeartbeat(r, filter))
+      .toList
+      .groupBy(_.periodStart)
+      .iterator
+      .collect {
+        case (_, bucket) if bucket.exists(r => !isExempt(r.host)) =>
+          bucketSeconds(bucket)
+      }
+      .sum
+  }
+
+  def dedupedTotalMinutes(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+  ): Int =
+    (dedupedTotalSeconds(rows, exemptPatterns, filter) / 60).toInt
+
+  /**
    * #714 heartbeat classification, applied ONLY inside `totalSecondsByMac`/`totalMinutesByMac`.
    * Per-site (`patternMinutesByMac`) and per-host (`hostMinutes`) breakdowns intentionally do not
    * filter — heartbeats keep counting for per-site time for now; the operator wants to evaluate

@@ -90,7 +90,7 @@ describe('SWR caching (#803)', () => {
     const qc = freshClient(0)
     const wrapper = makeWrapper(qc)
     ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'block-all' as const }, schedules: [], timeLimit: null, siteTimeLimits: [] },
+      { profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'block-all' as const, crossDeviceOverlapMode: 'sum' as const }, schedules: [], timeLimit: null, siteTimeLimits: [] },
     ])
     const hook = renderHook(() => useProfiles(), { wrapper })
     await waitFor(() => expect(hook.result.current.isSuccess).toBe(true))

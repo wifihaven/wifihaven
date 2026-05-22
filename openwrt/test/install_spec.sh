@@ -243,5 +243,29 @@ else
         "function returned early without installing dnsmasq-full (sim log: $(cat "$_sim_log"))"
 fi
 
+# #869: both the IPK postinst (openwrt/Makefile Package/wifihaven/postinst)
+# and the APK postinst (openwrt/build-apk.sh post-install heredoc) must
+# register the wifihaven-update cron entry. The APK builder originally
+# dropped this block, so APK-installed routers never got /etc/crontabs/root
+# wired up and auto-update never ran. Guard both producers so they can't
+# drift again.
+for f in "$ROOT/Makefile" "$ROOT/build-apk.sh"; do
+  label=$(basename "$f")
+  grep -q "wifihaven-update" "$f" \
+    && check "#869 $label postinst references wifihaven-update cron" ok \
+    || check "#869 $label postinst references wifihaven-update cron" \
+             "missing cron registration for /usr/sbin/wifihaven-update"
+
+  grep -q "/usr/sbin/wifihaven-update" "$f" \
+    && check "#869 $label postinst writes /usr/sbin/wifihaven-update to crontab" ok \
+    || check "#869 $label postinst writes /usr/sbin/wifihaven-update to crontab" \
+             "missing crontab line for /usr/sbin/wifihaven-update"
+
+  grep -q "/etc/init.d/cron restart" "$f" \
+    && check "#869 $label postinst restarts cron" ok \
+    || check "#869 $label postinst restarts cron" \
+             "postinst doesn't restart cron after writing crontab"
+done
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

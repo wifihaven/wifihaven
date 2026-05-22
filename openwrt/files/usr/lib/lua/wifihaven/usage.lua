@@ -1,38 +1,50 @@
 -- usage.lua — nftables counter scraper and usage reporter
 --
--- Per-(mac, dst_ip) byte/packet accounting comes from the dynamic set
--- `mac_ip_tracking` declared in render.lua:
+-- Per-flow byte/packet accounting comes from two dynamic sets declared in
+-- render.lua:
 --
---   set mac_ip_tracking {
+--   set mac_ip_tracking {                   -- tx: device → remote
 --     type ether_addr . ipv4_addr
 --     flags dynamic,timeout
 --     counter
---     ...
+--   }
+--   set ip_tracking_rx {                    -- rx: remote → device
+--     type ipv4_addr
+--     flags dynamic,timeout
+--     counter
 --   }
 --   chain wifihaven_account {
 --     type filter hook forward priority 1; policy accept;
 --     update @mac_ip_tracking { ether saddr . ip daddr } counter
+--     update @ip_tracking_rx  { ip daddr } counter
 --   }
 --
--- Each set element carries its own counter, so we read
--- `nft -j list set inet wifihaven mac_ip_tracking` and walk
--- `nftables[*].set.elem[*].elem.{val.concat:[mac,ip], counter:{packets,bytes}}`.
--- After a successful POST the agent calls
--- `nft reset set inet wifihaven mac_ip_tracking` to zero the per-element
--- counters in place so the next bucket starts clean.
+-- The rx set is intentionally NOT keyed on `ether daddr`: at the forward
+-- hook the L2 daddr of a WAN→LAN routed packet is still the router's
+-- WAN-interface MAC (the rewrite to the LAN device MAC happens at egress
+-- via the neighbor cache). Keying on it attributed every download byte to
+-- the router itself (#879). Instead the rx set records per-(lan_ip)
+-- totals and the agent resolves the IP back to a MAC via the dnsmasq
+-- lease table; rx bytes for an IP not in the lease table are dropped.
 --
 -- Public API:
 --   usage.parse_nft_counters(json_str)
 --     → list of { mac, dst_ip, bytes, packets }
---     Input: JSON from `nft -j list set inet wifihaven mac_ip_tracking{,_rx}`
+--     Input: JSON from `nft -j list set inet wifihaven mac_ip_tracking`
 --
---   usage.merge_counters(tx, rx)
+--   usage.parse_nft_rx_counters(json_str)
+--     → list of { ip, bytes, packets }
+--     Input: JSON from `nft -j list set inet wifihaven ip_tracking_rx`
+--
+--   usage.merge_counters(tx, rx, ip_to_mac, log)
 --     → list of { mac, dst_ip, bytes, packets, bytes_out, packets_out }
---     Joins the two per-direction counter lists on (mac, dst_ip). `bytes`/
---     `packets` come from the tx set (device→remote, traffic ingressing the
---     router); `bytes_out`/`packets_out` come from the rx set (remote→device,
---     traffic egressing the router). Pairs missing from one direction are
---     still emitted with that side zeroed (#717).
+--     `tx` (device→remote) carries `{mac, dst_ip, bytes, packets}` and goes
+--     into bytes/packets. `rx` (remote→device) carries `{ip, bytes, packets}`
+--     and is resolved to a MAC via `ip_to_mac[ip]` (the dnsmasq lease table);
+--     unresolved IPs are dropped with a log line. Resolved rx contributions
+--     are attributed to the device with dst_ip = the LAN ip itself (the rx
+--     keying carries no remote_ip, so per-remote-host attribution is lost
+--     on the download side; the row lands on the device's own IP as host).
 --
 --   usage.build_report(counters, nft_sets, period_start, period_end, router_id,
 --                      leases, lookup_hostname, tracker,
@@ -120,16 +132,57 @@ function M.parse_nft_counters(json_str)
 end
 
 -- ---------------------------------------------------------------------------
--- usage.merge_counters(tx, rx)
+-- usage.parse_nft_rx_counters(json_str)
 --
--- Joins per-direction counter lists (each as produced by parse_nft_counters)
--- on (mac, dst_ip). The tx side is the existing `ether saddr . ip daddr`
--- direction and stays in `bytes`/`packets`; the rx side is the new
--- `ether daddr . ip saddr` direction and goes into `bytes_out`/`packets_out`.
--- A (mac, dst_ip) pair seen in only one direction still produces a record
--- with the other direction's fields at zero.
+-- Walks the JSON output of `nft -j list set inet wifihaven ip_tracking_rx`
+-- (single-key set: `type ipv4_addr`). Each set element's `val` is the IP
+-- string directly (not a `concat` array).
 -- ---------------------------------------------------------------------------
-function M.merge_counters(tx, rx)
+function M.parse_nft_rx_counters(json_str)
+  local jsonc   = require("luci.jsonc")
+  local decoded = jsonc.parse(json_str)
+  local result  = {}
+
+  if not decoded then return result end
+
+  for _, entry in ipairs(decoded.nftables or {}) do
+    local set = entry.set
+    if set and set.elem then
+      for _, wrapper in ipairs(set.elem) do
+        local e = wrapper.elem or wrapper
+        local ip = e.val
+        local counter = e.counter
+        if type(ip) == "string" and counter then
+          result[#result + 1] = {
+            ip      = ip,
+            bytes   = counter.bytes   or 0,
+            packets = counter.packets or 0,
+          }
+        end
+      end
+    end
+  end
+
+  return result
+end
+
+-- ---------------------------------------------------------------------------
+-- usage.merge_counters(tx, rx, ip_to_mac, log)
+--
+-- Joins tx (per (mac, remote_ip)) with rx (per (lan_ip), resolved to mac
+-- via `ip_to_mac`). Records are keyed (mac, dst_ip):
+--
+--   * tx records add `bytes`/`packets` at (mac, c.dst_ip).
+--   * rx records add `bytes_out`/`packets_out` at (resolved_mac, c.ip) —
+--     the LAN IP itself doubles as the host placeholder, since the rx set
+--     does not capture the remote IP (#879). The merge with a tx record
+--     at the same (mac, lan_ip) is incidental (tx normally targets remote
+--     IPs, not the device's own LAN IP) and is fine when it happens.
+--   * rx records whose `ip` is not in `ip_to_mac` are dropped. We log a
+--     summary count per bucket so unattributed download bytes are visible
+--     in `logread` without spamming a line per packet.
+-- ---------------------------------------------------------------------------
+function M.merge_counters(tx, rx, ip_to_mac, log)
   local index = {}
   local result = {}
   local function key(mac, dst_ip) return mac .. "|" .. dst_ip end
@@ -155,10 +208,22 @@ function M.merge_counters(tx, rx)
     rec.bytes   = rec.bytes   + (c.bytes   or 0)
     rec.packets = rec.packets + (c.packets or 0)
   end
+  local unknown_n     = 0
+  local unknown_bytes = 0
   for _, c in ipairs(rx or {}) do
-    local rec = get_or_make(c.mac, c.dst_ip)
-    rec.bytes_out   = rec.bytes_out   + (c.bytes   or 0)
-    rec.packets_out = rec.packets_out + (c.packets or 0)
+    local mac = ip_to_mac and ip_to_mac[c.ip] or nil
+    if mac then
+      local rec = get_or_make(mac, c.ip)
+      rec.bytes_out   = rec.bytes_out   + (c.bytes   or 0)
+      rec.packets_out = rec.packets_out + (c.packets or 0)
+    else
+      unknown_n     = unknown_n     + 1
+      unknown_bytes = unknown_bytes + (c.bytes or 0)
+    end
+  end
+  if unknown_n > 0 and log and log.debug then
+    log.debug("usage.merge_counters: dropped %d rx record(s) with unresolved ip (bytes=%d)",
+              unknown_n, unknown_bytes)
   end
   return result
 end
