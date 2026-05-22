@@ -1,0 +1,93 @@
+name: Master Router CD
+
+# Router deployment pipeline — produces the openwrt-latest rolling release.
+#
+# Split off from the unified Master CD in #871: a single workflow handling
+# both router and api/ui meant frequent api/ui pushes cancelled in-flight
+# router publishes. The two pipelines now share no state and each only
+# fires on changes to its own path scope, so api/ui churn cannot stall
+# router releases.
+#
+# Flow:
+#   ci-tests                    (full matrix; ci.yml self-filters by path)
+#     → gate-2-router-fake-api  (qemu OpenWRT + Alpine + fake API on KVM)
+#       → approve-production    (manual gate, `production` environment)
+#         → publish-openwrt     (rolling openwrt-latest GitHub Release)
+#
+# Path scope: see `on.push.paths` below. shared/** triggers BOTH pipelines
+# (router + api/ui) so wire-schema changes get a tandem release until #597
+# (capability negotiation) lands. Docs, READMEs, and meta files do not
+# fire CD on either side.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'openwrt/**'
+      - 'opnsense/**'
+      - 'shared/**'
+      - '.github/workflows/master-router.yml'
+      - '.github/workflows/openwrt-build.yml'
+      - '.github/workflows/e2e-vm-fake.yml'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+# No workflow-level concurrency. Pre-prod jobs carry their own job-level
+# cancel-in-progress so a faster main push pre-empts wasted build/gate
+# work — but publish-openwrt is unscoped and runs to completion once it
+# starts. A workflow-level cancel-in-progress would cancel the whole run
+# (including publish-openwrt mid-upload), which is exactly the #871 bug.
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  ci-tests:
+    name: CI
+    concurrency:
+      group: master-router-${{ github.ref }}-ci-tests
+      cancel-in-progress: true
+    uses: ./.github/workflows/ci.yml
+
+  # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
+  # against an in-process fake API serving snapshot fixtures. Runs on the
+  # self-hosted KVM runner; e2e-vm-fake.yml's own concurrency group
+  # serializes against the live-mode VM e2e workflow on the same host.
+  gate-2-router-fake-api:
+    name: Gate 2 — router fake-API e2e
+    needs: [ci-tests]
+    concurrency:
+      group: master-router-${{ github.ref }}-gate-2
+      cancel-in-progress: true
+    uses: ./.github/workflows/e2e-vm-fake.yml
+    secrets: inherit
+
+  # Manual-approval gate. Carries `environment: production` so GitHub pauses
+  # the run for an approval click before the rolling release is touched.
+  # API/UI prod approval lives on its own gate in master-api-ui.yml; both
+  # queue on the same `production` environment, so GitHub serializes
+  # approval prompts across the two pipelines.
+  approve-production:
+    name: Manual approval (router production gate)
+    needs: [gate-2-router-fake-api]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://github.com/wifihaven/wifihaven/releases/tag/openwrt-latest
+    steps:
+      - name: Approved
+        run: echo "Router release approved — publishing openwrt-latest."
+
+  # Rolling openwrt-latest release. Reusable openwrt-build.yml with
+  # publish_release: true; see that file for the gating logic. Intentionally
+  # has NO concurrency group: once approval lands, this job must run to
+  # completion regardless of any later main push.
+  publish-openwrt:
+    name: Publish OpenWRT release
+    needs: [approve-production]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/openwrt-build.yml
+    with:
+      publish_release: true
+    secrets: inherit

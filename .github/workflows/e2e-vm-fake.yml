@@ -4,12 +4,12 @@ name: VM e2e (fake API — Gate 2)
 # Alpine client on the self-hosted KVM runner against the in-process fake
 # API (scripts/e2e/fake-api/), runs scripts/e2e/scenarios_fake/.
 #
-# Gates publish-openwrt in master.yml via workflow_call. Does NOT gate
+# Gates publish-openwrt in master-router.yml via workflow_call. Does NOT gate
 # publish-api — Gate 1 (api-smoke-staging) and the planned Gate 3
 # integration smoke cover the API side.
 #
 # Triggers:
-#   - workflow_call    — invoked from master.yml as a needs: of publish-openwrt
+#   - workflow_call    — invoked from master-router.yml as a needs: of publish-openwrt
 #   - workflow_dispatch — manual debugging from the Actions tab
 #
 # Concurrency: shares the e2e-vm group with the live-mode VM e2e workflow
