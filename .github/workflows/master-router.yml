@@ -60,55 +60,15 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  # Build the OpenWRT VM image and upload it as a 14-day artifact. Gated on
-  # approve-production so we only burn the build (and keep an artifact)
-  # for commits that actually ship — unapproved/failed runs don't produce
-  # a misleading downloadable image. PR validation lives in
-  # router-image-build.yml.
+  # Build the OpenWRT VM image and upload it as an artifact. Reuses
+  # router-image-build.yml (which also runs standalone on PRs); gated on
+  # approve-production so the artifact only ships for prod-approved commits.
   build-vm-image:
-    name: Build OpenWRT VM image (x86_64)
+    name: Build OpenWRT VM image
     needs: [approve-production]
-    runs-on: ubuntu-latest
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Read pinned OpenWRT version
-        id: ver
-        run: |
-          # shellcheck disable=SC1091
-          . scripts/vm/versions.sh
-          {
-            echo "openwrt_version=${OPENWRT_VERSION}"
-            echo "tarball=${OPENWRT_IMAGEBUILDER_TARBALL}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Cache Image Builder download
-        uses: actions/cache@v5
-        with:
-          path: scripts/vm/.cache/downloads
-          key: openwrt-ib-${{ steps.ver.outputs.openwrt_version }}-${{ steps.ver.outputs.tarball }}
-
-      - name: Build router image
-        env:
-          IPK_SOURCE: local
-        run: |
-          chmod +x scripts/vm/build-router-image.sh openwrt/build-ipk.sh
-          scripts/vm/build-router-image.sh
-
-      - name: Image summary
-        run: |
-          ls -lh scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
-          file scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: openwrt-wifihaven-${{ steps.ver.outputs.openwrt_version }}-${{ github.sha }}
-          path: scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
-          if-no-files-found: error
-          retention-days: 14
+    uses: ./.github/workflows/router-image-build.yml
 
   # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
   # against an in-process fake API serving snapshot fixtures. Runs on the
