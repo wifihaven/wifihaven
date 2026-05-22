@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
@@ -41,20 +41,77 @@ function renderLayout() {
   )
 }
 
-describe('Layout — nav visibility', () => {
-  it('shows the Users link for admins', () => {
+describe('Layout — primary nav', () => {
+  it('renders the four primary items inline for admins', () => {
     renderLayout()
-    // Both desktop and mobile bottom nav include "Users"
-    expect(screen.getAllByRole('link', { name: /Users/ }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('link', { name: /Dashboard/ }).length).toBeGreaterThan(0)
+    for (const label of ['Dashboard', 'Devices', 'Profiles', 'Screen Time']) {
+      expect(screen.getAllByRole('link', { name: new RegExp(label) }).length).toBeGreaterThan(0)
+    }
   })
 
-  it('hides the Users link for non-admins', () => {
+  it('renders the four primary items inline for non-admins', () => {
     mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
     renderLayout()
-    expect(screen.queryByRole('link', { name: /Users/ })).not.toBeInTheDocument()
-    expect(screen.getAllByRole('link', { name: /Dashboard/ }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('link', { name: /Devices/ }).length).toBeGreaterThan(0)
+    for (const label of ['Dashboard', 'Devices', 'Profiles', 'Screen Time']) {
+      expect(screen.getAllByRole('link', { name: new RegExp(label) }).length).toBeGreaterThan(0)
+    }
+  })
+
+  it('does not render Logs inline in the desktop header', () => {
+    renderLayout()
+    // The Settings button is collapsed by default, so Logs should not be present yet.
+    expect(screen.queryByRole('link', { name: /Logs/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('Layout — Settings dropdown', () => {
+  it('reveals all settings items for admins when opened', async () => {
+    const user = userEvent.setup()
+    renderLayout()
+    await user.click(screen.getByRole('button', { name: /Settings/ }))
+    const menu = screen.getByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: /Logs/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Users/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Routers/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Admin/ })).toBeInTheDocument()
+  })
+
+  it('shows only Logs in the dropdown for non-admins', async () => {
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    const user = userEvent.setup()
+    renderLayout()
+    await user.click(screen.getByRole('button', { name: /Settings/ }))
+    const menu = screen.getByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: /Logs/ })).toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Users/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Routers/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Admin/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('Layout — mobile bottom nav', () => {
+  it('renders exactly 4 cells regardless of role', () => {
+    const { container, unmount } = renderLayout()
+    const bottomNav = container.querySelector('nav.md\\:hidden')
+    expect(bottomNav).not.toBeNull()
+    expect(bottomNav!.querySelectorAll('a').length).toBe(4)
+    unmount()
+
+    mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
+    const { container: c2 } = renderLayout()
+    const bottomNav2 = c2.querySelector('nav.md\\:hidden')
+    expect(bottomNav2!.querySelectorAll('a').length).toBe(4)
+  })
+})
+
+describe('Layout — mobile drawer', () => {
+  it('includes settings items in the flat drawer list for admins', async () => {
+    const user = userEvent.setup()
+    renderLayout()
+    await user.click(screen.getByRole('button', { name: /Open menu/ }))
+    // Drawer + bottom-nav both render links. With drawer open, Users should now appear.
+    expect(screen.getAllByRole('link', { name: /Users/ }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('link', { name: /Logs/ }).length).toBeGreaterThan(0)
   })
 })
 
