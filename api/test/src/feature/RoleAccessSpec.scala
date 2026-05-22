@@ -367,9 +367,19 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:01"), "kid-tablet", kidsId, "")
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:02"), "dad-laptop", adultsId, "")
-        _ <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
+        _     <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:00:00:01"),
+          "kid-tablet",
+          Some(kidsId),
+          "",
+        )
+        _     <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:00:00:02"),
+          "dad-laptop",
+          Some(adultsId),
+          "",
+        )
+        _     <- createUser(userRepo, upRepo, auth, "alice", "child", List(kidsId))
         token <- auth.login("alice", "pass").map(_.token.value)
         routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
         req    = Request
@@ -455,9 +465,19 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profiles    <- profileRepo.listAll
         kidsId   = profiles.find(_.name == "Kids").get.id
         adultsId = profiles.find(_.name == "Adults").get.id
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:01"), "kid-tablet", kidsId, "")
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:00:00:02"), "dad-laptop", adultsId, "")
-        _ <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
+        _     <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:00:00:01"),
+          "kid-tablet",
+          Some(kidsId),
+          "",
+        )
+        _     <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:00:00:02"),
+          "dad-laptop",
+          Some(adultsId),
+          "",
+        )
+        _     <- createUser(userRepo, upRepo, auth, "mom", "adult", List(kidsId))
         token <- auth.login("mom", "pass").map(_.token.value)
         routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
         req    = Request

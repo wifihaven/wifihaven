@@ -109,7 +109,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
     for {
       pid <- profileRepo.create("Kids", List(BlocklistId.unsafe("adult")))
-      _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", pid, "192.168.1.10")
+      _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", Some(pid), "192.168.1.10")
     } yield ()
 
   def spec = suite("Router ingest /api/router/*")(
@@ -687,7 +687,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         pid      <- pRepo.create("Kids", List.empty)
         _        <- tlr.upsert(pid, 1)
         // 2. Device assigned to that profile
-        _        <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", pid, "192.168.1.10")
+        _        <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", Some(pid), "192.168.1.10")
         // 3. Router (RouterAuth.sha256Hex == PolicyService.hashToken, so the
         //    same bearer authenticates against both ingest and policy routes).
         (id, tk) <- seedRouter(rRepo)

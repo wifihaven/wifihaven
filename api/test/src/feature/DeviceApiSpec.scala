@@ -45,7 +45,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         body   = UpsertDeviceRequest(
           mac = MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
           name = "iPad",
-          profileId = kidsId,
+          profileId = Some(kidsId),
         ).toJson
         putReq = Request
           .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
@@ -79,8 +79,12 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         kidsId = profiles.find(_.name == "Kids").get.id
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
-        body = UpsertDeviceRequest(MacAddress.unsafe("aa:bb:cc:dd:ee:ff"), "Laptop", kidsId).toJson
-        req  = Request
+        body   = UpsertDeviceRequest(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:ff"),
+          "Laptop",
+          Some(kidsId),
+        ).toJson
+        req    = Request
           .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token.value))
           .addHeader(Header.ContentType(MediaType.application.json))
@@ -98,7 +102,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "11:22:33:44:55:66"
-        _ <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldDevice", kidsId, "192.168.1.50")
+        _ <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldDevice", Some(kidsId), "192.168.1.50")
         userProfileRepo <- ZIO.service[UserProfileRepo]
         routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
         delReq = Request
@@ -117,7 +121,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         profiles    <- profileRepo.listAll
         kidsId = profiles.find(_.name == "Kids").get.id
         mac    = "cc:dd:ee:ff:00:11"
-        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Laptop", kidsId, "192.168.1.5")
+        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Laptop", Some(kidsId), "192.168.1.5")
         _      <- deviceRepo.updateLastSeen(MacAddress.unsafe(mac), "192.168.1.99")
         device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
       } yield assertTrue(device.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.99")))) &&
@@ -135,14 +139,134 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         adultsId = profiles.find(_.name == "Adults").get.id
         mac      = "aa:bb:cc:00:00:01"
         // First insert: assigned to Kids, router later sets last_seen_ip.
-        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Phone", kidsId, "")
+        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Phone", Some(kidsId), "")
         _      <- deviceRepo.updateLastSeen(MacAddress.unsafe(mac), "192.168.1.10")
         // Re-assign to Adults and rename — last_seen_ip must survive unchanged.
-        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Tablet", adultsId, "")
+        _      <- deviceRepo.upsert(MacAddress.unsafe(mac), "Tablet", Some(adultsId), "")
         device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
       } yield assertTrue(device.exists(_.profileId.contains(adultsId))) &&
         assertTrue(device.exists(_.name == "Tablet")) &&
         assertTrue(device.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.10"))))
+    },
+    test("#708 insert with profileId=None creates an unassigned device") {
+      for {
+        _               <- cleanDb
+        deviceRepo      <- ZIO.service[DeviceRepo]
+        auth            <- makeAuth
+        token           <- auth.login("admin", "changeme").map(_.token)
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        body   = UpsertDeviceRequest(
+          mac = MacAddress.unsafe("aa:bb:cc:00:00:10"),
+          name = "Lutron Bridge",
+          profileId = None,
+        ).toJson
+        putReq = Request
+          .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
+          .addHeader(Header.Authorization.Bearer(token.value))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        resp   <- routes.runZIO(putReq)
+        device <- deviceRepo.findByMac(MacAddress.unsafe("aa:bb:cc:00:00:10"))
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(device.exists(_.name == "Lutron Bridge")) &&
+        assertTrue(device.exists(_.profileId.isEmpty))
+    },
+    test("#708 update with profileId=None clears the profile assignment") {
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token)
+        profiles    <- profileRepo.listAll
+        kidsId = profiles.find(_.name == "Kids").get.id
+        mac    = "aa:bb:cc:00:00:20"
+        _               <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldName", Some(kidsId), "")
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        body   = UpsertDeviceRequest(MacAddress.unsafe(mac), "NewName", None).toJson
+        putReq = Request
+          .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
+          .addHeader(Header.Authorization.Bearer(token.value))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        resp   <- routes.runZIO(putReq)
+        device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(device.exists(_.name == "NewName")) &&
+        assertTrue(device.exists(_.profileId.isEmpty))
+    },
+    test("#708 update with profileId=Some re-assigns profile and changes name") {
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token)
+        profiles    <- profileRepo.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        mac      = "aa:bb:cc:00:00:21"
+        _               <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldName", Some(kidsId), "")
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        routes = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        body   = UpsertDeviceRequest(MacAddress.unsafe(mac), "NewName", Some(adultsId)).toJson
+        putReq = Request
+          .put(URL.decode("/api/devices").toOption.get, Body.fromString(body))
+          .addHeader(Header.Authorization.Bearer(token.value))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        resp   <- routes.runZIO(putReq)
+        device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(device.exists(_.name == "NewName")) &&
+        assertTrue(device.exists(_.profileId.contains(adultsId)))
+    },
+    test(
+      "#708 non-admin rename without profileId succeeds; supplying inaccessible profileId still 403s",
+    ) {
+      // The PUT /api/devices auth check is requireWriter (adult/admin role), and on
+      // top of that requireProfileAccess only fires when a profileId is supplied.
+      // So an adult can rename without supplying a profile (the device ends up
+      // unassigned), but cannot move it to Adults if they aren't linked to Adults.
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        profiles    <- profileRepo.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        mac      = "aa:bb:cc:00:00:22"
+        _     <- deviceRepo.upsert(MacAddress.unsafe(mac), "OldName", Some(kidsId), "")
+        // mom is an adult linked only to Kids — not Adults.
+        hash  <- auth.hashPassword("pass")
+        momId <- userRepo.create("mom", hash, "adult")
+        _     <- userRepo.clearMustChangePassword(momId)
+        _     <- upRepo.setProfilesForUser(momId, List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token.value)
+        routes     = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        // Rename only — no profileId supplied — should succeed.
+        renameBody = UpsertDeviceRequest(MacAddress.unsafe(mac), "RenamedByMom", None).toJson
+        renameReq  = Request
+          .put(URL.decode("/api/devices").toOption.get, Body.fromString(renameBody))
+          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        renameResp  <- routes.runZIO(renameReq)
+        afterRename <- deviceRepo.findByMac(MacAddress.unsafe(mac))
+        // Now try to move to Adults (mom isn't linked) — should 403.
+        moveBody = UpsertDeviceRequest(MacAddress.unsafe(mac), "Moved", Some(adultsId)).toJson
+        moveReq  = Request
+          .put(URL.decode("/api/devices").toOption.get, Body.fromString(moveBody))
+          .addHeader(Header.Authorization.Bearer(token))
+          .addHeader(Header.ContentType(MediaType.application.json))
+        moveResp  <- routes.runZIO(moveReq)
+        afterMove <- deviceRepo.findByMac(MacAddress.unsafe(mac))
+      } yield assertTrue(renameResp.status == Status.Ok) &&
+        assertTrue(afterRename.exists(_.name == "RenamedByMom")) &&
+        assertTrue(afterRename.exists(_.profileId.isEmpty)) &&
+        assertTrue(moveResp.status == Status.Forbidden) &&
+        assertTrue(afterMove.exists(_.profileId.isEmpty))
     },
   ) @@ TestAspect.sequential
 }
