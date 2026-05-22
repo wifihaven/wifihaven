@@ -108,22 +108,6 @@ object UsageTraffic {
   }
 
   /**
-   * #846 audit + #858: drop traffic_reports rows that carry no usable signal — bytes_in = bytes_out
-   * \= active_seconds = 0. These should never reach the server (router-side bug per #858) but the
-   * agent does emit them today. We filter on read so the human-facing pages aren't drowned in
-   * noise.
-   *
-   * TODO(#864): once observability lands, replace the per-request log warning with a Counter so
-   * silent regressions of #858 are alertable.
-   */
-  def cleanRows(rows: List[TrafficUsageDbRow]): (List[TrafficUsageDbRow], Int) = {
-    val (good, bad) = rows.partition { r =>
-      r.activeSeconds > 0 || r.bytesIn > 0L || r.bytesOut > 0L
-    }
-    (good, bad.size)
-  }
-
-  /**
    * Build raw rows for the page. Each `TrafficReport` becomes one `TrafficUsageRawRow`, decorated
    * with device + profile names looked up from the supplied maps.
    */

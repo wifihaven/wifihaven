@@ -308,25 +308,17 @@ object UsageRoutes {
               Response.forbidden("mac or profileId required for non-admin"),
             )
       }
-      rawRows      <-
+      // #858: zero-bytes-zero-seconds rows are filtered at SQL level in
+      // listRawInRange so the application never sees them. TODO(#864) wire
+      // a metric for "rows filtered" once observability lands.
+      rows         <-
         if (macs.isEmpty && (macOpt.isDefined || profileIdOpt.isDefined))
           ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
         else
           trafficRepo
             .listRawInRange(macs, fromI, toI)
             .mapError(ErrorMapper.dbErrorToResponse)
-      // #858: drop zero-bytes-zero-seconds rows that the agent shouldn't be
-      // emitting. Log a warning so we can spot regressions; TODO(#864) wire
-      // to a metric once observability lands.
-      cleaned      = UsageTraffic.cleanRows(rawRows)
-      rows         = cleaned._1
-      droppedCount = cleaned._2
-      _        <- ZIO
-        .logWarning(
-          s"#858: dropped $droppedCount/${rawRows.size} traffic_reports rows with bytes=0 + secs=0",
-        )
-        .when(droppedCount > 0)
-      profiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      profiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
       profNames        = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac         = allDevices.iterator.map(d => d.mac -> d).toMap
       // #846 audit: cap raw rows. The default 24h window can hit 40k+ rows;

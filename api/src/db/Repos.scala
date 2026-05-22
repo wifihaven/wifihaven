@@ -1084,7 +1084,9 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                    AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
                  ORDER BY ts DESC LIMIT 1
                ) ce ON tr.host_type IN ('ipv4','ipv6')
-               WHERE tr.date BETWEEN $from AND $to AND """ ++ Fragments.in(fr"tr.mac", nel)
+               WHERE tr.date BETWEEN $from AND $to
+                 AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
+                 AND """ ++ Fragments.in(fr"tr.mac", nel)
         q.query[Row]
           .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
             val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
@@ -1120,7 +1122,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
              ORDER BY ts DESC LIMIT 1
            ) ce ON tr.host_type IN ('ipv4','ipv6')
-           WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant """
+           WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
+             AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0) """
     val macFilter  = macs match {
       case Nil => fr""
       case ms  =>

@@ -307,9 +307,16 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
               </td>
             </tr>
           )}
-          {data.aggregateRows.map((r, i) => (
-            <tr key={i} className="border-t border-gray-800">
-              <td className="px-2 py-1 font-mono text-xs">{localTime(r.windowStart)}</td>
+          {data.aggregateRows.map((r, i) => {
+            // Collapse repeated window_start values: show only on first row
+            // of each window so window boundaries are easy to scan.
+            const prevWindow = i > 0 ? data.aggregateRows[i - 1].windowStart : null
+            const showWindow = r.windowStart !== prevWindow
+            return (
+            <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>
+              <td className="px-2 py-1 font-mono text-xs">
+                {showWindow ? localTime(r.windowStart) : ''}
+              </td>
               <td className="px-2 py-1">
                 <NonGroupedCell
                   groupedValue={groupBy.includes('device') ? r.groups.device : undefined}
@@ -335,7 +342,8 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.totalBytesOut)}</td>
               <td className="px-2 py-1 text-right font-mono">{fmtDuration(r.totalSeconds)}</td>
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>

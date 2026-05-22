@@ -276,9 +276,14 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
               </td>
             </tr>
           )}
-          {rows.map((r, i) => (
-            <tr key={i} className="border-t border-gray-800">
-              <td className="px-2 py-1 font-mono text-xs">{localTime(r.windowStart)}</td>
+          {rows.map((r, i) => {
+            const prevWindow = i > 0 ? rows[i - 1].windowStart : null
+            const showWindow = r.windowStart !== prevWindow
+            return (
+            <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>
+              <td className="px-2 py-1 font-mono text-xs">
+                {showWindow ? localTime(r.windowStart) : ''}
+              </td>
               <td className="px-2 py-1">
                 <NonGroupedCell
                   groupedValue={groupBy.includes('device') ? r.groups.device : undefined}
@@ -304,7 +309,8 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
               <td className="px-2 py-1 text-red-400 text-right">{r.countBlocked}</td>
               <td className="px-2 py-1 font-mono text-xs">{localTime(r.lastSeen)}</td>
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>
