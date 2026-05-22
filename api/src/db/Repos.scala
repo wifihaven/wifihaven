@@ -1127,7 +1127,9 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         fr"AND " ++ Fragments.in(fr"tr.mac", nel)
     }
-    val select     = baseSelect ++ macFilter ++ fr"ORDER BY tr.period_start"
+    // #846 audit: newest-first ordering so the SPA renders most-recent at top
+    // and the route's `take(rawLimit)` returns the most recent N rows.
+    val select     = baseSelect ++ macFilter ++ fr"ORDER BY tr.period_start DESC"
     select
       .query[Row]
       .map { case (m, h, ps, pe, secs, bi, bo) =>
@@ -1434,7 +1436,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
     (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
       fr"GROUP BY " ++ groupByCols ++
-      fr"ORDER BY (COUNT(*)) DESC LIMIT ${f.limit} OFFSET ${f.offset}")
+      // #846 audit: order by newest window first, then biggest count within
+      // window — was sorting by total count only which scrambled the
+      // chronology.
+      fr"ORDER BY window_start DESC, COUNT(*) DESC LIMIT ${f.limit} OFFSET ${f.offset}")
       .query[
         (
             Option[String], // grp_domain

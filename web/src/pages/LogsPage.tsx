@@ -30,8 +30,6 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
 export function LogsPage() {
   const [bucket, setBucket]     = useState<EventsBucket>('raw')
   const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(['domain'])
-  const [endAt, setEndAt]       = useState<string>(() => new Date().toISOString())
-  const { from, to } = useMemo(() => windowFromTo(bucket, endAt), [bucket, endAt])
   const [mac, setMac]           = useState<string>('')
   const [profileId, setProfileId] = useState<string>('')
   const [devices, setDevices]   = useState<Device[]>([])
@@ -68,12 +66,9 @@ export function LogsPage() {
         mac={mac}
         profileId={profileId}
         bucket={bucket}
-        endAt={endAt}
-        hideEndAt={bucket === 'raw'}
         onMacChange={v => { setMac(v); if (v) setProfileId('') }}
         onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
         onBucketChange={setBucket}
-        onEndAtChange={setEndAt}
       />
 
       {bucket === 'raw'
@@ -89,17 +84,9 @@ export function LogsPage() {
             onToggleGroup={toggleGroup}
             mac={mac}
             profileId={profileId}
-            from={from}
-            to={to}
           />}
     </div>
   )
-}
-
-function hoursBetween(from: string, to: string): number {
-  const f = new Date(from).getTime()
-  const t = new Date(to).getTime()
-  return Math.max(1, Math.ceil((t - f) / (3600 * 1000)))
 }
 
 function Spinner() {
@@ -229,11 +216,9 @@ interface AggProps {
   onToggleGroup: (key: string) => void
   mac: string
   profileId: string
-  from: string
-  to: string
 }
 
-function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId, from, to }: AggProps) {
+function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }: AggProps) {
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
@@ -242,19 +227,20 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId, 
     let cancelled = false
     setLoading(true)
     setError(null)
+    const { from, to } = windowFromTo(bucket, new Date().toISOString())
     api.logs.series({
       bucket,
       groupBy,
       mac:       mac || undefined,
       profileId: profileId ? Number(profileId) : undefined,
-      hours:     hoursBetween(from, to),
+      hours:     Math.max(1, Math.ceil((new Date(to).getTime() - new Date(from).getTime()) / 3600000)),
       limit:     500,
     })
       .then(d => { if (!cancelled) setRows(d) })
       .catch(e => { if (!cancelled) { setRows([]); setError(String(e.message ?? e)) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [bucket, groupBy.join(','), mac, profileId, from, to])
+  }, [bucket, groupBy.join(','), mac, profileId])
 
   if (loading) return <Spinner />
   if (error)   return <ErrorBanner message={error} />

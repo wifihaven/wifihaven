@@ -211,6 +211,9 @@ object UsageTraffic {
           soleDomain = soleOf(GroupBy.Domain, domains),
         )
       }
-      .sortBy(r => (r.windowStart, -r.totalBytesIn - r.totalBytesOut))
+      // #846 audit: newest window first, then biggest-bytes-first within window.
+      .sortBy(r => (r.windowStart, r.totalBytesIn + r.totalBytesOut))(
+        Ordering.Tuple2(Ordering.String.reverse, Ordering.Long.reverse),
+      )
   }
 }

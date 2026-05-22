@@ -9,7 +9,6 @@ import type {
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
-import { EndAtPicker } from '@/components/usage/EndAtPicker'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import {
   fmtBytes,
@@ -28,10 +27,6 @@ const DEFAULT_RAW_LIMIT = 100
 export function TrafficUsagePage() {
   const [bucket, setBucket]     = useState<TrafficUsageBucket>('raw')
   const [groupBy, setGroupBy]   = useState<TrafficUsageGroupBy[]>(['domain'])
-  const [endAt, setEndAt]       = useState<string>(() => new Date().toISOString())
-  // From is derived from bucket — fixed look-back per agg level. Infinite
-  // scroll lands in #862.
-  const { from, to } = useMemo(() => windowFromTo(bucket, endAt), [bucket, endAt])
   const [mac, setMac]           = useState<string>('')
   const [profileId, setProfileId] = useState<string>('')
   const [devices, setDevices]   = useState<Device[]>([])
@@ -45,10 +40,13 @@ export function TrafficUsagePage() {
     api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
   }, [])
 
+  // Window is bucket-derived, anchored at "now-at-fetch-time". No end-at
+  // picker — paging older history is #862's job.
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
+    const { from, to } = windowFromTo(bucket, new Date().toISOString())
     api.usage
       .traffic({
         mac: mac || undefined,
@@ -72,7 +70,7 @@ export function TrafficUsagePage() {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [bucket, groupBy, from, to, mac, profileId])
+  }, [bucket, groupBy, mac, profileId])
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
@@ -102,11 +100,9 @@ export function TrafficUsagePage() {
         mac={mac}
         profileId={profileId}
         bucket={bucket}
-        endAt={endAt}
         onMacChange={v => { setMac(v); if (v) setProfileId('') }}
         onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
         onBucketChange={setBucket}
-        onEndAtChange={setEndAt}
       />
 
       {error && <ErrorBanner message={error} />}
@@ -128,26 +124,19 @@ interface ShelfProps {
   mac: string
   profileId: string
   bucket: TrafficUsageBucket
-  endAt: string
   onMacChange: (v: string) => void
   onProfileChange: (v: string) => void
   onBucketChange: (b: TrafficUsageBucket) => void
-  onEndAtChange: (iso: string) => void
-  // Connection Events raw view doesn't honor an end-at anchor yet (API only
-  // accepts hours-from-now, see #863); hide the picker rather than showing
-  // a control that doesn't do anything.
-  hideEndAt?: boolean
 }
 
 // Shared filter shelf — same shape used by Connection Events page.
 export function FilterShelf({
-  devices, profiles, mac, profileId, bucket, endAt, hideEndAt,
-  onMacChange, onProfileChange, onBucketChange, onEndAtChange,
+  devices, profiles, mac, profileId, bucket,
+  onMacChange, onProfileChange, onBucketChange,
 }: ShelfProps) {
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
       <BucketSelector value={bucket} onChange={onBucketChange} />
-      {!hideEndAt && <EndAtPicker to={endAt} onChange={onEndAtChange} />}
       <div className="flex flex-wrap gap-3">
         <label className="text-xs text-gray-400">
           Device

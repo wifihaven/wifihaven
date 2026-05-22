@@ -340,7 +340,7 @@ object UsageRoutes {
             from = fromI.toString,
             to = toI.toString,
             tz = zone.getId,
-            rawRows = allRaw.takeRight(rawLimit),
+            rawRows = allRaw.take(rawLimit),
             aggregateRows = Nil,
             rawRowLimit = Some(rawLimit),
             rawRowsTruncated = truncated,
