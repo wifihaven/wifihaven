@@ -189,14 +189,16 @@ IPK_SOURCE=path IPK_PATH=/abs/path/wifihaven_X.Y.Z-1_all.ipk \
     scripts/vm/build-router-image.sh
 ```
 
-Output: `.cache/openwrt-wifihaven.img` (uncompressed, ready to feed
+Output: `.cache/openwrt-wifihaven-ipk-23.05.img` for the default ipk
+flavor, or `.cache/openwrt-wifihaven-apk-25.12.img` for `PKG_FORMAT=apk`
+(uncompressed, ready to feed
 directly to QEMU). Image size: ~30–50 MB.
 
 To boot it via the existing harness, point `router-up.sh` at the file
 through `WH_ROUTER_IMAGE_PATH`:
 
 ```bash
-WH_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-wifihaven.img \
+WH_ROUTER_IMAGE_PATH=scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img \
     scripts/vm/router-up.sh
 ```
 

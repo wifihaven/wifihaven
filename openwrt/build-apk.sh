@@ -44,7 +44,15 @@ ensure_apk() {
         cd "$APK_TOOLS_PREFIX/src"
         # -Durl_backend=wget avoids needing libfetch on Ubuntu.
         # -Ddocs/help/zstd disabled where not strictly required for `mkpkg`.
-        meson setup --reconfigure \
+        # --reconfigure only on re-runs; meson 1.0.x (Debian bookworm)
+        # errors out on first-run --reconfigure with "Directory does not
+        # contain a valid build tree". Newer meson is tolerant.
+        if [ -f "$APK_TOOLS_PREFIX/build/build.ninja" ]; then
+            meson_reconfigure="--reconfigure"
+        else
+            meson_reconfigure=""
+        fi
+        meson setup $meson_reconfigure \
             -Dprefix=/usr \
             -Durl_backend=wget \
             -Dhelp=disabled \

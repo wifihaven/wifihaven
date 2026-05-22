@@ -72,7 +72,7 @@ jobs:
 
       - name: Build router image (if not cached)
         run: |
-          if [[ -f scripts/vm/.cache/openwrt-wifihaven.img ]]; then
+          if [[ -f scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img ]]; then
             echo "router image cached, skipping build"
           else
             scripts/vm/build-router-image.sh
@@ -91,7 +91,7 @@ jobs:
       # stack bring-up / teardown / log capture is needed here.
       - name: Run e2e fake-mode suite
         env:
-          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven.img
+          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
         run: scripts/e2e-vm.sh --mode=fake
 
       - name: Upload failure artifacts

@@ -82,7 +82,7 @@ jobs:
 
       - name: Build router image (if not cached)
         run: |
-          if [[ -f scripts/vm/.cache/openwrt-wifihaven.img ]]; then
+          if [[ -f scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img ]]; then
             echo "router image cached, skipping build"
           else
             scripts/vm/build-router-image.sh
@@ -111,7 +111,7 @@ jobs:
 
       - name: Run e2e suite
         env:
-          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven.img
+          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
           # #473: pytest's stack fixture defaults to tearing the docker
           # compose stack down at session end, which removes containers
           # before the failure-capture step below can read their logs.
