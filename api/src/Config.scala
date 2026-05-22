@@ -16,6 +16,16 @@ case class AppConfig(
   // Read from env, not HOCON, so it stays out of application.conf — debug
   // belongs to the runtime environment, not the persistent config.
   val debugEnabled: Boolean = AppConfig.envTruthy(sys.env.get("WIFIHAVEN_DEBUG"))
+
+  // #706: WIFIHAVEN_ENV gates dev-only fixtures (currently: the test_ads /
+  // test_social blocklist seed). Recognized values: "prod" (default, no
+  // fixtures), "dev" (re-seed test blocklists after migrations). Read from
+  // env, not HOCON — environment identity belongs to the deploy target, not
+  // the persistent config file. Default is "prod" so any unset deployment
+  // is safe.
+  val env: String    =
+    sys.env.get("WIFIHAVEN_ENV").map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("prod")
+  val isDev: Boolean = env == "dev"
 }
 
 case class DbConfig(

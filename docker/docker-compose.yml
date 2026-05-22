@@ -40,6 +40,9 @@ services:
       WIFIHAVEN_DB_PASSWORD: wifihaven
       WIFIHAVEN_HTTP_PORT: "8080"
       WIFIHAVEN_JWT_SECRET: "staging-jwt-secret-do-not-use-in-prod-32ch"
+      # #706: enable dev fixtures (test_ads / test_social blocklists). The
+      # API defaults to env=prod (no fixtures); local + CI need the seed.
+      WIFIHAVEN_ENV: "dev"
       # #612: allow the Vite dev server and the JVM-bundled SPA on localhost.
       WIFIHAVEN_ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:8080"
       # #614: dev defaults to serving the bundled SPA at http://localhost:8080/.

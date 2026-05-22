@@ -31,6 +31,13 @@ object Main extends ZIOAppDefault {
         .when(cfg.debugEnabled)
       _      <- Database.runMigrations(cfg.db)
       _      <- ZIO.logInfo("Database migrations complete")
+      // #706: re-seed test_ads / test_social blocklists only on dev. V26
+      // removed them from every DB; without this they'd be missing from
+      // local + e2e stacks that expect them as fixtures.
+      _      <- ZIO
+        .serviceWithZIO[BlocklistRepo](DevSeeder.seedTestBlocklists)
+        .zipLeft(ZIO.logInfo(s"WIFIHAVEN_ENV=${cfg.env} — dev fixtures seeded"))
+        .when(cfg.isDev)
       // #334: ensure household_settings has its single row, defaulting the
       // daily-reset tz to the API server's local zone on first install. No-op
       // on subsequent boots because of ON CONFLICT DO NOTHING.

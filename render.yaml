@@ -71,6 +71,11 @@ services:
       # Staging runs DEBUG so issues are visible in the Render log stream.
       - key: WIFIHAVEN_LOG_LEVEL
         value: DEBUG
+      # #706: staging is expendable and used for e2e fixtures, so re-seed
+      # the test_ads / test_social blocklists after migrations. Prod omits
+      # this key entirely — the API defaults to env=prod (no fixtures).
+      - key: WIFIHAVEN_ENV
+        value: dev
       # Entrypoint warns if WIFIHAVEN_DEBUG is non-empty (mounts debug
       # endpoints on loopback). Keep explicitly empty in staging.
       - key: WIFIHAVEN_DEBUG
