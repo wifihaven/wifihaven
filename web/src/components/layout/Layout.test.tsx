@@ -60,7 +60,7 @@ describe('Layout — primary nav', () => {
   it('does not render Usage inline in the desktop header', () => {
     renderLayout()
     // The Advanced button is collapsed by default, so Usage should not be present yet.
-    expect(screen.queryByRole('link', { name: /^Usage$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Usage/ })).not.toBeInTheDocument()
   })
 })
 
@@ -70,7 +70,7 @@ describe('Layout — Settings dropdown', () => {
     renderLayout()
     await user.click(screen.getByRole('button', { name: /Advanced/ }))
     const menu = screen.getByRole('menu')
-    expect(within(menu).getByRole('menuitem', { name: /^Usage$/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Usage/ })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: /Traffic Reports/ })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: /Connection Events/ })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: /Users/ })).toBeInTheDocument()
@@ -84,7 +84,7 @@ describe('Layout — Settings dropdown', () => {
     renderLayout()
     await user.click(screen.getByRole('button', { name: /Advanced/ }))
     const menu = screen.getByRole('menu')
-    expect(within(menu).getByRole('menuitem', { name: /^Usage$/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Usage/ })).toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Users/ })).not.toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Routers/ })).not.toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Settings/ })).not.toBeInTheDocument()
@@ -113,7 +113,7 @@ describe('Layout — mobile drawer', () => {
     await user.click(screen.getByRole('button', { name: /Open menu/ }))
     // Drawer + bottom-nav both render links. With drawer open, Users + Usage should appear.
     expect(screen.getAllByRole('link', { name: /Users/ }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('link', { name: /^Usage$/ }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('link', { name: /Usage/ }).length).toBeGreaterThan(0)
   })
 })
 
