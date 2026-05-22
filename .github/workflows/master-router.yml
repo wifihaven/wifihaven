@@ -60,13 +60,14 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  # Build the OpenWRT VM image and upload it as a 14-day artifact. Mirrors
-  # the PR-validation build in router-image-build.yml — running it here
-  # means every router push to main also produces a downloadable image
-  # without a separate workflow. Independent of ci-tests / gate-2 so a
-  # red lint or qemu run doesn't lose the artifact.
+  # Build the OpenWRT VM image and upload it as a 14-day artifact. Gated on
+  # approve-production so we only burn the build (and keep an artifact)
+  # for commits that actually ship — unapproved/failed runs don't produce
+  # a misleading downloadable image. PR validation lives in
+  # router-image-build.yml.
   build-vm-image:
     name: Build OpenWRT VM image (x86_64)
+    needs: [approve-production]
     runs-on: ubuntu-latest
     permissions:
       contents: read
