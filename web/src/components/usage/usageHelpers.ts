@@ -1,26 +1,29 @@
+import type { TrafficUsageBucket } from '@/types/api'
+
 // #846 — shared helpers for the Traffic Usage + Connection Events pages.
 
-export type RangePreset = '1h' | '6h' | '24h' | '7d' | 'custom'
-
-export const PRESET_LABELS: Record<Exclude<RangePreset, 'custom'>, string> = {
-  '1h':  'Last 1h',
-  '6h':  'Last 6h',
-  '24h': 'Last 24h',
-  '7d':  'Last 7d',
+// Bucket → wall-clock window we anchor at "to". Picked so each bucket level
+// shows a useful but bounded number of rows without paging (proper paging
+// lands in #862). Raw is unique — it's bounded by row-count, not window-width.
+export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw' | '1m'>, number> = {
+  '10m': 24 * 60 * 60 * 1000,        // 1 day
+  '1h':  7 * 24 * 60 * 60 * 1000,    // 1 week
+  '12h': 14 * 24 * 60 * 60 * 1000,   // 2 weeks
+  '1d':  30 * 24 * 60 * 60 * 1000,   // 1 month
+  '1w':  180 * 24 * 60 * 60 * 1000,  // 6 months
 }
 
-export const PRESET_MS: Record<Exclude<RangePreset, 'custom'>, number> = {
-  '1h':  60 * 60 * 1000,
-  '6h':  6 * 60 * 60 * 1000,
-  '24h': 24 * 60 * 60 * 1000,
-  '7d':  7 * 24 * 60 * 60 * 1000,
-}
+// Raw view is row-count bounded; API enforces a `limit` (default 100). We
+// anchor the window at `to` and walk back a generous distance — the row cap
+// handles the truncation.
+export const RAW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000  // 1 week look-back ceiling
 
-export function presetRange(preset: Exclude<RangePreset, 'custom'>): { from: string; to: string } {
-  const now  = Date.now()
-  const from = new Date(now - PRESET_MS[preset]).toISOString()
-  const to   = new Date(now).toISOString()
-  return { from, to }
+export function windowFromTo(bucket: TrafficUsageBucket, to: string): { from: string; to: string } {
+  const t = new Date(to).getTime()
+  const width = bucket === 'raw' || bucket === '1m'
+    ? RAW_WINDOW_MS
+    : BUCKET_WINDOW_MS[bucket]
+  return { from: new Date(t - width).toISOString(), to: new Date(t).toISOString() }
 }
 
 // <input type="datetime-local"> needs "YYYY-MM-DDTHH:mm" in local time, not UTC ISO.

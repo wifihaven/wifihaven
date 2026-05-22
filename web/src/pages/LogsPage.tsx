@@ -5,11 +5,7 @@ import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsa
 import { HostCell } from '@/components/HostCell'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { FilterShelf } from './TrafficUsagePage'
-import {
-  localTime,
-  presetRange,
-  type RangePreset,
-} from '@/components/usage/usageHelpers'
+import { localTime, windowFromTo } from '@/components/usage/usageHelpers'
 
 // #846 — Connection Events page. Same look/feel as Traffic Usage; column
 // headers double as group-by toggles. apex/app deferred to #856/#857.
@@ -34,10 +30,8 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
 export function LogsPage() {
   const [bucket, setBucket]     = useState<EventsBucket>('raw')
   const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(['domain'])
-  const initial = useMemo(() => presetRange('24h'), [])
-  const [from, setFrom]         = useState<string>(initial.from)
-  const [to, setTo]             = useState<string>(initial.to)
-  const [preset, setPreset]     = useState<RangePreset>('24h')
+  const [endAt, setEndAt]       = useState<string>(() => new Date().toISOString())
+  const { from, to } = useMemo(() => windowFromTo(bucket, endAt), [bucket, endAt])
   const [mac, setMac]           = useState<string>('')
   const [profileId, setProfileId] = useState<string>('')
   const [devices, setDevices]   = useState<Device[]>([])
@@ -74,13 +68,11 @@ export function LogsPage() {
         mac={mac}
         profileId={profileId}
         bucket={bucket}
-        from={from}
-        to={to}
-        preset={preset}
+        endAt={endAt}
         onMacChange={v => { setMac(v); if (v) setProfileId('') }}
         onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
         onBucketChange={setBucket}
-        onRangeChange={r => { setFrom(r.from); setTo(r.to); setPreset(r.preset) }}
+        onEndAtChange={setEndAt}
       />
 
       {bucket === 'raw'

@@ -9,14 +9,13 @@ import type {
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
-import { DateRangePicker } from '@/components/usage/DateRangePicker'
+import { EndAtPicker } from '@/components/usage/EndAtPicker'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import {
   fmtBytes,
   fmtDuration,
   localTime,
-  presetRange,
-  type RangePreset,
+  windowFromTo,
 } from '@/components/usage/usageHelpers'
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
@@ -29,10 +28,10 @@ const DEFAULT_RAW_LIMIT = 100
 export function TrafficUsagePage() {
   const [bucket, setBucket]     = useState<TrafficUsageBucket>('raw')
   const [groupBy, setGroupBy]   = useState<TrafficUsageGroupBy[]>(['domain'])
-  const initial = useMemo(() => presetRange('24h'), [])
-  const [from, setFrom]         = useState<string>(initial.from)
-  const [to, setTo]             = useState<string>(initial.to)
-  const [preset, setPreset]     = useState<RangePreset>('24h')
+  const [endAt, setEndAt]       = useState<string>(() => new Date().toISOString())
+  // From is derived from bucket — fixed look-back per agg level. Infinite
+  // scroll lands in #862.
+  const { from, to } = useMemo(() => windowFromTo(bucket, endAt), [bucket, endAt])
   const [mac, setMac]           = useState<string>('')
   const [profileId, setProfileId] = useState<string>('')
   const [devices, setDevices]   = useState<Device[]>([])
@@ -103,13 +102,11 @@ export function TrafficUsagePage() {
         mac={mac}
         profileId={profileId}
         bucket={bucket}
-        from={from}
-        to={to}
-        preset={preset}
+        endAt={endAt}
         onMacChange={v => { setMac(v); if (v) setProfileId('') }}
         onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
         onBucketChange={setBucket}
-        onRangeChange={r => { setFrom(r.from); setTo(r.to); setPreset(r.preset) }}
+        onEndAtChange={setEndAt}
       />
 
       {error && <ErrorBanner message={error} />}
@@ -131,24 +128,22 @@ interface ShelfProps {
   mac: string
   profileId: string
   bucket: TrafficUsageBucket
-  from: string
-  to: string
-  preset: RangePreset
+  endAt: string
   onMacChange: (v: string) => void
   onProfileChange: (v: string) => void
   onBucketChange: (b: TrafficUsageBucket) => void
-  onRangeChange: (r: { from: string; to: string; preset: RangePreset }) => void
+  onEndAtChange: (iso: string) => void
 }
 
 // Shared filter shelf — same shape used by Connection Events page.
 export function FilterShelf({
-  devices, profiles, mac, profileId, bucket, from, to, preset,
-  onMacChange, onProfileChange, onBucketChange, onRangeChange,
+  devices, profiles, mac, profileId, bucket, endAt,
+  onMacChange, onProfileChange, onBucketChange, onEndAtChange,
 }: ShelfProps) {
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
       <BucketSelector value={bucket} onChange={onBucketChange} />
-      <DateRangePicker from={from} to={to} preset={preset} onChange={onRangeChange} />
+      <EndAtPicker to={endAt} onChange={onEndAtChange} />
       <div className="flex flex-wrap gap-3">
         <label className="text-xs text-gray-400">
           Device
