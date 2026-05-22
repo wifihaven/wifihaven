@@ -1,25 +1,45 @@
-import { useState } from 'react'
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 
 interface NavItem { to: string; label: string; icon: string; adminOnly?: boolean }
 
-const navItems: NavItem[] = [
-  { to: '/dashboard', label: 'Dashboard', icon: '◈' },
-  { to: '/devices',   label: 'Devices',   icon: '⬡' },
-  { to: '/profiles',  label: 'Profiles',  icon: '◉' },
+const primaryNav: NavItem[] = [
+  { to: '/dashboard', label: 'Dashboard',   icon: '◈' },
+  { to: '/devices',   label: 'Devices',     icon: '⬡' },
+  { to: '/profiles',  label: 'Profiles',    icon: '◉' },
   { to: '/time',      label: 'Screen Time', icon: '◷' },
-  { to: '/logs',      label: 'Logs',      icon: '≡' },
-  { to: '/users',     label: 'Users',     icon: '◐', adminOnly: true },
-  { to: '/routers',   label: 'Routers',   icon: '⬢', adminOnly: true },
-  { to: '/admin',     label: 'Admin',     icon: '⚙', adminOnly: true },
+]
+
+const settingsNav: NavItem[] = [
+  { to: '/logs',    label: 'Logs',    icon: '≡' },
+  { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
+  { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
+  { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },
 ]
 
 export function Layout() {
   const { username, role, logout, isAdmin } = useAuth()
-  const visibleNav = navItems.filter(item => !item.adminOnly || isAdmin)
+  const visibleSettings = settingsNav.filter(item => !item.adminOnly || isAdmin)
+  const visibleDrawer = [...primaryNav, ...visibleSettings]
   const navigate = useNavigate()
+  const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    function onDocClick(e: MouseEvent) {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [settingsOpen])
+
+  const settingsActive = visibleSettings.some(item => location.pathname.startsWith(item.to))
 
   function handleLogout() {
     logout()
@@ -34,6 +54,7 @@ export function Layout() {
           <div className="flex items-center gap-3">
             {/* Mobile hamburger */}
             <button
+              aria-label={menuOpen ? 'Close menu' : 'Open menu'}
               className="md:hidden p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800"
               onClick={() => setMenuOpen(!menuOpen)}
             >
@@ -49,7 +70,7 @@ export function Layout() {
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-1">
-            {visibleNav.map(item => (
+            {primaryNav.map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -64,6 +85,49 @@ export function Layout() {
                 {item.label}
               </NavLink>
             ))}
+            {visibleSettings.length > 0 && (
+              <div className="relative" ref={settingsRef}>
+                <button
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={settingsOpen}
+                  onClick={() => setSettingsOpen(o => !o)}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 ${
+                    settingsActive
+                      ? 'bg-gray-800 text-emerald-400'
+                      : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  }`}
+                >
+                  <span>Advanced</span>
+                  <span className="text-xs leading-none">▾</span>
+                </button>
+                {settingsOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 mt-1 min-w-[10rem] bg-gray-900 border border-gray-800 rounded-lg shadow-lg py-1 z-50"
+                  >
+                    {visibleSettings.map(item => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        role="menuitem"
+                        onClick={() => setSettingsOpen(false)}
+                        className={({ isActive }) =>
+                          `flex items-center gap-2 px-3 py-2 text-sm transition-colors ${
+                            isActive
+                              ? 'text-emerald-400 bg-gray-800'
+                              : 'text-gray-300 hover:text-white hover:bg-gray-800'
+                          }`
+                        }
+                      >
+                        <span className="text-base w-4 text-center">{item.icon}</span>
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </nav>
 
           <div className="flex items-center gap-3">
@@ -92,7 +156,7 @@ export function Layout() {
         {/* Mobile menu */}
         {menuOpen && (
           <div className="md:hidden border-t border-gray-800 bg-gray-900 px-4 py-2">
-            {visibleNav.map(item => (
+            {visibleDrawer.map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -120,8 +184,8 @@ export function Layout() {
 
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 bg-gray-900 border-t border-gray-800 z-50">
-        <div className="grid" style={{ gridTemplateColumns: `repeat(${visibleNav.length}, minmax(0, 1fr))` }}>
-          {visibleNav.map(item => (
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${primaryNav.length}, minmax(0, 1fr))` }}>
+          {primaryNav.map(item => (
             <NavLink
               key={item.to}
               to={item.to}
