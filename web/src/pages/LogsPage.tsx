@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
+import { UsageTabs } from '@/components/usage/UsageTabs'
 
 // Click-through to the device/profile referenced by a row. The destination
 // pages (DevicesPage / ProfilesPage) read the query param and scroll the
@@ -62,7 +63,8 @@ export function LogsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-white">Activity</h1>
+      <UsageTabs />
+      <h1 className="text-xl font-bold text-white">Connection Events</h1>
 
       <FilterBar
         filters={filters}

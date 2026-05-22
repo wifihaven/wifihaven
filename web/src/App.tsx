@@ -53,8 +53,9 @@ function AppRoutes() {
         <Route path="profiles"  element={<RequirePwChanged><ProfilesPage /></RequirePwChanged>} />
         <Route path="time"      element={<RequirePwChanged><TimePage /></RequirePwChanged>} />
         <Route path="time/:profileId/timeline" element={<RequirePwChanged><ProfileTimelinePage /></RequirePwChanged>} />
-        <Route path="logs"      element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
-        <Route path="usage"     element={<RequirePwChanged><TrafficUsagePage /></RequirePwChanged>} />
+        <Route path="logs"      element={<Navigate to="/usage/events" replace />} />
+        <Route path="usage"          element={<RequirePwChanged><TrafficUsagePage /></RequirePwChanged>} />
+        <Route path="usage/events"   element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />
