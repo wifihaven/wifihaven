@@ -18,6 +18,11 @@ name: VM e2e (fake API — Gate 2)
 
 on:
   workflow_call:
+    inputs:
+      consume_vm_image_artifact:
+        description: "Download the VM image from a sibling build-vm-image job artifact instead of building locally. Master Router CD sets this true so the .img is built once per run."
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -70,10 +75,18 @@ jobs:
           qemu-system-x86_64 --version | head -n1
           docker --version
 
-      - name: Build router image (if not cached)
+      - name: Download VM image artifact (from build-vm-image)
+        if: inputs.consume_vm_image_artifact
+        uses: actions/download-artifact@v6
+        with:
+          pattern: openwrt-wifihaven-*-${{ github.sha }}
+          path: scripts/vm/.cache
+          merge-multiple: true
+
+      - name: Build router image (if not cached / not downloaded)
         run: |
           if [[ -f scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img ]]; then
-            echo "router image cached, skipping build"
+            echo "router image present, skipping build"
           else
             scripts/vm/build-router-image.sh
           fi

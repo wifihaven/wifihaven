@@ -78,10 +78,12 @@ jobs:
   # serializes against the live-mode VM e2e workflow on the same host.
   gate-2-router-fake-api:
     name: Gate 2 — router fake-API e2e
-    needs: [ci-tests]
+    needs: [ci-tests, build-vm-image]
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-vm-fake.yml
+    with:
+      consume_vm_image_artifact: true
     secrets: inherit
 
   # Manual-approval gate. Carries `environment: production` so GitHub pauses
