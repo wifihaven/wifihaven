@@ -8,7 +8,6 @@ import type {
   TrafficUsageResponse,
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
-import { UsageTabs } from '@/components/usage/UsageTabs'
 
 // #846 — Traffic Usage page. Bucket selector + group-by selector + raw / aggregated tables.
 // Per-app group is reserved for the apps track (#761-#769); per-apex needs PSL.
@@ -149,7 +148,6 @@ export function TrafficUsagePage() {
 
   return (
     <div className="space-y-4" data-testid="traffic-usage-page">
-      <UsageTabs />
       <header>
         <h1 className="text-2xl font-bold text-gray-100">Traffic Usage</h1>
         <p className="text-sm text-gray-500">

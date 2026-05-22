@@ -2,7 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 
-interface NavItem { to: string; label: string; icon: string; adminOnly?: boolean }
+interface NavItem {
+  to: string
+  label: string
+  icon: string
+  adminOnly?: boolean
+  // #846: optional inline submenu for the Advanced dropdown — parent link
+  // stays clickable (lands on `to`); children render as indented sub-items.
+  children?: NavItem[]
+}
 
 const primaryNav: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard',   icon: '◈' },
@@ -12,7 +20,15 @@ const primaryNav: NavItem[] = [
 ]
 
 const settingsNav: NavItem[] = [
-  { to: '/usage',   label: 'Usage',   icon: '⇅' },
+  {
+    to: '/usage',
+    label: 'Usage',
+    icon: '⇅',
+    children: [
+      { to: '/usage',        label: 'Traffic Reports',   icon: '⇅' },
+      { to: '/usage/events', label: 'Connection Events', icon: '≡' },
+    ],
+  },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },
@@ -21,7 +37,9 @@ const settingsNav: NavItem[] = [
 export function Layout() {
   const { username, role, logout, isAdmin } = useAuth()
   const visibleSettings = settingsNav.filter(item => !item.adminOnly || isAdmin)
-  const visibleDrawer = [...primaryNav, ...visibleSettings]
+  const visibleDrawer = [...primaryNav, ...visibleSettings.flatMap(item =>
+    item.children ? [item, ...item.children] : [item],
+  )]
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -107,22 +125,42 @@ export function Layout() {
                     className="absolute right-0 mt-1 min-w-[10rem] bg-gray-900 border border-gray-800 rounded-lg shadow-lg py-1 z-50"
                   >
                     {visibleSettings.map(item => (
-                      <NavLink
-                        key={item.to}
-                        to={item.to}
-                        role="menuitem"
-                        onClick={() => setSettingsOpen(false)}
-                        className={({ isActive }) =>
-                          `flex items-center gap-2 px-3 py-2 text-sm transition-colors ${
-                            isActive
-                              ? 'text-emerald-400 bg-gray-800'
-                              : 'text-gray-300 hover:text-white hover:bg-gray-800'
-                          }`
-                        }
-                      >
-                        <span className="text-base w-4 text-center">{item.icon}</span>
-                        {item.label}
-                      </NavLink>
+                      <div key={item.to}>
+                        <NavLink
+                          to={item.to}
+                          end={!item.children}
+                          role="menuitem"
+                          onClick={() => setSettingsOpen(false)}
+                          className={({ isActive }) =>
+                            `flex items-center gap-2 px-3 py-2 text-sm transition-colors ${
+                              isActive
+                                ? 'text-emerald-400 bg-gray-800'
+                                : 'text-gray-300 hover:text-white hover:bg-gray-800'
+                            }`
+                          }
+                        >
+                          <span className="text-base w-4 text-center">{item.icon}</span>
+                          {item.label}
+                        </NavLink>
+                        {item.children?.map(child => (
+                          <NavLink
+                            key={child.to}
+                            to={child.to}
+                            end
+                            role="menuitem"
+                            onClick={() => setSettingsOpen(false)}
+                            className={({ isActive }) =>
+                              `flex items-center gap-2 pl-9 pr-3 py-1.5 text-xs transition-colors ${
+                                isActive
+                                  ? 'text-emerald-400 bg-gray-800'
+                                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                              }`
+                            }
+                          >
+                            {child.label}
+                          </NavLink>
+                        ))}
+                      </div>
                     ))}
                   </div>
                 )}
