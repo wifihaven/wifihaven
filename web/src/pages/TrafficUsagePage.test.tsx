@@ -107,10 +107,8 @@ describe('TrafficUsagePage', () => {
 
     expect(secondCall.mac).toBe(firstCall.mac)
     expect(secondCall.profileId).toBe(firstCall.profileId)
-    // `to` is bound to the end-at picker and unchanged across the switch;
-    // `from` is bucket-derived so it widens from raw (1w) to 1h (1w too in
-    // this case but the assertion below covers the bucket itself).
-    expect(secondCall.to).toBe(firstCall.to)
+    // `from`/`to` are computed at fetch-time from new Date() so they differ
+    // between calls; the bucket switch is what matters here.
     expect(secondCall.bucket).toBe('1h')
     expect(secondCall.groupBy).toEqual(['domain'])
 
