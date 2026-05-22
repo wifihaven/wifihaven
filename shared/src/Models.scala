@@ -328,10 +328,14 @@ object ConnectionEventBucket {
     ConnectionEventBucket.values.find(_.wire == s)
 }
 
+// #846: groupBy is now a comma-separated set. Apex is deferred to #856
+// (needs PSL), App to #857 (needs apps track). Device/Profile/Domain are
+// composable — e.g. groupBy=device,domain returns one row per
+// (window, device, domain).
 enum ConnectionEventGroupBy(val wire: String) {
-  case Domain extends ConnectionEventGroupBy("domain")
-  case Apex   extends ConnectionEventGroupBy("apex")
-  case App    extends ConnectionEventGroupBy("app")
+  case Domain  extends ConnectionEventGroupBy("domain")
+  case Device  extends ConnectionEventGroupBy("device")
+  case Profile extends ConnectionEventGroupBy("profile")
 }
 
 object ConnectionEventGroupBy {
@@ -339,13 +343,21 @@ object ConnectionEventGroupBy {
     ConnectionEventGroupBy.values.find(_.wire == s)
 }
 
+// `groups` maps each column in the request's groupBy set to its value for
+// this row — e.g. {"device": "Prima iPad", "domain": "youtube.com"}. For
+// columns NOT in the groupBy set, the SPA shows the distinct-count from
+// the matching `distinct*` field (per #846 audit decision: just show the
+// number until drill-down lands in #859/#860).
 case class ConnectionEventAggRow(
-    group: String,
+    groups: Map[String, String],
     windowStart: String,
     countSucceeded: Int,
     countBlocked: Int,
     lastSeen: String,
     topDevice: Option[String],
+    distinctDevices: Int = 0,
+    distinctProfiles: Int = 0,
+    distinctDomains: Int = 0,
 ) derives JsonCodec
 
 case class SiteUsage(
@@ -553,24 +565,33 @@ case class TrafficUsageRawRow(
     periodEnd: String,
 ) derives JsonCodec
 
+// #846: multi-column aggregation. `groups` is the per-row mapping for
+// columns in the request's groupBy set (e.g. {"device": "Prima iPad"}).
+// For columns NOT in the set, the corresponding `distinct*` field carries
+// the count of distinct values that contributed to this row — the SPA
+// renders the count in that column header until drill-down lands (#859).
 case class TrafficUsageAggregateRow(
-    group: String,
+    groups: Map[String, String],
     windowStart: String,
     windowEnd: String,
     totalBytesIn: Long,
     totalBytesOut: Long,
     totalSeconds: Long,
-    distinctDevices: Int,
+    distinctDevices: Int = 0,
+    distinctProfiles: Int = 0,
+    distinctDomains: Int = 0,
 ) derives JsonCodec
 
 case class TrafficUsageResponse(
     bucket: String,
-    groupBy: Option[String],
+    groupBy: List[String] = Nil,
     from: String,
     to: String,
     tz: String,
     rawRows: List[TrafficUsageRawRow] = Nil,
     aggregateRows: List[TrafficUsageAggregateRow] = Nil,
+    rawRowLimit: Option[Int] = None,
+    rawRowsTruncated: Boolean = false,
 ) derives JsonCodec
 
 // ── Dashboard "Now" ────────────────────────────────────────────────────────

@@ -463,7 +463,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           rawOut  <- ZIO.fromEither(rawBody.fromJson[TrafficUsageResponse])
         } yield assertTrue(aggResp.status == Status.Ok) &&
           assertTrue(aggOut.bucket == "1h") &&
-          assertTrue(aggOut.groupBy.contains("domain")) &&
+          assertTrue(aggOut.groupBy == List("domain")) &&
           assertTrue(aggOut.aggregateRows.length == 2) &&
           // Sum invariant: aggregated bytes == raw bytes for the same window.
           assertTrue(
@@ -477,7 +477,96 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
               rawOut.rawRows.map(_.activeSeconds.toLong).sum,
           ) &&
           // distinctDevices is at-least-1 per group (single test device).
-          assertTrue(aggOut.aggregateRows.forall(_.distinctDevices == 1))
+          assertTrue(aggOut.aggregateRows.forall(_.distinctDevices == 1)) &&
+          // Each row carries its domain in the `groups` map.
+          assertTrue(aggOut.aggregateRows.forall(_.groups.contains("domain"))) &&
+          assertTrue(
+            aggOut.aggregateRows.map(_.groups("domain")).toSet ==
+              Set("youtube.com", "google.com"),
+          )
+      },
+      test("multi-column groupBy=device,domain produces one row per (window, device, domain)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        val macA  = "aa:bb:cc:dd:ee:0a"
+        val macB  = "aa:bb:cc:dd:ee:0b"
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
+          routerId    <- seedRouter
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macA),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                100L,
+                0L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macB),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                200L,
+                0L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macA),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                50L,
+                0L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(
+                  s"/api/usage/traffic?profileId=${kidsId.value}&from=$from&to=$to&bucket=1h&groupBy=device,domain",
+                )
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy.toSet == Set("device", "domain")) &&
+          // 3 distinct (device, domain) tuples in the same hour window.
+          assertTrue(out.aggregateRows.length == 3) &&
+          assertTrue(
+            out.aggregateRows.forall(r =>
+              r.groups.contains("device") && r.groups.contains("domain"),
+            ),
+          )
       },
       test("rejects bucket=1m with bucket_not_implemented") {
         for {

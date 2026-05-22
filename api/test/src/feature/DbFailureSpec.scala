@@ -122,7 +122,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def listForMac(mac: MacAddress, l: Int)                                             = throwing
     def listForRouter(r: RouterId, l: Int)                                              = throwing
     def query(f: LogFilter)                                                             = throwing
-    def querySeries(f: LogFilter, bucketSeconds: Int)                                   = throwing
+    def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String])             = throwing
     def stats                                                                           = throwing
     def topBlocked(h: Int, l: Int)                                                      = throwing
     def lastSeenByMacSince(since: Instant)                                              = throwing

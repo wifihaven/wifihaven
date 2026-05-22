@@ -50,10 +50,16 @@ object UsageTraffic {
     def parse(s: String): Option[Bucket] = values.find(_.code == s)
   }
 
+  // #846 audit: groupBy is composable. Domain / Device / Profile can be
+  // combined (e.g. groupBy=device,domain). Apex deferred to #856 (needs
+  // PSL), App deferred to #857 (needs apps track) — both are accepted
+  // wire values but rejected at the route layer with typed errors.
   enum GroupBy(val code: String) {
-    case Domain extends GroupBy("domain")
-    case Apex   extends GroupBy("apex")
-    case App    extends GroupBy("app")
+    case Domain  extends GroupBy("domain")
+    case Device  extends GroupBy("device")
+    case Profile extends GroupBy("profile")
+    case Apex    extends GroupBy("apex")
+    case App     extends GroupBy("app")
   }
 
   object GroupBy {
@@ -137,31 +143,64 @@ object UsageTraffic {
    * per-host columns are inherently overlapping and the operator's interest in this page is "bytes
    * by host within window", with seconds as a rough proxy).
    */
+  /**
+   * Multi-column aggregation. `groupBy` is the set of columns to roll up on; the response carries
+   * one row per (window, *grouped-column-values*) tuple. For columns NOT in `groupBy`, the row
+   * carries the count of distinct values in `distinct*` fields so the SPA can render "{n} devices"
+   * / "{n} profiles" in their place (drill-down deferred to #859).
+   *
+   * Device/profile attribution uses the device list passed in — rows whose MAC has no matching
+   * device get attributed to a synthetic device row keyed by the MAC string; their profile is
+   * "(unassigned)".
+   */
   def buildAggregate(
       rows: List[TrafficUsageDbRow],
       bucket: Bucket,
       zone: ZoneId,
+      groupBy: Set[GroupBy],
+      deviceByMac: Map[MacAddress, Device],
+      profileNameById: Map[ProfileId, String],
   ): List[TrafficUsageAggregateRow] = {
-    val step    = stepOf(bucket)
+    val step = stepOf(bucket)
+
+    def deviceLabel(mac: MacAddress): String  =
+      deviceByMac.get(mac).map(_.name).getOrElse(mac.value)
+    def profileLabel(mac: MacAddress): String =
+      deviceByMac
+        .get(mac)
+        .flatMap(_.profileId)
+        .flatMap(profileNameById.get)
+        .getOrElse("(unassigned)")
+
     val grouped = rows
       .groupBy { r =>
         val windowStart = floorTo(r.periodStart, bucket, zone)
-        (windowStart, r.host.value)
+        val keyParts    = scala.collection.mutable.LinkedHashMap.empty[String, String]
+        // Stable ordering: domain, device, profile.
+        if (groupBy.contains(GroupBy.Domain)) keyParts += ("domain"   -> r.host.value)
+        if (groupBy.contains(GroupBy.Device)) keyParts += ("device"   -> deviceLabel(r.mac))
+        if (groupBy.contains(GroupBy.Profile)) keyParts += ("profile" -> profileLabel(r.mac))
+        (windowStart, keyParts.toMap)
       }
+
     grouped.toList
-      .map { case ((windowStart, group), bucketRows) =>
-        val devices       = bucketRows.iterator.map(_.mac).toSet
+      .map { case ((windowStart, groupsMap), bucketRows) =>
+        val devices       = bucketRows.iterator.map(r => deviceLabel(r.mac)).toSet
+        val profiles      = bucketRows.iterator.map(r => profileLabel(r.mac)).toSet
+        val domains       = bucketRows.iterator.map(_.host.value).toSet
         val totalBytesIn  = bucketRows.iterator.map(_.bytesIn).sum
         val totalBytesOut = bucketRows.iterator.map(_.bytesOut).sum
         val totalSeconds  = bucketRows.iterator.map(_.activeSeconds.toLong).sum
         TrafficUsageAggregateRow(
-          group = group,
+          groups = groupsMap,
           windowStart = windowStart.toString,
           windowEnd = windowStart.plus(step).toString,
           totalBytesIn = totalBytesIn,
           totalBytesOut = totalBytesOut,
           totalSeconds = totalSeconds,
           distinctDevices = devices.size,
+          distinctProfiles = profiles.size,
+          distinctDomains = domains.size,
         )
       }
       .sortBy(r => (r.windowStart, -r.totalBytesIn - r.totalBytesOut))

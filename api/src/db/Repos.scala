@@ -338,7 +338,14 @@ trait ConnectionEventRepo {
   def listForMac(mac: MacAddress, limit: Int): Task[List[ConnectionEvent]]
   def listForRouter(routerId: RouterId, limit: Int): Task[List[ConnectionEvent]]
   def query(f: LogFilter): Task[List[QueryLog]]
-  def querySeries(f: LogFilter, bucketSeconds: Int): Task[List[ConnectionEventAggRow]]
+  // #846: multi-column grouping. `groupBy` is the set of column names from
+  // {"domain","device","profile"}; the repo returns one row per
+  // (window, *grouped-column-values*) with distinct-counts for the rest.
+  def querySeries(
+      f: LogFilter,
+      bucketSeconds: Int,
+      groupBy: Set[String],
+  ): Task[List[ConnectionEventAggRow]]
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
 
@@ -1354,38 +1361,106 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .transact(xa)
   }
 
-  // #847: domain-grouped aggregation over connection_events. Buckets are
+  // #847 + #846: multi-column aggregation over connection_events. Buckets are
   // computed in UTC via date_bin — UI re-renders boundaries in household-local
   // tz for display. No rollup table exists yet (#809 in flight); for now even
   // wide buckets compute on-the-fly from connection_events.
-  def querySeries(f: LogFilter, bucketSeconds: Int) = {
-    val bucketIv = fr"make_interval(secs => $bucketSeconds)"
-    val grpExpr  = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
-    val base     =
-      fr"""SELECT $grpExpr AS grp,
-                  (date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00'))::TEXT AS window_start,
+  //
+  // #846 audit: emit ISO 8601 with T separator + trailing Z so JS Date.parse
+  // accepts these without a per-field workaround. Postgres TIMESTAMPTZ::TEXT
+  // defaults to "2026-05-21 22:00:00+00" (space separator) which `new Date(...)`
+  // rejects as Invalid Date.
+  def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String]) = {
+    val bucketIv    = fr"make_interval(secs => $bucketSeconds)"
+    val domainExpr  = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
+    val deviceExpr  = fr"COALESCE(d.name, ce.mac::TEXT)"
+    val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
+
+    // Default group: domain (matches pre-#846 behaviour). Multi-group composes
+    // freely across {domain, device, profile} — apex/app rejected at route.
+    val wantsDomain  = groupBy.contains("domain") || groupBy.isEmpty
+    val wantsDevice  = groupBy.contains("device")
+    val wantsProfile = groupBy.contains("profile")
+
+    // Always SELECT all three group expressions (NULL when not requested) so
+    // the result tuple has a constant shape and doobie can decode it.
+    val selDomain  = if (wantsDomain) domainExpr else fr"NULL::TEXT"
+    val selDevice  = if (wantsDevice) deviceExpr else fr"NULL::TEXT"
+    val selProfile = if (wantsProfile) profileExpr else fr"NULL::TEXT"
+
+    // GROUP BY only the requested columns, plus the window bucket.
+    val groupByParts = List(
+      Some(fr"window_start"),
+      Option.when(wantsDomain)(domainExpr),
+      Option.when(wantsDevice)(deviceExpr),
+      Option.when(wantsProfile)(profileExpr),
+    ).flatten
+    val groupByCols  = groupByParts.reduce(_ ++ fr"," ++ _)
+
+    val base  =
+      fr"""SELECT """ ++ selDomain ++ fr"AS grp_domain," ++
+        selDevice ++ fr"AS grp_device," ++
+        selProfile ++ fr"""AS grp_profile,
+                  to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
+                          AT TIME ZONE 'UTC',
+                          'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS window_start,
                   COUNT(*) FILTER (WHERE ce.allowed)::INT      AS count_succeeded,
                   COUNT(*) FILTER (WHERE NOT ce.allowed)::INT  AS count_blocked,
-                  MAX(ce.ts)::TEXT                              AS last_seen,
-                  mode() WITHIN GROUP (ORDER BY COALESCE(d.name, ce.mac::TEXT)) AS top_device
+                  to_char(MAX(ce.ts) AT TIME ZONE 'UTC',
+                          'YYYY-MM-DD"T"HH24:MI:SS"Z"')  AS last_seen,
+                  mode() WITHIN GROUP (ORDER BY """ ++ deviceExpr ++ fr""") AS top_device,
+                  COUNT(DISTINCT """ ++ deviceExpr ++ fr""")::INT          AS distinct_devices,
+                  COUNT(DISTINCT """ ++ profileExpr ++ fr""")::INT         AS distinct_profiles,
+                  COUNT(DISTINCT """ ++ domainExpr ++ fr""")::INT          AS distinct_domains
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac = ce.mac
            LEFT JOIN profiles p ON p.id  = d.profile_id
            LEFT JOIN routers r  ON r.id  = ce.router_id
            WHERE 1=1"""
-    val since    = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
-    val byMac    = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
-    val byDev    = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
-    val byPid    = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
-    val byBl     = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
-    val byDom    = f.domain.fold(fr"")(d =>
+    val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
+    val byMac = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
+    val byDev = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
+    val byPid = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
+    val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
+    val byDom = f.domain.fold(fr"")(d =>
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
     )
-    val byLoc    = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
     (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
-      fr"GROUP BY grp, window_start ORDER BY (COUNT(*)) DESC LIMIT ${f.limit} OFFSET ${f.offset}")
-      .query[(String, String, Int, Int, String, Option[String])]
-      .map(ConnectionEventAggRow.apply)
+      fr"GROUP BY " ++ groupByCols ++
+      fr"ORDER BY (COUNT(*)) DESC LIMIT ${f.limit} OFFSET ${f.offset}")
+      .query[
+        (
+            Option[String], // grp_domain
+            Option[String], // grp_device
+            Option[String], // grp_profile
+            String,         // window_start
+            Int,            // count_succeeded
+            Int,            // count_blocked
+            String,         // last_seen
+            Option[String], // top_device
+            Int,            // distinct_devices
+            Int,            // distinct_profiles
+            Int,            // distinct_domains
+        ),
+      ]
+      .map { case (gd, gv, gp, ws, sc, bl, ls, td, dd, dpr, dm) =>
+        val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
+        gd.foreach(v => groupMap += ("domain" -> v))
+        gv.foreach(v => groupMap += ("device" -> v))
+        gp.foreach(v => groupMap += ("profile" -> v))
+        ConnectionEventAggRow(
+          groups = groupMap.toMap,
+          windowStart = ws,
+          countSucceeded = sc,
+          countBlocked = bl,
+          lastSeen = ls,
+          topDevice = td,
+          distinctDevices = dd,
+          distinctProfiles = dpr,
+          distinctDomains = dm,
+        )
+      }
       .to[List]
       .transact(xa)
   }

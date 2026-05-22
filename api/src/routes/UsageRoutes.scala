@@ -205,27 +205,41 @@ object UsageRoutes {
             ),
         )
         .when(bucket == UsageTraffic.Bucket.OneMin)
-      groupByOpt <- ZIO
-        .foreach(req.url.queryParam("groupBy")) { s =>
-          ZIO
-            .fromOption(UsageTraffic.GroupBy.parse(s))
-            .orElseFail(Response.badRequest(s"""{"error":"unknown_groupBy","groupBy":"$s"}"""))
-        }
-      _          <- groupByOpt match {
-        case Some(UsageTraffic.GroupBy.Apex) =>
-          ZIO.fail(
-            Response.badRequest(
-              """{"error":"groupBy_not_implemented","groupBy":"apex","reason":"PSL not available"}""",
-            ),
-          )
-        case Some(UsageTraffic.GroupBy.App)  =>
-          ZIO.fail(
-            Response.badRequest(
-              """{"error":"groupBy_not_implemented","groupBy":"app","reason":"apps track not implemented"}""",
-            ),
-          )
-        case _                               => ZIO.succeed(())
+      // #846: comma-separated multi-column groupBy. Apex deferred to #856,
+      // App to #857 — both still rejected with typed errors so the SPA can
+      // re-enable them later without an API change.
+      groupBySet <- {
+        val raw = req.url
+          .queryParam("groupBy")
+          .getOrElse("")
+          .split(',')
+          .toList
+          .map(_.trim)
+          .filter(_.nonEmpty)
+        ZIO
+          .foreach(raw) { s =>
+            ZIO
+              .fromOption(UsageTraffic.GroupBy.parse(s))
+              .orElseFail(
+                Response.badRequest(s"""{"error":"unknown_groupBy","groupBy":"$s"}"""),
+              )
+          }
+          .map(_.toSet)
       }
+      _          <- ZIO
+        .fail(
+          Response.badRequest(
+            """{"error":"groupBy_not_implemented","groupBy":"apex","reason":"PSL not available — see #856"}""",
+          ),
+        )
+        .when(groupBySet.contains(UsageTraffic.GroupBy.Apex))
+      _          <- ZIO
+        .fail(
+          Response.badRequest(
+            """{"error":"groupBy_not_implemented","groupBy":"app","reason":"apps track not implemented — see #857"}""",
+          ),
+        )
+        .when(groupBySet.contains(UsageTraffic.GroupBy.App))
       tzStr = req.url.queryParam("tz").getOrElse("UTC")
       zone <- ZIO.attempt(ZoneId.of(tzStr)).orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
       now  <- clock.now
@@ -302,29 +316,45 @@ object UsageRoutes {
             .listRawInRange(macs, fromI, toI)
             .mapError(ErrorMapper.dbErrorToResponse)
       profiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      profNames = profiles.iterator.map(p => p.id -> p.name).toMap
-      devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
-      resp      = bucket match {
+      profNames        = profiles.iterator.map(p => p.id -> p.name).toMap
+      devByMac         = allDevices.iterator.map(d => d.mac -> d).toMap
+      // #846 audit: cap raw rows. The default 24h window can hit 40k+ rows;
+      // SPA tables choke. `limit` defaults to 100 for the raw view and is
+      // honored as-is for aggregated views (where row counts are naturally
+      // bounded by window*group cardinality).
+      rawLimit         = req.url
+        .queryParam("limit")
+        .flatMap(_.toIntOption)
+        .getOrElse(100)
+        .max(1)
+        .min(5000)
+      effectiveGroupBy =
+        if (groupBySet.nonEmpty) groupBySet else Set(UsageTraffic.GroupBy.Domain)
+      resp             = bucket match {
         case UsageTraffic.Bucket.Raw =>
+          val allRaw    = UsageTraffic.buildRaw(rows, devByMac, profNames)
+          val truncated = allRaw.size > rawLimit
           TrafficUsageResponse(
             bucket = bucket.code,
-            groupBy = None,
+            groupBy = Nil,
             from = fromI.toString,
             to = toI.toString,
             tz = zone.getId,
-            rawRows = UsageTraffic.buildRaw(rows, devByMac, profNames),
+            rawRows = allRaw.takeRight(rawLimit),
             aggregateRows = Nil,
+            rawRowLimit = Some(rawLimit),
+            rawRowsTruncated = truncated,
           )
         case _                       =>
-          val gb = groupByOpt.getOrElse(UsageTraffic.GroupBy.Domain)
           TrafficUsageResponse(
             bucket = bucket.code,
-            groupBy = Some(gb.code),
+            groupBy = effectiveGroupBy.toList.map(_.code).sorted,
             from = fromI.toString,
             to = toI.toString,
             tz = zone.getId,
             rawRows = Nil,
-            aggregateRows = UsageTraffic.buildAggregate(rows, bucket, zone),
+            aggregateRows = UsageTraffic
+              .buildAggregate(rows, bucket, zone, effectiveGroupBy, devByMac, profNames),
           )
       }
     } yield Response.json(resp.toJson)

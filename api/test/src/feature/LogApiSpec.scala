@@ -517,15 +517,15 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
         body <- resp.body.asString
         rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
-        yt = rows.find(_.group == "youtube.com").get
-        fb = rows.find(_.group == "facebook.com").get
+        yt = rows.find(_.groups.getOrElse("domain", "") == "youtube.com").get
+        fb = rows.find(_.groups.getOrElse("domain", "") == "facebook.com").get
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(yt.countSucceeded == 2) &&
         assertTrue(yt.countBlocked == 1) &&
         assertTrue(fb.countSucceeded == 1) &&
         assertTrue(fb.countBlocked == 0) &&
         // youtube has 3 events vs facebook 1 — total-count desc ordering
-        assertTrue(rows.head.group == "youtube.com")
+        assertTrue(rows.head.groups.getOrElse("domain", "") == "youtube.com")
     },
     test("GET /api/connection-events/series passes through blocked filter") {
       for {
@@ -566,7 +566,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         body <- resp.body.asString
         rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
       } yield assertTrue(rows.length == 1) &&
-        assertTrue(rows.head.group == "bad.com") &&
+        assertTrue(rows.head.groups.getOrElse("domain", "") == "bad.com") &&
         assertTrue(rows.head.countBlocked == 1)
     },
     test("GET /api/connection-events/series rejects groupBy=apex with 400 (#849)") {
@@ -650,7 +650,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         body <- resp.body.asString
         rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
       } yield assertTrue(rows.length == 2) &&
-        assertTrue(rows.forall(_.group == "a.com"))
+        assertTrue(rows.forall(_.groups.getOrElse("domain", "") == "a.com"))
     },
   ) @@ TestAspect.sequential
 }

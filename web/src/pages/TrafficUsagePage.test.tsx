@@ -20,6 +20,8 @@ const rawResp: TrafficUsageResponse = {
   from: '2026-05-21T00:00:00Z',
   to: '2026-05-22T00:00:00Z',
   tz: 'UTC',
+  rawRowLimit: 100,
+  rawRowsTruncated: false,
   rawRows: [
     {
       mac: 'aa:bb:cc:dd:ee:01',
@@ -39,20 +41,22 @@ const rawResp: TrafficUsageResponse = {
 
 const aggResp: TrafficUsageResponse = {
   bucket: '1h',
-  groupBy: 'domain',
+  groupBy: ['domain'],
   from: '2026-05-21T00:00:00Z',
   to: '2026-05-22T00:00:00Z',
   tz: 'UTC',
   rawRows: [],
   aggregateRows: [
     {
-      group: 'youtube.com',
+      groups: { domain: 'youtube.com' },
       windowStart: '2026-05-21T14:00:00Z',
       windowEnd: '2026-05-21T15:00:00Z',
       totalBytesIn: 99000,
       totalBytesOut: 1200,
       totalSeconds: 600,
       distinctDevices: 2,
+      distinctProfiles: 1,
+      distinctDomains: 1,
     },
   ],
 }
@@ -87,11 +91,10 @@ describe('TrafficUsagePage', () => {
     const btn = screen.getByTestId('bucket-1m')
     expect(btn).toBeDisabled()
     await userEvent.click(btn, { pointerEventsCheck: 0 })
-    // No additional fetch issued because the disabled button is a no-op.
     expect(api.usage.traffic).toHaveBeenCalledTimes(1)
   })
 
-  it('switching bucket to 1h preserves device/profile filters and shows aggregate table', async () => {
+  it('switching bucket to 1h preserves filters and shows aggregate table with default groupBy=domain', async () => {
     ;(api.usage.traffic as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(rawResp)
       .mockResolvedValueOnce(aggResp)
@@ -103,34 +106,31 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
     const secondCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[1][0]
 
-    // Filters preserved across bucket switch.
     expect(secondCall.mac).toBe(firstCall.mac)
     expect(secondCall.profileId).toBe(firstCall.profileId)
     expect(secondCall.from).toBe(firstCall.from)
     expect(secondCall.to).toBe(firstCall.to)
     expect(secondCall.bucket).toBe('1h')
-    expect(secondCall.groupBy).toBe('domain')
+    expect(secondCall.groupBy).toEqual(['domain'])
 
     await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
     expect(screen.getByText('youtube.com')).toBeInTheDocument()
   })
 
-  it('disabled groupBy buttons (apex/app) are visible but do not dispatch', async () => {
+  it('clicking a column header toggles it into the groupBy set', async () => {
     ;(api.usage.traffic as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(rawResp)
       .mockResolvedValueOnce(aggResp)
+      .mockResolvedValueOnce({ ...aggResp, groupBy: ['device', 'domain'] })
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     await userEvent.click(screen.getByTestId('bucket-1h'))
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
 
-    const apex = screen.getByTestId('groupby-apex')
-    const app  = screen.getByTestId('groupby-app')
-    expect(apex).toBeDisabled()
-    expect(app).toBeDisabled()
-    await userEvent.click(apex, { pointerEventsCheck: 0 })
-    await userEvent.click(app,  { pointerEventsCheck: 0 })
-    expect(api.usage.traffic).toHaveBeenCalledTimes(2)
+    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(3))
+    const lastCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[2][0]
+    expect(lastCall.groupBy?.sort()).toEqual(['device', 'domain'])
   })
 
   it('surfaces server error', async () => {
