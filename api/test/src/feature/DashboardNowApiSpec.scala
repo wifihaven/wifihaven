@@ -134,7 +134,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         parsed.profiles.forall(_.activeDevices.isEmpty),
       )
     },
-    test("active device with current session: top host + currentSession populated") {
+    test("active device: top host populated") {
       for {
         _        <- cleanDb
         _        <- clearSeededProfiles
@@ -166,8 +166,6 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev.lastSeenSeconds <= 60L,
         dev.topHosts.headOption.exists(_.host == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
         dev.topHosts.head.activeSeconds == 1800L,
-        dev.currentSession.exists(_.host == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
-        dev.currentSession.get.durationSeconds == 1800L,
       )
     },
     test("stale device (no conn + no recent traffic) is excluded") {
@@ -215,28 +213,6 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev.mac == mac1T,
         dev.lastSeenSeconds <= 90L,
       )
-    },
-    test("currentSession is null when the latest session ended > 10 min ago") {
-      for {
-        _        <- cleanDb
-        _        <- clearSeededProfiles
-        routerId <- seedRouter()
-        dr       <- ZIO.service[DeviceRepo]
-        pr       <- ZIO.service[ProfileRepo]
-        kid      <- pr.create("Kids", Nil)
-        _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
-        now0     <- Clock.instant
-        _        <- insertReport(routerId, mac1, "youtube.com", now0.minusSeconds(17 * 60))
-        _        <- insertConn(routerId, mac1, now0.minusSeconds(30))
-        auth     <- makeAuth
-        token    <- auth.login("admin", "changeme").map(_.token)
-        routes   <- buildRoutes(auth)
-        resp     <- getJson(routes, "/api/dashboard/now", token)
-        body     <- resp.body.asString
-        parsed   <- ZIO.fromEither(body.fromJson[DashboardNow])
-        prof = parsed.profiles.find(_.id == kid).get
-        dev  = prof.activeDevices.head
-      } yield assertTrue(prof.activeDevices.length == 1, dev.currentSession.isEmpty)
     },
     test("topHosts: sums active_seconds, sorts desc, caps at 3") {
       for {

@@ -58,11 +58,6 @@ const liveNow: DashboardNow = {
             { host: { type: 'fqdn', value: 'youtube.com' }, activeSeconds: 840 },
             { host: { type: 'fqdn', value: 'tiktok.com' }, activeSeconds: 120 },
           ],
-          currentSession: {
-            host: { type: 'fqdn', value: 'youtube.com' },
-            startedAt: '2026-05-13T09:46:00Z',
-            durationSeconds: 840,
-          },
         },
       ],
     },
@@ -134,16 +129,15 @@ describe('NowSection', () => {
     expect(screen.getByText(/No activity in the last 5 minutes/)).toBeInTheDocument()
   })
 
-  it('shows device name, last-seen, current session, and top hosts', async () => {
+  it('shows device name, last-seen, and top hosts', async () => {
     mockNow().mockResolvedValue(liveNow)
     render(withQuery(<NowSection />))
     await screen.findByTestId('now-device-aa:bb:cc:dd:ee:01')
     expect(screen.getByText('iPhone')).toBeInTheDocument()
     expect(screen.getByText('30s ago')).toBeInTheDocument()
-    expect(screen.getByText(/watching/)).toBeInTheDocument()
     expect(screen.getAllByText('youtube.com').length).toBeGreaterThan(0)
     expect(screen.getByText('tiktok.com')).toBeInTheDocument()
-    expect(screen.getAllByText('14m').length).toBeGreaterThan(0)
+    expect(screen.getByText('14m')).toBeInTheDocument()
   })
 
   it('renders Paused badge when profile is paused', async () => {

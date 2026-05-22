@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, Session } from '@/types/api'
+import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 
 // Click-through to the device/profile referenced by a row. The destination
@@ -24,30 +24,12 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
   return <span className="text-yellow-400">{mac ?? '?'}</span>
 }
 
-function ProfileLink({ id, name }: { id: number | null; name: string | null }) {
-  if (id != null && name) {
-    return (
-      <Link
-        to={`/profiles?id=${id}`}
-        data-testid={`logs-profile-link-${id}`}
-        className="hover:underline"
-      >
-        {name}
-      </Link>
-    )
-  }
-  return <span>{name ?? ''}</span>
-}
-
-type Tab = 'sessions' | 'raw'
-
 interface Filters {
   deviceId: number | null
   profileId: number | null
 }
 
 export function LogsPage() {
-  const [tab, setTab] = useState<Tab>('sessions')
   const [searchParams, setSearchParams] = useSearchParams()
   const [devices, setDevices] = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
@@ -90,14 +72,7 @@ export function LogsPage() {
         onClear={clearFilters}
       />
 
-      <div className="flex gap-2" role="tablist">
-        <TabButton id="sessions" current={tab} onClick={setTab}>Sessions</TabButton>
-        <TabButton id="raw"      current={tab} onClick={setTab}>Connection events</TabButton>
-      </div>
-
-      {tab === 'sessions'
-        ? <SessionsTab  filters={filters} hasFilters={hasFilters} onClear={clearFilters} />
-        : <RawEventsTab filters={filters} hasFilters={hasFilters} onClear={clearFilters} />}
+      <RawEventsTab filters={filters} hasFilters={hasFilters} onClear={clearFilters} />
     </div>
   )
 }
@@ -159,117 +134,7 @@ function FilterBar({
   )
 }
 
-function TabButton({
-  id, current, onClick, children,
-}: {
-  id: Tab; current: Tab; onClick: (t: Tab) => void; children: React.ReactNode
-}) {
-  const active = id === current
-  return (
-    <button
-      role="tab"
-      aria-selected={active}
-      data-testid={`logs-tab-${id}`}
-      onClick={() => onClick(id)}
-      className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
-        active
-          ? 'bg-emerald-600 text-white'
-          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
-
-// ── Sessions tab ───────────────────────────────────────────────────────────
-
-function SessionsTab({
-  filters, hasFilters, onClear,
-}: { filters: Filters; hasFilters: boolean; onClear: () => void }) {
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [loading,  setLoading]  = useState(true)
-  const [host,     setHost]     = useState('')
-
-  async function load() {
-    setLoading(true)
-    try {
-      const page = await api.sessions.list({
-        host:  host || undefined,
-        deviceId:  filters.deviceId  ?? undefined,
-        profileId: filters.profileId ?? undefined,
-        hours: 24,
-        limit: 100,
-      })
-      setSessions(page.sessions)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load() }, [host, filters.deviceId, filters.profileId])
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-3">
-        <input
-          type="text"
-          value={host}
-          onChange={e => setHost(e.target.value)}
-          placeholder="Filter by host…"
-          data-testid="sessions-filter-host"
-          className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500 flex-1 min-w-[160px]"
-        />
-        <button onClick={load} className="bg-gray-800 hover:bg-gray-700 text-white text-sm px-4 py-2.5 rounded-xl transition-colors">
-          Refresh
-        </button>
-      </div>
-
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
-        {loading
-          ? <div className="p-8 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"/></div>
-          : <div className="overflow-x-auto">
-              <table className="w-full text-xs font-mono">
-                <thead>
-                  <tr className="text-gray-600 border-b border-gray-800">
-                    <th className="text-left px-4 py-3">Started</th>
-                    <th className="text-left px-4 py-3">Device</th>
-                    <th className="text-left px-4 py-3 hidden md:table-cell">Profile</th>
-                    <th className="text-left px-4 py-3">Host</th>
-                    <th className="text-left px-4 py-3">Duration</th>
-                    <th className="text-left px-4 py-3 hidden lg:table-cell">Bytes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sessions.map(s => (
-                    <tr key={`${s.mac}-${s.host.type}:${s.host.value}-${s.startedAt}`}
-                        className="border-b border-gray-800/50 hover:bg-gray-800/30"
-                        data-testid="session-row">
-                      <td className="px-4 py-2.5 text-gray-500">{fmtStarted(s.startedAt)}</td>
-                      <td className="px-4 py-2.5"><DeviceLink mac={s.mac} deviceName={s.deviceName} /></td>
-                      <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell"><ProfileLink id={s.profileId} name={s.profileName} /></td>
-                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={s.host} /></td>
-                      <td className="px-4 py-2.5 text-emerald-400">{fmtDuration(s.durationSeconds)}</td>
-                      <td className="px-4 py-2.5 text-gray-600 hidden lg:table-cell">{fmtBytes(s.bytesIn + s.bytesOut)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {sessions.length === 0 && (
-                <EmptyState
-                  message={hasFilters ? 'No matching sessions.' : 'No sessions found.'}
-                  hasFilters={hasFilters}
-                  onClear={onClear}
-                />
-              )}
-            </div>
-        }
-      </div>
-    </div>
-  )
-}
-
-// ── Connection events tab ─────────────────────────────────────────────────
+// ── Connection events ─────────────────────────────────────────────────────
 // Default Raw → /api/logs. Pick any bucket (1m/10m/…/1w) to switch to
 // /api/connection-events/series with the current filters carried through.
 // groupBy=per-app is gated (apps track #761-#769); per-apex is gated until
@@ -550,27 +415,6 @@ function EmptyState({
 }
 
 // ── formatters ─────────────────────────────────────────────────────────────
-
-function fmtDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  if (m < 60) return s === 0 ? `${m}m` : `${m}m ${s}s`
-  const h = Math.floor(m / 60)
-  const mm = m % 60
-  return mm === 0 ? `${h}h` : `${h}h ${mm}m`
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
-function fmtStarted(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
 
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString()

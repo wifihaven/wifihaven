@@ -172,7 +172,15 @@ jobs:
         run: scalafmt --check --non-interactive
 
       - name: Compile all modules
-        run: mill __.compile
+        # Mill caches `out/` across runs but does NOT drop stale `.class` files when their `.scala`
+        # sources are deleted, so old test classes can still be discovered by the test framework
+        # (#845 hit this: SessionApiSpec was deleted but its cached class file persisted and
+        # failed with NoClassDefFoundError for the also-deleted SessionPage). Wipe the per-module
+        # `classes` dirs so Zinc rebuilds against the current source set; everything else in
+        # `out/` (Zinc analysis, downloaded deps) stays cached.
+        run: |
+          rm -rf out/*/test/compile.dest/classes out/*/compile.dest/classes 2>/dev/null || true
+          mill __.compile
 
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
         # api.test spins up EmbeddedPostgres; running sequentially avoids

@@ -146,12 +146,6 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
         <p className="text-sm font-medium text-white truncate">{device.name}</p>
         <p className="text-xs text-gray-500 shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
       </div>
-      {device.currentSession && (
-        <p className="text-xs text-emerald-400 mt-1">
-          watching <span className="font-mono"><HostCell host={device.currentSession.host} /></span>
-          {' · '}{formatDuration(device.currentSession.durationSeconds)}
-        </p>
-      )}
       {device.topHosts.length > 0 && (
         <ul className="mt-2 space-y-0.5">
           {device.topHosts.map(h => (
