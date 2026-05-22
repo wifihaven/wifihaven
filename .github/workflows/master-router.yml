@@ -14,10 +14,11 @@ name: Master Router CD
 #       → approve-production    (manual gate, `production` environment)
 #         → publish-openwrt     (rolling openwrt-latest GitHub Release)
 #
-# Path scope: see `on.push.paths` below. shared/** triggers BOTH pipelines
-# (router + api/ui) so wire-schema changes get a tandem release until #597
-# (capability negotiation) lands. Docs, READMEs, and meta files do not
-# fire CD on either side.
+# Path scope: see `on.push.paths` below. shared/contract/** (wire-format
+# goldens) triggers BOTH pipelines for tandem releases until #597 lands.
+# Scala-only model changes under shared/src/ fire api/ui only — the router
+# agent is Lua and doesn't link Scala. Docs, READMEs, and meta files fire
+# neither.
 
 on:
   push:
@@ -25,7 +26,10 @@ on:
     paths:
       - 'openwrt/**'
       - 'opnsense/**'
-      - 'shared/**'
+      # shared/contract/** = wire-format goldens that gate-2's fake API
+      # loads as fixtures. Scala-side model changes under shared/src/ don't
+      # reach the Lua router agent, so we don't fire CD on those.
+      - 'shared/contract/**'
       - '.github/workflows/master-router.yml'
       - '.github/workflows/openwrt-build.yml'
       - '.github/workflows/e2e-vm-fake.yml'
