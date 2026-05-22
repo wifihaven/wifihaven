@@ -193,15 +193,29 @@ describe("render.nft", function()
     assert.truthy(nft:find("mac_ip_tracking", 1, true))
   end)
 
-  -- #717: a second per-direction set captures bytes egressing the router to
-  -- LAN clients (downloads), keyed `ether daddr (mac) . ip saddr (remote)`,
-  -- so usage.lua can populate `bytesOut` alongside `bytesIn`.
-  it("declares the mac_ip_tracking_rx set for the download direction (#717)", function()
+  -- #879: download bytes used to be keyed on `ether daddr (mac) . ip saddr
+  -- (remote)`, but at the forward hook a WAN→LAN routed packet still has
+  -- the router's WAN-interface MAC as its L2 daddr (the rewrite to the LAN
+  -- device's MAC happens at egress via the neighbor cache). Every rx byte
+  -- got attributed to the router itself. Re-key on `ip daddr` only (the
+  -- LAN device's IP) and resolve to MAC in the agent via the dnsmasq lease
+  -- table.
+  it("declares the ip_tracking_rx set keyed on ipv4_addr only (#879)", function()
     local nft = render.nft(snap_one())
-    assert.truthy(nft:find("set mac_ip_tracking_rx", 1, true))
+    local pos = nft:find("set ip_tracking_rx", 1, true)
+    assert.truthy(pos)
+    local block = nft:sub(pos, pos + 200)
+    assert.truthy(block:find("type ipv4_addr"))
+    -- The old composite type would betray the bug returning; assert it's gone.
+    assert.is_nil(block:find("ether_addr"))
   end)
 
-  it("wifihaven_account chain updates BOTH tx and rx tracking sets atomically (#717)", function()
+  it("does NOT declare the old mac_ip_tracking_rx set (#879 cleanup)", function()
+    local nft = render.nft(snap_one())
+    assert.is_nil(nft:find("mac_ip_tracking_rx", 1, true))
+  end)
+
+  it("wifihaven_account chain updates BOTH tx and rx tracking sets atomically (#879)", function()
     local nft = render.nft(snap_one())
     local pos = nft:find("chain wifihaven_account", 1, true)
     assert.truthy(pos)
@@ -209,7 +223,7 @@ describe("render.nft", function()
     -- bytesOut always cover the same window.
     local block = nft:sub(pos, pos + 500)
     assert.truthy(block:find("update @mac_ip_tracking%s+{%s*ether saddr %. ip daddr%s*}%s+counter"))
-    assert.truthy(block:find("update @mac_ip_tracking_rx%s+{%s*ether daddr %. ip saddr%s*}%s+counter"))
+    assert.truthy(block:find("update @ip_tracking_rx%s+{%s*ip daddr%s*}%s+counter"))
   end)
 
   -- #354: blocked_macs is derived per-device from effective BlockRules.blocked.
