@@ -53,6 +53,12 @@ on:
 # Pre-prod jobs use per-job cancel-in-progress to drop superseded work;
 # deploy-production jobs have no concurrency so they run to completion.
 
+# Default GITHUB_TOKEN to minimum privilege at the workflow level — jobs
+# that need more (build-image, retag-latest → packages: write) override
+# locally.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/wifihaven-api

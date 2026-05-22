@@ -38,6 +38,11 @@ on:
 # starts. A workflow-level cancel-in-progress would cancel the whole run
 # (including publish-openwrt mid-upload), which is exactly the #871 bug.
 
+# Default GITHUB_TOKEN to minimum privilege at the workflow level — jobs
+# that need more (publish-openwrt → contents: write) override locally.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
