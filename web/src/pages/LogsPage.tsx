@@ -3,8 +3,6 @@ import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
-import { BucketSelector } from '@/components/usage/BucketSelector'
-import { DateRangePicker } from '@/components/usage/DateRangePicker'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { FilterShelf } from './TrafficUsagePage'
 import {
@@ -226,7 +224,7 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId, 
     setError(null)
     if (bucket === 'raw') return
     api.logs.series({
-      bucket: bucket as Exclude<EventsBucket, 'raw'>,
+      bucket,
       groupBy,
       mac:       mac || undefined,
       profileId: profileId ? Number(profileId) : undefined,
