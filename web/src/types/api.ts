@@ -108,6 +108,16 @@ export interface QueryLog {
   ts: string
 }
 
+// #847: aggregated connection-events row.
+export interface ConnectionEventAggRow {
+  group: string
+  windowStart: string
+  countSucceeded: number
+  countBlocked: number
+  lastSeen: string
+  topDevice: string | null
+}
+
 export interface Session {
   mac: string
   deviceName: string | null

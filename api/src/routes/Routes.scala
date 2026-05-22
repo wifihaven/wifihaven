@@ -1028,7 +1028,7 @@ object LogRoutes {
       userProfileRepo: UserProfileRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "logs"  ->
+      Method.GET / "api" / "logs"                         ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)
@@ -1047,7 +1047,65 @@ object LogRoutes {
             visible <- filterLogs(claims, logs, userProfileRepo)
           } yield Response.json(visible.toJson)
         },
-      Method.GET / "api" / "stats" ->
+      // #847: aggregated connection-event series. bucket+groupBy required; only
+      // domain grouping is implemented (apex needs PSL #849, app needs apps
+      // track #761-#769). Filters mirror /api/logs.
+      Method.GET / "api" / "connection-events" / "series" ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            // Aggregated rows don't carry per-row profile_id, so we can't
+            // post-filter the way /api/logs does. Restrict to admin/adult;
+            // children can still use /api/logs raw view with a profileId
+            // filter that goes through filterLogs.
+            _      <- ZIO
+              .fail(Response.forbidden("aggregated view requires admin or adult role"))
+              .when(claims.role != "admin" && claims.role != "adult")
+            bktStr <- ZIO
+              .fromOption(req.url.queryParam("bucket"))
+              .orElseFail(Response.badRequest("bucket query parameter required"))
+            bucket <- ZIO
+              .fromOption(ConnectionEventBucket.fromWire(bktStr))
+              .orElseFail(Response.badRequest(s"unknown bucket: $bktStr"))
+            _      <- ZIO
+              .fail(Response.badRequest("bucket=off not supported on /series — use /api/logs"))
+              .when(bucket == ConnectionEventBucket.Off)
+            grpStr <- ZIO
+              .fromOption(req.url.queryParam("groupBy"))
+              .orElseFail(Response.badRequest("groupBy query parameter required"))
+            grp    <- ZIO
+              .fromOption(ConnectionEventGroupBy.fromWire(grpStr))
+              .orElseFail(Response.badRequest(s"unknown groupBy: $grpStr"))
+            _      <- grp match {
+              case ConnectionEventGroupBy.Domain => ZIO.unit
+              case ConnectionEventGroupBy.Apex   =>
+                ZIO.fail(
+                  Response.badRequest("groupBy=apex not implemented yet — see #849 (needs PSL)"),
+                )
+              case ConnectionEventGroupBy.App    =>
+                ZIO.fail(
+                  Response.badRequest(
+                    "groupBy=app not implemented yet — apps track in flight (#761-#769)",
+                  ),
+                )
+            }
+            filter = LogFilter(
+              mac = req.url.queryParam("mac"),
+              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
+              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
+              blocked = req.url.queryParam("blocked").map(_ == "true"),
+              domain = req.url.queryParam("domain"),
+              location = req.url.queryParam("location"),
+              hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24),
+              limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(500),
+              offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
+            )
+            rows   <- connRepo
+              .querySeries(filter, bucket.seconds)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.json(rows.toJson)
+        },
+      Method.GET / "api" / "stats"                        ->
         handler { (req: Request) =>
           requireAdmin(req, auth) *>
             connRepo.stats

@@ -310,6 +310,44 @@ case class DomainCount(host: HostId, count: Int) derives JsonCodec
 case class DeviceStats(mac: MacAddress, deviceName: String, total: Int, blocked: Int)
     derives JsonCodec
 
+// ── Connection-events aggregation (#847) ───────────────────────────────────
+// Bucket widths supported by /api/connection-events/series. "off" = caller
+// wants raw rows from /api/logs (the series endpoint rejects it as 400).
+enum ConnectionEventBucket(val wire: String, val seconds: Int) {
+  case Off extends ConnectionEventBucket("off", 0)
+  case M1  extends ConnectionEventBucket("1m", 60)
+  case M10 extends ConnectionEventBucket("10m", 600)
+  case H1  extends ConnectionEventBucket("1h", 3600)
+  case H12 extends ConnectionEventBucket("12h", 43200)
+  case D1  extends ConnectionEventBucket("1d", 86400)
+  case W1  extends ConnectionEventBucket("1w", 604800)
+}
+
+object ConnectionEventBucket {
+  def fromWire(s: String): Option[ConnectionEventBucket] =
+    ConnectionEventBucket.values.find(_.wire == s)
+}
+
+enum ConnectionEventGroupBy(val wire: String) {
+  case Domain extends ConnectionEventGroupBy("domain")
+  case Apex   extends ConnectionEventGroupBy("apex")
+  case App    extends ConnectionEventGroupBy("app")
+}
+
+object ConnectionEventGroupBy {
+  def fromWire(s: String): Option[ConnectionEventGroupBy] =
+    ConnectionEventGroupBy.values.find(_.wire == s)
+}
+
+case class ConnectionEventAggRow(
+    group: String,
+    windowStart: String,
+    countSucceeded: Int,
+    countBlocked: Int,
+    lastSeen: String,
+    topDevice: Option[String],
+) derives JsonCodec
+
 case class SiteUsage(
     label: String,
     domainPattern: String,
