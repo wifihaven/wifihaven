@@ -15,7 +15,7 @@ const settingsNav: NavItem[] = [
   { to: '/logs',    label: 'Logs',    icon: '≡' },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
-  { to: '/admin',   label: 'Admin',   icon: '⚙', adminOnly: true },
+  { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },
 ]
 
 export function Layout() {
@@ -98,7 +98,7 @@ export function Layout() {
                       : 'text-gray-400 hover:text-white hover:bg-gray-800'
                   }`}
                 >
-                  <span>Settings</span>
+                  <span>Advanced</span>
                   <span className="text-xs leading-none">▾</span>
                 </button>
                 {settingsOpen && (

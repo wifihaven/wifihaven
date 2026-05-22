@@ -68,24 +68,24 @@ describe('Layout — Settings dropdown', () => {
   it('reveals all settings items for admins when opened', async () => {
     const user = userEvent.setup()
     renderLayout()
-    await user.click(screen.getByRole('button', { name: /Settings/ }))
+    await user.click(screen.getByRole('button', { name: /Advanced/ }))
     const menu = screen.getByRole('menu')
     expect(within(menu).getByRole('menuitem', { name: /Logs/ })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: /Users/ })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: /Routers/ })).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: /Admin/ })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: /Settings/ })).toBeInTheDocument()
   })
 
   it('shows only Logs in the dropdown for non-admins', async () => {
     mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
     const user = userEvent.setup()
     renderLayout()
-    await user.click(screen.getByRole('button', { name: /Settings/ }))
+    await user.click(screen.getByRole('button', { name: /Advanced/ }))
     const menu = screen.getByRole('menu')
     expect(within(menu).getByRole('menuitem', { name: /Logs/ })).toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Users/ })).not.toBeInTheDocument()
     expect(within(menu).queryByRole('menuitem', { name: /Routers/ })).not.toBeInTheDocument()
-    expect(within(menu).queryByRole('menuitem', { name: /Admin/ })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: /Settings/ })).not.toBeInTheDocument()
   })
 })
 
