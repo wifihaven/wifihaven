@@ -1070,26 +1070,29 @@ object LogRoutes {
             _      <- ZIO
               .fail(Response.badRequest("bucket=off not supported on /series — use /api/logs"))
               .when(bucket == ConnectionEventBucket.Off)
-            grpStr <- ZIO
+            // #846: comma-separated multi-column groupBy. Apex/App still
+            // accepted as wire names but rejected with typed errors so the
+            // SPA can re-enable them later without an API change (#856, #857).
+            grpRaw <- ZIO
               .fromOption(req.url.queryParam("groupBy"))
               .orElseFail(Response.badRequest("groupBy query parameter required"))
-            grp    <- ZIO
-              .fromOption(ConnectionEventGroupBy.fromWire(grpStr))
-              .orElseFail(Response.badRequest(s"unknown groupBy: $grpStr"))
-            _      <- grp match {
-              case ConnectionEventGroupBy.Domain => ZIO.unit
-              case ConnectionEventGroupBy.Apex   =>
-                ZIO.fail(
-                  Response.badRequest("groupBy=apex not implemented yet — see #849 (needs PSL)"),
-                )
-              case ConnectionEventGroupBy.App    =>
-                ZIO.fail(
-                  Response.badRequest(
-                    "groupBy=app not implemented yet — apps track in flight (#761-#769)",
-                  ),
-                )
-            }
-            filter = LogFilter(
+            grpSet <- ZIO
+              .foreach(grpRaw.split(',').toList.map(_.trim).filter(_.nonEmpty)) { s =>
+                ZIO
+                  .fromOption(ConnectionEventGroupBy.fromWire(s))
+                  .orElseFail(Response.badRequest(s"unknown groupBy: $s"))
+              }
+              .map(_.toSet)
+            _      <- ZIO
+              .fail(Response.badRequest("groupBy=apex not implemented — see #856 (needs PSL)"))
+              .when(grpSet.exists(g => g.wire == "apex"))
+            _      <- ZIO
+              .fail(
+                Response.badRequest("groupBy=app not implemented — apps track #761-#769 / see #857"),
+              )
+              .when(grpSet.exists(g => g.wire == "app"))
+            groupByCodes = grpSet.map(_.wire)
+            filter       = LogFilter(
               mac = req.url.queryParam("mac"),
               deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
               profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
@@ -1100,8 +1103,8 @@ object LogRoutes {
               limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(500),
               offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
             )
-            rows   <- connRepo
-              .querySeries(filter, bucket.seconds)
+            rows <- connRepo
+              .querySeries(filter, bucket.seconds, groupByCodes)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(rows.toJson)
         },

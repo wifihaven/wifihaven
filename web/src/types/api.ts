@@ -108,14 +108,21 @@ export interface QueryLog {
   ts: string
 }
 
-// #847: aggregated connection-events row.
+// #847 + #846: aggregated connection-events row, with multi-column groupBy.
+// `groups` keyed by "domain" | "device" | "profile" depending on the request.
 export interface ConnectionEventAggRow {
-  group: string
+  groups: Record<string, string>
   windowStart: string
   countSucceeded: number
   countBlocked: number
   lastSeen: string
   topDevice: string | null
+  distinctDevices?: number
+  distinctProfiles?: number
+  distinctDomains?: number
+  soleDevice?: string | null
+  soleProfile?: string | null
+  soleDomain?: string | null
 }
 
 
@@ -299,6 +306,60 @@ export interface UsageSeriesResponse {
   buckets: UsageBucket[]
   topDevices?: UsageDeviceTotal[]
   bucketsByDevice?: UsageDeviceBucket[]
+}
+
+// #846 — Traffic Usage page. Wire-distinct from UsageSeriesResponse: that one
+// drives the screen-time minutes chart; this one drives raw + aggregated bytes
+// inspection. 1m bucket and apex/app groupBy are reserved (router cadence /
+// PSL / apps track) — server returns 400 with a typed `error` code.
+export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+// #846: groupBy is composable. Apex is deferred to #856 (needs PSL), App to
+// #857 (needs apps track) — both still rejected server-side with typed errors.
+export type TrafficUsageGroupBy = 'domain' | 'device' | 'profile' | 'apex' | 'app'
+
+export interface TrafficUsageRawRow {
+  mac: string
+  deviceName?: string
+  profileId?: number
+  profileName?: string
+  host: HostId
+  bytesIn: number
+  bytesOut: number
+  activeSeconds: number
+  periodStart: string
+  periodEnd: string
+}
+
+export interface TrafficUsageAggregateRow {
+  // Keyed by the column codes in the request's groupBy set ("domain" |
+  // "device" | "profile"). For columns NOT in the set, the SPA shows the
+  // distinct-count from `distinct*` below (drill-down deferred to #859).
+  groups: Record<string, string>
+  windowStart: string
+  windowEnd: string
+  totalBytesIn: number
+  totalBytesOut: number
+  totalSeconds: number
+  distinctDevices?: number
+  distinctProfiles?: number
+  distinctDomains?: number
+  // Populated only when the corresponding `distinct*` is 1 AND the column is
+  // not in `groupBy` — lets the SPA render the value in place of "1".
+  soleDevice?: string | null
+  soleProfile?: string | null
+  soleDomain?: string | null
+}
+
+export interface TrafficUsageResponse {
+  bucket: TrafficUsageBucket
+  groupBy?: TrafficUsageGroupBy[]
+  from: string
+  to: string
+  tz: string
+  rawRows: TrafficUsageRawRow[]
+  aggregateRows: TrafficUsageAggregateRow[]
+  rawRowLimit?: number
+  rawRowsTruncated?: boolean
 }
 
 // #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`
