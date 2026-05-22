@@ -171,7 +171,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(device.exists(_.name == "Lutron Bridge")) &&
         assertTrue(device.exists(_.profileId.isEmpty))
     },
-    test("#708 update with profileId=None preserves existing profile, changes name") {
+    test("#708 update with profileId=None clears the profile assignment") {
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
@@ -193,7 +193,7 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         device <- deviceRepo.findByMac(MacAddress.unsafe(mac))
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(device.exists(_.name == "NewName")) &&
-        assertTrue(device.exists(_.profileId.contains(kidsId)))
+        assertTrue(device.exists(_.profileId.isEmpty))
     },
     test("#708 update with profileId=Some re-assigns profile and changes name") {
       for {
@@ -225,8 +225,8 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
     ) {
       // The PUT /api/devices auth check is requireWriter (adult/admin role), and on
       // top of that requireProfileAccess only fires when a profileId is supplied.
-      // So an adult linked to Kids can rename any device without supplying a profile,
-      // but cannot move it to Adults if they aren't linked to Adults.
+      // So an adult can rename without supplying a profile (the device ends up
+      // unassigned), but cannot move it to Adults if they aren't linked to Adults.
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
@@ -264,9 +264,9 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         afterMove <- deviceRepo.findByMac(MacAddress.unsafe(mac))
       } yield assertTrue(renameResp.status == Status.Ok) &&
         assertTrue(afterRename.exists(_.name == "RenamedByMom")) &&
-        assertTrue(afterRename.exists(_.profileId.contains(kidsId))) &&
+        assertTrue(afterRename.exists(_.profileId.isEmpty)) &&
         assertTrue(moveResp.status == Status.Forbidden) &&
-        assertTrue(afterMove.exists(_.profileId.contains(kidsId)))
+        assertTrue(afterMove.exists(_.profileId.isEmpty))
     },
   ) @@ TestAspect.sequential
 }

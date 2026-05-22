@@ -332,10 +332,9 @@ object DeviceRoutes {
               .fromEither(body.fromJson[UpsertDeviceRequest])
               .mapError(e => Response.badRequest(e))
             mac = MacAddress.unsafe(normalizeMac(udr.mac.value))
-            // #708: profileId is optional — None means "don't touch profile" on update,
-            // or fall through to unassigned on insert. The access check skips when
-            // no profile change is requested; if the caller supplies a profileId they
-            // can't write to, this still 403s.
+            // #708: profileId is optional — None means "unassigned" (NULL). The
+            // access check only fires when the caller supplies a profileId; targeting
+            // a profile they can't write to still 403s.
             _  <- udr.profileId match {
               case Some(pid) => requireProfileAccess(claims, pid, userProfileRepo)
               case None      => ZIO.unit
