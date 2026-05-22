@@ -298,9 +298,13 @@ end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
 -- read at flush time) and reused by both the per-minute sampler and the
--- 60 s usage timer below.
-local function read_nft_counters()
-  local pipe = io.popen("nft -j list set inet wifihaven mac_ip_tracking 2>/dev/null", "r")
+-- 60 s usage timer below. Reads both per-direction sets (#717) and merges
+-- them into one list per (mac, dst_ip) carrying both bytes (tx) and
+-- bytes_out (rx). A missing set is treated as an empty side rather than a
+-- hard failure — the chain installs both atomically, so a single-set absence
+-- only happens transiently during a render swap.
+local function read_one_set(name)
+  local pipe = io.popen("nft -j list set inet wifihaven " .. name .. " 2>/dev/null", "r")
   if not pipe then return nil end
   local json_str = pipe:read("*a") or ""
   pipe:close()
@@ -308,6 +312,13 @@ local function read_nft_counters()
   local ok, counters = pcall(usage.parse_nft_counters, json_str)
   if not ok then return nil end
   return counters
+end
+
+local function read_nft_counters()
+  local tx = read_one_set("mac_ip_tracking")
+  local rx = read_one_set("mac_ip_tracking_rx")
+  if not tx and not rx then return nil end
+  return usage.merge_counters(tx or {}, rx or {})
 end
 
 -- ── Start conntrack event watcher (blocking; runs for the lifetime of the process)
@@ -470,9 +481,10 @@ conntrack.watch({
       last_usage_run     = mono
       last_usage_wall_ts = wall
 
-      -- Per-(mac,ip) counters live as element counters on the dynamic set
-      -- `mac_ip_tracking` (see render.lua). After a successful POST we
-      -- `nft reset set ...` to zero those per-element counters in place.
+      -- Per-(mac,ip) counters live as element counters on two dynamic sets
+      -- `mac_ip_tracking` (tx) and `mac_ip_tracking_rx` (rx) — see
+      -- render.lua. After a successful POST we `nft reset set ...` on both
+      -- to zero those per-element counters in lock-step (#717).
       local counters = read_nft_counters()
       if counters then
         -- Final sample at flush so set elements that appeared after the
@@ -493,6 +505,7 @@ conntrack.watch({
         -- is now owned by the retry queue (or already sent), so leaving the
         -- nft counters intact would double-count on the next bucket.
         os.execute("nft reset set inet wifihaven mac_ip_tracking >/dev/null 2>&1")
+        os.execute("nft reset set inet wifihaven mac_ip_tracking_rx >/dev/null 2>&1")
         usage.tracker_reset(activity_tracker)
         if not posted then
           log.warn("usage timer: queued for retry (queue depth=%d)",

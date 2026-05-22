@@ -24,7 +24,15 @@
 -- Public API:
 --   usage.parse_nft_counters(json_str)
 --     → list of { mac, dst_ip, bytes, packets }
---     Input: JSON from `nft -j list set inet wifihaven mac_ip_tracking`
+--     Input: JSON from `nft -j list set inet wifihaven mac_ip_tracking{,_rx}`
+--
+--   usage.merge_counters(tx, rx)
+--     → list of { mac, dst_ip, bytes, packets, bytes_out, packets_out }
+--     Joins the two per-direction counter lists on (mac, dst_ip). `bytes`/
+--     `packets` come from the tx set (device→remote, traffic ingressing the
+--     router); `bytes_out`/`packets_out` come from the rx set (remote→device,
+--     traffic egressing the router). Pairs missing from one direction are
+--     still emitted with that side zeroed (#717).
 --
 --   usage.build_report(counters, nft_sets, period_start, period_end, router_id,
 --                      leases, lookup_hostname, tracker,
@@ -112,6 +120,50 @@ function M.parse_nft_counters(json_str)
 end
 
 -- ---------------------------------------------------------------------------
+-- usage.merge_counters(tx, rx)
+--
+-- Joins per-direction counter lists (each as produced by parse_nft_counters)
+-- on (mac, dst_ip). The tx side is the existing `ether saddr . ip daddr`
+-- direction and stays in `bytes`/`packets`; the rx side is the new
+-- `ether daddr . ip saddr` direction and goes into `bytes_out`/`packets_out`.
+-- A (mac, dst_ip) pair seen in only one direction still produces a record
+-- with the other direction's fields at zero.
+-- ---------------------------------------------------------------------------
+function M.merge_counters(tx, rx)
+  local index = {}
+  local result = {}
+  local function key(mac, dst_ip) return mac .. "|" .. dst_ip end
+  local function get_or_make(mac, dst_ip)
+    local k = key(mac, dst_ip)
+    local rec = index[k]
+    if not rec then
+      rec = {
+        mac         = mac,
+        dst_ip      = dst_ip,
+        bytes       = 0,
+        packets     = 0,
+        bytes_out   = 0,
+        packets_out = 0,
+      }
+      index[k] = rec
+      result[#result + 1] = rec
+    end
+    return rec
+  end
+  for _, c in ipairs(tx or {}) do
+    local rec = get_or_make(c.mac, c.dst_ip)
+    rec.bytes   = rec.bytes   + (c.bytes   or 0)
+    rec.packets = rec.packets + (c.packets or 0)
+  end
+  for _, c in ipairs(rx or {}) do
+    local rec = get_or_make(c.mac, c.dst_ip)
+    rec.bytes_out   = rec.bytes_out   + (c.bytes   or 0)
+    rec.packets_out = rec.packets_out + (c.packets or 0)
+  end
+  return result
+end
+
+-- ---------------------------------------------------------------------------
 -- host_for_ip(dst_ip, nft_sets, lookup_hostname) → { type, value }
 -- ---------------------------------------------------------------------------
 -- Returns a HostId-shaped table (#391) identifying the destination of this
@@ -162,16 +214,19 @@ end
 -- count it as an active sample if the new value is > 0.
 function M.tracker_sample(tracker, counters)
   for _, c in ipairs(counters or {}) do
-    local key  = tracker_key(c.mac, c.dst_ip)
-    local prev = tracker.last[key] or 0
-    if c.bytes > prev then
+    local key   = tracker_key(c.mac, c.dst_ip)
+    local prev  = tracker.last[key] or 0
+    -- Counter total spans both directions (#717) — growth in either bytes
+    -- (device→remote) or bytes_out (remote→device) marks an active sample.
+    local total = (c.bytes or 0) + (c.bytes_out or 0)
+    if total > prev then
       tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
-      tracker.last[key] = c.bytes
-    elseif c.bytes < prev then
-      if c.bytes > 0 then
+      tracker.last[key] = total
+    elseif total < prev then
+      if total > 0 then
         tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
       end
-      tracker.last[key] = c.bytes
+      tracker.last[key] = total
     end
   end
 end
@@ -201,7 +256,7 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
     local active_seconds
     if samples > 0 then
       active_seconds = math.min(sample_seconds * samples, bucket_seconds)
-    elseif c.bytes > 0 then
+    elseif (c.bytes or 0) + (c.bytes_out or 0) > 0 then
       -- Set element first appeared after the final sample tick: credit one sample.
       active_seconds = sample_seconds
     else
@@ -211,8 +266,8 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
       mac           = c.mac,
       host          = host,
       activeSeconds = active_seconds,
-      bytesIn       = c.bytes,
-      bytesOut      = 0,   -- nftables ingress-only counters; egress tracked separately
+      bytesIn       = c.bytes     or 0,
+      bytesOut      = c.bytes_out or 0,
     }
     if leases then
       rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table

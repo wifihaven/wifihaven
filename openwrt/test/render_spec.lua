@@ -193,6 +193,25 @@ describe("render.nft", function()
     assert.truthy(nft:find("mac_ip_tracking", 1, true))
   end)
 
+  -- #717: a second per-direction set captures bytes egressing the router to
+  -- LAN clients (downloads), keyed `ether daddr (mac) . ip saddr (remote)`,
+  -- so usage.lua can populate `bytesOut` alongside `bytesIn`.
+  it("declares the mac_ip_tracking_rx set for the download direction (#717)", function()
+    local nft = render.nft(snap_one())
+    assert.truthy(nft:find("set mac_ip_tracking_rx", 1, true))
+  end)
+
+  it("wifihaven_account chain updates BOTH tx and rx tracking sets atomically (#717)", function()
+    local nft = render.nft(snap_one())
+    local pos = nft:find("chain wifihaven_account", 1, true)
+    assert.truthy(pos)
+    -- Same chain (one rule walk per packet) so a bucket's bytesIn and
+    -- bytesOut always cover the same window.
+    local block = nft:sub(pos, pos + 500)
+    assert.truthy(block:find("update @mac_ip_tracking%s+{%s*ether saddr %. ip daddr%s*}%s+counter"))
+    assert.truthy(block:find("update @mac_ip_tracking_rx%s+{%s*ether daddr %. ip saddr%s*}%s+counter"))
+  end)
+
   -- #354: blocked_macs is derived per-device from effective BlockRules.blocked.
   -- The API server precomputes pause / time-limit / schedule into that flag.
 

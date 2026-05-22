@@ -227,9 +227,13 @@ local USAGE_FIELD_ORDER = {
 }
 
 local function build_usage_report()
+  -- Mirror what the agent passes after merging the two per-direction nft
+  -- sets (#717): bytes = tx (device→remote), bytes_out = rx (remote→device).
   local counters = {
-    { mac = "aa:bb:cc:11:22:33", dst_ip = "151.101.65.69",  bytes = 1048576 },
-    { mac = "76:2d:95:47:d1:8e", dst_ip = "192.168.10.99",  bytes = 4096 },
+    { mac = "aa:bb:cc:11:22:33", dst_ip = "151.101.65.69",
+      bytes = 1048576, bytes_out = 8388608 },
+    { mac = "76:2d:95:47:d1:8e", dst_ip = "192.168.10.99",
+      bytes = 4096,    bytes_out = 16384 },
   }
   local lookup = function(ip)
     if ip == "151.101.65.69" then return "khanacademy.org" end
