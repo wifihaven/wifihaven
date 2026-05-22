@@ -7,11 +7,6 @@
 # Also rejects duplicate version numbers in the resulting tree — if two
 # files share the same V<n>__ prefix, Flyway refuses to start. This
 # guardrail was added after #883, where two PRs independently grabbed V27.
-#
-# Emergency escape hatch: set ALLOW_MIGRATION_MUTATIONS=1 in the workflow
-# environment to skip the mutation check (the duplicate-version check
-# still runs). Added for the #883 dup-V27 rename.
-# TODO(#885): remove the escape-hatch wiring after the #883 PR has merged.
 set -euo pipefail
 
 BASE="${1:?usage: check-migrations.sh <base-ref>}"
@@ -22,28 +17,23 @@ changes="$(git diff --name-status "${BASE}"...HEAD -- "${DIR}")"
 bad=0
 
 if [[ -n "${changes}" ]]; then
-  if [[ "${ALLOW_MIGRATION_MUTATIONS:-0}" == "1" ]]; then
-    echo "ALLOW_MIGRATION_MUTATIONS=1 — skipping migration immutability check."
-    echo "Changes detected (not enforced):"
-    printf '%s\n' "${changes}"
-  else
-    while IFS= read -r line; do
-      [[ -z "${line}" ]] && continue
-      status="$(printf '%s' "${line}" | cut -f1)"
-      files="$(printf '%s' "${line}" | cut -f2-)"
-      case "${status}" in
-        A)
-          echo "OK (added):    ${files}"
-          ;;
-        *)
-          echo "BLOCKED (${status}): ${files}" >&2
-          bad=1
-          ;;
-      esac
-    done <<< "${changes}"
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    status="$(printf '%s' "${line}" | cut -f1)"
+    files="$(printf '%s' "${line}" | cut -f2-)"
+    case "${status}" in
+      A)
+        echo "OK (added):    ${files}"
+        ;;
+      *)
+        echo "BLOCKED (${status}): ${files}" >&2
+        bad=1
+        ;;
+    esac
+  done <<< "${changes}"
 
-    if [[ ${bad} -ne 0 ]]; then
-      cat >&2 <<'MSG'
+  if [[ ${bad} -ne 0 ]]; then
+    cat >&2 <<'MSG'
 
 Migration files in api/resources/db/migration must not be modified, deleted,
 or renamed once merged to main. Editing an applied migration causes a Flyway
@@ -52,8 +42,7 @@ V{n+1}__... migration instead.
 
 This rule is enforced by .github/scripts/check-migrations.sh (issue #61).
 MSG
-      exit 1
-    fi
+    exit 1
   fi
 else
   echo "No migration changes."
