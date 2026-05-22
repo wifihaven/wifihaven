@@ -237,6 +237,22 @@ case class Device(
     lastSeenAt: Option[String],
 ) derives JsonCodec
 
+/**
+ * #711: a notification raised when the agent ingest path auto-creates a row for a previously-unseen
+ * MAC. The admin reviews pending alerts in the SPA and dismisses each one once they have named the
+ * device / assigned a profile / decided it isn't worth a name. `dismissedAt` is `None` while
+ * pending, `Some(ts)` once cleared.
+ */
+case class DeviceAlert(
+    id: DeviceAlertId,
+    mac: MacAddress,
+    deviceName: String,
+    profileId: Option[ProfileId],
+    profileName: Option[String],
+    firstSeenAt: String,
+    dismissedAt: Option[String],
+) derives JsonCodec
+
 case class QueryLog(
     id: QueryLogId,
     mac: Option[MacAddress],

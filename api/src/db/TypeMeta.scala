@@ -31,6 +31,7 @@ object TypeMeta {
   given Meta[QueryLogId]            = Meta[Long].imap(QueryLogId(_))(_.value)
   given Meta[TrafficReportId]       = Meta[Long].imap(TrafficReportId(_))(_.value)
   given Meta[TimeUsageId]           = Meta[Long].imap(TimeUsageId(_))(_.value)
+  given Meta[DeviceAlertId]         = Meta[Long].imap(DeviceAlertId(_))(_.value)
   given Meta[AppId]                 = Meta[Long].imap(AppId(_))(_.value)
   given Meta[AppPolicyAssignmentId] = Meta[Long].imap(AppPolicyAssignmentId(_))(_.value)
 

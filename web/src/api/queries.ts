@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  DashboardNow, Device, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
+  DashboardNow, Device, DeviceAlert, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
   ProfileTimeSummary, ProfileTimeSummaryWeek, UsageSeriesResponse,
 } from '@/types/api'
 
@@ -27,6 +27,7 @@ const STALE = {
 export const qk = {
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
+  deviceAlerts: () => ['device-alerts'] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
   timeStatusToday: () => ['time', 'status', 'today'] as const,
   timeStatusDate: (date: string) => ['time', 'status', 'date', date] as const,
@@ -61,6 +62,19 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
     queryKey: qk.devices(),
     queryFn: () => api.devices.list(),
     staleTime: STALE.devices,
+    ...opts,
+  })
+}
+
+// #711 — pending new-device alerts. Refetched on a 30s interval so the banner
+// reflects a freshly-connected device without the admin reloading the page.
+export function useDeviceAlerts(opts?: QueryOpts<DeviceAlert[]>) {
+  return useQuery({
+    queryKey: qk.deviceAlerts(),
+    queryFn: () => api.deviceAlerts.list(false),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
     ...opts,
   })
 }
@@ -181,6 +195,7 @@ export function useInvalidators() {
   return {
     profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
+    deviceAlerts: () => qc.invalidateQueries({ queryKey: qk.deviceAlerts() }),
     dashboardNow: () => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
     profileMutated: () => Promise.all([

@@ -116,6 +116,12 @@ object DbFailureSpec extends ZIOSpecDefault {
     def delete(mac: MacAddress)                                                          = throwing
   }
 
+  private def brokenDeviceAlertRepo: DeviceAlertRepo = new DeviceAlertRepo {
+    def raise(mac: MacAddress, firstSeenAt: Instant) = throwing
+    def listAll(includeDismissed: Boolean)           = throwing
+    def dismiss(id: DeviceAlertId, at: Instant)      = throwing
+  }
+
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
     def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
     def recent(l: Int)                                                                  = throwing
@@ -165,6 +171,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
+        brokenDeviceAlertRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
@@ -188,6 +195,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
+        brokenDeviceAlertRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("not json"))
@@ -207,6 +215,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
+        brokenDeviceAlertRepo,
       )
       val req    = Request.post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
       for {

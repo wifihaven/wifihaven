@@ -148,6 +148,18 @@ trait DeviceRepo {
   def delete(mac: MacAddress): Task[Unit]
 }
 
+trait DeviceAlertRepo {
+
+  /**
+   * #711: raise an alert for a freshly auto-created device. Idempotent on `mac` — if a row already
+   * exists for the MAC the existing one wins (including its `dismissed_at` state), so re-ingesting
+   * the same first-seen event doesn't resurrect a dismissed alert or duplicate a pending one.
+   */
+  def raise(mac: MacAddress, firstSeenAt: Instant): Task[Unit]
+  def listAll(includeDismissed: Boolean): Task[List[DeviceAlert]]
+  def dismiss(id: DeviceAlertId, at: Instant): Task[Int]
+}
+
 trait BlocklistRepo {
   def insertBatch(domains: List[(String, String)]): Task[Int]
   def clearCategory(cat: BlocklistId): Task[Unit]
@@ -685,6 +697,43 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   def updateProfile(mac: MacAddress, pid: ProfileId)                                   =
     sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
   def delete(mac: MacAddress) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
+}
+
+class DeviceAlertRepoLive(xa: Transactor[Task]) extends DeviceAlertRepo {
+  def raise(mac: MacAddress, firstSeenAt: Instant): Task[Unit] =
+    // #711: ON CONFLICT DO NOTHING — a dismissed alert stays dismissed; a
+    // pending one isn't bumped to a newer first_seen_at on a duplicate event.
+    sql"""INSERT INTO device_alerts(mac, first_seen_at)
+          VALUES($mac, $firstSeenAt)
+          ON CONFLICT(mac) DO NOTHING""".update.run.transact(xa).unit
+
+  def listAll(includeDismissed: Boolean): Task[List[DeviceAlert]] = {
+    val filter = if includeDismissed then fr"" else fr"WHERE a.dismissed_at IS NULL"
+    (fr"""SELECT a.id, a.mac, d.name, d.profile_id, p.name,
+                 a.first_seen_at::TEXT, a.dismissed_at::TEXT
+          FROM device_alerts a
+          JOIN devices d ON d.mac = a.mac
+          LEFT JOIN profiles p ON p.id = d.profile_id
+       """ ++ filter ++ fr"ORDER BY a.first_seen_at DESC")
+      .query[
+        (
+            DeviceAlertId,
+            MacAddress,
+            String,
+            Option[ProfileId],
+            Option[String],
+            String,
+            Option[String],
+        ),
+      ]
+      .map(r => DeviceAlert(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+      .to[List]
+      .transact(xa)
+  }
+
+  def dismiss(id: DeviceAlertId, at: Instant): Task[Int] =
+    sql"UPDATE device_alerts SET dismissed_at=$at WHERE id=${id.value} AND dismissed_at IS NULL".update.run
+      .transact(xa)
 }
 
 class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
@@ -1721,7 +1770,8 @@ object Repos {
   val trafficReportRepo     = ZLayer.fromFunction(TrafficReportRepoLive(_))
   val blockEventRepo        = ZLayer.fromFunction(BlockEventRepoLive(_))
   val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
+  val deviceAlertRepo       = ZLayer.fromFunction(DeviceAlertRepoLive(_))
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ appRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ deviceAlertRepo ++ appRepo
 }

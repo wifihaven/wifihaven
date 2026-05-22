@@ -84,6 +84,18 @@ export interface Device {
   lastSeenAt: string | null
 }
 
+// #711: notification raised when the agent auto-creates a Device row for a
+// previously-unseen MAC. `dismissedAt` is null while pending.
+export interface DeviceAlert {
+  id: number
+  mac: string
+  deviceName: string
+  profileId: number | null
+  profileName: string | null
+  firstSeenAt: string
+  dismissedAt: string | null
+}
+
 // Tagged-union host identifier (#391). Wire shape carried by every endpoint
 // that surfaces a "what host did the device contact" field. FQDN is a
 // resolved hostname; ipv4/ipv6 are raw IP literals emitted when DNS

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { DashboardNow, DashboardStats, QueryLog } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
@@ -10,6 +11,9 @@ vi.mock('@/api/client', () => ({
     },
     dashboard: {
       now: vi.fn(),
+    },
+    deviceAlerts: {
+      list: vi.fn(),
     },
   },
 }))
@@ -69,16 +73,19 @@ const mockStats = () => api.logs.stats as unknown as ReturnType<typeof vi.fn>
 const mockQuery = () => api.logs.query as unknown as ReturnType<typeof vi.fn>
 const mockNow   = () => api.dashboard.now as unknown as ReturnType<typeof vi.fn>
 
+const mockAlerts = () => api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>
+
 beforeEach(() => {
   vi.resetAllMocks()
   mockStats().mockResolvedValue(stats)
   mockQuery().mockResolvedValue([recent])
   mockNow().mockResolvedValue(emptyNow)
+  mockAlerts().mockResolvedValue([])
 })
 
 describe('DashboardPage', () => {
   it('renders stat cards, top-blocked, per-device, and recent queries', async () => {
-    render(withQuery(<DashboardPage />))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     expect(await screen.findByText('1234')).toBeInTheDocument()
     expect(screen.getByText('56')).toBeInTheDocument()
     expect(screen.getByText('78')).toBeInTheDocument()
@@ -95,12 +102,12 @@ describe('DashboardPage', () => {
 
   it('shows empty state when no blocked queries', async () => {
     mockStats().mockResolvedValue({ ...stats, topBlocked: [] })
-    render(withQuery(<DashboardPage />))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     expect(await screen.findByText(/No blocked queries yet/)).toBeInTheDocument()
   })
 
   it('recent activity Time column renders in viewer local time (not UTC slice)', async () => {
-    render(withQuery(<DashboardPage />))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     await screen.findByText('example.com')
     const expected = new Date(recent.ts).toLocaleTimeString()
     expect(screen.getByText(expected)).toBeInTheDocument()
@@ -108,7 +115,7 @@ describe('DashboardPage', () => {
 
   it('renders Now section above stat cards', async () => {
     mockNow().mockResolvedValue(liveNow)
-    render(withQuery(<DashboardPage />))
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
     await screen.findByText('1234')
     await waitFor(() => expect(screen.getByTestId('now-profile-1')).toBeInTheDocument())
     const nowHeading = screen.getByText('Now')

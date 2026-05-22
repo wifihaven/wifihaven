@@ -22,6 +22,7 @@ opaque type ConnectionEventId     = Long
 opaque type QueryLogId            = Long
 opaque type TrafficReportId       = Long
 opaque type TimeUsageId           = Long
+opaque type DeviceAlertId         = Long
 opaque type AppId                 = Long
 opaque type AppPolicyAssignmentId = Long
 
@@ -103,6 +104,12 @@ object TimeUsageId {
   def apply(l: Long): TimeUsageId            = l
   extension (t: TimeUsageId) def value: Long = t
   given JsonCodec[TimeUsageId]               = JsonCodec.long
+}
+
+object DeviceAlertId {
+  def apply(l: Long): DeviceAlertId            = l
+  extension (a: DeviceAlertId) def value: Long = a
+  given JsonCodec[DeviceAlertId]               = JsonCodec.long
 }
 
 object AppId {

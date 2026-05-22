@@ -1,6 +1,6 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
-  DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
+  DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventAggRow, QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
@@ -119,6 +119,16 @@ export const api = {
     list: () => req<Device[]>('GET', '/devices'),
     upsert: (data: UpsertDeviceRequest) => req<{ id: number }>('PUT', '/devices', data),
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
+  },
+
+  // ── Device alerts (#711) ───────────────────────────────────────────────
+  deviceAlerts: {
+    list: (includeDismissed = false) =>
+      req<DeviceAlert[]>(
+        'GET',
+        `/device-alerts${includeDismissed ? '?dismissed=true' : ''}`,
+      ),
+    dismiss: (id: number) => req<void>('POST', `/device-alerts/${id}/dismiss`),
   },
 
   // ── Time ───────────────────────────────────────────────────────────────
