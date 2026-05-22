@@ -1,12 +1,11 @@
 name: Build OpenWRT VM image
 
+# PR-validation only. The main-branch VM image build lives in
+# master-router.yml's `build-vm-image` job so it's coupled to the rest of
+# the router release pipeline and the artifact is produced for every
+# router push. Keeping a PR trigger here means contributors get the same
+# image build feedback on their PR before merge.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "openwrt/**"
-      - "scripts/vm/**"
-      - ".github/workflows/router-image-build.yml"
   pull_request:
     paths:
       - "openwrt/**"

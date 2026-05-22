@@ -60,6 +60,55 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci.yml
 
+  # Build the OpenWRT VM image and upload it as a 14-day artifact. Mirrors
+  # the PR-validation build in router-image-build.yml — running it here
+  # means every router push to main also produces a downloadable image
+  # without a separate workflow. Independent of ci-tests / gate-2 so a
+  # red lint or qemu run doesn't lose the artifact.
+  build-vm-image:
+    name: Build OpenWRT VM image (x86_64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read pinned OpenWRT version
+        id: ver
+        run: |
+          # shellcheck disable=SC1091
+          . scripts/vm/versions.sh
+          {
+            echo "openwrt_version=${OPENWRT_VERSION}"
+            echo "tarball=${OPENWRT_IMAGEBUILDER_TARBALL}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cache Image Builder download
+        uses: actions/cache@v5
+        with:
+          path: scripts/vm/.cache/downloads
+          key: openwrt-ib-${{ steps.ver.outputs.openwrt_version }}-${{ steps.ver.outputs.tarball }}
+
+      - name: Build router image
+        env:
+          IPK_SOURCE: local
+        run: |
+          chmod +x scripts/vm/build-router-image.sh openwrt/build-ipk.sh
+          scripts/vm/build-router-image.sh
+
+      - name: Image summary
+        run: |
+          ls -lh scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
+          file scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: openwrt-wifihaven-${{ steps.ver.outputs.openwrt_version }}-${{ github.sha }}
+          path: scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
+          if-no-files-found: error
+          retention-days: 14
+
   # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
   # against an in-process fake API serving snapshot fixtures. Runs on the
   # self-hosted KVM runner; e2e-vm-fake.yml's own concurrency group
