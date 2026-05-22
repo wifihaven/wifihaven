@@ -301,6 +301,46 @@ export interface UsageSeriesResponse {
   bucketsByDevice?: UsageDeviceBucket[]
 }
 
+// #846 — Traffic Usage page. Wire-distinct from UsageSeriesResponse: that one
+// drives the screen-time minutes chart; this one drives raw + aggregated bytes
+// inspection. 1m bucket and apex/app groupBy are reserved (router cadence /
+// PSL / apps track) — server returns 400 with a typed `error` code.
+export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+export type TrafficUsageGroupBy = 'domain' | 'apex' | 'app'
+
+export interface TrafficUsageRawRow {
+  mac: string
+  deviceName?: string
+  profileId?: number
+  profileName?: string
+  host: HostId
+  bytesIn: number
+  bytesOut: number
+  activeSeconds: number
+  periodStart: string
+  periodEnd: string
+}
+
+export interface TrafficUsageAggregateRow {
+  group: string
+  windowStart: string
+  windowEnd: string
+  totalBytesIn: number
+  totalBytesOut: number
+  totalSeconds: number
+  distinctDevices: number
+}
+
+export interface TrafficUsageResponse {
+  bucket: TrafficUsageBucket
+  groupBy?: TrafficUsageGroupBy
+  from: string
+  to: string
+  tz: string
+  rawRows: TrafficUsageRawRow[]
+  aggregateRows: TrafficUsageAggregateRow[]
+}
+
 // #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`
 // (one of 0/15/30/45 — minute past the UTC hour where the grid starts). The SPA picks the
 // offset so each bucket falls fully within one local-tz day, then groups by local day for the

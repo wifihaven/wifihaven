@@ -10,6 +10,7 @@ import { ProfilesPage } from '@/pages/ProfilesPage'
 import { TimePage } from '@/pages/TimePage'
 import { ProfileTimelinePage } from '@/pages/ProfileTimelinePage'
 import { LogsPage } from '@/pages/LogsPage'
+import { TrafficUsagePage } from '@/pages/TrafficUsagePage'
 import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { RoutersPage } from '@/pages/RoutersPage'
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="time"      element={<RequirePwChanged><TimePage /></RequirePwChanged>} />
         <Route path="time/:profileId/timeline" element={<RequirePwChanged><ProfileTimelinePage /></RequirePwChanged>} />
         <Route path="logs"      element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
+        <Route path="usage"     element={<RequirePwChanged><TrafficUsagePage /></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />

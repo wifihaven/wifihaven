@@ -13,6 +13,7 @@ const primaryNav: NavItem[] = [
 
 const settingsNav: NavItem[] = [
   { to: '/logs',    label: 'Logs',    icon: '≡' },
+  { to: '/usage',   label: 'Usage',   icon: '⇅' },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },

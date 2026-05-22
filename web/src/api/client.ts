@@ -2,6 +2,7 @@ import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
   DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventAggRow, QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
@@ -168,6 +169,26 @@ export const api = {
       if (params.tz)        qs.set('tz', params.tz)
       if (params.topN)      qs.set('topN', String(params.topN))
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
+    },
+    // #846 Traffic Usage page
+    traffic: (params: {
+      mac?: string
+      profileId?: number
+      from?: string
+      to?: string
+      bucket?: TrafficUsageBucket
+      groupBy?: TrafficUsageGroupBy
+      tz?: string
+    }) => {
+      const qs = new URLSearchParams()
+      if (params.mac)                      qs.set('mac', params.mac)
+      if (params.profileId !== undefined)  qs.set('profileId', String(params.profileId))
+      if (params.from)                     qs.set('from', params.from)
+      if (params.to)                       qs.set('to', params.to)
+      if (params.bucket)                   qs.set('bucket', params.bucket)
+      if (params.groupBy)                  qs.set('groupBy', params.groupBy)
+      if (params.tz)                       qs.set('tz', params.tz)
+      return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`)
     },
   },
 

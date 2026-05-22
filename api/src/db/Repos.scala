@@ -307,6 +307,23 @@ trait TrafficReportRepo {
       from: LocalDate,
       to: LocalDate,
   ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
+   * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs"
+   * (used by the Traffic Usage page in unfiltered mode). Returns Instants (not String date columns)
+   * so callers can bucket without re-parsing.
+   */
+  def listRawInRange(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
+
+  /**
+   * #846: earliest `period_start` across all rows. Used by Traffic Usage page to reject `from`
+   * instants that fall outside the retention horizon — naïve until #809/#814 land.
+   */
+  def earliestPeriodStart: Task[Option[Instant]]
 }
 
 trait BlockEventRepo {
@@ -1070,6 +1087,54 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
           .transact(xa)
     }
   }
+
+  // #846: raw row range pull. Wide range × all-macs scans traffic_reports — caller
+  // (UsageTrafficService) enforces a window cap that keeps this from melting prod.
+  // TODO(#730): remove this read-side join once usage records carry dest_ip.
+  def listRawInRange(macs: List[MacAddress], fromInstant: Instant, toInstant: Instant) = {
+    type Row =
+      (MacAddress, HostId, Instant, Instant, Int, Long, Long)
+    val baseSelect =
+      fr"""SELECT tr.mac,
+                  CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                       THEN 'fqdn' ELSE tr.host_type END,
+                  COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                           tr.host_value),
+                  tr.period_start, tr.period_end,
+                  tr.active_seconds, tr.bytes_in, tr.bytes_out
+           FROM traffic_reports tr
+           LEFT JOIN LATERAL (
+             SELECT resolved_host_value
+             FROM connection_events
+             WHERE mac          = tr.mac
+               AND dest_ip      = tr.host_value
+               AND resolved_host_value IS NOT NULL
+               AND ts >= tr.date::TIMESTAMPTZ
+               AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+             ORDER BY ts DESC LIMIT 1
+           ) ce ON tr.host_type IN ('ipv4','ipv6')
+           WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant """
+    val macFilter  = macs match {
+      case Nil => fr""
+      case ms  =>
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
+        fr"AND " ++ Fragments.in(fr"tr.mac", nel)
+    }
+    val select     = baseSelect ++ macFilter ++ fr"ORDER BY tr.period_start"
+    select
+      .query[Row]
+      .map { case (m, h, ps, pe, secs, bi, bo) =>
+        wifihaven.api.usage.TrafficUsageDbRow(m, h, ps, pe, secs, bi, bo)
+      }
+      .to[List]
+      .transact(xa)
+  }
+
+  def earliestPeriodStart =
+    sql"SELECT MIN(period_start) FROM traffic_reports"
+      .query[Option[Instant]]
+      .unique
+      .transact(xa)
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listTrafficRollupRows(f: TrafficRollupFilter) = {

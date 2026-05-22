@@ -533,6 +533,46 @@ case class UsageSeriesResponse(
     bucketsByDevice: List[UsageDeviceBucket] = Nil,
 ) derives JsonCodec
 
+// ── Traffic Usage page (#846) ─────────────────────────────────────────────
+//
+// New page-backing endpoint for raw-row inspection and group-by-domain
+// aggregation. Wire-distinct from UsageSeriesResponse (which powers the
+// screen-time minutes chart and is shape-locked to per-hour minute buckets);
+// see PR for #846 for why this is a sibling rather than an extension.
+
+case class TrafficUsageRawRow(
+    mac: MacAddress,
+    deviceName: Option[String],
+    profileId: Option[ProfileId],
+    profileName: Option[String],
+    host: HostId,
+    bytesIn: Long,
+    bytesOut: Long,
+    activeSeconds: Int,
+    periodStart: String,
+    periodEnd: String,
+) derives JsonCodec
+
+case class TrafficUsageAggregateRow(
+    group: String,
+    windowStart: String,
+    windowEnd: String,
+    totalBytesIn: Long,
+    totalBytesOut: Long,
+    totalSeconds: Long,
+    distinctDevices: Int,
+) derives JsonCodec
+
+case class TrafficUsageResponse(
+    bucket: String,
+    groupBy: Option[String],
+    from: String,
+    to: String,
+    tz: String,
+    rawRows: List[TrafficUsageRawRow] = Nil,
+    aggregateRows: List[TrafficUsageAggregateRow] = Nil,
+) derives JsonCodec
+
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec

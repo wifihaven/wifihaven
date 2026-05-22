@@ -78,6 +78,12 @@ object DbFailureSpec extends ZIOSpecDefault {
         from: java.time.LocalDate,
         to: java.time.LocalDate,
     ) = throwing
+    def listRawInRange(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = throwing
+    def earliestPeriodStart                                              = throwing
   }
 
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {
