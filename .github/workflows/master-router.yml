@@ -62,8 +62,9 @@ jobs:
 
   # Build the OpenWRT VM image early so downstream tests can consume it.
   # Reuses router-image-build.yml (which also runs standalone on PRs).
-  # The upload from that workflow is a workflow artifact — internal CI
-  # use only; user-facing publish happens in publish-vm-image post-gate.
+  # The upload is a workflow artifact only — internal CI use; the .img is
+  # never attached to the user-facing openwrt-latest release (only the
+  # .ipk/.apk packages from publish-openwrt are).
   build-vm-image:
     name: Build OpenWRT VM image
     needs: [ci-tests]
@@ -113,31 +114,3 @@ jobs:
     with:
       publish_release: true
     secrets: inherit
-
-  # Attach the VM image built earlier in this run to the openwrt-latest
-  # release. Needs publish-openwrt so the release definitely exists before
-  # we upload to it. Gated on approve-production via that chain — the
-  # image is built on every router push (build-vm-image, above) but only
-  # surfaces in the public release after the prod gate passes.
-  publish-vm-image:
-    name: Attach VM image to openwrt-latest release
-    needs: [publish-openwrt, build-vm-image]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download VM image artifact
-        uses: actions/download-artifact@v6
-        with:
-          pattern: openwrt-wifihaven-*-${{ github.sha }}
-          path: vm-image
-          merge-multiple: true
-
-      - name: Upload .img to openwrt-latest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          img=$(ls vm-image/*.img | head -1)
-          [[ -n "$img" ]] || { echo "no .img artifact found" >&2; exit 1; }
-          echo "Attaching $img to openwrt-latest"
-          gh release upload openwrt-latest "$img" --clobber --repo "${{ github.repository }}"
