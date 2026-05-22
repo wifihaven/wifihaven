@@ -474,6 +474,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       Boolean,
       String,
       Boolean,
+      String,
   )
   private def toP(r: R)                             = Profile(
     r._1,
@@ -484,15 +485,16 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     r._6,
     FailureMode.parse(r._7).getOrElse(FailureMode.LastKnownGood),
     r._8,
+    CrossDeviceOverlapMode.parse(r._9).getOrElse(CrossDeviceOverlapMode.Sum),
   )
   def listAll                                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only FROM profiles ORDER BY id"
+    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles ORDER BY id"
       .query[R]
       .map(toP)
       .to[List]
       .transact(xa)
   def findById(id: ProfileId)                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only FROM profiles WHERE id=$id"
+    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles WHERE id=$id"
       .query[R]
       .map(toP)
       .option
@@ -510,7 +512,8 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
             extra_allowed=${p.extraAllowed.map(_.value).toArray},
             paused=${p.paused},
             failure_mode=${FailureMode.asString(p.failureMode)},
-            block_ip_only=${p.blockIpOnly}
+            block_ip_only=${p.blockIpOnly},
+            cross_device_overlap_mode=${CrossDeviceOverlapMode.asString(p.crossDeviceOverlapMode)}
           WHERE id=${p.id}""".update.run
       .transact(xa)
       .unit

@@ -150,6 +150,7 @@ object UsageSeries {
       deviceNames: Map[MacAddress, String],
       zone: ZoneId,
       topN: Int,
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
   ): (List[UsageHostTotal], List[UsageBucket], List[UsageDeviceTotal], List[UsageDeviceBucket]) = {
     // Group by (mac, periodStart) — same 5-min bucketing as the per-device build,
     // but now we keep the mac so we can later stack-by-device.
@@ -160,12 +161,12 @@ object UsageSeries {
         .map(r => r.host -> r.bytes)
         .toList
         .groupMapReduce(_._1)(_._2)(_ + _)
-      (hour, mac, secs, byHost)
+      (hour, mac, ps, secs, byHost)
     }
 
     // ── Per-host day totals (#715 byte-share within each (mac, bucket)) ────
     val perHostDaySecs = scala.collection.mutable.Map.empty[HostId, Double]
-    for ((_, _, secs, byHost) <- fiveMin if byHost.nonEmpty) {
+    for ((_, _, _, secs, byHost) <- fiveMin if byHost.nonEmpty) {
       val totalBytes = byHost.valuesIterator.sum
       if (totalBytes > 0L)
         for ((h, b) <- byHost) {
@@ -187,7 +188,7 @@ object UsageSeries {
 
     // ── Per-device day totals (one bucket → one device) ───────────────────
     val perDeviceDaySecs = scala.collection.mutable.Map.empty[MacAddress, Long]
-    for ((_, mac, secs, _) <- fiveMin)
+    for ((_, mac, _, secs, _) <- fiveMin)
       perDeviceDaySecs.updateWith(mac)(p => Some(p.getOrElse(0L) + secs.toLong))
     val orderedDevices = perDeviceDaySecs.toList
       .map { case (m, s) => (m, (s / 60).toInt) }
@@ -205,13 +206,30 @@ object UsageSeries {
     val bucketsByDevice = scala.collection.mutable.ArrayBuffer.empty[UsageDeviceBucket]
     for (hr <- 0 until 24) {
       val hrBuckets = byHour.getOrElse(hr, Nil)
-      val totalSecs = hrBuckets.iterator.map((_, _, s, _) => s.toLong).sum
+      // #751: in Dedup mode the per-hour total collapses to the union of
+      // periodStarts (one bucket → one wall-clock contribution regardless of
+      // how many of the profile's devices were active in it). The per-host
+      // and per-device stacks below stay summed (they're the contribution
+      // breakdown, not a strict reconcile-to-total), so in Dedup mode the
+      // stacks can exceed totalMins; the otherMins clamp keeps the rendered
+      // chart non-negative.
+      val totalSecs = overlap match {
+        case CrossDeviceOverlapMode.Sum   =>
+          hrBuckets.iterator.map((_, _, _, s, _) => s.toLong).sum
+        case CrossDeviceOverlapMode.Dedup =>
+          hrBuckets.iterator
+            .map { case (_, _, ps, s, _) => ps -> s.toLong }
+            .toList
+            .groupMapReduce(_._1)(_._2)(_ max _)
+            .valuesIterator
+            .sum
+      }
       val totalMins = (totalSecs / 60).toInt
 
       // Per-host stack within the hour (#715 byte-share within each 5-min bucket).
       val perHost   = scala.collection.mutable.Map.empty[HostId, Double]
       var hostOther = 0.0
-      for ((_, _, secs, byHost) <- hrBuckets if byHost.nonEmpty) {
+      for ((_, _, _, secs, byHost) <- hrBuckets if byHost.nonEmpty) {
         val totalBytes = byHost.valuesIterator.sum
         if (totalBytes > 0L)
           for ((h, b) <- byHost) {
@@ -242,7 +260,7 @@ object UsageSeries {
       // Per-device stack within the hour (each bucket attributes to its mac).
       val perDevice = scala.collection.mutable.Map.empty[MacAddress, Long]
       var devOther  = 0L
-      for ((_, mac, secs, _) <- hrBuckets)
+      for ((_, mac, _, secs, _) <- hrBuckets)
         if (topDeviceMacs.contains(mac))
           perDevice.updateWith(mac)(p => Some(p.getOrElse(0L) + secs.toLong))
         else devOther += secs.toLong
