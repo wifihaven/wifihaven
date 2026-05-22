@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDevices, useProfiles, useInvalidators } from '@/api/queries'
+import { useDevices, useDeviceAlerts, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
-import type { Device } from '@/types/api'
+import type { Device, DeviceAlert } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 // Apply the LogsPage click-through highlight (#298): when the URL carries
@@ -76,6 +76,8 @@ export function DevicesPage() {
 
   return (
     <div className="space-y-6">
+      <NewDeviceAlertsBanner isAdmin={isAdmin} />
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">Devices</h1>
         {isAdmin && (
@@ -172,6 +174,64 @@ export function DevicesPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── New-device alerts banner (#711) ────────────────────────────────────────
+//
+// Shown above the device list whenever pending alerts exist. Admins can
+// dismiss each one inline; non-admins see the count but can't dismiss
+// (admin-only on the API side, so the button would 403). The banner
+// refetches on a 30 s interval (see useDeviceAlerts) so a freshly-connected
+// device shows up without a manual reload.
+
+function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
+  const alertsQuery  = useDeviceAlerts()
+  const invalidators = useInvalidators()
+  const alerts: DeviceAlert[] = alertsQuery.data ?? []
+
+  const dismissMutation = useMutation({
+    mutationFn: (id: number) => api.deviceAlerts.dismiss(id),
+    onSuccess: () => invalidators.deviceAlerts(),
+  })
+
+  if (alerts.length === 0) return null
+
+  return (
+    <div data-testid="new-device-alerts-banner" className="bg-yellow-500/5 border border-yellow-500/30 rounded-2xl p-5 space-y-3">
+      <div className="flex items-center gap-3">
+        <span className="text-yellow-400 text-lg">●</span>
+        <h2 className="text-yellow-200 font-semibold">
+          {alerts.length === 1
+            ? '1 new device on the network'
+            : `${alerts.length} new devices on the network`}
+        </h2>
+      </div>
+      <ul className="space-y-2">
+        {alerts.map(a => (
+          <li
+            key={a.id}
+            data-testid={`new-device-alert-${a.mac}`}
+            className="flex items-center gap-3 text-sm bg-gray-900/60 rounded-lg px-3 py-2"
+          >
+            <div className="flex-1 min-w-0">
+              <p className="text-white truncate">{a.deviceName}</p>
+              <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
+              <p className="text-xs text-gray-600">first seen {new Date(a.firstSeenAt).toLocaleString()}</p>
+            </div>
+            {isAdmin && (
+              <button
+                onClick={() => dismissMutation.mutate(a.id)}
+                disabled={dismissMutation.isPending}
+                className="text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+              >
+                Dismiss
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

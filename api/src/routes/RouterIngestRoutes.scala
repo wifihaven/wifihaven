@@ -25,6 +25,7 @@ object RouterIngestRoutes {
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
+      deviceAlertRepo: DeviceAlertRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "router" / "usage"  ->
@@ -83,8 +84,8 @@ object RouterIngestRoutes {
                   s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
               ),
             )
-            _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo)
-            _      <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _ <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, deviceAlertRepo)
+            _ <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
           handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
         },
@@ -215,6 +216,7 @@ object RouterIngestRoutes {
       events: List[RouterEvent],
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
+      deviceAlertRepo: DeviceAlertRepo,
   ): IO[Response, Unit] = {
     val connInserts = events.collect {
       case e if e.`type` == "connection_attempt" =>
@@ -254,7 +256,7 @@ object RouterIngestRoutes {
       // reverse arrival order ("ipv4 race-loser observed first, fqdn lands
       // moments later").
       _         <- ZIO.foreachDiscard(enriched)(backfillFromFqdn(_, connEventRepo))
-      _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo))
+      _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo, deviceAlertRepo))
     } yield ()
   }
 
@@ -305,6 +307,7 @@ object RouterIngestRoutes {
   private def applyDhcpOrFirstSeen(
       e: RouterEvent,
       deviceRepo: DeviceRepo,
+      deviceAlertRepo: DeviceAlertRepo,
   ): IO[Response, Unit] =
     if e.`type` != "dhcp_lease" && e.`type` != "first_seen_mac" then ZIO.unit
     else
@@ -329,6 +332,10 @@ object RouterIngestRoutes {
                         .mapError(ErrorMapper.dbErrorToResponse),
                     )
               case None    =>
+                // #711: a brand-new MAC. Insert the device row, then raise a
+                // notification for the admin. The alert repo is idempotent on
+                // `mac`, so a router replaying the same event won't resurrect
+                // a previously-dismissed alert.
                 deviceRepo
                   .upsertUnknown(
                     mac,
@@ -337,7 +344,10 @@ object RouterIngestRoutes {
                     ts,
                   )
                   .mapError(ErrorMapper.dbErrorToResponse)
-                  .unit
+                  .unit *>
+                  deviceAlertRepo
+                    .raise(mac, ts)
+                    .mapError(ErrorMapper.dbErrorToResponse)
             }
           } yield ()
       }

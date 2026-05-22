@@ -22,6 +22,7 @@ opaque type ConnectionEventId = Long
 opaque type QueryLogId        = Long
 opaque type TrafficReportId   = Long
 opaque type TimeUsageId       = Long
+opaque type DeviceAlertId     = Long
 
 object ProfileId {
   def apply(l: Long): ProfileId            = l
@@ -101,6 +102,12 @@ object TimeUsageId {
   def apply(l: Long): TimeUsageId            = l
   extension (t: TimeUsageId) def value: Long = t
   given JsonCodec[TimeUsageId]               = JsonCodec.long
+}
+
+object DeviceAlertId {
+  def apply(l: Long): DeviceAlertId            = l
+  extension (a: DeviceAlertId) def value: Long = a
+  given JsonCodec[DeviceAlertId]               = JsonCodec.long
 }
 
 /** UUID-backed router identifier. */

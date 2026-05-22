@@ -57,8 +57,9 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       tu    <- ZIO.service[TimeUsageRepo]
       dRepo <- ZIO.service[DeviceRepo]
       cRepo <- ZIO.service[ConnectionEventRepo]
+      aRepo <- ZIO.service[DeviceAlertRepo]
       auth = new RouterAuthLive(rRepo)
-    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo)
+    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo)
 
   private def makePolicyService =
     for {
@@ -1071,6 +1072,70 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           rows.exists(r => r.host == HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
         ) &&
         assertTrue(rows.exists(_.host == HostId.Fqdn(Hostname.unsafe("neverssl.com"))))
+    },
+    // ── #711: new-device alert is raised on first ingest of an unknown MAC ──
+    test("events: first_seen_mac for unknown mac raises a pending device_alerts row") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        aRepo    <- ZIO.service[DeviceAlertRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "first_seen_mac",
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.61")),
+          hostname = None,
+          ts = "2026-05-07T14:03:00Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        alerts <- aRepo.listAll(includeDismissed = false)
+      } yield assertTrue(alerts.size == 1) &&
+        assertTrue(alerts.head.mac == MacAddress.unsafe(unknownMac)) &&
+        assertTrue(alerts.head.dismissedAt.isEmpty)
+    },
+    test("events: repeated first_seen_mac for the same MAC raises only one alert") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        aRepo    <- ZIO.service[DeviceAlertRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "first_seen_mac",
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.61")),
+          hostname = None,
+          ts = "2026-05-07T14:03:00Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        alerts <- aRepo.listAll(includeDismissed = true)
+      } yield assertTrue(alerts.size == 1)
+    },
+    test("events: dhcp_lease for a known MAC does NOT raise an alert") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        aRepo    <- ZIO.service[DeviceAlertRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "dhcp_lease",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.10")),
+          hostname = Some(Hostname.unsafe("kid-ipad")),
+          ts = "2026-05-07T14:03:00Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        alerts <- aRepo.listAll(includeDismissed = true)
+      } yield assertTrue(alerts.isEmpty)
     },
   ) @@ TestAspect.sequential
 }
