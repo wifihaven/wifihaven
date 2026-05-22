@@ -1,7 +1,7 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
   DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
-  QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  ConnectionEventAggRow, QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
@@ -195,6 +195,35 @@ export const api = {
       if (params.limit)    qs.set('limit', String(params.limit))
       if (params.offset)   qs.set('offset', String(params.offset))
       return req<QueryLog[]>('GET', `/logs?${qs}`)
+    },
+    // #847: aggregated connection-events series. bucket+groupBy required;
+    // groupBy=apex/app return 400 until #849 (PSL) / #761-#769 (apps) land.
+    series: (params: {
+      bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+      groupBy: 'domain' | 'apex' | 'app'
+      mac?: string
+      deviceId?: number
+      profileId?: number
+      blocked?: boolean
+      domain?: string
+      location?: string
+      hours?: number
+      limit?: number
+      offset?: number
+    }) => {
+      const qs = new URLSearchParams()
+      qs.set('bucket', params.bucket)
+      qs.set('groupBy', params.groupBy)
+      if (params.mac)      qs.set('mac', params.mac)
+      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
+      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
+      if (params.domain)   qs.set('domain', params.domain)
+      if (params.location) qs.set('location', params.location)
+      if (params.hours)    qs.set('hours', String(params.hours))
+      if (params.limit)    qs.set('limit', String(params.limit))
+      if (params.offset)   qs.set('offset', String(params.offset))
+      return req<ConnectionEventAggRow[]>('GET', `/connection-events/series?${qs}`)
     },
     stats: () => req<DashboardStats>('GET', '/stats'),
   },

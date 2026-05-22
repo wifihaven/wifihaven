@@ -465,5 +465,192 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "kids-site.com")
     },
+    test("GET /api/connection-events/series buckets domain counts (1h, groupBy=domain)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("facebook.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        yt = rows.find(_.group == "youtube.com").get
+        fb = rows.find(_.group == "facebook.com").get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(yt.countSucceeded == 2) &&
+        assertTrue(yt.countBlocked == 1) &&
+        assertTrue(fb.countSucceeded == 1) &&
+        assertTrue(fb.countBlocked == 0) &&
+        // youtube has 3 events vs facebook 1 — total-count desc ordering
+        assertTrue(rows.head.group == "youtube.com")
+    },
+    test("GET /api/connection-events/series passes through blocked filter") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("ok.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("bad.com")),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&blocked=true",
+          token,
+        )
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+      } yield assertTrue(rows.length == 1) &&
+        assertTrue(rows.head.group == "bad.com") &&
+        assertTrue(rows.head.countBlocked == 1)
+    },
+    test("GET /api/connection-events/series rejects groupBy=apex with 400 (#849)") {
+      for {
+        _        <- cleanDb
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=apex", token)
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("GET /api/connection-events/series rejects groupBy=app with 400") {
+      for {
+        _        <- cleanDb
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("GET /api/connection-events/series rejects bucket=off with 400") {
+      for {
+        _        <- cleanDb
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=off&groupBy=domain", token)
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("GET /api/connection-events/series rejects unknown bucket with 400") {
+      for {
+        _        <- cleanDb
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=5m&groupBy=domain", token)
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("GET /api/connection-events/series buckets across multiple windows (10m)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        now = Instant.now()
+        // Two events 25 min apart → land in different 10-minute buckets
+        _ <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("a.com")),
+              None,
+              true,
+              "allowed",
+              now.minusSeconds(60),
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("a.com")),
+              None,
+              true,
+              "allowed",
+              now.minusSeconds(60 * 25),
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=10m&groupBy=domain", token)
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+      } yield assertTrue(rows.length == 2) &&
+        assertTrue(rows.forall(_.group == "a.com"))
+    },
   ) @@ TestAspect.sequential
 }

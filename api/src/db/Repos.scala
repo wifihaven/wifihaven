@@ -321,6 +321,7 @@ trait ConnectionEventRepo {
   def listForMac(mac: MacAddress, limit: Int): Task[List[ConnectionEvent]]
   def listForRouter(routerId: RouterId, limit: Int): Task[List[ConnectionEvent]]
   def query(f: LogFilter): Task[List[QueryLog]]
+  def querySeries(f: LogFilter, bucketSeconds: Int): Task[List[ConnectionEventAggRow]]
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
 
@@ -1284,6 +1285,42 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         ),
       ]
       .map(QueryLog.apply)
+      .to[List]
+      .transact(xa)
+  }
+
+  // #847: domain-grouped aggregation over connection_events. Buckets are
+  // computed in UTC via date_bin — UI re-renders boundaries in household-local
+  // tz for display. No rollup table exists yet (#809 in flight); for now even
+  // wide buckets compute on-the-fly from connection_events.
+  def querySeries(f: LogFilter, bucketSeconds: Int) = {
+    val bucketIv = fr"make_interval(secs => $bucketSeconds)"
+    val grpExpr  = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
+    val base     =
+      fr"""SELECT $grpExpr AS grp,
+                  (date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00'))::TEXT AS window_start,
+                  COUNT(*) FILTER (WHERE ce.allowed)::INT      AS count_succeeded,
+                  COUNT(*) FILTER (WHERE NOT ce.allowed)::INT  AS count_blocked,
+                  MAX(ce.ts)::TEXT                              AS last_seen,
+                  mode() WITHIN GROUP (ORDER BY COALESCE(d.name, ce.mac::TEXT)) AS top_device
+           FROM connection_events ce
+           LEFT JOIN devices d  ON d.mac = ce.mac
+           LEFT JOIN profiles p ON p.id  = d.profile_id
+           LEFT JOIN routers r  ON r.id  = ce.router_id
+           WHERE 1=1"""
+    val since    = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
+    val byMac    = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
+    val byDev    = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
+    val byPid    = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
+    val byBl     = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
+    val byDom    = f.domain.fold(fr"")(d =>
+      fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
+    )
+    val byLoc    = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
+      fr"GROUP BY grp, window_start ORDER BY (COUNT(*)) DESC LIMIT ${f.limit} OFFSET ${f.offset}")
+      .query[(String, String, Int, Int, String, Option[String])]
+      .map(ConnectionEventAggRow.apply)
       .to[List]
       .transact(xa)
   }
