@@ -7,8 +7,11 @@ interface BucketOption {
   disabledReason?: string
 }
 
+// Raw period is whatever the router agent emits — typically 1m in prod,
+// 5m in older fixtures. The actual period per row is in `period_end -
+// period_start`; we don't promise a value here.
 const BUCKETS: BucketOption[] = [
-  { value: 'raw', label: 'Raw (5m)' },
+  { value: 'raw', label: 'Raw' },
   {
     value: '1m',
     label: '1m',

@@ -69,6 +69,7 @@ export function LogsPage() {
         profileId={profileId}
         bucket={bucket}
         endAt={endAt}
+        hideEndAt={bucket === 'raw'}
         onMacChange={v => { setMac(v); if (v) setProfileId('') }}
         onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
         onBucketChange={setBucket}
@@ -76,7 +77,12 @@ export function LogsPage() {
       />
 
       {bucket === 'raw'
-        ? <RawEventsView mac={mac} profileId={profileId} from={from} to={to} devices={devices} />
+        ? <>
+            <div className="text-xs text-amber-400">
+              Showing latest {RAW_EVENTS_LIMIT} events. Switch buckets to aggregate by window.
+            </div>
+            <RawEventsView mac={mac} profileId={profileId} devices={devices} />
+          </>
         : <AggregatedEventsView
             bucket={bucket}
             groupBy={groupBy}
@@ -119,12 +125,15 @@ function ErrorBanner({ message }: { message: string }) {
 interface RawProps {
   mac: string
   profileId: string
-  from: string
-  to: string
   devices: Device[]
 }
 
-function RawEventsView({ mac, profileId, from, to, devices }: RawProps) {
+const RAW_EVENTS_LIMIT = 200
+
+// Connection-event rows are point events, not bucketed — so the operator
+// just wants "show me the last N". No time window. (#846 audit). An `until=`
+// API param to anchor at a specific moment lands in #863.
+function RawEventsView({ mac, profileId, devices }: RawProps) {
   const [logs, setLogs]       = useState<QueryLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
@@ -138,18 +147,19 @@ function RawEventsView({ mac, profileId, from, to, devices }: RawProps) {
     let cancelled = false
     setLoading(true)
     setError(null)
-    // /api/logs uses `hours` not from/to; derive from the picked range.
+    // /api/logs requires `hours` — pass a wide cap (1y) so the row limit
+    // dominates. When #863 lands we can drop the hours hack entirely.
     api.logs.query({
-      hours:     hoursBetween(from, to),
+      hours:     24 * 365,
       deviceId,
       profileId: profileId ? Number(profileId) : undefined,
-      limit:     200,
+      limit:     RAW_EVENTS_LIMIT,
     })
       .then(d => { if (!cancelled) setLogs(d) })
       .catch(e => { if (!cancelled) { setLogs([]); setError(String(e.message ?? e)) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [deviceId, profileId, from, to])
+  }, [deviceId, profileId])
 
   if (loading) return <Spinner />
   if (error)   return <ErrorBanner message={error} />

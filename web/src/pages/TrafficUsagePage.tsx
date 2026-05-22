@@ -133,17 +133,21 @@ interface ShelfProps {
   onProfileChange: (v: string) => void
   onBucketChange: (b: TrafficUsageBucket) => void
   onEndAtChange: (iso: string) => void
+  // Connection Events raw view doesn't honor an end-at anchor yet (API only
+  // accepts hours-from-now, see #863); hide the picker rather than showing
+  // a control that doesn't do anything.
+  hideEndAt?: boolean
 }
 
 // Shared filter shelf — same shape used by Connection Events page.
 export function FilterShelf({
-  devices, profiles, mac, profileId, bucket, endAt,
+  devices, profiles, mac, profileId, bucket, endAt, hideEndAt,
   onMacChange, onProfileChange, onBucketChange, onEndAtChange,
 }: ShelfProps) {
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
       <BucketSelector value={bucket} onChange={onBucketChange} />
-      <EndAtPicker to={endAt} onChange={onEndAtChange} />
+      {!hideEndAt && <EndAtPicker to={endAt} onChange={onEndAtChange} />}
       <div className="flex flex-wrap gap-3">
         <label className="text-xs text-gray-400">
           Device
