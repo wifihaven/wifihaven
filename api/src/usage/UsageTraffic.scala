@@ -191,6 +191,11 @@ object UsageTraffic {
         val totalBytesIn  = bucketRows.iterator.map(_.bytesIn).sum
         val totalBytesOut = bucketRows.iterator.map(_.bytesOut).sum
         val totalSeconds  = bucketRows.iterator.map(_.activeSeconds.toLong).sum
+        // sole* are populated only when the column is NOT in the groupBy set
+        // AND there's exactly one distinct value contributing — so the SPA can
+        // render the value in place of the "1" count.
+        def soleOf(k: GroupBy, vals: Set[String]): Option[String] =
+          if (!groupBy.contains(k) && vals.size == 1) vals.headOption else None
         TrafficUsageAggregateRow(
           groups = groupsMap,
           windowStart = windowStart.toString,
@@ -201,6 +206,9 @@ object UsageTraffic {
           distinctDevices = devices.size,
           distinctProfiles = profiles.size,
           distinctDomains = domains.size,
+          soleDevice = soleOf(GroupBy.Device, devices),
+          soleProfile = soleOf(GroupBy.Profile, profiles),
+          soleDomain = soleOf(GroupBy.Domain, domains),
         )
       }
       .sortBy(r => (r.windowStart, -r.totalBytesIn - r.totalBytesOut))

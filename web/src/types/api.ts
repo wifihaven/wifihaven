@@ -120,6 +120,9 @@ export interface ConnectionEventAggRow {
   distinctDevices?: number
   distinctProfiles?: number
   distinctDomains?: number
+  soleDevice?: string | null
+  soleProfile?: string | null
+  soleDomain?: string | null
 }
 
 
@@ -340,6 +343,11 @@ export interface TrafficUsageAggregateRow {
   distinctDevices?: number
   distinctProfiles?: number
   distinctDomains?: number
+  // Populated only when the corresponding `distinct*` is 1 AND the column is
+  // not in `groupBy` — lets the SPA render the value in place of "1".
+  soleDevice?: string | null
+  soleProfile?: string | null
+  soleDomain?: string | null
 }
 
 export interface TrafficUsageResponse {

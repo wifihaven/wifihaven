@@ -254,6 +254,24 @@ interface AggProps {
   onToggleGroup: (key: string) => void
 }
 
+// #846 follow-up: render strategy for non-grouped aggregated columns.
+//   - column IS in groupBy   → show the per-row value
+//   - column NOT in groupBy, distinct == 1 → show the sole value (dim)
+//   - else                                  → show the distinct count
+function NonGroupedCell({
+  groupedValue,
+  sole,
+  count,
+}: {
+  groupedValue: string | undefined
+  sole: string | null | undefined
+  count: number | undefined
+}) {
+  if (groupedValue !== undefined) return <>{groupedValue}</>
+  if (sole)                       return <span className="text-gray-400">{sole}</span>
+  return <span className="text-gray-500">{count ?? 0}</span>
+}
+
 function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
   return (
     <div className="overflow-x-auto" data-testid="aggregate-table">
@@ -305,19 +323,25 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
             <tr key={i} className="border-t border-gray-800">
               <td className="px-2 py-1 font-mono text-xs">{localTime(r.windowStart)}</td>
               <td className="px-2 py-1">
-                {groupBy.includes('device')
-                  ? r.groups.device ?? '-'
-                  : <span className="text-gray-500">{r.distinctDevices ?? 0}</span>}
+                <NonGroupedCell
+                  groupedValue={groupBy.includes('device') ? r.groups.device : undefined}
+                  sole={r.soleDevice}
+                  count={r.distinctDevices}
+                />
               </td>
               <td className="px-2 py-1">
-                {groupBy.includes('profile')
-                  ? r.groups.profile ?? '-'
-                  : <span className="text-gray-500">{r.distinctProfiles ?? 0}</span>}
+                <NonGroupedCell
+                  groupedValue={groupBy.includes('profile') ? r.groups.profile : undefined}
+                  sole={r.soleProfile}
+                  count={r.distinctProfiles}
+                />
               </td>
               <td className="px-2 py-1">
-                {groupBy.includes('domain')
-                  ? r.groups.domain ?? '-'
-                  : <span className="text-gray-500">{r.distinctDomains ?? 0}</span>}
+                <NonGroupedCell
+                  groupedValue={groupBy.includes('domain') ? r.groups.domain : undefined}
+                  sole={r.soleDomain}
+                  count={r.distinctDomains}
+                />
               </td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.totalBytesIn)}</td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.totalBytesOut)}</td>

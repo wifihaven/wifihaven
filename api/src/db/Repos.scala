@@ -1411,7 +1411,13 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                   mode() WITHIN GROUP (ORDER BY """ ++ deviceExpr ++ fr""") AS top_device,
                   COUNT(DISTINCT """ ++ deviceExpr ++ fr""")::INT          AS distinct_devices,
                   COUNT(DISTINCT """ ++ profileExpr ++ fr""")::INT         AS distinct_profiles,
-                  COUNT(DISTINCT """ ++ domainExpr ++ fr""")::INT          AS distinct_domains
+                  COUNT(DISTINCT """ ++ domainExpr ++ fr""")::INT          AS distinct_domains,
+                  CASE WHEN COUNT(DISTINCT """ ++ deviceExpr ++ fr""") = 1
+                       THEN MAX(""" ++ deviceExpr ++ fr""") END            AS sole_device,
+                  CASE WHEN COUNT(DISTINCT """ ++ profileExpr ++ fr""") = 1
+                       THEN MAX(""" ++ profileExpr ++ fr""") END           AS sole_profile,
+                  CASE WHEN COUNT(DISTINCT """ ++ domainExpr ++ fr""") = 1
+                       THEN MAX(""" ++ domainExpr ++ fr""") END            AS sole_domain
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac = ce.mac
            LEFT JOIN profiles p ON p.id  = d.profile_id
@@ -1442,13 +1448,18 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             Int,            // distinct_devices
             Int,            // distinct_profiles
             Int,            // distinct_domains
+            Option[String], // sole_device   (null when distinct != 1)
+            Option[String], // sole_profile
+            Option[String], // sole_domain
         ),
       ]
-      .map { case (gd, gv, gp, ws, sc, bl, ls, td, dd, dpr, dm) =>
+      .map { case (gd, gv, gp, ws, sc, bl, ls, td, dd, dpr, dm, sde, spr, sdo) =>
         val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
         gd.foreach(v => groupMap += ("domain" -> v))
         gv.foreach(v => groupMap += ("device" -> v))
         gp.foreach(v => groupMap += ("profile" -> v))
+        // Only surface sole* when the column is NOT in groupBy — when it IS,
+        // the value is already in `groups`.
         ConnectionEventAggRow(
           groups = groupMap.toMap,
           windowStart = ws,
@@ -1459,6 +1470,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           distinctDevices = dd,
           distinctProfiles = dpr,
           distinctDomains = dm,
+          soleDevice = if (wantsDevice) None else sde,
+          soleProfile = if (wantsProfile) None else spr,
+          soleDomain = if (wantsDomain) None else sdo,
         )
       }
       .to[List]

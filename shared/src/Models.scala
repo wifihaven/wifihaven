@@ -358,6 +358,10 @@ case class ConnectionEventAggRow(
     distinctDevices: Int = 0,
     distinctProfiles: Int = 0,
     distinctDomains: Int = 0,
+    // #846 audit follow-up: see TrafficUsageAggregateRow.
+    soleDevice: Option[String] = None,
+    soleProfile: Option[String] = None,
+    soleDomain: Option[String] = None,
 ) derives JsonCodec
 
 case class SiteUsage(
@@ -580,6 +584,13 @@ case class TrafficUsageAggregateRow(
     distinctDevices: Int = 0,
     distinctProfiles: Int = 0,
     distinctDomains: Int = 0,
+    // #846 audit follow-up: when a non-grouped column has only one distinct
+    // value contributing to the row, surface it so the SPA can render the
+    // value instead of just "1". `None` when the column is in `groups`
+    // (already covered) OR when distinct > 1.
+    soleDevice: Option[String] = None,
+    soleProfile: Option[String] = None,
+    soleDomain: Option[String] = None,
 ) derives JsonCodec
 
 case class TrafficUsageResponse(
