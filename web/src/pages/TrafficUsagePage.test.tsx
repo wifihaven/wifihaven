@@ -95,9 +95,8 @@ describe('TrafficUsagePage', () => {
   })
 
   it('switching bucket to 1h preserves filters and shows aggregate table with default groupBy=domain', async () => {
-    ;(api.usage.traffic as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce(rawResp)
-      .mockResolvedValueOnce(aggResp)
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValueOnce(rawResp).mockResolvedValueOnce(aggResp)
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     const firstCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[0][0]
@@ -120,7 +119,8 @@ describe('TrafficUsagePage', () => {
   })
 
   it('clicking a column header toggles it into the groupBy set', async () => {
-    ;(api.usage.traffic as ReturnType<typeof vi.fn>)
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock
       .mockResolvedValueOnce(rawResp)
       .mockResolvedValueOnce(aggResp)
       .mockResolvedValueOnce({ ...aggResp, groupBy: ['device', 'domain'] })
@@ -136,9 +136,8 @@ describe('TrafficUsagePage', () => {
   })
 
   it('surfaces server error', async () => {
-    ;(api.usage.traffic as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('window_too_large'),
-    )
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockRejectedValueOnce(new Error('window_too_large'))
     renderPage()
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('window_too_large'))
   })
