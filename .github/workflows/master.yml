@@ -48,13 +48,13 @@ on:
 # main push lands while an older run is still in build/staging, dropping
 # the older run is fine. We do NOT want cancel-in-progress applying to the
 # deploy-production jobs: cancelling mid-promotion can leave one of the
-# three sub-jobs done and the others not, producing a partial release.
-# Splitting the concurrency group by job name (via the job-level
-# `concurrency` field) is more surgical than narrowing the top-level group,
-# so we keep this group covering build/staging and let prod jobs run free.
-concurrency:
-  group: master-${{ github.ref }}
-  cancel-in-progress: true
+# three sub-jobs done and the others not, producing a partial release —
+# and in particular leaves the openwrt-latest rolling artifact stale.
+#
+# Workflow-level cancel-in-progress would cancel the whole run, including
+# deploy-production jobs. Instead we apply concurrency at the job level for
+# the cancellable build/staging jobs only; deploy-production jobs carry no
+# concurrency and always run to completion once they start. See #871.
 
 env:
   REGISTRY: ghcr.io
@@ -67,11 +67,17 @@ jobs:
   # ── 1. Full CI test matrix (unit, lint, lua, python, shell, frontend) ─────
   ci-tests:
     name: CI
+    concurrency:
+      group: master-build-${{ github.ref }}-ci-tests
+      cancel-in-progress: true
     uses: ./.github/workflows/ci.yml
 
   # ── 2. E2E + smoke tests (unconditional) ──────────────────────────────────
   bootstrap-smoke:
     name: bootstrap-host.sh smoke (Ubuntu container)
+    concurrency:
+      group: master-build-${{ github.ref }}-bootstrap-smoke
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -82,6 +88,9 @@ jobs:
 
   e2e:
     name: Live e2e against staging stack
+    concurrency:
+      group: master-build-${{ github.ref }}-e2e
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -109,6 +118,9 @@ jobs:
 
   prod-stack-smoke:
     name: deploy/docker-compose.prod.yml smoke
+    concurrency:
+      group: master-build-${{ github.ref }}-prod-stack-smoke
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -126,6 +138,9 @@ jobs:
   build-image:
     name: Build Docker image to ghcr.io (sha + staging tags)
     needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
+    concurrency:
+      group: master-build-${{ github.ref }}-build-image
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -178,6 +193,9 @@ jobs:
   deploy-staging:
     name: Deploy staging (Render)
     needs: [build-image]
+    concurrency:
+      group: master-build-${{ github.ref }}-deploy-staging
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Render staging deploy hook
@@ -219,6 +237,9 @@ jobs:
   deploy-spa-staging:
     name: Deploy SPA to Cloudflare Pages (staging)
     needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
+    concurrency:
+      group: master-build-${{ github.ref }}-deploy-spa-staging
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -263,6 +284,9 @@ jobs:
   smoke-staging:
     name: Smoke-test staging
     needs: [deploy-staging, deploy-spa-staging]
+    concurrency:
+      group: master-build-${{ github.ref }}-smoke-staging
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - name: Health endpoint returns 200 + db ok
@@ -338,6 +362,9 @@ jobs:
     # CORS plane; this job covers the admin + router API plane. Either
     # going red still blocks prod via approve-production's `needs:`.
     needs: [deploy-staging]
+    concurrency:
+      group: master-build-${{ github.ref }}-api-smoke-staging
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -430,6 +457,9 @@ jobs:
   gate-2-router-fake-api:
     name: Gate 2 — router fake-API e2e
     needs: [ci-tests]
+    concurrency:
+      group: master-build-${{ github.ref }}-gate-2-router-fake-api
+      cancel-in-progress: true
     uses: ./.github/workflows/e2e-vm-fake.yml
     secrets: inherit
 
