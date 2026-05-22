@@ -429,6 +429,51 @@ describe('formatMins (#791)', () => {
   })
 })
 
+describe('TimePage — reliable accordion (#854)', () => {
+  it('profile name appears exactly once per row (header only, not duplicated in body)', async () => {
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    // Profile 1 is auto-expanded — body content present, but profile name should
+    // still appear only once for that row (in the header, not in the body card).
+    await screen.findByTestId('time-card-1')
+    expect(screen.getAllByText('Kids').length).toBe(1)
+  })
+
+  it('+ Time button is reachable in the header without expanding the card', async () => {
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-row-2')
+    // Profile 2 (Teens) stays collapsed but its + Time button is in the header.
+    expect(screen.queryByTestId('time-card-2')).not.toBeInTheDocument()
+    expect(screen.getByTestId('time-row-grant-2')).toBeInTheDocument()
+  })
+
+  it('clicking + Time in a collapsed row does not toggle it', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-row-2')
+    expect(screen.queryByTestId('time-card-2')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('time-row-grant-2'))
+    // Modal opened — row 2 stayed collapsed.
+    expect(screen.queryByTestId('time-card-2')).not.toBeInTheDocument()
+    expect(screen.getByText('Grant Extra Time')).toBeInTheDocument()
+  })
+
+  it('user-collapsed rows stay collapsed across summary refetches (no auto-expand race)', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-card-1')
+    // Collapse the auto-expanded row.
+    await user.click(screen.getByTestId('time-row-toggle-1'))
+    expect(screen.queryByTestId('time-card-1')).not.toBeInTheDocument()
+    // Simulate a polling refetch by invalidating the summary query through a
+    // grant mutation — onSuccess invalidator forces summaryAll to refetch.
+    await user.click(screen.getByTestId('time-row-grant-2'))
+    await user.click(screen.getByRole('button', { name: /Grant 30m/ }))
+    await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+    // Row 1 must remain collapsed despite the fresh summary array reference.
+    expect(screen.queryByTestId('time-card-1')).not.toBeInTheDocument()
+  })
+})
+
 describe('TimePage — role gating', () => {
   it('hides "+ Time" button for non-admins', async () => {
     mockAuth = { isAdmin: false }
