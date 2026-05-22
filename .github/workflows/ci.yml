@@ -204,6 +204,11 @@ jobs:
       - name: Reject changes to existing migration files
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Emergency escape hatch for #883 (duplicate V27 rename). The
+          # mutation check is bypassed only on this specific PR branch;
+          # the duplicate-version check still runs.
+          # TODO(#885): remove this env block after the #883 PR has merged.
+          ALLOW_MIGRATION_MUTATIONS: ${{ github.event.pull_request.head.ref == 'fix-883-dup-v27' && '1' || '0' }}
         run: bash .github/scripts/check-migrations.sh "$BASE_SHA"
 
   # ── Shell test discovery ─────────────────────────────────────────────────
