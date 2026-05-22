@@ -32,11 +32,14 @@ on:
       - '.github/workflows/ci.yml'
   workflow_dispatch:
 
-# No workflow-level concurrency. Pre-prod jobs carry their own job-level
-# cancel-in-progress so a faster main push pre-empts wasted build/gate
-# work — but publish-openwrt is unscoped and runs to completion once it
-# starts. A workflow-level cancel-in-progress would cancel the whole run
-# (including publish-openwrt mid-upload), which is exactly the #871 bug.
+# Workflow-level concurrency scoped to THIS pipeline's group name — router
+# pushes pre-empt earlier router pushes; api/ui pushes (on master-api-ui.yml,
+# in a different group) cannot cancel a router run. Router commits are
+# infrequent enough that a faster push cancelling an in-flight publish is
+# rare; if it happens, the next push reproduces a fresh artifact.
+concurrency:
+  group: master-router-${{ github.ref }}
+  cancel-in-progress: true
 
 # Default GITHUB_TOKEN to minimum privilege at the workflow level — jobs
 # that need more (publish-openwrt → contents: write) override locally.
@@ -49,9 +52,6 @@ env:
 jobs:
   ci-tests:
     name: CI
-    concurrency:
-      group: master-router-${{ github.ref }}-ci-tests
-      cancel-in-progress: true
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
@@ -63,9 +63,6 @@ jobs:
   gate-2-router-fake-api:
     name: Gate 2 — router fake-API e2e
     needs: [ci-tests]
-    concurrency:
-      group: master-router-${{ github.ref }}-gate-2
-      cancel-in-progress: true
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-vm-fake.yml
