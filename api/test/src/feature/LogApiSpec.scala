@@ -374,11 +374,16 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         ipadId      <- deviceRepo.upsert(
           MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
           "Kid's iPad",
-          pid,
+          Some(pid),
           "10.0.0.1",
         )
-        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "Phone", pid, "10.0.0.2")
-        _ <- connRepo.insertBatch(
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:02"),
+          "Phone",
+          Some(pid),
+          "10.0.0.2",
+        )
+        _           <- connRepo.insertBatch(
           List(
             ConnectionEventInsert(
               routerId,
@@ -422,13 +427,13 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         _           <- deviceRepo.upsert(
           MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
           "Kid's iPad",
-          kidsPid,
+          Some(kidsPid),
           "10.0.0.1",
         )
         _           <- deviceRepo.upsert(
           MacAddress.unsafe("aa:bb:cc:dd:ee:02"),
           "Adult Phone",
-          adultsPid,
+          Some(adultsPid),
           "10.0.0.2",
         )
         _           <- connRepo.insertBatch(

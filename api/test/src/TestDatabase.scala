@@ -160,5 +160,5 @@ object TestLayers {
       name: String,
       profileId: ProfileId,
   ): Task[DeviceId] =
-    deviceRepo.upsert(MacAddress.unsafe(mac), name, profileId, "192.168.1.100")
+    deviceRepo.upsert(MacAddress.unsafe(mac), name, Some(profileId), "192.168.1.100")
 }

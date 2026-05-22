@@ -288,7 +288,7 @@ case class SiteTimeLimitRequest(
 case class UpsertDeviceRequest(
     mac: MacAddress,
     name: String,
-    profileId: ProfileId,
+    profileId: Option[ProfileId],
 ) derives JsonCodec
 
 case class GrantExtensionRequest(

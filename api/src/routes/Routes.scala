@@ -331,15 +331,22 @@ object DeviceRoutes {
             udr    <- ZIO
               .fromEither(body.fromJson[UpsertDeviceRequest])
               .mapError(e => Response.badRequest(e))
-            _      <- requireProfileAccess(claims, udr.profileId, userProfileRepo)
             mac = MacAddress.unsafe(normalizeMac(udr.mac.value))
+            // #708: profileId is optional — None means "don't touch profile" on update,
+            // or fall through to unassigned on insert. The access check skips when
+            // no profile change is requested; if the caller supplies a profileId they
+            // can't write to, this still 403s.
+            _  <- udr.profileId match {
+              case Some(pid) => requireProfileAccess(claims, pid, userProfileRepo)
+              case None      => ZIO.unit
+            }
             id <- deviceRepo
               .upsert(mac, udr.name, udr.profileId, "")
               .mapError(ErrorMapper.dbErrorToResponse)
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
             _  <- ZIO.logInfo(
-              s"device upserted: mac=${mac.value} profileId=${udr.profileId.value} name=${udr.name}",
+              s"device upserted: mac=${mac.value} profileId=${udr.profileId.map(_.value.toString).getOrElse("-")} name=${udr.name}",
             )
           } yield Response.json(s"""{"id":${id.value}}""")
         },

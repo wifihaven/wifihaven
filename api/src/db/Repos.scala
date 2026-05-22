@@ -102,7 +102,7 @@ trait SiteTimeLimitRepo {
 trait DeviceRepo {
   def listAll: Task[List[Device]]
   def findByMac(mac: MacAddress): Task[Option[Device]]
-  def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String): Task[DeviceId]
+  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String): Task[DeviceId]
   def updateLastSeen(mac: MacAddress, ip: String): Task[Unit]
 
   /**
@@ -594,8 +594,15 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
       .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
       .option
       .transact(xa)
-  def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String)                =
-    sql"INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at) VALUES($mac,$name,$pid,NULLIF($ip,''),NOW()) ON CONFLICT(mac) DO UPDATE SET name=EXCLUDED.name,profile_id=EXCLUDED.profile_id RETURNING id"
+  def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String) =
+    // #708: pid=None means "don't touch profile" on update; on fresh insert it falls
+    // through to NULL (unassigned), matching the auto-discovery default.
+    sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
+          VALUES($mac,$name,$pid,NULLIF($ip,''),NOW())
+          ON CONFLICT(mac) DO UPDATE
+          SET name=EXCLUDED.name,
+              profile_id=COALESCE(EXCLUDED.profile_id, devices.profile_id)
+          RETURNING id"""
       .query[DeviceId]
       .unique
       .transact(xa)

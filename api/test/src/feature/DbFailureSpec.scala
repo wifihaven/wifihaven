@@ -99,7 +99,7 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
     def listAll                                                                          = throwing
     def findByMac(mac: MacAddress)                                                       = throwing
-    def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String)                = throwing
+    def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String)        = throwing
     def updateLastSeen(mac: MacAddress, ip: String)                                      = throwing
     def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               = throwing
     def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) = throwing
