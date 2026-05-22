@@ -462,13 +462,21 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
-  -- Per-flow accounting sets. Two sets, one per direction, both keyed on
-  -- (device_mac, remote_ip) so usage.lua can join them into a single record
-  -- carrying bytesIn and bytesOut (#717). The set for the device→remote
-  -- direction matches `ether saddr (mac) . ip daddr (remote)`; the reverse
-  -- direction matches `ether daddr (mac) . ip saddr (remote)`. The chain
-  -- below updates both atomically per packet, so a row's bytesIn/bytesOut
-  -- always cover the same window and the agent's per-bucket nft reset
+  -- Per-flow accounting sets. Two sets, one per direction.
+  --
+  -- tx (device→remote): `ether saddr (mac) . ip daddr (remote)`. The L2 saddr
+  -- at the forward hook is the LAN device's real MAC, so per-(mac, remote_ip)
+  -- attribution works.
+  --
+  -- rx (remote→device): keyed on `ip daddr` only — the LAN device's IP. We
+  -- *cannot* use `ether daddr` here: for WAN→LAN routed packets the L2 daddr
+  -- at the forward hook is still the router's WAN-interface MAC (the rewrite
+  -- to the LAN device's MAC happens at egress via the neighbor cache, after
+  -- the forward hook runs). Keying on it would attribute every download to
+  -- the router itself (#879). Instead we record per-(lan_ip) totals and the
+  -- agent resolves the IP back to a MAC via the dnsmasq lease table.
+  --
+  -- The chain below updates both sets per packet, so a bucket's nft reset
   -- zeroes both in lock-step.
   ind("set mac_ip_tracking {")
   ind2("type ether_addr . ipv4_addr")
@@ -478,8 +486,8 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
-  ind("set mac_ip_tracking_rx {")
-  ind2("type ether_addr . ipv4_addr")
+  ind("set ip_tracking_rx {")
+  ind2("type ipv4_addr")
   ind2("flags dynamic,timeout")
   ind2("timeout 6h")
   ind2("counter")
@@ -491,8 +499,8 @@ function M.nft(snapshot, opts)
   -- forwarded packet bumps exactly one element on exactly one set.
   ind("chain wifihaven_account {")
   ind2("type filter hook forward priority 1; policy accept;")
-  ind2("update @mac_ip_tracking    { ether saddr . ip daddr } counter")
-  ind2("update @mac_ip_tracking_rx { ether daddr . ip saddr } counter")
+  ind2("update @mac_ip_tracking { ether saddr . ip daddr } counter")
+  ind2("update @ip_tracking_rx  { ip daddr } counter")
   ind("}")
   emit("")
 
