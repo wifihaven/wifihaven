@@ -209,9 +209,20 @@ export interface DeviceUsageSummary {
   usedMins: number
 }
 
+// #715: per-host time-on-site has two parallel numbers.
+//   - `usedMins` is bucket-presence: every host the device touched in a 5-min
+//     bucket is credited with that bucket's full duration. Sums across hosts
+//     can wildly exceed wall-clock time when a device polls many endpoints.
+//   - `proportionalMins` is byte-share-weighted within each 5-min bucket — a
+//     fair "wall-clock attention" number. Summing across hosts within a mac ≈
+//     the device's wall-clock minutes. UI defaults to displaying this.
+//
+// The daily-cap math collapses each bucket once per device and reads neither
+// field; both are additive surface area.
 export interface HostUsage {
   host: HostId
   usedMins: number
+  proportionalMins: number
 }
 
 // #777 — collapsed-accordion payload: just the headline numbers, no per-device /

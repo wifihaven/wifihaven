@@ -146,6 +146,12 @@ trait TimeUsageRepo {
   /**
    * Increment seconds + byte counters for (mac, host, date). Repeats are *additive* — the caller is
    * responsible for idempotency at the request level (traffic_reports unique key).
+   *
+   * `seconds` is the bucket-presence count (bucket duration credited in full to every host the
+   * device touched in the bucket). `proportionalSeconds` is the same bucket duration weighted by
+   * this host's byte share of the bucket (#715) — a fairer wall-clock attribution for per-host
+   * screen-time UI. Daily-cap math reads neither directly: it goes through the presence-based
+   * `totalMinutesByMac` over `traffic_reports`.
    */
   def incrementSecondsAndBytes(
       mac: MacAddress,
@@ -154,6 +160,7 @@ trait TimeUsageRepo {
       seconds: Long,
       bytesIn: Long,
       bytesOut: Long,
+      proportionalSeconds: Long = 0L,
   ): Task[Unit]
 
   /** Read seconds_used for a (mac, host, date) row. Returns 0 if no row. */
@@ -165,6 +172,13 @@ trait TimeUsageRepo {
       host: HostId,
       date: LocalDate,
   ): Task[(Long, Long, Long)]
+
+  /**
+   * #715: read the byte-share-weighted proportional seconds for a (mac, host, date) row. Returns 0
+   * if no row. Cap math doesn't read this; it's stored so the column stays in sync with
+   * `seconds_used` for any consumer that wants a fairer per-host attribution.
+   */
+  def getProportionalSeconds(mac: MacAddress, host: HostId, date: LocalDate): Task[Long]
   def listForDevice(mac: MacAddress, date: LocalDate): Task[List[TimeUsage]]
   def listForDeviceMacs(macs: List[MacAddress], date: LocalDate): Task[List[TimeUsage]]
   def snapshotAll(date: LocalDate): Task[Map[(MacAddress, HostId), Int]]
@@ -663,16 +677,24 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       seconds: Long,
       bytesIn: Long,
       bytesOut: Long,
+      proportionalSeconds: Long = 0L,
   ): Task[Unit] =
-    sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,bytes_in,bytes_out,last_seen_at)
-          VALUES($mac,${host.kind},${host.value},$d,$seconds,$bytesIn,$bytesOut,NOW())
+    sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
+          VALUES($mac,${host.kind},${host.value},$d,$seconds,$proportionalSeconds,$bytesIn,$bytesOut,NOW())
           ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE
           SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used,
+              proportional_seconds=time_usage.proportional_seconds+EXCLUDED.proportional_seconds,
               bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in,
               bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out,
               last_seen_at=NOW()""".update.run
       .transact(xa)
       .unit
+  def getProportionalSeconds(mac: MacAddress, host: HostId, d: LocalDate): Task[Long]           =
+    sql"SELECT COALESCE(proportional_seconds,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
+      .query[Long]
+      .option
+      .transact(xa)
+      .map(_.getOrElse(0L))
   def getSecondsUsed(mac: MacAddress, host: HostId, d: LocalDate): Task[Long]                   =
     sql"SELECT COALESCE(seconds_used,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
       .query[Long]

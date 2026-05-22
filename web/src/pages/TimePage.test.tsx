@@ -45,9 +45,9 @@ const limited: ProfileTimeStatus = {
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 90 }],
   hostUsage: [
-    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 35 },
-    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 10 },
-    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5 },
+    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 35, proportionalMins: 30 },
+    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 10, proportionalMins: 8 },
+    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5, proportionalMins: 2 },
   ],
 }
 
@@ -103,8 +103,8 @@ const weekKids: ProfileTimeStatusWeek = {
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 210 }],
   hostUsage: [
-    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 90 },
-    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 30 },
+    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 90, proportionalMins: 80 },
+    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 30, proportionalMins: 25 },
   ],
 }
 
@@ -228,7 +228,9 @@ describe('TimePage — expanded card content', () => {
     expect(screen.getAllByText('30m left').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('YouTube')).toBeInTheDocument()
     expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('youtube.com')
-    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('35m')
+    // #715: row shows proportional (wall-clock attention) first, presence in parens.
+    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('30m')
+    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('(35m)')
   })
 
   it('over-limit and no-limit details render when expanded', async () => {
@@ -346,7 +348,9 @@ describe('TimePage — week toggle (#723)', () => {
     expect(await screen.findByTestId('time-week-card-1')).toBeInTheDocument()
     expect(screen.getByText('3:30 used this week')).toBeInTheDocument()
     expect(screen.getByTestId('time-week-chart-1')).toBeInTheDocument()
-    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('1:30')
+    // Weekly host row shows proportional (1:20 = 80m) first, then presence in parens (1:30 = 90m).
+    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('1:20')
+    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('(1:30)')
     expect(screen.getByTestId('time-week-device-link-aa:bb:cc:dd:ee:01'))
       .toHaveAttribute('href', '/devices/aa%3Abb%3Acc%3Add%3Aee%3A01/timeline')
   })

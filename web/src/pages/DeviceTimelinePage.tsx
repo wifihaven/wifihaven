@@ -111,9 +111,12 @@ export function DeviceTimelinePage() {
   const dayEmpty = window === 'today' && dayTotal === 0
   const weekEmpty = window === 'week' && (weekData?.totalMins ?? 0) === 0
   const titleName = dayData?.deviceName ?? weekData?.deviceName ?? mac
+  // `mins` is the wall-clock-share number (#715 proportional). For the weekly
+  // breakdown we additionally surface bucket-presence in parens so the operator
+  // can spot heartbeat-style hosts that show up everywhere but with tiny bytes.
   const hosts = window === 'today'
-    ? (dayData?.topHosts.filter(h => h.dayMins > 0) ?? []).map(h => ({ host: h.host, mins: h.dayMins }))
-    : (weekData?.hostUsage ?? []).map(h => ({ host: h.host, mins: h.usedMins }))
+    ? (dayData?.topHosts.filter(h => h.dayMins > 0) ?? []).map(h => ({ host: h.host, mins: h.dayMins, presenceMins: null as number | null }))
+    : (weekData?.hostUsage ?? []).map(h => ({ host: h.host, mins: h.proportionalMins, presenceMins: h.usedMins }))
 
   return (
     <div className="space-y-6">
@@ -278,17 +281,25 @@ export function DeviceTimelinePage() {
                       )}
                     </span>
                   </span>
-                  <span className="text-gray-500 font-mono shrink-0 ml-2">{formatMins(h.mins)}</span>
+                  <span
+                    className="text-gray-500 font-mono shrink-0 ml-2"
+                    title={h.presenceMins !== null
+                      ? `presence ${formatMins(h.presenceMins)} (every bucket this host appeared in)`
+                      : undefined}
+                  >
+                    {formatMins(h.mins)}
+                    {h.presenceMins !== null && (
+                      <span className="text-gray-600"> ({formatMins(h.presenceMins)})</span>
+                    )}
+                  </span>
                 </li>
               )
             })}
           </ul>
-          {window === 'today' && (
-            <p className="text-[11px] text-gray-600 mt-3">
-              Per-host minutes are proportional within each 5-minute window. The stack sums to
-              the device's wall-clock minutes for that hour.
-            </p>
-          )}
+          <p className="text-[11px] text-gray-600 mt-3">
+            Per-host minutes are byte-share-weighted wall-clock attention within each 5-minute
+            window (#715){window === 'week' ? '; presence in parens is how many buckets the host appeared in at all' : ', so the stack sums to the device\'s wall-clock minutes for that hour'}.
+          </p>
         </div>
       )}
     </div>

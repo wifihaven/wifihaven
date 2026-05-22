@@ -778,16 +778,20 @@ object TimeRoutes {
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
       // #262 — top-N host attribution across all profile devices for the day.
-      // Bucket-deduped per host; informational, so all hosts (including
-      // exempt-pattern matches) appear. UI shows top 10.
-      hostUsage       = wifihaven.api.presence.Presence
-        .hostMinutes(presence)
-        .iterator
-        .filter(_._2 > 0)
-        .map { case (h, m) => HostUsage(h, m) }
-        .toList
-        .sortBy(hu => (-hu.usedMins, hu.host.value))
-        .take(10)
+      // `usedMins` is bucket-presence and `proportionalMins` is the #715
+      // byte-share-weighted attribution; UI defaults to the latter. Hosts
+      // with zero presence are dropped so the top-10 list isn't padded by
+      // hosts that exist only because the bucket touched them at all.
+      hostUsage       = {
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
+        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        presenceMins.iterator
+          .filter(_._2 > 0)
+          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+          .toList
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+          .take(10)
+      }
     } yield ProfileTimeStatus(
       profile.id,
       profile.name,
@@ -831,14 +835,16 @@ object TimeRoutes {
       deviceSummaries = devices.map { d =>
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
-      hostUsage       = wifihaven.api.presence.Presence
-        .hostMinutes(presence)
-        .iterator
-        .filter(_._2 > 0)
-        .map { case (h, m) => HostUsage(h, m) }
-        .toList
-        .sortBy(hu => (-hu.usedMins, hu.host.value))
-        .take(10)
+      hostUsage       = {
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
+        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        presenceMins.iterator
+          .filter(_._2 > 0)
+          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+          .toList
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+          .take(10)
+      }
       perBucket       = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
     } yield ProfileTimeStatusWeek(
       profile.id,
@@ -875,14 +881,16 @@ object TimeRoutes {
       perMac    = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
       totalUsed = perMac.getOrElse(device.mac, 0)
-      hostUsage = wifihaven.api.presence.Presence
-        .hostMinutes(presence)
-        .iterator
-        .filter(_._2 > 0)
-        .map { case (h, m) => HostUsage(h, m) }
-        .toList
-        .sortBy(hu => (-hu.usedMins, hu.host.value))
-        .take(10)
+      hostUsage = {
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
+        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        presenceMins.iterator
+          .filter(_._2 > 0)
+          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+          .toList
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+          .take(10)
+      }
       perBucket = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
     } yield DeviceTimeStatusWeek(
       device.mac,
