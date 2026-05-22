@@ -637,6 +637,164 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           ) &&
           assertTrue(kids.devices.find(_.deviceMac == MacAddress.unsafe(mac2)).get.usedMins == 35)
       },
+      // #751: Sum vs Dedup — two devices active in the same 5-min bucket.
+      // Sum mode adds per-device totals (5+5=10); Dedup unions per-device
+      // active buckets so overlap counts once (5).
+      test("crossDeviceOverlapMode=sum: overlapping buckets across devices count twice") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 60)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Both devices in the SAME 5-min bucket (bucketOffset=0 on each).
+          _               <- seedTraffic(routerId, mac1, "minecraft.net", today, 5, 0)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 5, 0)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        } yield assertTrue(kids.usedMins == 10) // sum mode (default): 5+5
+      },
+      test("crossDeviceOverlapMode=dedup: overlapping buckets count once") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          // Flip the profile to Dedup mode.
+          _           <- profileRepo.findById(kidsId).flatMap { opt =>
+            ZIO.foreachDiscard(opt)(p =>
+              profileRepo.update(p.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup)),
+            )
+          }
+          _           <- tlRepo.upsert(kidsId, 60)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Same bucket on both devices.
+          _               <- seedTraffic(routerId, mac1, "minecraft.net", today, 5, 0)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 5, 0)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        } yield assertTrue(kids.usedMins == 5)
+      },
+      test("crossDeviceOverlapMode=dedup: non-overlapping buckets sum the same as sum mode") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- profileRepo.findById(kidsId).flatMap { opt =>
+            ZIO.foreachDiscard(opt)(p =>
+              profileRepo.update(p.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup)),
+            )
+          }
+          _           <- tlRepo.upsert(kidsId, 60)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Different bucket ranges → no overlap.
+          off1            <- seedTraffic(routerId, mac1, "minecraft.net", today, 10, 0)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 10, off1)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        } yield assertTrue(kids.usedMins == 20) // 10+10 with no overlap
+      },
       test("per-app site usage aggregated across all profile devices") {
         for {
           _           <- cleanDb

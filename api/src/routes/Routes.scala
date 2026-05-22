@@ -198,6 +198,10 @@ object ProfileRoutes {
                   // #424: omitted blockIpOnly defaults to false on create
                   // (matches the DB column default).
                   upr.blockIpOnly.getOrElse(false),
+                  // #751: omitted crossDeviceOverlapMode defaults to Sum
+                  // (matches the DB column default and preserves
+                  // pre-#751 per-profile semantics).
+                  upr.crossDeviceOverlapMode.getOrElse(CrossDeviceOverlapMode.Sum),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -240,6 +244,9 @@ object ProfileRoutes {
                   // #424: if caller omits blockIpOnly, preserve the
                   // existing value rather than clearing it.
                   blockIpOnly = upr.blockIpOnly.getOrElse(p.blockIpOnly),
+                  // #751: same preserve-on-omit semantics.
+                  crossDeviceOverlapMode =
+                    upr.crossDeviceOverlapMode.getOrElse(p.crossDeviceOverlapMode),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -436,7 +443,14 @@ object TimeRoutes {
               val exempts   = exemptByPid.getOrElse(p.id, Nil)
               val perMac    = wifihaven.api.presence.Presence
                 .totalMinutesByMac(pRows, exempts, settings.heartbeatFilter)
-              val used      = devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+              // #751: honor the profile's overlap mode.
+              val used      = p.crossDeviceOverlapMode match {
+                case CrossDeviceOverlapMode.Sum   =>
+                  devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+                case CrossDeviceOverlapMode.Dedup =>
+                  wifihaven.api.presence.Presence
+                    .dedupedTotalMinutes(pRows, exempts, settings.heartbeatFilter)
+              }
               val limit     = limitByPid.get(p.id)
               val extMins   = extsByPid.getOrElse(p.id, 0)
               val remaining = limit.map(l => (l + extMins - used).max(0))
@@ -485,7 +499,14 @@ object TimeRoutes {
               val pRows   = presence.filter(r => macSet.contains(r.mac))
               val perMac  = wifihaven.api.presence.Presence
                 .totalMinutesByMac(pRows, Nil, settings.heartbeatFilter)
-              val total   = devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+              // #751: same Sum/Dedup branch as the daily summary.
+              val total   = p.crossDeviceOverlapMode match {
+                case CrossDeviceOverlapMode.Sum   =>
+                  devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+                case CrossDeviceOverlapMode.Dedup =>
+                  wifihaven.api.presence.Presence
+                    .dedupedTotalMinutes(pRows, Nil, settings.heartbeatFilter)
+              }
               ProfileTimeSummaryWeek(
                 p.id,
                 p.name,
@@ -768,7 +789,17 @@ object TimeRoutes {
         .totalMinutesByMac(presence, exemptPats, heartbeatFilter)
       perMacPat       = wifihaven.api.presence.Presence
         .patternMinutesByMac(presence, stls.map(_.domainPattern))
-      totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+      // #751: in Dedup mode the profile total unions per-device active buckets
+      // (one bucket → one minute, regardless of how many of this profile's
+      // devices were active in it). In Sum mode we keep the historical
+      // behaviour: per-device totals added.
+      totalUsed       = profile.crossDeviceOverlapMode match {
+        case CrossDeviceOverlapMode.Sum   =>
+          devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+        case CrossDeviceOverlapMode.Dedup =>
+          wifihaven.api.presence.Presence
+            .dedupedTotalMinutes(presence, exemptPats, heartbeatFilter)
+      }
       remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
       siteUsage       = stls.map { stl =>
         val used = devices.iterator.map(d => perMacPat.getOrElse((d.mac, stl.domainPattern), 0)).sum
@@ -837,7 +868,16 @@ object TimeRoutes {
       // view (#714). Per-FQDN attribution caveats from #715 still apply.
       perMacTotal     = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
-      totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+      // #751: same Sum/Dedup branch as the daily endpoint, applied across the
+      // entire weekly range. perBucket below also respects the mode so the
+      // bars reconcile to totalUsed.
+      totalUsed       = profile.crossDeviceOverlapMode match {
+        case CrossDeviceOverlapMode.Sum   =>
+          devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+        case CrossDeviceOverlapMode.Dedup =>
+          wifihaven.api.presence.Presence
+            .dedupedTotalMinutes(presence, Nil, heartbeatFilter)
+      }
       deviceSummaries = devices.map { d =>
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
@@ -851,7 +891,13 @@ object TimeRoutes {
           .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
           .take(10)
       }
-      perBucket       = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
+      perBucket       =
+        bucketHourlyAligned(
+          presence,
+          heartbeatFilter,
+          bucketOffsetMin,
+          profile.crossDeviceOverlapMode,
+        )
     } yield ProfileTimeStatusWeek(
       profile.id,
       profile.name,
@@ -897,7 +943,10 @@ object TimeRoutes {
           .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
           .take(10)
       }
-      perBucket = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
+      // Per-device path: only one mac in play, so the dedup/sum distinction is
+      // moot; use the Sum branch to keep the historical wiring.
+      perBucket =
+        bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin, CrossDeviceOverlapMode.Sum)
     } yield DeviceTimeStatusWeek(
       device.mac,
       device.name,
@@ -942,6 +991,7 @@ object TimeRoutes {
       presence: List[wifihaven.api.presence.PresenceRow],
       heartbeatFilter: HeartbeatFilter,
       offsetMin: Int,
+      overlap: CrossDeviceOverlapMode,
   ): List[ProfileTimeBucket] = {
     val hourSeconds   = 3600L
     val offsetSeconds = offsetMin.toLong * 60L
@@ -954,10 +1004,18 @@ object TimeRoutes {
       }
       .iterator
       .map { case (bucketStart, rows) =>
-        val mins = wifihaven.api.presence.Presence
-          .totalMinutesByMac(rows, Nil, heartbeatFilter)
-          .values
-          .sum
+        // #751: respect the profile's overlap mode so the hourly bars reconcile
+        // with the headline totalUsed.
+        val mins = overlap match {
+          case CrossDeviceOverlapMode.Sum   =>
+            wifihaven.api.presence.Presence
+              .totalMinutesByMac(rows, Nil, heartbeatFilter)
+              .values
+              .sum
+          case CrossDeviceOverlapMode.Dedup =>
+            wifihaven.api.presence.Presence
+              .dedupedTotalMinutes(rows, Nil, heartbeatFilter)
+        }
         ProfileTimeBucket(bucketStart, mins)
       }
       .filter(_.usedMins > 0)

@@ -95,6 +95,35 @@ object FailureMode {
   )
 }
 
+// #751: per-profile knob controlling how the profile's screen-time total
+// handles two devices on the same profile being active in the same 5-min
+// bucket.
+//   Sum   — current behavior: per-device bucket-deduped minutes are added.
+//           Two siblings on the same profile both active for a bucket count
+//           as two buckets.
+//   Dedup — the per-device active-bucket sets are unioned before counting,
+//           so overlap counts once at the profile level. Right for "one
+//           profile = one human with multiple devices".
+enum CrossDeviceOverlapMode {
+  case Sum, Dedup
+}
+
+object CrossDeviceOverlapMode {
+  def asString(m: CrossDeviceOverlapMode): String      = m match {
+    case Sum   => "sum"
+    case Dedup => "dedup"
+  }
+  def parse(s: String): Option[CrossDeviceOverlapMode] = s.toLowerCase match {
+    case "sum"   => Some(Sum)
+    case "dedup" => Some(Dedup)
+    case _       => None
+  }
+  given JsonCodec[CrossDeviceOverlapMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown crossDeviceOverlapMode: $s"),
+    asString,
+  )
+}
+
 case class Profile(
     id: ProfileId,
     name: String,
@@ -104,6 +133,7 @@ case class Profile(
     paused: Boolean,
     failureMode: FailureMode = FailureMode.LastKnownGood,
     blockIpOnly: Boolean = false,
+    crossDeviceOverlapMode: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
 ) derives JsonCodec
 
 case class Schedule(
@@ -217,6 +247,7 @@ case class UpsertProfileRequest(
     siteTimeLimits: List[SiteTimeLimitRequest],
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,
+    crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(

@@ -143,7 +143,7 @@ object UsageRoutes {
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
       rows <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
       (topHosts, bucketsByHost, topDevices, bucketsByDevice) =
-        UsageSeries.buildProfile(rows, nameByMac, zone, topN)
+        UsageSeries.buildProfile(rows, nameByMac, zone, topN, profile.crossDeviceOverlapMode)
     } yield UsageSeriesResponse(
       profileId = Some(pid),
       profileName = Some(profile.name),

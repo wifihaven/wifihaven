@@ -4,6 +4,12 @@
 // shared/src/Models.scala FailureMode.asString.
 export type FailureMode = 'block-all' | 'allow-all' | 'last-known-good'
 
+// #751: per-profile knob — `sum` adds per-device totals (siblings on the same
+// profile double-count when both are active in the same bucket); `dedup`
+// unions the per-device active-bucket sets so overlap counts once. Default
+// is `sum` (preserves pre-#751 semantics).
+export type CrossDeviceOverlapMode = 'sum' | 'dedup'
+
 export interface Profile {
   id: number
   name: string
@@ -12,6 +18,7 @@ export interface Profile {
   extraAllowed: string[]
   paused: boolean
   failureMode: FailureMode
+  crossDeviceOverlapMode: CrossDeviceOverlapMode
 }
 
 export interface Schedule {
@@ -469,6 +476,8 @@ export interface UpsertProfileRequest {
   timeLimit: number | null
   siteTimeLimits: SiteTimeLimitRequest[]
   failureMode: FailureMode
+  // #751: omit to preserve existing value on update; defaults to 'sum' on create.
+  crossDeviceOverlapMode?: CrossDeviceOverlapMode
 }
 
 export interface UpsertDeviceRequest {

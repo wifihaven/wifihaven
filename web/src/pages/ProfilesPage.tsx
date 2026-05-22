@@ -5,8 +5,8 @@ import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type {
-  Device, FailureMode, HouseholdSettings, ProfileDetail, ScheduleRequest,
-  SiteTimeLimitRequest, UpsertProfileRequest, User,
+  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
+  ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { PageLoader } from './DashboardPage'
@@ -23,6 +23,7 @@ interface FormState {
   schedules: ScheduleRequest[]
   siteTimeLimits: SiteTimeLimitRequest[]
   failureMode: FailureMode
+  crossDeviceOverlapMode: CrossDeviceOverlapMode
 }
 
 function emptyForm(): FormState {
@@ -40,6 +41,10 @@ function emptyForm(): FormState {
     // BlockAll-for-kids recommendation in copy; admins still have to
     // pick BlockAll explicitly when creating a child profile.
     failureMode: 'last-known-good',
+    // #751: default to the historical behaviour ("two siblings on the same
+    // profile both active count as two") for new profiles. Admins opt in to
+    // dedup explicitly when one profile = one human with multiple devices.
+    crossDeviceOverlapMode: 'sum',
   }
 }
 
@@ -61,6 +66,7 @@ function detailToForm(pd: ProfileDetail): FormState {
       exemptFromDaily: s.exemptFromDaily,
     })),
     failureMode: pd.profile.failureMode,
+    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
   }
 }
 
@@ -77,6 +83,7 @@ function formToRequest(f: FormState): UpsertProfileRequest {
     schedules: f.schedules,
     siteTimeLimits: f.siteTimeLimits,
     failureMode: f.failureMode,
+    crossDeviceOverlapMode: f.crossDeviceOverlapMode,
   }
 }
 
@@ -650,6 +657,50 @@ function ProfileEditor({
                 <span className="text-gray-500"> (only for trusted profiles)</span>
                 <span className="block text-xs text-gray-400 mt-0.5">
                   when the router can't reach the API, clear every block for this profile's devices. The cached categorical / schedule rules stop applying.
+                </span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        {/* #751: how the profile's screen-time total handles two devices on
+            the same profile being active in the same 5-min bucket. */}
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+            Cross-device overlap
+          </label>
+          <div className="space-y-2">
+            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="radio"
+                name="crossDeviceOverlapMode"
+                data-testid="profile-overlap-mode-sum"
+                checked={form.crossDeviceOverlapMode === 'sum'}
+                onChange={() => setForm(f => ({ ...f, crossDeviceOverlapMode: 'sum' }))}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span>
+                <span className="font-medium text-white">Count each device separately</span>
+                <span className="text-gray-500"> (default)</span>
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  add per-device totals. Two devices on this profile both active in the same 5-minute window count as 10 minutes against the daily cap.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+              <input
+                type="radio"
+                name="crossDeviceOverlapMode"
+                data-testid="profile-overlap-mode-dedup"
+                checked={form.crossDeviceOverlapMode === 'dedup'}
+                onChange={() => setForm(f => ({ ...f, crossDeviceOverlapMode: 'dedup' }))}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span>
+                <span className="font-medium text-white">Combine overlapping device usage</span>
+                <span className="text-gray-500"> (one profile = one human)</span>
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  union the per-device active windows. Two devices both active in the same 5-minute window count as 5 minutes against the daily cap. Right when one person carries an iPad and a phone for the same profile.
                 </span>
               </span>
             </label>

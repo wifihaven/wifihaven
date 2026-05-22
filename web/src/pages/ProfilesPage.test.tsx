@@ -55,6 +55,7 @@ const kidsProfile: ProfileDetail = {
     extraAllowed: ['school.com'],
     paused: false,
     failureMode: 'block-all',
+    crossDeviceOverlapMode: 'sum',
   },
   schedules: [
     { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
@@ -74,6 +75,7 @@ const adultsProfile: ProfileDetail = {
     extraAllowed: [],
     paused: true,
     failureMode: 'last-known-good',
+    crossDeviceOverlapMode: 'sum',
   },
   schedules: [],
   timeLimit: null,
@@ -245,6 +247,10 @@ describe('ProfilesPage — create', () => {
       // (matches DB column default; UI copy steers admins towards BlockAll
       // for child profiles).
       failureMode: 'last-known-good',
+      // #751: form default for a brand-new profile is Sum (matches DB
+      // column default; admins opt in to Dedup explicitly when one
+      // profile represents one human with multiple devices).
+      crossDeviceOverlapMode: 'sum',
     })
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
   })
@@ -285,7 +291,32 @@ describe('ProfilesPage — edit', () => {
       ],
       // #385: edit preserves the existing failureMode unless changed.
       failureMode: 'block-all',
+      // #751: edit round-trips the existing crossDeviceOverlapMode.
+      crossDeviceOverlapMode: 'sum',
     })
+  })
+})
+
+describe('ProfilesPage — cross-device overlap toggle (#751)', () => {
+  it('round-trips the dedup selection to api.profiles.update', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+
+    expect(screen.getByTestId('profile-overlap-mode-sum')).toBeChecked()
+    expect(screen.getByTestId('profile-overlap-mode-dedup')).not.toBeChecked()
+
+    await user.click(screen.getByTestId('profile-overlap-mode-dedup'))
+    expect(screen.getByTestId('profile-overlap-mode-dedup')).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
+    expect(api.profiles.update).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ crossDeviceOverlapMode: 'dedup' }),
+    )
   })
 })
 
