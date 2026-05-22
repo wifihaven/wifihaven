@@ -34,11 +34,27 @@ case class LogFilter(
     offset: Int = 0,
 )
 
-case class SessionFilter(
+case class TrafficRollupFilter(
     macs: Option[List[MacAddress]] = None, // None = no MAC restriction; Some(Nil) = match nothing
     host: Option[String] = None,
     since: Option[Instant] = None,
     until: Option[Instant] = None,
+)
+
+/**
+ * One row per 5-min traffic_reports period (with ipv4/ipv6 hosts resolved to their attributed FQDN
+ * when possible). Used by [[DashboardNowRoutes]] to compute per-device top hosts.
+ */
+case class TrafficRollupRow(
+    routerId: RouterId,
+    mac: MacAddress,
+    host: HostId,
+    date: LocalDate,
+    periodStart: Instant,
+    periodEnd: Instant,
+    activeSeconds: Int,
+    bytesIn: Long,
+    bytesOut: Long,
 )
 
 trait UserRepo {
@@ -263,11 +279,11 @@ trait TrafficReportRepo {
   def listForRouter(routerId: RouterId, limit: Int): Task[List[TrafficReport]]
 
   /**
-   * Rows fit for session stitching: returned ordered by (router_id, mac, hostname, date,
-   * period_start) so the caller can fold contiguous runs directly. Filters are AND-composed. `macs
-   * \= Some(Nil)` returns an empty list (no devices match).
+   * Per-5-min traffic_reports rows for aggregation: returned ordered by (router_id, mac, hostname,
+   * date, period_start). Filters are AND-composed. `macs = Some(Nil)` returns an empty list (no
+   * devices match).
    */
-  def listSessionRows(f: SessionFilter): Task[List[wifihaven.api.sessions.SessionRow]]
+  def listTrafficRollupRows(f: TrafficRollupFilter): Task[List[TrafficRollupRow]]
 
   /**
    * Minimal projection used by presence-based minute accounting (see
@@ -1055,7 +1071,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   }
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  def listSessionRows(f: SessionFilter) = {
+  def listTrafficRollupRows(f: TrafficRollupFilter) = {
     type Row = (RouterId, MacAddress, HostId, LocalDate, Instant, Instant, Int, Long, Long)
     val base    =
       fr"""SELECT tr.router_id, tr.mac,
@@ -1092,7 +1108,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     sql_
       .query[Row]
       .map { r =>
-        wifihaven.api.sessions.SessionRow(
+        TrafficRollupRow(
           routerId = r._1,
           mac = r._2,
           host = r._3,

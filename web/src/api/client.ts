@@ -1,7 +1,7 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
   DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
-  QueryLog, RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension,
+  QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
@@ -202,33 +202,6 @@ export const api = {
   // ── Dashboard "now" ────────────────────────────────────────────────────
   dashboard: {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
-  },
-
-  // ── Sessions ───────────────────────────────────────────────────────────
-  sessions: {
-    list: (params: {
-      mac?: string
-      deviceId?: number
-      profileId?: number
-      host?: string
-      since?: string
-      until?: string
-      hours?: number
-      limit?: number
-      cursor?: string
-    }) => {
-      const qs = new URLSearchParams()
-      if (params.mac)       qs.set('mac', params.mac)
-      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
-      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
-      if (params.host)      qs.set('host', params.host)
-      if (params.since)     qs.set('since', params.since)
-      if (params.until)     qs.set('until', params.until)
-      if (params.hours)     qs.set('hours', String(params.hours))
-      if (params.limit)     qs.set('limit', String(params.limit))
-      if (params.cursor)    qs.set('cursor', params.cursor)
-      return req<SessionPage>('GET', `/sessions?${qs}`)
-    },
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────

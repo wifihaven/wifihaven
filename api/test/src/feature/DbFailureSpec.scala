@@ -71,7 +71,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def insertBatch(rs: List[TrafficReportInsert])                       = throwing
     def listForDevice(mac: MacAddress, d: java.time.LocalDate)           = throwing
     def listForRouter(r: RouterId, l: Int)                               = throwing
-    def listSessionRows(f: SessionFilter)                                = throwing
+    def listTrafficRollupRows(f: TrafficRollupFilter)                    = throwing
     def listPresenceRows(macs: List[MacAddress], d: java.time.LocalDate) = throwing
     def listPresenceRows(
         macs: List[MacAddress],

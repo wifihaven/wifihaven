@@ -13,17 +13,15 @@ with [#793](https://github.com/wifihaven/wifihaven/issues/793) (partitioning) an
 | Hourly | new `traffic_hourly` | 1 h × (router, mac, host) | **3 months** | API-side ZIO cron, every 5 min, UPSERT from raw |
 | Daily | new `traffic_daily` | 1 day × (router, mac, host) | **6 months** | API-side ZIO cron, daily at 00:15 local, UPSERT from raw |
 | Quota | existing `time_usage` | 1 day × (mac, host) bucket-deduped wall-clock | unchanged (forever) | unchanged — written at ingest |
-| Sessions | `/api/sessions` (stitched from `traffic_reports`) | per-host session | **deferred** — see [#817](https://github.com/wifihaven/wifihaven/issues/817) | no separate retention until data-quality issues are fixed |
 
 `/api/usage/series` picks the tier by window width: `≤ 6 h → raw`, `≤ 14 d → hourly`,
 `> 14 d → daily`. SPA date pickers expose the 30-day horizon for 5-min mode, 3 months
 for hourly, 6 months for daily.
 
-**Sessions retention is intentionally out of scope.** The session-stitching surface
-(`/api/sessions`) has known data-quality problems (tracker [#817](https://github.com/wifihaven/wifihaven/issues/817)). Until those are
-resolved we do not separately retain or sweep sessions — they remain a derived view
-over whatever `traffic_reports` rows still exist (so the 30-day raw retention does
-implicitly bound them, but we make no correctness claim about sessions over time).
+**Sessions are no longer a surface.** The session-stitching endpoint was removed in
+[#845](https://github.com/wifihaven/wifihaven/issues/845); the replacement (Connection
+Events + Traffic Usage) reads `connection_events` and `traffic_reports` directly and
+inherits their retention. See umbrella [#844](https://github.com/wifihaven/wifihaven/issues/844).
 
 ## 1. Raw retention — 30 days
 
@@ -270,13 +268,13 @@ revisit if pgstat shows the autovacuum cost is real.
 - The SPA auto-promotes the granularity when the user expands the window past a
   threshold (see #5), so the constraint is rarely hit explicitly.
 
-## 12. Sessions — out of scope for retention
+## 12. Sessions — removed
 
-`/api/sessions` stitches per-host sessions out of `traffic_reports` and has known
-data-quality problems (tracker [#817](https://github.com/wifihaven/wifihaven/issues/817)). Until
-those land, no separate sessions retention policy applies — sessions remain a
-derived view bounded only by the 30-day raw retention, and we explicitly make no
-correctness or persistence claim about them. Revisit once #817 is closed.
+The `/api/sessions` surface was removed in [#845](https://github.com/wifihaven/wifihaven/issues/845); see umbrella
+[#844](https://github.com/wifihaven/wifihaven/issues/844) for the replacement
+(Connection Events + Traffic Usage), which reads `connection_events` and
+`traffic_reports` directly and inherits their retention. No separate sessions
+retention policy applies.
 
 ## Open operator questions
 

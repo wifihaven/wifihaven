@@ -499,19 +499,12 @@ case class UsageSeriesResponse(
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec
 
-case class DashboardNowCurrentSession(
-    host: HostId,
-    startedAt: String,
-    durationSeconds: Long,
-) derives JsonCodec
-
 case class DashboardNowDevice(
     id: DeviceId,
     name: String,
     mac: MacAddress,
     lastSeenSeconds: Long,
     topHosts: List[DashboardNowHost],
-    currentSession: Option[DashboardNowCurrentSession],
 ) derives JsonCodec
 
 case class DashboardNowProfile(
@@ -575,27 +568,6 @@ case class TrafficReport(
     activeSeconds: Int,
     bytesIn: Long,
     bytesOut: Long,
-) derives JsonCodec
-
-case class Session(
-    mac: MacAddress,
-    deviceName: Option[String],
-    profileId: Option[ProfileId],
-    profileName: Option[String],
-    host: HostId,
-    routerId: RouterId,
-    date: String,
-    startedAt: String,
-    endedAt: String,
-    durationSeconds: Long,
-    bytesIn: Long,
-    bytesOut: Long,
-    periodCount: Int,
-) derives JsonCodec
-
-case class SessionPage(
-    sessions: List[Session],
-    nextCursor: Option[String],
 ) derives JsonCodec
 
 case class BlockEvent(

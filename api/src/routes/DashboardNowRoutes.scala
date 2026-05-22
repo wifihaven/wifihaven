@@ -2,7 +2,6 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.sessions.{SessionRow, Sessions}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -18,8 +17,7 @@ import java.time.Instant
  * Within each profile, lists devices that produced either a connection_events row in the last
  * `RecentActivityWindow` (5m) OR a traffic_reports period whose `period_end` falls in the last
  * `TrafficActiveWindow` (5m). For each active device, returns the top hosts by active_seconds over
- * the last `TopHostsWindow` (30m) and the in-progress session (via [[Sessions.stitch]]) iff its
- * latest period_end is within `SessionTolerance` (10m) of "now".
+ * the last `TopHostsWindow` (30m).
  */
 object DashboardNowRoutes {
 
@@ -27,7 +25,6 @@ object DashboardNowRoutes {
   private val RecentActivityWindow = java.time.Duration.ofSeconds(300) // connection_events: last 5m
   private val TrafficActiveWindow  = java.time.Duration.ofMinutes(5)
   private val TopHostsWindow       = java.time.Duration.ofMinutes(30)
-  private val SessionTolerance     = java.time.Duration.ofMinutes(10)
   private val TopHostsLimit        = 3
 
   def routes(
@@ -55,8 +52,8 @@ object DashboardNowRoutes {
             connSince   = now.minus(RecentActivityWindow)
             lastSeenF <- connRepo.lastSeenByMacSince(connSince).fork
             rowsF     <- trafficRepo
-              .listSessionRows(
-                SessionFilter(
+              .listTrafficRollupRows(
+                TrafficRollupFilter(
                   macs = Some(visibleMacs),
                   host = None,
                   since = Some(since),
@@ -83,10 +80,9 @@ object DashboardNowRoutes {
       profiles: List[Profile],
       devices: List[Device],
       lastSeen: Map[MacAddress, Instant],
-      rows: List[SessionRow],
+      rows: List[TrafficRollupRow],
   ): DashboardNow = {
     val trafficCutoff                             = now.minus(TrafficActiveWindow)
-    val sessionCutoff                             = now.minus(SessionTolerance)
     val rowsByMac                                 = rows.groupBy(_.mac)
     val latestTrafficTs: Map[MacAddress, Instant] =
       rowsByMac.view
@@ -111,7 +107,6 @@ object DashboardNowRoutes {
             mac = d.mac,
             lastSeenSeconds = lastSeenSeconds,
             topHosts = topHostsFromRows(devRows),
-            currentSession = currentSessionFromRows(devRows, sessionCutoff),
           )
         }
       }
@@ -126,7 +121,7 @@ object DashboardNowRoutes {
     DashboardNow(asOf = now.toString, profiles = profile)
   }
 
-  def topHostsFromRows(rows: List[SessionRow]): List[DashboardNowHost] =
+  def topHostsFromRows(rows: List[TrafficRollupRow]): List[DashboardNowHost] =
     rows
       .groupBy(_.host)
       .view
@@ -135,26 +130,4 @@ object DashboardNowRoutes {
       .sortBy { case (h, s) => (-s, h.value) }
       .take(TopHostsLimit)
       .map { case (h, s) => DashboardNowHost(h, s) }
-
-  def currentSessionFromRows(
-      rows: List[SessionRow],
-      sessionCutoff: Instant,
-  ): Option[DashboardNowCurrentSession] =
-    if rows.isEmpty then None
-    else {
-      val stitched = Sessions.stitch(rows)
-      // Sessions.stitch returns newest-first by startedAt; pick the one whose endedAt is most recent
-      // and after the cutoff.
-      stitched
-        .filter(s => Instant.parse(s.endedAt).isAfter(sessionCutoff))
-        .sortBy(s => -Instant.parse(s.endedAt).toEpochMilli)
-        .headOption
-        .map { s =>
-          DashboardNowCurrentSession(
-            host = s.host,
-            startedAt = s.startedAt,
-            durationSeconds = s.durationSeconds,
-          )
-        }
-    }
 }

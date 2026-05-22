@@ -108,27 +108,6 @@ export interface QueryLog {
   ts: string
 }
 
-export interface Session {
-  mac: string
-  deviceName: string | null
-  profileId: number | null
-  profileName: string | null
-  host: HostId
-  routerId: string
-  date: string
-  startedAt: string
-  endedAt: string
-  durationSeconds: number
-  bytesIn: number
-  bytesOut: number
-  periodCount: number
-}
-
-export interface SessionPage {
-  sessions: Session[]
-  nextCursor: string | null
-}
-
 export interface DashboardStats {
   totalToday: number
   blockedToday: number
@@ -143,19 +122,12 @@ export interface DashboardNowHost {
   activeSeconds: number
 }
 
-export interface DashboardNowCurrentSession {
-  host: HostId
-  startedAt: string
-  durationSeconds: number
-}
-
 export interface DashboardNowDevice {
   id: number
   name: string
   mac: string
   lastSeenSeconds: number
   topHosts: DashboardNowHost[]
-  currentSession: DashboardNowCurrentSession | null
 }
 
 export interface DashboardNowProfile {

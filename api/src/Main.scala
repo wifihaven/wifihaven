@@ -103,7 +103,6 @@ object Main extends ZIOAppDefault {
         timeCache,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
-      SessionRoutes.routes(auth, trafficRepo, deviceRepo, profileRepo, upRepo, clock) ++
       UsageRoutes.routes(auth, deviceRepo, trafficRepo, upRepo, profileRepo, clock) ++
       DashboardNowRoutes.routes(
         auth,
