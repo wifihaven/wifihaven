@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useDevices, useDeviceAlerts, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import type { Device, DeviceAlert } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
@@ -190,6 +191,7 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
   const alertsQuery  = useDeviceAlerts()
   const invalidators = useInvalidators()
   const alerts: DeviceAlert[] = alertsQuery.data ?? []
+  const notificationPermission = useNotificationPermission()
 
   const dismissMutation = useMutation({
     mutationFn: (id: number) => api.deviceAlerts.dismiss(id),
@@ -202,11 +204,20 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
     <div data-testid="new-device-alerts-banner" className="bg-yellow-500/5 border border-yellow-500/30 rounded-2xl p-5 space-y-3">
       <div className="flex items-center gap-3">
         <span className="text-yellow-400 text-lg">●</span>
-        <h2 className="text-yellow-200 font-semibold">
+        <h2 className="text-yellow-200 font-semibold flex-1">
           {alerts.length === 1
             ? '1 new device on the network'
             : `${alerts.length} new devices on the network`}
         </h2>
+        {notificationPermission.state === 'default' && (
+          <button
+            data-testid="enable-notifications-btn"
+            onClick={() => notificationPermission.request()}
+            className="text-xs text-yellow-200 hover:text-white bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+          >
+            Enable browser notifications
+          </button>
+        )}
       </div>
       <ul className="space-y-2">
         {alerts.map(a => (

@@ -211,4 +211,31 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
     expect(within(banner).getByText('aa:bb:cc:99:99:99')).toBeInTheDocument()
     expect(within(banner).queryByRole('button', { name: /Dismiss/ })).not.toBeInTheDocument()
   })
+
+  it('shows "Enable browser notifications" when Notification.permission is default', async () => {
+    class FakeN { static permission: NotificationPermission = 'default'; static requestPermission = vi.fn(async () => 'granted' as NotificationPermission); constructor() {} }
+    // @ts-expect-error inject
+    window.Notification = FakeN
+    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    renderPage()
+    await screen.findByTestId('new-device-alerts-banner')
+    const btn = await screen.findByTestId('enable-notifications-btn')
+    const user = userEvent.setup()
+    await user.click(btn)
+    expect(FakeN.requestPermission).toHaveBeenCalled()
+    // @ts-expect-error cleanup
+    delete window.Notification
+  })
+
+  it('hides "Enable browser notifications" when permission is already granted', async () => {
+    class FakeN { static permission: NotificationPermission = 'granted'; static requestPermission = vi.fn(); constructor() {} }
+    // @ts-expect-error inject
+    window.Notification = FakeN
+    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    renderPage()
+    await screen.findByTestId('new-device-alerts-banner')
+    expect(screen.queryByTestId('enable-notifications-btn')).not.toBeInTheDocument()
+    // @ts-expect-error cleanup
+    delete window.Notification
+  })
 })
