@@ -52,6 +52,8 @@ jobs:
     concurrency:
       group: master-router-${{ github.ref }}-ci-tests
       cancel-in-progress: true
+    permissions:
+      contents: read
     uses: ./.github/workflows/ci.yml
 
   # Gate 2 (#654/#686): router enforcement in qemu OpenWRT + Alpine client
@@ -64,6 +66,8 @@ jobs:
     concurrency:
       group: master-router-${{ github.ref }}-gate-2
       cancel-in-progress: true
+    permissions:
+      contents: read
     uses: ./.github/workflows/e2e-vm-fake.yml
     secrets: inherit
 
@@ -76,6 +80,7 @@ jobs:
     name: Manual approval (router production gate)
     needs: [gate-2-router-fake-api]
     runs-on: ubuntu-latest
+    permissions: {}
     environment:
       name: production
       url: https://github.com/wifihaven/wifihaven/releases/tag/openwrt-latest
