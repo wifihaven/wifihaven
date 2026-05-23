@@ -159,12 +159,18 @@ export interface DashboardNowHost {
   activeSeconds: number
 }
 
+export interface DashboardNowActivity {
+  topHost: HostId
+  minutes: number | null
+}
+
 export interface DashboardNowDevice {
   id: number
   name: string
   mac: string
   lastSeenSeconds: number
   topHosts: DashboardNowHost[]
+  nowActivity: DashboardNowActivity | null
 }
 
 export interface DashboardNowProfile {
