@@ -268,7 +268,8 @@ describe("usage.build_report", function()
     assert.equal(2, #r.records)
   end)
 
-  it("attributes bytes to the hostname the dst_ip resolved to (via nft_sets)", function()
+  -- #905: tx (c.bytes) is the upload direction → maps to bytesOut on the wire.
+  it("maps tx counter (c.bytes) to bytesOut (upload direction, #905)", function()
     local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
                                  nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
     local by_host = {}
@@ -276,42 +277,46 @@ describe("usage.build_report", function()
     assert.equal("fqdn",             by_host["youtube.com"].host.type)
     assert.equal("youtube.com",      by_host["youtube.com"].host.value)
     assert.equal("aa:bb:cc:11:22:33", by_host["youtube.com"].mac)
-    assert.equal(50000,               by_host["youtube.com"].bytesIn)
+    assert.equal(50000,               by_host["youtube.com"].bytesOut)
+    assert.equal(0,                   by_host["youtube.com"].bytesIn)
   end)
 
-  -- #717: bytesOut must be wired through from the merged counter's
-  -- bytes_out field (the rx nft set), not hard-coded to 0.
-  it("populates bytesOut from c.bytes_out (download direction, #717)", function()
+  -- #905: tx → bytesOut (upload), rx → bytesIn (download). The internal
+  -- record's c.bytes (tx) feeds bytesOut and c.bytes_out (rx) feeds bytesIn.
+  it("maps tx to bytesOut and rx to bytesIn (combined-direction flow, #905)", function()
     local counters = {
       { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4",
         bytes = 50000, packets = 100, bytes_out = 4000000, packets_out = 3500 },
     }
     local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
                                  nil, nil, full_tracker(counters), SAMPLE_S, BUCKET_S)
-    assert.equal(50000,    r.records[1].bytesIn)
-    assert.equal(4000000,  r.records[1].bytesOut)
+    assert.equal(50000,    r.records[1].bytesOut)
+    assert.equal(4000000,  r.records[1].bytesIn)
   end)
 
-  it("defaults bytesOut to 0 when c.bytes_out is missing (tx-only snapshot)", function()
-    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
-                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
-    for _, rec in ipairs(r.records) do
-      assert.equal(0, rec.bytesOut)
-    end
+  it("tx-only flow produces bytesOut > 0 and bytesIn == 0 (#905)", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4",
+        bytes = 50000, packets = 100 },  -- no bytes_out → rx absent
+    }
+    local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(counters), SAMPLE_S, BUCKET_S)
+    assert.equal(50000, r.records[1].bytesOut)
+    assert.equal(0,     r.records[1].bytesIn)
   end)
 
-  it("credits one sample when bytes=0 but bytes_out>0 (rx-only flow first appearing post-tick)", function()
+  it("rx-only flow produces bytesIn > 0 and bytesOut == 0 (#905)", function()
     local counters = {
       { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4",
         bytes = 0, packets = 0, bytes_out = 1234, packets_out = 5 },
     }
-    -- Empty tracker → falls through to the post-tick path. That path
-    -- previously gated on `c.bytes > 0`; with #717 it must also treat
-    -- bytes_out > 0 as activity.
+    -- Empty tracker → falls through to the post-tick path, which gates on
+    -- bytes + bytes_out > 0 (#717).
     local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
                                  nil, nil, usage.new_tracker(), SAMPLE_S, BUCKET_S)
     assert.equal(SAMPLE_S, r.records[1].activeSeconds)
-    assert.equal(1234,     r.records[1].bytesOut)
+    assert.equal(1234,     r.records[1].bytesIn)
+    assert.equal(0,        r.records[1].bytesOut)
   end)
 
   -- #391: the "unknown" sentinel is gone. When DNS attribution misses we emit
