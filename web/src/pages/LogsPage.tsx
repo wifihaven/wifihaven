@@ -4,6 +4,7 @@ import { api } from '@/api/client'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
+import { HeaderFilter } from '@/components/usage/HeaderFilter'
 import { FilterShelf } from './TrafficUsagePage'
 import { localTime, windowFromTo } from '@/components/usage/usageHelpers'
 
@@ -30,8 +31,8 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
 export function LogsPage() {
   const [bucket, setBucket]     = useState<EventsBucket>('raw')
   const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(['domain'])
-  const [mac, setMac]           = useState<string>('')
-  const [profileId, setProfileId] = useState<string>('')
+  const [macs, setMacs]                 = useState<string[]>([])
+  const [profileIds, setProfileIds]     = useState<number[]>([])
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
 
@@ -56,18 +57,18 @@ export function LogsPage() {
         <h1 className="text-2xl font-bold text-gray-100">Connection Events</h1>
         <p className="text-sm text-gray-500">
           Per-query DNS / blocking decisions. Click a column header (Domain / Device /
-          Profile) to add it to the aggregation.
+          Profile) to add it to the aggregation, or the funnel icon to filter that column.
         </p>
       </header>
 
       <FilterShelf
         devices={devices}
         profiles={profiles}
-        mac={mac}
-        profileId={profileId}
+        macs={macs}
+        profileIds={profileIds}
         bucket={bucket}
-        onMacChange={v => { setMac(v); if (v) setProfileId('') }}
-        onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
+        onMacsChange={setMacs}
+        onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
       />
 
@@ -76,14 +77,25 @@ export function LogsPage() {
             <div className="text-xs text-amber-400">
               Showing latest {RAW_EVENTS_LIMIT} events. Switch buckets to aggregate by window.
             </div>
-            <RawEventsView mac={mac} profileId={profileId} devices={devices} />
+            <RawEventsView
+              macs={macs}
+              profileIds={profileIds}
+              devices={devices}
+              profiles={profiles}
+              onMacsChange={setMacs}
+              onProfileIdsChange={setProfileIds}
+            />
           </>
         : <AggregatedEventsView
             bucket={bucket}
             groupBy={groupBy}
             onToggleGroup={toggleGroup}
-            mac={mac}
-            profileId={profileId}
+            macs={macs}
+            profileIds={profileIds}
+            devices={devices}
+            profiles={profiles}
+            onMacsChange={setMacs}
+            onProfileIdsChange={setProfileIds}
           />}
     </div>
   )
@@ -109,26 +121,37 @@ function ErrorBanner({ message }: { message: string }) {
   )
 }
 
-interface RawProps {
-  mac: string
-  profileId: string
+interface FilterApi {
+  macs: string[]
+  profileIds: number[]
   devices: Device[]
+  profiles: ProfileDetail[]
+  onMacsChange: (v: string[]) => void
+  onProfileIdsChange: (v: number[]) => void
 }
+
+interface RawProps extends FilterApi {}
 
 const RAW_EVENTS_LIMIT = 200
 
 // Connection-event rows are point events, not bucketed — so the operator
 // just wants "show me the last N". No time window. (#846 audit). An `until=`
 // API param to anchor at a specific moment lands in #863.
-function RawEventsView({ mac, profileId, devices }: RawProps) {
+function RawEventsView({
+  macs, profileIds, devices, profiles, onMacsChange, onProfileIdsChange,
+}: RawProps) {
   const [logs, setLogs]       = useState<QueryLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
 
-  const deviceId = useMemo(() => {
-    if (!mac) return undefined
-    return devices.find(d => d.mac === mac)?.id
-  }, [mac, devices])
+  // #865: translate selected mac list to deviceId list so /api/logs filters
+  // on devices.id (the index path) rather than ce.mac.
+  const deviceIds = useMemo(() => {
+    if (!macs.length) return undefined
+    const byMac = new Map(devices.map(d => [d.mac, d.id]))
+    const ids = macs.map(m => byMac.get(m)).filter((x): x is number => x !== undefined)
+    return ids.length ? ids : undefined
+  }, [macs, devices])
 
   useEffect(() => {
     let cancelled = false
@@ -137,16 +160,16 @@ function RawEventsView({ mac, profileId, devices }: RawProps) {
     // /api/logs requires `hours` — pass a wide cap (1y) so the row limit
     // dominates. When #863 lands we can drop the hours hack entirely.
     api.logs.query({
-      hours:     24 * 365,
-      deviceId,
-      profileId: profileId ? Number(profileId) : undefined,
-      limit:     RAW_EVENTS_LIMIT,
+      hours:      24 * 365,
+      deviceIds,
+      profileIds: profileIds.length ? profileIds : undefined,
+      limit:      RAW_EVENTS_LIMIT,
     })
       .then(d => { if (!cancelled) setLogs(d) })
       .catch(e => { if (!cancelled) { setLogs([]); setError(String(e.message ?? e)) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [deviceId, profileId])
+  }, [deviceIds?.join(','), profileIds.join(',')])
 
   if (loading) return <Spinner />
   if (error)   return <ErrorBanner message={error} />
@@ -157,8 +180,31 @@ function RawEventsView({ mac, profileId, devices }: RawProps) {
         <thead className="text-xs uppercase">
           <tr className="text-gray-500">
             <th className="text-left px-2 py-1">Time</th>
-            <th className="text-left px-2 py-1">Device</th>
-            <th className="text-left px-2 py-1">Profile</th>
+            <th className="text-left px-2 py-1">
+              <span className="inline-flex items-center gap-1">
+                <span>Device</span>
+                <HeaderFilter
+                  testId="ce-filter-device"
+                  title="Filter device"
+                  options={devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` }))}
+                  selected={macs}
+                  onChange={onMacsChange}
+                  searchable={devices.length > 12}
+                />
+              </span>
+            </th>
+            <th className="text-left px-2 py-1">
+              <span className="inline-flex items-center gap-1">
+                <span>Profile</span>
+                <HeaderFilter
+                  testId="ce-filter-profile"
+                  title="Filter profile"
+                  options={profiles.map(p => ({ value: String(p.profile.id), label: p.profile.name }))}
+                  selected={profileIds.map(String)}
+                  onChange={next => onProfileIdsChange(next.map(Number))}
+                />
+              </span>
+            </th>
             <th className="text-left px-2 py-1">Domain</th>
             <th className="text-left px-2 py-1">Status</th>
             <th className="text-left px-2 py-1">Reason</th>
@@ -210,15 +256,16 @@ function NonGroupedCell({
   return <span className="text-gray-500">{count ?? 0}</span>
 }
 
-interface AggProps {
+interface AggProps extends FilterApi {
   bucket: Exclude<EventsBucket, 'raw'>
   groupBy: EventsGroupBy[]
   onToggleGroup: (key: string) => void
-  mac: string
-  profileId: string
 }
 
-function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }: AggProps) {
+function AggregatedEventsView({
+  bucket, groupBy, onToggleGroup,
+  macs, profileIds, devices, profiles, onMacsChange, onProfileIdsChange,
+}: AggProps) {
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
@@ -231,16 +278,16 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
     api.logs.series({
       bucket,
       groupBy,
-      mac:       mac || undefined,
-      profileId: profileId ? Number(profileId) : undefined,
-      hours:     Math.max(1, Math.ceil((new Date(to).getTime() - new Date(from).getTime()) / 3600000)),
-      limit:     500,
+      macs:       macs.length ? macs : undefined,
+      profileIds: profileIds.length ? profileIds : undefined,
+      hours:      Math.max(1, Math.ceil((new Date(to).getTime() - new Date(from).getTime()) / 3600000)),
+      limit:      500,
     })
       .then(d => { if (!cancelled) setRows(d) })
       .catch(e => { if (!cancelled) { setRows([]); setError(String(e.message ?? e)) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [bucket, groupBy.join(','), mac, profileId])
+  }, [bucket, groupBy.join(','), macs.join(','), profileIds.join(',')])
 
   if (loading) return <Spinner />
   if (error)   return <ErrorBanner message={error} />
@@ -252,12 +299,31 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
           <tr className="text-gray-500">
             <th className="text-left px-2 py-1">Window start</th>
             <th className="text-left px-2 py-1">
-              <GroupableHeader label="Device" groupKey="device" groupBy={groupBy}
-                onToggle={onToggleGroup} testIdPrefix="ce-group" />
+              <span className="inline-flex items-center gap-1">
+                <GroupableHeader label="Device" groupKey="device" groupBy={groupBy}
+                  onToggle={onToggleGroup} testIdPrefix="ce-group" />
+                <HeaderFilter
+                  testId="ce-filter-device"
+                  title="Filter device"
+                  options={devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` }))}
+                  selected={macs}
+                  onChange={onMacsChange}
+                  searchable={devices.length > 12}
+                />
+              </span>
             </th>
             <th className="text-left px-2 py-1">
-              <GroupableHeader label="Profile" groupKey="profile" groupBy={groupBy}
-                onToggle={onToggleGroup} testIdPrefix="ce-group" />
+              <span className="inline-flex items-center gap-1">
+                <GroupableHeader label="Profile" groupKey="profile" groupBy={groupBy}
+                  onToggle={onToggleGroup} testIdPrefix="ce-group" />
+                <HeaderFilter
+                  testId="ce-filter-profile"
+                  title="Filter profile"
+                  options={profiles.map(p => ({ value: String(p.profile.id), label: p.profile.name }))}
+                  selected={profileIds.map(String)}
+                  onChange={next => onProfileIdsChange(next.map(Number))}
+                />
+              </span>
             </th>
             <th className="text-left px-2 py-1">
               <GroupableHeader label="Domain" groupKey="domain" groupBy={groupBy}

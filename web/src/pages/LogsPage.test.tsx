@@ -63,8 +63,6 @@ describe('LogsPage (Connection Events) — raw view', () => {
     expect(await screen.findByText('example.com')).toBeInTheDocument()
     expect(api.logs.query).toHaveBeenCalled()
     expect(screen.getByText("Kid's iPad")).toBeInTheDocument()
-    // 'Kids' appears in both the profile dropdown <option> and the data row
-    // <td>; finding at least one is enough to prove the column rendered.
     expect(screen.getAllByText('Kids').length).toBeGreaterThan(0)
   })
 

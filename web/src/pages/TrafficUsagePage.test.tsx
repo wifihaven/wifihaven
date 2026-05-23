@@ -105,8 +105,8 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
     const secondCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[1][0]
 
-    expect(secondCall.mac).toBe(firstCall.mac)
-    expect(secondCall.profileId).toBe(firstCall.profileId)
+    expect(secondCall.macs).toEqual(firstCall.macs)
+    expect(secondCall.profileIds).toEqual(firstCall.profileIds)
     // `from`/`to` are computed at fetch-time from new Date() so they differ
     // between calls; the bucket switch is what matters here.
     expect(secondCall.bucket).toBe('1h')
@@ -131,6 +131,33 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(3))
     const lastCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[2][0]
     expect(lastCall.groupBy?.sort()).toEqual(['device', 'domain'])
+  })
+
+  it('#865 selecting two devices in the header filter posts macs as an array and shows chips', async () => {
+    const devices = [
+      { id: 1, mac: 'aa:bb:cc:dd:ee:01', name: "Kid's iPad", profileId: 1, profileName: 'Kids', lastSeenIp: null, lastSeenAt: null },
+      { id: 2, mac: 'aa:bb:cc:dd:ee:02', name: 'Adult Laptop', profileId: 2, profileName: 'Adults', lastSeenIp: null, lastSeenAt: null },
+    ]
+    ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue(devices)
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(rawResp)
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+
+    // Open the device-header filter popover and select both devices via the
+    // "all" affordance — exercises the multi-value wire shape in one click
+    // without depending on popover lifecycle between separate checkbox clicks.
+    await userEvent.click(screen.getByTestId('traffic-filter-device'))
+    await userEvent.click(screen.getByTestId('traffic-filter-device-all'))
+
+    await waitFor(() => {
+      const calls = trafficMock.mock.calls
+      const last = calls[calls.length - 1][0]
+      expect(last.macs?.slice().sort()).toEqual(['aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02'])
+    })
+    // Chip summary in the shelf renders the active filters.
+    expect(screen.getByTestId('chip-mac-aa:bb:cc:dd:ee:01')).toBeInTheDocument()
+    expect(screen.getByTestId('chip-mac-aa:bb:cc:dd:ee:02')).toBeInTheDocument()
   })
 
   it('surfaces server error', async () => {

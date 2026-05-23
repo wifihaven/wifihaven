@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import type {
   Device,
@@ -10,6 +10,7 @@ import type {
 import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
+import { HeaderFilter } from '@/components/usage/HeaderFilter'
 import {
   fmtBytes,
   fmtDuration,
@@ -27,8 +28,9 @@ const DEFAULT_RAW_LIMIT = 100
 export function TrafficUsagePage() {
   const [bucket, setBucket]     = useState<TrafficUsageBucket>('raw')
   const [groupBy, setGroupBy]   = useState<TrafficUsageGroupBy[]>(['domain'])
-  const [mac, setMac]           = useState<string>('')
-  const [profileId, setProfileId] = useState<string>('')
+  // #865: multi-select. Empty = no filter.
+  const [macs, setMacs]                 = useState<string[]>([])
+  const [profileIds, setProfileIds]     = useState<number[]>([])
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   const [data, setData]         = useState<TrafficUsageResponse | null>(null)
@@ -49,8 +51,8 @@ export function TrafficUsagePage() {
     const { from, to } = windowFromTo(bucket, new Date().toISOString())
     api.usage
       .traffic({
-        mac: mac || undefined,
-        profileId: profileId ? Number(profileId) : undefined,
+        macs:       macs.length       ? macs       : undefined,
+        profileIds: profileIds.length ? profileIds : undefined,
         from,
         to,
         bucket,
@@ -70,7 +72,7 @@ export function TrafficUsagePage() {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [bucket, groupBy, mac, profileId])
+  }, [bucket, groupBy, macs.join(','), profileIds.join(',')])
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
@@ -90,18 +92,18 @@ export function TrafficUsagePage() {
         <p className="text-sm text-gray-500">
           Raw <code className="text-emerald-400">traffic_reports</code> rows plus on-the-fly
           aggregation. Click a column header (Host / Device / Profile) to add it to the
-          aggregation.
+          aggregation, or the funnel icon to filter that column.
         </p>
       </header>
 
       <FilterShelf
         devices={devices}
         profiles={profiles}
-        mac={mac}
-        profileId={profileId}
+        macs={macs}
+        profileIds={profileIds}
         bucket={bucket}
-        onMacChange={v => { setMac(v); if (v) setProfileId('') }}
-        onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
+        onMacsChange={setMacs}
+        onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
       />
 
@@ -109,10 +111,28 @@ export function TrafficUsagePage() {
       {loading && <Spinner />}
 
       {data && bucket === 'raw' && !loading && (
-        <RawTable data={data} />
+        <RawTable
+          data={data}
+          devices={devices}
+          profiles={profiles}
+          macs={macs}
+          profileIds={profileIds}
+          onMacsChange={setMacs}
+          onProfileIdsChange={setProfileIds}
+        />
       )}
       {data && bucket !== 'raw' && !loading && (
-        <AggregateTable data={data} groupBy={groupBy} onToggleGroup={toggleGroup} />
+        <AggregateTable
+          data={data}
+          groupBy={groupBy}
+          onToggleGroup={toggleGroup}
+          devices={devices}
+          profiles={profiles}
+          macs={macs}
+          profileIds={profileIds}
+          onMacsChange={setMacs}
+          onProfileIdsChange={setProfileIds}
+        />
       )}
     </div>
   )
@@ -121,53 +141,77 @@ export function TrafficUsagePage() {
 interface ShelfProps {
   devices: Device[]
   profiles: ProfileDetail[]
-  mac: string
-  profileId: string
+  macs: string[]
+  profileIds: number[]
   bucket: TrafficUsageBucket
-  onMacChange: (v: string) => void
-  onProfileChange: (v: string) => void
+  onMacsChange: (v: string[]) => void
+  onProfileIdsChange: (v: number[]) => void
   onBucketChange: (b: TrafficUsageBucket) => void
 }
 
-// Shared filter shelf — same shape used by Connection Events page.
+// #865: shelf carries the bucket selector + a chip summary of any active
+// column-header filters. Device / Profile dropdowns moved into column
+// headers as multi-select popovers.
 export function FilterShelf({
-  devices, profiles, mac, profileId, bucket,
-  onMacChange, onProfileChange, onBucketChange,
+  devices, profiles, macs, profileIds, bucket,
+  onMacsChange, onProfileIdsChange, onBucketChange,
 }: ShelfProps) {
+  const deviceLabel = (m: string) => devices.find(d => d.mac === m)?.name ?? m
+  const profileLabel = (pid: number) =>
+    profiles.find(p => p.profile.id === pid)?.profile.name ?? `#${pid}`
+  const hasChips = macs.length > 0 || profileIds.length > 0
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
       <BucketSelector value={bucket} onChange={onBucketChange} />
-      <div className="flex flex-wrap gap-3">
-        <label className="text-xs text-gray-400">
-          Device
-          <select
-            data-testid="device-filter"
-            value={mac}
-            onChange={e => onMacChange(e.target.value)}
-            className="block mt-1 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-sm"
+      {hasChips && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="active-filters">
+          <span className="text-[11px] uppercase tracking-wide text-gray-500">Filters:</span>
+          {macs.map(m => (
+            <Chip
+              key={`mac-${m}`}
+              testId={`chip-mac-${m}`}
+              label={`Device: ${deviceLabel(m)}`}
+              onRemove={() => onMacsChange(macs.filter(x => x !== m))}
+            />
+          ))}
+          {profileIds.map(pid => (
+            <Chip
+              key={`pid-${pid}`}
+              testId={`chip-profile-${pid}`}
+              label={`Profile: ${profileLabel(pid)}`}
+              onRemove={() => onProfileIdsChange(profileIds.filter(x => x !== pid))}
+            />
+          ))}
+          <button
+            type="button"
+            data-testid="clear-filters"
+            onClick={() => { onMacsChange([]); onProfileIdsChange([]) }}
+            className="text-[11px] text-gray-500 hover:text-gray-300 underline"
           >
-            <option value="">all</option>
-            {devices.map(d => (
-              <option key={d.mac} value={d.mac}>{d.name} ({d.mac})</option>
-            ))}
-          </select>
-        </label>
-        <label className="text-xs text-gray-400">
-          Profile
-          <select
-            data-testid="profile-filter"
-            value={profileId}
-            onChange={e => onProfileChange(e.target.value)}
-            className="block mt-1 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-sm"
-          >
-            <option value="">all</option>
-            {profiles.map(p => (
-              <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>
-            ))}
-          </select>
-        </label>
-      </div>
+            clear all
+          </button>
+        </div>
+      )}
     </div>
+  )
+}
+
+function Chip({ testId, label, onRemove }: { testId: string; label: string; onRemove: () => void }) {
+  return (
+    <span
+      data-testid={testId}
+      className="inline-flex items-center gap-1 text-[11px] bg-emerald-950/50 border border-emerald-900 text-emerald-300 rounded px-2 py-0.5"
+    >
+      {label}
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="remove"
+        className="text-emerald-400 hover:text-red-400"
+      >
+        ×
+      </button>
+    </span>
   )
 }
 
@@ -191,7 +235,86 @@ function ErrorBanner({ message }: { message: string }) {
   )
 }
 
-function RawTable({ data }: { data: TrafficUsageResponse }) {
+interface FilterHeaderProps {
+  devices: Device[]
+  profiles: ProfileDetail[]
+  macs: string[]
+  profileIds: number[]
+  onMacsChange: (v: string[]) => void
+  onProfileIdsChange: (v: number[]) => void
+}
+
+// Helpers shared by Raw and Aggregate tables.
+function useDeviceOptions(devices: Device[]) {
+  return useMemo(
+    () => devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` })),
+    [devices],
+  )
+}
+
+function useProfileOptions(profiles: ProfileDetail[]) {
+  return useMemo(
+    () => profiles.map(p => ({ value: String(p.profile.id), label: p.profile.name })),
+    [profiles],
+  )
+}
+
+function DeviceHeaderCell({
+  label, testIdPrefix, devices, macs, onMacsChange,
+}: {
+  label: string
+  testIdPrefix: string
+  devices: Device[]
+  macs: string[]
+  onMacsChange: (v: string[]) => void
+}) {
+  const opts = useDeviceOptions(devices)
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      <HeaderFilter
+        testId={`${testIdPrefix}-filter-device`}
+        title="Filter device"
+        options={opts}
+        selected={macs}
+        onChange={onMacsChange}
+        searchable={devices.length > 12}
+      />
+    </span>
+  )
+}
+
+function ProfileHeaderCell({
+  label, testIdPrefix, profiles, profileIds, onProfileIdsChange,
+}: {
+  label: string
+  testIdPrefix: string
+  profiles: ProfileDetail[]
+  profileIds: number[]
+  onProfileIdsChange: (v: number[]) => void
+}) {
+  const opts = useProfileOptions(profiles)
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      <HeaderFilter
+        testId={`${testIdPrefix}-filter-profile`}
+        title="Filter profile"
+        options={opts}
+        selected={profileIds.map(String)}
+        onChange={next => onProfileIdsChange(next.map(Number))}
+      />
+    </span>
+  )
+}
+
+interface RawTableProps extends FilterHeaderProps {
+  data: TrafficUsageResponse
+}
+
+function RawTable({
+  data, devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
+}: RawTableProps) {
   return (
     <div className="overflow-x-auto" data-testid="raw-table">
       {data.rawRowsTruncated && (
@@ -203,8 +326,24 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
         <thead className="text-xs uppercase">
           <tr className="text-gray-500">
             <th className="text-left px-2 py-1">Period start</th>
-            <th className="text-left px-2 py-1">Device</th>
-            <th className="text-left px-2 py-1">Profile</th>
+            <th className="text-left px-2 py-1">
+              <DeviceHeaderCell
+                label="Device"
+                testIdPrefix="traffic"
+                devices={devices}
+                macs={macs}
+                onMacsChange={onMacsChange}
+              />
+            </th>
+            <th className="text-left px-2 py-1">
+              <ProfileHeaderCell
+                label="Profile"
+                testIdPrefix="traffic"
+                profiles={profiles}
+                profileIds={profileIds}
+                onProfileIdsChange={onProfileIdsChange}
+              />
+            </th>
             <th className="text-left px-2 py-1">Host</th>
             <th className="text-right px-2 py-1">Inbound</th>
             <th className="text-right px-2 py-1">Outbound</th>
@@ -236,7 +375,7 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
   )
 }
 
-interface AggProps {
+interface AggProps extends FilterHeaderProps {
   data: TrafficUsageResponse
   groupBy: TrafficUsageGroupBy[]
   onToggleGroup: (key: string) => void
@@ -260,7 +399,10 @@ function NonGroupedCell({
   return <span className="text-gray-500">{count ?? 0}</span>
 }
 
-function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
+function AggregateTable({
+  data, groupBy, onToggleGroup,
+  devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
+}: AggProps) {
   return (
     <div className="overflow-x-auto" data-testid="aggregate-table">
       <table className="min-w-full text-sm">
@@ -268,22 +410,41 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
           <tr className="text-gray-500">
             <th className="text-left px-2 py-1">Window start</th>
             <th className="text-left px-2 py-1">
-              <GroupableHeader
-                label="Device"
-                groupKey="device"
-                groupBy={groupBy}
-                onToggle={onToggleGroup}
-                testIdPrefix="traffic-group"
-              />
+              <span className="inline-flex items-center gap-1">
+                <GroupableHeader
+                  label="Device"
+                  groupKey="device"
+                  groupBy={groupBy}
+                  onToggle={onToggleGroup}
+                  testIdPrefix="traffic-group"
+                />
+                <HeaderFilter
+                  testId="traffic-filter-device"
+                  title="Filter device"
+                  options={devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` }))}
+                  selected={macs}
+                  onChange={onMacsChange}
+                  searchable={devices.length > 12}
+                />
+              </span>
             </th>
             <th className="text-left px-2 py-1">
-              <GroupableHeader
-                label="Profile"
-                groupKey="profile"
-                groupBy={groupBy}
-                onToggle={onToggleGroup}
-                testIdPrefix="traffic-group"
-              />
+              <span className="inline-flex items-center gap-1">
+                <GroupableHeader
+                  label="Profile"
+                  groupKey="profile"
+                  groupBy={groupBy}
+                  onToggle={onToggleGroup}
+                  testIdPrefix="traffic-group"
+                />
+                <HeaderFilter
+                  testId="traffic-filter-profile"
+                  title="Filter profile"
+                  options={profiles.map(p => ({ value: String(p.profile.id), label: p.profile.name }))}
+                  selected={profileIds.map(String)}
+                  onChange={next => onProfileIdsChange(next.map(Number))}
+                />
+              </span>
             </th>
             <th className="text-left px-2 py-1">
               <GroupableHeader
