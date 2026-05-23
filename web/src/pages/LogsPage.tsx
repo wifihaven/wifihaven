@@ -51,10 +51,10 @@ export function LogsPage() {
   }
 
   return (
-    <div className="space-y-4" data-testid="connection-events-page">
+    <div className="space-y-4 min-w-0" data-testid="connection-events-page">
       <header>
-        <h1 className="text-2xl font-bold text-gray-100">Connection Events</h1>
-        <p className="text-sm text-gray-500">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-100">Connection Events</h1>
+        <p className="text-xs sm:text-sm text-gray-500">
           Per-query DNS / blocking decisions. Click a column header (Domain / Device /
           Profile) to add it to the aggregation.
         </p>
@@ -158,11 +158,11 @@ function RawEventsView({ mac, profileId, devices }: RawProps) {
           <tr className="text-gray-500">
             <th className="text-left px-2 py-1">Time</th>
             <th className="text-left px-2 py-1">Device</th>
-            <th className="text-left px-2 py-1">Profile</th>
+            <th className="text-left px-2 py-1 hidden md:table-cell">Profile</th>
             <th className="text-left px-2 py-1">Domain</th>
             <th className="text-left px-2 py-1">Status</th>
-            <th className="text-left px-2 py-1">Reason</th>
-            <th className="text-left px-2 py-1">Location</th>
+            <th className="text-left px-2 py-1 hidden sm:table-cell">Reason</th>
+            <th className="text-left px-2 py-1 hidden lg:table-cell">Location</th>
           </tr>
         </thead>
         <tbody className="text-gray-300">
@@ -175,15 +175,15 @@ function RawEventsView({ mac, profileId, devices }: RawProps) {
           )}
           {logs.map(l => (
             <tr key={l.id} className="border-t border-gray-800">
-              <td className="px-2 py-1 font-mono text-xs">{localTime(l.ts)}</td>
+              <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">{localTime(l.ts)}</td>
               <td className="px-2 py-1"><DeviceLink mac={l.mac} deviceName={l.deviceName} /></td>
-              <td className="px-2 py-1">{l.profileName ?? '-'}</td>
-              <td className="px-2 py-1 max-w-[280px] truncate"><HostCell host={l.host} /></td>
-              <td className={`px-2 py-1 ${l.blocked ? 'text-red-400' : 'text-emerald-500'}`}>
+              <td className="px-2 py-1 hidden md:table-cell">{l.profileName ?? '-'}</td>
+              <td className="px-2 py-1 max-w-[160px] sm:max-w-[280px] truncate"><HostCell host={l.host} /></td>
+              <td className={`px-2 py-1 whitespace-nowrap ${l.blocked ? 'text-red-400' : 'text-emerald-500'}`}>
                 {l.blocked ? '✗ blocked' : '✓ ok'}
               </td>
-              <td className="px-2 py-1 text-gray-500">{l.reason}</td>
-              <td className="px-2 py-1 text-gray-500">{l.location ?? ''}</td>
+              <td className="px-2 py-1 text-gray-500 hidden sm:table-cell">{l.reason}</td>
+              <td className="px-2 py-1 text-gray-500 hidden lg:table-cell">{l.location ?? ''}</td>
             </tr>
           ))}
         </tbody>
@@ -255,7 +255,7 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
               <GroupableHeader label="Device" groupKey="device" groupBy={groupBy}
                 onToggle={onToggleGroup} testIdPrefix="ce-group" />
             </th>
-            <th className="text-left px-2 py-1">
+            <th className="text-left px-2 py-1 hidden md:table-cell">
               <GroupableHeader label="Profile" groupKey="profile" groupBy={groupBy}
                 onToggle={onToggleGroup} testIdPrefix="ce-group" />
             </th>
@@ -265,7 +265,7 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
             </th>
             <th className="text-right px-2 py-1">OK</th>
             <th className="text-right px-2 py-1">Blocked</th>
-            <th className="text-left px-2 py-1">Last seen</th>
+            <th className="text-left px-2 py-1 hidden sm:table-cell">Last seen</th>
           </tr>
         </thead>
         <tbody className="text-gray-300">
@@ -281,7 +281,7 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
             const showWindow = r.windowStart !== prevWindow
             return (
             <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>
-              <td className="px-2 py-1 font-mono text-xs">
+              <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">
                 {showWindow ? localTime(r.windowStart) : ''}
               </td>
               <td className="px-2 py-1">
@@ -291,14 +291,14 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
                   count={r.distinctDevices}
                 />
               </td>
-              <td className="px-2 py-1">
+              <td className="px-2 py-1 hidden md:table-cell">
                 <NonGroupedCell
                   groupedValue={groupBy.includes('profile') ? r.groups.profile : undefined}
                   sole={r.soleProfile}
                   count={r.distinctProfiles}
                 />
               </td>
-              <td className="px-2 py-1 max-w-[280px] truncate">
+              <td className="px-2 py-1 max-w-[160px] sm:max-w-[280px] truncate">
                 <NonGroupedCell
                   groupedValue={groupBy.includes('domain') ? r.groups.domain : undefined}
                   sole={r.soleDomain}
@@ -307,7 +307,7 @@ function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }
               </td>
               <td className="px-2 py-1 text-emerald-400 text-right">{r.countSucceeded}</td>
               <td className="px-2 py-1 text-red-400 text-right">{r.countBlocked}</td>
-              <td className="px-2 py-1 font-mono text-xs">{localTime(r.lastSeen)}</td>
+              <td className="px-2 py-1 font-mono text-xs whitespace-nowrap hidden sm:table-cell">{localTime(r.lastSeen)}</td>
             </tr>
             )
           })}

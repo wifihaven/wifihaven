@@ -84,10 +84,10 @@ export function TrafficUsagePage() {
   }
 
   return (
-    <div className="space-y-4" data-testid="traffic-usage-page">
+    <div className="space-y-4 min-w-0" data-testid="traffic-usage-page">
       <header>
-        <h1 className="text-2xl font-bold text-gray-100">Traffic Usage</h1>
-        <p className="text-sm text-gray-500">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-100">Traffic Usage</h1>
+        <p className="text-xs sm:text-sm text-gray-500">
           Raw <code className="text-emerald-400">traffic_reports</code> rows plus on-the-fly
           aggregation. Click a column header (Host / Device / Profile) to add it to the
           aggregation.
@@ -137,14 +137,14 @@ export function FilterShelf({
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
       <BucketSelector value={bucket} onChange={onBucketChange} />
-      <div className="flex flex-wrap gap-3">
-        <label className="text-xs text-gray-400">
+      <div className="grid grid-cols-1 sm:flex sm:flex-wrap gap-3">
+        <label className="text-xs text-gray-400 min-w-0">
           Device
           <select
             data-testid="device-filter"
             value={mac}
             onChange={e => onMacChange(e.target.value)}
-            className="block mt-1 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-sm"
+            className="block mt-1 w-full sm:w-auto sm:max-w-xs bg-gray-950 border border-gray-800 rounded px-2 py-1 text-sm"
           >
             <option value="">all</option>
             {devices.map(d => (
@@ -152,13 +152,13 @@ export function FilterShelf({
             ))}
           </select>
         </label>
-        <label className="text-xs text-gray-400">
+        <label className="text-xs text-gray-400 min-w-0">
           Profile
           <select
             data-testid="profile-filter"
             value={profileId}
             onChange={e => onProfileChange(e.target.value)}
-            className="block mt-1 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-sm"
+            className="block mt-1 w-full sm:w-auto sm:max-w-xs bg-gray-950 border border-gray-800 rounded px-2 py-1 text-sm"
           >
             <option value="">all</option>
             {profiles.map(p => (
@@ -204,11 +204,11 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
           <tr className="text-gray-500">
             <th className="text-left px-2 py-1">Period start</th>
             <th className="text-left px-2 py-1">Device</th>
-            <th className="text-left px-2 py-1">Profile</th>
+            <th className="text-left px-2 py-1 hidden md:table-cell">Profile</th>
             <th className="text-left px-2 py-1">Host</th>
             <th className="text-right px-2 py-1">Inbound</th>
-            <th className="text-right px-2 py-1">Outbound</th>
-            <th className="text-right px-2 py-1">Time</th>
+            <th className="text-right px-2 py-1 hidden sm:table-cell">Outbound</th>
+            <th className="text-right px-2 py-1 hidden md:table-cell">Time</th>
           </tr>
         </thead>
         <tbody className="text-gray-300">
@@ -221,13 +221,13 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
           )}
           {data.rawRows.map((r, i) => (
             <tr key={i} className="border-t border-gray-800">
-              <td className="px-2 py-1 font-mono text-xs">{localTime(r.periodStart)}</td>
+              <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">{localTime(r.periodStart)}</td>
               <td className="px-2 py-1">{r.deviceName ?? r.mac}</td>
-              <td className="px-2 py-1">{r.profileName ?? '-'}</td>
-              <td className="px-2 py-1"><HostCell host={r.host} /></td>
+              <td className="px-2 py-1 hidden md:table-cell">{r.profileName ?? '-'}</td>
+              <td className="px-2 py-1 max-w-[180px] sm:max-w-none truncate"><HostCell host={r.host} /></td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.bytesIn)}</td>
-              <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.bytesOut)}</td>
-              <td className="px-2 py-1 text-right font-mono">{fmtDuration(r.activeSeconds)}</td>
+              <td className="px-2 py-1 text-right font-mono hidden sm:table-cell">{fmtBytes(r.bytesOut)}</td>
+              <td className="px-2 py-1 text-right font-mono hidden md:table-cell">{fmtDuration(r.activeSeconds)}</td>
             </tr>
           ))}
         </tbody>
@@ -276,7 +276,7 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
                 testIdPrefix="traffic-group"
               />
             </th>
-            <th className="text-left px-2 py-1">
+            <th className="text-left px-2 py-1 hidden md:table-cell">
               <GroupableHeader
                 label="Profile"
                 groupKey="profile"
@@ -295,8 +295,8 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
               />
             </th>
             <th className="text-right px-2 py-1">Inbound</th>
-            <th className="text-right px-2 py-1">Outbound</th>
-            <th className="text-right px-2 py-1">Time</th>
+            <th className="text-right px-2 py-1 hidden sm:table-cell">Outbound</th>
+            <th className="text-right px-2 py-1 hidden md:table-cell">Time</th>
           </tr>
         </thead>
         <tbody className="text-gray-300">
@@ -314,7 +314,7 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
             const showWindow = r.windowStart !== prevWindow
             return (
             <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>
-              <td className="px-2 py-1 font-mono text-xs">
+              <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">
                 {showWindow ? localTime(r.windowStart) : ''}
               </td>
               <td className="px-2 py-1">
@@ -324,14 +324,14 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
                   count={r.distinctDevices}
                 />
               </td>
-              <td className="px-2 py-1">
+              <td className="px-2 py-1 hidden md:table-cell">
                 <NonGroupedCell
                   groupedValue={groupBy.includes('profile') ? r.groups.profile : undefined}
                   sole={r.soleProfile}
                   count={r.distinctProfiles}
                 />
               </td>
-              <td className="px-2 py-1">
+              <td className="px-2 py-1 max-w-[180px] sm:max-w-none truncate">
                 <NonGroupedCell
                   groupedValue={groupBy.includes('domain') ? r.groups.domain : undefined}
                   sole={r.soleDomain}
@@ -339,8 +339,8 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
                 />
               </td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.totalBytesIn)}</td>
-              <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.totalBytesOut)}</td>
-              <td className="px-2 py-1 text-right font-mono">{fmtDuration(r.totalSeconds)}</td>
+              <td className="px-2 py-1 text-right font-mono hidden sm:table-cell">{fmtBytes(r.totalBytesOut)}</td>
+              <td className="px-2 py-1 text-right font-mono hidden md:table-cell">{fmtDuration(r.totalSeconds)}</td>
             </tr>
             )
           })}
