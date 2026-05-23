@@ -28,6 +28,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 pass() { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*" >&2; exit 1; }
 step() { echo; echo "▶ $*"; }
+_py() { python3 -c "$1"; }
 
 # Quick wait for the API to come up (compose healthcheck should already gate, but be safe).
 step "Waiting for API at $BASE"
@@ -85,6 +86,70 @@ pass "profile round-trips"
 step "Devices endpoint"
 curl -fsS "${AUTH[@]}" "$BASE/api/devices" >/dev/null
 pass "devices endpoint OK"
+
+# ── #926: PUT /api/devices accepts profileId=null on insert + update ─────
+# UpsertDeviceRequest.profileId was made optional in #708/#841 so the
+# unknown-MAC and admin-reassignment flows work. e2e-router.sh only ever
+# upserts with a concrete profileId, so the optional path is unexercised.
+# Three curls + re-reads cover insert-null, update-attach, update-clear.
+step "Device upsert with profileId=null (insert, update attach, update clear) (#926)"
+# Randomized locally-administered unicast MAC so concurrent runs don't collide.
+TEST_MAC=$(_py "import random; print(':'.join(['%02x' % ((random.randint(0,255) & 0xfc) | 0x02)] + ['%02x' % random.randint(0,255) for _ in range(5)]))")
+TEST_DEV_NAME="e2e-dev-${RUN_ID}"
+
+# Cleanup the test device on exit in addition to the profile.
+cleanup_tests_926() {
+  local rc=$?
+  rm -rf "$TMP"
+  curl -s -X DELETE "$BASE/api/devices/$TEST_MAC" "${AUTH[@]}" >/dev/null 2>&1 || true
+  curl -s -X DELETE "$BASE/api/profiles/$PID" "${AUTH[@]}" >/dev/null 2>&1 || true
+  return $rc
+}
+trap cleanup_tests_926 EXIT
+
+read_device_pid() {
+  # Echo "null" if the device's profileId is absent/null in the listing,
+  # else echo the numeric id. Fails (empty) if the MAC isn't found.
+  curl -fsS "${AUTH[@]}" "$BASE/api/devices" >"$TMP/devices.json"
+  _py "
+import json, sys
+mac = '$TEST_MAC'
+for d in json.load(open('$TMP/devices.json')):
+    if d.get('mac','').lower() == mac.lower():
+        pid = d.get('profileId')
+        print('null' if pid is None else pid)
+        sys.exit(0)
+sys.exit('device not found: ' + mac)
+"
+}
+
+# (a) insert with profileId omitted → null
+curl -fsS -X PUT "$BASE/api/devices" \
+  "${AUTH[@]}" -H 'content-type: application/json' \
+  -d "{\"mac\":\"$TEST_MAC\",\"name\":\"$TEST_DEV_NAME\"}" >/dev/null
+GOT=$(read_device_pid)
+[ "$GOT" = "null" ] || fail "insert profileId=null: expected null, got $GOT"
+pass "insert with profileId omitted → null"
+
+# (b) update to attach a real profile id
+curl -fsS -X PUT "$BASE/api/devices" \
+  "${AUTH[@]}" -H 'content-type: application/json' \
+  -d "{\"mac\":\"$TEST_MAC\",\"name\":\"$TEST_DEV_NAME\",\"profileId\":$PID}" >/dev/null
+GOT=$(read_device_pid)
+[ "$GOT" = "$PID" ] || fail "update attach: expected profileId=$PID, got $GOT"
+pass "update attach profileId=$PID"
+
+# (c) update with profileId=null clears the assignment
+curl -fsS -X PUT "$BASE/api/devices" \
+  "${AUTH[@]}" -H 'content-type: application/json' \
+  -d "{\"mac\":\"$TEST_MAC\",\"name\":\"$TEST_DEV_NAME\",\"profileId\":null}" >/dev/null
+GOT=$(read_device_pid)
+[ "$GOT" = "null" ] || fail "update clear: expected null, got $GOT"
+pass "update with profileId=null clears assignment"
+
+# (d) explicit delete (also covered by trap, but verify the route here).
+curl -fsS -X DELETE "$BASE/api/devices/$TEST_MAC" "${AUTH[@]}" >/dev/null
+pass "test device deleted"
 
 step "Logs + stats endpoints"
 curl -fsS "${AUTH[@]}" "$BASE/api/logs" >/dev/null
