@@ -160,6 +160,20 @@ describe('TrafficUsagePage', () => {
     expect(screen.getByTestId('chip-mac-aa:bb:cc:dd:ee:02')).toBeInTheDocument()
   })
 
+  // #861 — verify low-priority columns carry responsive `hidden` classes so
+  // the table fits at phone (~375px) and tablet (~768px) widths. jsdom doesn't
+  // do real layout, so we assert on classnames rather than measuring overflow.
+  // #865 widened the column headers with funnel popover buttons, so the
+  // accessible name picks up the funnel glyph — match by regex.
+  it('hides low-priority raw-table columns on narrow viewports', async () => {
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('raw-table')).toBeInTheDocument())
+    const profile = screen.getByRole('columnheader', { name: /^Profile/ })
+    expect(profile.className).toMatch(/hidden md:table-cell/)
+    const outbound = screen.getByRole('columnheader', { name: 'Outbound' })
+    expect(outbound.className).toMatch(/hidden sm:table-cell/)
+  })
+
   it('surfaces server error', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
     trafficMock.mockRejectedValueOnce(new Error('window_too_large'))

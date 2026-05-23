@@ -66,6 +66,16 @@ describe('LogsPage (Connection Events) — raw view', () => {
     expect(screen.getAllByText('Kids').length).toBeGreaterThan(0)
   })
 
+  // #861 — verify low-priority columns carry responsive `hidden` classes so
+  // the table fits at phone (~375px) and tablet (~768px) widths.
+  it('hides low-priority raw-view columns on narrow viewports', async () => {
+    renderAt()
+    await screen.findByText('example.com')
+    expect(screen.getByRole('columnheader', { name: /^Profile/ }).className).toMatch(/hidden md:table-cell/)
+    expect(screen.getByRole('columnheader', { name: 'Reason' }).className).toMatch(/hidden sm:table-cell/)
+    expect(screen.getByRole('columnheader', { name: 'Location' }).className).toMatch(/hidden lg:table-cell/)
+  })
+
   it('shows empty state when no events', async () => {
     (api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
     renderAt()
