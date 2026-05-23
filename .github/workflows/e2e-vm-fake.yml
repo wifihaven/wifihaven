@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   e2e-fake:
-    name: VM e2e (fake API) suite
+    name: VM e2e (fake API) — ${{ matrix.pkg_format }}
     # Block fork PRs on the self-hosted runner; same guard as e2e-vm.yml.
     # (workflow_call and workflow_dispatch are always allowed.)
     if: >-
@@ -41,6 +41,16 @@ jobs:
     # build on the runner plus headroom; concurrency=e2e-vm serializes so
     # a slow run can't pile up.
     timeout-minutes: 30
+    # #685: matrix over ipk-23.05 and apk-25.12 router images. max-parallel=1
+    # belts-and-suspenders alongside the concurrency group: only one qemu
+    # boot at a time on the single self-hosted KVM host. fail-fast=false so
+    # a regression in one flavor still reports the other arm's status
+    # (needed to demonstrate the apk-only regression case from #531).
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        pkg_format: [ipk, apk]
 
     steps:
       # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
@@ -70,9 +80,24 @@ jobs:
           qemu-system-x86_64 --version | head -n1
           docker --version
 
-      - name: Build router image (if not cached)
+      - name: Resolve router image path
+        id: image
+        env:
+          PKG_FORMAT: ${{ matrix.pkg_format }}
         run: |
-          if [[ -f scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img ]]; then
+          # Source versions.sh so the image filename stays in sync with
+          # whichever OpenWRT pin scripts/vm/versions.sh selects for this
+          # flavor (#685: derived, not hardcoded in YAML).
+          . scripts/vm/versions.sh
+          IMG="$GITHUB_WORKSPACE/scripts/vm/.cache/openwrt-wifihaven-${PKG_FORMAT}-${OPENWRT_VERSION_SHORT}.img"
+          echo "path=$IMG" >> "$GITHUB_OUTPUT"
+          echo "Resolved image: $IMG"
+
+      - name: Build router image (if not cached)
+        env:
+          PKG_FORMAT: ${{ matrix.pkg_format }}
+        run: |
+          if [[ -f "${{ steps.image.outputs.path }}" ]]; then
             echo "router image cached, skipping build"
           else
             scripts/vm/build-router-image.sh
@@ -91,14 +116,14 @@ jobs:
       # stack bring-up / teardown / log capture is needed here.
       - name: Run e2e fake-mode suite
         env:
-          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
+          WH_ROUTER_IMAGE_PATH: ${{ steps.image.outputs.path }}
         run: scripts/e2e-vm.sh --mode=fake
 
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-vm-fake-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          name: e2e-vm-fake-failure-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             scripts/vm/.run/**
             !scripts/vm/.run/**/*.qcow2
