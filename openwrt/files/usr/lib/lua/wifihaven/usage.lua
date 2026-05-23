@@ -47,7 +47,10 @@
 --     `ip_to_mac[lan_ip]` (the dnsmasq lease table); unresolved lan_ips are
 --     dropped with a log line. Resolved rx contributions are attributed to
 --     `(mac, remote_ip)` — the same shape as the tx side, so a single bucket
---     row carries both bytesIn and bytesOut against the real remote host.
+--     row carries both directions against the real remote host. On the wire
+--     (#905) rx populates bytesIn and tx populates bytesOut; internally the
+--     record's `bytes` (tx) and `bytes_out` (rx) field names refer to which
+--     nft set the counter came from, not the wire direction.
 --
 --   usage.build_report(counters, nft_sets, period_start, period_end, router_id,
 --                      leases, lookup_hostname, tracker,
@@ -336,8 +339,13 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
       mac           = c.mac,
       host          = host,
       activeSeconds = active_seconds,
-      bytesIn       = c.bytes     or 0,
-      bytesOut      = c.bytes_out or 0,
+      -- Wire semantics (#905): bytesIn is from the device's POV — traffic
+      -- arriving from the internet (rx counter). bytesOut is traffic leaving
+      -- the device toward the internet (tx counter). The internal record
+      -- fields here are named for their nft-set source (bytes = tx,
+      -- bytes_out = rx) and the swap happens only at the wire boundary.
+      bytesIn       = c.bytes_out or 0,
+      bytesOut      = c.bytes     or 0,
     }
     if leases then
       rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
