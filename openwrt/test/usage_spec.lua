@@ -85,10 +85,11 @@ describe("usage.parse_nft_counters", function()
 
 end)
 
--- ── parse_nft_rx_counters (#879) ───────────────────────────────────────────
+-- ── parse_nft_rx_counters (#897) ───────────────────────────────────────────
 --
--- The rx set `ip_tracking_rx` is keyed on `type ipv4_addr` (single key, not a
--- composite), so each element's `val` is a bare IP string — not a `concat`.
+-- The rx set `ip_pair_tracking_rx` is keyed on `type ipv4_addr . ipv4_addr`
+-- (lan_device_ip, remote_ip), so each element's `val` is a `concat` of two
+-- IP strings. The earlier single-key form (#879) lost the remote-host axis.
 
 describe("usage.parse_nft_rx_counters", function()
 
@@ -96,74 +97,77 @@ describe("usage.parse_nft_rx_counters", function()
     "nftables": [
       { "metainfo": {"version":"1.1.6"} },
       { "set": {
-          "family":"inet","table":"wifihaven","name":"ip_tracking_rx",
-          "type":"ipv4_addr",
+          "family":"inet","table":"wifihaven","name":"ip_pair_tracking_rx",
+          "type":["ipv4_addr","ipv4_addr"],
           "flags":["timeout","dynamic"],
           "elem":[
-            { "elem": { "val":"192.168.10.50", "counter":{"packets":42,"bytes":4096} } },
-            { "elem": { "val":"192.168.10.99", "counter":{"packets": 5,"bytes": 500} } }
+            { "elem": { "val":{"concat":["192.168.10.50","1.2.3.4"]},  "counter":{"packets":42,"bytes":4096} } },
+            { "elem": { "val":{"concat":["192.168.10.99","203.0.113.1"]}, "counter":{"packets": 5,"bytes": 500} } }
           ]
       }}
     ]
   }]]
 
-  it("returns one record per element with ip/bytes/packets", function()
+  it("returns one record per element with lan_ip/remote_ip/bytes/packets", function()
     local rx = usage.parse_nft_rx_counters(RX_JSON)
     assert.equal(2, #rx)
-    local by_ip = {}
-    for _, c in ipairs(rx) do by_ip[c.ip] = c end
-    assert.equal(4096, by_ip["192.168.10.50"].bytes)
-    assert.equal(42,   by_ip["192.168.10.50"].packets)
-    assert.equal(500,  by_ip["192.168.10.99"].bytes)
+    local by_lan = {}
+    for _, c in ipairs(rx) do by_lan[c.lan_ip] = c end
+    assert.equal("1.2.3.4",   by_lan["192.168.10.50"].remote_ip)
+    assert.equal(4096,        by_lan["192.168.10.50"].bytes)
+    assert.equal(42,          by_lan["192.168.10.50"].packets)
+    assert.equal("203.0.113.1", by_lan["192.168.10.99"].remote_ip)
+    assert.equal(500,         by_lan["192.168.10.99"].bytes)
   end)
 
   it("returns an empty list when the set is empty", function()
-    local empty = [[{"nftables":[{"set":{"name":"ip_tracking_rx"}}]}]]
+    local empty = [[{"nftables":[{"set":{"name":"ip_pair_tracking_rx"}}]}]]
     assert.equal(0, #usage.parse_nft_rx_counters(empty))
   end)
 
 end)
 
--- ── merge_counters (#879) ─────────────────────────────────────────────────
+-- ── merge_counters (#897) ─────────────────────────────────────────────────
 --
--- tx is keyed (mac, remote_ip); rx is keyed (lan_ip) only and the agent
--- resolves lan_ip → mac via the dnsmasq lease table before merging. rx
--- contributions land on a record with dst_ip = the lan_ip itself (per-
--- remote-host attribution is lost on the download side; #879).
+-- tx is keyed (mac, remote_ip); rx is keyed (lan_ip, remote_ip). The agent
+-- resolves lan_ip → mac via the dnsmasq lease table and merges into
+-- (mac, remote_ip) — same shape on both directions, so a single record
+-- carries the full bytesIn/bytesOut for one (device, remote) flow.
 
 describe("usage.merge_counters", function()
 
-  local LAN_IP = "192.168.10.50"
-  local MAC    = "aa:bb:cc:11:22:33"
-  local IP2M   = { [LAN_IP] = MAC }
+  local LAN_IP    = "192.168.10.50"
+  local REMOTE_IP = "1.2.3.4"
+  local MAC       = "aa:bb:cc:11:22:33"
+  local IP2M      = { [LAN_IP] = MAC }
 
   it("attributes tx records on (mac, dst_ip) unchanged", function()
-    local tx = { { mac = MAC, dst_ip = "1.2.3.4", bytes = 100, packets = 3 } }
+    local tx = { { mac = MAC, dst_ip = REMOTE_IP, bytes = 100, packets = 3 } }
     local merged = usage.merge_counters(tx, {}, IP2M)
     assert.equal(1, #merged)
     assert.equal(MAC,       merged[1].mac)
-    assert.equal("1.2.3.4", merged[1].dst_ip)
+    assert.equal(REMOTE_IP, merged[1].dst_ip)
     assert.equal(100,       merged[1].bytes)
     assert.equal(3,         merged[1].packets)
     assert.equal(0,         merged[1].bytes_out)
   end)
 
-  it("resolves rx records by ip→mac via the lease map and attributes to (mac, lan_ip)", function()
-    local rx = { { ip = LAN_IP, bytes = 900, packets = 7 } }
+  it("resolves rx records by lan_ip→mac via the lease map and attributes to (mac, remote_ip) (#897)", function()
+    local rx = { { lan_ip = LAN_IP, remote_ip = REMOTE_IP, bytes = 900, packets = 7 } }
     local merged = usage.merge_counters({}, rx, IP2M)
     assert.equal(1, #merged)
-    assert.equal(MAC,    merged[1].mac)
-    assert.equal(LAN_IP, merged[1].dst_ip)
-    assert.equal(900,    merged[1].bytes_out)
-    assert.equal(7,      merged[1].packets_out)
-    assert.equal(0,      merged[1].bytes)
+    assert.equal(MAC,       merged[1].mac)
+    -- #897: dst_ip is now the REAL remote IP, not the LAN device's own IP.
+    assert.equal(REMOTE_IP, merged[1].dst_ip)
+    assert.equal(900,       merged[1].bytes_out)
+    assert.equal(7,         merged[1].packets_out)
+    assert.equal(0,         merged[1].bytes)
   end)
 
-  it("drops rx records whose ip is not in the lease table (no router-MAC attribution, #879)", function()
-    -- The router's own WAN IP (or any IP not associated with a LAN client)
-    -- must not produce a record. Otherwise bytesOut would land on a fake
-    -- device row.
-    local rx = { { ip = "8.8.8.8", bytes = 1234, packets = 9 } }
+  it("drops rx records whose lan_ip is not in the lease table (#879)", function()
+    -- An unknown LAN IP (lease aged out, stale set element) must not produce
+    -- a record. Otherwise bytesOut would land on a fake device row.
+    local rx = { { lan_ip = "192.168.99.99", remote_ip = REMOTE_IP, bytes = 1234, packets = 9 } }
     local merged = usage.merge_counters({}, rx, IP2M)
     assert.equal(0, #merged)
   end)
@@ -174,8 +178,8 @@ describe("usage.merge_counters", function()
       debug = function(fmt, ...) seen[#seen + 1] = string.format(fmt, ...) end,
     }
     local rx = {
-      { ip = "8.8.8.8",       bytes = 100, packets = 1 },
-      { ip = "203.0.113.10",  bytes = 200, packets = 2 },
+      { lan_ip = "192.168.99.1", remote_ip = "8.8.8.8",      bytes = 100, packets = 1 },
+      { lan_ip = "192.168.99.2", remote_ip = "203.0.113.10", bytes = 200, packets = 2 },
     }
     usage.merge_counters({}, rx, {}, fake_log)
     assert.equal(1, #seen)
@@ -183,19 +187,29 @@ describe("usage.merge_counters", function()
     assert.truthy(seen[1]:find("bytes=300"))
   end)
 
-  it("merges tx and rx for the same (mac, lan_ip) when both exist", function()
-    -- Possible (rare) when a device addresses its own LAN IP for some reason;
-    -- merge should just sum.
-    local tx = { { mac = MAC, dst_ip = LAN_IP, bytes = 100, packets = 1 } }
-    local rx = { { ip = LAN_IP,                bytes = 200, packets = 2 } }
+  it("merges tx and rx for the same (mac, remote_ip) into a single record (#897)", function()
+    -- The 4-hop case: device sent 100B up to remote_ip and got 200B back.
+    -- Both directions land on one (mac, remote_ip) row.
+    local tx = { { mac = MAC,    dst_ip   = REMOTE_IP, bytes = 100, packets = 1 } }
+    local rx = { { lan_ip = LAN_IP, remote_ip = REMOTE_IP, bytes = 200, packets = 2 } }
     local merged = usage.merge_counters(tx, rx, IP2M)
     assert.equal(1, #merged)
+    assert.equal(MAC,       merged[1].mac)
+    assert.equal(REMOTE_IP, merged[1].dst_ip)
     assert.equal(100, merged[1].bytes)
     assert.equal(200, merged[1].bytes_out)
   end)
 
+  it("keeps a tx-only record (no rx counterpart) with bytes_out=0", function()
+    local tx = { { mac = MAC, dst_ip = REMOTE_IP, bytes = 100, packets = 1 } }
+    local merged = usage.merge_counters(tx, {}, IP2M)
+    assert.equal(1, #merged)
+    assert.equal(100, merged[1].bytes)
+    assert.equal(0,   merged[1].bytes_out)
+  end)
+
   it("treats nil tx or rx as empty (single-direction snapshot during a render swap)", function()
-    local rx = { { ip = LAN_IP, bytes = 500, packets = 4 } }
+    local rx = { { lan_ip = LAN_IP, remote_ip = REMOTE_IP, bytes = 500, packets = 4 } }
     local merged = usage.merge_counters(nil, rx, IP2M)
     assert.equal(1, #merged)
     assert.equal(0,   merged[1].bytes)

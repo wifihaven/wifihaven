@@ -321,7 +321,7 @@ local function read_tx_set()
 end
 
 local function read_rx_set()
-  local json_str = read_set_json("ip_tracking_rx")
+  local json_str = read_set_json("ip_pair_tracking_rx")
   if not json_str then return nil end
   local ok, counters = pcall(usage.parse_nft_rx_counters, json_str)
   if not ok then return nil end
@@ -508,11 +508,12 @@ conntrack.watch({
       last_usage_run     = mono
       last_usage_wall_ts = wall
 
-      -- Per-flow counters live as element counters on two dynamic sets
-      -- `mac_ip_tracking` (tx, keyed mac+remote_ip) and `ip_tracking_rx`
-      -- (rx, keyed on lan_ip only — #879). After a successful POST we
-      -- `nft reset set ...` on both to zero those per-element counters
-      -- in lock-step.
+      -- Per-flow counters live as element counters on two dynamic sets:
+      -- `mac_ip_tracking` (tx, keyed mac+remote_ip) and
+      -- `ip_pair_tracking_rx` (rx, keyed lan_ip+remote_ip — #897, was
+      -- single-keyed `ip_tracking_rx` per #879 but that lost the remote
+      -- axis). After a successful POST we `nft reset set ...` on both to
+      -- zero those per-element counters in lock-step.
       local counters = read_nft_counters()
       if counters then
         -- Final sample at flush so set elements that appeared after the
@@ -533,7 +534,7 @@ conntrack.watch({
         -- is now owned by the retry queue (or already sent), so leaving the
         -- nft counters intact would double-count on the next bucket.
         os.execute("nft reset set inet wifihaven mac_ip_tracking >/dev/null 2>&1")
-        os.execute("nft reset set inet wifihaven ip_tracking_rx >/dev/null 2>&1")
+        os.execute("nft reset set inet wifihaven ip_pair_tracking_rx >/dev/null 2>&1")
         usage.tracker_reset(activity_tracker)
         if not posted then
           log.warn("usage timer: queued for retry (queue depth=%d)",
