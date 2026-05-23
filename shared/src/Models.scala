@@ -702,12 +702,21 @@ case class TrafficUsageResponse(
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec
 
+/**
+ * "Watching right now" replacement for the removed `currentSession` line. Derived per-request from
+ * `traffic_reports` — `topHost` is the host with the most active_seconds in the latest populated
+ * 5-min bucket; `minutes` is the run of consecutive earlier buckets in which that same host was
+ * also top, capped at 60. None when we can't make a confident call. See #852.
+ */
+case class DashboardNowActivity(topHost: HostId, minutes: Option[Int]) derives JsonCodec
+
 case class DashboardNowDevice(
     id: DeviceId,
     name: String,
     mac: MacAddress,
     lastSeenSeconds: Long,
     topHosts: List[DashboardNowHost],
+    nowActivity: Option[DashboardNowActivity],
 ) derives JsonCodec
 
 case class DashboardNowProfile(

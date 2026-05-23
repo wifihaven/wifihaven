@@ -167,6 +167,7 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
         <p className="text-sm font-medium text-white truncate">{device.name}</p>
         <p className="text-xs text-gray-500 shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
       </div>
+      <NowActivityLine device={device} />
       {device.topHosts.length > 0 && (
         <ul className="mt-2 space-y-0.5">
           {device.topHosts.map(h => (
@@ -178,6 +179,23 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
         </ul>
       )}
     </div>
+  )
+}
+
+// #852 — "watching X · Nm" line, the replacement for the old `currentSession` widget.
+// Show `(active)` when the device is talking but the latest bucket has no resolvable top host
+// (heartbeat-only, all-IP, or the bucket hasn't closed yet) — be honest about the unknown.
+function NowActivityLine({ device }: { device: DashboardNowDevice }) {
+  const a = device.nowActivity
+  if (a == null) {
+    return <p className="mt-1 text-xs text-gray-500 italic">(active)</p>
+  }
+  return (
+    <p className="mt-1 text-xs text-gray-300">
+      <span className="text-gray-500">watching</span>{' '}
+      <span className="font-mono"><HostCell host={a.topHost} /></span>
+      {a.minutes != null && <span className="text-gray-500"> · {a.minutes}m</span>}
+    </p>
   )
 }
 
