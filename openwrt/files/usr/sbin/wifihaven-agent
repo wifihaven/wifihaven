@@ -22,6 +22,7 @@ local dns_log    = require("wifihaven.dns_log")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
 local paths      = require("wifihaven.paths")
+local selfheal   = require("wifihaven.selfheal")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -53,6 +54,12 @@ if activity_sample_int <= 0 or usage_int % activity_sample_int ~= 0 then
   log.warn("activity_sample_int=%d does not evenly divide usage_report_interval=%d; activeSeconds accuracy will degrade. See docs/router-tuning.md.",
            activity_sample_int, usage_int)
 end
+
+-- #896: self-heal the wifihaven-update cron entry. apk v3 skips post-install
+-- on same-version reinstall, so any router that had the package before #869
+-- shipped would never get the cron line otherwise. Idempotent; logs only when
+-- a heal actually happened.
+selfheal.selfheal_cron({ log = log })
 
 if router_token == "" then
   log.err("router_token not set — run enrollment first")
