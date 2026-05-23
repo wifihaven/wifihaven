@@ -158,7 +158,10 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 PY
 }
 
-if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" ]]; then
+# If the caller set WH_PORT_BASE (the #891 concurrent-pair knob), defer to
+# config.sh's base-derived defaults rather than randomizing. Keeps the
+# explicit "give me a deterministic port window" workflow working.
+if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" && -z "${WH_PORT_BASE:-}" ]]; then
   : "${WH_ROUTER_SSH_PORT:=$(alloc_free_port)}"
   : "${WH_ROUTER_HTTP_PORT:=$(alloc_free_port)}"
   : "${WH_CLIENT_SSH_PORT_BASE:=$(alloc_free_port)}"
