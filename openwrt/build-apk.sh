@@ -99,6 +99,7 @@ cat > "$WORK/post-install" <<'POSTINSTALL'
 # #869: Install cron entry for the auto-updater (daily, 04:00 router-local).
 # Replace any existing wifihaven-update entry so upgrades migrate the
 # cadence — older packages installed it at "0 */6 * * *".
+# Kept in sync with the trigger script below and openwrt/Makefile postinst.
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
 echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
@@ -106,6 +107,26 @@ echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
 /etc/init.d/cron restart 2>/dev/null || true
 POSTINSTALL
 chmod 0755 "$WORK/post-install"
+
+# ── trigger script ───────────────────────────────────────────────────────────
+# #898: apk-tools v3 skips `post-install` on `apk add --force-reinstall` when
+# the package version hasn't changed, so a manual reinstall to "fix"
+# /etc/crontabs/root would otherwise be a no-op. A trigger script keyed on
+# /etc/crontabs fires whenever a package install/upgrade/reinstall touches
+# that directory — and database.c sets ipkg->run_all_triggers=1 on every
+# install of our own package, so reinstalling ourselves is enough to fire
+# this even if /etc/crontabs was untouched on disk.
+# Mirrors the cron-installation block in post-install above and in
+# openwrt/Makefile (.ipk postinst); keep all three in sync.
+cat > "$WORK/trigger" <<'TRIGGER'
+#!/bin/sh
+mkdir -p /etc/crontabs
+[ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
+echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
+/etc/init.d/cron enable 2>/dev/null || true
+/etc/init.d/cron restart 2>/dev/null || true
+TRIGGER
+chmod 0755 "$WORK/trigger"
 
 # ── build .apk ───────────────────────────────────────────────────────────────
 rm -f "$OUT_APK"
@@ -119,6 +140,8 @@ rm -f "$OUT_APK"
     --info "maintainer:WifiHaven <noreply@example.com>" \
     --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl uhttpd-mod-lua" \
     --script "post-install:$WORK/post-install" \
+    --script "trigger:$WORK/trigger" \
+    --trigger "/etc/crontabs" \
     --files "$WORK/data" \
     --output "$OUT_APK"
 

@@ -267,5 +267,38 @@ for f in "$ROOT/Makefile" "$ROOT/build-apk.sh"; do
              "postinst doesn't restart cron after writing crontab"
 done
 
+# #898: build-apk.sh must also register an apk-tools v3 `trigger` script
+# keyed on /etc/crontabs. apk v3 skips `post-install` on a same-version
+# `apk add --force-reinstall`, so without a trigger a manual reinstall to
+# repair /etc/crontabs/root is a no-op. The trigger fires whenever any
+# install touches a path matching its key, and database.c sets
+# run_all_triggers=1 on every install of our own package — so reinstalling
+# ourselves fires it even if /etc/crontabs is untouched on disk.
+APK="$ROOT/build-apk.sh"
+grep -q '"trigger:\$WORK/trigger"' "$APK" \
+  && check "#898 build-apk.sh declares trigger script via --script trigger:" ok \
+  || check "#898 build-apk.sh declares trigger script via --script trigger:" \
+           "build-apk.sh missing --script trigger:... — apk add --force-reinstall would skip cron block"
+
+grep -q '\-\-trigger "/etc/crontabs"' "$APK" \
+  && check "#898 build-apk.sh registers /etc/crontabs as trigger key" ok \
+  || check "#898 build-apk.sh registers /etc/crontabs as trigger key" \
+           "build-apk.sh missing --trigger /etc/crontabs"
+
+# The trigger body must mirror the cron-installation block (same canonical
+# crontab line + cron restart) so reinstall ends in the same state as a
+# fresh install.
+awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
+  | grep -q "0 4 \* \* \* /usr/sbin/wifihaven-update" \
+  && check "#898 trigger script writes canonical wifihaven-update crontab line" ok \
+  || check "#898 trigger script writes canonical wifihaven-update crontab line" \
+           "trigger heredoc missing the canonical '0 4 * * * /usr/sbin/wifihaven-update' line"
+
+awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
+  | grep -q "/etc/init.d/cron restart" \
+  && check "#898 trigger script restarts cron" ok \
+  || check "#898 trigger script restarts cron" \
+           "trigger heredoc doesn't restart cron after writing crontab"
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
