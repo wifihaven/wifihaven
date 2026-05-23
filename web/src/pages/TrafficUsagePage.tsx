@@ -247,7 +247,7 @@ interface FilterHeaderProps {
 // Helpers shared by Raw and Aggregate tables.
 function useDeviceOptions(devices: Device[]) {
   return useMemo(
-    () => devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` })),
+    () => devices.map(d => ({ value: d.mac, label: d.name })),
     [devices],
   )
 }
@@ -421,7 +421,7 @@ function AggregateTable({
                 <HeaderFilter
                   testId="traffic-filter-device"
                   title="Filter device"
-                  options={devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` }))}
+                  options={devices.map(d => ({ value: d.mac, label: d.name }))}
                   selected={macs}
                   onChange={onMacsChange}
                   searchable={devices.length > 12}

@@ -186,7 +186,7 @@ function RawEventsView({
                 <HeaderFilter
                   testId="ce-filter-device"
                   title="Filter device"
-                  options={devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` }))}
+                  options={devices.map(d => ({ value: d.mac, label: d.name }))}
                   selected={macs}
                   onChange={onMacsChange}
                   searchable={devices.length > 12}
@@ -305,7 +305,7 @@ function AggregatedEventsView({
                 <HeaderFilter
                   testId="ce-filter-device"
                   title="Filter device"
-                  options={devices.map(d => ({ value: d.mac, label: `${d.name} (${d.mac})` }))}
+                  options={devices.map(d => ({ value: d.mac, label: d.name }))}
                   selected={macs}
                   onChange={onMacsChange}
                   searchable={devices.length > 12}
