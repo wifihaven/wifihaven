@@ -25,6 +25,7 @@ object RouterIngestRoutes {
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
+      deviceAlertRepo: DeviceAlertRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "router" / "usage"  ->
@@ -83,8 +84,8 @@ object RouterIngestRoutes {
                   s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
               ),
             )
-            _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo)
-            _      <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _ <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, deviceAlertRepo)
+            _ <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
           handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
         },
@@ -145,7 +146,7 @@ object RouterIngestRoutes {
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
   ): IO[Response, Unit] = {
-    val date    = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
+    val date      = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
     // A batch carries one record per (mac, dst_ip) but time_usage is keyed
     // by (mac, hostname, date), and activeSeconds is the bucket duration
     // (the report window, ~60 s — same value on every record that saw bytes>0). Two
@@ -153,7 +154,20 @@ object RouterIngestRoutes {
     // active time, not two windows back-to-back, so the seconds delta is
     // the max of activeSeconds, not the sum. Bytes still sum because they
     // count distinct flows.
-    val grouped = records
+    // Per-mac aggregates needed for #715 proportional attribution: bucket duration
+    // (one batch == one period, so max activeSeconds across the mac is the bucket
+    // duration) and total bytes across the mac in this batch (denominator for the
+    // bytes-share weight).
+    val perMacAgg = records
+      .groupBy(_.mac)
+      .view
+      .mapValues { rs =>
+        val bucketSecs = rs.map(_.activeSeconds).maxOption.getOrElse(0L)
+        val totalBytes = rs.map(r => r.bytesIn + r.bytesOut).sum
+        (bucketSecs, totalBytes)
+      }
+      .toMap
+    val grouped   = records
       .groupBy(r => (r.mac, r.host))
       .view
       .mapValues { rs =>
@@ -165,8 +179,19 @@ object RouterIngestRoutes {
       }
       .toList
     ZIO.foreachDiscard(grouped) { case ((mac, host), (secs, bIn, bOut)) =>
+      // #715: bytes-share weighted attribution within the batch. `bucketSecs` is
+      // the wall-clock duration of the bucket; the share is this host's
+      // (bytes_in + bytes_out) over the mac's total bytes in the batch. When the
+      // mac has zero bytes (shouldn't happen — the agent only emits a record
+      // when it saw bytes>0), fall back to crediting full bucket seconds so the
+      // row still moves and matches `seconds_used`.
+      val (bucketSecs, totalBytes) = perMacAgg.getOrElse(mac, (secs, bIn + bOut))
+      val hostBytes                = bIn + bOut
+      val proportionalSecs         =
+        if (totalBytes > 0L) (bucketSecs.toDouble * hostBytes.toDouble / totalBytes.toDouble).round
+        else bucketSecs
       timeUsageRepo
-        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut)
+        .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut, proportionalSecs)
         .mapError(ErrorMapper.dbErrorToResponse)
     } *>
       // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).
@@ -191,6 +216,7 @@ object RouterIngestRoutes {
       events: List[RouterEvent],
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
+      deviceAlertRepo: DeviceAlertRepo,
   ): IO[Response, Unit] = {
     val connInserts = events.collect {
       case e if e.`type` == "connection_attempt" =>
@@ -230,7 +256,7 @@ object RouterIngestRoutes {
       // reverse arrival order ("ipv4 race-loser observed first, fqdn lands
       // moments later").
       _         <- ZIO.foreachDiscard(enriched)(backfillFromFqdn(_, connEventRepo))
-      _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo))
+      _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo, deviceAlertRepo))
     } yield ()
   }
 
@@ -281,6 +307,7 @@ object RouterIngestRoutes {
   private def applyDhcpOrFirstSeen(
       e: RouterEvent,
       deviceRepo: DeviceRepo,
+      deviceAlertRepo: DeviceAlertRepo,
   ): IO[Response, Unit] =
     if e.`type` != "dhcp_lease" && e.`type` != "first_seen_mac" then ZIO.unit
     else
@@ -305,6 +332,10 @@ object RouterIngestRoutes {
                         .mapError(ErrorMapper.dbErrorToResponse),
                     )
               case None    =>
+                // #711: a brand-new MAC. Insert the device row, then raise a
+                // notification for the admin. The alert repo is idempotent on
+                // `mac`, so a router replaying the same event won't resurrect
+                // a previously-dismissed alert.
                 deviceRepo
                   .upsertUnknown(
                     mac,
@@ -313,7 +344,10 @@ object RouterIngestRoutes {
                     ts,
                   )
                   .mapError(ErrorMapper.dbErrorToResponse)
-                  .unit
+                  .unit *>
+                  deviceAlertRepo
+                    .raise(mac, ts)
+                    .mapError(ErrorMapper.dbErrorToResponse)
             }
           } yield ()
       }

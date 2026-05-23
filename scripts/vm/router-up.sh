@@ -20,6 +20,11 @@ if router_is_running; then
   exit 0
 fi
 
+# Auto-pick a free bridge from the wh-lan* pool when one wasn't set explicitly
+# (#891). On hosts without a pool, this is a no-op and we fall through to
+# WH_LAN_BRIDGE=wh-lan0 (today's default). Holds a flock until this shell exits.
+wh_pick_lan_bridge
+
 "${HERE}/lan-bridge-up.sh"
 
 ensure_openwrt_image
@@ -41,7 +46,7 @@ log "  LAN: ${LAN_NETDEV}"
 log "  WAN: user-mode (ssh 127.0.0.1:${WH_ROUTER_SSH_PORT}, http 127.0.0.1:${WH_ROUTER_HTTP_PORT})"
 
 qemu-system-x86_64 \
-  -name wh-router \
+  -name "${WH_ROUTER_VM_NAME}" \
   -m "${WH_ROUTER_MEM_MB}" -smp 2 \
   "${ACCEL_ARGS[@]}" \
   -display none \

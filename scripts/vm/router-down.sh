@@ -11,9 +11,9 @@ stale_qemu_sweep() {
   # Fallback: a previous run was killed hard (e.g., CI cancellation) and
   # left a qemu alive without an up-to-date pidfile. Kill by name so the
   # next router-up doesn't fail to bind hostfwd ports.
-  if pgrep -f "qemu-system-x86_64.*-name wh-router" >/dev/null 2>&1; then
+  if pgrep -f "qemu-system-x86_64.*-name ${WH_ROUTER_VM_NAME} -" >/dev/null 2>&1; then
     log "found stale wh-router qemu without pidfile match — killing"
-    pkill -f "qemu-system-x86_64.*-name wh-router" || true
+    pkill -f "qemu-system-x86_64.*-name ${WH_ROUTER_VM_NAME} -" || true
     # Give the kernel a moment to release the bound ports.
     sleep 1
   fi

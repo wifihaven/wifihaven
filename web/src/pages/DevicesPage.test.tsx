@@ -15,6 +15,10 @@ vi.mock('@/api/client', () => ({
     profiles: {
       list: vi.fn(),
     },
+    deviceAlerts: {
+      list: vi.fn(),
+      dismiss: vi.fn(),
+    },
   },
 }))
 
@@ -47,11 +51,11 @@ const laptop: Device = {
 }
 
 const kidsProfile: ProfileDetail = {
-  profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'block-all' },
+  profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum' },
   schedules: [], timeLimit: null, siteTimeLimits: [],
 }
 const adultsProfile: ProfileDetail = {
-  profile: { id: 2, name: 'Adults', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'last-known-good' },
+  profile: { id: 2, name: 'Adults', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum' },
   schedules: [], timeLimit: null, siteTimeLimits: [],
 }
 
@@ -62,6 +66,8 @@ beforeEach(() => {
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
   ;(api.devices.upsert as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.devices.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.deviceAlerts.dismiss as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
 
 describe('DevicesPage — list', () => {
@@ -158,5 +164,78 @@ describe('DevicesPage — role gating', () => {
     expect(screen.queryByRole('button', { name: /\+ Add Device/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Edit/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('DevicesPage — new-device alerts banner (#711)', () => {
+  const alert = {
+    id: 42,
+    mac: 'aa:bb:cc:99:99:99',
+    deviceName: 'device-999999',
+    profileId: null,
+    profileName: null,
+    firstSeenAt: '2026-05-22T12:00:00Z',
+    dismissedAt: null,
+  }
+
+  it('does not render banner when there are no pending alerts', async () => {
+    renderPage()
+    await screen.findByText("Kid's iPad")
+    expect(screen.queryByTestId('new-device-alerts-banner')).not.toBeInTheDocument()
+  })
+
+  it('renders the banner with the MAC + Dismiss when an alert is pending', async () => {
+    (api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    renderPage()
+    const banner = await screen.findByTestId('new-device-alerts-banner')
+    expect(within(banner).getByText('aa:bb:cc:99:99:99')).toBeInTheDocument()
+    expect(within(banner).getByRole('button', { name: /Dismiss/ })).toBeInTheDocument()
+  })
+
+  it('clicks Dismiss → calls api.deviceAlerts.dismiss(id) and refetches', async () => {
+    (api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('new-device-alerts-banner')
+    await user.click(screen.getByRole('button', { name: /Dismiss/ }))
+    await waitFor(() => expect(api.deviceAlerts.dismiss).toHaveBeenCalledWith(42))
+    // banner refetch invoked
+    await waitFor(() => expect(api.deviceAlerts.list).toHaveBeenCalledTimes(2))
+  })
+
+  it('non-admins see the banner but no Dismiss button', async () => {
+    mockAuth = { isAdmin: false }
+    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    renderPage()
+    const banner = await screen.findByTestId('new-device-alerts-banner')
+    expect(within(banner).getByText('aa:bb:cc:99:99:99')).toBeInTheDocument()
+    expect(within(banner).queryByRole('button', { name: /Dismiss/ })).not.toBeInTheDocument()
+  })
+
+  it('shows "Enable browser notifications" when Notification.permission is default', async () => {
+    class FakeN { static permission: NotificationPermission = 'default'; static requestPermission = vi.fn(async () => 'granted' as NotificationPermission); constructor() {} }
+    // @ts-expect-error inject
+    window.Notification = FakeN
+    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    renderPage()
+    await screen.findByTestId('new-device-alerts-banner')
+    const btn = await screen.findByTestId('enable-notifications-btn')
+    const user = userEvent.setup()
+    await user.click(btn)
+    expect(FakeN.requestPermission).toHaveBeenCalled()
+    // @ts-expect-error cleanup
+    delete window.Notification
+  })
+
+  it('hides "Enable browser notifications" when permission is already granted', async () => {
+    class FakeN { static permission: NotificationPermission = 'granted'; static requestPermission = vi.fn(); constructor() {} }
+    // @ts-expect-error inject
+    window.Notification = FakeN
+    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    renderPage()
+    await screen.findByTestId('new-device-alerts-banner')
+    expect(screen.queryByTestId('enable-notifications-btn')).not.toBeInTheDocument()
+    // @ts-expect-error cleanup
+    delete window.Notification
   })
 })

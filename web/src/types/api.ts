@@ -4,6 +4,12 @@
 // shared/src/Models.scala FailureMode.asString.
 export type FailureMode = 'block-all' | 'allow-all' | 'last-known-good'
 
+// #751: per-profile knob — `sum` adds per-device totals (siblings on the same
+// profile double-count when both are active in the same bucket); `dedup`
+// unions the per-device active-bucket sets so overlap counts once. Default
+// is `sum` (preserves pre-#751 semantics).
+export type CrossDeviceOverlapMode = 'sum' | 'dedup'
+
 export interface Profile {
   id: number
   name: string
@@ -12,6 +18,7 @@ export interface Profile {
   extraAllowed: string[]
   paused: boolean
   failureMode: FailureMode
+  crossDeviceOverlapMode: CrossDeviceOverlapMode
 }
 
 export interface Schedule {
@@ -77,6 +84,18 @@ export interface Device {
   lastSeenAt: string | null
 }
 
+// #711: notification raised when the agent auto-creates a Device row for a
+// previously-unseen MAC. `dismissedAt` is null while pending.
+export interface DeviceAlert {
+  id: number
+  mac: string
+  deviceName: string
+  profileId: number | null
+  profileName: string | null
+  firstSeenAt: string
+  dismissedAt: string | null
+}
+
 // Tagged-union host identifier (#391). Wire shape carried by every endpoint
 // that surfaces a "what host did the device contact" field. FQDN is a
 // resolved hostname; ipv4/ipv6 are raw IP literals emitted when DNS
@@ -108,26 +127,23 @@ export interface QueryLog {
   ts: string
 }
 
-export interface Session {
-  mac: string
-  deviceName: string | null
-  profileId: number | null
-  profileName: string | null
-  host: HostId
-  routerId: string
-  date: string
-  startedAt: string
-  endedAt: string
-  durationSeconds: number
-  bytesIn: number
-  bytesOut: number
-  periodCount: number
+// #847 + #846: aggregated connection-events row, with multi-column groupBy.
+// `groups` keyed by "domain" | "device" | "profile" depending on the request.
+export interface ConnectionEventAggRow {
+  groups: Record<string, string>
+  windowStart: string
+  countSucceeded: number
+  countBlocked: number
+  lastSeen: string
+  topDevice: string | null
+  distinctDevices?: number
+  distinctProfiles?: number
+  distinctDomains?: number
+  soleDevice?: string | null
+  soleProfile?: string | null
+  soleDomain?: string | null
 }
 
-export interface SessionPage {
-  sessions: Session[]
-  nextCursor: string | null
-}
 
 export interface DashboardStats {
   totalToday: number
@@ -143,19 +159,12 @@ export interface DashboardNowHost {
   activeSeconds: number
 }
 
-export interface DashboardNowCurrentSession {
-  host: HostId
-  startedAt: string
-  durationSeconds: number
-}
-
 export interface DashboardNowDevice {
   id: number
   name: string
   mac: string
   lastSeenSeconds: number
   topHosts: DashboardNowHost[]
-  currentSession: DashboardNowCurrentSession | null
 }
 
 export interface DashboardNowProfile {
@@ -209,9 +218,20 @@ export interface DeviceUsageSummary {
   usedMins: number
 }
 
+// #715: per-host time-on-site has two parallel numbers.
+//   - `usedMins` is bucket-presence: every host the device touched in a 5-min
+//     bucket is credited with that bucket's full duration. Sums across hosts
+//     can wildly exceed wall-clock time when a device polls many endpoints.
+//   - `proportionalMins` is byte-share-weighted within each 5-min bucket — a
+//     fair "wall-clock attention" number. Summing across hosts within a mac ≈
+//     the device's wall-clock minutes. UI defaults to displaying this.
+//
+// The daily-cap math collapses each bucket once per device and reads neither
+// field; both are additive surface area.
 export interface HostUsage {
   host: HostId
   usedMins: number
+  proportionalMins: number
 }
 
 // #777 — collapsed-accordion payload: just the headline numbers, no per-device /
@@ -305,6 +325,60 @@ export interface UsageSeriesResponse {
   buckets: UsageBucket[]
   topDevices?: UsageDeviceTotal[]
   bucketsByDevice?: UsageDeviceBucket[]
+}
+
+// #846 — Traffic Usage page. Wire-distinct from UsageSeriesResponse: that one
+// drives the screen-time minutes chart; this one drives raw + aggregated bytes
+// inspection. 1m bucket and apex/app groupBy are reserved (router cadence /
+// PSL / apps track) — server returns 400 with a typed `error` code.
+export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+// #846: groupBy is composable. Apex is deferred to #856 (needs PSL), App to
+// #857 (needs apps track) — both still rejected server-side with typed errors.
+export type TrafficUsageGroupBy = 'domain' | 'device' | 'profile' | 'apex' | 'app'
+
+export interface TrafficUsageRawRow {
+  mac: string
+  deviceName?: string
+  profileId?: number
+  profileName?: string
+  host: HostId
+  bytesIn: number
+  bytesOut: number
+  activeSeconds: number
+  periodStart: string
+  periodEnd: string
+}
+
+export interface TrafficUsageAggregateRow {
+  // Keyed by the column codes in the request's groupBy set ("domain" |
+  // "device" | "profile"). For columns NOT in the set, the SPA shows the
+  // distinct-count from `distinct*` below (drill-down deferred to #859).
+  groups: Record<string, string>
+  windowStart: string
+  windowEnd: string
+  totalBytesIn: number
+  totalBytesOut: number
+  totalSeconds: number
+  distinctDevices?: number
+  distinctProfiles?: number
+  distinctDomains?: number
+  // Populated only when the corresponding `distinct*` is 1 AND the column is
+  // not in `groupBy` — lets the SPA render the value in place of "1".
+  soleDevice?: string | null
+  soleProfile?: string | null
+  soleDomain?: string | null
+}
+
+export interface TrafficUsageResponse {
+  bucket: TrafficUsageBucket
+  groupBy?: TrafficUsageGroupBy[]
+  from: string
+  to: string
+  tz: string
+  rawRows: TrafficUsageRawRow[]
+  aggregateRows: TrafficUsageAggregateRow[]
+  rawRowLimit?: number
+  rawRowsTruncated?: boolean
 }
 
 // #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`
@@ -414,6 +488,8 @@ export interface UpsertProfileRequest {
   timeLimit: number | null
   siteTimeLimits: SiteTimeLimitRequest[]
   failureMode: FailureMode
+  // #751: omit to preserve existing value on update; defaults to 'sum' on create.
+  crossDeviceOverlapMode?: CrossDeviceOverlapMode
 }
 
 export interface UpsertDeviceRequest {

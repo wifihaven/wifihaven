@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import type { Device, ProfileDetail, QueryLog, Session } from '@/types/api'
+import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
+import { GroupableHeader } from '@/components/usage/GroupableHeader'
+import { FilterShelf } from './TrafficUsagePage'
+import { localTime, windowFromTo } from '@/components/usage/usageHelpers'
 
-// Click-through to the device/profile referenced by a row. The destination
-// pages (DevicesPage / ProfilesPage) read the query param and scroll the
-// matching row into view + highlight it. A dedicated detail route is the
-// proper home for this (#273) but does not exist yet.
+// #846 — Connection Events page. Same look/feel as Traffic Usage; column
+// headers double as group-by toggles. apex/app deferred to #856/#857.
+type EventsGroupBy = 'domain' | 'device' | 'profile'
+type EventsBucket  = TrafficUsageBucket  // shared with Traffic page; raw = /api/logs path
+
 function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: string | null }) {
   if (deviceName && mac) {
     return (
@@ -20,36 +24,15 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
       </Link>
     )
   }
-  // Unknown / unregistered MAC: show the MAC (or '?') as plain text — no link.
   return <span className="text-yellow-400">{mac ?? '?'}</span>
 }
 
-function ProfileLink({ id, name }: { id: number | null; name: string | null }) {
-  if (id != null && name) {
-    return (
-      <Link
-        to={`/profiles?id=${id}`}
-        data-testid={`logs-profile-link-${id}`}
-        className="hover:underline"
-      >
-        {name}
-      </Link>
-    )
-  }
-  return <span>{name ?? ''}</span>
-}
-
-type Tab = 'sessions' | 'raw'
-
-interface Filters {
-  deviceId: number | null
-  profileId: number | null
-}
-
 export function LogsPage() {
-  const [tab, setTab] = useState<Tab>('sessions')
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [devices, setDevices] = useState<Device[]>([])
+  const [bucket, setBucket]     = useState<EventsBucket>('raw')
+  const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(['domain'])
+  const [mac, setMac]           = useState<string>('')
+  const [profileId, setProfileId] = useState<string>('')
+  const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
 
   useEffect(() => {
@@ -57,357 +40,279 @@ export function LogsPage() {
     api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
   }, [])
 
-  const filters: Filters = useMemo(() => ({
-    deviceId:  numOrNull(searchParams.get('deviceId')),
-    profileId: numOrNull(searchParams.get('profileId')),
-  }), [searchParams])
-
-  function updateFilter(key: keyof Filters, value: number | null) {
-    const next = new URLSearchParams(searchParams)
-    if (value === null) next.delete(key)
-    else next.set(key, String(value))
-    setSearchParams(next, { replace: true })
+  function toggleGroup(key: string) {
+    setGroupBy(prev => {
+      if (prev.includes(key as EventsGroupBy)) {
+        const next = prev.filter(g => g !== key)
+        return next.length === 0 ? prev : next
+      }
+      return [...prev, key as EventsGroupBy]
+    })
   }
-
-  function clearFilters() {
-    const next = new URLSearchParams(searchParams)
-    next.delete('deviceId')
-    next.delete('profileId')
-    setSearchParams(next, { replace: true })
-  }
-
-  const hasFilters = filters.deviceId !== null || filters.profileId !== null
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-bold text-white">Activity</h1>
+    <div className="space-y-4" data-testid="connection-events-page">
+      <header>
+        <h1 className="text-2xl font-bold text-gray-100">Connection Events</h1>
+        <p className="text-sm text-gray-500">
+          Per-query DNS / blocking decisions. Click a column header (Domain / Device /
+          Profile) to add it to the aggregation.
+        </p>
+      </header>
 
-      <FilterBar
-        filters={filters}
+      <FilterShelf
         devices={devices}
-        profiles={profiles.map(pd => pd.profile)}
-        onChange={updateFilter}
-        onClear={clearFilters}
+        profiles={profiles}
+        mac={mac}
+        profileId={profileId}
+        bucket={bucket}
+        onMacChange={v => { setMac(v); if (v) setProfileId('') }}
+        onProfileChange={v => { setProfileId(v); if (v) setMac('') }}
+        onBucketChange={setBucket}
       />
 
-      <div className="flex gap-2" role="tablist">
-        <TabButton id="sessions" current={tab} onClick={setTab}>Sessions</TabButton>
-        <TabButton id="raw"      current={tab} onClick={setTab}>Connection events</TabButton>
-      </div>
-
-      {tab === 'sessions'
-        ? <SessionsTab  filters={filters} hasFilters={hasFilters} onClear={clearFilters} />
-        : <RawEventsTab filters={filters} hasFilters={hasFilters} onClear={clearFilters} />}
+      {bucket === 'raw'
+        ? <>
+            <div className="text-xs text-amber-400">
+              Showing latest {RAW_EVENTS_LIMIT} events. Switch buckets to aggregate by window.
+            </div>
+            <RawEventsView mac={mac} profileId={profileId} devices={devices} />
+          </>
+        : <AggregatedEventsView
+            bucket={bucket}
+            groupBy={groupBy}
+            onToggleGroup={toggleGroup}
+            mac={mac}
+            profileId={profileId}
+          />}
     </div>
   )
 }
 
-function numOrNull(v: string | null): number | null {
-  if (v === null) return null
-  const n = Number(v)
-  return Number.isFinite(n) ? n : null
-}
-
-// ── Filter bar ─────────────────────────────────────────────────────────────
-
-function FilterBar({
-  filters, devices, profiles, onChange, onClear,
-}: {
-  filters: Filters
-  devices: Device[]
-  profiles: { id: number; name: string }[]
-  onChange: (key: keyof Filters, value: number | null) => void
-  onClear: () => void
-}) {
-  const active = filters.deviceId !== null || filters.profileId !== null
+function Spinner() {
   return (
-    <div className="flex flex-wrap gap-3 items-center" data-testid="logs-filter-bar">
-      <label className="text-xs text-gray-500 font-mono">Filter:</label>
-      <select
-        data-testid="logs-filter-device"
-        value={filters.deviceId ?? ''}
-        onChange={e => onChange('deviceId', e.target.value === '' ? null : Number(e.target.value))}
-        className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm"
-      >
-        <option value="">All devices</option>
-        {devices.map(d => (
-          <option key={d.id} value={d.id}>{d.name || d.mac}</option>
-        ))}
-      </select>
-      <select
-        data-testid="logs-filter-profile"
-        value={filters.profileId ?? ''}
-        onChange={e => onChange('profileId', e.target.value === '' ? null : Number(e.target.value))}
-        className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm"
-      >
-        <option value="">All profiles</option>
-        {profiles.map(p => (
-          <option key={p.id} value={p.id}>{p.name}</option>
-        ))}
-      </select>
-      {active && (
-        <button
-          type="button"
-          onClick={onClear}
-          data-testid="logs-filter-clear"
-          className="text-xs text-gray-400 hover:text-white underline"
-        >
-          Clear
-        </button>
-      )}
+    <div className="flex items-center gap-2 text-gray-500 text-sm py-6" data-testid="loading">
+      <span className="inline-block h-3 w-3 rounded-full border-2 border-gray-700 border-t-emerald-400 animate-spin" />
+      Loading…
     </div>
   )
 }
 
-function TabButton({
-  id, current, onClick, children,
-}: {
-  id: Tab; current: Tab; onClick: (t: Tab) => void; children: React.ReactNode
-}) {
-  const active = id === current
+function ErrorBanner({ message }: { message: string }) {
   return (
-    <button
-      role="tab"
-      aria-selected={active}
-      data-testid={`logs-tab-${id}`}
-      onClick={() => onClick(id)}
-      className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
-        active
-          ? 'bg-emerald-600 text-white'
-          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-      }`}
+    <div
+      data-testid="error"
+      className="px-3 py-2 rounded border border-red-800 bg-red-950/30 text-red-300 text-sm"
     >
-      {children}
-    </button>
-  )
-}
-
-// ── Sessions tab ───────────────────────────────────────────────────────────
-
-function SessionsTab({
-  filters, hasFilters, onClear,
-}: { filters: Filters; hasFilters: boolean; onClear: () => void }) {
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [loading,  setLoading]  = useState(true)
-  const [host,     setHost]     = useState('')
-
-  async function load() {
-    setLoading(true)
-    try {
-      const page = await api.sessions.list({
-        host:  host || undefined,
-        deviceId:  filters.deviceId  ?? undefined,
-        profileId: filters.profileId ?? undefined,
-        hours: 24,
-        limit: 100,
-      })
-      setSessions(page.sessions)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load() }, [host, filters.deviceId, filters.profileId])
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-3">
-        <input
-          type="text"
-          value={host}
-          onChange={e => setHost(e.target.value)}
-          placeholder="Filter by host…"
-          data-testid="sessions-filter-host"
-          className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500 flex-1 min-w-[160px]"
-        />
-        <button onClick={load} className="bg-gray-800 hover:bg-gray-700 text-white text-sm px-4 py-2.5 rounded-xl transition-colors">
-          Refresh
-        </button>
-      </div>
-
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
-        {loading
-          ? <div className="p-8 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"/></div>
-          : <div className="overflow-x-auto">
-              <table className="w-full text-xs font-mono">
-                <thead>
-                  <tr className="text-gray-600 border-b border-gray-800">
-                    <th className="text-left px-4 py-3">Started</th>
-                    <th className="text-left px-4 py-3">Device</th>
-                    <th className="text-left px-4 py-3 hidden md:table-cell">Profile</th>
-                    <th className="text-left px-4 py-3">Host</th>
-                    <th className="text-left px-4 py-3">Duration</th>
-                    <th className="text-left px-4 py-3 hidden lg:table-cell">Bytes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sessions.map(s => (
-                    <tr key={`${s.mac}-${s.host.type}:${s.host.value}-${s.startedAt}`}
-                        className="border-b border-gray-800/50 hover:bg-gray-800/30"
-                        data-testid="session-row">
-                      <td className="px-4 py-2.5 text-gray-500">{fmtStarted(s.startedAt)}</td>
-                      <td className="px-4 py-2.5"><DeviceLink mac={s.mac} deviceName={s.deviceName} /></td>
-                      <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell"><ProfileLink id={s.profileId} name={s.profileName} /></td>
-                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={s.host} /></td>
-                      <td className="px-4 py-2.5 text-emerald-400">{fmtDuration(s.durationSeconds)}</td>
-                      <td className="px-4 py-2.5 text-gray-600 hidden lg:table-cell">{fmtBytes(s.bytesIn + s.bytesOut)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {sessions.length === 0 && (
-                <EmptyState
-                  message={hasFilters ? 'No matching sessions.' : 'No sessions found.'}
-                  hasFilters={hasFilters}
-                  onClear={onClear}
-                />
-              )}
-            </div>
-        }
-      </div>
-    </div>
-  )
-}
-
-// ── Connection events tab (every row is a connection_attempt from /api/logs) ─
-
-function RawEventsTab({
-  filters, hasFilters, onClear,
-}: { filters: Filters; hasFilters: boolean; onClear: () => void }) {
-  const [logs,    setLogs]    = useState<QueryLog[]>([])
-  const [loading, setLoading] = useState(true)
-  const [domain,  setDomain]  = useState('')
-  const [blocked, setBlocked] = useState<'all' | 'true' | 'false'>('all')
-
-  async function load() {
-    setLoading(true)
-    try {
-      const data = await api.logs.query({
-        domain:    domain || undefined,
-        blocked:   blocked === 'all' ? undefined : blocked === 'true',
-        deviceId:  filters.deviceId  ?? undefined,
-        profileId: filters.profileId ?? undefined,
-        limit:     200,
-      })
-      setLogs(data)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load() }, [domain, blocked, filters.deviceId, filters.profileId])
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-3">
-        <input
-          type="text"
-          value={domain}
-          onChange={e => setDomain(e.target.value)}
-          placeholder="Filter by domain…"
-          className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500 flex-1 min-w-[160px]"
-        />
-        <select value={blocked} onChange={e => setBlocked(e.target.value as typeof blocked)}
-          className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm">
-          <option value="all">All queries</option>
-          <option value="true">Blocked only</option>
-          <option value="false">Allowed only</option>
-        </select>
-        <button onClick={load} className="bg-gray-800 hover:bg-gray-700 text-white text-sm px-4 py-2.5 rounded-xl transition-colors">
-          Refresh
-        </button>
-      </div>
-
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
-        {loading
-          ? <div className="p-8 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"/></div>
-          : <div className="overflow-x-auto">
-              <table className="w-full text-xs font-mono">
-                <thead>
-                  <tr className="text-gray-600 border-b border-gray-800">
-                    <th className="text-left px-4 py-3">Time</th>
-                    <th className="text-left px-4 py-3">Device</th>
-                    <th className="text-left px-4 py-3">Domain</th>
-                    <th className="text-left px-4 py-3">Status</th>
-                    <th className="text-left px-4 py-3 hidden md:table-cell">Reason</th>
-                    <th className="text-left px-4 py-3 hidden lg:table-cell">Location</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.map(l => (
-                    <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                      <td className="px-4 py-2.5 text-gray-500">{fmtTime(l.ts)}</td>
-                      <td className="px-4 py-2.5"><DeviceLink mac={l.mac} deviceName={l.deviceName} /></td>
-                      <td className="px-4 py-2.5 text-gray-300 max-w-[200px] truncate"><HostCell host={l.host} /></td>
-                      <td className={`px-4 py-2.5 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
-                        {l.blocked ? '✗ blocked' : '✓ ok'}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-600 hidden md:table-cell">{l.reason}</td>
-                      <td className="px-4 py-2.5 text-gray-600 hidden lg:table-cell">{l.location ?? ''}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {logs.length === 0 && (
-                <EmptyState
-                  message={hasFilters ? 'No matching events.' : 'No events found.'}
-                  hasFilters={hasFilters}
-                  onClear={onClear}
-                />
-              )}
-            </div>
-        }
-      </div>
-    </div>
-  )
-}
-
-function EmptyState({
-  message, hasFilters, onClear,
-}: { message: string; hasFilters: boolean; onClear: () => void }) {
-  return (
-    <p className="p-6 text-gray-500 text-sm" data-testid="logs-empty-state">
       {message}
-      {hasFilters && (
-        <>
-          {' '}
-          <button
-            type="button"
-            onClick={onClear}
-            data-testid="logs-empty-clear"
-            className="text-emerald-400 hover:text-emerald-300 underline"
-          >
-            Clear filters
-          </button>
-        </>
-      )}
-    </p>
+    </div>
   )
 }
 
-// ── formatters ─────────────────────────────────────────────────────────────
-
-function fmtDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  if (m < 60) return s === 0 ? `${m}m` : `${m}m ${s}s`
-  const h = Math.floor(m / 60)
-  const mm = m % 60
-  return mm === 0 ? `${h}h` : `${h}h ${mm}m`
+interface RawProps {
+  mac: string
+  profileId: string
+  devices: Device[]
 }
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+const RAW_EVENTS_LIMIT = 200
+
+// Connection-event rows are point events, not bucketed — so the operator
+// just wants "show me the last N". No time window. (#846 audit). An `until=`
+// API param to anchor at a specific moment lands in #863.
+function RawEventsView({ mac, profileId, devices }: RawProps) {
+  const [logs, setLogs]       = useState<QueryLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState<string | null>(null)
+
+  const deviceId = useMemo(() => {
+    if (!mac) return undefined
+    return devices.find(d => d.mac === mac)?.id
+  }, [mac, devices])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    // /api/logs requires `hours` — pass a wide cap (1y) so the row limit
+    // dominates. When #863 lands we can drop the hours hack entirely.
+    api.logs.query({
+      hours:     24 * 365,
+      deviceId,
+      profileId: profileId ? Number(profileId) : undefined,
+      limit:     RAW_EVENTS_LIMIT,
+    })
+      .then(d => { if (!cancelled) setLogs(d) })
+      .catch(e => { if (!cancelled) { setLogs([]); setError(String(e.message ?? e)) } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [deviceId, profileId])
+
+  if (loading) return <Spinner />
+  if (error)   return <ErrorBanner message={error} />
+
+  return (
+    <div className="overflow-x-auto" data-testid="ce-raw-table">
+      <table className="min-w-full text-sm">
+        <thead className="text-xs uppercase">
+          <tr className="text-gray-500">
+            <th className="text-left px-2 py-1">Time</th>
+            <th className="text-left px-2 py-1">Device</th>
+            <th className="text-left px-2 py-1">Profile</th>
+            <th className="text-left px-2 py-1">Domain</th>
+            <th className="text-left px-2 py-1">Status</th>
+            <th className="text-left px-2 py-1">Reason</th>
+            <th className="text-left px-2 py-1">Location</th>
+          </tr>
+        </thead>
+        <tbody className="text-gray-300">
+          {logs.length === 0 && (
+            <tr>
+              <td colSpan={7} className="text-center text-gray-500 py-4">
+                No events in window.
+              </td>
+            </tr>
+          )}
+          {logs.map(l => (
+            <tr key={l.id} className="border-t border-gray-800">
+              <td className="px-2 py-1 font-mono text-xs">{localTime(l.ts)}</td>
+              <td className="px-2 py-1"><DeviceLink mac={l.mac} deviceName={l.deviceName} /></td>
+              <td className="px-2 py-1">{l.profileName ?? '-'}</td>
+              <td className="px-2 py-1 max-w-[280px] truncate"><HostCell host={l.host} /></td>
+              <td className={`px-2 py-1 ${l.blocked ? 'text-red-400' : 'text-emerald-500'}`}>
+                {l.blocked ? '✗ blocked' : '✓ ok'}
+              </td>
+              <td className="px-2 py-1 text-gray-500">{l.reason}</td>
+              <td className="px-2 py-1 text-gray-500">{l.location ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
-function fmtStarted(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+// #846 follow-up: render strategy for non-grouped aggregated columns.
+//   - column IS in groupBy   → show the per-row value
+//   - column NOT in groupBy, distinct == 1 → show the sole value (dim)
+//   - else                                  → show the distinct count
+function NonGroupedCell({
+  groupedValue,
+  sole,
+  count,
+}: {
+  groupedValue: string | undefined
+  sole: string | null | undefined
+  count: number | undefined
+}) {
+  if (groupedValue !== undefined) return <>{groupedValue}</>
+  if (sole)                       return <span className="text-gray-400">{sole}</span>
+  return <span className="text-gray-500">{count ?? 0}</span>
 }
 
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString()
+interface AggProps {
+  bucket: Exclude<EventsBucket, 'raw'>
+  groupBy: EventsGroupBy[]
+  onToggleGroup: (key: string) => void
+  mac: string
+  profileId: string
+}
+
+function AggregatedEventsView({ bucket, groupBy, onToggleGroup, mac, profileId }: AggProps) {
+  const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    const { from, to } = windowFromTo(bucket, new Date().toISOString())
+    api.logs.series({
+      bucket,
+      groupBy,
+      mac:       mac || undefined,
+      profileId: profileId ? Number(profileId) : undefined,
+      hours:     Math.max(1, Math.ceil((new Date(to).getTime() - new Date(from).getTime()) / 3600000)),
+      limit:     500,
+    })
+      .then(d => { if (!cancelled) setRows(d) })
+      .catch(e => { if (!cancelled) { setRows([]); setError(String(e.message ?? e)) } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [bucket, groupBy.join(','), mac, profileId])
+
+  if (loading) return <Spinner />
+  if (error)   return <ErrorBanner message={error} />
+
+  return (
+    <div className="overflow-x-auto" data-testid="ce-agg-table">
+      <table className="min-w-full text-sm">
+        <thead className="text-xs uppercase">
+          <tr className="text-gray-500">
+            <th className="text-left px-2 py-1">Window start</th>
+            <th className="text-left px-2 py-1">
+              <GroupableHeader label="Device" groupKey="device" groupBy={groupBy}
+                onToggle={onToggleGroup} testIdPrefix="ce-group" />
+            </th>
+            <th className="text-left px-2 py-1">
+              <GroupableHeader label="Profile" groupKey="profile" groupBy={groupBy}
+                onToggle={onToggleGroup} testIdPrefix="ce-group" />
+            </th>
+            <th className="text-left px-2 py-1">
+              <GroupableHeader label="Domain" groupKey="domain" groupBy={groupBy}
+                onToggle={onToggleGroup} testIdPrefix="ce-group" />
+            </th>
+            <th className="text-right px-2 py-1">OK</th>
+            <th className="text-right px-2 py-1">Blocked</th>
+            <th className="text-left px-2 py-1">Last seen</th>
+          </tr>
+        </thead>
+        <tbody className="text-gray-300">
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={7} className="text-center text-gray-500 py-4">
+                No events in window.
+              </td>
+            </tr>
+          )}
+          {rows.map((r, i) => {
+            const prevWindow = i > 0 ? rows[i - 1].windowStart : null
+            const showWindow = r.windowStart !== prevWindow
+            return (
+            <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>
+              <td className="px-2 py-1 font-mono text-xs">
+                {showWindow ? localTime(r.windowStart) : ''}
+              </td>
+              <td className="px-2 py-1">
+                <NonGroupedCell
+                  groupedValue={groupBy.includes('device') ? r.groups.device : undefined}
+                  sole={r.soleDevice}
+                  count={r.distinctDevices}
+                />
+              </td>
+              <td className="px-2 py-1">
+                <NonGroupedCell
+                  groupedValue={groupBy.includes('profile') ? r.groups.profile : undefined}
+                  sole={r.soleProfile}
+                  count={r.distinctProfiles}
+                />
+              </td>
+              <td className="px-2 py-1 max-w-[280px] truncate">
+                <NonGroupedCell
+                  groupedValue={groupBy.includes('domain') ? r.groups.domain : undefined}
+                  sole={r.soleDomain}
+                  count={r.distinctDomains}
+                />
+              </td>
+              <td className="px-2 py-1 text-emerald-400 text-right">{r.countSucceeded}</td>
+              <td className="px-2 py-1 text-red-400 text-right">{r.countBlocked}</td>
+              <td className="px-2 py-1 font-mono text-xs">{localTime(r.lastSeen)}</td>
+            </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
 }

@@ -202,7 +202,7 @@ that only ask for recent data.
 
 **Verify points**:
 - `SELECT COUNT(*) FROM traffic_reports` matches pre-rename count.
-- `EXPLAIN` on `/api/sessions` shows partition pruning (Append node with
+- `EXPLAIN` on `/api/usage/series` shows partition pruning (Append node with
   pruned children).
 - 24 hours of writes land in the correct (current-week) partition, not
   the omnibus.

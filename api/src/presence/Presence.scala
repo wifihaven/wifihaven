@@ -93,6 +93,41 @@ object Presence {
     totalSecondsByMac(rows, exemptPatterns, filter).view.mapValues(s => (s / 60).toInt).toMap
 
   /**
+   * #751: profile-scoped active-bucket union across multiple macs. Each `period_start` instant
+   * counts once regardless of how many of the profile's devices were active in it — the right
+   * semantic when one profile = one human with multiple devices. A bucket counts iff at least one
+   * (mac, host) row in the bucket is non-heartbeat AND non-exempt; its contribution is the max
+   * `activeSeconds` across all macs present in that bucket (the longest-active device sets the
+   * wall-clock floor). Use [[totalSecondsByMac]] + sum when the operator wants per-device totals
+   * added (the `sum` mode).
+   */
+  def dedupedTotalSeconds(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+  ): Long = {
+    def isExempt(h: HostId) =
+      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
+    rows.iterator
+      .filterNot(r => isHeartbeat(r, filter))
+      .toList
+      .groupBy(_.periodStart)
+      .iterator
+      .collect {
+        case (_, bucket) if bucket.exists(r => !isExempt(r.host)) =>
+          bucketSeconds(bucket)
+      }
+      .sum
+  }
+
+  def dedupedTotalMinutes(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+  ): Int =
+    (dedupedTotalSeconds(rows, exemptPatterns, filter) / 60).toInt
+
+  /**
    * #714 heartbeat classification, applied ONLY inside `totalSecondsByMac`/`totalMinutesByMac`.
    * Per-site (`patternMinutesByMac`) and per-host (`hostMinutes`) breakdowns intentionally do not
    * filter — heartbeats keep counting for per-site time for now; the operator wants to evaluate
@@ -171,4 +206,38 @@ object Presence {
     }
     accum.view.mapValues(s => (s / 60).toInt).toMap
   }
+
+  /**
+   * #715: per-host seconds attributed by byte share within each (mac, period_start) bucket. Each
+   * bucket's wall-clock duration is split across the hosts present in proportion to their share of
+   * the bucket's total bytes (bytes_in + bytes_out). Summing across hosts within one mac's bucket ≈
+   * the bucket duration, so this is a much fairer "wall-clock attention" number than
+   * [[hostMinutes]] (which credits every host the device touched with the bucket's full duration).
+   *
+   * Note: when a bucket carries multiple rows for the same host (e.g. two ipv4-typed rows resolving
+   * to the same fqdn via the read-side LATERAL join), their bytes are summed before the share is
+   * computed so the same host doesn't get a double weight. If the bucket has zero total bytes (an
+   * edge case — the agent only emits records with bytes>0), the bucket is skipped entirely.
+   */
+  def proportionalHostSeconds(rows: List[PresenceRow]): Map[HostId, Double] = {
+    val accum = scala.collection.mutable.Map.empty[HostId, Double]
+    for ((_, bucket) <- rows.groupBy(r => (r.mac, r.periodStart))) {
+      val secs   = bucketSeconds(bucket).toDouble
+      val byHost = bucket.iterator
+        .map(r => r.host -> r.bytes)
+        .toList
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      val total  = byHost.valuesIterator.sum
+      if (secs > 0.0 && total > 0L)
+        for ((h, b) <- byHost) {
+          val share = b.toDouble / total.toDouble
+          accum.updateWith(h)(prev => Some(prev.getOrElse(0.0) + secs * share))
+        }
+    }
+    accum.toMap
+  }
+
+  /** Convenience: floor-divided minute view of [[proportionalHostSeconds]]. */
+  def proportionalHostMinutes(rows: List[PresenceRow]): Map[HostId, Int] =
+    proportionalHostSeconds(rows).view.mapValues(s => (s / 60).toInt).toMap
 }

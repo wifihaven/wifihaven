@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
@@ -141,16 +141,23 @@ export function TimePage() {
     const v = loadExpanded()
     return { today: new Set(v.today), week: new Set(v.week) }
   })
-  // Once summaries are first loaded, auto-expand the first row if nothing is expanded yet
-  // (issue's "one profile expanded by default" rule — avoids an empty-looking page).
+  // #854 — auto-expand the first row once per tab per page mount. Previously this
+  // effect re-fired on every summary refetch (polling), so after the user collapsed
+  // everything the next poll would re-open the first row — and toggling the only
+  // open row would race with the next refetch. Latch via a ref so the auto-expand
+  // happens exactly once per tab and never interferes with user toggles after.
+  const didAutoExpandToday = useRef(false)
+  const didAutoExpandWeek = useRef(false)
   useEffect(() => {
-    if (window !== 'today' || summaries.length === 0 || expanded.today.size > 0) return
-    setExpanded(e => ({ ...e, today: new Set([summaries[0].profileId]) }))
-  }, [window, summaries, expanded.today.size])
+    if (window !== 'today' || didAutoExpandToday.current || summaries.length === 0) return
+    didAutoExpandToday.current = true
+    setExpanded(e => e.today.size > 0 ? e : { ...e, today: new Set([summaries[0].profileId]) })
+  }, [window, summaries])
   useEffect(() => {
-    if (window !== 'week' || weekSummaries.length === 0 || expanded.week.size > 0) return
-    setExpanded(e => ({ ...e, week: new Set([weekSummaries[0].profileId]) }))
-  }, [window, weekSummaries, expanded.week.size])
+    if (window !== 'week' || didAutoExpandWeek.current || weekSummaries.length === 0) return
+    didAutoExpandWeek.current = true
+    setExpanded(e => e.week.size > 0 ? e : { ...e, week: new Set([weekSummaries[0].profileId]) })
+  }, [window, weekSummaries])
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -314,13 +321,10 @@ export function TimePage() {
   )
 }
 
-function ProfileTimeCard({
-  status, isAdmin, onGrant,
-}: {
-  status: ProfileTimeStatus
-  isAdmin: boolean
-  onGrant: () => void
-}) {
+// #854 — body card no longer renders the profile name or +Time button; both
+// live in the always-visible accordion header so they're reachable when
+// collapsed and avoid the duplicate name.
+function ProfileTimeCard({ status }: { status: ProfileTimeStatus }) {
   const hasLimit  = status.dailyLimitMins != null
   const limitBase = (status.dailyLimitMins ?? 0) + status.extensionMins
   const pct       = hasLimit && limitBase > 0
@@ -340,24 +344,6 @@ function ProfileTimeCard({
 
   return (
     <div data-testid={`time-card-${status.profileId}`} className={`bg-gray-900 rounded-2xl border p-5 space-y-4 ${overLimit ? 'border-red-500/40' : 'border-gray-800'}`}>
-      <div className="flex items-start justify-between gap-2">
-        <Link
-          to={`/time/${status.profileId}/timeline`}
-          data-testid={`time-profile-link-${status.profileId}`}
-          className="font-semibold text-white text-lg hover:text-emerald-400 transition-colors"
-        >
-          {status.profileName}
-        </Link>
-        {isAdmin && hasLimit && (
-          <button
-            onClick={onGrant}
-            className="shrink-0 text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors"
-          >
-            + Time
-          </button>
-        )}
-      </div>
-
       {hasLimit ? (
         <div>
           <div className="flex justify-between text-xs text-gray-500 mb-1.5">
@@ -447,7 +433,12 @@ function ProfileTimeCard({
 
       {status.hostUsage.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Top Sites</p>
+          <p
+            className="text-xs font-semibold text-gray-500 uppercase tracking-wider"
+            title="Per-host minutes are a byte-share of each 5-min window (wall-clock attention, #715). The presence number — how many 5-min windows the host appeared in at all — shows in parentheses."
+          >
+            Top Sites
+          </p>
           {status.hostUsage.map(hu => (
             <div
               key={hu.host.value}
@@ -455,7 +446,13 @@ function ProfileTimeCard({
               className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
             >
               <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
-              <span className="text-gray-500 font-mono shrink-0 ml-2">{formatMins(hu.usedMins)}</span>
+              <span
+                className="text-gray-500 font-mono shrink-0 ml-2"
+                title={`presence ${formatMins(hu.usedMins)} (every bucket this host appeared in)`}
+              >
+                {formatMins(hu.proportionalMins)}
+                <span className="text-gray-600"> ({formatMins(hu.usedMins)})</span>
+              </span>
             </div>
           ))}
         </div>
@@ -515,28 +512,43 @@ function ProfileAccordionRow({
       data-testid={`time-row-${summary.profileId}`}
       className={`bg-gray-900 rounded-2xl border ${overLimit ? 'border-red-500/40' : 'border-gray-800'}`}
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        data-testid={`time-row-toggle-${summary.profileId}`}
-        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left"
-      >
-        <div className="flex items-center gap-3 min-w-0">
-          <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
-          <span className="font-semibold text-white text-lg truncate">{summary.profileName}</span>
-        </div>
-        <div className="flex items-center gap-3 shrink-0 text-xs">
-          <span className="text-gray-400 font-mono">{formatMins(summary.usedMins)} used</span>
-          {hasLimit && (
-            <span className={overLimit ? 'text-red-400' : 'text-gray-500'}>
-              {summary.remainingMins != null && summary.remainingMins > 0
-                ? `${formatMins(summary.remainingMins)} left`
-                : 'Limit reached'}
-            </span>
-          )}
-        </div>
-      </button>
+      {/* #854 — header row: toggle button takes most of the width; +Time button
+          is a sibling so it stays visible/usable when the card is collapsed and
+          its click doesn't bubble into the toggle. */}
+      <div className="flex items-center gap-2 px-5 py-4">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          data-testid={`time-row-toggle-${summary.profileId}`}
+          className="flex-1 flex items-center justify-between gap-3 text-left min-w-0"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+            <span className="font-semibold text-white text-lg truncate">{summary.profileName}</span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0 text-xs">
+            <span className="text-gray-400 font-mono">{formatMins(summary.usedMins)} used</span>
+            {hasLimit && (
+              <span className={overLimit ? 'text-red-400' : 'text-gray-500'}>
+                {summary.remainingMins != null && summary.remainingMins > 0
+                  ? `${formatMins(summary.remainingMins)} left`
+                  : 'Limit reached'}
+              </span>
+            )}
+          </div>
+        </button>
+        {isAdmin && hasLimit && (
+          <button
+            type="button"
+            onClick={onGrant}
+            data-testid={`time-row-grant-${summary.profileId}`}
+            className="shrink-0 text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            + Time
+          </button>
+        )}
+      </div>
 
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4">
@@ -545,9 +557,7 @@ function ProfileAccordionRow({
               Loading…
             </p>
           )}
-          {detail.data && (
-            <ProfileTimeCard status={detail.data} isAdmin={isAdmin} onGrant={onGrant} />
-          )}
+          {detail.data && <ProfileTimeCard status={detail.data} />}
         </div>
       )}
     </div>
@@ -613,14 +623,8 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
   const chartData = groupBucketsByLocalDay(status.perBucket, status.to)
   return (
     <div data-testid={`time-week-card-${status.profileId}`} className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4">
-      <div className="flex items-start justify-between gap-2">
-        <Link
-          to={`/time/${status.profileId}/timeline`}
-          data-testid={`time-week-profile-link-${status.profileId}`}
-          className="font-semibold text-white text-lg hover:text-emerald-400 transition-colors"
-        >
-          {status.profileName}
-        </Link>
+      {/* #854 — profile name now lives only in the accordion header. */}
+      <div className="flex items-center justify-end">
         <span className="text-xs text-gray-500 font-mono">{status.from} → {status.to}</span>
       </div>
 
@@ -684,7 +688,12 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
 
       {status.hostUsage.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Top Sites</p>
+          <p
+            className="text-xs font-semibold text-gray-500 uppercase tracking-wider"
+            title="Per-host minutes are byte-share of each 5-min window (wall-clock attention, #715). Presence in parens is how many windows the host appeared in at all."
+          >
+            Top Sites
+          </p>
           {status.hostUsage.map(hu => (
             <div
               key={hu.host.value}
@@ -692,7 +701,13 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
               className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
             >
               <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
-              <span className="text-gray-500 font-mono shrink-0 ml-2">{formatMins(hu.usedMins)}</span>
+              <span
+                className="text-gray-500 font-mono shrink-0 ml-2"
+                title={`presence ${formatMins(hu.usedMins)} (every bucket this host appeared in)`}
+              >
+                {formatMins(hu.proportionalMins)}
+                <span className="text-gray-600"> ({formatMins(hu.usedMins)})</span>
+              </span>
             </div>
           ))}
         </div>

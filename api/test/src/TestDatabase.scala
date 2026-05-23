@@ -110,7 +110,8 @@ object TestDatabase {
   type AllRepos =
     UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo &
       TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TimeUsageRepo &
-      TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo & ConnectionEventRepo
+      TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo & ConnectionEventRepo &
+      DeviceAlertRepo & AppRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg
@@ -160,5 +161,5 @@ object TestLayers {
       name: String,
       profileId: ProfileId,
   ): Task[DeviceId] =
-    deviceRepo.upsert(MacAddress.unsafe(mac), name, profileId, "192.168.1.100")
+    deviceRepo.upsert(MacAddress.unsafe(mac), name, Some(profileId), "192.168.1.100")
 }

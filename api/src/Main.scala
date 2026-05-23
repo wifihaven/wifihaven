@@ -77,6 +77,7 @@ object Main extends ZIOAppDefault {
       trafficRepo <- ZIO.service[TrafficReportRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
       blockEvRepo <- ZIO.service[BlockEventRepo]
+      alertRepo   <- ZIO.service[DeviceAlertRepo]
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
@@ -103,7 +104,6 @@ object Main extends ZIOAppDefault {
         timeCache,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
-      SessionRoutes.routes(auth, trafficRepo, deviceRepo, profileRepo, upRepo, clock) ++
       UsageRoutes.routes(auth, deviceRepo, trafficRepo, upRepo, profileRepo, clock) ++
       DashboardNowRoutes.routes(
         auth,
@@ -124,7 +124,9 @@ object Main extends ZIOAppDefault {
         usageRepo,
         deviceRepo,
         connRepo,
+        alertRepo,
       ) ++
+      DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
       DebugRoutes.routes(
         cfg.debugEnabled,
         deviceRepo,

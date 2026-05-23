@@ -1,6 +1,7 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
+import { DeviceAlertNotifier } from '@/hooks/useNotifyOnNewAlerts'
 import { Layout } from '@/components/layout/Layout'
 import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -10,6 +11,7 @@ import { ProfilesPage } from '@/pages/ProfilesPage'
 import { TimePage } from '@/pages/TimePage'
 import { ProfileTimelinePage } from '@/pages/ProfileTimelinePage'
 import { LogsPage } from '@/pages/LogsPage'
+import { TrafficUsagePage } from '@/pages/TrafficUsagePage'
 import { AccountPage } from '@/pages/AccountPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { RoutersPage } from '@/pages/RoutersPage'
@@ -43,7 +45,7 @@ function AppRoutes() {
         change-password form even when the server-side flag is set (#586).
         All other protected routes redirect to /account until the flag clears.
       */}
-      <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
+      <Route path="/" element={<RequireAuth><><DeviceAlertNotifier /><Layout /></></RequireAuth>}>
         <Route path="account" element={<AccountPage />} />
         <Route index element={<RequirePwChanged><Navigate to="/dashboard" replace /></RequirePwChanged>} />
         <Route path="dashboard" element={<RequirePwChanged><DashboardPage /></RequirePwChanged>} />
@@ -52,7 +54,9 @@ function AppRoutes() {
         <Route path="profiles"  element={<RequirePwChanged><ProfilesPage /></RequirePwChanged>} />
         <Route path="time"      element={<RequirePwChanged><TimePage /></RequirePwChanged>} />
         <Route path="time/:profileId/timeline" element={<RequirePwChanged><ProfileTimelinePage /></RequirePwChanged>} />
-        <Route path="logs"      element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
+        <Route path="logs"      element={<Navigate to="/usage/events" replace />} />
+        <Route path="usage"          element={<RequirePwChanged><TrafficUsagePage /></RequirePwChanged>} />
+        <Route path="usage/events"   element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />

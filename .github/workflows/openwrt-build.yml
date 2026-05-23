@@ -1,16 +1,16 @@
 name: OpenWRT Package Build
 
 # Release flow (post-#498): the rolling "openwrt-latest" GitHub Release is
-# published exclusively from Master CD's deploy-production path, behind the
+# published exclusively from Master Router CD's publish-openwrt path, behind the
 # manual-approval gate. There is no standalone `push.tags: ["v*"]` trigger —
 # tag pushes would otherwise fire this workflow ungated and race with the
-# coordinated release from master.yml (see #498).
+# coordinated release from master-router.yml (see #498).
 #
 # Triggers retained:
 #   - push to main (paths: openwrt/**)  — build-only confidence run, no upload
 #   - pull_request (paths: openwrt/**)  — PR validation
 #   - workflow_dispatch                 — one-off debug builds
-#   - workflow_call                     — invoked by master.yml deploy-production
+#   - workflow_call                     — invoked by master-router.yml deploy-production
 #                                         with publish_release: true
 #
 # The build itself still runs for PR / main-push validation; only the public
@@ -25,7 +25,7 @@ on:
   workflow_call:
     inputs:
       publish_release:
-        description: "If true, attach packages to the rolling openwrt-latest GitHub Release. Set only from Master CD's deploy-production path."
+        description: "If true, attach packages to the rolling openwrt-latest GitHub Release. Set only from Master Router CD's publish-openwrt path."
         type: boolean
         default: false
 
@@ -158,9 +158,10 @@ jobs:
           if-no-files-found: error
 
       # Rolling pre-release. Post-#498 this is the ONLY release path — fires
-      # only when the caller passes publish_release=true (Master CD's
-      # deploy-production job, after the manual-approval gate). Direct main
-      # pushes and PR validation runs build for confidence without publishing.
+      # only when the caller passes publish_release=true (Master Router
+      # CD's publish-openwrt job, after the manual-approval gate). Direct
+      # main pushes and PR validation runs build for confidence without
+      # publishing.
       - name: Publish rolling openwrt-latest release (gated by caller)
         if: inputs.publish_release == true
         uses: softprops/action-gh-release@v2

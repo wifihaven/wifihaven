@@ -4,20 +4,27 @@ name: VM e2e (fake API — Gate 2)
 # Alpine client on the self-hosted KVM runner against the in-process fake
 # API (scripts/e2e/fake-api/), runs scripts/e2e/scenarios_fake/.
 #
-# Gates publish-openwrt in master.yml via workflow_call. Does NOT gate
+# Gates publish-openwrt in master-router.yml via workflow_call. Does NOT gate
 # publish-api — Gate 1 (api-smoke-staging) and the planned Gate 3
 # integration smoke cover the API side.
 #
 # Triggers:
-#   - workflow_call    — invoked from master.yml as a needs: of publish-openwrt
+#   - workflow_call    — invoked from master-router.yml as a needs: of publish-openwrt
 #   - workflow_dispatch — manual debugging from the Actions tab
 #
 # Concurrency: shares the e2e-vm group with the live-mode VM e2e workflow
-# so runs serialize on the single self-hosted KVM runner — the CI runner
-# is the same host as local dev and collisions are real.
+# so cross-workflow runs serialize on the self-hosted KVM runner. #891
+# parameterized bridge/ports/MACs so two qemu pairs can share a host,
+# but the group stays until two concurrent runs are observed clean on
+# the runner (per #891's follow-up note).
 
 on:
   workflow_call:
+    inputs:
+      consume_vm_image_artifact:
+        description: "Download the VM image from a sibling build-vm-image job artifact instead of building locally. Master Router CD sets this true so the .img is built once per run."
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -36,21 +43,39 @@ jobs:
       github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
-    # Local wall time for the full fake-mode pack is ~15m (per #684
-    # validation: `24 passed in 927s`). 30m covers a cold router-image
-    # build on the runner plus headroom; concurrency=e2e-vm serializes so
-    # a slow run can't pile up.
+    # Local wall time for the full fake-mode pack is ~15–20m (per #685
+    # validation: ipk arm green 3x at 18m avg). 30m covers a cold image
+    # build on the runner plus headroom.
     timeout-minutes: 30
-    # #685: matrix over ipk-23.05 and apk-25.12 router images. max-parallel=1
-    # belts-and-suspenders alongside the concurrency group: only one qemu
-    # boot at a time on the single self-hosted KVM host. fail-fast=false so
-    # a regression in one flavor still reports the other arm's status
-    # (needed to demonstrate the apk-only regression case from #531).
+    # #685: matrix over ipk-23.05 and apk-25.12 router images. fail-fast=false
+    # so a regression in one flavor still reports the other arm's status
+    # (needed to surface apk-only regressions like the #531 history case).
+    # No max-parallel: with #891's bridge/port/MAC parameterization the two
+    # arms can share a host. In practice today the single self-hosted kvm
+    # runner still serializes them via runner availability; once a second
+    # runner is added the arms parallelize automatically.
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
-        pkg_format: [ipk, apk]
+        include:
+          - pkg_format: ipk
+            port_base: 2222
+          - pkg_format: apk
+            port_base: 2322
+
+    env:
+      PKG_FORMAT: ${{ matrix.pkg_format }}
+      # Per-arm run keying so two arms sharing the host (today: serialized
+      # by single-runner; later: real parallel) get distinct .run/<id>/
+      # dirs, MACs, and qemu -name. github.run_id+run_attempt makes this
+      # unique across workflow runs too — two PRs both triggering Gate 2
+      # would otherwise reuse the same WH_RUN_ID.
+      WH_RUN_ID: gate2-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Distinct host port bases per arm (#891): router-ssh, router-http,
+      # client1-ssh use port_base, port_base+1, port_base+2. Today the
+      # single runner serializes the arms so reuse would be fine; the
+      # split is for forward-compat once a second runner is labeled `kvm`.
+      WH_PORT_BASE: ${{ matrix.port_base }}
 
     steps:
       # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
@@ -82,8 +107,6 @@ jobs:
 
       - name: Resolve router image path
         id: image
-        env:
-          PKG_FORMAT: ${{ matrix.pkg_format }}
         run: |
           # Source versions.sh so the image filename stays in sync with
           # whichever OpenWRT pin scripts/vm/versions.sh selects for this
@@ -93,12 +116,26 @@ jobs:
           echo "path=$IMG" >> "$GITHUB_OUTPUT"
           echo "Resolved image: $IMG"
 
-      - name: Build router image (if not cached)
-        env:
-          PKG_FORMAT: ${{ matrix.pkg_format }}
+      # Download the per-flavor image from the sibling build-vm-image job
+      # when Master Router CD invokes us with consume_vm_image_artifact=true.
+      # The artifact pattern matches openwrt-wifihaven-<flavor>-<version>-<sha>
+      # (cf. router-image-build.yml's upload). Today build-vm-image only
+      # builds .ipk; the .apk arm's download is a no-op and the next step
+      # falls through to a local build. Follow-up: extend build-vm-image
+      # to matrix-build both flavors.
+      - name: Download VM image artifact (from build-vm-image)
+        if: inputs.consume_vm_image_artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v6
+        with:
+          pattern: openwrt-wifihaven-${{ matrix.pkg_format }}-*-${{ github.sha }}
+          path: scripts/vm/.cache
+          merge-multiple: true
+
+      - name: Build router image (if not cached / not downloaded)
         run: |
           if [[ -f "${{ steps.image.outputs.path }}" ]]; then
-            echo "router image cached, skipping build"
+            echo "router image present, skipping build"
           else
             scripts/vm/build-router-image.sh
           fi
@@ -106,7 +143,7 @@ jobs:
       - name: Build client base (if not cached)
         run: scripts/vm/build-client-base.sh
 
-      - name: Pre-flight kill of stale wh VMs
+      - name: Pre-flight kill of stale wh VMs (this WH_RUN_ID only)
         run: |
           scripts/vm/router-down.sh || true
           scripts/vm/client-down.sh || true

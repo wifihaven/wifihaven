@@ -82,7 +82,15 @@ class PolicyServiceLive(
         }
         val exemptPats = pSiteLims.filter(_.exemptFromDaily).map(_.domainPattern)
         val perMacTot  = Presence.totalMinutesByMac(pPresence, exemptPats, settings.heartbeatFilter)
-        val totalMins  = devicesIn.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
+        // #751: cap-enforcement reads the same Sum/Dedup branch as the
+        // /api/time/status surface so the policy snapshot agrees with what
+        // the screen-time UI shows.
+        val totalMins  = p.crossDeviceOverlapMode match {
+          case CrossDeviceOverlapMode.Sum   =>
+            devicesIn.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
+          case CrossDeviceOverlapMode.Dedup =>
+            Presence.dedupedTotalMinutes(pPresence, exemptPats, settings.heartbeatFilter)
+        }
         val extMins    = exts.getOrElse(p.id, 0)
 
         val inputs = ProfileInputs(
@@ -194,7 +202,18 @@ class PolicyServiceLive(
                           stlims.filter(_.exemptFromDaily).map(_.domainPattern)
                         val perMacTot  =
                           Presence.totalMinutesByMac(pPres, exemptPats, settings.heartbeatFilter)
-                        val totalMins  = devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
+                        // #751: same branch as snapshot — keeps decide()
+                        // consistent with the snapshot's cap evaluation.
+                        val totalMins  = p.crossDeviceOverlapMode match {
+                          case CrossDeviceOverlapMode.Sum   =>
+                            devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
+                          case CrossDeviceOverlapMode.Dedup =>
+                            Presence.dedupedTotalMinutes(
+                              pPres,
+                              exemptPats,
+                              settings.heartbeatFilter,
+                            )
+                        }
                         timeLimitBlockFromDb(
                           h,
                           now,

@@ -31,6 +31,46 @@ client VM: the LAN bridge name, the LAN subnet, the Alpine image version, and
 file paths. **Both halves of the harness read from here.** If you need to
 change a bridge name or subnet, change it in this one file.
 
+### Running two pairs concurrently (#891)
+
+**One-time host setup**: pre-allocate a pool of LAN bridges and authorize
+them all in `/etc/qemu/bridge.conf`. Then any subsequent VM e2e run
+auto-picks a free bridge from the pool — no extra env vars needed for the
+bridge.
+
+```
+# Creates wh-lan0..wh-lan3 (default pool size 4) and ensures bridge.conf
+# has an `allow` line for each. Idempotent.
+sudo scripts/vm/lan-bridge-pool-bootstrap.sh
+```
+
+The bootstrap uses `sudo` for both `ip link add` and `tee -a
+/etc/qemu/bridge.conf` — existing entries are left alone, missing entries
+are appended. Run it once per host (or whenever you bump
+`WH_LAN_BRIDGE_POOL_SIZE`).
+
+**Per-run knobs**: to launch a second pair on a bootstrapped host, set only
+two env vars on the second invocation — the bridge is auto-picked from the
+pool:
+
+```
+WH_RUN_ID=b WH_PORT_BASE=2322 scripts/e2e-vm.sh --mode=fake
+```
+
+- `WH_RUN_ID` — short token. Suffixes the QEMU `-name` (so `pgrep`-based
+  fallbacks in `*-down.sh` only match this instance) and the `.run/` subdir
+  (so overlay/pid/socket files don't collide). Also seeds the default MACs.
+- `WH_PORT_BASE` — first host port; router SSH = base, router HTTP =
+  base+1, client SSH = base+2. Individual port vars
+  (`WH_ROUTER_SSH_PORT`, `WH_ROUTER_HTTP_PORT`, `WH_CLIENT_SSH_PORT_BASE`)
+  still win if set explicitly.
+- `WH_LAN_BRIDGE` — optional override. If set explicitly, skips pool pick.
+- For fake-mode, also set `WH_FAKE_API_PORT` to a free port on the second run.
+
+**On a host without the pool**, the bridge picker is a no-op and the run
+falls back to creating `wh-lan0` on the fly — byte-identical to single-pair
+behavior on un-bootstrapped hosts.
+
 ## Client VM
 
 A minimal Alpine VM that lives on the router VM's LAN bridge with a

@@ -45,9 +45,9 @@ const limited: ProfileTimeStatus = {
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 90 }],
   hostUsage: [
-    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 35 },
-    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 10 },
-    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5 },
+    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 35, proportionalMins: 30 },
+    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 10, proportionalMins: 8 },
+    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5, proportionalMins: 2 },
   ],
 }
 
@@ -103,8 +103,8 @@ const weekKids: ProfileTimeStatusWeek = {
   ],
   devices: [{ deviceMac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad", usedMins: 210 }],
   hostUsage: [
-    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 90 },
-    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 30 },
+    { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 90, proportionalMins: 80 },
+    { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 30, proportionalMins: 25 },
   ],
 }
 
@@ -228,7 +228,9 @@ describe('TimePage — expanded card content', () => {
     expect(screen.getAllByText('30m left').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('YouTube')).toBeInTheDocument()
     expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('youtube.com')
-    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('35m')
+    // #715: row shows proportional (wall-clock attention) first, presence in parens.
+    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('30m')
+    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('(35m)')
   })
 
   it('over-limit and no-limit details render when expanded', async () => {
@@ -346,7 +348,9 @@ describe('TimePage — week toggle (#723)', () => {
     expect(await screen.findByTestId('time-week-card-1')).toBeInTheDocument()
     expect(screen.getByText('3:30 used this week')).toBeInTheDocument()
     expect(screen.getByTestId('time-week-chart-1')).toBeInTheDocument()
-    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('1:30')
+    // Weekly host row shows proportional (1:20 = 80m) first, then presence in parens (1:30 = 90m).
+    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('1:20')
+    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('(1:30)')
     expect(screen.getByTestId('time-week-device-link-aa:bb:cc:dd:ee:01'))
       .toHaveAttribute('href', '/devices/aa%3Abb%3Acc%3Add%3Aee%3A01/timeline')
   })
@@ -404,6 +408,46 @@ describe('groupBucketsByLocalDay (#794)', () => {
     )
     expect(out.find(r => r.date === '2026-05-20')!.usedMins).toBe(40)
   })
+
+  // #794 boundary pin: previously the chart re-bucketed by UTC date, so a late-night
+  // bucket whose UTC instant crossed midnight got attributed to the *next* local day.
+  // These tests construct bucket starts from chosen local Y/M/D + H:M via the
+  // `new Date(y, m, d, h, m)` constructor (always interpreted in host-local tz), so they
+  // pin the boundary correctly regardless of which tz the test runner is in.
+  describe('midnight boundary (#794 regression)', () => {
+    const localBucketISO = (y: number, m0: number, d: number, h: number, min: number) =>
+      new Date(y, m0, d, h, min, 0, 0).toISOString()
+
+    it('a bucket at 23:00 local Thursday attributes to Thursday, not Friday', () => {
+      // Bucket aligned at 23:00 local 2026-05-21 (Thursday).
+      const bs = localBucketISO(2026, 4, 21, 23, 0)
+      const out = groupBucketsByLocalDay([{ bucketStart: bs, usedMins: 17 }], '2026-05-21')
+      expect(out.find(r => r.date === '2026-05-21')!.usedMins).toBe(17)
+      expect(out.find(r => r.date === '2026-05-22')).toBeUndefined()
+    })
+
+    it('a bucket at 00:00 local Friday attributes to Friday, not Thursday', () => {
+      const bs = localBucketISO(2026, 4, 22, 0, 0)
+      const out = groupBucketsByLocalDay([{ bucketStart: bs, usedMins: 9 }], '2026-05-22')
+      expect(out.find(r => r.date === '2026-05-22')!.usedMins).toBe(9)
+      expect(out.find(r => r.date === '2026-05-21')!.usedMins).toBe(0)
+    })
+
+    it('two adjacent buckets straddling local midnight land in different local days', () => {
+      // 23:00 local Thursday + 00:00 local Friday — consecutive hour buckets, different days.
+      const late = localBucketISO(2026, 4, 21, 23, 0)
+      const early = localBucketISO(2026, 4, 22, 0, 0)
+      const out = groupBucketsByLocalDay(
+        [
+          { bucketStart: late, usedMins: 30 },
+          { bucketStart: early, usedMins: 12 },
+        ],
+        '2026-05-22',
+      )
+      expect(out.find(r => r.date === '2026-05-21')!.usedMins).toBe(30)
+      expect(out.find(r => r.date === '2026-05-22')!.usedMins).toBe(12)
+    })
+  })
 })
 
 describe('formatMins (#791)', () => {
@@ -422,6 +466,51 @@ describe('formatMins (#791)', () => {
     expect(formatMins(NaN)).toBe('0m')
     expect(formatMins(-5)).toBe('0m')
     expect(formatMins(Infinity)).toBe('0m')
+  })
+})
+
+describe('TimePage — reliable accordion (#854)', () => {
+  it('profile name appears exactly once per row (header only, not duplicated in body)', async () => {
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    // Profile 1 is auto-expanded — body content present, but profile name should
+    // still appear only once for that row (in the header, not in the body card).
+    await screen.findByTestId('time-card-1')
+    expect(screen.getAllByText('Kids').length).toBe(1)
+  })
+
+  it('+ Time button is reachable in the header without expanding the card', async () => {
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-row-2')
+    // Profile 2 (Teens) stays collapsed but its + Time button is in the header.
+    expect(screen.queryByTestId('time-card-2')).not.toBeInTheDocument()
+    expect(screen.getByTestId('time-row-grant-2')).toBeInTheDocument()
+  })
+
+  it('clicking + Time in a collapsed row does not toggle it', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-row-2')
+    expect(screen.queryByTestId('time-card-2')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('time-row-grant-2'))
+    // Modal opened — row 2 stayed collapsed.
+    expect(screen.queryByTestId('time-card-2')).not.toBeInTheDocument()
+    expect(screen.getByText('Grant Extra Time')).toBeInTheDocument()
+  })
+
+  it('user-collapsed rows stay collapsed across summary refetches (no auto-expand race)', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<MemoryRouter><TimePage /></MemoryRouter>))
+    await screen.findByTestId('time-card-1')
+    // Collapse the auto-expanded row.
+    await user.click(screen.getByTestId('time-row-toggle-1'))
+    expect(screen.queryByTestId('time-card-1')).not.toBeInTheDocument()
+    // Simulate a polling refetch by invalidating the summary query through a
+    // grant mutation — onSuccess invalidator forces summaryAll to refetch.
+    await user.click(screen.getByTestId('time-row-grant-2'))
+    await user.click(screen.getByRole('button', { name: /Grant 30m/ }))
+    await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+    // Row 1 must remain collapsed despite the fresh summary array reference.
+    expect(screen.queryByTestId('time-card-1')).not.toBeInTheDocument()
   })
 })
 

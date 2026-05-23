@@ -14,9 +14,10 @@ import java.time.ZoneId
  *   - Per-host minutes within those buckets — currently bucket-presence (overlapping across hosts),
  *     which over-counts (#715).
  *
- * The output proportionally allocates each 5-min bucket's wall-clock duration across the distinct
- * hosts present in that bucket (even-share), so each hour's `perHost` + `otherMins` sums exactly to
- * `totalMins`. Bytes-weighted allocation is a #715 follow-up.
+ * The output proportionally allocates each 5-min bucket's wall-clock duration across the hosts
+ * present in that bucket — bytes-weighted (#715) — so each hour's `perHost` + `otherMins` sums
+ * exactly to `totalMins`. When the bucket has zero total bytes (an edge case — agent only emits
+ * records with bytes>0), we fall back to even-share so the per-host stack still adds up.
  */
 object UsageSeries {
 
@@ -38,19 +39,33 @@ object UsageSeries {
       topN: Int,
   ): (List[UsageHostTotal], List[UsageBucket]) = {
     // Group rows into 5-min buckets. activeSeconds is identical for every row
-    // in a bucket (the router emits one batch per window) so .head is fine.
+    // in a bucket (the router emits one batch per window) so max() is fine.
+    // Track per-host bytes (collapsing multiple rows for the same host within a
+    // bucket) so we can do #715 byte-share-weighted allocation.
     val fiveMin = rows.groupBy(r => r.periodStart).toList.map { case (ps, bucket) =>
-      val hour  = ps.atZone(zone).getHour
-      val secs  = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
-      val hosts = bucket.iterator.map(_.host).toSet.toList
-      (hour, secs, hosts)
+      val hour   = ps.atZone(zone).getHour
+      val secs   = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
+      val byHost = bucket.iterator
+        .map(r => r.host -> r.bytes)
+        .toList
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      (hour, secs, byHost)
     }
 
-    // Day-total per host, in proportional seconds (= bucket secs / hosts-in-bucket).
+    // Day-total per host, byte-share-weighted (even-share fallback if the bucket
+    // recorded zero bytes — agent only emits bytes>0 rows in practice).
     val perHostDaySecs = scala.collection.mutable.Map.empty[HostId, Double]
-    for ((_, secs, hosts) <- fiveMin if hosts.nonEmpty) {
-      val share = secs.toDouble / hosts.size
-      for (h <- hosts) perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+    for ((_, secs, byHost) <- fiveMin if byHost.nonEmpty) {
+      val totalBytes = byHost.valuesIterator.sum
+      if (totalBytes > 0L)
+        for ((h, b) <- byHost) {
+          val share = secs.toDouble * b.toDouble / totalBytes.toDouble
+          perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+        }
+      else {
+        val share = secs.toDouble / byHost.size
+        for (h <- byHost.keys) perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+      }
     }
 
     // Drop hosts whose proportional day-total floors to 0 — they'd render
@@ -74,11 +89,20 @@ object UsageSeries {
       val total     = hrBuckets.iterator.map((_, s, _) => s.toLong).sum
       val perHost   = scala.collection.mutable.Map.empty[HostId, Double]
       var other     = 0.0
-      for ((_, secs, hosts) <- hrBuckets if hosts.nonEmpty) {
-        val share = secs.toDouble / hosts.size
-        for (h <- hosts)
-          if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
-          else other += share
+      for ((_, secs, byHost) <- hrBuckets if byHost.nonEmpty) {
+        val totalBytes = byHost.valuesIterator.sum
+        if (totalBytes > 0L)
+          for ((h, b) <- byHost) {
+            val share = secs.toDouble * b.toDouble / totalBytes.toDouble
+            if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+            else other += share
+          }
+        else {
+          val share = secs.toDouble / byHost.size
+          for (h <- byHost.keys)
+            if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+            else other += share
+        }
       }
       // Floor per-host minutes (consistent with how the daily cap reports
       // wall-clock minutes) and drop hosts that round to zero — keeps the
@@ -126,21 +150,33 @@ object UsageSeries {
       deviceNames: Map[MacAddress, String],
       zone: ZoneId,
       topN: Int,
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
   ): (List[UsageHostTotal], List[UsageBucket], List[UsageDeviceTotal], List[UsageDeviceBucket]) = {
     // Group by (mac, periodStart) — same 5-min bucketing as the per-device build,
     // but now we keep the mac so we can later stack-by-device.
     val fiveMin = rows.groupBy(r => (r.mac, r.periodStart)).toList.map { case ((mac, ps), bucket) =>
-      val hour  = ps.atZone(zone).getHour
-      val secs  = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
-      val hosts = bucket.iterator.map(_.host).toSet.toList
-      (hour, mac, secs, hosts)
+      val hour   = ps.atZone(zone).getHour
+      val secs   = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
+      val byHost = bucket.iterator
+        .map(r => r.host -> r.bytes)
+        .toList
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      (hour, mac, ps, secs, byHost)
     }
 
-    // ── Per-host day totals (proportional within each bucket) ─────────────
+    // ── Per-host day totals (#715 byte-share within each (mac, bucket)) ────
     val perHostDaySecs = scala.collection.mutable.Map.empty[HostId, Double]
-    for ((_, _, secs, hosts) <- fiveMin if hosts.nonEmpty) {
-      val share = secs.toDouble / hosts.size
-      for (h <- hosts) perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+    for ((_, _, _, secs, byHost) <- fiveMin if byHost.nonEmpty) {
+      val totalBytes = byHost.valuesIterator.sum
+      if (totalBytes > 0L)
+        for ((h, b) <- byHost) {
+          val share = secs.toDouble * b.toDouble / totalBytes.toDouble
+          perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+        }
+      else {
+        val share = secs.toDouble / byHost.size
+        for (h <- byHost.keys) perHostDaySecs.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+      }
     }
     val orderedHosts = perHostDaySecs.toList
       .map { case (h, s) => (h, (s / 60).toInt) }
@@ -152,7 +188,7 @@ object UsageSeries {
 
     // ── Per-device day totals (one bucket → one device) ───────────────────
     val perDeviceDaySecs = scala.collection.mutable.Map.empty[MacAddress, Long]
-    for ((_, mac, secs, _) <- fiveMin)
+    for ((_, mac, _, secs, _) <- fiveMin)
       perDeviceDaySecs.updateWith(mac)(p => Some(p.getOrElse(0L) + secs.toLong))
     val orderedDevices = perDeviceDaySecs.toList
       .map { case (m, s) => (m, (s / 60).toInt) }
@@ -170,17 +206,43 @@ object UsageSeries {
     val bucketsByDevice = scala.collection.mutable.ArrayBuffer.empty[UsageDeviceBucket]
     for (hr <- 0 until 24) {
       val hrBuckets = byHour.getOrElse(hr, Nil)
-      val totalSecs = hrBuckets.iterator.map((_, _, s, _) => s.toLong).sum
+      // #751: in Dedup mode the per-hour total collapses to the union of
+      // periodStarts (one bucket → one wall-clock contribution regardless of
+      // how many of the profile's devices were active in it). The per-host
+      // and per-device stacks below stay summed (they're the contribution
+      // breakdown, not a strict reconcile-to-total), so in Dedup mode the
+      // stacks can exceed totalMins; the otherMins clamp keeps the rendered
+      // chart non-negative.
+      val totalSecs = overlap match {
+        case CrossDeviceOverlapMode.Sum   =>
+          hrBuckets.iterator.map((_, _, _, s, _) => s.toLong).sum
+        case CrossDeviceOverlapMode.Dedup =>
+          hrBuckets.iterator
+            .map { case (_, _, ps, s, _) => ps -> s.toLong }
+            .toList
+            .groupMapReduce(_._1)(_._2)(_ max _)
+            .valuesIterator
+            .sum
+      }
       val totalMins = (totalSecs / 60).toInt
 
-      // Per-host stack within the hour (even-share within each 5-min bucket).
+      // Per-host stack within the hour (#715 byte-share within each 5-min bucket).
       val perHost   = scala.collection.mutable.Map.empty[HostId, Double]
       var hostOther = 0.0
-      for ((_, _, secs, hosts) <- hrBuckets if hosts.nonEmpty) {
-        val share = secs.toDouble / hosts.size
-        for (h <- hosts)
-          if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
-          else hostOther += share
+      for ((_, _, _, secs, byHost) <- hrBuckets if byHost.nonEmpty) {
+        val totalBytes = byHost.valuesIterator.sum
+        if (totalBytes > 0L)
+          for ((h, b) <- byHost) {
+            val share = secs.toDouble * b.toDouble / totalBytes.toDouble
+            if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+            else hostOther += share
+          }
+        else {
+          val share = secs.toDouble / byHost.size
+          for (h <- byHost.keys)
+            if (topHostIds.contains(h)) perHost.updateWith(h)(p => Some(p.getOrElse(0.0) + share))
+            else hostOther += share
+        }
       }
       val perHostList = perHost.iterator
         .map { case (h, s) => UsageBucketHost(h, (s / 60).toInt) }
@@ -198,7 +260,7 @@ object UsageSeries {
       // Per-device stack within the hour (each bucket attributes to its mac).
       val perDevice = scala.collection.mutable.Map.empty[MacAddress, Long]
       var devOther  = 0L
-      for ((_, mac, secs, _) <- hrBuckets)
+      for ((_, mac, _, secs, _) <- hrBuckets)
         if (topDeviceMacs.contains(mac))
           perDevice.updateWith(mac)(p => Some(p.getOrElse(0L) + secs.toLong))
         else devOther += secs.toLong

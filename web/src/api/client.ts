@@ -1,7 +1,8 @@
 import type {
   CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
-  DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
-  QueryLog, RouterSummary, SessionPage, SetUserProfilesRequest, TimeExtension,
+  DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
+  ConnectionEventAggRow, QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
@@ -120,6 +121,16 @@ export const api = {
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
   },
 
+  // ── Device alerts (#711) ───────────────────────────────────────────────
+  deviceAlerts: {
+    list: (includeDismissed = false) =>
+      req<DeviceAlert[]>(
+        'GET',
+        `/device-alerts${includeDismissed ? '?dismissed=true' : ''}`,
+      ),
+    dismiss: (id: number) => req<void>('POST', `/device-alerts/${id}/dismiss`),
+  },
+
   // ── Time ───────────────────────────────────────────────────────────────
   time: {
     statusAll: (date?: string, profileId?: number) => {
@@ -169,6 +180,28 @@ export const api = {
       if (params.topN)      qs.set('topN', String(params.topN))
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
     },
+    // #846 Traffic Usage page — multi-column groupBy via comma-separated set.
+    traffic: (params: {
+      mac?: string
+      profileId?: number
+      from?: string
+      to?: string
+      bucket?: TrafficUsageBucket
+      groupBy?: TrafficUsageGroupBy[]
+      tz?: string
+      limit?: number
+    }) => {
+      const qs = new URLSearchParams()
+      if (params.mac)                      qs.set('mac', params.mac)
+      if (params.profileId !== undefined)  qs.set('profileId', String(params.profileId))
+      if (params.from)                     qs.set('from', params.from)
+      if (params.to)                       qs.set('to', params.to)
+      if (params.bucket)                   qs.set('bucket', params.bucket)
+      if (params.groupBy?.length)          qs.set('groupBy', params.groupBy.join(','))
+      if (params.tz)                       qs.set('tz', params.tz)
+      if (params.limit !== undefined)      qs.set('limit', String(params.limit))
+      return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`)
+    },
   },
 
   // ── Logs ───────────────────────────────────────────────────────────────
@@ -196,39 +229,41 @@ export const api = {
       if (params.offset)   qs.set('offset', String(params.offset))
       return req<QueryLog[]>('GET', `/logs?${qs}`)
     },
+    // #847 + #846: aggregated connection-events series. Multi-column groupBy
+    // via comma-separated set. apex deferred to #856, app to #857.
+    series: (params: {
+      bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+      groupBy: Array<'domain' | 'device' | 'profile' | 'apex' | 'app'>
+      mac?: string
+      deviceId?: number
+      profileId?: number
+      blocked?: boolean
+      domain?: string
+      location?: string
+      hours?: number
+      limit?: number
+      offset?: number
+    }) => {
+      const qs = new URLSearchParams()
+      qs.set('bucket', params.bucket)
+      qs.set('groupBy', params.groupBy.join(','))
+      if (params.mac)      qs.set('mac', params.mac)
+      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
+      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
+      if (params.domain)   qs.set('domain', params.domain)
+      if (params.location) qs.set('location', params.location)
+      if (params.hours)    qs.set('hours', String(params.hours))
+      if (params.limit)    qs.set('limit', String(params.limit))
+      if (params.offset)   qs.set('offset', String(params.offset))
+      return req<ConnectionEventAggRow[]>('GET', `/connection-events/series?${qs}`)
+    },
     stats: () => req<DashboardStats>('GET', '/stats'),
   },
 
   // ── Dashboard "now" ────────────────────────────────────────────────────
   dashboard: {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
-  },
-
-  // ── Sessions ───────────────────────────────────────────────────────────
-  sessions: {
-    list: (params: {
-      mac?: string
-      deviceId?: number
-      profileId?: number
-      host?: string
-      since?: string
-      until?: string
-      hours?: number
-      limit?: number
-      cursor?: string
-    }) => {
-      const qs = new URLSearchParams()
-      if (params.mac)       qs.set('mac', params.mac)
-      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
-      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
-      if (params.host)      qs.set('host', params.host)
-      if (params.since)     qs.set('since', params.since)
-      if (params.until)     qs.set('until', params.until)
-      if (params.hours)     qs.set('hours', String(params.hours))
-      if (params.limit)     qs.set('limit', String(params.limit))
-      if (params.cursor)    qs.set('cursor', params.cursor)
-      return req<SessionPage>('GET', `/sessions?${qs}`)
-    },
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────

@@ -98,7 +98,7 @@ QMP_SOCK="${RUN_DIR}/qemu.sock"
 
 # Background the qemu process. -daemonize gives us a stable pidfile.
 qemu-system-x86_64 \
-  -name "wh-${NAME}" \
+  -name "$(wh_client_vm_name "${NAME}")" \
   -m 512 -smp 1 \
   "${ACCEL_ARGS[@]}" \
   -display none -serial "file:${RUN_DIR}/console.log" \

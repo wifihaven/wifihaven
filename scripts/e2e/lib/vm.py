@@ -10,7 +10,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from .paths import CLIENT_SSH_KEY, VM_DIR
+from .paths import CLIENT_SSH_KEY, VM_DIR, VM_RUN_DIR
 
 # The router image bakes the same test keypair the client uses (see
 # build-router-image.sh). Use it for the WAN-side SSH hostfwd so the
@@ -20,7 +20,24 @@ from .sh import Result, run
 
 log = logging.getLogger(__name__)
 
-ROUTER_SSH_PORT = 2222
+def _port_default(name: str, fallback: int) -> int:
+    """Resolve a port env var, falling back to WH_PORT_BASE-derived defaults.
+
+    Mirrors the bash logic in scripts/vm/config.sh so the orchestrator and the
+    VM scripts agree on which port to dial when WH_PORT_BASE is set without
+    individual port vars (#891).
+    """
+    v = os.environ.get(name)
+    if v:
+        return int(v)
+    base = os.environ.get("WH_PORT_BASE")
+    if base:
+        offsets = {"WH_ROUTER_SSH_PORT": 0, "WH_ROUTER_HTTP_PORT": 1, "WH_CLIENT_SSH_PORT_BASE": 2}
+        return int(base) + offsets[name]
+    return fallback
+
+
+ROUTER_SSH_PORT = _port_default("WH_ROUTER_SSH_PORT", 2222)
 ROUTER_HOST = "127.0.0.1"
 ROUTER_SSH_USER = "root"
 
@@ -28,7 +45,11 @@ ROUTER_SSH_USER = "root"
 # router-up.sh always sets up the forward. Default 8080 collides with a
 # developer's docker-compose stack (and with our own e2e stack on certain
 # layouts), so pin it to a high port. Override with WH_ROUTER_HTTP_PORT.
-ROUTER_HTTP_PORT = int(os.environ.get("WH_ROUTER_HTTP_PORT", "18081"))
+ROUTER_HTTP_PORT = _port_default("WH_ROUTER_HTTP_PORT", 18081)
+
+# Default SSH port for the first client slot. Matches the bash-side
+# WH_CLIENT_SSH_PORT_BASE default (and its WH_PORT_BASE-derived override).
+CLIENT_SSH_PORT_DEFAULT = _port_default("WH_CLIENT_SSH_PORT_BASE", 2223)
 
 # QEMU SLIRP gateway as seen from inside the router VM. The router VM's WAN is
 # user-mode networking, so it reaches the host (where the API stack runs) via
@@ -172,7 +193,7 @@ def router_ssh(cmd: str, *, timeout: float = 30, check: bool = True) -> Result:
 
 
 def router_serial_log(tail: int = 200) -> str:
-    log_path = VM_DIR / ".run" / "router" / "console.log"
+    log_path = VM_RUN_DIR / "router" / "console.log"
     if not log_path.exists():
         return "(no router serial log yet)"
     with log_path.open("rb") as f:
@@ -204,7 +225,7 @@ class Client:
         ]
 
     def serial_log(self, tail: int = 200) -> str:
-        log_path = VM_DIR / ".run" / self.name / "console.log"
+        log_path = VM_RUN_DIR / self.name / "console.log"
         if not log_path.exists():
             return f"(no client serial log for {self.name})"
         with log_path.open("rb") as f:
@@ -215,7 +236,9 @@ class Client:
             return f.read().decode("utf-8", errors="replace")
 
 
-def client_up(*, mac: str, name: str = "client1", ssh_port: int = 2223) -> Client:
+def client_up(*, mac: str, name: str = "client1", ssh_port: int | None = None) -> Client:
+    if ssh_port is None:
+        ssh_port = CLIENT_SSH_PORT_DEFAULT
     args = [_vm_script("client-up.sh"), "--mac", mac, "--name", name, "--ssh-port", str(ssh_port)]
     run(args, timeout=180)
     c = Client(name=name, mac=mac, ssh_port=ssh_port)

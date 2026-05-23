@@ -16,9 +16,9 @@ name: VM e2e
 #   3. workflow_call — kept for future use; not currently invoked from any
 #      other workflow.
 #
-# Notably NOT triggered on push:main and NOT a `needs:` of Master CD's
-# publish-api job. Image publish is ungated from the VM e2e while we
-# stabilize the suite.
+# Notably NOT triggered on push:main and NOT a `needs:` of either Master
+# CD pipeline (master-api-ui.yml / master-router.yml). Image publish is
+# ungated from the VM e2e while we stabilize the suite.
 
 on:
   pull_request:

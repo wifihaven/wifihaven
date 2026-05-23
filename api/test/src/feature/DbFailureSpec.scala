@@ -71,13 +71,19 @@ object DbFailureSpec extends ZIOSpecDefault {
     def insertBatch(rs: List[TrafficReportInsert])                       = throwing
     def listForDevice(mac: MacAddress, d: java.time.LocalDate)           = throwing
     def listForRouter(r: RouterId, l: Int)                               = throwing
-    def listSessionRows(f: SessionFilter)                                = throwing
+    def listTrafficRollupRows(f: TrafficRollupFilter)                    = throwing
     def listPresenceRows(macs: List[MacAddress], d: java.time.LocalDate) = throwing
     def listPresenceRows(
         macs: List[MacAddress],
         from: java.time.LocalDate,
         to: java.time.LocalDate,
     ) = throwing
+    def listRawInRange(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = throwing
+    def earliestPeriodStart                                              = throwing
   }
 
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {
@@ -88,18 +94,20 @@ object DbFailureSpec extends ZIOSpecDefault {
         s: Long,
         bi: Long,
         bo: Long,
+        proportional: Long,
     ) = throwing
-    def getSecondsUsed(mac: MacAddress, host: HostId, date: java.time.LocalDate)     = throwing
-    def getSecondsAndBytes(mac: MacAddress, host: HostId, date: java.time.LocalDate) = throwing
-    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                    = throwing
-    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)         = throwing
-    def snapshotAll(date: java.time.LocalDate)                                       = throwing
+    def getSecondsUsed(mac: MacAddress, host: HostId, date: java.time.LocalDate)         = throwing
+    def getSecondsAndBytes(mac: MacAddress, host: HostId, date: java.time.LocalDate)     = throwing
+    def getProportionalSeconds(mac: MacAddress, host: HostId, date: java.time.LocalDate) = throwing
+    def listForDevice(mac: MacAddress, date: java.time.LocalDate)                        = throwing
+    def listForDeviceMacs(macs: List[MacAddress], date: java.time.LocalDate)             = throwing
+    def snapshotAll(date: java.time.LocalDate)                                           = throwing
   }
 
   private def brokenDeviceRepo: DeviceRepo = new DeviceRepo {
     def listAll                                                                          = throwing
     def findByMac(mac: MacAddress)                                                       = throwing
-    def upsert(mac: MacAddress, name: String, pid: ProfileId, ip: String)                = throwing
+    def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String)        = throwing
     def updateLastSeen(mac: MacAddress, ip: String)                                      = throwing
     def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               = throwing
     def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) = throwing
@@ -108,12 +116,19 @@ object DbFailureSpec extends ZIOSpecDefault {
     def delete(mac: MacAddress)                                                          = throwing
   }
 
+  private def brokenDeviceAlertRepo: DeviceAlertRepo = new DeviceAlertRepo {
+    def raise(mac: MacAddress, firstSeenAt: Instant) = throwing
+    def listAll(includeDismissed: Boolean)           = throwing
+    def dismiss(id: DeviceAlertId, at: Instant)      = throwing
+  }
+
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
     def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
     def recent(l: Int)                                                                  = throwing
     def listForMac(mac: MacAddress, l: Int)                                             = throwing
     def listForRouter(r: RouterId, l: Int)                                              = throwing
     def query(f: LogFilter)                                                             = throwing
+    def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String])             = throwing
     def stats                                                                           = throwing
     def topBlocked(h: Int, l: Int)                                                      = throwing
     def lastSeenByMacSince(since: Instant)                                              = throwing
@@ -156,6 +171,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
+        brokenDeviceAlertRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
@@ -179,6 +195,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
+        brokenDeviceAlertRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("not json"))
@@ -198,6 +215,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
+        brokenDeviceAlertRepo,
       )
       val req    = Request.post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
       for {

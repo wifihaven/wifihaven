@@ -95,6 +95,35 @@ object FailureMode {
   )
 }
 
+// #751: per-profile knob controlling how the profile's screen-time total
+// handles two devices on the same profile being active in the same 5-min
+// bucket.
+//   Sum   — current behavior: per-device bucket-deduped minutes are added.
+//           Two siblings on the same profile both active for a bucket count
+//           as two buckets.
+//   Dedup — the per-device active-bucket sets are unioned before counting,
+//           so overlap counts once at the profile level. Right for "one
+//           profile = one human with multiple devices".
+enum CrossDeviceOverlapMode {
+  case Sum, Dedup
+}
+
+object CrossDeviceOverlapMode {
+  def asString(m: CrossDeviceOverlapMode): String      = m match {
+    case Sum   => "sum"
+    case Dedup => "dedup"
+  }
+  def parse(s: String): Option[CrossDeviceOverlapMode] = s.toLowerCase match {
+    case "sum"   => Some(Sum)
+    case "dedup" => Some(Dedup)
+    case _       => None
+  }
+  given JsonCodec[CrossDeviceOverlapMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown crossDeviceOverlapMode: $s"),
+    asString,
+  )
+}
+
 case class Profile(
     id: ProfileId,
     name: String,
@@ -104,6 +133,7 @@ case class Profile(
     paused: Boolean,
     failureMode: FailureMode = FailureMode.LastKnownGood,
     blockIpOnly: Boolean = false,
+    crossDeviceOverlapMode: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
 ) derives JsonCodec
 
 case class Schedule(
@@ -128,6 +158,52 @@ case class SiteTimeLimit(
     domainPattern: String,
     dailyMinutes: Int,
     label: String,
+    exemptFromDaily: Boolean = true,
+) derives JsonCodec
+
+// #761: app concept. An App is a household-scoped named bundle of host
+// patterns (apex form — subdomain match is inherent to the wire). See #105
+// design comment §2. Wire stays unchanged — apps are an API-side bundling
+// concept that #763 will expand into the existing per-MAC BlockRules buckets.
+enum AppMode {
+  case Blocked, Allowed, TimeLimited
+}
+
+object AppMode {
+  def asString(m: AppMode): String      = m match {
+    case Blocked     => "blocked"
+    case Allowed     => "allowed"
+    case TimeLimited => "time_limited"
+  }
+  def parse(s: String): Option[AppMode] = s match {
+    case "blocked"      => Some(Blocked)
+    case "allowed"      => Some(Allowed)
+    case "time_limited" => Some(TimeLimited)
+    case _              => None
+  }
+  given JsonCodec[AppMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown app mode: $s"),
+    asString,
+  )
+}
+
+case class App(
+    id: AppId,
+    name: String,
+    slug: String,
+    templateId: Option[AppTemplateId],
+    icon: Option[String],
+    createdAt: java.time.Instant,
+) derives JsonCodec
+
+case class AppHost(appId: AppId, host: Hostname) derives JsonCodec
+
+case class AppPolicyAssignment(
+    id: AppPolicyAssignmentId,
+    appId: AppId,
+    profileId: ProfileId,
+    mode: AppMode,
+    dailyMinutes: Option[Int],
     exemptFromDaily: Boolean = true,
 ) derives JsonCodec
 
@@ -159,6 +235,22 @@ case class Device(
     profileName: Option[String],
     lastSeenIp: Option[IpAddress],
     lastSeenAt: Option[String],
+) derives JsonCodec
+
+/**
+ * #711: a notification raised when the agent ingest path auto-creates a row for a previously-unseen
+ * MAC. The admin reviews pending alerts in the SPA and dismisses each one once they have named the
+ * device / assigned a profile / decided it isn't worth a name. `dismissedAt` is `None` while
+ * pending, `Some(ts)` once cleared.
+ */
+case class DeviceAlert(
+    id: DeviceAlertId,
+    mac: MacAddress,
+    deviceName: String,
+    profileId: Option[ProfileId],
+    profileName: Option[String],
+    firstSeenAt: String,
+    dismissedAt: Option[String],
 ) derives JsonCodec
 
 case class QueryLog(
@@ -217,6 +309,7 @@ case class UpsertProfileRequest(
     siteTimeLimits: List[SiteTimeLimitRequest],
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,
+    crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(
@@ -288,7 +381,7 @@ case class SiteTimeLimitRequest(
 case class UpsertDeviceRequest(
     mac: MacAddress,
     name: String,
-    profileId: ProfileId,
+    profileId: Option[ProfileId],
 ) derives JsonCodec
 
 case class GrantExtensionRequest(
@@ -309,6 +402,60 @@ case class DashboardStats(
 case class DomainCount(host: HostId, count: Int) derives JsonCodec
 case class DeviceStats(mac: MacAddress, deviceName: String, total: Int, blocked: Int)
     derives JsonCodec
+
+// ── Connection-events aggregation (#847) ───────────────────────────────────
+// Bucket widths supported by /api/connection-events/series. "off" = caller
+// wants raw rows from /api/logs (the series endpoint rejects it as 400).
+enum ConnectionEventBucket(val wire: String, val seconds: Int) {
+  case Off extends ConnectionEventBucket("off", 0)
+  case M1  extends ConnectionEventBucket("1m", 60)
+  case M10 extends ConnectionEventBucket("10m", 600)
+  case H1  extends ConnectionEventBucket("1h", 3600)
+  case H12 extends ConnectionEventBucket("12h", 43200)
+  case D1  extends ConnectionEventBucket("1d", 86400)
+  case W1  extends ConnectionEventBucket("1w", 604800)
+}
+
+object ConnectionEventBucket {
+  def fromWire(s: String): Option[ConnectionEventBucket] =
+    ConnectionEventBucket.values.find(_.wire == s)
+}
+
+// #846: groupBy is now a comma-separated set. Apex is deferred to #856
+// (needs PSL), App to #857 (needs apps track). Device/Profile/Domain are
+// composable — e.g. groupBy=device,domain returns one row per
+// (window, device, domain).
+enum ConnectionEventGroupBy(val wire: String) {
+  case Domain  extends ConnectionEventGroupBy("domain")
+  case Device  extends ConnectionEventGroupBy("device")
+  case Profile extends ConnectionEventGroupBy("profile")
+}
+
+object ConnectionEventGroupBy {
+  def fromWire(s: String): Option[ConnectionEventGroupBy] =
+    ConnectionEventGroupBy.values.find(_.wire == s)
+}
+
+// `groups` maps each column in the request's groupBy set to its value for
+// this row — e.g. {"device": "Prima iPad", "domain": "youtube.com"}. For
+// columns NOT in the groupBy set, the SPA shows the distinct-count from
+// the matching `distinct*` field (per #846 audit decision: just show the
+// number until drill-down lands in #859/#860).
+case class ConnectionEventAggRow(
+    groups: Map[String, String],
+    windowStart: String,
+    countSucceeded: Int,
+    countBlocked: Int,
+    lastSeen: String,
+    topDevice: Option[String],
+    distinctDevices: Int = 0,
+    distinctProfiles: Int = 0,
+    distinctDomains: Int = 0,
+    // #846 audit follow-up: see TrafficUsageAggregateRow.
+    soleDevice: Option[String] = None,
+    soleProfile: Option[String] = None,
+    soleDomain: Option[String] = None,
+) derives JsonCodec
 
 case class SiteUsage(
     label: String,
@@ -337,7 +484,19 @@ case class DeviceUsageSummary(
     usedMins: Int,
 ) derives JsonCodec
 
-case class HostUsage(host: HostId, usedMins: Int) derives JsonCodec
+/**
+ * #715: per-host time-on-site has two parallel numbers.
+ *   - `usedMins` is bucket-presence: every host the device touched in a 5-min bucket is credited
+ *     with that bucket's full duration. Sums across hosts can wildly exceed wall-clock time when a
+ *     device polls many endpoints; useful only for "did this host show up at all today".
+ *   - `proportionalMins` is the same bucket duration weighted by this host's byte share of the
+ *     bucket (bytes_in + bytes_out). Summing across hosts within a mac ≈ the device's wall-clock
+ *     minutes, so this is the right number to drive per-app screen-time UI.
+ *
+ * The daily-cap math (which already collapses each bucket once per device) reads neither field —
+ * adding `proportionalMins` is additive and does not affect cap arithmetic.
+ */
+case class HostUsage(host: HostId, usedMins: Int, proportionalMins: Int) derives JsonCodec
 
 /**
  * #777 lightweight per-profile rollup for the collapsed accordion on the screen-time page. Just the
@@ -483,15 +642,65 @@ case class UsageSeriesResponse(
     bucketsByDevice: List[UsageDeviceBucket] = Nil,
 ) derives JsonCodec
 
+// ── Traffic Usage page (#846) ─────────────────────────────────────────────
+//
+// New page-backing endpoint for raw-row inspection and group-by-domain
+// aggregation. Wire-distinct from UsageSeriesResponse (which powers the
+// screen-time minutes chart and is shape-locked to per-hour minute buckets);
+// see PR for #846 for why this is a sibling rather than an extension.
+
+case class TrafficUsageRawRow(
+    mac: MacAddress,
+    deviceName: Option[String],
+    profileId: Option[ProfileId],
+    profileName: Option[String],
+    host: HostId,
+    bytesIn: Long,
+    bytesOut: Long,
+    activeSeconds: Int,
+    periodStart: String,
+    periodEnd: String,
+) derives JsonCodec
+
+// #846: multi-column aggregation. `groups` is the per-row mapping for
+// columns in the request's groupBy set (e.g. {"device": "Prima iPad"}).
+// For columns NOT in the set, the corresponding `distinct*` field carries
+// the count of distinct values that contributed to this row — the SPA
+// renders the count in that column header until drill-down lands (#859).
+case class TrafficUsageAggregateRow(
+    groups: Map[String, String],
+    windowStart: String,
+    windowEnd: String,
+    totalBytesIn: Long,
+    totalBytesOut: Long,
+    totalSeconds: Long,
+    distinctDevices: Int = 0,
+    distinctProfiles: Int = 0,
+    distinctDomains: Int = 0,
+    // #846 audit follow-up: when a non-grouped column has only one distinct
+    // value contributing to the row, surface it so the SPA can render the
+    // value instead of just "1". `None` when the column is in `groups`
+    // (already covered) OR when distinct > 1.
+    soleDevice: Option[String] = None,
+    soleProfile: Option[String] = None,
+    soleDomain: Option[String] = None,
+) derives JsonCodec
+
+case class TrafficUsageResponse(
+    bucket: String,
+    groupBy: List[String] = Nil,
+    from: String,
+    to: String,
+    tz: String,
+    rawRows: List[TrafficUsageRawRow] = Nil,
+    aggregateRows: List[TrafficUsageAggregateRow] = Nil,
+    rawRowLimit: Option[Int] = None,
+    rawRowsTruncated: Boolean = false,
+) derives JsonCodec
+
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec
-
-case class DashboardNowCurrentSession(
-    host: HostId,
-    startedAt: String,
-    durationSeconds: Long,
-) derives JsonCodec
 
 case class DashboardNowDevice(
     id: DeviceId,
@@ -499,7 +708,6 @@ case class DashboardNowDevice(
     mac: MacAddress,
     lastSeenSeconds: Long,
     topHosts: List[DashboardNowHost],
-    currentSession: Option[DashboardNowCurrentSession],
 ) derives JsonCodec
 
 case class DashboardNowProfile(
@@ -563,27 +771,6 @@ case class TrafficReport(
     activeSeconds: Int,
     bytesIn: Long,
     bytesOut: Long,
-) derives JsonCodec
-
-case class Session(
-    mac: MacAddress,
-    deviceName: Option[String],
-    profileId: Option[ProfileId],
-    profileName: Option[String],
-    host: HostId,
-    routerId: RouterId,
-    date: String,
-    startedAt: String,
-    endedAt: String,
-    durationSeconds: Long,
-    bytesIn: Long,
-    bytesOut: Long,
-    periodCount: Int,
-) derives JsonCodec
-
-case class SessionPage(
-    sessions: List[Session],
-    nextCursor: Option[String],
 ) derives JsonCodec
 
 case class BlockEvent(

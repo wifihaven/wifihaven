@@ -57,8 +57,9 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       tu    <- ZIO.service[TimeUsageRepo]
       dRepo <- ZIO.service[DeviceRepo]
       cRepo <- ZIO.service[ConnectionEventRepo]
+      aRepo <- ZIO.service[DeviceAlertRepo]
       auth = new RouterAuthLive(rRepo)
-    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo)
+    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo)
 
   private def makePolicyService =
     for {
@@ -109,7 +110,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
     for {
       pid <- profileRepo.create("Kids", List(BlocklistId.unsafe("adult")))
-      _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", pid, "192.168.1.10")
+      _   <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", Some(pid), "192.168.1.10")
     } yield ()
 
   def spec = suite("Router ingest /api/router/*")(
@@ -285,6 +286,105 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(sb == ((300L, 350L, 60L)))
+    },
+    test("usage: #715 — applyDelta writes byte-share-weighted proportional_seconds per host") {
+      // Two hosts in the same batch with an 80/20 byte split. seconds_used is
+      // bucket-max for each host (= the full bucket duration the agent saw on
+      // that host), but proportional_seconds splits the bucket by byte share so
+      // the heavy host gets most of the wall-clock attribution.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        recs = List(
+          // youtube: 300s bucket, 800 bytes
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.Fqdn(Hostname.unsafe("youtube.com")),
+            300L,
+            500L,
+            300L,
+          ),
+          // icloud: 300s bucket, 200 bytes
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.Fqdn(Hostname.unsafe("icloud.com")),
+            300L,
+            150L,
+            50L,
+          ),
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, recs).toJson
+        resp   <- post(routes, "/api/router/usage", body, Some(tk))
+        // Bucket-presence is unchanged: each host still credits the full 300s.
+        ytSb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          testDate,
+        )
+        icSb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("icloud.com")),
+          testDate,
+        )
+        ytProp <- tu.getProportionalSeconds(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          testDate,
+        )
+        icProp <- tu.getProportionalSeconds(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("icloud.com")),
+          testDate,
+        )
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(ytSb._1 == 300L && icSb._1 == 300L) &&
+        // bucket=300s. youtube share = 800/1000 → 240s. icloud share = 200/1000 → 60s.
+        assertTrue(ytProp == 240L) &&
+        assertTrue(icProp == 60L) &&
+        // The two proportional values reconcile back to the bucket wall-clock duration.
+        assertTrue(ytProp + icProp == 300L)
+    },
+    test("usage: #715 — single-host batches credit full bucket to proportional_seconds") {
+      // No competing hosts → byte share is 100% → proportional_seconds equals
+      // seconds_used. Guarantees we don't regress for the common case.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          None,
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          300L,
+          1000L,
+          500L,
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        _    <- post(routes, "/api/router/usage", body, Some(tk))
+        sb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          testDate,
+        )
+        prop <- tu.getProportionalSeconds(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          testDate,
+        )
+      } yield assertTrue(sb._1 == 300L) && assertTrue(prop == 300L)
     },
     test("usage: seconds add across distinct periods for same (mac, hostname)") {
       for {
@@ -588,7 +688,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         pid      <- pRepo.create("Kids", List.empty)
         _        <- tlr.upsert(pid, 1)
         // 2. Device assigned to that profile
-        _        <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", pid, "192.168.1.10")
+        _        <- dRepo.upsert(MacAddress.unsafe(knownMac), "kid-ipad", Some(pid), "192.168.1.10")
         // 3. Router (RouterAuth.sha256Hex == PolicyService.hashToken, so the
         //    same bearer authenticates against both ingest and policy routes).
         (id, tk) <- seedRouter(rRepo)
@@ -972,6 +1072,70 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           rows.exists(r => r.host == HostId.IPv4(IpAddress.unsafe("34.223.124.45"))),
         ) &&
         assertTrue(rows.exists(_.host == HostId.Fqdn(Hostname.unsafe("neverssl.com"))))
+    },
+    // ── #711: new-device alert is raised on first ingest of an unknown MAC ──
+    test("events: first_seen_mac for unknown mac raises a pending device_alerts row") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        aRepo    <- ZIO.service[DeviceAlertRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "first_seen_mac",
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.61")),
+          hostname = None,
+          ts = "2026-05-07T14:03:00Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        alerts <- aRepo.listAll(includeDismissed = false)
+      } yield assertTrue(alerts.size == 1) &&
+        assertTrue(alerts.head.mac == MacAddress.unsafe(unknownMac)) &&
+        assertTrue(alerts.head.dismissedAt.isEmpty)
+    },
+    test("events: repeated first_seen_mac for the same MAC raises only one alert") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        aRepo    <- ZIO.service[DeviceAlertRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "first_seen_mac",
+          mac = Some(MacAddress.unsafe(unknownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.61")),
+          hostname = None,
+          ts = "2026-05-07T14:03:00Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        alerts <- aRepo.listAll(includeDismissed = true)
+      } yield assertTrue(alerts.size == 1)
+    },
+    test("events: dhcp_lease for a known MAC does NOT raise an alert") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        aRepo    <- ZIO.service[DeviceAlertRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        ev   = RouterEvent(
+          "dhcp_lease",
+          mac = Some(MacAddress.unsafe(knownMac)),
+          ip = Some(IpAddress.unsafe("192.168.1.10")),
+          hostname = Some(Hostname.unsafe("kid-ipad")),
+          ts = "2026-05-07T14:03:00Z",
+        )
+        body = RouterEventsRequest(id, List(ev)).toJson
+        _      <- post(routes, "/api/router/events", body, Some(tk))
+        alerts <- aRepo.listAll(includeDismissed = true)
+      } yield assertTrue(alerts.isEmpty)
     },
   ) @@ TestAspect.sequential
 }

@@ -4,9 +4,10 @@ on:
   pull_request:
     # Run on PRs targeting any branch
   workflow_call:
-    # Invoked by master.yml on push to main so the CD pipeline gates publish
-    # on the same test matrix PRs run. Direct push: main is intentionally
-    # omitted — main coverage flows through master.yml (issue #190).
+    # Invoked by master-api-ui.yml and master-router.yml on push to main so
+    # the CD pipelines gate publish on the same test matrix PRs run. Direct
+    # push:main is intentionally omitted — main coverage flows through the
+    # two Master CD workflows (issue #190).
   workflow_dispatch:
 
 env:
@@ -18,7 +19,7 @@ env:
 
 jobs:
   # ── Path filter: decide which downstream jobs need to run on this PR ─────
-  # On workflow_call (from master.yml) and workflow_dispatch we force every
+  # On workflow_call (from the Master CD workflows) and workflow_dispatch we force every
   # output to 'true' so the post-merge CD gate and manual runs still execute
   # the full matrix. On pull_request we let dorny/paths-filter compute deltas
   # against the PR base. Any change to ci.yml itself also forces everything.
@@ -172,7 +173,15 @@ jobs:
         run: scalafmt --check --non-interactive
 
       - name: Compile all modules
-        run: mill __.compile
+        # Mill caches `out/` across runs but does NOT drop stale `.class` files when their `.scala`
+        # sources are deleted, so old test classes can still be discovered by the test framework
+        # (#845 hit this: SessionApiSpec was deleted but its cached class file persisted and
+        # failed with NoClassDefFoundError for the also-deleted SessionPage). Wipe the per-module
+        # `classes` dirs so Zinc rebuilds against the current source set; everything else in
+        # `out/` (Zinc analysis, downloaded deps) stays cached.
+        run: |
+          rm -rf out/*/test/compile.dest/classes out/*/compile.dest/classes 2>/dev/null || true
+          mill __.compile
 
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
         # api.test spins up EmbeddedPostgres; running sequentially avoids
@@ -195,6 +204,11 @@ jobs:
       - name: Reject changes to existing migration files
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Emergency escape hatch for #883 (duplicate V27 rename). The
+          # mutation check is bypassed only on this specific PR branch;
+          # the duplicate-version check still runs.
+          # TODO(#885): remove this env block after the #883 PR has merged.
+          ALLOW_MIGRATION_MUTATIONS: ${{ github.event.pull_request.head.ref == 'fix-883-dup-v27' && '1' || '0' }}
         run: bash .github/scripts/check-migrations.sh "$BASE_SHA"
 
   # ── Shell test discovery ─────────────────────────────────────────────────

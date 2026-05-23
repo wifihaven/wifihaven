@@ -77,6 +77,13 @@ case_add_plus_modify() {
   git add . && git commit -q -m mixed
 }
 
+# #883 guardrail: two files at the same V<n>__ prefix must be rejected.
+case_dup_version() {
+  echo "-- v2" > api/resources/db/migration/V2__one.sql
+  echo "-- v2 again" > api/resources/db/migration/V2__two.sql
+  git add . && git commit -q -m dup
+}
+
 run_case "no migration changes"         pass case_no_changes
 run_case "added new migration"          pass case_add_new
 run_case "unrelated file change"        pass case_unrelated_change
@@ -84,5 +91,6 @@ run_case "modified existing migration"  fail case_modify
 run_case "deleted existing migration"   fail case_delete
 run_case "renamed existing migration"   fail case_rename
 run_case "added new + modified existing" fail case_add_plus_modify
+run_case "duplicate version numbers"    fail case_dup_version
 
 echo "All tests passed."

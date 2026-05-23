@@ -198,6 +198,10 @@ object ProfileRoutes {
                   // #424: omitted blockIpOnly defaults to false on create
                   // (matches the DB column default).
                   upr.blockIpOnly.getOrElse(false),
+                  // #751: omitted crossDeviceOverlapMode defaults to Sum
+                  // (matches the DB column default and preserves
+                  // pre-#751 per-profile semantics).
+                  upr.crossDeviceOverlapMode.getOrElse(CrossDeviceOverlapMode.Sum),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -240,6 +244,9 @@ object ProfileRoutes {
                   // #424: if caller omits blockIpOnly, preserve the
                   // existing value rather than clearing it.
                   blockIpOnly = upr.blockIpOnly.getOrElse(p.blockIpOnly),
+                  // #751: same preserve-on-omit semantics.
+                  crossDeviceOverlapMode =
+                    upr.crossDeviceOverlapMode.getOrElse(p.crossDeviceOverlapMode),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -331,15 +338,21 @@ object DeviceRoutes {
             udr    <- ZIO
               .fromEither(body.fromJson[UpsertDeviceRequest])
               .mapError(e => Response.badRequest(e))
-            _      <- requireProfileAccess(claims, udr.profileId, userProfileRepo)
             mac = MacAddress.unsafe(normalizeMac(udr.mac.value))
+            // #708: profileId is optional — None means "unassigned" (NULL). The
+            // access check only fires when the caller supplies a profileId; targeting
+            // a profile they can't write to still 403s.
+            _  <- udr.profileId match {
+              case Some(pid) => requireProfileAccess(claims, pid, userProfileRepo)
+              case None      => ZIO.unit
+            }
             id <- deviceRepo
               .upsert(mac, udr.name, udr.profileId, "")
               .mapError(ErrorMapper.dbErrorToResponse)
             // #481: log device upsert so the next CI failure makes it obvious
             // whether the mutation reached the API at all.
             _  <- ZIO.logInfo(
-              s"device upserted: mac=${mac.value} profileId=${udr.profileId.value} name=${udr.name}",
+              s"device upserted: mac=${mac.value} profileId=${udr.profileId.map(_.value.toString).getOrElse("-")} name=${udr.name}",
             )
           } yield Response.json(s"""{"id":${id.value}}""")
         },
@@ -430,7 +443,14 @@ object TimeRoutes {
               val exempts   = exemptByPid.getOrElse(p.id, Nil)
               val perMac    = wifihaven.api.presence.Presence
                 .totalMinutesByMac(pRows, exempts, settings.heartbeatFilter)
-              val used      = devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+              // #751: honor the profile's overlap mode.
+              val used      = p.crossDeviceOverlapMode match {
+                case CrossDeviceOverlapMode.Sum   =>
+                  devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+                case CrossDeviceOverlapMode.Dedup =>
+                  wifihaven.api.presence.Presence
+                    .dedupedTotalMinutes(pRows, exempts, settings.heartbeatFilter)
+              }
               val limit     = limitByPid.get(p.id)
               val extMins   = extsByPid.getOrElse(p.id, 0)
               val remaining = limit.map(l => (l + extMins - used).max(0))
@@ -479,7 +499,14 @@ object TimeRoutes {
               val pRows   = presence.filter(r => macSet.contains(r.mac))
               val perMac  = wifihaven.api.presence.Presence
                 .totalMinutesByMac(pRows, Nil, settings.heartbeatFilter)
-              val total   = devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+              // #751: same Sum/Dedup branch as the daily summary.
+              val total   = p.crossDeviceOverlapMode match {
+                case CrossDeviceOverlapMode.Sum   =>
+                  devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
+                case CrossDeviceOverlapMode.Dedup =>
+                  wifihaven.api.presence.Presence
+                    .dedupedTotalMinutes(pRows, Nil, settings.heartbeatFilter)
+              }
               ProfileTimeSummaryWeek(
                 p.id,
                 p.name,
@@ -762,7 +789,17 @@ object TimeRoutes {
         .totalMinutesByMac(presence, exemptPats, heartbeatFilter)
       perMacPat       = wifihaven.api.presence.Presence
         .patternMinutesByMac(presence, stls.map(_.domainPattern))
-      totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+      // #751: in Dedup mode the profile total unions per-device active buckets
+      // (one bucket → one minute, regardless of how many of this profile's
+      // devices were active in it). In Sum mode we keep the historical
+      // behaviour: per-device totals added.
+      totalUsed       = profile.crossDeviceOverlapMode match {
+        case CrossDeviceOverlapMode.Sum   =>
+          devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+        case CrossDeviceOverlapMode.Dedup =>
+          wifihaven.api.presence.Presence
+            .dedupedTotalMinutes(presence, exemptPats, heartbeatFilter)
+      }
       remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
       siteUsage       = stls.map { stl =>
         val used = devices.iterator.map(d => perMacPat.getOrElse((d.mac, stl.domainPattern), 0)).sum
@@ -778,16 +815,20 @@ object TimeRoutes {
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
       // #262 — top-N host attribution across all profile devices for the day.
-      // Bucket-deduped per host; informational, so all hosts (including
-      // exempt-pattern matches) appear. UI shows top 10.
-      hostUsage       = wifihaven.api.presence.Presence
-        .hostMinutes(presence)
-        .iterator
-        .filter(_._2 > 0)
-        .map { case (h, m) => HostUsage(h, m) }
-        .toList
-        .sortBy(hu => (-hu.usedMins, hu.host.value))
-        .take(10)
+      // `usedMins` is bucket-presence and `proportionalMins` is the #715
+      // byte-share-weighted attribution; UI defaults to the latter. Hosts
+      // with zero presence are dropped so the top-10 list isn't padded by
+      // hosts that exist only because the bucket touched them at all.
+      hostUsage       = {
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
+        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        presenceMins.iterator
+          .filter(_._2 > 0)
+          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+          .toList
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+          .take(10)
+      }
     } yield ProfileTimeStatus(
       profile.id,
       profile.name,
@@ -827,19 +868,36 @@ object TimeRoutes {
       // view (#714). Per-FQDN attribution caveats from #715 still apply.
       perMacTotal     = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
-      totalUsed       = devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+      // #751: same Sum/Dedup branch as the daily endpoint, applied across the
+      // entire weekly range. perBucket below also respects the mode so the
+      // bars reconcile to totalUsed.
+      totalUsed       = profile.crossDeviceOverlapMode match {
+        case CrossDeviceOverlapMode.Sum   =>
+          devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
+        case CrossDeviceOverlapMode.Dedup =>
+          wifihaven.api.presence.Presence
+            .dedupedTotalMinutes(presence, Nil, heartbeatFilter)
+      }
       deviceSummaries = devices.map { d =>
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
-      hostUsage       = wifihaven.api.presence.Presence
-        .hostMinutes(presence)
-        .iterator
-        .filter(_._2 > 0)
-        .map { case (h, m) => HostUsage(h, m) }
-        .toList
-        .sortBy(hu => (-hu.usedMins, hu.host.value))
-        .take(10)
-      perBucket       = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
+      hostUsage       = {
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
+        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        presenceMins.iterator
+          .filter(_._2 > 0)
+          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+          .toList
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+          .take(10)
+      }
+      perBucket       =
+        bucketHourlyAligned(
+          presence,
+          heartbeatFilter,
+          bucketOffsetMin,
+          profile.crossDeviceOverlapMode,
+        )
     } yield ProfileTimeStatusWeek(
       profile.id,
       profile.name,
@@ -875,15 +933,20 @@ object TimeRoutes {
       perMac    = wifihaven.api.presence.Presence
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
       totalUsed = perMac.getOrElse(device.mac, 0)
-      hostUsage = wifihaven.api.presence.Presence
-        .hostMinutes(presence)
-        .iterator
-        .filter(_._2 > 0)
-        .map { case (h, m) => HostUsage(h, m) }
-        .toList
-        .sortBy(hu => (-hu.usedMins, hu.host.value))
-        .take(10)
-      perBucket = bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin)
+      hostUsage = {
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
+        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        presenceMins.iterator
+          .filter(_._2 > 0)
+          .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
+          .toList
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+          .take(10)
+      }
+      // Per-device path: only one mac in play, so the dedup/sum distinction is
+      // moot; use the Sum branch to keep the historical wiring.
+      perBucket =
+        bucketHourlyAligned(presence, heartbeatFilter, bucketOffsetMin, CrossDeviceOverlapMode.Sum)
     } yield DeviceTimeStatusWeek(
       device.mac,
       device.name,
@@ -928,6 +991,7 @@ object TimeRoutes {
       presence: List[wifihaven.api.presence.PresenceRow],
       heartbeatFilter: HeartbeatFilter,
       offsetMin: Int,
+      overlap: CrossDeviceOverlapMode,
   ): List[ProfileTimeBucket] = {
     val hourSeconds   = 3600L
     val offsetSeconds = offsetMin.toLong * 60L
@@ -940,10 +1004,18 @@ object TimeRoutes {
       }
       .iterator
       .map { case (bucketStart, rows) =>
-        val mins = wifihaven.api.presence.Presence
-          .totalMinutesByMac(rows, Nil, heartbeatFilter)
-          .values
-          .sum
+        // #751: respect the profile's overlap mode so the hourly bars reconcile
+        // with the headline totalUsed.
+        val mins = overlap match {
+          case CrossDeviceOverlapMode.Sum   =>
+            wifihaven.api.presence.Presence
+              .totalMinutesByMac(rows, Nil, heartbeatFilter)
+              .values
+              .sum
+          case CrossDeviceOverlapMode.Dedup =>
+            wifihaven.api.presence.Presence
+              .dedupedTotalMinutes(rows, Nil, heartbeatFilter)
+        }
         ProfileTimeBucket(bucketStart, mins)
       }
       .filter(_.usedMins > 0)
@@ -1014,7 +1086,7 @@ object LogRoutes {
       userProfileRepo: UserProfileRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "logs"  ->
+      Method.GET / "api" / "logs"                         ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)
@@ -1033,7 +1105,68 @@ object LogRoutes {
             visible <- filterLogs(claims, logs, userProfileRepo)
           } yield Response.json(visible.toJson)
         },
-      Method.GET / "api" / "stats" ->
+      // #847: aggregated connection-event series. bucket+groupBy required; only
+      // domain grouping is implemented (apex needs PSL #849, app needs apps
+      // track #761-#769). Filters mirror /api/logs.
+      Method.GET / "api" / "connection-events" / "series" ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            // Aggregated rows don't carry per-row profile_id, so we can't
+            // post-filter the way /api/logs does. Restrict to admin/adult;
+            // children can still use /api/logs raw view with a profileId
+            // filter that goes through filterLogs.
+            _      <- ZIO
+              .fail(Response.forbidden("aggregated view requires admin or adult role"))
+              .when(claims.role != "admin" && claims.role != "adult")
+            bktStr <- ZIO
+              .fromOption(req.url.queryParam("bucket"))
+              .orElseFail(Response.badRequest("bucket query parameter required"))
+            bucket <- ZIO
+              .fromOption(ConnectionEventBucket.fromWire(bktStr))
+              .orElseFail(Response.badRequest(s"unknown bucket: $bktStr"))
+            _      <- ZIO
+              .fail(Response.badRequest("bucket=off not supported on /series — use /api/logs"))
+              .when(bucket == ConnectionEventBucket.Off)
+            // #846: comma-separated multi-column groupBy. Apex/App still
+            // accepted as wire names but rejected with typed errors so the
+            // SPA can re-enable them later without an API change (#856, #857).
+            grpRaw <- ZIO
+              .fromOption(req.url.queryParam("groupBy"))
+              .orElseFail(Response.badRequest("groupBy query parameter required"))
+            grpSet <- ZIO
+              .foreach(grpRaw.split(',').toList.map(_.trim).filter(_.nonEmpty)) { s =>
+                ZIO
+                  .fromOption(ConnectionEventGroupBy.fromWire(s))
+                  .orElseFail(Response.badRequest(s"unknown groupBy: $s"))
+              }
+              .map(_.toSet)
+            _      <- ZIO
+              .fail(Response.badRequest("groupBy=apex not implemented — see #856 (needs PSL)"))
+              .when(grpSet.exists(g => g.wire == "apex"))
+            _      <- ZIO
+              .fail(
+                Response.badRequest("groupBy=app not implemented — apps track #761-#769 / see #857"),
+              )
+              .when(grpSet.exists(g => g.wire == "app"))
+            groupByCodes = grpSet.map(_.wire)
+            filter       = LogFilter(
+              mac = req.url.queryParam("mac"),
+              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
+              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
+              blocked = req.url.queryParam("blocked").map(_ == "true"),
+              domain = req.url.queryParam("domain"),
+              location = req.url.queryParam("location"),
+              hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24),
+              limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(500),
+              offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
+            )
+            rows <- connRepo
+              .querySeries(filter, bucket.seconds, groupByCodes)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.json(rows.toJson)
+        },
+      Method.GET / "api" / "stats"                        ->
         handler { (req: Request) =>
           requireAdmin(req, auth) *>
             connRepo.stats

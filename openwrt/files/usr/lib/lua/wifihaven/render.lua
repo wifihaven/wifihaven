@@ -462,14 +462,24 @@ function M.nft(snapshot, opts)
     emit("")
   end
 
-  -- Per-flow accounting sets. Two sets, one per direction, both keyed on
-  -- (device_mac, remote_ip) so usage.lua can join them into a single record
-  -- carrying bytesIn and bytesOut (#717). The set for the device→remote
-  -- direction matches `ether saddr (mac) . ip daddr (remote)`; the reverse
-  -- direction matches `ether daddr (mac) . ip saddr (remote)`. The chain
-  -- below updates both atomically per packet, so a row's bytesIn/bytesOut
-  -- always cover the same window and the agent's per-bucket nft reset
-  -- zeroes both in lock-step.
+  -- Per-flow accounting sets — one per direction, each updated from its own
+  -- chain (#897). Both chains hook `forward` at priority 1; the direction
+  -- predicate (`iifname` / `oifname "br-lan"`) is what keeps tx from
+  -- absorbing WAN→LAN packets (which would otherwise land in the tx set
+  -- keyed on the upstream-gateway MAC + the LAN device's IP — pure noise)
+  -- and what keeps rx from absorbing LAN→WAN packets.
+  --
+  -- tx (device→remote, `iifname br-lan`): `ether saddr (device_mac) .
+  -- ip daddr (remote_ip)`. The L2 saddr at the forward hook is the real LAN
+  -- device MAC for LAN→WAN traffic, so per-(mac, remote_ip) attribution works.
+  --
+  -- rx (remote→device, `oifname br-lan`): `ip daddr (lan_device_ip) .
+  -- ip saddr (remote_ip)`. We *cannot* use `ether daddr` here: for a WAN→LAN
+  -- routed packet the L2 daddr at the forward hook is still the router's
+  -- WAN-interface MAC (the rewrite to the LAN device's MAC happens at egress
+  -- via the neighbor cache, after the forward hook runs) — keying on it
+  -- attributed every download to the router itself (#879). The agent
+  -- resolves the LAN IP back to a MAC via the dnsmasq lease table.
   ind("set mac_ip_tracking {")
   ind2("type ether_addr . ipv4_addr")
   ind2("flags dynamic,timeout")
@@ -478,21 +488,25 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
-  ind("set mac_ip_tracking_rx {")
-  ind2("type ether_addr . ipv4_addr")
+  -- #897: fresh set name (was `ip_tracking_rx`, single-key) so a hot agent
+  -- restart against an older nft ruleset can't misparse the old shape.
+  ind("set ip_pair_tracking_rx {")
+  ind2("type ipv4_addr . ipv4_addr")
   ind2("flags dynamic,timeout")
   ind2("timeout 6h")
   ind2("counter")
   ind("}")
   emit("")
 
-  -- Accounting chain: forward hook, low priority; updates both tracking sets
-  -- per packet. Both updates happen in the same rule walk so a single
-  -- forwarded packet bumps exactly one element on exactly one set.
-  ind("chain wifihaven_account {")
+  ind("chain wifihaven_account_tx {")
   ind2("type filter hook forward priority 1; policy accept;")
-  ind2("update @mac_ip_tracking    { ether saddr . ip daddr } counter")
-  ind2("update @mac_ip_tracking_rx { ether daddr . ip saddr } counter")
+  ind2("iifname \"br-lan\" update @mac_ip_tracking { ether saddr . ip daddr } counter")
+  ind("}")
+  emit("")
+
+  ind("chain wifihaven_account_rx {")
+  ind2("type filter hook forward priority 1; policy accept;")
+  ind2("oifname \"br-lan\" update @ip_pair_tracking_rx { ip daddr . ip saddr } counter")
   ind("}")
   emit("")
 

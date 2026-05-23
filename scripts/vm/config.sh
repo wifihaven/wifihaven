@@ -4,12 +4,22 @@
 # the single source of truth for names that span the router VM (#144) and the
 # client VM (#146), so changes here propagate to both halves.
 
-# --- LAN bridge (shared with the router VM from #144) ------------------------
-# If #144 picks different names/ranges, update *here* — these constants are
-# referenced everywhere else by variable, not by literal.
-WH_LAN_BRIDGE="${WH_LAN_BRIDGE:-wh-lan0}"
-WH_LAN_SUBNET="${WH_LAN_SUBNET:-192.168.100.0/24}"
-WH_LAN_ROUTER_IP="${WH_LAN_ROUTER_IP:-192.168.100.1}"
+# --- Concurrent-run keying (#891) --------------------------------------------
+# Set WH_RUN_ID to a short, filesystem-safe token (e.g. "a", "ci-7") to run a
+# second router+client pair on the same host. When empty, all derived names,
+# paths, ports, and MACs are byte-identical to the pre-#891 layout — single-
+# pair invocations need no changes.
+WH_RUN_ID="${WH_RUN_ID:-}"
+
+# WH_PORT_BASE: shorthand to allocate three consecutive host ports. Only
+# applies as a *default* for the individual port vars below — explicit
+# WH_ROUTER_SSH_PORT / WH_ROUTER_HTTP_PORT / WH_CLIENT_SSH_PORT_BASE still win.
+WH_PORT_BASE="${WH_PORT_BASE:-}"
+
+# WH_MAC_PREFIX: three-octet OUI used to build default WAN/LAN MACs. The
+# per-run suffix is derived from WH_RUN_ID (sha256, first 2 hex bytes) so two
+# concurrent pairs don't collide. Explicit WH_ROUTER_MAC_* still wins.
+WH_MAC_PREFIX="${WH_MAC_PREFIX:-52:54:00}"
 
 # --- Alpine cloud image (client VM base) -------------------------------------
 # Pinned to a specific release + checksum. Bump deliberately, not casually.
@@ -22,14 +32,35 @@ WH_ALPINE_SHA512="d0ddf1faae4d44aee3ad6621f166bd414c2f99b6974fb455408612d59cbb31
 
 # --- Paths -------------------------------------------------------------------
 # Resolve relative to the directory containing config.sh, so callers can be
-# invoked from anywhere.
+# invoked from anywhere. When WH_RUN_ID is set, runtime state lives under
+# .run/<run-id>/ so a second concurrent pair doesn't collide on overlay/pid/
+# socket paths.
 WH_VM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WH_CACHE_DIR="${WH_VM_DIR}/.cache"
-WH_RUN_DIR="${WH_VM_DIR}/.run"
+if [[ -n "${WH_RUN_ID}" ]]; then
+  WH_RUN_DIR="${WH_VM_DIR}/.run/${WH_RUN_ID}"
+else
+  WH_RUN_DIR="${WH_VM_DIR}/.run"
+fi
 WH_KEYS_DIR="${WH_VM_DIR}/keys"
 WH_CLIENT_BASE_IMG="${WH_CACHE_DIR}/client-base.qcow2"
 WH_CLIENT_SSH_KEY="${WH_KEYS_DIR}/client_test_ed25519"
 WH_CLIENT_SSH_PUB="${WH_KEYS_DIR}/client_test_ed25519.pub"
+
+# --- LAN bridge (shared with the router VM from #144) ------------------------
+# Resolution order:
+#   1. WH_LAN_BRIDGE explicitly set in env → use it (back-compat).
+#   2. router-up.sh in this run recorded a pool pick under .run/<id>/lan-bridge
+#      → use that (so client-up.sh sees the same bridge router-up chose).
+#   3. Default to wh-lan0 (today's single-pair behavior).
+# The pool-pick itself happens in lib.sh::wh_pick_lan_bridge, called from
+# router-up.sh before qemu boot (#891).
+if [[ -z "${WH_LAN_BRIDGE:-}" && -f "${WH_RUN_DIR}/lan-bridge" ]]; then
+  WH_LAN_BRIDGE="$(cat "${WH_RUN_DIR}/lan-bridge")"
+fi
+WH_LAN_BRIDGE="${WH_LAN_BRIDGE:-wh-lan0}"
+WH_LAN_SUBNET="${WH_LAN_SUBNET:-192.168.100.0/24}"
+WH_LAN_ROUTER_IP="${WH_LAN_ROUTER_IP:-192.168.100.1}"
 
 # --- Router VM (OpenWRT, #144) -----------------------------------------------
 # Bump procedure:
@@ -53,16 +84,54 @@ WH_ROUTER_PIDFILE="${WH_ROUTER_RUN_DIR}/qemu.pid"
 WH_ROUTER_MONITOR_SOCK="${WH_ROUTER_RUN_DIR}/monitor.sock"
 WH_ROUTER_SERIAL_LOG="${WH_ROUTER_RUN_DIR}/console.log"
 
+# QEMU `-name` for the router VM. Suffixed with WH_RUN_ID so `pgrep -f` in
+# router-down.sh only matches *this* instance — without the suffix two
+# concurrent runs would each kill the other's qemu (#891).
+if [[ -n "${WH_RUN_ID}" ]]; then
+  WH_ROUTER_VM_NAME="${WH_ROUTER_VM_NAME:-wh-router-${WH_RUN_ID}}"
+else
+  WH_ROUTER_VM_NAME="${WH_ROUTER_VM_NAME:-wh-router}"
+fi
+
 # Router VM size + WAN-side SSH hostfwd (LuCI HTTP forwarded for manual poking).
+# When WH_PORT_BASE is set and the individual port var is unset, derive:
+#   router SSH  = WH_PORT_BASE
+#   router HTTP = WH_PORT_BASE + 1
+#   client SSH  = WH_PORT_BASE + 2
 WH_ROUTER_MEM_MB="${WH_ROUTER_MEM_MB:-512}"
 WH_ROUTER_DISK_SIZE="${WH_ROUTER_DISK_SIZE:-512M}"
-WH_ROUTER_SSH_PORT="${WH_ROUTER_SSH_PORT:-2222}"
-WH_ROUTER_HTTP_PORT="${WH_ROUTER_HTTP_PORT:-8080}"
+if [[ -n "${WH_PORT_BASE}" ]]; then
+  WH_ROUTER_SSH_PORT="${WH_ROUTER_SSH_PORT:-${WH_PORT_BASE}}"
+  WH_ROUTER_HTTP_PORT="${WH_ROUTER_HTTP_PORT:-$((WH_PORT_BASE + 1))}"
+  WH_CLIENT_SSH_PORT_BASE="${WH_CLIENT_SSH_PORT_BASE:-$((WH_PORT_BASE + 2))}"
+else
+  WH_ROUTER_SSH_PORT="${WH_ROUTER_SSH_PORT:-2222}"
+  WH_ROUTER_HTTP_PORT="${WH_ROUTER_HTTP_PORT:-8080}"
+  WH_CLIENT_SSH_PORT_BASE="${WH_CLIENT_SSH_PORT_BASE:-2223}"
+fi
 
 # Stable, locally-administered MACs so the orchestrator can match-by-MAC in
-# router-side logs.
-WH_ROUTER_MAC_LAN="${WH_ROUTER_MAC_LAN:-52:54:00:fd:00:02}"
-WH_ROUTER_MAC_WAN="${WH_ROUTER_MAC_WAN:-52:54:00:fd:00:01}"
+# router-side logs. When WH_RUN_ID is set, mix it into the last two octets so
+# two concurrent pairs get distinct MACs even on the same L2; explicit
+# WH_ROUTER_MAC_LAN / WH_ROUTER_MAC_WAN still win.
+if [[ -n "${WH_RUN_ID}" ]]; then
+  # First 2 bytes of sha256(WH_RUN_ID) → 4 hex chars, split into two octets.
+  if command -v sha256sum >/dev/null 2>&1; then
+    _wh_mac_hash="$(printf '%s' "${WH_RUN_ID}" | sha256sum | awk '{print $1}')"
+  else
+    _wh_mac_hash="$(printf '%s' "${WH_RUN_ID}" | shasum -a 256 | awk '{print $1}')"
+  fi
+  _wh_mac_oct3="${_wh_mac_hash:0:2}"
+  _wh_mac_oct4="${_wh_mac_hash:2:2}"
+  WH_ROUTER_MAC_LAN="${WH_ROUTER_MAC_LAN:-${WH_MAC_PREFIX}:fd:${_wh_mac_oct3}:${_wh_mac_oct4}}"
+  # WAN differs in the last octet so router-side logs can disambiguate.
+  _wh_mac_oct4_alt="$(printf '%02x' $(( 0x${_wh_mac_oct4} ^ 0x01 )))"
+  WH_ROUTER_MAC_WAN="${WH_ROUTER_MAC_WAN:-${WH_MAC_PREFIX}:fd:${_wh_mac_oct3}:${_wh_mac_oct4_alt}}"
+  unset _wh_mac_hash _wh_mac_oct3 _wh_mac_oct4 _wh_mac_oct4_alt
+else
+  WH_ROUTER_MAC_LAN="${WH_ROUTER_MAC_LAN:-52:54:00:fd:00:02}"
+  WH_ROUTER_MAC_WAN="${WH_ROUTER_MAC_WAN:-52:54:00:fd:00:01}"
+fi
 
 # --- SSH management NIC ------------------------------------------------------
 # The client VM has two NICs:
@@ -70,5 +139,14 @@ WH_ROUTER_MAC_WAN="${WH_ROUTER_MAC_WAN:-52:54:00:fd:00:01}"
 #   eth1 — host-side user-mode NIC (QEMU SLIRP), used ONLY for orchestrator
 #          SSH via hostfwd. No default route, no DNS — keeps all real traffic
 #          on the LAN side so DNS scenarios actually exercise the router.
-# Default port for the first client; client-up.sh increments per --name slot.
-WH_CLIENT_SSH_PORT_BASE="${WH_CLIENT_SSH_PORT_BASE:-2223}"
+
+# Helper: compute the QEMU `-name` for a client slot. Suffixed with WH_RUN_ID
+# so client-down.sh's pgrep fallback only matches *this* instance.
+wh_client_vm_name() {
+  local slot="$1"
+  if [[ -n "${WH_RUN_ID}" ]]; then
+    printf 'wh-%s-%s' "${slot}" "${WH_RUN_ID}"
+  else
+    printf 'wh-%s' "${slot}"
+  fi
+}

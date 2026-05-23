@@ -23,6 +23,18 @@ if [[ -n "${attached}" ]]; then
 Stop the router/client VMs first."
 fi
 
+# Pool bridges (wh-lan0, wh-lan1, ...) are owned by lan-bridge-pool-bootstrap.sh
+# and meant to outlive any single run — deleting one here would force the next
+# run to re-create it (needs sudo) and would race with another in-flight
+# concurrent run picking the same pool slot (#891). Only delete bridges we
+# would also create on-the-fly via lan-bridge-up.sh — i.e. bridges *not* in
+# the pool.
+if [[ "${WH_LAN_BRIDGE}" =~ ^wh-lan[0-9]+$ ]] && [[ -f /etc/qemu/bridge.conf ]] \
+    && grep -qE "^[[:space:]]*allow[[:space:]]+${WH_LAN_BRIDGE}\b" /etc/qemu/bridge.conf; then
+  log "leaving pool bridge ${WH_LAN_BRIDGE} in place (managed by lan-bridge-pool-bootstrap.sh)"
+  exit 0
+fi
+
 log "removing bridge ${WH_LAN_BRIDGE}"
 sudo ip link set "${WH_LAN_BRIDGE}" down
 sudo ip link delete "${WH_LAN_BRIDGE}" type bridge
