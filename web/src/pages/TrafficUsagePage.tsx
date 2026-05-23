@@ -208,7 +208,7 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
             <th className="text-left px-2 py-1">Host</th>
             <th className="text-right px-2 py-1">Inbound</th>
             <th className="text-right px-2 py-1">Outbound</th>
-            <th className="text-right px-2 py-1">Seconds</th>
+            <th className="text-right px-2 py-1">Time</th>
           </tr>
         </thead>
         <tbody className="text-gray-300">
@@ -227,7 +227,7 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
               <td className="px-2 py-1"><HostCell host={r.host} /></td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.bytesIn)}</td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.bytesOut)}</td>
-              <td className="px-2 py-1 text-right font-mono">{r.activeSeconds}</td>
+              <td className="px-2 py-1 text-right font-mono">{fmtDuration(r.activeSeconds)}</td>
             </tr>
           ))}
         </tbody>
@@ -296,7 +296,7 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
             </th>
             <th className="text-right px-2 py-1">Inbound</th>
             <th className="text-right px-2 py-1">Outbound</th>
-            <th className="text-right px-2 py-1">Total seconds</th>
+            <th className="text-right px-2 py-1">Time</th>
           </tr>
         </thead>
         <tbody className="text-gray-300">
