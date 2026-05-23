@@ -49,23 +49,28 @@ The bootstrap uses `sudo` for both `ip link add` and `tee -a
 are appended. Run it once per host (or whenever you bump
 `WH_LAN_BRIDGE_POOL_SIZE`).
 
-**Per-run knobs**: to launch a second pair on a bootstrapped host, set only
-two env vars on the second invocation — the bridge is auto-picked from the
-pool:
+**Per-run knobs**: to launch a second pair on a bootstrapped host, set
+`WH_RUN_ID` — the bridge is auto-picked from the pool and host ports are
+auto-allocated by `scripts/e2e-vm.sh`:
 
 ```
-WH_RUN_ID=b WH_PORT_BASE=2322 scripts/e2e-vm.sh --mode=fake
+WH_RUN_ID=b scripts/e2e-vm.sh --mode=fake
 ```
 
 - `WH_RUN_ID` — short token. Suffixes the QEMU `-name` (so `pgrep`-based
   fallbacks in `*-down.sh` only match this instance) and the `.run/` subdir
   (so overlay/pid/socket files don't collide). Also seeds the default MACs.
-- `WH_PORT_BASE` — first host port; router SSH = base, router HTTP =
-  base+1, client SSH = base+2. Individual port vars
-  (`WH_ROUTER_SSH_PORT`, `WH_ROUTER_HTTP_PORT`, `WH_CLIENT_SSH_PORT_BASE`)
-  still win if set explicitly.
+- `WH_PORT_BASE` — optional. First host port; router SSH = base, router
+  HTTP = base+1, client SSH = base+2. When set, `scripts/e2e-vm.sh` skips
+  random port allocation and uses the base-derived window. Individual port
+  vars (`WH_ROUTER_SSH_PORT`, `WH_ROUTER_HTTP_PORT`,
+  `WH_CLIENT_SSH_PORT_BASE`) still win if set explicitly. Most callers
+  shouldn't need this — `scripts/e2e-vm.sh` now auto-allocates free host
+  ports per run (#902), so concurrent pairs no longer need a manual port
+  window.
 - `WH_LAN_BRIDGE` — optional override. If set explicitly, skips pool pick.
-- For fake-mode, also set `WH_FAKE_API_PORT` to a free port on the second run.
+- For fake-mode, `WH_FAKE_API_PORT` is auto-allocated to a free port by
+  `scripts/e2e-vm.sh` (#902). Override only if you need a fixed port.
 
 **On a host without the pool**, the bridge picker is a no-op and the run
 falls back to creating `wh-lan0` on the fly — byte-identical to single-pair
