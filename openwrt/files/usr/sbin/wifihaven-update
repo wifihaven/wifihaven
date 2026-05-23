@@ -107,5 +107,19 @@ case "$PM" in
     ;;
 esac
 
+# Stamp BEFORE restart: a restart failure (procd hiccup, etc.) must not leave
+# the digest unrecorded — otherwise every cron tick would re-install but never
+# move the stamp forward. Next reboot recovers the agent code regardless.
 mkdir -p "$STATE_DIR"
 printf '%s\n' "$LATEST_STAMP" > "$STAMP_FILE"
+
+# Lua loads modules once at process start, so freshly-installed files only take
+# effect after the agent restarts (#909). Best-effort: if procd is wedged, log
+# and move on — next reboot resolves it.
+log "restarting wifihaven service to load new agent code"
+if /etc/init.d/wifihaven restart >/tmp/wifihaven-update-restart.log 2>&1; then
+  log "wifihaven service restarted"
+  rm -f /tmp/wifihaven-update-restart.log
+else
+  log "warn: /etc/init.d/wifihaven restart failed; agent will continue on old code until next reboot (see /tmp/wifihaven-update-restart.log)"
+fi
