@@ -65,7 +65,8 @@ WH_RUN_ID=b WH_PORT_BASE=2322 scripts/e2e-vm.sh --mode=fake
   (`WH_ROUTER_SSH_PORT`, `WH_ROUTER_HTTP_PORT`, `WH_CLIENT_SSH_PORT_BASE`)
   still win if set explicitly.
 - `WH_LAN_BRIDGE` — optional override. If set explicitly, skips pool pick.
-- For fake-mode, also set `WH_FAKE_API_PORT` to a free port on the second run.
+- For fake-mode, `WH_FAKE_API_PORT` is auto-allocated to a free port by
+  `scripts/e2e-vm.sh` (#902). Override only if you need a fixed port.
 
 **On a host without the pool**, the bridge picker is a no-op and the run
 falls back to creating `wh-lan0` on the fly — byte-identical to single-pair
