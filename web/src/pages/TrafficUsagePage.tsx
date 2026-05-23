@@ -206,8 +206,8 @@ function RawTable({ data }: { data: TrafficUsageResponse }) {
             <th className="text-left px-2 py-1">Device</th>
             <th className="text-left px-2 py-1">Profile</th>
             <th className="text-left px-2 py-1">Host</th>
-            <th className="text-right px-2 py-1">Bytes in</th>
-            <th className="text-right px-2 py-1">Bytes out</th>
+            <th className="text-right px-2 py-1">Inbound</th>
+            <th className="text-right px-2 py-1">Outbound</th>
             <th className="text-right px-2 py-1">Seconds</th>
           </tr>
         </thead>
@@ -294,8 +294,8 @@ function AggregateTable({ data, groupBy, onToggleGroup }: AggProps) {
                 testIdPrefix="traffic-group"
               />
             </th>
-            <th className="text-right px-2 py-1">Bytes in</th>
-            <th className="text-right px-2 py-1">Bytes out</th>
+            <th className="text-right px-2 py-1">Inbound</th>
+            <th className="text-right px-2 py-1">Outbound</th>
             <th className="text-right px-2 py-1">Total seconds</th>
           </tr>
         </thead>
