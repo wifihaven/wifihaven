@@ -1433,9 +1433,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val deviceExpr  = fr"COALESCE(d.name, ce.mac::TEXT)"
     val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
 
-    // Default group: domain (matches pre-#846 behaviour). Multi-group composes
-    // freely across {domain, device, profile} — apex/app rejected at route.
-    val wantsDomain  = groupBy.contains("domain") || groupBy.isEmpty
+    // #917: strictly additive — empty set = no drill, one row per window.
+    // Multi-group composes freely across {domain, device, profile} (apex/app
+    // rejected at route).
+    val wantsDomain  = groupBy.contains("domain")
     val wantsDevice  = groupBy.contains("device")
     val wantsProfile = groupBy.contains("profile")
 

@@ -180,7 +180,9 @@ export const api = {
       if (params.topN)      qs.set('topN', String(params.topN))
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
     },
-    // #846 Traffic Usage page — multi-column groupBy via comma-separated set.
+    // #917: groupBy as repeated query params. Empty/absent = strictly aggregate
+    // (one row per time bucket). The API also accepts the legacy comma-separated
+    // single-param form for back-compat.
     traffic: (params: {
       mac?: string
       profileId?: number
@@ -197,7 +199,7 @@ export const api = {
       if (params.from)                     qs.set('from', params.from)
       if (params.to)                       qs.set('to', params.to)
       if (params.bucket)                   qs.set('bucket', params.bucket)
-      if (params.groupBy?.length)          qs.set('groupBy', params.groupBy.join(','))
+      if (params.groupBy) for (const g of params.groupBy) qs.append('groupBy', g)
       if (params.tz)                       qs.set('tz', params.tz)
       if (params.limit !== undefined)      qs.set('limit', String(params.limit))
       return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`)
@@ -229,8 +231,9 @@ export const api = {
       if (params.offset)   qs.set('offset', String(params.offset))
       return req<QueryLog[]>('GET', `/logs?${qs}`)
     },
-    // #847 + #846: aggregated connection-events series. Multi-column groupBy
-    // via comma-separated set. apex deferred to #856, app to #857.
+    // #847 + #917: aggregated connection-events series. groupBy is sent as
+    // repeated query params; empty = one row per time bucket. apex deferred
+    // to #856, app to #857.
     series: (params: {
       bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
       groupBy: Array<'domain' | 'device' | 'profile' | 'apex' | 'app'>
@@ -246,7 +249,7 @@ export const api = {
     }) => {
       const qs = new URLSearchParams()
       qs.set('bucket', params.bucket)
-      qs.set('groupBy', params.groupBy.join(','))
+      for (const g of params.groupBy) qs.append('groupBy', g)
       if (params.mac)      qs.set('mac', params.mac)
       if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
       if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))

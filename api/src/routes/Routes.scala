@@ -1128,14 +1128,19 @@ object LogRoutes {
             _      <- ZIO
               .fail(Response.badRequest("bucket=off not supported on /series — use /api/logs"))
               .when(bucket == ConnectionEventBucket.Off)
-            // #846: comma-separated multi-column groupBy. Apex/App still
-            // accepted as wire names but rejected with typed errors so the
-            // SPA can re-enable them later without an API change (#856, #857).
-            grpRaw <- ZIO
-              .fromOption(req.url.queryParam("groupBy"))
-              .orElseFail(Response.badRequest("groupBy query parameter required"))
+            // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
+            // For backwards-compat each value is also comma-split. Empty/absent
+            // is now valid — yields one row per window. Apex/App still rejected
+            // with typed errors (#856 PSL, #857 apps track).
             grpSet <- ZIO
-              .foreach(grpRaw.split(',').toList.map(_.trim).filter(_.nonEmpty)) { s =>
+              .foreach(
+                req.url.queryParams
+                  .getAll("groupBy")
+                  .toList
+                  .flatMap(_.split(',').toList)
+                  .map(_.trim)
+                  .filter(_.nonEmpty),
+              ) { s =>
                 ZIO
                   .fromOption(ConnectionEventGroupBy.fromWire(s))
                   .orElseFail(Response.badRequest(s"unknown groupBy: $s"))

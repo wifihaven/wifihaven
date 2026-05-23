@@ -94,9 +94,15 @@ describe('TrafficUsagePage', () => {
     expect(api.usage.traffic).toHaveBeenCalledTimes(1)
   })
 
-  it('switching bucket to 1h preserves filters and shows aggregate table with default groupBy=domain', async () => {
+  // #917: default groupBy is [] — no implicit dimension.
+  it('switching bucket to 1h preserves filters and shows aggregate table with default groupBy=[]', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
-    trafficMock.mockResolvedValueOnce(rawResp).mockResolvedValueOnce(aggResp)
+    const aggEmptyResp: TrafficUsageResponse = {
+      ...aggResp,
+      groupBy: [],
+      aggregateRows: [{ ...aggResp.aggregateRows[0], groups: {} }],
+    }
+    trafficMock.mockResolvedValueOnce(rawResp).mockResolvedValueOnce(aggEmptyResp)
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     const firstCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[0][0]
@@ -107,30 +113,68 @@ describe('TrafficUsagePage', () => {
 
     expect(secondCall.mac).toBe(firstCall.mac)
     expect(secondCall.profileId).toBe(firstCall.profileId)
-    // `from`/`to` are computed at fetch-time from new Date() so they differ
-    // between calls; the bucket switch is what matters here.
     expect(secondCall.bucket).toBe('1h')
-    expect(secondCall.groupBy).toEqual(['domain'])
+    expect(secondCall.groupBy).toEqual([])
 
     await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
-    expect(screen.getByText('youtube.com')).toBeInTheDocument()
   })
 
-  it('clicking a column header toggles it into the groupBy set', async () => {
+  // #917: toggling a column on adds rows; toggling off removes them. Toggling
+  // *all* off lands back in the strictly-aggregate default.
+  it('clicking a column header toggles it into the groupBy set, additively', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    const aggEmptyResp: TrafficUsageResponse = {
+      ...aggResp,
+      groupBy: [],
+      aggregateRows: [{ ...aggResp.aggregateRows[0], groups: {} }],
+    }
     trafficMock
-      .mockResolvedValueOnce(rawResp)
-      .mockResolvedValueOnce(aggResp)
-      .mockResolvedValueOnce({ ...aggResp, groupBy: ['device', 'domain'] })
+      .mockResolvedValueOnce(rawResp)        // initial raw
+      .mockResolvedValueOnce(aggEmptyResp)   // bucket=1h, groupBy=[]
+      .mockResolvedValueOnce(aggResp)        // + domain toggle
+      .mockResolvedValueOnce({ ...aggResp, groupBy: ['domain', 'device'] }) // + device toggle
+      .mockResolvedValueOnce(aggEmptyResp)   // - domain - device (back to empty)
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     await userEvent.click(screen.getByTestId('bucket-1h'))
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
 
-    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    // Adds the first dimension.
+    await userEvent.click(screen.getByTestId('traffic-group-domain'))
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(3))
-    const lastCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[2][0]
-    expect(lastCall.groupBy?.sort()).toEqual(['device', 'domain'])
+    expect((api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[2][0].groupBy).toEqual(['domain'])
+
+    // Adds the second dimension.
+    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(4))
+    expect((api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[3][0].groupBy?.sort())
+      .toEqual(['device', 'domain'])
+
+    // Toggling them all back off returns to the empty default — the prior
+    // implementation kept at least one on; #917 makes "no toggles" valid.
+    await userEvent.click(screen.getByTestId('traffic-group-domain'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(5))
+    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(6))
+    expect((api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[5][0].groupBy).toEqual([])
+  })
+
+  // #917: URL state. groupBy round-trips as repeated ?groupBy= params so
+  // links restore the operator's drill-in.
+  it('initializes groupBy from URL query params (?groupBy=device&groupBy=domain)', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(aggResp)
+    render(
+      <MemoryRouter initialEntries={['/?groupBy=device&groupBy=domain']}>
+        <TrafficUsagePage />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+    // Default bucket is raw — switch to 1h to surface the groupBy in the call.
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
+    const aggCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[1][0]
+    expect(aggCall.groupBy?.sort()).toEqual(['device', 'domain'])
   })
 
   // #861 — verify low-priority columns carry responsive `hidden` classes so
