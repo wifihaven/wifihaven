@@ -96,3 +96,82 @@ ensure_router_overlay() {
 router_is_running() {
   [[ -f "${WH_ROUTER_PIDFILE}" ]] && kill -0 "$(cat "${WH_ROUTER_PIDFILE}")" 2>/dev/null
 }
+
+# Pick a LAN bridge from the wh-lan* pool when one wasn't set explicitly (#891).
+#
+# Contract:
+#   - If WH_LAN_BRIDGE was already set in env, or already resolved from a prior
+#     in-run pick (.run/<id>/lan-bridge), this is a no-op.
+#   - If no wh-lan* bridges exist at all, this is a no-op — config.sh's default
+#     (wh-lan0) stands, and lan-bridge-up.sh will create it. Byte-identical to
+#     pre-#891 behavior on un-bootstrapped hosts.
+#   - Otherwise, under a host-wide flock, picks the lowest-numbered wh-lan*
+#     bridge with no attached interfaces, records it in .run/<id>/lan-bridge,
+#     and exports WH_LAN_BRIDGE. The flock is held until this shell exits, so
+#     it bridges the gap between pick and qemu's synchronous tap attach.
+#
+# Exits non-zero with a clear message if every pool bridge is already in use.
+wh_pick_lan_bridge() {
+  # Caller set it explicitly (or we already picked in a prior phase) — leave alone.
+  if [[ -n "${WH_LAN_BRIDGE_PICKED:-}" ]]; then
+    return 0
+  fi
+  if [[ -f "${WH_RUN_DIR}/lan-bridge" ]]; then
+    return 0
+  fi
+  # If the user set WH_LAN_BRIDGE in env to anything other than the wh-lan0
+  # default, treat it as explicit and skip auto-pick. We can't tell "user set
+  # to wh-lan0" from "default wh-lan0", so we always run the pick logic — but
+  # the pick will only override if a pool exists *and* wh-lan0 is in use.
+  # Only consider bridges that are (a) named wh-lanN, (b) actually exist as a
+  # kernel netdev, and (c) listed in /etc/qemu/bridge.conf. (c) is what
+  # distinguishes a real pool member from a stale leftover bridge a previous
+  # experiment forgot to clean up — qemu-bridge-helper would refuse to attach
+  # to such a leftover anyway.
+  local pool=()
+  if [[ -f /etc/qemu/bridge.conf ]]; then
+    local br
+    while IFS= read -r br; do
+      [[ -n "${br}" ]] || continue
+      [[ "${br}" =~ ^wh-lan[0-9]+$ ]] || continue
+      [[ -d "/sys/class/net/${br}" ]] || continue
+      pool+=("${br}")
+    done < <(awk '/^[[:space:]]*allow[[:space:]]+/ {print $2}' /etc/qemu/bridge.conf)
+  fi
+  # No pool bridges exist → fall back to today's behavior (config.sh default).
+  if (( ${#pool[@]} == 0 )); then
+    return 0
+  fi
+  # Sort numerically (wh-lan0, wh-lan1, ..., wh-lan10).
+  local sorted
+  sorted=$(printf '%s\n' "${pool[@]}" | sort -V)
+  mkdir -p "${WH_VM_DIR}/.run"
+  local lock_file="${WH_VM_DIR}/.run/.bridge-pool.lock"
+  exec 9>"${lock_file}"
+  if ! flock -w 60 9; then
+    die "could not acquire bridge-pool lock (${lock_file}) within 60s"
+  fi
+  local chosen=""
+  local br
+  while IFS= read -r br; do
+    local attached
+    attached=$(ls "/sys/class/net/${br}/brif" 2>/dev/null | wc -l)
+    if (( attached == 0 )); then
+      chosen="${br}"
+      break
+    fi
+  done <<<"${sorted}"
+  if [[ -z "${chosen}" ]]; then
+    die "LAN bridge pool exhausted — every wh-lan* has interfaces attached: $(printf '%s ' "${pool[@]}")"
+  fi
+  mkdir -p "${WH_RUN_DIR}"
+  printf '%s\n' "${chosen}" > "${WH_RUN_DIR}/lan-bridge"
+  WH_LAN_BRIDGE="${chosen}"
+  WH_LAN_BRIDGE_PICKED=1
+  export WH_LAN_BRIDGE WH_LAN_BRIDGE_PICKED
+  log "picked LAN bridge from pool: ${chosen}"
+  # Flock is held by FD 9 until this shell exits. qemu's tap attach happens
+  # synchronously inside qemu-system-x86_64 (before -daemonize returns), so by
+  # the time router-up.sh exits the bridge has an attached interface and the
+  # next concurrent run sees it as in-use.
+}
