@@ -187,14 +187,14 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
 // (heartbeat-only, all-IP, or the bucket hasn't closed yet) — be honest about the unknown.
 function NowActivityLine({ device }: { device: DashboardNowDevice }) {
   const a = device.nowActivity
-  if (a === null) {
+  if (a == null) {
     return <p className="mt-1 text-xs text-gray-500 italic">(active)</p>
   }
   return (
     <p className="mt-1 text-xs text-gray-300">
       <span className="text-gray-500">watching</span>{' '}
       <span className="font-mono"><HostCell host={a.topHost} /></span>
-      {a.minutes !== null && <span className="text-gray-500"> · {a.minutes}m</span>}
+      {a.minutes != null && <span className="text-gray-500"> · {a.minutes}m</span>}
     </p>
   )
 }
