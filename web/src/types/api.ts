@@ -402,6 +402,19 @@ export interface TrafficUsageResponse {
   aggregateRows: TrafficUsageAggregateRow[]
   rawRowLimit?: number
   rawRowsTruncated?: boolean
+  // #862: opaque cursor for the next (older) page. null/undefined = end of stream.
+  nextCursor?: string | null
+}
+
+// #862: paged envelopes for /api/logs and /api/connection-events/series.
+export interface QueryLogPage {
+  rows: QueryLog[]
+  nextCursor?: string | null
+}
+
+export interface ConnectionEventSeriesPage {
+  rows: ConnectionEventAggRow[]
+  nextCursor?: string | null
 }
 
 // #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`

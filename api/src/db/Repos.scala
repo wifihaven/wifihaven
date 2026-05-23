@@ -24,6 +24,12 @@ case class DbUser(
 )
 // #865: mac/deviceId/profileId became multi-valued so the SPA's column-header
 // popovers can filter to a subset. Empty list = no filter on that column.
+// #862: cursor-paged. `until` anchors the window's right edge (defaults to
+// NOW() when unset). `cursorTs`/`cursorId` come from a decoded raw-log cursor
+// — when set, the query is `(ts, id) < (cursorTs, cursorId)` (keyset).
+// `cursorWs`/`cursorKey` carry an aggregated-series cursor on
+// `(window_start DESC, group_key ASC)`. `offset` is gone — replaced by keyset
+// pagination so concurrent inserts can't shift pages.
 case class LogFilter(
     macs: List[String] = Nil,
     deviceIds: List[DeviceId] = Nil,
@@ -33,7 +39,11 @@ case class LogFilter(
     location: Option[String] = None,
     hours: Int = 24,
     limit: Int = 200,
-    offset: Int = 0,
+    until: Option[Instant] = None,
+    cursorTs: Option[Instant] = None,
+    cursorId: Option[Long] = None,
+    cursorWs: Option[String] = None,
+    cursorKey: Option[String] = None,
 )
 
 case class TrafficRollupFilter(
@@ -331,6 +341,8 @@ trait TrafficReportRepo {
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
+      cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
+      limit: Option[Int] = None,
   ): Task[List[wifihaven.api.usage.TrafficUsageDbRow]]
 
   /**
@@ -1154,7 +1166,13 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   // #846: raw row range pull. Wide range × all-macs scans traffic_reports — caller
   // (UsageTrafficService) enforces a window cap that keeps this from melting prod.
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
-  def listRawInRange(macs: List[MacAddress], fromInstant: Instant, toInstant: Instant) = {
+  def listRawInRange(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+      cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
+      limit: Option[Int] = None,
+  ) = {
     type Row =
       (MacAddress, HostId, Instant, Instant, Int, Long, Long)
     val baseSelect =
@@ -1184,9 +1202,18 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
         val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
         fr"AND " ++ Fragments.in(fr"tr.mac", nel)
     }
-    // #846 audit: newest-first ordering so the SPA renders most-recent at top
-    // and the route's `take(rawLimit)` returns the most recent N rows.
-    val select     = baseSelect ++ macFilter ++ fr"ORDER BY tr.period_start DESC"
+    // #862: keyset cursor on (period_start DESC, mac, host_value). Stable
+    // tiebreak so concurrent inserts can't shift pages mid-scroll.
+    val byCursor   = cursor match {
+      case Some(c) =>
+        fr"AND (tr.period_start, tr.mac::TEXT, COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END, tr.host_value)) < (${c.ts}::TIMESTAMPTZ, ${c.mac}, ${c.host})"
+      case None    => fr""
+    }
+    // #846 audit: newest-first ordering so the SPA renders most-recent at top.
+    // #862: add stable secondary keys for keyset cursor.
+    val limitFr    = limit.fold(fr"")(n => fr"LIMIT $n")
+    val select     = baseSelect ++ macFilter ++ byCursor ++
+      fr"ORDER BY tr.period_start DESC, tr.mac ASC, COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END, tr.host_value) ASC " ++ limitFr
     select
       .query[Row]
       .map { case (m, h, ps, pe, secs, bi, bo) =>
@@ -1376,36 +1403,46 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // #720: coalesce resolved_host_value into the returned host tuple so
     // race-loser ipv4 rows show up under their resolved FQDN in the log UI
     // and in domain ILIKE filters.
-    val base  =
+    val base   =
       fr"""SELECT ce.id, ce.mac, d.name, d.profile_id, p.name,
                   CASE WHEN ce.resolved_host_value IS NOT NULL THEN 'fqdn' ELSE ce.host_type END,
                   COALESCE(ce.resolved_host_value, ce.host_value),
-                  1, NOT ce.allowed, ce.reason, r.name, ce.ts::TEXT
+                  1, NOT ce.allowed, ce.reason, r.name,
+                  to_char(ce.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac    = ce.mac
            LEFT JOIN profiles p ON p.id     = d.profile_id
            LEFT JOIN routers r  ON r.id     = ce.router_id
            WHERE 1=1"""
-    val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
-    val byMac = cats.data.NonEmptyList
+    // #862: window anchor moves from "now" to `until` (defaults to NOW()).
+    val anchor = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val window =
+      fr"AND ce.ts > " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND ce.ts <= " ++ anchor
+    // #862: keyset cursor on (ts DESC, id DESC).
+    val byCur  = (f.cursorTs, f.cursorId) match {
+      case (Some(ts), Some(id)) => fr"AND (ce.ts, ce.id) < ($ts, $id)"
+      case _                    => fr""
+    }
+    // #865: multi-valued mac/deviceId/profileId via IN (...).
+    val byMac  = cats.data.NonEmptyList
       .fromList(f.macs)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
-    val byDev = cats.data.NonEmptyList
+    val byDev  = cats.data.NonEmptyList
       .fromList(f.deviceIds)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
-    val byPid = cats.data.NonEmptyList
+    val byPid  = cats.data.NonEmptyList
       .fromList(f.profileIds)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
-    val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
-    val byDom = f.domain.fold(fr"")(d =>
+    val byBl   = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
+    val byDom  = f.domain.fold(fr"")(d =>
       // #720: domain filter has to look through the resolution too — otherwise
       // a search for "youtube.com" would miss race-loser ipv4 rows we just
       // attributed.
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
     )
-    val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
-    (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
-      fr"ORDER BY ce.ts DESC LIMIT ${f.limit} OFFSET ${f.offset}")
+    val byLoc  = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    (base ++ window ++ byCur ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
+      fr"ORDER BY ce.ts DESC, ce.id DESC LIMIT ${f.limit}")
       .query[
         (
             QueryLogId,
@@ -1436,10 +1473,17 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // defaults to "2026-05-21 22:00:00+00" (space separator) which `new Date(...)`
   // rejects as Invalid Date.
   def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String]) = {
-    val bucketIv     = fr"make_interval(secs => $bucketSeconds)"
-    val domainExpr   = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
-    val deviceExpr   = fr"COALESCE(d.name, ce.mac::TEXT)"
-    val profileExpr  = fr"COALESCE(p.name, '(unassigned)')"
+    // #862: inline `bucketSeconds` as a SQL literal (it's a server-controlled
+    // enum value, not user input) so the SELECT and GROUP BY copies of the
+    // date_bin expression are byte-identical. Postgres matches the SELECT
+    // expression against GROUP BY by parse tree; if doobie assigns different
+    // parameter positions to the two copies, the match fails and PG raises
+    // "ce.ts must appear in GROUP BY".
+    val bucketIv    = Fragment.const(s"make_interval(secs => $bucketSeconds)")
+    val domainExpr  = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
+    val deviceExpr  = fr"COALESCE(d.name, ce.mac::TEXT)"
+    val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
+
     // #917: strictly additive — empty set = no drill, one row per window.
     // Multi-group composes freely across {domain, device, profile, app}.
     val wantsDomain  = groupBy.contains("domain")
@@ -1472,8 +1516,16 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // (slug, name, icon, id) so the GROUP BY can carry through metadata; in
     // practice (slug) alone uniquely identifies the row but name/icon/id are
     // functionally dependent so adding them is safe and avoids MAX() casts.
+    //
+    // #862: the window bucket uses the full date_bin/to_char expression (not
+    // the SELECT alias) so the HAVING clause for the keyset cursor below can
+    // reference the same expression — PG doesn't recognize SELECT aliases in
+    // HAVING.
+    val winExpr      = fr"""to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
+                          AT TIME ZONE 'UTC',
+                          'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
     val groupByParts = List(
-      Some(fr"window_start"),
+      Some(winExpr),
       Option.when(wantsDomain)(domainExpr),
       Option.when(wantsDevice)(deviceExpr),
       Option.when(wantsProfile)(profileExpr),
@@ -1484,7 +1536,20 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     ).flatten
     val groupByCols  = groupByParts.reduce(_ ++ fr"," ++ _)
 
-    val base  =
+    // #862: stable lexicographic group key for keyset paging. Concatenates the
+    // SELECTed group values (or empty string when not requested) with a
+    // delimiter unlikely to collide with hostnames / device names.
+    val groupKeyParts = List(
+      Option.when(wantsDomain)(fr"COALESCE(" ++ domainExpr ++ fr", '')"),
+      Option.when(wantsDevice)(fr"COALESCE(" ++ deviceExpr ++ fr", '')"),
+      Option.when(wantsProfile)(fr"COALESCE(" ++ profileExpr ++ fr", '')"),
+    ).flatten
+    val groupKeyExpr  = groupKeyParts match {
+      case Nil   => fr"''"
+      case parts => parts.reduce((a, b) => a ++ fr"|| chr(31) ||" ++ b)
+    }
+
+    val base    =
       fr"""SELECT """ ++ selDomain ++ fr"AS grp_domain," ++
         selDevice ++ fr"AS grp_device," ++
         selProfile ++ fr"AS grp_profile," ++
@@ -1524,27 +1589,48 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
            LEFT JOIN apps aps   ON aps.id = ah.app_id"""
          else fr"") ++
         fr"""WHERE 1=1"""
-    val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
-    val byMac = cats.data.NonEmptyList
+    // #862: window anchor moves from "now" to `until` (defaults to NOW()).
+    val anchor = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val window =
+      fr"AND ce.ts > " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND ce.ts <= " ++ anchor
+    val byMac  = cats.data.NonEmptyList
       .fromList(f.macs)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
-    val byDev = cats.data.NonEmptyList
+    val byDev   = cats.data.NonEmptyList
       .fromList(f.deviceIds)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
-    val byPid = cats.data.NonEmptyList
+    val byPid   = cats.data.NonEmptyList
       .fromList(f.profileIds)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
-    val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
-    val byDom = f.domain.fold(fr"")(d =>
+    val byBl    = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
+    val byDom   = f.domain.fold(fr"")(d =>
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
     )
-    val byLoc = f.location.fold(fr"")(l => fr"AND r.name = $l")
-    (base ++ since ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
-      fr"GROUP BY " ++ groupByCols ++
-      // #846 audit: order by newest window first, then biggest count within
-      // window — was sorting by total count only which scrambled the
-      // chronology.
-      fr"ORDER BY window_start DESC, COUNT(*) DESC LIMIT ${f.limit} OFFSET ${f.offset}")
+    val byLoc   = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    // #862: keyset cursor on (window_start DESC, group_key ASC). HAVING uses
+    // the full window/groupkey expressions (PG doesn't allow SELECT aliases
+    // in HAVING).
+    // Tuple lex `(a,b) < (x,y)` only matches when both columns sort the same
+    // direction. Our order is (window_start DESC, group_key ASC), so we
+    // split into an OR: strictly-older window, OR same window with a
+    // strictly-greater key.
+    val having  = (f.cursorWs, f.cursorKey) match {
+      case (Some(ws), Some(k)) =>
+        fr"HAVING " ++ winExpr ++ fr"< $ws OR (" ++ winExpr ++ fr"= $ws AND " ++
+          groupKeyExpr ++ fr"> $k)"
+      case _                   => fr""
+    }
+    // #862: stable secondary order so keyset cursor is deterministic. Was
+    // COUNT(*) DESC which is unstable under inserts. When groupBy is empty
+    // (#917 one-row-per-window mode), there's no secondary key and PG rejects
+    // a literal '' in ORDER BY ("non-integer constant in ORDER BY"), so we
+    // drop the second clause.
+    val orderBy =
+      if (groupKeyParts.isEmpty) fr"ORDER BY window_start DESC"
+      else fr"ORDER BY window_start DESC, " ++ groupKeyExpr ++ fr" ASC"
+    (base ++ window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
+      fr"GROUP BY " ++ groupByCols ++ fr" " ++ having ++
+      orderBy ++ fr"LIMIT ${f.limit}")
       .query[
         (
             Option[String], // grp_domain

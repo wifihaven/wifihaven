@@ -38,6 +38,11 @@ case class TrafficUsageDbRow(
     bytesOut: Long,
 )
 
+// #862: keyset cursor key for raw traffic_reports paging. Mirrors the secondary
+// sort columns on `listRawInRange` so `(ts, mac, host) < (cursorTs, cursorMac,
+// cursorHost)` is stable under concurrent inserts.
+case class RawTrafficCursorKey(ts: Instant, mac: String, host: String)
+
 /**
  * #846 — Traffic Usage page. Two views over `traffic_reports`:
  *   - Raw: one row per (period_start, mac, host) — the underlying 5-minute bucket as-stored.
@@ -81,6 +86,21 @@ object UsageTraffic {
 
   object GroupBy {
     def parse(s: String): Option[GroupBy] = values.find(_.code == s)
+  }
+
+  // #862: stable group key for keyset cursor on the aggregated path. Must
+  // mirror the order used by buildAggregate's row builder so the cursor
+  // compare is deterministic. Same separator as the SQL chr(31) || concat in
+  // ConnectionEventRepo.querySeries.
+  def aggGroupKey(
+      r: wifihaven.shared.TrafficUsageAggregateRow,
+      effectiveGroupBy: Set[GroupBy],
+  ): String = {
+    val sep = ""
+    List(GroupBy.Domain, GroupBy.Device, GroupBy.Profile).iterator
+      .filter(effectiveGroupBy.contains)
+      .flatMap(g => r.groups.get(g.code))
+      .mkString(sep)
   }
 
   /**

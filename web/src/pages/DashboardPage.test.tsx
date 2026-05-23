@@ -82,7 +82,7 @@ const mockAlerts = () => api.deviceAlerts.list as unknown as ReturnType<typeof v
 beforeEach(() => {
   vi.resetAllMocks()
   mockStats().mockResolvedValue(stats)
-  mockQuery().mockResolvedValue([recent])
+  mockQuery().mockResolvedValue({ rows: [recent], nextCursor: null })
   mockNow().mockResolvedValue(emptyNow)
   mockAlerts().mockResolvedValue([])
 })

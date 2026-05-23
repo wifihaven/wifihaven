@@ -1080,6 +1080,57 @@ object TimeRoutes {
 // ── Query log routes ───────────────────────────────────────────────────────
 
 object LogRoutes {
+  // #862: tiny parse helpers for pagination params. Pulled into top-level so
+  // both /api/logs and /api/connection-events/series use the same shape.
+  private def parseInstantOpt(req: Request, name: String): IO[Response, Option[java.time.Instant]] =
+    req.url.queryParam(name) match {
+      case None    => ZIO.succeed(None)
+      case Some(s) =>
+        ZIO
+          .attempt(Some(java.time.Instant.parse(s)))
+          .orElseFail(Response.badRequest(s"invalid $name: $s"))
+    }
+
+  private def parseLimit(req: Request, default: Int, max: Int): IO[Response, Int] =
+    req.url.queryParam("limit") match {
+      case None    => ZIO.succeed(default)
+      case Some(s) =>
+        s.toIntOption match {
+          case None    => ZIO.fail(Response.badRequest(s"invalid limit: $s"))
+          case Some(n) =>
+            if (n < 1) ZIO.fail(Response.badRequest("limit must be >= 1"))
+            else if (n > max) ZIO.fail(Response.badRequest(s"limit must be <= $max"))
+            else ZIO.succeed(n)
+        }
+    }
+
+  private def parseLogCursor(req: Request): IO[Response, Option[Cursor.LogCursor]] =
+    req.url.queryParam("cursor") match {
+      case None    => ZIO.succeed(None)
+      case Some(s) =>
+        ZIO
+          .fromEither(Cursor.decode[Cursor.LogCursor](s))
+          .mapBoth(Response.badRequest, Some(_))
+    }
+
+  private def parseAggCursor(req: Request): IO[Response, Option[Cursor.AggCursor]] =
+    req.url.queryParam("cursor") match {
+      case None    => ZIO.succeed(None)
+      case Some(s) =>
+        ZIO
+          .fromEither(Cursor.decode[Cursor.AggCursor](s))
+          .mapBoth(Response.badRequest, Some(_))
+    }
+
+  // #862: must mirror the SQL's group_key concatenation order exactly
+  // (domain, device, profile — only requested columns, US-separator).
+  private def aggGroupKey(r: ConnectionEventAggRow): String = {
+    val sep = ""
+    List("domain", "device", "profile").iterator
+      .flatMap(k => r.groups.get(k))
+      .mkString(sep)
+  }
+
   def routes(
       auth: AuthService,
       connRepo: ConnectionEventRepo,
@@ -1094,6 +1145,11 @@ object LogRoutes {
             // Old single-value URLs (e.g. ?profileId=2) parse to a one-element list.
             deviceIds  <- parseMultiDeviceIdParam(req)
             profileIds <- parseMultiProfileIdParam(req)
+            untilOpt   <- parseInstantOpt(req, "until")
+            cursorOpt  <- parseLogCursor(req)
+            // #862: page cap. 500 max, 200 default. Wider pages would let one
+            // tab freeze the SPA when scrolling fast.
+            limit      <- parseLimit(req, default = 200, max = 500)
             filter = LogFilter(
               macs = parseMultiValueParam(req, "mac"),
               deviceIds = deviceIds,
@@ -1102,12 +1158,24 @@ object LogRoutes {
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
               hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24),
-              limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(200),
-              offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
+              limit = limit,
+              until = untilOpt,
+              cursorTs = cursorOpt.map(_.ts),
+              cursorId = cursorOpt.map(_.id),
             )
             logs    <- connRepo.query(filter).mapError(ErrorMapper.dbErrorToResponse)
             visible <- filterLogs(claims, logs, userProfileRepo)
-          } yield Response.json(visible.toJson)
+            // #862: nextCursor is built from the *raw* last row, not the
+            // post-filter `visible` list — filterLogs may drop rows the child
+            // can't see, but the cursor must continue from where the SQL window
+            // left off so we don't skip rows on the next page.
+            nextCur =
+              if (logs.size < limit) None
+              else
+                logs.lastOption.map(l =>
+                  Cursor.encode(Cursor.LogCursor(java.time.Instant.parse(l.ts), l.id.value)),
+                )
+          } yield Response.json(QueryLogPage(visible, nextCur).toJson)
         },
       // #847: aggregated connection-event series. bucket+groupBy required; only
       // domain grouping is implemented (apex needs PSL #849, app needs apps
@@ -1157,6 +1225,9 @@ object LogRoutes {
             groupByCodes = grpSet.map(_.wire)
             deviceIds  <- parseMultiDeviceIdParam(req)
             profileIds <- parseMultiProfileIdParam(req)
+            untilOpt   <- parseInstantOpt(req, "until")
+            cursorOpt  <- parseAggCursor(req)
+            limit      <- parseLimit(req, default = 500, max = 500)
             filter = LogFilter(
               macs = parseMultiValueParam(req, "mac"),
               deviceIds = deviceIds,
@@ -1165,13 +1236,21 @@ object LogRoutes {
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
               hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24),
-              limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(500),
-              offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
+              limit = limit,
+              until = untilOpt,
+              cursorWs = cursorOpt.map(_.ws),
+              cursorKey = cursorOpt.map(_.key),
             )
             rows <- connRepo
               .querySeries(filter, bucket.seconds, groupByCodes)
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(rows.toJson)
+            nextCur =
+              if (rows.size < limit) None
+              else
+                rows.lastOption.map(r =>
+                  Cursor.encode(Cursor.AggCursor(r.windowStart, aggGroupKey(r))),
+                )
+          } yield Response.json(ConnectionEventSeriesPage(rows, nextCur).toJson)
         },
       Method.GET / "api" / "stats"                        ->
         handler { (req: Request) =>

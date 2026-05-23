@@ -1,30 +1,42 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type {
   Device,
   ProfileDetail,
+  TrafficUsageAggregateRow,
   TrafficUsageBucket,
   TrafficUsageGroupBy,
+  TrafficUsageRawRow,
   TrafficUsageResponse,
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
+import { JumpToDate } from '@/components/usage/JumpToDate'
 import {
   fmtBytes,
   fmtDuration,
   localTime,
-  windowFromTo,
 } from '@/components/usage/usageHelpers'
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
 // Column headers double as groupBy toggles (Host=domain, Device=device,
 // Profile=profile, App=app). apex still deferred to #856; app turned on by
 // #769 (server-side join through app_hosts).
 
-const DEFAULT_RAW_LIMIT = 100
+// #862: infinite scroll. Initial fetch anchored at NOW (or the JumpToDate
+// picker's `until`); cursor walks back; sentinel below the table triggers
+// the next page when it scrolls into view.
+const RAW_PAGE_SIZE = 200
+const AGG_PAGE_SIZE = 500
+// Raw view pushes keyset + LIMIT into SQL, so a wide band is fine.
+// Aggregated still in-memory-buckets the whole band → 30d cap (server enforces
+// 31d for aggregated). Operator can JumpToDate to scroll past the cap.
+const RAW_BAND_MS = 365 * 24 * 60 * 60 * 1000
+const AGG_BAND_MS = 30 * 24 * 60 * 60 * 1000
 
 const TRAFFIC_GROUP_KEYS: TrafficUsageGroupBy[] = ['domain', 'device', 'profile', 'app']
 
@@ -45,13 +57,21 @@ export function TrafficUsagePage() {
   // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
+  // #862: jump-to-date anchors the right edge of the scroll window.
+  const [until, setUntil]               = useState<string | null>(null)
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
-  const [data, setData]         = useState<TrafficUsageResponse | null>(null)
+  // #862: append-on-scroll model. rawRows + aggRows accumulate across pages;
+  // cursor advances each fetch; hasMore = there's an older page to load.
+  const [rawRows, setRawRows]   = useState<TrafficUsageRawRow[]>([])
+  const [aggRows, setAggRows]   = useState<TrafficUsageAggregateRow[]>([])
+  const [cursor, setCursor]     = useState<string | null>(null)
+  const [hasMore, setHasMore]   = useState(true)
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
   // #769: surface the "no apps yet" empty-state on group-by=app.
   const [appCount, setAppCount] = useState<number | null>(null)
+  const sentinelRef             = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     api.devices.list().then(setDevices).catch(() => setDevices([]))
@@ -59,37 +79,60 @@ export function TrafficUsagePage() {
     api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
   }, [])
 
-  // Window is bucket-derived, anchored at "now-at-fetch-time". No end-at
-  // picker — paging older history is #862's job.
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    const { from, to } = windowFromTo(bucket, new Date().toISOString())
-    api.usage
-      .traffic({
-        macs:       macs.length       ? macs       : undefined,
-        profileIds: profileIds.length ? profileIds : undefined,
-        from,
-        to,
-        bucket,
-        groupBy: bucket === 'raw' ? undefined : groupBy,
-        limit: bucket === 'raw' ? DEFAULT_RAW_LIMIT : undefined,
-      })
-      .then(d => {
-        if (!cancelled) setData(d)
-      })
-      .catch((e: Error) => {
-        if (!cancelled) {
-          setError(e.message || 'failed to load')
-          setData(null)
+  // Filter key drives the reset effect — when any of these change, the cursor
+  // walk restarts from None.
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
+
+  const load = useCallback(
+    async (curs: string | null) => {
+      setLoading(true)
+      setError(null)
+      try {
+        const limit = bucket === 'raw' ? RAW_PAGE_SIZE : AGG_PAGE_SIZE
+        const band  = bucket === 'raw' ? RAW_BAND_MS : AGG_BAND_MS
+        const anchor = until ?? new Date().toISOString()
+        const from   = new Date(new Date(anchor).getTime() - band).toISOString()
+        const resp: TrafficUsageResponse = await api.usage.traffic({
+          macs:       macs.length       ? macs       : undefined,
+          profileIds: profileIds.length ? profileIds : undefined,
+          from,
+          to: anchor,
+          bucket,
+          groupBy: bucket === 'raw' ? undefined : groupBy,
+          limit,
+          cursor: curs ?? undefined,
+        })
+        if (bucket === 'raw') {
+          setRawRows(prev => curs ? prev.concat(resp.rawRows) : resp.rawRows)
+        } else {
+          setAggRows(prev => curs ? prev.concat(resp.aggregateRows) : resp.aggregateRows)
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [bucket, groupBy, macs.join(','), profileIds.join(',')])
+        setCursor(resp.nextCursor ?? null)
+        setHasMore(!!resp.nextCursor)
+      } catch (e) {
+        setError((e as Error).message || 'failed to load')
+        setHasMore(false)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [bucket, groupBy, macs, profileIds, until],
+  )
+
+  useEffect(() => {
+    setRawRows([])
+    setAggRows([])
+    setCursor(null)
+    setHasMore(true)
+    void load(null)
+  }, [filterKey])
+
+  useInfiniteScroll({
+    sentinelRef,
+    hasMore,
+    loading,
+    onLoadMore: () => { if (cursor) void load(cursor) },
+  })
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
@@ -121,17 +164,18 @@ export function TrafficUsagePage() {
         macs={macs}
         profileIds={profileIds}
         bucket={bucket}
+        until={until}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
+        onUntilChange={setUntil}
       />
 
       {error && <ErrorBanner message={error} />}
-      {loading && <Spinner />}
 
-      {data && bucket === 'raw' && !loading && (
+      {bucket === 'raw' && (
         <RawTable
-          data={data}
+          rows={rawRows}
           devices={devices}
           profiles={profiles}
           macs={macs}
@@ -140,7 +184,7 @@ export function TrafficUsagePage() {
           onProfileIdsChange={setProfileIds}
         />
       )}
-      {data && bucket !== 'raw' && !loading && groupBy.includes('app') && appCount === 0 && (
+      {bucket !== 'raw' && groupBy.includes('app') && appCount === 0 && (
         <div
           data-testid="traffic-app-empty"
           className="rounded border border-emerald-900 bg-emerald-950/30 p-4 text-sm text-emerald-200"
@@ -149,9 +193,9 @@ export function TrafficUsagePage() {
           traffic by app.
         </div>
       )}
-      {data && bucket !== 'raw' && !loading && !(groupBy.includes('app') && appCount === 0) && (
+      {bucket !== 'raw' && !(groupBy.includes('app') && appCount === 0) && (
         <AggregateTable
-          data={data}
+          rows={aggRows}
           groupBy={groupBy}
           onToggleGroup={toggleGroup}
           devices={devices}
@@ -161,6 +205,14 @@ export function TrafficUsagePage() {
           onMacsChange={setMacs}
           onProfileIdsChange={setProfileIds}
         />
+      )}
+
+      <div ref={sentinelRef} data-testid="scroll-sentinel" className="h-1" />
+      {loading && <Spinner />}
+      {!hasMore && !loading && (rawRows.length > 0 || aggRows.length > 0) && (
+        <div className="text-xs text-gray-500 text-center py-3" data-testid="end-of-stream">
+          — end of history —
+        </div>
       )}
     </div>
   )
@@ -172,17 +224,21 @@ interface ShelfProps {
   macs: string[]
   profileIds: number[]
   bucket: TrafficUsageBucket
+  // #862: end-at anchor (null = NOW). JumpToDate re-anchors.
+  until: string | null
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
   onBucketChange: (b: TrafficUsageBucket) => void
+  onUntilChange: (v: string | null) => void
 }
 
 // #865: shelf carries the bucket selector + a chip summary of any active
 // column-header filters. Device / Profile dropdowns moved into column
 // headers as multi-select popovers.
+// #862: also hosts the JumpToDate picker (right-edge anchor for infinite scroll).
 export function FilterShelf({
-  devices, profiles, macs, profileIds, bucket,
-  onMacsChange, onProfileIdsChange, onBucketChange,
+  devices, profiles, macs, profileIds, bucket, until,
+  onMacsChange, onProfileIdsChange, onBucketChange, onUntilChange,
 }: ShelfProps) {
   const deviceLabel = (m: string) => devices.find(d => d.mac === m)?.name ?? m
   const profileLabel = (pid: number) =>
@@ -190,7 +246,10 @@ export function FilterShelf({
   const hasChips = macs.length > 0 || profileIds.length > 0
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
-      <BucketSelector value={bucket} onChange={onBucketChange} />
+      <div className="flex flex-wrap items-end gap-3">
+        <BucketSelector value={bucket} onChange={onBucketChange} />
+        <JumpToDate value={until} onChange={onUntilChange} />
+      </div>
       {hasChips && (
         <div className="flex flex-wrap items-center gap-2" data-testid="active-filters">
           <span className="text-[11px] uppercase tracking-wide text-gray-500">Filters:</span>
@@ -337,19 +396,14 @@ function ProfileHeaderCell({
 }
 
 interface RawTableProps extends FilterHeaderProps {
-  data: TrafficUsageResponse
+  rows: TrafficUsageRawRow[]
 }
 
 function RawTable({
-  data, devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
+  rows, devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
 }: RawTableProps) {
   return (
     <div className="overflow-x-auto" data-testid="raw-table">
-      {data.rawRowsTruncated && (
-        <div className="text-xs text-amber-400 mb-2">
-          Showing latest {data.rawRowLimit} rows in window. Narrow the time range to see older ones.
-        </div>
-      )}
       <table className="min-w-full text-sm">
         <thead className="text-xs uppercase">
           <tr className="text-gray-500">
@@ -379,14 +433,14 @@ function RawTable({
           </tr>
         </thead>
         <tbody className="text-gray-300">
-          {data.rawRows.length === 0 && (
+          {rows.length === 0 && (
             <tr>
               <td colSpan={7} className="text-center text-gray-500 py-4">
                 No rows in window.
               </td>
             </tr>
           )}
-          {data.rawRows.map((r, i) => (
+          {rows.map((r, i) => (
             <tr key={i} className="border-t border-gray-800">
               <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">{localTime(r.periodStart)}</td>
               <td className="px-2 py-1">{r.deviceName ?? r.mac}</td>
@@ -404,7 +458,7 @@ function RawTable({
 }
 
 interface AggProps extends FilterHeaderProps {
-  data: TrafficUsageResponse
+  rows: TrafficUsageAggregateRow[]
   groupBy: TrafficUsageGroupBy[]
   onToggleGroup: (key: string) => void
 }
@@ -459,7 +513,7 @@ function NonGroupedCell({
 }
 
 function AggregateTable({
-  data, groupBy, onToggleGroup,
+  rows, groupBy, onToggleGroup,
   devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
 }: AggProps) {
   return (
@@ -529,17 +583,17 @@ function AggregateTable({
           </tr>
         </thead>
         <tbody className="text-gray-300">
-          {data.aggregateRows.length === 0 && (
+          {rows.length === 0 && (
             <tr>
               <td colSpan={8} className="text-center text-gray-500 py-4">
                 No rows in window.
               </td>
             </tr>
           )}
-          {data.aggregateRows.map((r, i) => {
+          {rows.map((r, i) => {
             // Collapse repeated window_start values: show only on first row
             // of each window so window boundaries are easy to scan.
-            const prevWindow = i > 0 ? data.aggregateRows[i - 1].windowStart : null
+            const prevWindow = i > 0 ? rows[i - 1].windowStart : null
             const showWindow = r.windowStart !== prevWindow
             return (
             <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>

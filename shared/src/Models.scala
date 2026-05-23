@@ -743,6 +743,22 @@ case class TrafficUsageResponse(
     aggregateRows: List[TrafficUsageAggregateRow] = Nil,
     rawRowLimit: Option[Int] = None,
     rawRowsTruncated: Boolean = false,
+    // #862: opaque cursor for the next (older) page. None = end of stream.
+    // Wire-distinct from rawRowsTruncated which signals "this single response
+    // hit the row cap" — nextCursor signals "more rows exist beyond this".
+    nextCursor: Option[String] = None,
+) derives JsonCodec
+
+// #862: page envelopes for /api/logs and /api/connection-events/series. Wraps
+// the per-row payload with a nextCursor field (None = no more older rows).
+case class QueryLogPage(
+    rows: List[QueryLog],
+    nextCursor: Option[String] = None,
+) derives JsonCodec
+
+case class ConnectionEventSeriesPage(
+    rows: List[ConnectionEventAggRow],
+    nextCursor: Option[String] = None,
 ) derives JsonCodec
 
 // ── Dashboard "Now" ────────────────────────────────────────────────────────

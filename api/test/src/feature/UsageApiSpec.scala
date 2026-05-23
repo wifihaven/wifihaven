@@ -1030,6 +1030,136 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         } yield assertTrue(resp.status == Status.ServiceUnavailable) &&
           assertTrue(body.contains("window_too_large"))
       },
+      test("raw cursor pagination walks the full set without dups (#862)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // 7 rows in distinct 5-min slots, single domain to make ordering deterministic.
+          _           <- ZIO.foreachDiscard(0 until 7)(i =>
+            insertRow(routerId, testMac, s"site$i.com", today, 14, i * 5),
+          )
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from  = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to    = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          pager = (cursor: Option[String]) => {
+            val base = s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=raw&limit=3"
+            val q    = cursor.fold(base)(c => s"$base&cursor=$c")
+            val req  = Request
+              .get(URL.decode(q).toOption.get)
+              .addHeader(Header.Authorization.Bearer(token))
+            routes
+              .runZIO(req)
+              .flatMap(_.body.asString)
+              .flatMap(b => ZIO.fromEither(b.fromJson[TrafficUsageResponse]))
+          }
+          p1 <- pager(None)
+          p2 <- p1.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p1.copy(rawRows = Nil, nextCursor = None))
+          }
+          p3 <- p2.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p2.copy(rawRows = Nil, nextCursor = None))
+          }
+          all = p1.rawRows ++ p2.rawRows ++ p3.rawRows
+          hosts = all.map(_.host.value)
+        } yield assertTrue(p1.rawRows.length == 3) &&
+          assertTrue(p2.rawRows.length == 3) &&
+          assertTrue(p3.rawRows.length == 1) &&
+          assertTrue(p3.nextCursor.isEmpty) &&
+          assertTrue(hosts.distinct.length == 7) &&
+          // newest first: site6 → site0
+          assertTrue(
+            hosts == List(
+              "site6.com",
+              "site5.com",
+              "site4.com",
+              "site3.com",
+              "site2.com",
+              "site1.com",
+              "site0.com",
+            ),
+          )
+      },
+      test("raw cursor: bad cursor returns 400 (#862)") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          _           <- seedRouter
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&bucket=raw&cursor=not-valid")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.BadRequest)
+      },
+      test("aggregated cursor pagination across multi-window dataset (#862)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // 5 rows in 5 different hours so 1h bucket yields 5 windows.
+          _           <- ZIO.foreachDiscard(0 until 5)(h =>
+            insertRow(routerId, testMac, "alpha.com", today, 10 + h, 0),
+          )
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from  = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to    = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          pager = (cursor: Option[String]) => {
+            val base = s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&limit=2"
+            val q    = cursor.fold(base)(c => s"$base&cursor=$c")
+            val req  = Request
+              .get(URL.decode(q).toOption.get)
+              .addHeader(Header.Authorization.Bearer(token))
+            routes
+              .runZIO(req)
+              .flatMap(_.body.asString)
+              .flatMap(b => ZIO.fromEither(b.fromJson[TrafficUsageResponse]))
+          }
+          p1 <- pager(None)
+          p2 <- p1.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p1.copy(aggregateRows = Nil, nextCursor = None))
+          }
+          p3 <- p2.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p2.copy(aggregateRows = Nil, nextCursor = None))
+          }
+          all = p1.aggregateRows ++ p2.aggregateRows ++ p3.aggregateRows
+          windows = all.map(_.windowStart)
+        } yield assertTrue(p1.aggregateRows.length == 2) &&
+          assertTrue(p2.aggregateRows.length == 2) &&
+          assertTrue(p3.aggregateRows.length == 1) &&
+          assertTrue(p3.nextCursor.isEmpty) &&
+          assertTrue(windows.distinct.length == 5) &&
+          assertTrue(windows == windows.sortBy(s => -java.time.Instant.parse(s).toEpochMilli))
+      },
     ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential
 }
