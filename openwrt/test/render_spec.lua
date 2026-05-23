@@ -193,37 +193,77 @@ describe("render.nft", function()
     assert.truthy(nft:find("mac_ip_tracking", 1, true))
   end)
 
-  -- #879: download bytes used to be keyed on `ether daddr (mac) . ip saddr
-  -- (remote)`, but at the forward hook a WAN→LAN routed packet still has
-  -- the router's WAN-interface MAC as its L2 daddr (the rewrite to the LAN
-  -- device's MAC happens at egress via the neighbor cache). Every rx byte
-  -- got attributed to the router itself. Re-key on `ip daddr` only (the
-  -- LAN device's IP) and resolve to MAC in the agent via the dnsmasq lease
-  -- table.
-  it("declares the ip_tracking_rx set keyed on ipv4_addr only (#879)", function()
+  -- #879/#897: download bytes used to be keyed on `ether daddr (mac) . ip
+  -- saddr (remote)`, but at the forward hook a WAN→LAN routed packet still
+  -- has the router's WAN-interface MAC as its L2 daddr (the rewrite happens
+  -- at egress via the neighbor cache) — every rx byte got attributed to the
+  -- router itself (#879). The interim fix keyed only on `ip daddr` which lost
+  -- the remote-host axis (#897). The set now records (lan_device_ip,
+  -- remote_ip) pairs and the agent resolves the lan_ip back to a MAC via
+  -- the dnsmasq lease table.
+  it("declares the ip_pair_tracking_rx set keyed on (ipv4_addr . ipv4_addr) (#897)", function()
     local nft = render.nft(snap_one())
-    local pos = nft:find("set ip_tracking_rx", 1, true)
+    local pos = nft:find("set ip_pair_tracking_rx", 1, true)
     assert.truthy(pos)
     local block = nft:sub(pos, pos + 200)
-    assert.truthy(block:find("type ipv4_addr"))
-    -- The old composite type would betray the bug returning; assert it's gone.
+    assert.truthy(block:find("type ipv4_addr %. ipv4_addr"))
+    -- Guards against regressing to ether_addr keying (#879) or single-key
+    -- ipv4_addr keying (#897).
     assert.is_nil(block:find("ether_addr"))
   end)
 
-  it("does NOT declare the old mac_ip_tracking_rx set (#879 cleanup)", function()
+  it("does NOT declare the old mac_ip_tracking_rx or ip_tracking_rx sets (#897 cleanup)", function()
     local nft = render.nft(snap_one())
     assert.is_nil(nft:find("mac_ip_tracking_rx", 1, true))
+    -- Old single-keyed set name from #879; superseded by ip_pair_tracking_rx.
+    assert.is_nil(nft:find("set ip_tracking_rx", 1, true))
   end)
 
-  it("wifihaven_account chain updates BOTH tx and rx tracking sets atomically (#879)", function()
+  -- #897: tx and rx live in separate chains, each scoped to one direction
+  -- by an interface predicate. Without the predicate, the tx chain absorbs
+  -- WAN→LAN packets too and writes ghost rows keyed on the upstream-gateway
+  -- MAC + LAN device IP (live evidence in #897 showed these mirror the rx
+  -- rows byte-for-byte, double-counting every download).
+  -- Slice helper: return the body of a `chain <name> { ... }` block, exclusive
+  -- of the braces. Lets each assertion check exactly one chain.
+  local function chain_body(nft, name)
+    local start = nft:find("chain " .. name .. " {", 1, true)
+    if not start then return nil end
+    local open  = nft:find("{", start, true)
+    local close = nft:find("\n  }", open, true)
+    return nft:sub(open + 1, close - 1)
+  end
+
+  it("declares wifihaven_account_tx scoped to iifname \"br-lan\" updating @mac_ip_tracking (#897)", function()
+    local nft  = render.nft(snap_one())
+    local body = chain_body(nft, "wifihaven_account_tx")
+    assert.truthy(body)
+    assert.truthy(body:find("iifname \"br%-lan\""))
+    assert.truthy(body:find("update @mac_ip_tracking%s+{%s*ether saddr %. ip daddr%s*}%s+counter"))
+    -- The rx set must NOT be updated from the tx chain — that would
+    -- re-introduce the double-counting #897 fixes.
+    assert.is_nil(body:find("ip_pair_tracking_rx"))
+    assert.is_nil(body:find("oifname"))
+  end)
+
+  it("declares wifihaven_account_rx scoped to oifname \"br-lan\" updating @ip_pair_tracking_rx (#897)", function()
+    local nft  = render.nft(snap_one())
+    local body = chain_body(nft, "wifihaven_account_rx")
+    assert.truthy(body)
+    assert.truthy(body:find("oifname \"br%-lan\""))
+    assert.truthy(body:find("update @ip_pair_tracking_rx%s+{%s*ip daddr %. ip saddr%s*}%s+counter"))
+    -- Symmetric guard: the tx set must NOT be updated from the rx chain.
+    assert.is_nil(body:find("mac_ip_tracking"))
+    assert.is_nil(body:find("iifname"))
+  end)
+
+  it("does NOT declare the old combined wifihaven_account chain (#897)", function()
     local nft = render.nft(snap_one())
-    local pos = nft:find("chain wifihaven_account", 1, true)
-    assert.truthy(pos)
-    -- Same chain (one rule walk per packet) so a bucket's bytesIn and
-    -- bytesOut always cover the same window.
-    local block = nft:sub(pos, pos + 500)
-    assert.truthy(block:find("update @mac_ip_tracking%s+{%s*ether saddr %. ip daddr%s*}%s+counter"))
-    assert.truthy(block:find("update @ip_tracking_rx%s+{%s*ip daddr%s*}%s+counter"))
+    -- We split into wifihaven_account_tx and wifihaven_account_rx; the
+    -- bare `wifihaven_account ` chain (with trailing space, distinguishing
+    -- from the new `_tx`/`_rx` suffixes) must be gone.
+    assert.is_nil(nft:find("chain wifihaven_account ", 1, true))
+    assert.is_nil(nft:find("chain wifihaven_account\n", 1, true))
   end)
 
   -- #354: blocked_macs is derived per-device from effective BlockRules.blocked.
