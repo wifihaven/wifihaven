@@ -205,15 +205,16 @@ object UsageRoutes {
             ),
         )
         .when(bucket == UsageTraffic.Bucket.OneMin)
-      // #846: comma-separated multi-column groupBy. Apex deferred to #856,
-      // App to #857 — both still rejected with typed errors so the SPA can
-      // re-enable them later without an API change.
+      // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
+      // For backwards-compat each value is also comma-split, so the older
+      // single-param ?groupBy=host,device form keeps working. Empty/absent =
+      // strictly aggregate (one row per window). Apex deferred to #856, App
+      // to #857 — both still rejected with typed errors.
       groupBySet <- {
-        val raw = req.url
-          .queryParam("groupBy")
-          .getOrElse("")
-          .split(',')
+        val raw = req.url.queryParams
+          .getAll("groupBy")
           .toList
+          .flatMap(_.split(',').toList)
           .map(_.trim)
           .filter(_.nonEmpty)
         ZIO
@@ -331,8 +332,9 @@ object UsageRoutes {
         .getOrElse(100)
         .max(1)
         .min(5000)
-      effectiveGroupBy =
-        if (groupBySet.nonEmpty) groupBySet else Set(UsageTraffic.GroupBy.Domain)
+      // #917: empty set is intentional — strictly aggregate ("one row per
+      // time bucket"). No implicit default.
+      effectiveGroupBy = groupBySet
       resp             = bucket match {
         case UsageTraffic.Bucket.Raw =>
           val allRaw    = UsageTraffic.buildRaw(rows, devByMac, profNames)
