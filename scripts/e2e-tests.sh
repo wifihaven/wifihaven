@@ -160,6 +160,13 @@ step "Blocklists endpoint"
 curl -fsS "${AUTH[@]}" "$BASE/api/blocklists" >/dev/null
 pass "blocklists OK"
 
+step "Sessions endpoint is gone (#845)"
+# Sessions feature was killed in #845/#851; /api/sessions must 404.
+# 200 = resurrection, 401 = auth regression, anything else = unexpected.
+SESSIONS=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/api/sessions")
+[ "$SESSIONS" = "404" ] || fail "expected 404 from /api/sessions, got $SESSIONS"
+pass "/api/sessions returns 404"
+
 step "Time status endpoint"
 # Confirm /api/time/status returns a JSON array.
 STATUS=$(curl -fsS "${AUTH[@]}" "$BASE/api/time/status")
