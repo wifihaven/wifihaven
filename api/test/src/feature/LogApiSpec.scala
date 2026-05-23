@@ -465,6 +465,140 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "kids-site.com")
     },
+    test("GET /api/logs?profileId=A,B accepts comma-separated multi-value (#865)") {
+      for {
+        _           <- cleanDb
+        routerId    <- seedRouter()
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        connRepo    <- ZIO.service[ConnectionEventRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token.value)
+        kidsPid     <- profileRepo.create("Kids", List.empty)
+        adultsPid   <- profileRepo.create("Adults", List.empty)
+        guestsPid   <- profileRepo.create("Guests", List.empty)
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:01"),
+          "Kid's iPad",
+          Some(kidsPid),
+          "10.0.0.1",
+        )
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:02"),
+          "Adult Phone",
+          Some(adultsPid),
+          "10.0.0.2",
+        )
+        _           <- deviceRepo.upsert(
+          MacAddress.unsafe("aa:bb:cc:dd:ee:03"),
+          "Guest Laptop",
+          Some(guestsPid),
+          "10.0.0.3",
+        )
+        _           <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
+              HostId.Fqdn(Hostname.unsafe("kids-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
+              HostId.Fqdn(Hostname.unsafe("adults-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:03")),
+              HostId.Fqdn(Hostname.unsafe("guest-site.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        // Two profiles selected — should include only kids + adults rows.
+        respMulti <- getJson(
+          routes,
+          s"/api/logs?profileId=${kidsPid.value},${adultsPid.value}",
+          token,
+        )
+        bodyMulti <- respMulti.body.asString
+        logsMulti <- ZIO.fromEither(bodyMulti.fromJson[List[QueryLog]])
+        // Empty list (absent param) returns everything — empty != "match nothing".
+        respAll   <- getJson(routes, "/api/logs", token)
+        bodyAll   <- respAll.body.asString
+        logsAll   <- ZIO.fromEither(bodyAll.fromJson[List[QueryLog]])
+        // Single-value param still works — backwards compatibility.
+        respOne   <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
+        bodyOne   <- respOne.body.asString
+        logsOne   <- ZIO.fromEither(bodyOne.fromJson[List[QueryLog]])
+      } yield assertTrue(
+        logsMulti.map(_.host.value).sorted == List("adults-site.com", "kids-site.com"),
+      ) &&
+        assertTrue(logsAll.length == 3) &&
+        assertTrue(logsOne.length == 1 && logsOne.head.host.value == "kids-site.com")
+    },
+    test("GET /api/logs?mac=A,B accepts comma-separated multi-value (#865)") {
+      for {
+        _          <- cleanDb
+        routerId   <- seedRouter()
+        deviceRepo <- ZIO.service[DeviceRepo]
+        connRepo   <- ZIO.service[ConnectionEventRepo]
+        upRepo     <- ZIO.service[UserProfileRepo]
+        auth       <- makeAuth
+        token      <- auth.login("admin", "changeme").map(_.token.value)
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:01"), "A", None, "10.0.0.1")
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:02"), "B", None, "10.0.0.2")
+        _ <- deviceRepo.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:03"), "C", None, "10.0.0.3")
+        _ <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:01")),
+              HostId.Fqdn(Hostname.unsafe("a.example.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:02")),
+              HostId.Fqdn(Hostname.unsafe("b.example.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:03")),
+              HostId.Fqdn(Hostname.unsafe("c.example.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02", token)
+        body <- resp.body.asString
+        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+      } yield assertTrue(logs.map(_.host.value).sorted == List("a.example.com", "b.example.com"))
+    },
     test("GET /api/connection-events/series buckets domain counts (1h, groupBy=domain)") {
       for {
         _        <- cleanDb

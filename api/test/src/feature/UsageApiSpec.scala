@@ -736,6 +736,77 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             ),
           )
       },
+      test("#865 mac= and profileId= accept comma-separated multi-value") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          adultsId    <- profileRepo.create("Adults", List.empty)
+          macAStr = "aa:bb:cc:dd:ee:01"
+          macBStr = "aa:bb:cc:dd:ee:02"
+          macCStr = "aa:bb:cc:dd:ee:03"
+          _        <- TestLayers.seedDevice(deviceRepo, macAStr, "Kid iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, macBStr, "Kid Phone", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, macCStr, "Adult Phone", adultsId)
+          routerId <- seedRouter
+          _        <- insertRow(routerId, macAStr, "youtube.com", today, 14, 0)
+          _        <- insertRow(routerId, macBStr, "tiktok.com", today, 14, 0)
+          _        <- insertRow(routerId, macCStr, "nyt.com", today, 14, 0)
+          rb       <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          // Two macs selected — only those two rows come back.
+          reqM = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$macAStr,$macBStr&from=$from&to=$to&bucket=raw")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          respM <- routes.runZIO(reqM)
+          bodyM <- respM.body.asString
+          outM  <- ZIO.fromEither(bodyM.fromJson[TrafficUsageResponse])
+          // Single-mac form still parses (backwards compat).
+          reqOne = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$macAStr&from=$from&to=$to&bucket=raw")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          respOne <- routes.runZIO(reqOne)
+          bodyOne <- respOne.body.asString
+          outOne  <- ZIO.fromEither(bodyOne.fromJson[TrafficUsageResponse])
+          // Two profiles selected — kids + adults, three rows.
+          reqP = Request
+            .get(
+              URL
+                .decode(
+                  s"/api/usage/traffic?profileId=${kidsId.value},${adultsId.value}&from=$from&to=$to&bucket=raw",
+                )
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          respP <- routes.runZIO(reqP)
+          bodyP <- respP.body.asString
+          outP  <- ZIO.fromEither(bodyP.fromJson[TrafficUsageResponse])
+        } yield assertTrue(respM.status == Status.Ok) &&
+          assertTrue(outM.rawRows.map(_.host.value).toSet == Set("youtube.com", "tiktok.com")) &&
+          assertTrue(
+            outOne.rawRows.length == 1 && outOne.rawRows.head.host.value == "youtube.com",
+          ) &&
+          assertTrue(
+            outP.rawRows.map(_.host.value).toSet == Set("youtube.com", "tiktok.com", "nyt.com"),
+          )
+      },
       test("rejects bucket=1m with bucket_not_implemented") {
         for {
           _  <- cleanDb

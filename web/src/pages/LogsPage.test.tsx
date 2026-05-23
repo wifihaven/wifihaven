@@ -63,8 +63,6 @@ describe('LogsPage (Connection Events) — raw view', () => {
     expect(await screen.findByText('example.com')).toBeInTheDocument()
     expect(api.logs.query).toHaveBeenCalled()
     expect(screen.getByText("Kid's iPad")).toBeInTheDocument()
-    // 'Kids' appears in both the profile dropdown <option> and the data row
-    // <td>; finding at least one is enough to prove the column rendered.
     expect(screen.getAllByText('Kids').length).toBeGreaterThan(0)
   })
 
@@ -73,7 +71,7 @@ describe('LogsPage (Connection Events) — raw view', () => {
   it('hides low-priority raw-view columns on narrow viewports', async () => {
     renderAt()
     await screen.findByText('example.com')
-    expect(screen.getByRole('columnheader', { name: 'Profile' }).className).toMatch(/hidden md:table-cell/)
+    expect(screen.getByRole('columnheader', { name: /^Profile/ }).className).toMatch(/hidden md:table-cell/)
     expect(screen.getByRole('columnheader', { name: 'Reason' }).className).toMatch(/hidden sm:table-cell/)
     expect(screen.getByRole('columnheader', { name: 'Location' }).className).toMatch(/hidden lg:table-cell/)
   })
