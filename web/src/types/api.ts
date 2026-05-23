@@ -159,12 +159,20 @@ export interface DashboardNowHost {
   activeSeconds: number
 }
 
+export interface DashboardNowActivity {
+  topHost: HostId
+  // zio-json omits None — field is absent on the wire (treat absent as no run).
+  minutes?: number | null
+}
+
 export interface DashboardNowDevice {
   id: number
   name: string
   mac: string
   lastSeenSeconds: number
   topHosts: DashboardNowHost[]
+  // zio-json omits None — field is absent on the wire (treat absent as idle).
+  nowActivity?: DashboardNowActivity | null
 }
 
 export interface DashboardNowProfile {

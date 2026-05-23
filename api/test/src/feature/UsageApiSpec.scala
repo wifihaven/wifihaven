@@ -378,7 +378,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.rawRows.forall(_.profileName.contains("Kids"))) &&
           assertTrue(out.rawRows.map(_.host.value).toSet == Set("youtube.com", "google.com"))
       },
-      test("1h aggregated view groups by domain and sums bytes/seconds; matches raw sums") {
+      test(
+        "1h aggregated view with groupBy=domain groups by domain and sums bytes/seconds; matches raw sums",
+      ) {
         val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
           _           <- cleanDb
@@ -442,7 +444,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           aggReq = Request
             .get(
               URL
-                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h")
+                .decode(
+                  s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=domain",
+                )
                 .toOption
                 .get,
             )
@@ -484,6 +488,170 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             aggOut.aggregateRows.map(_.groups("domain")).toSet ==
               Set("youtube.com", "google.com"),
           )
+      },
+      // #917: strictly additive aggregation. Default = one row per window.
+      test("#917: 1h aggregated view with no groupBy returns one row per window (full roll-up)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          // Three rows in the same hour bucket, two distinct domains.
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start.plusSeconds(300),
+                start.plusSeconds(600),
+                300,
+                500L,
+                1500L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start.plusSeconds(600),
+                start.plusSeconds(900),
+                300,
+                100L,
+                100L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy.isEmpty) &&
+          // Three input rows in a single hour, all aggregated into one row.
+          assertTrue(out.aggregateRows.length == 1) &&
+          assertTrue(out.aggregateRows.head.groups.isEmpty) &&
+          assertTrue(out.aggregateRows.head.totalBytesIn == 1600L) &&
+          assertTrue(out.aggregateRows.head.totalBytesOut == 3600L) &&
+          assertTrue(out.aggregateRows.head.totalSeconds == 900L) &&
+          assertTrue(out.aggregateRows.head.distinctDomains == 2)
+      },
+      test(
+        "#917: groupBy as repeated params (?groupBy=device&groupBy=domain) equivalent to comma form",
+      ) {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        val macA  = "aa:bb:cc:dd:ee:1a"
+        val macB  = "aa:bb:cc:dd:ee:1b"
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
+          routerId    <- seedRouter
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macA),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                100L,
+                0L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macB),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                200L,
+                0L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(
+                  s"/api/usage/traffic?profileId=${kidsId.value}&from=$from&to=$to&bucket=1h&groupBy=device&groupBy=domain",
+                )
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy.toSet == Set("device", "domain")) &&
+          assertTrue(out.aggregateRows.length == 2)
+      },
+      test("#917: unknown groupBy value returns 400 unknown_groupBy") {
+        for {
+          _  <- cleanDb
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL.decode(s"/api/usage/traffic?mac=$testMac&bucket=1h&groupBy=bogus").toOption.get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+        } yield assertTrue(resp.status == Status.BadRequest) &&
+          assertTrue(body.contains("unknown_groupBy")) &&
+          assertTrue(body.contains("bogus"))
       },
       test("multi-column groupBy=device,domain produces one row per (window, device, domain)") {
         val today = TestClock.schoolDayAfternoon.toLocalDate

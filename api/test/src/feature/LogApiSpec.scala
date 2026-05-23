@@ -661,6 +661,124 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         // youtube has 3 events vs facebook 1 — total-count desc ordering
         assertTrue(rows.head.groups.getOrElse("domain", "") == "youtube.com")
     },
+    // #917: strictly additive aggregation. Empty groupBy = one row per window.
+    test("#917: GET /api/connection-events/series with no groupBy returns one row per window") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+              HostId.Fqdn(Hostname.unsafe("facebook.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h", token)
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // 3 events all in the same 1h window → one fully-aggregated row.
+        assertTrue(rows.length == 1) &&
+        assertTrue(rows.head.groups.isEmpty) &&
+        assertTrue(rows.head.countSucceeded == 2) &&
+        assertTrue(rows.head.countBlocked == 1) &&
+        assertTrue(rows.head.distinctDomains == 2) &&
+        assertTrue(rows.head.distinctDevices == 2)
+    },
+    test("#917: GET /api/connection-events/series accepts repeated groupBy params") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("facebook.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1h&groupBy=device&groupBy=domain",
+          token,
+        )
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // Three distinct (device,domain) tuples in the single window.
+        assertTrue(rows.length == 3) &&
+        assertTrue(rows.forall(r => r.groups.contains("device") && r.groups.contains("domain")))
+    },
+    test("#917: GET /api/connection-events/series rejects unknown groupBy with 400") {
+      for {
+        _        <- cleanDb
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=bogus", token)
+        body <- resp.body.asString
+      } yield assertTrue(resp.status == Status.BadRequest) &&
+        assertTrue(body.contains("unknown groupBy"))
+    },
     test("GET /api/connection-events/series passes through blocked filter") {
       for {
         _        <- cleanDb

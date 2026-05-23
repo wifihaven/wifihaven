@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
@@ -12,6 +12,16 @@ import { localTime, windowFromTo } from '@/components/usage/usageHelpers'
 // headers double as group-by toggles. apex/app deferred to #856/#857.
 type EventsGroupBy = 'domain' | 'device' | 'profile'
 type EventsBucket  = TrafficUsageBucket  // shared with Traffic page; raw = /api/logs path
+
+const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'profile']
+
+function parseEventsGroupBy(sp: URLSearchParams): EventsGroupBy[] {
+  // #917: repeated ?groupBy=device&groupBy=domain serialization; comma form
+  // still accepted for back-compat.
+  const raw = sp.getAll('groupBy').flatMap(v => v.split(',')).map(v => v.trim()).filter(Boolean)
+  const allowed = new Set<string>(EVENTS_GROUP_KEYS)
+  return raw.filter(g => allowed.has(g)) as EventsGroupBy[]
+}
 
 function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: string | null }) {
   if (deviceName && mac) {
@@ -29,8 +39,11 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
 }
 
 export function LogsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [bucket, setBucket]     = useState<EventsBucket>('raw')
-  const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(['domain'])
+  // #917: default groupBy = [] — one row per time bucket. Toggles strictly add rows.
+  const [groupBy, setGroupBy]   = useState<EventsGroupBy[]>(() => parseEventsGroupBy(searchParams))
+  // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
   const [devices, setDevices]   = useState<Device[]>([])
@@ -43,11 +56,14 @@ export function LogsPage() {
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
-      if (prev.includes(key as EventsGroupBy)) {
-        const next = prev.filter(g => g !== key)
-        return next.length === 0 ? prev : next
-      }
-      return [...prev, key as EventsGroupBy]
+      const next = prev.includes(key as EventsGroupBy)
+        ? prev.filter(g => g !== key)
+        : [...prev, key as EventsGroupBy]
+      const sp = new URLSearchParams(searchParams)
+      sp.delete('groupBy')
+      for (const g of next) sp.append('groupBy', g)
+      setSearchParams(sp, { replace: true })
+      return next
     })
   }
 

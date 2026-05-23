@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type {
   Device,
@@ -25,10 +26,23 @@ import {
 
 const DEFAULT_RAW_LIMIT = 100
 
+const TRAFFIC_GROUP_KEYS: TrafficUsageGroupBy[] = ['domain', 'device', 'profile']
+
+function parseGroupByFromSearch(sp: URLSearchParams): TrafficUsageGroupBy[] {
+  // #917: serialize as repeated ?groupBy=host&groupBy=device so links
+  // round-trip. We also accept the legacy comma-separated single param.
+  const raw = sp.getAll('groupBy').flatMap(v => v.split(',')).map(v => v.trim()).filter(Boolean)
+  const allowed = new Set<string>(TRAFFIC_GROUP_KEYS)
+  return raw.filter(g => allowed.has(g)) as TrafficUsageGroupBy[]
+}
+
 export function TrafficUsagePage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [bucket, setBucket]     = useState<TrafficUsageBucket>('raw')
-  const [groupBy, setGroupBy]   = useState<TrafficUsageGroupBy[]>(['domain'])
-  // #865: multi-select. Empty = no filter.
+  // #917: default is "everything rolled up" — empty groupBy = one row per
+  // time bucket. Each column toggle is strictly additive (adds rows).
+  const [groupBy, setGroupBy]   = useState<TrafficUsageGroupBy[]>(() => parseGroupByFromSearch(searchParams))
+  // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
   const [devices, setDevices]   = useState<Device[]>([])
@@ -76,12 +90,14 @@ export function TrafficUsagePage() {
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
-      if (prev.includes(key as TrafficUsageGroupBy)) {
-        const next = prev.filter(g => g !== key)
-        // Always keep at least one group dimension on aggregate views.
-        return next.length === 0 ? prev : next
-      }
-      return [...prev, key as TrafficUsageGroupBy]
+      const next = prev.includes(key as TrafficUsageGroupBy)
+        ? prev.filter(g => g !== key)
+        : [...prev, key as TrafficUsageGroupBy]
+      const sp = new URLSearchParams(searchParams)
+      sp.delete('groupBy')
+      for (const g of next) sp.append('groupBy', g)
+      setSearchParams(sp, { replace: true })
+      return next
     })
   }
 

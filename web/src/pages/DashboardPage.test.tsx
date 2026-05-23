@@ -62,6 +62,10 @@ const liveNow: DashboardNow = {
             { host: { type: 'fqdn', value: 'youtube.com' }, activeSeconds: 840 },
             { host: { type: 'fqdn', value: 'tiktok.com' }, activeSeconds: 120 },
           ],
+          nowActivity: {
+            topHost: { type: 'fqdn', value: 'youtube.com' },
+            minutes: 25,
+          },
         },
       ],
     },
@@ -145,6 +149,54 @@ describe('NowSection', () => {
     expect(screen.getAllByText('youtube.com').length).toBeGreaterThan(0)
     expect(screen.getByText('tiktok.com')).toBeInTheDocument()
     expect(screen.getByText('14m')).toBeInTheDocument()
+  })
+
+  it('renders "watching X · Nm" activity line for an active device', async () => {
+    mockNow().mockResolvedValue(liveNow)
+    render(withQuery(<NowSection />))
+    await screen.findByTestId('now-device-aa:bb:cc:dd:ee:01')
+    expect(screen.getByText(/watching/)).toBeInTheDocument()
+    expect(screen.getByText(/· 25m/)).toBeInTheDocument()
+  })
+
+  it('renders "(active)" fallback when nowActivity is null', async () => {
+    mockNow().mockResolvedValue({
+      ...liveNow,
+      profiles: [
+        {
+          ...liveNow.profiles[0],
+          activeDevices: [{ ...liveNow.profiles[0].activeDevices[0], nowActivity: null }],
+        },
+        liveNow.profiles[1],
+      ],
+    })
+    render(withQuery(<NowSection />))
+    await screen.findByTestId('now-device-aa:bb:cc:dd:ee:01')
+    expect(screen.getByText('(active)')).toBeInTheDocument()
+    expect(screen.queryByText(/watching/)).not.toBeInTheDocument()
+  })
+
+  it('omits the minutes suffix when minutes is null (single-bucket signal)', async () => {
+    mockNow().mockResolvedValue({
+      ...liveNow,
+      profiles: [
+        {
+          ...liveNow.profiles[0],
+          activeDevices: [{
+            ...liveNow.profiles[0].activeDevices[0],
+            nowActivity: {
+              topHost: { type: 'fqdn', value: 'youtube.com' },
+              minutes: null,
+            },
+          }],
+        },
+        liveNow.profiles[1],
+      ],
+    })
+    render(withQuery(<NowSection />))
+    await screen.findByTestId('now-device-aa:bb:cc:dd:ee:01')
+    expect(screen.getByText(/watching/)).toBeInTheDocument()
+    expect(screen.queryByText(/·\s*\d+m/)).not.toBeInTheDocument()
   })
 
   it('renders Paused badge when profile is paused', async () => {

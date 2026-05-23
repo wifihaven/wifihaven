@@ -76,3 +76,11 @@ def test_usage_flows_to_fake_for_client_mac(router, client, fake_api):
     assert "activeSeconds" in rec
     assert "bytesIn" in rec
     assert "bytesOut" in rec
+    # bytes_out cascade (#717 → #833 → #858 → #866 → #905 → #913): key-presence
+    # alone let zeroed/swapped counters ship repeatedly. See #920.
+    assert rec["bytesOut"] > 0, f"bytesOut should be >0 after HTTP GETs, got {rec!r}"
+    assert rec["bytesIn"] > 0, f"bytesIn should be >0 after HTTP GETs, got {rec!r}"
+    # GET-only workload is download-heavy; catches #905-class direction swaps.
+    assert rec["bytesIn"] > rec["bytesOut"], (
+        f"GET-only workload should have bytesIn > bytesOut, got {rec!r}"
+    )
