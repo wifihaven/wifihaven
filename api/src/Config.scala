@@ -1,5 +1,6 @@
 package wifihaven.api
 
+import wifihaven.shared.types.Hostname
 import zio.*
 import zio.config.*
 import zio.config.magnolia.*
@@ -10,6 +11,7 @@ case class AppConfig(
     http: HttpConfig,
     jwt: JwtConfig,
     cors: CorsConfig,
+    policy: PolicyConfig = PolicyConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -48,6 +50,35 @@ case class CorsConfig(
 ) {
   val origins: List[String] =
     allowedOrigins.split(",").iterator.map(_.trim).filter(_.nonEmpty).toList
+}
+
+// #944: hosts always present in every profile's snapshot `extraAllowed` so a
+// paused household member can still reach the wifihaven admin UI to unpause
+// themselves. Set per deployment to the SPA + API hostnames that this API
+// serves (prod or staging, not both). Empty disables the global allow list —
+// the default for self-hosted single-origin installs that don't need it.
+// Precursor to the DB-backed global profile in #937.
+case class PolicyConfig(
+    uiAllowedHosts: String = "",
+) {
+  val uiAllowedHostsParsed: List[Hostname] =
+    uiAllowedHosts
+      .split(",")
+      .iterator
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map { raw =>
+        Hostname
+          .parse(raw)
+          .fold(
+            err =>
+              throw new IllegalArgumentException(
+                s"wifihaven.policy.uiAllowedHosts: invalid hostname '$raw': $err",
+              ),
+            identity,
+          )
+      }
+      .toList
 }
 
 object AppConfig {

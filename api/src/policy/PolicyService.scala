@@ -1,5 +1,6 @@
 package wifihaven.api.policy
 
+import wifihaven.api.AppConfig
 import wifihaven.api.db.*
 import wifihaven.api.presence.Presence
 import wifihaven.shared.{Schedule as DbSchedule, *}
@@ -45,6 +46,7 @@ class PolicyServiceLive(
     trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
     clock: Clock,
+    uiAllowedHosts: List[Hostname] = Nil,
 ) extends PolicyService {
 
   def snapshot: Task[PolicySnapshot] =
@@ -102,7 +104,7 @@ class PolicyServiceLive(
           minutesByDomain = byDomain,
           extensionsMinutes = extMins,
         )
-        val rules  = PolicyService.computeBlockRules(inputs, now)
+        val rules  = PolicyService.computeBlockRules(inputs, now, uiAllowedHosts)
 
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
       }.toMap
@@ -335,11 +337,39 @@ private case class SnapshotCore(
 
 object PolicyService {
   val layer: ZLayer[
-    ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & SiteTimeLimitRepo &
-      DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & Clock,
+    AppConfig & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
+      SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
+      Clock,
     Nothing,
     PolicyService,
-  ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction {
+    (
+        cfg: AppConfig,
+        pr: ProfileRepo,
+        sr: ScheduleRepo,
+        hsr: HouseholdSettingsRepo,
+        tlr: TimeLimitRepo,
+        stlr: SiteTimeLimitRepo,
+        dr: DeviceRepo,
+        blr: BlocklistRepo,
+        trr: TrafficReportRepo,
+        er: TimeExtensionRepo,
+        clk: Clock,
+    ) =>
+      PolicyServiceLive(
+        pr,
+        sr,
+        hsr,
+        tlr,
+        stlr,
+        dr,
+        blr,
+        trr,
+        er,
+        clk,
+        cfg.policy.uiAllowedHostsParsed,
+      )
+  }
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
   def blocklistContentVersion(domains: Iterable[String]): String = {
@@ -387,6 +417,7 @@ object PolicyService {
   private[policy] def computeBlockRules(
       in: ProfileInputs,
       now: Instant,
+      uiAllowedHosts: List[Hostname] = Nil,
   ): BlockRules = {
     val p = in.profile
 
@@ -417,7 +448,13 @@ object PolicyService {
       blocked = blocked,
       blockReason = reason,
       extraBlocked = (p.extraBlocked ++ siteLimitExtraBlocked).distinct,
-      extraAllowed = p.extraAllowed,
+      // #944: union the deployment's UI hosts into per-profile extraAllowed so
+      // a household device can always reach the admin UI even when this
+      // profile is paused or lists one of these hosts in extraBlocked (allow
+      // beats block at the router). Configured via wifihaven.policy
+      // .uiAllowedHosts per-deployment so prod doesn't allow staging through
+      // and vice versa. Will become DB-backed per #937.
+      extraAllowed = (p.extraAllowed ++ uiAllowedHosts).distinct,
       blocklistIds = p.blockedCategories,
       blockIpOnly = p.blockIpOnly, // #424: per-profile toggle (router enforcement #353)
     )
