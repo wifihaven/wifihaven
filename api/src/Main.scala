@@ -78,6 +78,7 @@ object Main extends ZIOAppDefault {
       connRepo    <- ZIO.service[ConnectionEventRepo]
       blockEvRepo <- ZIO.service[BlockEventRepo]
       alertRepo   <- ZIO.service[DeviceAlertRepo]
+      appRepo     <- ZIO.service[AppRepo]
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
@@ -127,6 +128,7 @@ object Main extends ZIOAppDefault {
         alertRepo,
       ) ++
       DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
+      AppRoutes.routes(auth, appRepo, profileRepo, upRepo) ++
       DebugRoutes.routes(
         cfg.debugEnabled,
         deviceRepo,
