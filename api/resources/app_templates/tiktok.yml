@@ -1,0 +1,10 @@
+slug: tiktok
+name: TikTok
+icon: "🎵"
+icon_type: emoji
+hosts:
+  - tiktok.com
+  - tiktokcdn.com
+  - tiktokv.com
+  - musical.ly
+  - byteoversea.com

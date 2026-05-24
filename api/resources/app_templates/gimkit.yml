@@ -1,0 +1,6 @@
+slug: gimkit
+name: Gimkit
+icon: "💰"
+icon_type: emoji
+hosts:
+  - gimkit.com

@@ -1791,11 +1791,13 @@ trait AppRepo {
   def listAll: Task[List[App]]
   def findById(id: AppId): Task[Option[App]]
   def findBySlug(slug: String): Task[Option[App]]
+  def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
   def create(
       name: String,
       slug: String,
       templateId: Option[AppTemplateId],
       icon: Option[String],
+      iconType: IconType = IconType.Emoji,
   ): Task[AppId]
   def update(a: App): Task[Unit]
   def delete(id: AppId): Task[Unit]
@@ -1829,25 +1831,33 @@ trait AppRepo {
 }
 
 class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
-  private type R = (AppId, String, String, Option[AppTemplateId], Option[String], Instant)
-  private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6)
+  private type R =
+    (AppId, String, String, Option[AppTemplateId], Option[String], IconType, Instant)
+  private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
 
   def listAll =
-    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps ORDER BY id"
+    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps ORDER BY id"
       .query[R]
       .map(toApp)
       .to[List]
       .transact(xa)
 
   def findById(id: AppId) =
-    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE id=$id"
+    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE id=$id"
       .query[R]
       .map(toApp)
       .option
       .transact(xa)
 
   def findBySlug(slug: String) =
-    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE slug=$slug"
+    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE slug=$slug"
+      .query[R]
+      .map(toApp)
+      .option
+      .transact(xa)
+
+  def findByTemplateId(templateId: AppTemplateId) =
+    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE template_id=$templateId"
       .query[R]
       .map(toApp)
       .option
@@ -1858,8 +1868,10 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       slug: String,
       templateId: Option[AppTemplateId],
       icon: Option[String],
+      iconType: IconType = IconType.Emoji,
   ) =
-    sql"INSERT INTO apps(name,slug,template_id,icon) VALUES($name,$slug,$templateId,$icon) RETURNING id"
+    sql"""INSERT INTO apps(name,slug,template_id,icon,icon_type)
+          VALUES($name,$slug,$templateId,$icon,$iconType) RETURNING id"""
       .query[AppId]
       .unique
       .transact(xa)
@@ -1869,7 +1881,8 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
             name=${a.name},
             slug=${a.slug},
             template_id=${a.templateId},
-            icon=${a.icon}
+            icon=${a.icon},
+            icon_type=${a.iconType}
           WHERE id=${a.id}""".update.run.transact(xa).unit
 
   def delete(id: AppId) =

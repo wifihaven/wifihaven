@@ -36,9 +36,16 @@ object Main extends ZIOAppDefault {
       // on subsequent boots because of ON CONFLICT DO NOTHING.
       hsRepo <- ZIO.service[HouseholdSettingsRepo]
       tz = java.time.ZoneId.systemDefault()
-      _      <- hsRepo.ensureDefault(tz)
-      _      <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
-      routes <- allRoutes
+      _              <- hsRepo.ensureDefault(tz)
+      _              <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+      // #768: seed the starter library of app templates. Idempotent — operator
+      // host edits on previously-seeded apps are preserved.
+      appRepoForSeed <- ZIO.service[AppRepo]
+      templates      <- AppTemplates.loadAll()
+      _              <- AppTemplates.seed(appRepoForSeed, templates)
+      _              <- ZIO.logInfo(s"app_templates seeded (${templates.size} templates)")
+      templatesById = templates.map(t => t.slug -> t).toMap
+      routes <- allRoutes(templatesById)
       withCors = Cors.wrap(routes, cfg.cors)
       _ <- ZIO
         .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
@@ -59,7 +66,7 @@ object Main extends ZIOAppDefault {
       PolicyService.layer >+>
       TimeStatusCache.live()
 
-  private def allRoutes =
+  private def allRoutes(templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate]) =
     for {
       auth        <- ZIO.service[AuthService]
       userRepo    <- ZIO.service[UserRepo]
@@ -128,7 +135,7 @@ object Main extends ZIOAppDefault {
         alertRepo,
       ) ++
       DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
-      AppRoutes.routes(auth, appRepo, profileRepo, upRepo) ++
+      AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
       DebugRoutes.routes(
         cfg.debugEnabled,
         deviceRepo,

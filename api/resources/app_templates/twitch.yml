@@ -1,0 +1,9 @@
+slug: twitch
+name: Twitch
+icon: "🟣"
+icon_type: emoji
+hosts:
+  - twitch.tv
+  - ttvnw.net
+  - jtvnw.net
+  - twitchcdn.net

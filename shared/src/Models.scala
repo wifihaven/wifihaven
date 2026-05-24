@@ -187,12 +187,40 @@ object AppMode {
   )
 }
 
+/**
+ * How the `icon` string on an [[App]] should be interpreted by the SPA. The DB stores `icon` as
+ * free-form TEXT so we can ship emojis today, swap to a URL or inline a base64 PNG tomorrow without
+ * a schema change. `icon_type` tells the renderer which it is.
+ */
+enum IconType {
+  case Emoji, Url, PngBase64
+}
+
+object IconType {
+  def asString(t: IconType): String      = t match {
+    case Emoji     => "emoji"
+    case Url       => "url"
+    case PngBase64 => "png_base64"
+  }
+  def parse(s: String): Option[IconType] = s match {
+    case "emoji"      => Some(Emoji)
+    case "url"        => Some(Url)
+    case "png_base64" => Some(PngBase64)
+    case _            => None
+  }
+  given JsonCodec[IconType]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown icon type: $s"),
+    asString,
+  )
+}
+
 case class App(
     id: AppId,
     name: String,
     slug: String,
     templateId: Option[AppTemplateId],
     icon: Option[String],
+    iconType: IconType,
     createdAt: java.time.Instant,
 ) derives JsonCodec
 
@@ -214,6 +242,7 @@ case class CreateAppRequest(
     name: String,
     slug: Option[String] = None,
     icon: Option[String] = None,
+    iconType: Option[IconType] = None,
     templateId: Option[AppTemplateId] = None,
     hosts: List[String] = Nil,
 ) derives JsonCodec
@@ -221,6 +250,7 @@ case class CreateAppRequest(
 case class UpdateAppRequest(
     name: String,
     icon: Option[String] = None,
+    iconType: Option[IconType] = None,
     templateId: Option[AppTemplateId] = None,
 ) derives JsonCodec
 
