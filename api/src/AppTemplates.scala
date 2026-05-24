@@ -1,6 +1,7 @@
 package wifihaven.api
 
 import wifihaven.api.db.AppRepo
+import wifihaven.shared.IconType
 import wifihaven.shared.types.*
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
@@ -22,6 +23,7 @@ final case class AppTemplate(
     slug: AppTemplateId,
     name: String,
     icon: Option[String],
+    iconType: IconType,
     hosts: List[Hostname],
 )
 
@@ -79,21 +81,27 @@ object AppTemplates {
       Option(root.get(key)).toRight(s"missing required field '$key'").flatMap(f)
 
     for {
-      slugRaw <- req("slug") {
+      slugRaw  <- req("slug") {
         case s: String => Right(s)
         case other     => Left(s"slug must be a string, got $other")
       }
-      slug    <- AppTemplateId.parse(slugRaw)
-      name    <- req("name") {
+      slug     <- AppTemplateId.parse(slugRaw)
+      name     <- req("name") {
         case s: String if s.trim.nonEmpty => Right(s.trim)
         case _                            => Left("name must be a non-empty string")
       }
-      icon    <- Option(root.get("icon")) match {
+      icon     <- Option(root.get("icon")) match {
         case None            => Right(None)
         case Some(s: String) => Right(Some(s).filter(_.trim.nonEmpty))
         case Some(other)     => Left(s"icon must be a string if present, got $other")
       }
-      hosts   <- Option(root.get("hosts")) match {
+      iconType <- Option(root.get("icon_type")) match {
+        case None            => Right(IconType.Emoji)
+        case Some(s: String) =>
+          IconType.parse(s.trim).toRight(s"unknown icon_type '$s' (expected emoji|url|png_base64)")
+        case Some(other)     => Left(s"icon_type must be a string if present, got $other")
+      }
+      hosts    <- Option(root.get("hosts")) match {
         case Some(xs: java.util.List[?]) =>
           val strs = xs.asScala.toList.map(_.toString)
           if strs.isEmpty then Left("hosts must contain at least one entry")
@@ -107,13 +115,13 @@ object AppTemplates {
               .map(_.reverse.distinct)
         case _                           => Left("hosts must be a non-empty list of strings")
       }
-      _       <- Either.cond(
+      _        <- Either.cond(
         source.endsWith(s"/${slug.value}.yml"),
         (), {
           s"slug '${slug.value}' does not match file name $source"
         },
       )
-    } yield AppTemplate(slug, name, icon, hosts)
+    } yield AppTemplate(slug, name, icon, iconType, hosts)
   }
 
   private def withResource[A](resource: String)(f: InputStream => A): Task[A] =
@@ -159,7 +167,7 @@ object AppTemplates {
       case None           =>
         for {
           freeSlug <- findFreeSlug(repo, t.slug.value)
-          id       <- repo.create(t.name, freeSlug, Some(t.slug), t.icon)
+          id       <- repo.create(t.name, freeSlug, Some(t.slug), t.icon, t.iconType)
           _        <- repo.setHosts(id, t.hosts)
         } yield ()
     }

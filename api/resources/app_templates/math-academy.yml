@@ -1,5 +1,6 @@
 slug: math-academy
 name: Math Academy
 icon: "🧮"
+icon_type: emoji
 hosts:
   - mathacademy.com

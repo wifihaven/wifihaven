@@ -1,6 +1,7 @@
 slug: snapchat
 name: Snapchat
 icon: "👻"
+icon_type: emoji
 hosts:
   - snapchat.com
   - sc-cdn.net

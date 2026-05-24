@@ -5,6 +5,7 @@ import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
+import wifihaven.shared.IconType
 import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
@@ -110,6 +111,18 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(templates.forall(_.name.nonEmpty)) &&
         assertTrue(templates.map(_.slug).distinct.size == templates.size)
       }
+    },
+    test("templates carry icon_type, seeded apps round-trip it through the DB") {
+      for {
+        _         <- cleanDb
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        _         <- AppTemplates.seed(appRepo, templates)
+        yt        <- appRepo
+          .findByTemplateId(AppTemplateId.unsafe("youtube"))
+          .someOrFailException
+      } yield assertTrue(templates.forall(_.iconType == IconType.Emoji)) &&
+        assertTrue(yt.iconType == IconType.Emoji)
     },
     test("each template's hosts parse as apex hostnames") {
       for {

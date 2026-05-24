@@ -8,22 +8,32 @@
 #
 # Schema (required fields are marked):
 #
-#   slug:  required, kebab-case [a-z0-9][a-z0-9-]{0,63}. Used as the app's
-#          `template_id` and as the initial `slug` of the seeded apps row.
-#          Must be unique across the directory; the file name (without `.yml`)
-#          must match the slug for clarity.
-#   name:  required, human-readable display name (e.g. "YouTube").
-#   icon:  optional. Either an emoji or a path to an SVG/PNG served by the SPA.
-#   hosts: required, list of apex hostnames (e.g. "youtube.com"). Don't include
-#          wildcards — the router matches subdomains inherently. Be conservative:
-#          prefer the few FQDNs each service truly needs; we iterate over time.
+#   slug:      required, kebab-case [a-z0-9][a-z0-9-]{0,63}. Used as the app's
+#              `template_id` and as the initial `slug` of the seeded apps row.
+#              Must be unique across the directory; the file name (without
+#              `.yml`) must match the slug for clarity.
+#   name:      required, human-readable display name (e.g. "YouTube").
+#   icon:      optional. Opaque TEXT — interpreted according to `icon_type`.
+#              Drop this field if the app has no icon yet.
+#   icon_type: optional, defaults to `emoji`. One of:
+#                emoji      — `icon` is a single emoji character or short
+#                             grapheme cluster the SPA renders inline.
+#                url        — `icon` is an absolute URL (http(s)://...) the
+#                             SPA loads as an <img>.
+#                png_base64 — `icon` is a base64-encoded PNG (no data: prefix);
+#                             the SPA renders it inline as a data URI.
+#   hosts:     required, list of apex hostnames (e.g. "youtube.com"). Don't
+#              include wildcards — the router matches subdomains inherently.
+#              Be conservative: prefer the few FQDNs each service truly needs;
+#              we iterate over time.
 #
 # File names beginning with `_` are reserved for documentation (this file) and
-# are ignored by the loader.
+# the manifest (`_index.yml`) and are ignored by the template loader.
 
 slug: example
 name: Example App
 icon: "🧩"
+icon_type: emoji
 hosts:
   - example.com
   - cdn.example.com

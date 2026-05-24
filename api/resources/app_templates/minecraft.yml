@@ -1,6 +1,7 @@
 slug: minecraft
 name: Minecraft
 icon: "⛏️"
+icon_type: emoji
 hosts:
   - minecraft.net
   - mojang.com

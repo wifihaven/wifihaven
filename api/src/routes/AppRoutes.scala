@@ -125,7 +125,7 @@ object AppRoutes {
               )
               .when(existing.isDefined)
             id       <- appRepo
-              .create(name, slug, cr.templateId, cr.icon)
+              .create(name, slug, cr.templateId, cr.icon, cr.iconType.getOrElse(IconType.Emoji))
               .mapError(ErrorMapper.dbErrorToResponse)
             _        <- appRepo
               .setHosts(id, hosts)
@@ -154,7 +154,14 @@ object AppRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("App not found")))
             _ <- appRepo
-              .update(a.copy(name = name, icon = ur.icon, templateId = ur.templateId))
+              .update(
+                a.copy(
+                  name = name,
+                  icon = ur.icon,
+                  iconType = ur.iconType.getOrElse(a.iconType),
+                  templateId = ur.templateId,
+                ),
+              )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
