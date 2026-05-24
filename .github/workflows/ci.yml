@@ -176,11 +176,16 @@ jobs:
         # Mill caches `out/` across runs but does NOT drop stale `.class` files when their `.scala`
         # sources are deleted, so old test classes can still be discovered by the test framework
         # (#845 hit this: SessionApiSpec was deleted but its cached class file persisted and
-        # failed with NoClassDefFoundError for the also-deleted SessionPage). Wipe the per-module
-        # `classes` dirs so Zinc rebuilds against the current source set; everything else in
-        # `out/` (Zinc analysis, downloaded deps) stays cached.
+        # failed with NoClassDefFoundError for the also-deleted SessionPage). Wipe just the *test*
+        # `classes` dirs so Zinc rebuilds tests against the current source set; everything else in
+        # `out/` (main module classes, Zinc analysis, downloaded deps) stays cached.
+        #
+        # NB: do NOT also `rm -rf out/*/compile.dest/classes`. That would wipe shared/api main
+        # classes while Mill's task-state still treats those compile tasks as up-to-date from the
+        # restored cache — so they get skipped, downstream modules can't resolve their symbols, and
+        # `api.compile` fails with "value shared is not a member of wifihaven" (#946).
         run: |
-          rm -rf out/*/test/compile.dest/classes out/*/compile.dest/classes 2>/dev/null || true
+          rm -rf out/*/test/compile.dest/classes 2>/dev/null || true
           mill __.compile
 
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
