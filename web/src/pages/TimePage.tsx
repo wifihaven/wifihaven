@@ -15,6 +15,7 @@ import {
 } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type {
+  HostUsage,
   ProfileTimeBucket, ProfileTimeStatus, ProfileTimeStatusWeek,
   ProfileTimeSummary, ProfileTimeSummaryWeek,
 } from '@/types/api'
@@ -88,6 +89,48 @@ export function groupBucketsByLocalDay(
     })
   }
   return out
+}
+
+// #957 — per-host row shows two labeled numbers: byte-share attention (#715)
+// and the count of 5-min buckets where the host appeared at all. Column headers
+// make the distinction visible without hover; when both round to the same
+// formatted value we collapse to a single number to avoid noise.
+function HostUsageList({ rows, testidPrefix }: { rows: HostUsage[]; testidPrefix: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center text-[10px] font-semibold text-gray-500 uppercase tracking-wider gap-3 px-3">
+        <p className="flex-1">Top Sites</p>
+        <span
+          className="w-14 text-right"
+          title="Byte-share of each 5-min window — wall-clock attention this host got (#715)."
+        >
+          Attention
+        </span>
+        <span
+          className="w-14 text-right"
+          title="Count of 5-min buckets where this host appeared at all, regardless of share."
+        >
+          Seen
+        </span>
+      </div>
+      {rows.map(hu => {
+        const attention = formatMins(hu.proportionalMins)
+        const seen = formatMins(hu.usedMins)
+        const same = attention === seen
+        return (
+          <div
+            key={hu.host.value}
+            data-testid={`${testidPrefix}-${hu.host.value}`}
+            className="flex items-center text-xs bg-gray-800/50 rounded-lg px-3 py-2 gap-3"
+          >
+            <span className="text-gray-300 font-mono truncate flex-1" title={hu.host.value}>{hu.host.value}</span>
+            <span className="text-gray-500 font-mono shrink-0 w-14 text-right">{attention}</span>
+            <span className="text-gray-600 font-mono shrink-0 w-14 text-right">{same ? '' : seen}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export function formatMins(n: number): string {
@@ -432,30 +475,7 @@ function ProfileTimeCard({ status }: { status: ProfileTimeStatus }) {
       )}
 
       {status.hostUsage.length > 0 && (
-        <div className="space-y-1">
-          <p
-            className="text-xs font-semibold text-gray-500 uppercase tracking-wider"
-            title="Per-host minutes are a byte-share of each 5-min window (wall-clock attention, #715). The presence number — how many 5-min windows the host appeared in at all — shows in parentheses."
-          >
-            Top Sites
-          </p>
-          {status.hostUsage.map(hu => (
-            <div
-              key={hu.host.value}
-              data-testid={`time-host-${status.profileId}-${hu.host.value}`}
-              className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
-            >
-              <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
-              <span
-                className="text-gray-500 font-mono shrink-0 ml-2"
-                title={`presence ${formatMins(hu.usedMins)} (every bucket this host appeared in)`}
-              >
-                {formatMins(hu.proportionalMins)}
-                <span className="text-gray-600"> ({formatMins(hu.usedMins)})</span>
-              </span>
-            </div>
-          ))}
-        </div>
+        <HostUsageList rows={status.hostUsage} testidPrefix={`time-host-${status.profileId}`} />
       )}
 
       {status.siteUsage.length > 0 && (
@@ -687,30 +707,7 @@ function ProfileTimeWeekCard({ status }: { status: ProfileTimeStatusWeek }) {
       )}
 
       {status.hostUsage.length > 0 && (
-        <div className="space-y-1">
-          <p
-            className="text-xs font-semibold text-gray-500 uppercase tracking-wider"
-            title="Per-host minutes are byte-share of each 5-min window (wall-clock attention, #715). Presence in parens is how many windows the host appeared in at all."
-          >
-            Top Sites
-          </p>
-          {status.hostUsage.map(hu => (
-            <div
-              key={hu.host.value}
-              data-testid={`time-week-host-${status.profileId}-${hu.host.value}`}
-              className="flex justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
-            >
-              <span className="text-gray-300 font-mono truncate" title={hu.host.value}>{hu.host.value}</span>
-              <span
-                className="text-gray-500 font-mono shrink-0 ml-2"
-                title={`presence ${formatMins(hu.usedMins)} (every bucket this host appeared in)`}
-              >
-                {formatMins(hu.proportionalMins)}
-                <span className="text-gray-600"> ({formatMins(hu.usedMins)})</span>
-              </span>
-            </div>
-          ))}
-        </div>
+        <HostUsageList rows={status.hostUsage} testidPrefix={`time-week-host-${status.profileId}`} />
       )}
     </div>
   )
