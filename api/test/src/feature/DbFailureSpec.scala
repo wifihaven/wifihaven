@@ -86,6 +86,11 @@ object DbFailureSpec extends ZIOSpecDefault {
         limit: Option[Int] = None,
     ) = throwing
     def earliestPeriodStart                                              = throwing
+    def listFqdnHostAggregatesForDevice(
+        mac: MacAddress,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = throwing
   }
 
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {

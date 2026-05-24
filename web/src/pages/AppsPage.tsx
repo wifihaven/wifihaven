@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 import { useProfiles } from '@/api/queries'
 import type { AppDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+import { RecentApexPicker } from '@/components/RecentApexPicker'
 
 interface EditFormState {
   name: string
@@ -137,6 +138,23 @@ function CreateAppModal({ onClose, onSaved }: {
   const [hostsInput, setHostsInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  const currentHosts = useMemo(() => {
+    const fromText = splitHosts(hostsInput)
+    return [...new Set([...form.hosts, ...fromText])]
+  }, [form.hosts, hostsInput])
+
+  function addFromPicker(picked: string[]) {
+    setHostsInput(prev => {
+      const existing = new Set(splitHosts(prev))
+      const additions = picked.filter(h => !existing.has(h))
+      if (additions.length === 0) return prev
+      const sep = prev && !prev.endsWith('\n') ? '\n' : ''
+      return prev + sep + additions.join('\n')
+    })
+    setPickerOpen(false)
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -183,7 +201,6 @@ function CreateAppModal({ onClose, onSaved }: {
           />
         </Field>
         <Field label="Initial hosts (optional)">
-          {/* #766 — picker comes later; plain comma/newline-separated input for now. */}
           <textarea
             rows={4}
             value={hostsInput}
@@ -191,10 +208,17 @@ function CreateAppModal({ onClose, onSaved }: {
             placeholder="youtube.com&#10;*.googlevideo.com"
             className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-emerald-500"
           />
-          <p className="text-xs text-gray-500 mt-2">
-            One per line or comma-separated. <code>*.foo.com</code> and <code>foo.com</code>
-            both canonicalize to the apex.
-          </p>
+          <div className="flex items-center justify-between mt-2 gap-3">
+            <p className="text-xs text-gray-500">
+              One per line or comma-separated. <code>*.foo.com</code> and <code>foo.com</code>
+              both canonicalize to the apex.
+            </p>
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              className="shrink-0 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg"
+            >Pick from recent activity</button>
+          </div>
         </Field>
         <div className="flex gap-3 pt-2">
           <button type="button" onClick={onClose} disabled={saving}
@@ -207,6 +231,13 @@ function CreateAppModal({ onClose, onSaved }: {
           </button>
         </div>
       </form>
+      {pickerOpen && (
+        <RecentApexPicker
+          existingHosts={currentHosts}
+          onClose={() => setPickerOpen(false)}
+          onAdd={addFromPicker}
+        />
+      )}
     </Modal>
   )
 }
@@ -223,6 +254,13 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  function addFromPicker(picked: string[]) {
+    if (picked.length === 0) return
+    setForm(f => ({ ...f, hosts: [...new Set([...f.hosts, ...picked])] }))
+    setPickerOpen(false)
+  }
 
   const assignedProfiles = useMemo(() => {
     const ids = new Set(detail.assignments.map(a => a.profileId))
@@ -343,6 +381,11 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
               className="px-4 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-sm font-medium"
             >Add</button>
           </div>
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            className="mt-2 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg"
+          >Pick from recent activity</button>
         </Field>
 
         {hasTemplate && (
@@ -415,6 +458,13 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
           </button>
         </div>
       </form>
+      {pickerOpen && (
+        <RecentApexPicker
+          existingHosts={form.hosts}
+          onClose={() => setPickerOpen(false)}
+          onAdd={addFromPicker}
+        />
+      )}
     </Modal>
   )
 }

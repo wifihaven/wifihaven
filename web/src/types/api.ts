@@ -607,6 +607,24 @@ export interface SetAppHostsRequest {
   hosts: string[]
 }
 
+// #766 — recently-visited apex picker payload. One row per PSL-collapsed
+// registered domain for the device, sorted by total bytes desc. `subdomains`
+// is the set of observed FQDNs underneath the apex (empty when the apex
+// itself was the only hit). Bare-IP rows are excluded server-side.
+export interface RecentApex {
+  apex: string
+  bytes: number
+  hits: number
+  subdomains: string[]
+}
+
+export interface RecentApexesResponse {
+  deviceMac: string
+  deviceName: string
+  windowDays: number
+  items: RecentApex[]
+}
+
 export interface UpsertAppAssignmentRequest {
   mode: AppMode
   dailyMinutes?: number | null

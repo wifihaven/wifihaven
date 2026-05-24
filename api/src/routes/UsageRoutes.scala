@@ -26,7 +26,7 @@ object UsageRoutes {
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "usage" / "traffic" ->
+      Method.GET / "api" / "usage" / "traffic"                         ->
         handler { (req: Request) =>
           trafficHandler(
             req,
@@ -39,7 +39,60 @@ object UsageRoutes {
             clock,
           )
         },
-      Method.GET / "api" / "usage" / "series"  ->
+      // #766: recently-visited FQDN apexes for one device, used by the
+      // apps create/edit "Pick from recent activity" picker.
+      Method.GET / "api" / "devices" / string("mac") / "recent-apexes" ->
+        handler { (macRaw: String, req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            mac = MacAddress.unsafe(normalizeMac(macRaw))
+            device <- deviceRepo
+              .findByMac(mac)
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            windowDays = req.url
+              .queryParam("windowDays")
+              .flatMap(_.toIntOption)
+              .getOrElse(7)
+              .max(1)
+              .min(30)
+            limit      = req.url
+              .queryParam("limit")
+              .flatMap(_.toIntOption)
+              .getOrElse(50)
+              .max(1)
+              .min(500)
+            now <- clock.instant
+            from = now.minus(Duration.ofDays(windowDays.toLong))
+            rows <- trafficRepo
+              .listFqdnHostAggregatesForDevice(mac, from, now)
+              .mapError(ErrorMapper.dbErrorToResponse)
+            grouped = rows
+              .groupBy { case (h, _, _) => Apex.orSelf(h) }
+              .iterator
+              .map { case (apex, members) =>
+                val bytes = members.iterator.map(_._2).sum
+                val hits  = members.iterator.map(_._3).sum
+                val subs  = members
+                  .map(_._1)
+                  .filter(_ != apex)
+                  .distinct
+                  .sortBy(_.value)
+                RecentApex(apex, bytes, hits, subs)
+              }
+              .toList
+              .sortBy(r => (-r.bytes, r.apex.value))
+              .take(limit)
+            resp    = RecentApexesResponse(
+              deviceMac = mac,
+              deviceName = device.name,
+              windowDays = windowDays,
+              items = grouped,
+            )
+          } yield Response.json(resp.toJson)
+        },
+      Method.GET / "api" / "usage" / "series"                          ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)
