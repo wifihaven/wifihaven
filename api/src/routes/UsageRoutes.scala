@@ -343,7 +343,7 @@ object UsageRoutes {
             .flatMap { m =>
               byId
                 .get(m.appId)
-                .map(a => m.host.value -> AppMembership(a.slug, a.name, a.icon, Some(a.id)), )
+                .map(a => m.host.value -> AppMembership(a.slug, a.name, a.icon, Some(a.id)))
             }
             .groupMap(_._1)(_._2)).mapError(ErrorMapper.dbErrorToResponse)
         else ZIO.succeed(Map.empty[String, List[AppMembership]])
