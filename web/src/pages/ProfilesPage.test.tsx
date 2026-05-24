@@ -26,6 +26,11 @@ vi.mock('@/api/client', () => ({
     household: {
       get: vi.fn(),
     },
+    apps: {
+      list: vi.fn(),
+      setPolicy: vi.fn(),
+      deletePolicy: vi.fn(),
+    },
   },
 }))
 
@@ -114,6 +119,9 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
   })
+  ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 })
 
 describe('ProfilesPage — list', () => {
@@ -482,5 +490,125 @@ describe('ProfilesPage — highlight from ?id= (#298)', () => {
     renderPage()
     const card = await screen.findByTestId('profile-card-1')
     expect(card.className).not.toContain('ring-emerald-500')
+  })
+})
+
+describe('ProfilesPage — apps section (#767)', () => {
+  const youtube = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [] as { id: number; appId: number; profileId: number; mode: 'blocked'|'allowed'|'time_limited'; dailyMinutes: number|null; exemptFromDaily: boolean }[],
+  }
+  const tiktok = {
+    app: { id: 51, name: 'TikTok', slug: 'tiktok', templateId: null, icon: '🎵', createdAt: '2026-01-01' },
+    hosts: ['tiktok.com', 'www.tiktok.com'],
+    assignments: [
+      { id: 1, appId: 51, profileId: 1, mode: 'blocked' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+
+  it('empty state with link to /apps when no apps exist', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    const section = await screen.findByTestId('apps-section')
+    expect(within(section).getByText(/No apps yet/i)).toBeInTheDocument()
+    expect(within(section).getByTestId('apps-section-empty-link')).toHaveAttribute('href', '/apps')
+  })
+
+  it('renders one row per app and reflects current assignment', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube, tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await screen.findByTestId('app-row-50')
+    expect(screen.getByTestId('app-row-51')).toBeInTheDocument()
+    // TikTok is currently blocked for profile 1; the block button shows checked state.
+    const tiktokBlock = screen.getByTestId('app-row-51-block')
+    expect(tiktokBlock.textContent).toMatch(/✓/)
+  })
+
+  it('clicking block calls setPolicy with mode=blocked', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(await screen.findByTestId('app-row-50-block'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'blocked', dailyMinutes: null }),
+    )
+  })
+
+  it('clicking allow calls setPolicy with mode=allowed', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(await screen.findByTestId('app-row-50-allow'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null }),
+    )
+  })
+
+  it('time-limit requires positive minutes; rejects empty', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(await screen.findByTestId('app-row-50-time-limit'))
+    expect(api.apps.setPolicy).not.toHaveBeenCalled()
+    expect(await screen.findByTestId('app-row-50-error')).toHaveTextContent(/minutes > 0/i)
+  })
+
+  it('time-limit with minutes calls setPolicy with mode=time_limited + dailyMinutes', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    const input = await screen.findByTestId('app-row-50-minutes')
+    await user.type(input, '45')
+    await user.click(screen.getByTestId('app-row-50-time-limit'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'time_limited', dailyMinutes: 45 }),
+    )
+  })
+
+  it('clearing an assigned app calls deletePolicy', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(await screen.findByTestId('app-row-51-clear'))
+    await waitFor(() =>
+      expect(api.apps.deletePolicy).toHaveBeenCalledWith(51, 1),
+    )
+  })
+
+  it('for a brand-new profile, shows save-first hint instead of rows', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Kids')
+    await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
+    const section = await screen.findByTestId('apps-section')
+    expect(within(section).getByText(/Save this profile first to assign apps/i)).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
+  })
+
+  it('Manage apps link points at /apps', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    expect(await screen.findByTestId('apps-section-manage-link')).toHaveAttribute('href', '/apps')
   })
 })

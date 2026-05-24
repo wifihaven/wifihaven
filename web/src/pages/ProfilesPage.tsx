@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type {
+  AppDetail, AppMode, AppPolicyAssignment,
   CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
   ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
@@ -108,6 +109,7 @@ export function ProfilesPage() {
   const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
   const [userPick, setUserPick] = useState<number[]>([])
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
+  const [apps, setApps] = useState<AppDetail[]>([])
 
   // #298: LogsPage links to `/profiles?id=...`; scroll + highlight the
   // matching profile card so the parent sees what they clicked from logs.
@@ -149,14 +151,21 @@ export function ProfilesPage() {
   }, [allUsers])
 
   async function loadAux() {
-    const [cats, users, hs] = await Promise.all([
+    const [cats, users, hs, appsList] = await Promise.all([
       api.blocklists.counts().catch(() => []),
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
       api.household.get().catch(() => null),
+      api.apps.list().catch(() => [] as AppDetail[]),
     ])
     setCategories(cats.map(c => c.category))
     setAllUsers(users)
     setHousehold(hs)
+    setApps([...appsList].sort((a, b) => a.app.name.localeCompare(b.app.name)))
+  }
+
+  async function reloadApps() {
+    const list = await api.apps.list().catch(() => [] as AppDetail[])
+    setApps([...list].sort((a, b) => a.app.name.localeCompare(b.app.name)))
   }
 
   useEffect(() => {
@@ -484,9 +493,12 @@ export function ProfilesPage() {
       {editingId !== null && (
         <ProfileEditor
           isNew={editingId === 'new'}
+          profileId={typeof editingId === 'number' ? editingId : null}
           form={form}
           setForm={setForm}
           categories={categories}
+          apps={apps}
+          onAppsChanged={reloadApps}
           saving={saving}
           error={error}
           onCancel={() => setEditingId(null)}
@@ -499,12 +511,16 @@ export function ProfilesPage() {
 }
 
 function ProfileEditor({
-  isNew, form, setForm, categories, saving, error, onCancel, onSave, defaultTz,
+  isNew, profileId, form, setForm, categories, apps, onAppsChanged,
+  saving, error, onCancel, onSave, defaultTz,
 }: {
   isNew: boolean
+  profileId: number | null
   form: FormState
   setForm: (updater: (f: FormState) => FormState) => void
   categories: string[]
+  apps: AppDetail[]
+  onAppsChanged: () => void | Promise<void>
   saving: boolean
   error: string | null
   onCancel: () => void
@@ -862,6 +878,16 @@ function ProfileEditor({
           </div>
         </div>
 
+        {/* #767 — apps picker. Lives alongside the legacy extraBlocked /
+            extraAllowed / siteTimeLimits inputs above; #764 will remove the
+            legacy fields once apps cover everything. */}
+        <AppsSection
+          profileId={profileId}
+          isNew={isNew}
+          apps={apps}
+          onChanged={onAppsChanged}
+        />
+
         <div className="flex gap-3 pt-2 sticky bottom-0 bg-gray-900">
           <button onClick={onCancel} disabled={saving}
             className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
@@ -873,6 +899,194 @@ function ProfileEditor({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function findAssignment(app: AppDetail, profileId: number | null): AppPolicyAssignment | null {
+  if (profileId == null) return null
+  return app.assignments.find(a => a.profileId === profileId) ?? null
+}
+
+function AppsSection({ profileId, isNew, apps, onChanged }: {
+  profileId: number | null
+  isNew: boolean
+  apps: AppDetail[]
+  onChanged: () => void | Promise<void>
+}) {
+  return (
+    <div data-testid="apps-section">
+      <div className="flex items-center justify-between mb-2">
+        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          Apps
+        </label>
+        <Link
+          to="/apps"
+          data-testid="apps-section-manage-link"
+          className="text-xs text-emerald-400 hover:text-emerald-300"
+        >
+          Manage apps →
+        </Link>
+      </div>
+      {isNew || profileId == null
+        ? (
+            <p className="text-xs text-gray-500">
+              Save this profile first to assign apps.
+            </p>
+          )
+        : apps.length === 0
+          ? (
+              <p className="text-xs text-gray-500">
+                No apps yet.{' '}
+                <Link
+                  to="/apps"
+                  data-testid="apps-section-empty-link"
+                  className="text-emerald-400 hover:text-emerald-300 underline"
+                >
+                  Create one
+                </Link>
+                {' '}to block, allow, or time-limit a group of hosts.
+              </p>
+            )
+          : (
+              <div className="space-y-2">
+                {apps.map(a => (
+                  <AppRow
+                    key={a.app.id}
+                    app={a}
+                    profileId={profileId}
+                    onChanged={onChanged}
+                  />
+                ))}
+              </div>
+            )
+      }
+    </div>
+  )
+}
+
+function AppRow({ app, profileId, onChanged }: {
+  app: AppDetail
+  profileId: number
+  onChanged: () => void | Promise<void>
+}) {
+  const current = findAssignment(app, profileId)
+  const [minutesDraft, setMinutesDraft] = useState<string>(() =>
+    current?.mode === 'time_limited' && current.dailyMinutes != null
+      ? String(current.dailyMinutes)
+      : '',
+  )
+  const [busy, setBusy] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  async function apply(mode: AppMode, dailyMinutes: number | null) {
+    setBusy(true)
+    setLocalError(null)
+    try {
+      await api.apps.setPolicy(app.app.id, profileId, {
+        mode,
+        dailyMinutes,
+      })
+      await onChanged()
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : 'Failed to update')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function clear() {
+    setBusy(true)
+    setLocalError(null)
+    try {
+      await api.apps.deletePolicy(app.app.id, profileId)
+      setMinutesDraft('')
+      await onChanged()
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : 'Failed to clear')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function applyTimeLimited() {
+    const n = Number(minutesDraft)
+    if (!Number.isFinite(n) || n <= 0) {
+      setLocalError('Enter minutes > 0')
+      return
+    }
+    await apply('time_limited', n)
+  }
+
+  const mode = current?.mode ?? null
+  const baseBtn = 'text-xs px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-50'
+  const off = 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+  const onBlocked = 'bg-red-500/20 text-red-300 border-red-500/40'
+  const onAllowed = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+  const onTimeLimited = 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+
+  return (
+    <div
+      data-testid={`app-row-${app.app.id}`}
+      className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
+    >
+      <div className="flex items-center gap-3">
+        <span className="text-xl w-7 text-center" aria-hidden>{app.app.icon || '◳'}</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-white font-medium truncate">{app.app.name}</p>
+          <p className="text-xs text-gray-500 font-mono truncate">{app.hosts.length} host{app.hosts.length === 1 ? '' : 's'}</p>
+        </div>
+        {mode != null && (
+          <button
+            type="button"
+            data-testid={`app-row-${app.app.id}-clear`}
+            disabled={busy}
+            onClick={clear}
+            className={`${baseBtn} ${off}`}
+          >Clear</button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2 items-center">
+        <button
+          type="button"
+          data-testid={`app-row-${app.app.id}-block`}
+          disabled={busy}
+          onClick={() => apply('blocked', null)}
+          className={`${baseBtn} ${mode === 'blocked' ? onBlocked : off}`}
+        >{mode === 'blocked' ? '✓ ' : ''}Block</button>
+        <button
+          type="button"
+          data-testid={`app-row-${app.app.id}-allow`}
+          disabled={busy}
+          onClick={() => apply('allowed', null)}
+          className={`${baseBtn} ${mode === 'allowed' ? onAllowed : off}`}
+        >{mode === 'allowed' ? '✓ ' : ''}Allow</button>
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            min={1}
+            value={minutesDraft}
+            onChange={e => setMinutesDraft(e.target.value)}
+            placeholder="min"
+            data-testid={`app-row-${app.app.id}-minutes`}
+            className="w-16 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs"
+          />
+          <button
+            type="button"
+            data-testid={`app-row-${app.app.id}-time-limit`}
+            disabled={busy}
+            onClick={applyTimeLimited}
+            className={`${baseBtn} ${mode === 'time_limited' ? onTimeLimited : off}`}
+          >
+            {mode === 'time_limited' && current?.dailyMinutes != null
+              ? `✓ ${current.dailyMinutes}m / day`
+              : 'Time-limit'}
+          </button>
+        </div>
+      </div>
+      {localError && (
+        <p className="text-xs text-red-400" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
+      )}
     </div>
   )
 }
