@@ -350,6 +350,19 @@ trait TrafficReportRepo {
    * instants that fall outside the retention horizon — naïve until #809/#814 land.
    */
   def earliestPeriodStart: Task[Option[Instant]]
+
+  /**
+   * #766: per-host aggregates for one device over `[from, to)`, restricted to FQDN-typed rows
+   * (after the IP→FQDN LATERAL resolve). One row per resolved hostname, with total
+   * `bytes_in + bytes_out` and the hit count (number of 5-min buckets the host was observed in).
+   * Used by the apps create/edit recently-visited-hosts picker; PSL apex collapse happens in
+   * Scala.
+   */
+  def listFqdnHostAggregatesForDevice(
+      mac: MacAddress,
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[(Hostname, Long, Long)]]
 }
 
 trait BlockEventRepo {
@@ -1228,6 +1241,49 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .query[Option[Instant]]
       .unique
       .transact(xa)
+
+  // #766: per-device FQDN-only host aggregates. Bare-IP rows that fail the
+  // LATERAL FQDN resolve are filtered (host IS NULL). Indexed by
+  // (mac, period_start) — see V25.
+  def listFqdnHostAggregatesForDevice(
+      mac: MacAddress,
+      fromInstant: Instant,
+      toInstant: Instant,
+  ) = {
+    type Row = (String, Long, Long)
+    sql"""SELECT host, SUM(bytes)::BIGINT AS bytes, COUNT(*)::BIGINT AS hits
+          FROM (
+            SELECT COALESCE(
+                     CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                     CASE WHEN tr.host_type = 'fqdn' THEN tr.host_value END
+                   ) AS host,
+                   (tr.bytes_in + tr.bytes_out) AS bytes
+            FROM traffic_reports tr
+            LEFT JOIN LATERAL (
+              SELECT resolved_host_value
+              FROM connection_events
+              WHERE mac          = tr.mac
+                AND dest_ip      = tr.host_value
+                AND resolved_host_value IS NOT NULL
+                AND ts >= tr.date::TIMESTAMPTZ
+                AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+              ORDER BY ts DESC LIMIT 1
+            ) ce ON tr.host_type IN ('ipv4','ipv6')
+            WHERE tr.mac = $mac
+              AND tr.period_start >= $fromInstant
+              AND tr.period_start <  $toInstant
+              AND (tr.bytes_in + tr.bytes_out) > 0
+          ) sub
+          WHERE host IS NOT NULL
+          GROUP BY host
+          ORDER BY bytes DESC"""
+      .query[Row]
+      .to[List]
+      .transact(xa)
+      .map(_.flatMap { case (h, b, hits) =>
+        Hostname.parse(h).toOption.map(hn => (hn, b, hits))
+      })
+  }
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   def listTrafficRollupRows(f: TrafficRollupFilter) = {

@@ -3,7 +3,7 @@ import type {
   DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventSeriesPage, QueryLogPage,
-  RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
+  RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
@@ -300,6 +300,18 @@ export const api = {
     delete: (id: number) => req<void>('DELETE', `/apps/${id}`),
     setHosts: (id: number, hosts: string[]) =>
       req<void>('PUT', `/apps/${id}/hosts`, { hosts } as SetAppHostsRequest),
+    // #766: recently-visited apexes for a device — drives the picker in the
+    // apps create/edit flow.
+    recentApexes: (mac: string, opts: { windowDays?: number; limit?: number } = {}) => {
+      const qs = new URLSearchParams()
+      if (opts.windowDays != null) qs.set('windowDays', String(opts.windowDays))
+      if (opts.limit != null) qs.set('limit', String(opts.limit))
+      const q = qs.toString()
+      return req<RecentApexesResponse>(
+        'GET',
+        `/devices/${encodeURIComponent(mac)}/recent-apexes${q ? `?${q}` : ''}`,
+      )
+    },
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

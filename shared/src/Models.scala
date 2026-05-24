@@ -268,6 +268,25 @@ case class AppDetail(
     assignments: List[AppPolicyAssignment],
 ) derives JsonCodec
 
+// #766: recently-visited-hosts picker for the apps create/edit flow. The
+// endpoint returns FQDN traffic for a single device over a windowDays-day
+// window, collapsed to the PSL registered domain ("apex"). Bare-IP rows are
+// excluded — the picker only surfaces hosts the operator can express as a
+// host pattern. `subdomains` is the set of FQDNs observed beneath the apex.
+case class RecentApex(
+    apex: Hostname,
+    bytes: Long,
+    hits: Long,
+    subdomains: List[Hostname],
+) derives JsonCodec
+
+case class RecentApexesResponse(
+    deviceMac: MacAddress,
+    deviceName: String,
+    windowDays: Int,
+    items: List[RecentApex],
+) derives JsonCodec
+
 case class TimeUsage(
     id: TimeUsageId,
     deviceMac: MacAddress,

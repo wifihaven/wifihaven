@@ -12,8 +12,12 @@ vi.mock('@/api/client', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       setHosts: vi.fn(),
+      recentApexes: vi.fn(),
     },
     profiles: {
+      list: vi.fn(),
+    },
+    devices: {
       list: vi.fn(),
     },
   },
@@ -75,6 +79,21 @@ beforeEach(() => {
   vi.resetAllMocks()
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube, reddit])
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
+  ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 1, mac: 'aa:bb:cc:dd:ee:01', name: 'iPad', profileId: 1, profileName: 'Kids',
+      lastSeenIp: '192.168.1.10', lastSeenAt: '2026-05-24T18:00:00Z' },
+  ])
+  ;(api.apps.recentApexes as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    deviceMac: 'aa:bb:cc:dd:ee:01',
+    deviceName: 'iPad',
+    windowDays: 7,
+    items: [
+      { apex: 'googlevideo.com', bytes: 50_000_000, hits: 7,
+        subdomains: ['r1.googlevideo.com', 'r2.googlevideo.com'] },
+      { apex: 'youtube.com', bytes: 8_000_000, hits: 4,
+        subdomains: ['m.youtube.com', 'www.youtube.com'] },
+    ],
+  })
 })
 
 describe('AppsPage — list', () => {
@@ -162,6 +181,44 @@ describe('AppsPage — edit flow', () => {
       })
       expect(api.apps.setHosts).toHaveBeenCalledWith(10, ['youtube.com', '*.ytimg.com'])
     })
+  })
+})
+
+describe('AppsPage — recent-activity picker (#766)', () => {
+  it('opens picker from the create flow, multi-selects apexes, and appends them to the hosts input', async () => {
+    (api.apps.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...makeApp({ id: 13, name: 'YT', slug: 'yt' }),
+      hosts: ['youtube.com', 'googlevideo.com'],
+    })
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await screen.findByText('YouTube')
+    await user.click(screen.getByRole('button', { name: /new app/i }))
+    await user.type(screen.getByPlaceholderText('YouTube'), 'YT')
+    await user.click(screen.getByRole('button', { name: /pick from recent activity/i }))
+    await screen.findByText(/top apexes a device hit/i)
+    await waitFor(() => expect(api.apps.recentApexes).toHaveBeenCalled())
+    await user.click(await screen.findByLabelText('Select youtube.com'))
+    await user.click(screen.getByLabelText('Select googlevideo.com'))
+    await user.click(screen.getByTestId('picker-add-button'))
+    const textarea = screen.getByPlaceholderText(/youtube\.com/i) as HTMLTextAreaElement
+    await waitFor(() => {
+      expect(textarea.value).toMatch(/youtube\.com/)
+      expect(textarea.value).toMatch(/googlevideo\.com/)
+    })
+  })
+
+  it('opens picker from the edit flow and appends apexes to existing chips', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await user.click(await screen.findByRole('button', { name: /reddit/i }))
+    await user.click(screen.getByRole('button', { name: /pick from recent activity/i }))
+    await waitFor(() => expect(api.apps.recentApexes).toHaveBeenCalled())
+    await user.click(await screen.findByLabelText('Select googlevideo.com'))
+    await user.click(screen.getByTestId('picker-add-button'))
+    const chips = await screen.findByTestId('hosts-chips')
+    expect(within(chips).getByText('googlevideo.com')).toBeInTheDocument()
+    expect(within(chips).getByText('reddit.com')).toBeInTheDocument()
   })
 })
 
