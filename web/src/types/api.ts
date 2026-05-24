@@ -532,3 +532,49 @@ export interface CreateRouterResponse {
   name: string
   enrollmentToken: string
 }
+
+// ── Apps (#761/#762/#765) ──────────────────────────────────────────────────
+
+export type AppMode = 'blocked' | 'allowed' | 'time_limited'
+
+export interface App {
+  id: number
+  name: string
+  slug: string
+  templateId: number | null
+  icon: string | null
+  createdAt: string
+}
+
+export interface AppPolicyAssignment {
+  id: number
+  appId: number
+  profileId: number
+  mode: AppMode
+  dailyMinutes: number | null
+  exemptFromDaily: boolean
+}
+
+export interface AppDetail {
+  app: App
+  hosts: string[]
+  assignments: AppPolicyAssignment[]
+}
+
+export interface CreateAppRequest {
+  name: string
+  slug?: string
+  icon?: string | null
+  templateId?: number | null
+  hosts: string[]
+}
+
+export interface UpdateAppRequest {
+  name: string
+  icon?: string | null
+  templateId?: number | null
+}
+
+export interface SetAppHostsRequest {
+  hosts: string[]
+}

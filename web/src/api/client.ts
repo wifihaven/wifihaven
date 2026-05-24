@@ -1,9 +1,11 @@
 import type {
-  CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
+  AppDetail, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
-  ConnectionEventAggRow, QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  ConnectionEventAggRow, QueryLog, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest,
+  TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
-  UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
 
@@ -275,6 +277,18 @@ export const api = {
   blocklists: {
     counts: () => req<{ category: string; count: number }[]>('GET', '/blocklists'),
     clearCategory: (cat: string) => req<void>('POST', `/blocklists/${cat}/clear`, {}),
+  },
+
+  // ── Apps (#762/#765) ───────────────────────────────────────────────────
+  apps: {
+    list: () => req<AppDetail[]>('GET', '/apps'),
+    get: (id: number) => req<AppDetail>('GET', `/apps/${id}`),
+    create: (data: CreateAppRequest) => req<AppDetail>('POST', '/apps', data),
+    update: (id: number, data: UpdateAppRequest) =>
+      req<void>('PUT', `/apps/${id}`, data),
+    delete: (id: number) => req<void>('DELETE', `/apps/${id}`),
+    setHosts: (id: number, hosts: string[]) =>
+      req<void>('PUT', `/apps/${id}/hosts`, { hosts } as SetAppHostsRequest),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────
