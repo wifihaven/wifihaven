@@ -207,6 +207,36 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(h10.perHost.length == 2) &&
           assertTrue(h10.otherMins == 25) // 5 hosts × 5 min
       },
+      test("topN=500 returns the full long-tail unaggregated (#964 drill-in)") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // 30 distinct hosts — comfortably more than the prior cap of 20 and
+          // well below the new cap of 500. With topN=500 every host should be
+          // surfaced in topHosts (the prior 20-cap would have truncated to 20).
+          _  <- ZIO.foreachDiscard(0 until 30) { i =>
+            insertRow(routerId, testMac, s"host$i.com", today, 10, (i % 12) * 5)
+          }
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode(s"/api/usage/series?mac=$testMac&date=$today&topN=500").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Prior cap (.min(20)) would have capped this at 20 — the bump to 500
+          // is what enables the per-device 'other' drill-in to see the full tail.
+          assertTrue(out.topHosts.length == 30)
+      },
       test("tz parameter buckets by local-hour") {
         for {
           _           <- cleanDb

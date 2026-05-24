@@ -127,6 +127,92 @@ describe('DeviceTimelinePage', () => {
     expect(mock.mock.calls[0][0]).toMatchObject({ mac: MAC, date: '2026-05-15' })
   })
 
+  describe('"Other" drill-in (#964)', () => {
+    function withOtherResponse(date: string): UsageSeriesResponse {
+      // Top-5 covers the first 5 hosts; the long-tail (hosts 6-9) gets
+      // folded into otherMins on the chart. A drill-in fetch with topN=500
+      // should return all 9 hosts.
+      const top5 = Array.from({ length: 5 }, (_, i) => ({
+        host: { type: 'fqdn' as const, value: `top${i}.com` },
+        dayMins: 50 - i,
+      }))
+      return {
+        deviceMac: MAC,
+        deviceName: "Kid's iPad",
+        date,
+        tz: 'UTC',
+        topHosts: top5,
+        buckets: Array.from({ length: 24 }, (_, hour) => ({
+          hour,
+          totalMins: hour === 14 ? 50 : 0,
+          perHost: hour === 14 ? top5.map(h => ({ host: h.host, mins: 8 })) : [],
+          // Force a non-zero Other bucket so the drill-in affordance renders.
+          otherMins: hour === 14 ? 10 : 0,
+        })),
+      }
+    }
+    function withAllHostsResponse(date: string): UsageSeriesResponse {
+      const all = [
+        ...Array.from({ length: 5 }, (_, i) => ({
+          host: { type: 'fqdn' as const, value: `top${i}.com` },
+          dayMins: 50 - i,
+        })),
+        ...Array.from({ length: 4 }, (_, i) => ({
+          host: { type: 'fqdn' as const, value: `tail${i}.com` },
+          dayMins: 6 - i, // 6, 5, 4, 3 — sorted desc
+        })),
+      ]
+      return {
+        deviceMac: MAC,
+        deviceName: "Kid's iPad",
+        date,
+        tz: 'UTC',
+        topHosts: all,
+        buckets: Array.from({ length: 24 }, (_, hour) => ({
+          hour, totalMins: 0, perHost: [], otherMins: 0,
+        })),
+      }
+    }
+
+    it('shows the affordance only when Other > 0 and opens a modal with the long-tail', async () => {
+      const mock = api.usage.series as unknown as ReturnType<typeof vi.fn>
+      // First call (initial render): top-5 + otherMins. Second call (drill-in
+      // fetch with topN=500): the full unaggregated list.
+      mock
+        .mockResolvedValueOnce(withOtherResponse('2026-05-20'))
+        .mockResolvedValueOnce(withAllHostsResponse('2026-05-20'))
+
+      const user = userEvent.setup()
+      renderPage([`/devices/${MAC}/timeline?date=2026-05-20`])
+      const button = await screen.findByTestId('device-timeline-other-button')
+
+      await user.click(button)
+
+      expect(screen.getByTestId('device-timeline-other-modal')).toBeInTheDocument()
+      // Second fetch goes out with the higher topN.
+      await waitFor(() => expect(mock).toHaveBeenCalledTimes(2))
+      expect(mock.mock.calls[1][0]).toMatchObject({ mac: MAC, date: '2026-05-20', topN: 500 })
+
+      // Long-tail rows render, top-5 do not.
+      await waitFor(() =>
+        expect(screen.getByTestId('device-timeline-other-host-tail0.com')).toBeInTheDocument(),
+      )
+      expect(screen.getByTestId('device-timeline-other-host-tail3.com')).toBeInTheDocument()
+      expect(screen.queryByTestId('device-timeline-other-host-top0.com')).toBeNull()
+    })
+
+    it('hides the affordance when there is no Other bucket on any hour', async () => {
+      (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+        emptyDayResponse('2026-05-20'),
+      )
+      renderPage([`/devices/${MAC}/timeline?date=2026-05-20`])
+      await waitFor(() =>
+        expect(screen.getByTestId('device-timeline-empty')).toBeInTheDocument(),
+      )
+      expect(screen.queryByTestId('device-timeline-other-button')).toBeNull()
+    })
+  })
+
   describe('week toggle (#723)', () => {
     function richWeek(to: string): DeviceTimeStatusWeek {
       return {

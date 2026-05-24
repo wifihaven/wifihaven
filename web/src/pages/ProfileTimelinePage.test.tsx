@@ -117,7 +117,7 @@ describe('ProfileTimelinePage', () => {
     expect(screen.getByTestId('profile-timeline-name')).toHaveTextContent('Kids')
   })
 
-  it('renders host stack by default, switches to device stack on toggle', async () => {
+  it('defaults to Total (no drill-down): chart visible, devices listed, no hosts panel', async () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
@@ -125,17 +125,46 @@ describe('ProfileTimelinePage', () => {
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
     )
-    // Default: host stack visible, top-hosts list shown.
-    expect(screen.getByTestId('profile-timeline-host-youtube.com')).toBeInTheDocument()
+    // Total default: device list still visible (useful for drill-in), but the
+    // host breakdown panel is hidden because the chart is not stacked by host.
+    expect(screen.getByTestId('profile-timeline-stack-total')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-timeline-host-youtube.com')).toBeNull()
+  })
+
+  it('toggles between Total, Host, and Device; updates the visible breakdown', async () => {
+    (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      richResponse('2026-05-20'),
+    )
+    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByTestId('profile-timeline-stack-host'))
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-host-youtube.com')).toBeInTheDocument(),
+    )
     expect(screen.queryByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeNull()
 
     fireEvent.click(screen.getByTestId('profile-timeline-stack-device'))
-
-    // After toggle: device list visible, host list gone.
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeInTheDocument(),
     )
     expect(screen.queryByTestId('profile-timeline-host-youtube.com')).toBeNull()
+  })
+
+  it('disables the App toggle with a tooltip until #769 lands', async () => {
+    (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      richResponse('2026-05-20'),
+    )
+    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
+    )
+    const appBtn = screen.getByTestId('profile-timeline-stack-app')
+    expect(appBtn).toBeDisabled()
+    expect(appBtn).toHaveAttribute('title')
   })
 
   it('reads stackBy=device from URL', async () => {
