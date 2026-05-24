@@ -59,6 +59,9 @@ export function LogsPage() {
   // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
+  // #951: optional anchor for the right edge of the window. null = "now".
+  // Round-trips through ?until=<ISO> in the URL.
+  const [until, setUntilState]          = useState<string | null>(() => searchParams.get('until'))
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   // #769: surface the "no apps yet" empty-state when the operator drills on
@@ -70,6 +73,14 @@ export function LogsPage() {
     api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
     api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
   }, [])
+
+  function setUntil(next: string | null) {
+    setUntilState(next)
+    const sp = new URLSearchParams(searchParams)
+    if (next) sp.set('until', next)
+    else sp.delete('until')
+    setSearchParams(sp, { replace: true })
+  }
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
@@ -100,9 +111,11 @@ export function LogsPage() {
         macs={macs}
         profileIds={profileIds}
         bucket={bucket}
+        until={until}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
+        onUntilChange={setUntil}
       />
 
       {bucket === 'raw'
@@ -111,6 +124,7 @@ export function LogsPage() {
             profileIds={profileIds}
             devices={devices}
             profiles={profiles}
+            until={until}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
           />
@@ -123,6 +137,7 @@ export function LogsPage() {
             devices={devices}
             profiles={profiles}
             appCount={appCount}
+            until={until}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
           />}
@@ -159,13 +174,15 @@ interface FilterApi {
   onProfileIdsChange: (v: number[]) => void
 }
 
-interface RawProps extends FilterApi {}
+interface RawProps extends FilterApi {
+  until: string | null
+}
 
 // #862: infinite scroll. Initial fetch anchored at NOW (or `until`); cursor
 // walks back. /api/logs still requires `hours`, so we ask for a wide band
 // (1y) and let the row cap bound.
 function RawEventsView({
-  macs, profileIds, devices, profiles, onMacsChange, onProfileIdsChange,
+  macs, profileIds, devices, profiles, until, onMacsChange, onProfileIdsChange,
 }: RawProps) {
   const [logs, setLogs]       = useState<QueryLog[]>([])
   const [cursor, setCursor]   = useState<string | null>(null)
@@ -183,7 +200,7 @@ function RawEventsView({
     return ids.length ? ids : undefined
   }, [macs, devices])
 
-  const filterKey = `${deviceIds?.join(',') ?? ''}|${profileIds.join(',')}`
+  const filterKey = `${deviceIds?.join(',') ?? ''}|${profileIds.join(',')}|${until ?? ''}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -195,6 +212,7 @@ function RawEventsView({
           deviceIds,
           profileIds: profileIds.length ? profileIds : undefined,
           limit:      RAW_PAGE_SIZE,
+          until:      until ?? undefined,
           cursor:     curs ?? undefined,
         })
         setLogs(prev => curs ? prev.concat(page.rows) : page.rows)
@@ -207,7 +225,7 @@ function RawEventsView({
         setLoading(false)
       }
     },
-    [deviceIds, profileIds],
+    [deviceIds, profileIds, until],
   )
 
   useEffect(() => {
@@ -364,11 +382,12 @@ interface AggProps extends FilterApi {
   groupBy: EventsGroupBy[]
   onToggleGroup: (key: string) => void
   appCount: number | null
+  until: string | null
 }
 
 function AggregatedEventsView({
   bucket, groupBy, onToggleGroup,
-  macs, profileIds, devices, profiles, appCount,
+  macs, profileIds, devices, profiles, appCount, until,
   onMacsChange, onProfileIdsChange,
 }: AggProps) {
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
@@ -378,7 +397,7 @@ function AggregatedEventsView({
   const [error, setError]     = useState<string | null>(null)
   const sentinelRef           = useRef<HTMLDivElement | null>(null)
 
-  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}`
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -392,6 +411,7 @@ function AggregatedEventsView({
           profileIds: profileIds.length ? profileIds : undefined,
           hours:      AGG_HOURS_BAND,
           limit:      AGG_PAGE_SIZE,
+          until:      until ?? undefined,
           cursor:     curs ?? undefined,
         })
         setRows(prev => curs ? prev.concat(page.rows) : page.rows)
@@ -404,7 +424,7 @@ function AggregatedEventsView({
         setLoading(false)
       }
     },
-    [bucket, groupBy, macs, profileIds],
+    [bucket, groupBy, macs, profileIds, until],
   )
 
   useEffect(() => {

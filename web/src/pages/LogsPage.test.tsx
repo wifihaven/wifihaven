@@ -50,6 +50,23 @@ function renderAt(path = '/usage/events') {
   )
 }
 
+// #951 — calendar popover seeds on "now"; click prev/next month until the
+// header shows the target.
+async function navigateToMonth(targetYear: number, targetMonth0: number) {
+  const target = new Date(targetYear, targetMonth0, 1)
+  for (let i = 0; i < 60; i++) {
+    const popover = screen.getByTestId('jump-to-date-popover')
+    const header  = popover.querySelector('.uppercase')?.textContent ?? ''
+    const probe   = new Date(`${header} 1`)
+    if (!Number.isNaN(probe.getTime())
+        && probe.getFullYear() === target.getFullYear()
+        && probe.getMonth() === target.getMonth()) return
+    const goPrev = probe.getTime() > target.getTime()
+    await userEvent.click(screen.getByTestId(goPrev ? 'jump-to-date-prev-month' : 'jump-to-date-next-month'))
+  }
+  throw new Error(`navigateToMonth: gave up trying to reach ${targetYear}-${targetMonth0 + 1}`)
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   ;(api.logs.query    as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [log1], nextCursor: null })
@@ -218,5 +235,50 @@ describe('LogsPage — infinite scroll (#862)', () => {
     expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
   })
 
-  // Jump-to-date picker deferred to #951; test removed alongside the UI.
+})
+
+describe('LogsPage — jump-to-date (#951)', () => {
+  it('setting the picker re-anchors `until` on /api/logs and updates the URL', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt()
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1))
+    expect(queryMock.mock.calls[0][0].until).toBeUndefined()
+
+    // #951: open calendar popover, click May 21 2026, set time 14:00, apply.
+    await userEvent.click(screen.getByTestId('jump-to-date-trigger'))
+    await navigateToMonth(2026, 4) // 0-indexed: May = 4
+    await userEvent.click(screen.getByTestId('jump-to-date-day-2026-05-21'))
+    const hh = screen.getByTestId('jump-to-date-hh') as HTMLInputElement
+    const mm = screen.getByTestId('jump-to-date-mm') as HTMLInputElement
+    await userEvent.clear(hh); await userEvent.type(hh, '14')
+    await userEvent.clear(mm); await userEvent.type(mm, '00')
+    await userEvent.click(screen.getByTestId('jump-to-date-apply'))
+
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(2))
+    const anchored = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+    expect(anchored.until).toBe(new Date(2026, 4, 21, 14, 0, 0, 0).toISOString())
+    // URL round-trip is covered by the next test (reading ?until= back in).
+
+    await userEvent.click(screen.getByTestId('jump-to-date-now'))
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(3))
+    const cleared = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+    expect(cleared.until).toBeUndefined()
+  })
+
+  it('initializes `until` from ?until= and passes it to /api/logs', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    const seed = '2026-05-21T14:00:00.000Z'
+    renderAt(`/usage/events?until=${encodeURIComponent(seed)}`)
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1))
+    expect(queryMock.mock.calls[0][0].until).toBe(seed)
+  })
+
+  it('aggregated view also passes `until` to /connection-events/series', async () => {
+    const seriesMock = api.logs.series as unknown as ReturnType<typeof vi.fn>
+    const seed = '2026-05-21T14:00:00.000Z'
+    renderAt(`/usage/events?until=${encodeURIComponent(seed)}`)
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => expect(seriesMock).toHaveBeenCalled())
+    expect(seriesMock.mock.calls[0][0].until).toBe(seed)
+  })
 })
