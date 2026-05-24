@@ -26,5 +26,13 @@ object ApexSpec extends ZIOSpecDefault {
       assertTrue(Apex.orSelf(h("localhost")) == h("localhost")) &&
       assertTrue(Apex.orSelf(h("www.youtube.com")) == h("youtube.com"))
     },
+    test("ignores PSL PRIVATE section: S3 buckets roll up to amazonaws.com") {
+      assertTrue(
+        Apex.of(h("us-ore-00001.s3.dualstack.us-west-2.amazonaws.com"))
+          .contains(h("amazonaws.com")),
+      ) &&
+      assertTrue(Apex.of(h("d123.cloudfront.net")).contains(h("cloudfront.net"))) &&
+      assertTrue(Apex.of(h("myname.github.io")).contains(h("github.io")))
+    },
   )
 }
