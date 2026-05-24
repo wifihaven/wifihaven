@@ -232,11 +232,11 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         token       <- auth.login("admin", "changeme").map(_.token.value)
         kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
         adultsId    <- TestLayers.seedAdultsProfile(profileRepo)
-        _           <- tlRepo.upsert(kidsId, 30) // tight cap so the kid is over limit at 25m used + buffer
-        _           <- tlRepo.upsert(adultsId, 120)
-        _           <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
-        _           <- TestLayers.seedDevice(deviceRepo, macAdult, "iPad-Adult", adultsId)
-        routerId    <- seedRouter
+        _ <- tlRepo.upsert(kidsId, 30) // tight cap so the kid is over limit at 25m used + buffer
+        _ <- tlRepo.upsert(adultsId, 120)
+        _ <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
+        _ <- TestLayers.seedDevice(deviceRepo, macAdult, "iPad-Adult", adultsId)
+        routerId <- seedRouter
         today = TestClock.schoolDayAfternoon.toLocalDate
         _      <- seedTraffic(routerId, macKid, "minecraft.net", today, 25)
         _      <- seedTraffic(routerId, macAdult, "wsj.com", today, 40)
@@ -250,19 +250,19 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         kidsBefore  <- ZIO.fromEither(primedKids.fromJson[List[ProfileTimeStatus]])
         adultBefore <- ZIO.fromEither(primedAdult.fromJson[List[ProfileTimeStatus]])
         // Grant 15 extra minutes to kids; cache for kids must drop, cache for adults must stay.
-        grantBody    = GrantExtensionRequest(kidsId, 15, None).toJson
-        grantResp   <- routes.runZIO(
+        grantBody = GrantExtensionRequest(kidsId, 15, None).toJson
+        grantResp       <- routes.runZIO(
           Request
             .post(URL.decode("/api/time/extend").toOption.get, Body.fromString(grantBody))
             .addHeader(Header.Authorization.Bearer(token)),
         )
         statsAfterGrant <- cache.snapshot
         // Refetch — kids should hit the DB again and reflect the new cap; adults should hit the cache.
-        refetchKids  <- get(routes, kidsPath, token).flatMap(_.body.asString)
-        refetchAdult <- get(routes, adultPath, token).flatMap(_.body.asString)
-        kidsAfter    <- ZIO.fromEither(refetchKids.fromJson[List[ProfileTimeStatus]])
-        adultAfter   <- ZIO.fromEither(refetchAdult.fromJson[List[ProfileTimeStatus]])
-        finalStats   <- cache.snapshot
+        refetchKids     <- get(routes, kidsPath, token).flatMap(_.body.asString)
+        refetchAdult    <- get(routes, adultPath, token).flatMap(_.body.asString)
+        kidsAfter       <- ZIO.fromEither(refetchKids.fromJson[List[ProfileTimeStatus]])
+        adultAfter      <- ZIO.fromEither(refetchAdult.fromJson[List[ProfileTimeStatus]])
+        finalStats      <- cache.snapshot
       } yield assertTrue(
         grantResp.status == Status.Ok,
         // Before the grant: 30m cap, 0 extension.
