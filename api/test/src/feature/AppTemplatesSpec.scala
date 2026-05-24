@@ -66,6 +66,24 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     } yield id
 
   def spec = suite("AppTemplates")(
+    test("_index.yml is in sync with the .yml files in app_templates/") {
+      // Cross-check the manifest against the actual files on disk so a new
+      // template added without updating _index.yml fails loudly.
+      for {
+        templates <- AppTemplates.loadAll()
+        manifestSlugs = templates.map(_.slug.value).toSet
+        dirSlugs <- ZIO.attemptBlocking {
+          val url = getClass.getResource("/app_templates")
+          val dir = new java.io.File(url.toURI)
+          dir
+            .listFiles()
+            .toList
+            .filter(f => f.isFile && f.getName.endsWith(".yml") && !f.getName.startsWith("_"))
+            .map(_.getName.stripSuffix(".yml"))
+            .toSet
+        }
+      } yield assertTrue(manifestSlugs == dirSlugs)
+    },
     test("manifest + all 10 starter templates parse and have unique slugs") {
       for {
         templates <- AppTemplates.loadAll()
