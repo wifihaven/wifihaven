@@ -29,6 +29,7 @@ const settingsNav: NavItem[] = [
       { to: '/usage/events', label: 'Connection Events', icon: '≡' },
     ],
   },
+  { to: '/apps',    label: 'Apps',    icon: '◳', adminOnly: true },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },
