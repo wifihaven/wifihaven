@@ -273,13 +273,6 @@ export const api = {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
   },
 
-  // ── Apps (#769 surfaces the empty-state on group-by=app) ───────────────
-  // Minimal client: just enough to detect "no apps exist yet" so the
-  // group-by=app empty-state can point the operator at #765's /apps screen.
-  apps: {
-    list: () => req<Array<{ app: { id: number; name: string; slug: string } }>>('GET', '/apps'),
-  },
-
   // ── Blocklists ─────────────────────────────────────────────────────────
   blocklists: {
     counts: () => req<{ category: string; count: number }[]>('GET', '/blocklists'),
