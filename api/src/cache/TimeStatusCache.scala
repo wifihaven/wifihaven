@@ -49,6 +49,13 @@ trait TimeStatusCache {
   /** Drop everything — exposed for tests and the debug endpoint. */
   def invalidateAll: UIO[Unit]
 
+  /**
+   * Drop every cached entry for this profile across both daily and weekly sub-caches (#946). Called
+   * by mutating endpoints (`POST /api/time/extend`) so the next read reflects the write within the
+   * same tick rather than waiting up to `todayTtl` for the entry to expire.
+   */
+  def invalidateProfile(profileId: ProfileId): UIO[Unit]
+
   def snapshot: UIO[TimeStatusCache.StatsSnapshot]
 }
 
@@ -178,6 +185,15 @@ object TimeStatusCache {
       pastCache.invalidateAll()
       hits.reset()
       misses.reset()
+    }
+
+    def invalidateProfile(profileId: ProfileId): UIO[Unit] = ZIO.succeed {
+      def matches(k: Key): Boolean = k match {
+        case DailyKey(pid, _)         => pid == profileId
+        case WeeklyKey(pid, _, _, _)  => pid == profileId
+      }
+      val _ = todayCache.asMap().keySet().removeIf(matches(_))
+      val _ = pastCache.asMap().keySet().removeIf(matches(_))
     }
 
     def snapshot: UIO[StatsSnapshot] = ZIO.succeed {

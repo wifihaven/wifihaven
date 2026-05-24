@@ -728,6 +728,9 @@ object TimeRoutes {
             id     <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .mapError(ErrorMapper.dbErrorToResponse)
+            // #946: bust the cached ProfileTimeStatus for this profile so the SPA's next
+            // refetch reflects the new cap immediately instead of waiting up to todayTtl.
+            _      <- cache.invalidateProfile(ger.profileId)
           } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
         },
       Method.GET / "api" / "time" / "extensions" / long("profileId")    ->

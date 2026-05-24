@@ -220,6 +220,64 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         afterP.head.usedMins == 55, // 25 + 30 after invalidation re-queries
       )
     },
+    test("POST /api/time/extend invalidates the cached daily status for that profile (#946)") {
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        tlRepo      <- ZIO.service[TimeLimitRepo]
+        schedRepo   <- ZIO.service[ScheduleRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        trafficRepo <- ZIO.service[TrafficReportRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token.value)
+        kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+        adultsId    <- TestLayers.seedAdultsProfile(profileRepo)
+        _           <- tlRepo.upsert(kidsId, 30) // tight cap so the kid is over limit at 25m used + buffer
+        _           <- tlRepo.upsert(adultsId, 120)
+        _           <- TestLayers.seedDevice(deviceRepo, macKid, "iPad-Kid", kidsId)
+        _           <- TestLayers.seedDevice(deviceRepo, macAdult, "iPad-Adult", adultsId)
+        routerId    <- seedRouter
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        _      <- seedTraffic(routerId, macKid, "minecraft.net", today, 25)
+        _      <- seedTraffic(routerId, macAdult, "wsj.com", today, 40)
+        cache  <- TimeStatusCache.make()
+        routes <- buildRoutes(cache)
+        kidsPath  = s"/api/time/status?profileId=${kidsId.value}&date=$today"
+        adultPath = s"/api/time/status?profileId=${adultsId.value}&date=$today"
+        // Prime both profiles' cache entries.
+        primedKids  <- get(routes, kidsPath, token).flatMap(_.body.asString)
+        primedAdult <- get(routes, adultPath, token).flatMap(_.body.asString)
+        kidsBefore  <- ZIO.fromEither(primedKids.fromJson[List[ProfileTimeStatus]])
+        adultBefore <- ZIO.fromEither(primedAdult.fromJson[List[ProfileTimeStatus]])
+        // Grant 15 extra minutes to kids; cache for kids must drop, cache for adults must stay.
+        grantBody    = GrantExtensionRequest(kidsId, 15, None).toJson
+        grantResp   <- routes.runZIO(
+          Request
+            .post(URL.decode("/api/time/extend").toOption.get, Body.fromString(grantBody))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        statsAfterGrant <- cache.snapshot
+        // Refetch — kids should hit the DB again and reflect the new cap; adults should hit the cache.
+        refetchKids  <- get(routes, kidsPath, token).flatMap(_.body.asString)
+        refetchAdult <- get(routes, adultPath, token).flatMap(_.body.asString)
+        kidsAfter    <- ZIO.fromEither(refetchKids.fromJson[List[ProfileTimeStatus]])
+        adultAfter   <- ZIO.fromEither(refetchAdult.fromJson[List[ProfileTimeStatus]])
+        finalStats   <- cache.snapshot
+      } yield assertTrue(
+        grantResp.status == Status.Ok,
+        // Before the grant: 30m cap, 0 extension.
+        kidsBefore.head.dailyLimitMins.contains(30),
+        kidsBefore.head.extensionMins == 0,
+        // After the grant + refetch: extension shows up immediately (not after 30s).
+        kidsAfter.head.extensionMins == 15,
+        kidsAfter.head.remainingMins.contains(20), // 30 + 15 - 25
+        // Adults entry survives — invalidation is profile-scoped, not global.
+        adultBefore == adultAfter,
+        // The kids refetch was a miss (cache was invalidated); the adult refetch was a hit.
+        finalStats.misses == statsAfterGrant.misses + 1L,
+        finalStats.hits == statsAfterGrant.hits + 1L,
+      )
+    },
     test("Cache-Control: max-age=30 for today, max-age=3600 for past") {
       for {
         _           <- cleanDb
