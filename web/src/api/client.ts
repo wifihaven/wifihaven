@@ -301,7 +301,10 @@ export const api = {
     setHosts: (id: number, hosts: string[]) =>
       req<void>('PUT', `/apps/${id}/hosts`, { hosts } as SetAppHostsRequest),
     // #766: recently-visited apexes for a device — drives the picker in the
-    // apps create/edit flow.
+    // apps create/edit flow. Colons in the MAC are sent raw: zio-http doesn't
+    // auto-decode percent-encoded colons in path segments, so
+    // `encodeURIComponent` would turn the MAC into a 404 (same gotcha as
+    // time.statusDevice above).
     recentApexes: (mac: string, opts: { windowDays?: number; limit?: number } = {}) => {
       const qs = new URLSearchParams()
       if (opts.windowDays != null) qs.set('windowDays', String(opts.windowDays))
@@ -309,7 +312,7 @@ export const api = {
       const q = qs.toString()
       return req<RecentApexesResponse>(
         'GET',
-        `/devices/${encodeURIComponent(mac)}/recent-apexes${q ? `?${q}` : ''}`,
+        `/devices/${mac}/recent-apexes${q ? `?${q}` : ''}`,
       )
     },
     setPolicy: (id: number, profileId: number, data: UpsertAppAssignmentRequest) =>

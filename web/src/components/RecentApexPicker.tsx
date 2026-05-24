@@ -111,7 +111,7 @@ export function RecentApexPicker({
             {sortedDevices.length === 0 && <option value="">No devices yet</option>}
             {sortedDevices.map(d => (
               <option key={d.mac} value={d.mac}>
-                {d.name} ({d.mac})
+                {d.name}
               </option>
             ))}
           </select>
