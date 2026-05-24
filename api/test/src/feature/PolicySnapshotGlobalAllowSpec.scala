@@ -40,6 +40,7 @@ object PolicySnapshotGlobalAllowSpec
       blr    <- ZIO.service[BlocklistRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
       er     <- ZIO.service[TimeExtensionRepo]
+      ar     <- ZIO.service[AppRepo]
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
@@ -51,6 +52,7 @@ object PolicySnapshotGlobalAllowSpec
       blr,
       trRepo,
       er,
+      ar,
       clock,
       uiHosts,
     ): PolicyService
@@ -70,6 +72,7 @@ object PolicySnapshotGlobalAllowSpec
         blr  <- ZIO.service[BlocklistRepo]
         trr  <- ZIO.service[TrafficReportRepo]
         er   <- ZIO.service[TimeExtensionRepo]
+        ar   <- ZIO.service[AppRepo]
         clk  <- ZIO.service[Clock]
         ps0  <- pr.listAll
         kids = ps0.find(_.name == "Kids").get
@@ -84,6 +87,7 @@ object PolicySnapshotGlobalAllowSpec
           blr,
           trr,
           er,
+          ar,
           clk,
         ) // uiAllowedHosts defaults to Nil
         snap <- svc.snapshot

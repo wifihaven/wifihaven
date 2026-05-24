@@ -207,6 +207,37 @@ case class AppPolicyAssignment(
     exemptFromDaily: Boolean = true,
 ) derives JsonCodec
 
+// #762: HTTP request/response shapes for the apps CRUD endpoints. Hosts are
+// accepted as strings on input (the server strips a leading `*.` then runs
+// Hostname.parse — both `foo.com` and `*.foo.com` canonicalize to apex).
+case class CreateAppRequest(
+    name: String,
+    slug: Option[String] = None,
+    icon: Option[String] = None,
+    templateId: Option[AppTemplateId] = None,
+    hosts: List[String] = Nil,
+) derives JsonCodec
+
+case class UpdateAppRequest(
+    name: String,
+    icon: Option[String] = None,
+    templateId: Option[AppTemplateId] = None,
+) derives JsonCodec
+
+case class SetAppHostsRequest(hosts: List[String]) derives JsonCodec
+
+case class UpsertAppAssignmentRequest(
+    mode: AppMode,
+    dailyMinutes: Option[Int] = None,
+    exemptFromDaily: Option[Boolean] = None,
+) derives JsonCodec
+
+case class AppDetail(
+    app: App,
+    hosts: List[Hostname],
+    assignments: List[AppPolicyAssignment],
+) derives JsonCodec
+
 case class TimeUsage(
     id: TimeUsageId,
     deviceMac: MacAddress,

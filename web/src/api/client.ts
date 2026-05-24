@@ -180,12 +180,14 @@ export const api = {
       if (params.topN)      qs.set('topN', String(params.topN))
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
     },
-    // #917: groupBy as repeated query params. Empty/absent = strictly aggregate
-    // (one row per time bucket). The API also accepts the legacy comma-separated
-    // single-param form for back-compat.
+    // #846 Traffic Usage page — multi-column groupBy.
+    // #917: groupBy as repeated query params; empty = strictly aggregate
+    // (one row per time bucket). The API still accepts the older comma form.
+    // #865: mac / profileId are multi-value, serialized as comma-separated.
+    // A single-element array round-trips to the legacy single-value form.
     traffic: (params: {
-      mac?: string
-      profileId?: number
+      macs?: string[]
+      profileIds?: number[]
       from?: string
       to?: string
       bucket?: TrafficUsageBucket
@@ -194,8 +196,8 @@ export const api = {
       limit?: number
     }) => {
       const qs = new URLSearchParams()
-      if (params.mac)                      qs.set('mac', params.mac)
-      if (params.profileId !== undefined)  qs.set('profileId', String(params.profileId))
+      if (params.macs?.length)             qs.set('mac', params.macs.join(','))
+      if (params.profileIds?.length)       qs.set('profileId', params.profileIds.join(','))
       if (params.from)                     qs.set('from', params.from)
       if (params.to)                       qs.set('to', params.to)
       if (params.bucket)                   qs.set('bucket', params.bucket)
@@ -209,9 +211,9 @@ export const api = {
   // ── Logs ───────────────────────────────────────────────────────────────
   logs: {
     query: (params: {
-      mac?: string
-      deviceId?: number
-      profileId?: number
+      macs?: string[]
+      deviceIds?: number[]
+      profileIds?: number[]
       blocked?: boolean
       domain?: string
       location?: string
@@ -220,9 +222,9 @@ export const api = {
       offset?: number
     }) => {
       const qs = new URLSearchParams()
-      if (params.mac)      qs.set('mac', params.mac)
-      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
-      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      if (params.macs?.length)       qs.set('mac', params.macs.join(','))
+      if (params.deviceIds?.length)  qs.set('deviceId', params.deviceIds.join(','))
+      if (params.profileIds?.length) qs.set('profileId', params.profileIds.join(','))
       if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
       if (params.domain)   qs.set('domain', params.domain)
       if (params.location) qs.set('location', params.location)
@@ -237,9 +239,9 @@ export const api = {
     series: (params: {
       bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
       groupBy: Array<'domain' | 'device' | 'profile' | 'apex' | 'app'>
-      mac?: string
-      deviceId?: number
-      profileId?: number
+      macs?: string[]
+      deviceIds?: number[]
+      profileIds?: number[]
       blocked?: boolean
       domain?: string
       location?: string
@@ -250,9 +252,9 @@ export const api = {
       const qs = new URLSearchParams()
       qs.set('bucket', params.bucket)
       for (const g of params.groupBy) qs.append('groupBy', g)
-      if (params.mac)      qs.set('mac', params.mac)
-      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
-      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      if (params.macs?.length)       qs.set('mac', params.macs.join(','))
+      if (params.deviceIds?.length)  qs.set('deviceId', params.deviceIds.join(','))
+      if (params.profileIds?.length) qs.set('profileId', params.profileIds.join(','))
       if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
       if (params.domain)   qs.set('domain', params.domain)
       if (params.location) qs.set('location', params.location)
