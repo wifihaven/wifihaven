@@ -606,3 +606,9 @@ export interface UpdateAppRequest {
 export interface SetAppHostsRequest {
   hosts: string[]
 }
+
+export interface UpsertAppAssignmentRequest {
+  mode: AppMode
+  dailyMinutes?: number | null
+  exemptFromDaily?: boolean
+}
