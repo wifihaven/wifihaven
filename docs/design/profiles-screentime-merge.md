@@ -7,10 +7,16 @@ Tracks the breakdown of [#965](https://github.com/wifihaven/wifihaven/issues/965
 ### Q1 — Surviving route: `/profiles`
 Keep `/profiles`; drop `/time` (today's Screen Time route) and remove its nav entry. The collapsed-card summary row carries the at-a-glance time view that `/time` exists to provide, so the framing is preserved. "Profiles" is the more inclusive name and is already the discoverability anchor in the top nav.
 
-### Q2 — Save model: per-section Save buttons
-No autosave precedent in `web/src` — every edit form uses an explicit Save (see [`ProfilesPage.tsx`](web/src/pages/ProfilesPage.tsx), [`UsersPage.tsx`](web/src/pages/UsersPage.tsx)). And the API still PUTs the full profile; [#423](https://github.com/wifihaven/wifihaven/issues/423) (PATCH) is not done. Per-section Save is the smallest, lowest-risk shape:
-- Each accordion subsection (name/icon/color, devices, schedule, time limits, rules, users) owns its own dirty state + Save button + Saved-just-now indicator.
-- Implementation continues to PUT the whole Profile under the hood (no contract change). When #423 / [#581](https://github.com/wifihaven/wifihaven/issues/581) land, swap the PUT for a scoped PATCH per section without touching the UI shape; debounced autosave then becomes a follow-up if we want it.
+### Q2 — Save model: debounced autosave (no Save buttons)
+Operator preference: autosave is the project-wide default for edit forms going forward; Profile is the first place we land it. **Hard prereqs:** [#423](https://github.com/wifihaven/wifihaven/issues/423) (PATCH /api/profiles/:id) and [#581](https://github.com/wifihaven/wifihaven/issues/581) (symmetric Profile read/write shapes). Without those, autosave would have to PUT the whole profile per keystroke — not acceptable.
+
+Shape:
+- Each field is debounced (~600ms after last edit) and fires a scoped PATCH for just that field/section.
+- Per-subsection "Saved just now" indicator (transient) + a persistent "Unsaved" indicator while the debounce timer is pending or a request is in flight.
+- Errors surface inline on the subsection with a Retry; the dirty value stays in the form.
+- No Save buttons anywhere on the page.
+
+Ordering: #423 and #581 must merge before any of #965 sub-2..sub-6. The shell (#965 sub-1) does not edit and can land in parallel with #423/#581.
 
 ### Q3 — Expanded-card layout: inline collapsible accordion subsections
 Subsections (name/icon/color · devices · schedule · time limits · rules · users · cross-device overlap) are each independently collapsible inside the expanded card. The issue body already calls this out for mobile; tabs hide structure on a settings-like surface and flat always-open is too tall.
@@ -31,25 +37,29 @@ This ordering means #767 and #965 do not clobber each other: #767 owns the texta
 ## Sub-issue sequence
 
 ```
-#965 sub-1 (collapse shell)
-   └── #965 sub-2 (name/icon/color + devices)
-         ├── #965 sub-3 (schedule)
-         ├── #965 sub-4 (time limits + overlap)
-         ├── #965 sub-6 (users)
-         └── #965 sub-5 (rules, BLOCKS on #767)
-                  └── #965 sub-7 (delete modal + drop /time nav)
+#423 (PATCH) ──┐
+#581 (sym shapes) ──┤
+                    ├──> #965 sub-2 (name/icon/color + devices)
+#965 sub-1 ─────────┤    ├── #965 sub-3 (schedule)
+(collapse shell)    │    ├── #965 sub-4 (time limits + overlap)
+                    │    ├── #965 sub-6 (users)
+                    │    └── #965 sub-5 (rules; ALSO blocks on #767)
+                    │             └── #965 sub-7 (delete modal + drop /time nav)
 ```
 
-Sub-2 through sub-6 can land in any order once sub-1 is in; sub-7 is the cleanup gate.
+- #965 sub-1 (shell) is the only edit-free sub-issue and can run in parallel with #423 / #581.
+- Every other sub-issue (sub-2..sub-7) blocks on #423 + #581 + sub-1.
+- Sub-5 additionally blocks on #767.
+- Sub-7 is the cleanup gate.
 
 ## Mobile
 
 - Collapse-by-default is already the pattern from [#832](https://github.com/wifihaven/wifihaven/issues/832) — keep it.
-- Expanded card's accordion subsections each render full-width on phone; Save button sticks to the bottom of each subsection (no fixed page-level footer).
+- Expanded card's accordion subsections each render full-width on phone. No Save button anywhere — the "Saved just now" / "Unsaved" indicator sits in the subsection header.
 - The +Time button stays in the collapsed summary row, not buried in the expanded view — same affordance as today's screen-time header per [#855](https://github.com/wifihaven/wifihaven/issues/855).
 
 ## Out of scope (here)
 
 - #946 (+Time UI update bug) — separate fix; the merged shell must not re-introduce the bug but doesn't need to fix it.
-- #423 / #581 — nice-to-have; per-section Save works without them.
+- (#423 / #581 are now hard prereqs, not out-of-scope — see Q2.)
 - #622, #578, #137 — unrelated surfaces.
