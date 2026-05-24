@@ -20,14 +20,14 @@
 #   WIFIHAVEN_INSTALL_DIR    legacy alias for WIFIHAVEN_PREFIX.
 #   WIFIHAVEN_API_HOST_PORT  host port to bind           (default: 8080)
 #   WIFIHAVEN_API_BIND       host interface to bind on   (default: 0.0.0.0)
-#   WIFIHAVEN_UI_ALLOWED_HOSTS  comma-separated hostnames (optionally with
-#                            :port) the admin UI is reachable at (e.g.
-#                            "api.lan:8080" or
-#                            "wifihaven.example,api.wifihaven.example").
-#                            These are always allowed by every profile so a
-#                            paused household member can still reach the UI
-#                            to unpause themselves (#944). Empty = no global
-#                            allow list. (default: prompt)
+#   WIFIHAVEN_UI_ALLOWED_HOSTS  comma-separated hostnames the admin UI is
+#                            reachable at (e.g. "api.lan" or
+#                            "wifihaven.example,api.wifihaven.example"). These
+#                            are always allowed by every profile so a paused
+#                            household member can still reach the UI to
+#                            unpause themselves (#944). Hostname-only for
+#                            now; port-aware allow/block tracked in #296.
+#                            Empty = no global allow list. (default: prompt)
 #   WIFIHAVEN_NEW_ADMIN_PW   new admin password          (default: prompt)
 #   WIFIHAVEN_NONINTERACTIVE if set, never prompt; fail if any value missing.
 
@@ -144,13 +144,13 @@ fi
 prompt WIFIHAVEN_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
 prompt WIFIHAVEN_API_HOST_PORT  "Host port for the API"                       "8080"
 prompt WIFIHAVEN_API_BIND       "Bind address (0.0.0.0 or 127.0.0.1)"         "0.0.0.0"
-# #944: hostnames (optionally with :port) the admin UI is reachable at —
-# always allowed by every profile so a paused household member can still
-# reach the UI to unpause. Empty default keeps the strict self-hosted
-# behavior intact; the operator can paste in e.g. "api.lan:8080" or
-# "wifihaven.example,api.wifihaven.example".
+# #944: hostnames the admin UI is reachable at — always allowed by every
+# profile so a paused household member can still reach the UI to unpause.
+# Empty default keeps the strict self-hosted behavior intact; the operator
+# can paste in e.g. "api.lan" or "wifihaven.example,api.wifihaven.example".
+# Port-aware allow/block tracked in #296.
 prompt WIFIHAVEN_UI_ALLOWED_HOSTS \
-                                "Admin UI host:port (comma-sep, blank = none)" \
+                                "Admin UI hostname(s) (comma-sep, blank = none)" \
                                 ""
 
 # ── 3. Install directory ──────────────────────────────────────────────────

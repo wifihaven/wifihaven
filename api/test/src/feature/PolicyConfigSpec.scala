@@ -4,9 +4,8 @@ import wifihaven.api.PolicyConfig
 import zio.test.*
 
 /**
- * #944: PolicyConfig.uiAllowedHosts is a comma-separated list of host[:port] entries. Bare
- * hostnames parse via Hostname; host:port is accepted as-is (dev installs reach the API on a
- * non-default port).
+ * #944: PolicyConfig.uiAllowedHosts is a comma-separated list of hostnames validated by
+ * Hostname.parse. Port-aware allow/block is out of scope here and tracked in #296.
  */
 object PolicyConfigSpec extends ZIOSpecDefault {
 
@@ -18,26 +17,18 @@ object PolicyConfigSpec extends ZIOSpecDefault {
       val out = PolicyConfig("wifihaven.net").uiAllowedHostsParsed.map(_.value)
       assertTrue(out == List("wifihaven.net"))
     },
-    test("host:port preserved through to the Hostname wire string") {
-      val out = PolicyConfig("api.lan:8080").uiAllowedHostsParsed.map(_.value)
-      assertTrue(out == List("api.lan:8080"))
-    },
-    test("mixed entries (with and without port) and whitespace") {
+    test("multiple entries with whitespace") {
       val out =
-        PolicyConfig(" wifihaven.net , api.lan:8080 ,api.wifihaven.net").uiAllowedHostsParsed
+        PolicyConfig(" wifihaven.net , www.wifihaven.net ,api.wifihaven.net").uiAllowedHostsParsed
           .map(_.value)
-      assertTrue(out == List("wifihaven.net", "api.lan:8080", "api.wifihaven.net"))
+      assertTrue(out == List("wifihaven.net", "www.wifihaven.net", "api.wifihaven.net"))
     },
     test("invalid hostname throws at config load") {
       val ex = scala.util.Try(PolicyConfig("not_a_host").uiAllowedHostsParsed)
       assertTrue(ex.isFailure)
     },
-    test("non-numeric port throws at config load") {
-      val ex = scala.util.Try(PolicyConfig("api.lan:abc").uiAllowedHostsParsed)
-      assertTrue(ex.isFailure)
-    },
-    test("port out of range throws at config load") {
-      val ex = scala.util.Try(PolicyConfig("api.lan:99999").uiAllowedHostsParsed)
+    test("host:port rejected — port support tracked in #296") {
+      val ex = scala.util.Try(PolicyConfig("api.lan:8080").uiAllowedHostsParsed)
       assertTrue(ex.isFailure)
     },
   )
