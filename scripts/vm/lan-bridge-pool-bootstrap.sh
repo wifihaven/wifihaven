@@ -73,4 +73,15 @@ if (( ${#missing[@]} > 0 )); then
   done | sudo tee -a "${conf}" >/dev/null
 fi
 
+# Reservation dir (#907) — pool-bridge pickers write per-bridge marker files
+# here so the gap between flock-release and qemu tap-attach doesn't admit a
+# duplicate pick. Mode 1777 (sticky) so any non-root user can drop a marker
+# but cannot remove markers owned by another user.
+res_dir="/run/wh-lan-bridge"
+if [[ ! -d "${res_dir}" ]]; then
+  echo "[bridge-pool] creating ${res_dir} (mode 1777)"
+  sudo mkdir -p "${res_dir}"
+fi
+sudo chmod 1777 "${res_dir}"
+
 echo "[bridge-pool] pool ready: $(for ((i=0; i<SIZE; i++)); do printf 'wh-lan%s ' "${i}"; done)"

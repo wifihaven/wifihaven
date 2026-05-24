@@ -21,7 +21,9 @@
 #
 # Environment overrides (read by conftest.py / conftest_fake.py):
 #   E2E_VM_API_PORT         API stack host port (default 18080; live mode)
-#   WH_FAKE_API_PORT        fake API host port (fake mode; auto-allocated if unset)
+#   WH_FAKE_API_PORT        fake API host port (fake mode). If unset, defaults
+#                           to WH_PORT_BASE+1000 when WH_PORT_BASE is set (#907),
+#                           else a randomly-allocated free port (#902).
 #   WH_ROUTER_SSH_PORT      router VM WAN-side SSH hostfwd (auto-allocated if unset)
 #   WH_ROUTER_HTTP_PORT     router VM WAN-side HTTP hostfwd (auto-allocated if unset)
 #   WH_CLIENT_SSH_PORT_BASE client VM SSH hostfwd (auto-allocated if unset)
@@ -170,6 +172,16 @@ if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" && -z "${WH_PORT_BASE:-}" ]]; then
 fi
 
 if [[ "${MODE}" == "fake" ]]; then
+  # When the caller pinned a deterministic port window via WH_PORT_BASE
+  # (#891 concurrent-pair workflow), derive the fake-api port from it so a
+  # second arm gets a distinct, predictable port without needing a second env
+  # var. +1000 keeps it clear of the router/client SSH+HTTP triplet (base..base+2)
+  # for any reasonable WH_PORT_BASE spacing — concurrent pairs typically
+  # space WH_PORT_BASE by ~100 (see issue #907 acceptance repro), so the
+  # naive +100 here would collide A's fake-api with B's router-ssh.
+  if [[ -z "${WH_FAKE_API_PORT:-}" && -n "${WH_PORT_BASE:-}" ]]; then
+    WH_FAKE_API_PORT=$((WH_PORT_BASE + 1000))
+  fi
   : "${WH_FAKE_API_PORT:=$(alloc_free_port)}"
   export WH_FAKE_API_PORT
   echo "host ports: fake-api=${WH_FAKE_API_PORT}"

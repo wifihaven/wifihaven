@@ -17,7 +17,16 @@ else
   sudo ip link add name "${WH_LAN_BRIDGE}" type bridge
 fi
 
-sudo ip link set "${WH_LAN_BRIDGE}" up
+# Bring the bridge up only if IFF_UP isn't already set. Pool bridges are
+# pre-set-up by lan-bridge-pool-bootstrap.sh, and on many hosts only wh-lan0
+# is NOPASSWD-allowed in sudoers, so an unconditional `sudo ip link set` here
+# would fail under nohup/non-tty sessions when wh-lan<N> (N>0) is picked
+# (#907). Use the netdev flags bitmap (IFF_UP=0x1) instead of operstate —
+# operstate of an admin-up bridge with no carrier still reads "down".
+flags="$(cat "/sys/class/net/${WH_LAN_BRIDGE}/flags" 2>/dev/null || echo 0)"
+if (( (flags & 0x1) == 0 )); then
+  sudo ip link set "${WH_LAN_BRIDGE}" up
+fi
 
 # qemu-bridge-helper refuses to attach taps unless the bridge is in
 # /etc/qemu/bridge.conf. We don't auto-edit it (root-owned), just warn.
