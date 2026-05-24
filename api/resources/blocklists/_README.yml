@@ -6,8 +6,9 @@
 #
 # Unlike app templates, the host list for a bundled blocklist is API-
 # managed: each startup the seeder REPLACES the row's `blocklist_domains`
-# entries with the YAML's `hosts:` field. Operator-curated categories
-# (those not listed in `_index.yml`) are untouched.
+# entries with the YAML's hosts (for `hosts:` lists) or the fetched
+# upstream payload (for `url:` lists). Operator-curated categories (those
+# not listed in `_index.yml`) are untouched.
 #
 # Schema (required fields are marked):
 #
@@ -21,9 +22,26 @@
 #   source:      required, free-form attribution string. Cite the upstream
 #                list (URL + license) or "curated" if hand-rolled. Recorded
 #                in `blocklists.source_url`.
-#   hosts:       required, list of apex hostnames (e.g. "doubleclick.net").
+#
+#   Then EXACTLY ONE of:
+#
+#   hosts:       inline list of apex hostnames (e.g. "doubleclick.net").
 #                Don't include wildcards — the router matches subdomains
-#                inherently. Be conservative; iterate via follow-up PRs.
+#                inherently. Use this for hand-curated lists or anything
+#                small enough to commit.
+#
+#   url:         http(s):// URL of a public upstream blocklist (e.g.
+#                StevenBlack/hosts). Fetched once at API startup by
+#                BlocklistFetcher and cached in-memory; the resulting
+#                hosts populate blocklist_domains. On fetch failure
+#                the existing DB rows for this id are kept (so a network
+#                outage at boot doesn't wipe a previously-good list).
+#                Admins can force a re-fetch via
+#                POST /api/blocklists/<id>/refresh.
+#   format:      optional, only meaningful with `url`. One of:
+#                  hosts-file (default) — etc-hosts format: "0.0.0.0 host"
+#                                         or bare host per line, # comments.
+#                  domain-list           — one apex host per line, # comments.
 #
 # File names beginning with `_` are reserved for documentation (this file)
 # and the manifest (`_index.yml`) and are ignored by the loader.

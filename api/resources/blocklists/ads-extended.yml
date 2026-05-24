@@ -1,0 +1,17 @@
+# Comprehensive ads + malware list, fetched from StevenBlack/hosts.
+#
+# StevenBlack/hosts is MIT-licensed. The "hosts" file is the aggregated
+# mainline list (~200K entries last we checked) covering ads + tracking
+# + malware. Refreshed daily upstream; we re-fetch on every API restart
+# and expose POST /api/blocklists/ads-extended/refresh for ad-hoc
+# refreshes between restarts.
+#
+# This is the "kitchen sink" companion to the hand-curated `ads` list —
+# operators enable one or the other depending on how aggressive they want
+# to be. Both can be enabled together; the router dedupes.
+id: ads-extended
+name: Ads, Trackers, and Malware (StevenBlack)
+description: Comprehensive aggregated ads + tracking + malware list, fetched from StevenBlack/hosts on each API restart. Much larger than the curated "Ads & Trackers" list — expect occasional false positives on sites that load their CDN through a flagged apex.
+source: "https://github.com/StevenBlack/hosts (MIT)"
+url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+format: hosts-file

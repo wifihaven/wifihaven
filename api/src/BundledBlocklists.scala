@@ -23,12 +23,37 @@ import scala.jdk.CollectionConverters.*
  * the next API restart. Operators tune which blocklists are *enabled* per profile, not which
  * hosts a bundled blocklist contains.
  */
+/** Tagged union of how a bundled list sources its hosts. */
+sealed trait BundledBlocklistContent
+object BundledBlocklistContent {
+
+  /** Hand-curated host list baked into the YAML. */
+  final case class Inline(hosts: List[Hostname]) extends BundledBlocklistContent
+
+  /** Fetched at startup from a public upstream list. Cached in-memory after first fetch. */
+  final case class Remote(url: String, format: BlocklistFormat) extends BundledBlocklistContent
+}
+
+/** Parser format selector for upstream files. */
+enum BlocklistFormat {
+
+  /**
+   * Etc-hosts format: `0.0.0.0 example.com` / `127.0.0.1 example.com` / `# comment`. Bare hostnames
+   * on a line are also accepted. Comments after `#` are stripped. Empty lines ignored. The classic
+   * StevenBlack/hosts and pi-hole-style aggregations live here.
+   */
+  case HostsFile
+
+  /** One apex hostname per line; `#` comments; empty lines ignored. OISD's "domainswild" file etc. */
+  case DomainList
+}
+
 final case class BundledBlocklist(
     id: BlocklistId,
     name: String,
     description: String,
     source: String,
-    hosts: List[Hostname],
+    content: BundledBlocklistContent,
 )
 
 object BundledBlocklists {
@@ -92,26 +117,57 @@ object BundledBlocklists {
       name  <- reqStr("name")
       desc  <- reqStr("description")
       src   <- reqStr("source")
-      hosts <- Option(root.get("hosts")) match {
-        case Some(xs: java.util.List[?]) =>
-          val strs = xs.asScala.toList.map(_.toString)
-          if strs.isEmpty then Left("hosts must contain at least one entry")
-          else
-            strs
-              .foldLeft[Either[String, List[Hostname]]](Right(Nil)) { (acc, raw) =>
-                acc.flatMap(prev =>
-                  Hostname.parse(raw.trim).left.map(e => s"invalid host '$raw': $e").map(_ :: prev),
-                )
+      hasHosts = root.containsKey("hosts")
+      hasUrl   = root.containsKey("url")
+      _     <- Either.cond(
+        hasHosts ^ hasUrl,
+        (),
+        "exactly one of 'hosts' or 'url' must be set",
+      )
+      content <- if (hasHosts) {
+        Option(root.get("hosts")) match {
+          case Some(xs: java.util.List[?]) =>
+            val strs = xs.asScala.toList.map(_.toString)
+            if strs.isEmpty then Left("hosts must contain at least one entry")
+            else
+              strs
+                .foldLeft[Either[String, List[Hostname]]](Right(Nil)) { (acc, raw) =>
+                  acc.flatMap(prev =>
+                    Hostname.parse(raw.trim).left.map(e => s"invalid host '$raw': $e").map(_ :: prev),
+                  )
+                }
+                .map(hs => BundledBlocklistContent.Inline(hs.reverse.distinct))
+          case _                           => Left("hosts must be a non-empty list of strings")
+        }
+      } else {
+        for {
+          url <- Option(root.get("url")) match {
+            case Some(s: String) if s.trim.nonEmpty => Right(s.trim)
+            case _                                  => Left("url must be a non-empty string")
+          }
+          _   <- Either.cond(
+            url.startsWith("https://") || url.startsWith("http://"),
+            (),
+            s"url must start with http(s)://: $url",
+          )
+          fmt <- Option(root.get("format")) match {
+            case None            => Right(BlocklistFormat.HostsFile)
+            case Some(s: String) =>
+              s.trim.toLowerCase match {
+                case "hosts-file" | "hosts" => Right(BlocklistFormat.HostsFile)
+                case "domain-list" | "domains" | "domain" => Right(BlocklistFormat.DomainList)
+                case other => Left(s"unknown format '$other' (expected hosts-file|domain-list)")
               }
-              .map(_.reverse.distinct)
-        case _                           => Left("hosts must be a non-empty list of strings")
+            case Some(other)     => Left(s"format must be a string if present, got $other")
+          }
+        } yield BundledBlocklistContent.Remote(url, fmt)
       }
       _     <- Either.cond(
         source.endsWith(s"/${id.value}.yml"),
         (),
         s"id '${id.value}' does not match file name $source",
       )
-    } yield BundledBlocklist(id, name, desc, src, hosts)
+    } yield BundledBlocklist(id, name, desc, src, content)
   }
 
   private def withResource[A](resource: String)(f: InputStream => A): Task[A] =
@@ -136,22 +192,93 @@ object BundledBlocklists {
 
   /**
    * Seed all bundled blocklists. For each:
+   *   - resolve hosts: inline lists read directly from YAML; remote lists are fetched via
+   *     `BlocklistFetcher`, parsed by the declared format, and cached in-memory (the cache
+   *     enables future re-seed without re-fetching from upstream);
    *   - REPLACE the rows in blocklist_domains for this category (clear + insertBatch);
    *   - upsert the `blocklists` metadata row with display name, description, source, and the
    *     current instant as `last_built_at`.
    *
+   * **Failure mode for remote lists**: if the upstream fetch fails (network down, 5xx, parse
+   * error), log a warning and leave the existing `blocklist_domains` rows for that id alone.
+   * This means a startup with no network preserves whatever was last seeded — a fresh enrollment
+   * with no network will end up with empty remote lists, which is the right answer (an empty
+   * blocklist blocks nothing; better than a stale or partial one).
+   *
    * Idempotent — running twice with the same YAML content produces the same rows; only
    * `last_built_at` advances.
    */
-  def seed(repo: BlocklistRepo, lists: List[BundledBlocklist]): Task[Unit] =
-    Clock.instant.flatMap(now => ZIO.foreachDiscard(lists)(b => seedOne(repo, b, now)))
+  def seed(
+      repo: BlocklistRepo,
+      cache: BlocklistCache,
+      fetcher: BlocklistFetcher,
+      lists: List[BundledBlocklist],
+  ): Task[Unit] =
+    Clock.instant.flatMap(now =>
+      ZIO.foreachDiscard(lists)(b => seedOne(repo, cache, fetcher, b, now)),
+    )
 
-  private def seedOne(repo: BlocklistRepo, b: BundledBlocklist, now: java.time.Instant): Task[Unit] =
-    for {
-      _ <- repo.clearCategory(b.id)
-      _ <- repo.insertBatch(b.hosts.map(h => (h.value, b.id.value)))
-      _ <- repo.upsertMeta(b.id, b.name, Some(b.description), bundled = true, Some(b.source), now)
-    } yield ()
+  private def seedOne(
+      repo: BlocklistRepo,
+      cache: BlocklistCache,
+      fetcher: BlocklistFetcher,
+      b: BundledBlocklist,
+      now: java.time.Instant,
+  ): Task[Unit] =
+    resolveHosts(cache, fetcher, b).flatMap {
+      case None        => ZIO.unit // remote fetch failed; leave existing rows untouched
+      case Some(hosts) =>
+        for {
+          _ <- repo.clearCategory(b.id)
+          _ <- repo.insertBatch(hosts.map(h => (h.value, b.id.value)))
+          _ <- repo.upsertMeta(b.id, b.name, Some(b.description), bundled = true, Some(b.source), now)
+        } yield ()
+    }
+
+  /** Resolve a bundled list's hosts. None means "skip this seed cycle, keep existing DB rows." */
+  private def resolveHosts(
+      cache: BlocklistCache,
+      fetcher: BlocklistFetcher,
+      b: BundledBlocklist,
+  ): Task[Option[List[Hostname]]] = b.content match {
+    case BundledBlocklistContent.Inline(hosts) =>
+      ZIO.succeed(Some(hosts))
+    case BundledBlocklistContent.Remote(url, fmt) =>
+      fetcher
+        .fetch(url, fmt)
+        .tap(hosts =>
+          Clock.instant.flatMap(now =>
+            cache.put(b.id, BlocklistCache.Entry(hosts, fetchedAt = now, source = url)),
+          ),
+        )
+        .map(Some(_))
+        .catchAll(e =>
+          ZIO
+            .logWarning(
+              s"failed to fetch bundled blocklist '${b.id.value}' from $url: ${e.getMessage}; keeping existing DB rows",
+            )
+            .as(None),
+        )
+  }
+
+  /** Refresh a single bundled list on demand (admin endpoint). Returns Some(count) on success. */
+  def refresh(
+      repo: BlocklistRepo,
+      cache: BlocklistCache,
+      fetcher: BlocklistFetcher,
+      b: BundledBlocklist,
+  ): Task[Option[Int]] =
+    Clock.instant.flatMap { now =>
+      resolveHosts(cache, fetcher, b).flatMap {
+        case None        => ZIO.none
+        case Some(hosts) =>
+          for {
+            _ <- repo.clearCategory(b.id)
+            _ <- repo.insertBatch(hosts.map(h => (h.value, b.id.value)))
+            _ <- repo.upsertMeta(b.id, b.name, Some(b.description), bundled = true, Some(b.source), now)
+          } yield Some(hosts.size)
+      }
+    }
 
   /** #706: dev-only test categories, seeded on startup when WIFIHAVEN_SEED_TEST_BLOCKLISTS is set. */
   val devTestBlocklists: List[BundledBlocklist] = List(
@@ -160,14 +287,18 @@ object BundledBlocklists {
       "Test Ads",
       "Dev-only test category. Not shipped to prod.",
       "dev seed",
-      List("adserver.example.com", "doubleclick.net", "googleadservices.com").map(Hostname.unsafe),
+      BundledBlocklistContent.Inline(
+        List("adserver.example.com", "doubleclick.net", "googleadservices.com").map(Hostname.unsafe),
+      ),
     ),
     BundledBlocklist(
       BlocklistId.unsafe("test_social"),
       "Test Social",
       "Dev-only test category. Not shipped to prod.",
       "dev seed",
-      List("facebook.com", "instagram.com", "tiktok.com").map(Hostname.unsafe),
+      BundledBlocklistContent.Inline(
+        List("facebook.com", "instagram.com", "tiktok.com").map(Hostname.unsafe),
+      ),
     ),
   )
 }

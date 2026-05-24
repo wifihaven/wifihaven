@@ -1267,7 +1267,13 @@ object LogRoutes {
 // ── Blocklist routes ───────────────────────────────────────────────────────
 
 object BlocklistRoutes {
-  def routes(auth: AuthService, blRepo: BlocklistRepo): Routes[Any, Response] =
+  def routes(
+      auth: AuthService,
+      blRepo: BlocklistRepo,
+      cache: wifihaven.api.BlocklistCache,
+      fetcher: wifihaven.api.BlocklistFetcher,
+      bundled: Map[BlocklistId, wifihaven.api.BundledBlocklist],
+  ): Routes[Any, Response] =
     Routes(
       // #958: list every category with display metadata + host count for
       // the SPA management page. Returns BlocklistSummary[] in declared
@@ -1305,6 +1311,32 @@ object BlocklistRoutes {
           requireAdmin(req, auth) *>
             blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
+        },
+      // #958: trigger an out-of-band re-fetch + re-seed of a bundled list. Returns
+      // 200 {refreshedHosts:N} on success, 404 if the id isn't a bundled list, or
+      // 502 if the upstream fetch failed (existing DB rows are kept).
+      Method.POST / "api" / "blocklists" / string("id") / "refresh"      ->
+        handler { (id: String, req: Request) =>
+          for {
+            _   <- requireAdmin(req, auth)
+            bid <- ZIO.fromEither(BlocklistId.parse(id)).mapError(e => Response.badRequest(e))
+            b   <- ZIO
+              .fromOption(bundled.get(bid))
+              .orElseFail(
+                Response
+                  .status(Status.NotFound)
+                  .copy(body = Body.fromString(s"""{"error":"unknown bundled blocklist '$id'"}""")),
+              )
+            n   <- wifihaven.api.BundledBlocklists
+              .refresh(blRepo, cache, fetcher, b)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield n match {
+            case Some(count) => Response.json(s"""{"refreshedHosts":$count}""")
+            case None        =>
+              Response
+                .status(Status.BadGateway)
+                .copy(body = Body.fromString("""{"error":"upstream fetch failed; rows unchanged"}"""))
+          }
         },
     )
 }
