@@ -70,6 +70,23 @@ function renderPage() {
   )
 }
 
+// #951 — calendar popover seeds on "now"; click prev/next month until the
+// header shows the target. Bounded to keep a runaway test from spinning.
+async function navigateToMonth(targetYear: number, targetMonth0: number) {
+  const target = new Date(targetYear, targetMonth0, 1)
+  for (let i = 0; i < 60; i++) {
+    const popover = screen.getByTestId('jump-to-date-popover')
+    const header  = popover.querySelector('.uppercase')?.textContent ?? ''
+    const probe   = new Date(`${header} 1`)
+    if (!Number.isNaN(probe.getTime())
+        && probe.getFullYear() === target.getFullYear()
+        && probe.getMonth() === target.getMonth()) return
+    const goPrev = probe.getTime() > target.getTime()
+    await userEvent.click(screen.getByTestId(goPrev ? 'jump-to-date-prev-month' : 'jump-to-date-next-month'))
+  }
+  throw new Error(`navigateToMonth: gave up trying to reach ${targetYear}-${targetMonth0 + 1}`)
+}
+
 describe('TrafficUsagePage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -234,18 +251,20 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     expect(trafficMock.mock.calls[0][0].to).toBeDefined()
 
-    const input = screen.getByTestId('jump-to-date-input') as HTMLInputElement
-    // 2026-05-21 14:00 local — JumpToDate uses datetime-local, so we drive it
-    // with the same shape the browser produces.
-    await userEvent.clear(input)
-    await userEvent.type(input, '2026-05-21T14:00')
+    // Open the calendar popover, click May 21, set time 14:00, apply.
+    await userEvent.click(screen.getByTestId('jump-to-date-trigger'))
+    await navigateToMonth(2026, 4) // 0-indexed: May = 4
+    await userEvent.click(screen.getByTestId('jump-to-date-day-2026-05-21'))
+    const hh = screen.getByTestId('jump-to-date-hh') as HTMLInputElement
+    const mm = screen.getByTestId('jump-to-date-mm') as HTMLInputElement
+    await userEvent.clear(hh); await userEvent.type(hh, '14')
+    await userEvent.clear(mm); await userEvent.type(mm, '00')
+    await userEvent.click(screen.getByTestId('jump-to-date-apply'))
 
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
     const anchored = trafficMock.mock.calls[trafficMock.mock.calls.length - 1][0]
-    // The picker re-anchored `to` — we don't pin a precise instant because the
-    // test runs in whatever TZ the host has, but it must be the same instant
-    // round-tripped through the URL.
-    expect(anchored.to).toBe(new Date('2026-05-21T14:00').toISOString())
+    // The picker re-anchored `to` — local 2026-05-21 14:00 → UTC ISO.
+    expect(anchored.to).toBe(new Date(2026, 4, 21, 14, 0, 0, 0).toISOString())
     // URL round-trip is covered by the next test (reading ?until= back in).
 
     // Clearing the picker reverts to "now" and drops `until` from the URL.
