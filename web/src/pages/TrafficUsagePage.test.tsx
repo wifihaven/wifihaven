@@ -225,6 +225,24 @@ describe('TrafficUsagePage', () => {
     expect(outbound.className).toMatch(/hidden sm:table-cell/)
   })
 
+  // #968: while a fetch is in flight, the "No rows in window." empty-state
+  // must not render above the spinner. Gate empty-state on !loading.
+  it('does not render empty-state copy while loading', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    let resolve: (v: TrafficUsageResponse) => void = () => {}
+    trafficMock.mockReturnValueOnce(new Promise<TrafficUsageResponse>(r => { resolve = r }))
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
+    // Spinner is shown, empty-state copy is NOT.
+    expect(screen.getByTestId('loading')).toBeInTheDocument()
+    expect(screen.queryByText('No rows in window.')).not.toBeInTheDocument()
+    // Once the fetch resolves with no rows, the empty-state appears and the
+    // spinner clears.
+    resolve({ ...rawResp, rawRows: [] })
+    await waitFor(() => expect(screen.getByText('No rows in window.')).toBeInTheDocument())
+    expect(screen.queryByTestId('loading')).not.toBeInTheDocument()
+  })
+
   it('surfaces server error', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
     trafficMock.mockRejectedValueOnce(new Error('window_too_large'))

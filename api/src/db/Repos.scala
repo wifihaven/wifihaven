@@ -44,6 +44,11 @@ case class LogFilter(
     cursorId: Option[Long] = None,
     cursorWs: Option[String] = None,
     cursorKey: Option[String] = None,
+    // #969: when false (default), drop rows whose destination is IPv4 multicast
+    // (224.0.0.0/4), IPv4 broadcast (255.255.255.255), or IPv6 multicast
+    // (ff00::/8) from both the raw and aggregated views. Operators can pass
+    // ?includeMulticast=true to see them for diagnostics.
+    includeMulticast: Boolean = false,
 )
 
 case class TrafficRollupFilter(
@@ -1454,6 +1459,26 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
 
   // ── Dashboard / log API ──────────────────────────────────────────────────
 
+  // #969: SSDP / UPnP discovery (239.255.255.250) and the rest of the IPv4
+  // multicast range, IPv4 broadcast, and IPv6 multicast aren't real per-device
+  // connections an operator can act on. Filter pre-aggregation in both /api/logs
+  // and /series so counts stay correct. The router-side fix is deferred behind
+  // Gate 2 (#654); until then, this read-side filter is the floor.
+  //
+  // host_type is a strict enum ('fqdn'|'ipv4'|'ipv6') so the regex/literal
+  // checks only run on the relevant variant — fqdn rows short-circuit cheaply.
+  // We filter on the raw ce.host_value (the actual destination on the wire),
+  // not the resolved FQDN: a multicast IP that somehow got a resolved name is
+  // still a multicast packet.
+  private val multicastFilterSql: Fragment =
+    fr"""AND NOT (
+           (ce.host_type = 'ipv4' AND (
+             ce.host_value ~ '^(22[4-9]|23[0-9])\.'
+             OR ce.host_value = '255.255.255.255'
+           ))
+           OR (ce.host_type = 'ipv6' AND ce.host_value ~* '^ff')
+         )"""
+
   def query(f: LogFilter) = {
     // location is sourced from routers.name until routers.location lands (#136)
     // #720: coalesce resolved_host_value into the returned host tuple so
@@ -1497,7 +1522,8 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
     )
     val byLoc  = f.location.fold(fr"")(l => fr"AND r.name = $l")
-    (base ++ window ++ byCur ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
+    val byMc   = if (f.includeMulticast) fr"" else multicastFilterSql
+    (base ++ window ++ byCur ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc ++
       fr"ORDER BY ce.ts DESC, ce.id DESC LIMIT ${f.limit}")
       .query[
         (
@@ -1663,6 +1689,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
     )
     val byLoc   = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    val byMc    = if (f.includeMulticast) fr"" else multicastFilterSql
     // #862: keyset cursor on (window_start DESC, group_key ASC). HAVING uses
     // the full window/groupkey expressions (PG doesn't allow SELECT aliases
     // in HAVING).
@@ -1684,7 +1711,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val orderBy =
       if (groupKeyParts.isEmpty) fr"ORDER BY window_start DESC"
       else fr"ORDER BY window_start DESC, " ++ groupKeyExpr ++ fr" ASC"
-    (base ++ window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++
+    (base ++ window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc ++
       fr"GROUP BY " ++ groupByCols ++ fr" " ++ having ++
       orderBy ++ fr"LIMIT ${f.limit}")
       .query[

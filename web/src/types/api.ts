@@ -624,3 +624,9 @@ export interface RecentApexesResponse {
   windowDays: number
   items: RecentApex[]
 }
+
+export interface UpsertAppAssignmentRequest {
+  mode: AppMode
+  dailyMinutes?: number | null
+  exemptFromDaily?: boolean
+}

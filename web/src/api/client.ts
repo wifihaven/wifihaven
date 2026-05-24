@@ -5,7 +5,7 @@ import type {
   ConnectionEventSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
-  UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
 
@@ -312,6 +312,10 @@ export const api = {
         `/devices/${encodeURIComponent(mac)}/recent-apexes${q ? `?${q}` : ''}`,
       )
     },
+    setPolicy: (id: number, profileId: number, data: UpsertAppAssignmentRequest) =>
+      req<void>('PUT', `/apps/${id}/policy/${profileId}`, data),
+    deletePolicy: (id: number, profileId: number) =>
+      req<void>('DELETE', `/apps/${id}/policy/${profileId}`),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

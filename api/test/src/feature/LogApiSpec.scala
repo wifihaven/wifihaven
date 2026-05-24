@@ -1212,5 +1212,137 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         assertTrue(domains.distinct.length == 5) &&
         assertTrue(domains == domains.sorted) // group_key ASC ordering
     },
+    test("#969: GET /api/logs filters multicast/broadcast destinations by default") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.IPv4(IpAddress.unsafe("239.255.255.250")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.IPv4(IpAddress.unsafe("224.0.0.251")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.IPv4(IpAddress.unsafe("255.255.255.255")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.IPv6(IpAddress.unsafe("ff02::fb")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        respDef <- getJson(routes, "/api/logs", token)
+        bodyDef <- respDef.body.asString
+        pageDef <- ZIO.fromEither(bodyDef.fromJson[QueryLogPage])
+        respInc <- getJson(routes, "/api/logs?includeMulticast=true", token)
+        bodyInc <- respInc.body.asString
+        pageInc <- ZIO.fromEither(bodyInc.fromJson[QueryLogPage])
+      } yield assertTrue(pageDef.rows.length == 1) &&
+        assertTrue(pageDef.rows.head.host.value == "youtube.com") &&
+        assertTrue(pageInc.rows.length == 5) &&
+        assertTrue(pageInc.rows.exists(_.host.value == "239.255.255.250")) &&
+        assertTrue(pageInc.rows.exists(_.host.value == "224.0.0.251")) &&
+        assertTrue(pageInc.rows.exists(_.host.value == "255.255.255.255")) &&
+        assertTrue(pageInc.rows.exists(_.host.value == "ff02::fb"))
+    },
+    test("#969: GET /api/connection-events/series filters multicast pre-aggregation by default") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:dd:ee:ff")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.IPv4(IpAddress.unsafe("239.255.255.250")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.IPv4(IpAddress.unsafe("239.255.255.250")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        respDef <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
+        bodyDef <- respDef.body.asString
+        pageDef <- ZIO.fromEither(bodyDef.fromJson[ConnectionEventSeriesPage])
+        respInc <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1h&groupBy=domain&includeMulticast=true",
+          token,
+        )
+        bodyInc <- respInc.body.asString
+        pageInc <- ZIO.fromEither(bodyInc.fromJson[ConnectionEventSeriesPage])
+        defDomains = pageDef.rows.flatMap(_.groups.get("domain"))
+        incDomains = pageInc.rows.flatMap(_.groups.get("domain"))
+      } yield assertTrue(defDomains == List("youtube.com")) &&
+        assertTrue(incDomains.toSet == Set("youtube.com", "239.255.255.250")) &&
+        assertTrue(
+          pageInc.rows
+            .find(_.groups.get("domain").contains("239.255.255.250"))
+            .exists(_.countSucceeded == 2),
+        )
+    },
   ) @@ TestAspect.sequential
 }
