@@ -216,7 +216,7 @@ def router(router_session, fake_server, fake_api) -> EnrolledRouter:
 def client_factory():
     booted: list[str] = []
 
-    def _boot(*, mac: str | None = None, name: str = "client1", ssh_port: int = 2223) -> Client:
+    def _boot(*, mac: str | None = None, name: str = "client1", ssh_port: int | None = None) -> Client:
         chosen_mac = mac or _gen_mac()
         c = client_up(mac=chosen_mac, name=name, ssh_port=ssh_port)
         booted.append(name)
