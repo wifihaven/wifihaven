@@ -26,7 +26,7 @@ object UsageRoutes {
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "usage" / "traffic" ->
+      Method.GET / "api" / "usage" / "traffic"                         ->
         handler { (req: Request) =>
           trafficHandler(
             req,
@@ -45,7 +45,7 @@ object UsageRoutes {
         handler { (macRaw: String, req: Request) =>
           for {
             claims <- requireAuth(req, auth)
-            mac     = MacAddress.unsafe(normalizeMac(macRaw))
+            mac = MacAddress.unsafe(normalizeMac(macRaw))
             device <- deviceRepo
               .findByMac(mac)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -63,8 +63,8 @@ object UsageRoutes {
               .getOrElse(50)
               .max(1)
               .min(500)
-            now  <- clock.instant
-            from  = now.minus(Duration.ofDays(windowDays.toLong))
+            now <- clock.instant
+            from = now.minus(Duration.ofDays(windowDays.toLong))
             rows <- trafficRepo
               .listFqdnHostAggregatesForDevice(mac, from, now)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -84,7 +84,7 @@ object UsageRoutes {
               .toList
               .sortBy(r => (-r.bytes, r.apex.value))
               .take(limit)
-            resp = RecentApexesResponse(
+            resp    = RecentApexesResponse(
               deviceMac = mac,
               deviceName = device.name,
               windowDays = windowDays,
@@ -92,7 +92,7 @@ object UsageRoutes {
             )
           } yield Response.json(resp.toJson)
         },
-      Method.GET / "api" / "usage" / "series"  ->
+      Method.GET / "api" / "usage" / "series"                          ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)

@@ -358,10 +358,9 @@ trait TrafficReportRepo {
 
   /**
    * #766: per-host aggregates for one device over `[from, to)`, restricted to FQDN-typed rows
-   * (after the IP→FQDN LATERAL resolve). One row per resolved hostname, with total
-   * `bytes_in + bytes_out` and the hit count (number of 5-min buckets the host was observed in).
-   * Used by the apps create/edit recently-visited-hosts picker; PSL apex collapse happens in
-   * Scala.
+   * (after the IP→FQDN LATERAL resolve). One row per resolved hostname, with total `bytes_in +
+   * bytes_out` and the hit count (number of 5-min buckets the host was observed in). Used by the
+   * apps create/edit recently-visited-hosts picker; PSL apex collapse happens in Scala.
    */
   def listFqdnHostAggregatesForDevice(
       mac: MacAddress,

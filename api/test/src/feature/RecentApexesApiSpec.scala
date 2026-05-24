@@ -149,10 +149,10 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
         _           <- TestLayers.seedDevice(deviceRepo, kidsMac, "iPad", kidsId)
         routerId    <- seedRouter
-        today        = TestClock.schoolDayAfternoon.toLocalDate
+        today = TestClock.schoolDayAfternoon.toLocalDate
         // youtube subdomains collapse to youtube.com (PSL).
         _  <- insertFqdn(routerId, kidsMac, "www.youtube.com", today, 10, 800L)
-        _  <- insertFqdn(routerId, kidsMac, "m.youtube.com",   today, 11, 200L)
+        _  <- insertFqdn(routerId, kidsMac, "m.youtube.com", today, 11, 200L)
         // googlevideo as the other apex, bigger overall — sorted first.
         _  <- insertFqdn(routerId, kidsMac, "r1.googlevideo.com", today, 12, 5000L)
         _  <- insertFqdn(routerId, kidsMac, "r2.googlevideo.com", today, 13, 3000L)
@@ -173,12 +173,16 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         assertTrue(out.items.head.apex.value == "googlevideo.com") &&
         assertTrue(out.items.head.bytes == 8000L) &&
         assertTrue(out.items.head.hits == 2) &&
-        assertTrue(out.items.head.subdomains.map(_.value).toSet ==
-          Set("r1.googlevideo.com", "r2.googlevideo.com")) &&
+        assertTrue(
+          out.items.head.subdomains.map(_.value).toSet ==
+            Set("r1.googlevideo.com", "r2.googlevideo.com"),
+        ) &&
         assertTrue(out.items(1).apex.value == "youtube.com") &&
         assertTrue(out.items(1).bytes == 1000L) &&
-        assertTrue(out.items(1).subdomains.map(_.value).toSet ==
-          Set("www.youtube.com", "m.youtube.com")) &&
+        assertTrue(
+          out.items(1).subdomains.map(_.value).toSet ==
+            Set("www.youtube.com", "m.youtube.com"),
+        ) &&
         // bare IP excluded entirely
         assertTrue(out.items.forall(i => !i.apex.value.contains("203.0.113")))
     },
@@ -191,7 +195,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
         _           <- TestLayers.seedDevice(deviceRepo, kidsMac, "iPad", kidsId)
         routerId    <- seedRouter
-        today        = TestClock.schoolDayAfternoon.toLocalDate
+        today = TestClock.schoolDayAfternoon.toLocalDate
         _  <- insertFqdn(routerId, kidsMac, "youtube.com", today, 10, 500L)
         rb <- buildRoutes
         (routes, auth) = rb
@@ -215,7 +219,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
         _           <- TestLayers.seedDevice(deviceRepo, kidsMac, "iPad", kidsId)
         routerId    <- seedRouter
-        today        = TestClock.schoolDayAfternoon.toLocalDate
+        today = TestClock.schoolDayAfternoon.toLocalDate
         _  <- insertFqdn(routerId, kidsMac, "fresh.example.com", today, 10, 1000L)
         // 30 days back — outside default 7d window.
         _  <- insertFqdn(routerId, kidsMac, "stale.example.com", today.minusDays(30), 10, 1000L)
