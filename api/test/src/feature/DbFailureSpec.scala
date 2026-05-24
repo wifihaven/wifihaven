@@ -82,6 +82,8 @@ object DbFailureSpec extends ZIOSpecDefault {
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
+        cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
+        limit: Option[Int] = None,
     ) = throwing
     def earliestPeriodStart                                              = throwing
   }

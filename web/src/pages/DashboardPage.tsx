@@ -17,7 +17,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     Promise.all([api.logs.stats(), api.logs.query({ limit: 30 })])
-      .then(([s, l]) => { setStats(s); setLogs(l) })
+      .then(([s, l]) => { setStats(s); setLogs(l.rows) })
       .finally(() => setLoading(false))
   }, [])
 

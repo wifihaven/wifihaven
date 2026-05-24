@@ -2,8 +2,8 @@ import type {
   AppDetail, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
-  ConnectionEventAggRow, QueryLog, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest,
-  TimeExtension,
+  ConnectionEventSeriesPage, QueryLogPage,
+  RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
@@ -187,6 +187,8 @@ export const api = {
     // (one row per time bucket). The API still accepts the older comma form.
     // #865: mac / profileId are multi-value, serialized as comma-separated.
     // A single-element array round-trips to the legacy single-value form.
+    // #862: cursor + nextCursor for infinite scroll; `until` re-anchors the
+    // right edge of the window.
     traffic: (params: {
       macs?: string[]
       profileIds?: number[]
@@ -196,6 +198,7 @@ export const api = {
       groupBy?: TrafficUsageGroupBy[]
       tz?: string
       limit?: number
+      cursor?: string
     }) => {
       const qs = new URLSearchParams()
       if (params.macs?.length)             qs.set('mac', params.macs.join(','))
@@ -206,11 +209,15 @@ export const api = {
       if (params.groupBy) for (const g of params.groupBy) qs.append('groupBy', g)
       if (params.tz)                       qs.set('tz', params.tz)
       if (params.limit !== undefined)      qs.set('limit', String(params.limit))
+      if (params.cursor)                   qs.set('cursor', params.cursor)
       return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`)
     },
   },
 
   // ── Logs ───────────────────────────────────────────────────────────────
+  // #862: cursor + nextCursor on both endpoints. `until` anchors the right
+  // edge of the window (defaults to NOW() server-side) — supports a Jump-to-Date
+  // picker. `offset` is gone; keyset paging is stable under inserts.
   logs: {
     query: (params: {
       macs?: string[]
@@ -221,7 +228,8 @@ export const api = {
       location?: string
       hours?: number
       limit?: number
-      offset?: number
+      until?: string
+      cursor?: string
     }) => {
       const qs = new URLSearchParams()
       if (params.macs?.length)       qs.set('mac', params.macs.join(','))
@@ -232,8 +240,9 @@ export const api = {
       if (params.location) qs.set('location', params.location)
       if (params.hours)    qs.set('hours', String(params.hours))
       if (params.limit)    qs.set('limit', String(params.limit))
-      if (params.offset)   qs.set('offset', String(params.offset))
-      return req<QueryLog[]>('GET', `/logs?${qs}`)
+      if (params.until)    qs.set('until', params.until)
+      if (params.cursor)   qs.set('cursor', params.cursor)
+      return req<QueryLogPage>('GET', `/logs?${qs}`)
     },
     // #847 + #917: aggregated connection-events series. groupBy is sent as
     // repeated query params; empty = one row per time bucket. apex deferred
@@ -249,7 +258,8 @@ export const api = {
       location?: string
       hours?: number
       limit?: number
-      offset?: number
+      until?: string
+      cursor?: string
     }) => {
       const qs = new URLSearchParams()
       qs.set('bucket', params.bucket)
@@ -262,8 +272,9 @@ export const api = {
       if (params.location) qs.set('location', params.location)
       if (params.hours)    qs.set('hours', String(params.hours))
       if (params.limit)    qs.set('limit', String(params.limit))
-      if (params.offset)   qs.set('offset', String(params.offset))
-      return req<ConnectionEventAggRow[]>('GET', `/connection-events/series?${qs}`)
+      if (params.until)    qs.set('until', params.until)
+      if (params.cursor)   qs.set('cursor', params.cursor)
+      return req<ConnectionEventSeriesPage>('GET', `/connection-events/series?${qs}`)
     },
     stats: () => req<DashboardStats>('GET', '/stats'),
   },
@@ -271,13 +282,6 @@ export const api = {
   // ── Dashboard "now" ────────────────────────────────────────────────────
   dashboard: {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
-  },
-
-  // ── Apps (#769 surfaces the empty-state on group-by=app) ───────────────
-  // Minimal client: just enough to detect "no apps exist yet" so the
-  // group-by=app empty-state can point the operator at #765's /apps screen.
-  apps: {
-    list: () => req<Array<{ app: { id: number; name: string; slug: string } }>>('GET', '/apps'),
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────

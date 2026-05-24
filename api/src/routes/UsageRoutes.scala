@@ -2,7 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.usage.{AppMembership, UsageSeries, UsageTraffic}
+import wifihaven.api.usage.{AppMembership, RawTrafficCursorKey, UsageSeries, UsageTraffic}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -262,7 +262,12 @@ object UsageRoutes {
       _     <- ZIO
         .fail(Response.badRequest("from must be < to"))
         .when(!fromI.isBefore(toI))
-      _     <- ZIO
+      // #862: the 31-day cap only applies to aggregated views — those still
+      // read the whole [from, to) band into memory for in-app bucketing. The
+      // raw view pushes (period_start, mac, host) keyset paging + LIMIT into
+      // SQL, so a wide band is bounded by the per-page row cap.
+      bucketStrEarly = req.url.queryParam("bucket").getOrElse("raw")
+      _ <- ZIO
         .fail(
           Response(
             status = Status.ServiceUnavailable,
@@ -271,7 +276,10 @@ object UsageRoutes {
             ),
           ),
         )
-        .when(Duration.between(fromI, toI).compareTo(UsageTraffic.maxOnTheFlyDuration) > 0)
+        .when(
+          bucketStrEarly != "raw" &&
+            Duration.between(fromI, toI).compareTo(UsageTraffic.maxOnTheFlyDuration) > 0,
+        )
       // #865: mac and profileId are comma-separated multi-value lists. A
       // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
       // no filter on that column.
@@ -319,13 +327,6 @@ object UsageRoutes {
       // #858: zero-bytes-zero-seconds rows are filtered at SQL level in
       // listRawInRange so the application never sees them. TODO(#864) wire
       // a metric for "rows filtered" once observability lands.
-      rows       <-
-        if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
-          ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
-        else
-          trafficRepo
-            .listRawInRange(macs, fromI, toI)
-            .mapError(ErrorMapper.dbErrorToResponse)
       profiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
       profNames = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
@@ -347,43 +348,88 @@ object UsageRoutes {
             }
             .groupMap(_._1)(_._2)).mapError(ErrorMapper.dbErrorToResponse)
         else ZIO.succeed(Map.empty[String, List[AppMembership]])
-      // #846 audit: cap raw rows. The default 24h window can hit 40k+ rows;
-      // SPA tables choke. `limit` defaults to 100 for the raw view and is
-      // honored as-is for aggregated views (where row counts are naturally
-      // bounded by window*group cardinality).
+      // #862: cursor + nextCursor replace the old "single fixed window with
+      // rawRowsTruncated flag" UX. `limit` is the per-page cap (200 default,
+      // 500 max). For aggregated views the cap applies to GROUP BY output rows.
       rawLimit = req.url
         .queryParam("limit")
         .flatMap(_.toIntOption)
-        .getOrElse(100)
+        .getOrElse(if (bucket == UsageTraffic.Bucket.Raw) 200 else 500)
         .max(1)
-        .min(5000)
-      // #917: empty set is intentional — strictly aggregate ("one row per
+        .min(500)
+      // #917: empty groupBy is intentional — strictly aggregate ("one row per
       // time bucket"). No implicit default.
       effectiveGroupBy = groupBySet
-      resp             = bucket match {
+      resp <- bucket match {
         case UsageTraffic.Bucket.Raw =>
-          val allRaw    = UsageTraffic.buildRaw(rows, devByMac, profNames)
-          val truncated = allRaw.size > rawLimit
-          TrafficUsageResponse(
+          for {
+            rawCursor <- req.url.queryParam("cursor") match {
+              case None    => ZIO.succeed(Option.empty[RawTrafficCursorKey])
+              case Some(s) =>
+                ZIO
+                  .fromEither(
+                    wifihaven.api.db.Cursor.decode[wifihaven.api.db.Cursor.RawTrafficCursor](s),
+                  )
+                  .mapBoth(
+                    Response.badRequest,
+                    c => Some(RawTrafficCursorKey(c.ts, c.mac, c.host)),
+                  )
+            }
+            pagedRows <-
+              if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
+                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
+              else
+                trafficRepo
+                  .listRawInRange(macs, fromI, toI, rawCursor, Some(rawLimit))
+                  .mapError(ErrorMapper.dbErrorToResponse)
+            built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)
+            nextCur =
+              if (pagedRows.size < rawLimit) None
+              else
+                pagedRows.lastOption.map { r =>
+                  wifihaven.api.db.Cursor.encode(
+                    wifihaven.api.db.Cursor.RawTrafficCursor(
+                      r.periodStart,
+                      r.mac.value,
+                      r.host.value,
+                    ),
+                  )
+                }
+          } yield TrafficUsageResponse(
             bucket = bucket.code,
             groupBy = Nil,
             from = fromI.toString,
             to = toI.toString,
             tz = zone.getId,
-            rawRows = allRaw.take(rawLimit),
+            rawRows = built,
             aggregateRows = Nil,
             rawRowLimit = Some(rawLimit),
-            rawRowsTruncated = truncated,
+            rawRowsTruncated = false,
+            nextCursor = nextCur,
           )
         case _                       =>
-          TrafficUsageResponse(
-            bucket = bucket.code,
-            groupBy = effectiveGroupBy.toList.map(_.code).sorted,
-            from = fromI.toString,
-            to = toI.toString,
-            tz = zone.getId,
-            rawRows = Nil,
-            aggregateRows = UsageTraffic
+          // Aggregated path: still reads the whole raw band into memory,
+          // buckets in-app, then slices by cursor. Cheap because window*group
+          // cardinality is small. Rollup tables (#809) will replace this with
+          // a paged SQL fetch.
+          for {
+            rows      <-
+              if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
+                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
+              else
+                trafficRepo
+                  .listRawInRange(macs, fromI, toI)
+                  .mapError(ErrorMapper.dbErrorToResponse)
+            cursorOpt <- req.url.queryParam("cursor") match {
+              case None    => ZIO.succeed(Option.empty[wifihaven.api.db.Cursor.AggCursor])
+              case Some(s) =>
+                ZIO
+                  .fromEither(
+                    wifihaven.api.db.Cursor.decode[wifihaven.api.db.Cursor.AggCursor](s),
+                  )
+                  .mapBoth(Response.badRequest, Some(_))
+            }
+            allAgg = UsageTraffic
               .buildAggregate(
                 rows,
                 bucket,
@@ -392,7 +438,37 @@ object UsageRoutes {
                 devByMac,
                 profNames,
                 appsByHost,
-              ),
+              )
+            keyOf  = (r: TrafficUsageAggregateRow) => UsageTraffic.aggGroupKey(r, effectiveGroupBy)
+            sorted = allAgg.sortBy(r =>
+              (-java.time.Instant.parse(r.windowStart).toEpochMilli, keyOf(r)),
+            )
+            filtered = cursorOpt match {
+              case None    => sorted
+              case Some(c) =>
+                sorted.filter { r =>
+                  val cmp = r.windowStart.compare(c.ws)
+                  cmp < 0 || (cmp == 0 && keyOf(r).compare(c.key) > 0)
+                }
+            }
+            page     = filtered.take(rawLimit)
+            nextCur  =
+              if (page.size < rawLimit) None
+              else
+                page.lastOption.map { r =>
+                  wifihaven.api.db.Cursor.encode(
+                    wifihaven.api.db.Cursor.AggCursor(r.windowStart, keyOf(r)),
+                  )
+                }
+          } yield TrafficUsageResponse(
+            bucket = bucket.code,
+            groupBy = effectiveGroupBy.toList.map(_.code).sorted,
+            from = fromI.toString,
+            to = toI.toString,
+            tz = zone.getId,
+            rawRows = Nil,
+            aggregateRows = page,
+            nextCursor = nextCur,
           )
       }
     } yield Response.json(resp.toJson)

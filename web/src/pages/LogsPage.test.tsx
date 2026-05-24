@@ -52,8 +52,8 @@ function renderAt(path = '/usage/events') {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  ;(api.logs.query    as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([log1])
-  ;(api.logs.series   as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aggRow])
+  ;(api.logs.query    as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [log1], nextCursor: null })
+  ;(api.logs.series   as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [aggRow], nextCursor: null })
   ;(api.devices.list  as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(devices)
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(profileDetails)
   // #769: default to "one app exists" so groupBy=app doesn't trip the empty-state.
@@ -82,7 +82,7 @@ describe('LogsPage (Connection Events) — raw view', () => {
   })
 
   it('shows empty state when no events', async () => {
-    (api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    (api.logs.query as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], nextCursor: null })
     renderAt()
     expect(await screen.findByText('No events in window.')).toBeInTheDocument()
   })
@@ -147,19 +147,60 @@ describe('LogsPage — aggregation', () => {
   // #769: with apps defined the toggle is functional and the response's
   // appName/appIcon are surfaced in the row.
   it('renders app icon + display name when groupBy=app and rows arrive', async () => {
-    (api.logs.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
-      {
-        ...aggRow,
-        groups: { app: 'youtube' },
-        appId: 1,
-        appName: 'YouTube',
-        appIcon: '📺',
-      },
-    ])
+    (api.logs.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rows: [
+        {
+          ...aggRow,
+          groups: { app: 'youtube' },
+          appId: 1,
+          appName: 'YouTube',
+          appIcon: '📺',
+        },
+      ],
+      nextCursor: null,
+    })
     renderAt('/usage/events?groupBy=app')
     await screen.findByText('example.com')
     await userEvent.click(screen.getByTestId('bucket-1h'))
     expect(await screen.findByText('YouTube')).toBeInTheDocument()
     expect(screen.getByText('📺')).toBeInTheDocument()
   })
+})
+
+describe('LogsPage — infinite scroll (#862)', () => {
+  it('end-of-stream marker appears when nextCursor is null', async () => {
+    renderAt()
+    expect(await screen.findByText('example.com')).toBeInTheDocument()
+    // First (and only) page has nextCursor=null → end-of-stream rendered.
+    expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
+  })
+
+  it('scroll triggers a cursor-bearing fetch when more pages remain', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    const log2 = { ...log1, id: 2, host: { type: 'fqdn', value: 'older-page.com' } }
+    // Default falls back to the second page so any extra triggers (from
+    // accumulated IO callbacks across re-renders) stay deterministic.
+    queryMock
+      .mockReset()
+      .mockResolvedValueOnce({ rows: [log1], nextCursor: 'cursor-1' })
+      .mockResolvedValue({ rows: [log2], nextCursor: null })
+
+    renderAt()
+    await screen.findByText('example.com')
+    expect(queryMock.mock.calls[0][0].cursor).toBeUndefined()
+
+    // @ts-expect-error — test helper from setup.ts
+    globalThis.__triggerIntersection()
+
+    // Some cursor-carrying call must have fired with our cursor.
+    await waitFor(() =>
+      expect(
+        queryMock.mock.calls.some(c => c[0]?.cursor === 'cursor-1'),
+      ).toBe(true),
+    )
+    expect((await screen.findAllByText('older-page.com')).length).toBeGreaterThan(0)
+    expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
+  })
+
+  // Jump-to-date picker deferred to #951; test removed alongside the UI.
 })

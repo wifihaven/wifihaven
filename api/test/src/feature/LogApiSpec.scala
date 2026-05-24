@@ -93,7 +93,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/logs", token)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(logs.length == 3) &&
         assertTrue(logs.exists(_.host.value == "youtube.com")) &&
@@ -134,7 +135,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/logs?blocked=true", token)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "blocked.com") &&
         assertTrue(logs.head.blocked)
@@ -177,7 +179,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/logs?location=home", token)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "home-site.com")
     },
@@ -214,7 +217,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01", token)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.mac.contains(MacAddress.unsafe("aa:bb:cc:dd:ee:01")))
     },
@@ -324,7 +328,11 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         assertTrue(stats.topBlocked.head.count == 3) &&
         assertTrue(stats.topBlocked.exists(d => d.host.value == "rare.com" && d.count == 1))
     },
-    test("GET /api/logs pagination respects limit and offset") {
+    test("GET /api/logs cursor pagination: pages cover the dataset without dups or gaps (#862)") {
+      // Synthetic dataset of N rows; walk pages of K and assert the union
+      // equals the dataset and pages don't overlap.
+      val N        = 13
+      val PageSize = 4
       for {
         _        <- cleanDb
         routerId <- seedRouter()
@@ -333,7 +341,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
         _        <- connRepo.insertBatch(
-          (1 to 5).toList.map(i =>
+          (1 to N).toList.map(i =>
             ConnectionEventInsert(
               routerId,
               None,
@@ -346,19 +354,154 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
           ),
         )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
-        page1 <- getJson(routes, "/api/logs?limit=2&offset=0", token)
+        pager  = (cursor: Option[String]) => {
+          val q =
+            cursor.fold(s"/api/logs?limit=$PageSize")(c => s"/api/logs?limit=$PageSize&cursor=$c")
+          getJson(routes, q, token)
+            .flatMap(_.body.asString)
+            .flatMap(b => ZIO.fromEither(b.fromJson[QueryLogPage]))
+        }
+        // Walk pages until nextCursor is None. Bounded loop (no infinite test).
+        firstPage <- pager(None)
+        secondPage <- firstPage.nextCursor match {
+          case Some(c) => pager(Some(c))
+          case None    => ZIO.succeed(QueryLogPage(Nil, None))
+        }
+        thirdPage  <- secondPage.nextCursor match {
+          case Some(c) => pager(Some(c))
+          case None    => ZIO.succeed(QueryLogPage(Nil, None))
+        }
+        fourthPage <- thirdPage.nextCursor match {
+          case Some(c) => pager(Some(c))
+          case None    => ZIO.succeed(QueryLogPage(Nil, None))
+        }
+        all = firstPage.rows ++ secondPage.rows ++ thirdPage.rows ++ fourthPage.rows
+        ids = all.map(_.id.value)
+      } yield assertTrue(firstPage.rows.length == PageSize) &&
+        assertTrue(secondPage.rows.length == PageSize) &&
+        assertTrue(thirdPage.rows.length == PageSize) &&
+        // The remainder (N % PageSize = 1) lives in the fourth page.
+        assertTrue(fourthPage.rows.length == 1) &&
+        // No nextCursor on the final partial page.
+        assertTrue(fourthPage.nextCursor.isEmpty) &&
+        assertTrue(all.length == N) &&
+        // No duplicates across pages.
+        assertTrue(ids.distinct.length == N)
+    },
+    test("GET /api/logs?cursor=garbage returns 400 (#862)") {
+      for {
+        _        <- cleanDb
+        _        <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/logs?cursor=not-base64-json", token)
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("GET /api/logs cursor + filter composes (#862)") {
+      // Page through a filtered query — pages must respect the filter AND not
+      // drop rows on cursor handoff.
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          (1 to 6).toList.map(i =>
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe(s"site$i.com")),
+              None,
+              i % 2 == 0, // half blocked
+              if (i % 2 == 0) "allowed" else "blocked",
+              Instant.now().minusSeconds(i.toLong * 10),
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        p1       <- getJson(routes, "/api/logs?limit=2&blocked=true", token)
           .flatMap(_.body.asString)
-          .flatMap(b => ZIO.fromEither(b.fromJson[List[QueryLog]]))
-        page2 <- getJson(routes, "/api/logs?limit=2&offset=2", token)
+          .flatMap(b => ZIO.fromEither(b.fromJson[QueryLogPage]))
+        p2       <- p1.nextCursor match {
+          case Some(c) =>
+            getJson(routes, s"/api/logs?limit=2&blocked=true&cursor=$c", token)
+              .flatMap(_.body.asString)
+              .flatMap(b => ZIO.fromEither(b.fromJson[QueryLogPage]))
+          case None    => ZIO.succeed(QueryLogPage(Nil, None))
+        }
+      } yield assertTrue(p1.rows.length == 2) &&
+        assertTrue(p1.rows.forall(_.blocked)) &&
+        assertTrue(p2.rows.length == 1) &&
+        assertTrue(p2.rows.forall(_.blocked)) &&
+        assertTrue((p1.rows ++ p2.rows).map(_.id.value).distinct.length == 3)
+    },
+    test("GET /api/logs?until= anchors window right edge (subsumes #863)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        now       = Instant.now()
+        oldTs     = now.minusSeconds(7200)  // 2h ago
+        veryOldTs = now.minusSeconds(86400) // 1d ago
+        _ <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("a.com")),
+              None,
+              true,
+              "",
+              now.minusSeconds(60),
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("b.com")),
+              None,
+              true,
+              "",
+              oldTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe("c.com")),
+              None,
+              true,
+              "",
+              veryOldTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        // Anchor at 3h ago with 6h lookback — should see only `c.com` (and
+        // exclude `a.com` and `b.com` which are inside the past 3h).
+        anchor = now.minusSeconds(3 * 3600)
+        resp <- getJson(routes, s"/api/logs?until=$anchor&hours=24", token)
           .flatMap(_.body.asString)
-          .flatMap(b => ZIO.fromEither(b.fromJson[List[QueryLog]]))
-        page3 <- getJson(routes, "/api/logs?limit=2&offset=4", token)
-          .flatMap(_.body.asString)
-          .flatMap(b => ZIO.fromEither(b.fromJson[List[QueryLog]]))
-      } yield assertTrue(page1.length == 2) &&
-        assertTrue(page2.length == 2) &&
-        assertTrue(page3.length == 1) &&
-        assertTrue(page1.map(_.host.value) != page2.map(_.host.value))
+          .flatMap(b => ZIO.fromEither(b.fromJson[QueryLogPage]))
+      } yield assertTrue(resp.rows.map(_.host.value) == List("c.com"))
+    },
+    test("GET /api/logs?limit=999 rejects oversize page (#862)") {
+      for {
+        _        <- cleanDb
+        _        <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/logs?limit=9999", token)
+      } yield assertTrue(resp.status == Status.BadRequest)
     },
     test("GET /api/logs?deviceId= filters to events whose mac belongs to that device (#342)") {
       for {
@@ -408,7 +551,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, s"/api/logs?deviceId=${ipadId.value}", token)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "ipad-site.com")
     },
@@ -461,7 +605,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(logs.length == 1) &&
         assertTrue(logs.head.host.value == "kids-site.com")
     },
@@ -529,21 +674,24 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         // Two profiles selected — should include only kids + adults rows.
-        respMulti <- getJson(
+        respMulti     <- getJson(
           routes,
           s"/api/logs?profileId=${kidsPid.value},${adultsPid.value}",
           token,
         )
-        bodyMulti <- respMulti.body.asString
-        logsMulti <- ZIO.fromEither(bodyMulti.fromJson[List[QueryLog]])
+        bodyMulti     <- respMulti.body.asString
+        pageLogsmulti <- ZIO.fromEither(bodyMulti.fromJson[QueryLogPage])
+        logsMulti = pageLogsmulti.rows
         // Empty list (absent param) returns everything — empty != "match nothing".
-        respAll   <- getJson(routes, "/api/logs", token)
-        bodyAll   <- respAll.body.asString
-        logsAll   <- ZIO.fromEither(bodyAll.fromJson[List[QueryLog]])
+        respAll     <- getJson(routes, "/api/logs", token)
+        bodyAll     <- respAll.body.asString
+        pageLogsall <- ZIO.fromEither(bodyAll.fromJson[QueryLogPage])
+        logsAll = pageLogsall.rows
         // Single-value param still works — backwards compatibility.
-        respOne   <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
-        bodyOne   <- respOne.body.asString
-        logsOne   <- ZIO.fromEither(bodyOne.fromJson[List[QueryLog]])
+        respOne     <- getJson(routes, s"/api/logs?profileId=${kidsPid.value}", token)
+        bodyOne     <- respOne.body.asString
+        pageLogsone <- ZIO.fromEither(bodyOne.fromJson[QueryLogPage])
+        logsOne = pageLogsone.rows
       } yield assertTrue(
         logsMulti.map(_.host.value).sorted == List("adults-site.com", "kids-site.com"),
       ) &&
@@ -594,9 +742,10 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
           ),
         )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02", token)
-        body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        resp     <- getJson(routes, "/api/logs?mac=aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02", token)
+        body     <- resp.body.asString
+        pageLogs <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = pageLogs.rows
       } yield assertTrue(logs.map(_.host.value).sorted == List("a.example.com", "b.example.com"))
     },
     test("GET /api/connection-events/series buckets domain counts (1h, groupBy=domain)") {
@@ -650,16 +799,18 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=domain", token)
         body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
-        yt = rows.find(_.groups.getOrElse("domain", "") == "youtube.com").get
-        fb = rows.find(_.groups.getOrElse("domain", "") == "facebook.com").get
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
+        yt   = rows.find(_.groups.getOrElse("domain", "") == "youtube.com").get
+        fb   = rows.find(_.groups.getOrElse("domain", "") == "facebook.com").get
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(yt.countSucceeded == 2) &&
         assertTrue(yt.countBlocked == 1) &&
         assertTrue(fb.countSucceeded == 1) &&
         assertTrue(fb.countBlocked == 0) &&
-        // youtube has 3 events vs facebook 1 — total-count desc ordering
-        assertTrue(rows.head.groups.getOrElse("domain", "") == "youtube.com")
+        // #862: ordering is (window_start DESC, group_key ASC). Within a single
+        // window, alphabetical group key wins — facebook < youtube.
+        assertTrue(rows.head.groups.getOrElse("domain", "") == "facebook.com")
     },
     // #917: strictly additive aggregation. Empty groupBy = one row per window.
     test("#917: GET /api/connection-events/series with no groupBy returns one row per window") {
@@ -702,9 +853,10 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
           ),
         )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(routes, "/api/connection-events/series?bucket=1h", token)
-        body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        resp     <- getJson(routes, "/api/connection-events/series?bucket=1h", token)
+        body     <- resp.body.asString
+        pageRows <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = pageRows.rows
       } yield assertTrue(resp.status == Status.Ok) &&
         // 3 events all in the same 1h window → one fully-aggregated row.
         assertTrue(rows.length == 1) &&
@@ -754,13 +906,14 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
           ),
         )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
-        resp <- getJson(
+        resp     <- getJson(
           routes,
           "/api/connection-events/series?bucket=1h&groupBy=device&groupBy=domain",
           token,
         )
-        body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        body     <- resp.body.asString
+        pageRows <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = pageRows.rows
       } yield assertTrue(resp.status == Status.Ok) &&
         // Three distinct (device,domain) tuples in the single window.
         assertTrue(rows.length == 3) &&
@@ -816,7 +969,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
           token,
         )
         body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
       } yield assertTrue(rows.length == 1) &&
         assertTrue(rows.head.groups.getOrElse("domain", "") == "bad.com") &&
         assertTrue(rows.head.countBlocked == 1)
@@ -892,9 +1046,10 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
         body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
-        yt = rows.find(_.groups.getOrElse("app", "") == "youtube").get
-        ot = rows.find(_.groups.getOrElse("app", "") == "__other__").get
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
+        yt   = rows.find(_.groups.getOrElse("app", "") == "youtube").get
+        ot   = rows.find(_.groups.getOrElse("app", "") == "__other__").get
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.length == 2) &&
         assertTrue(yt.countSucceeded == 2) &&
@@ -937,7 +1092,8 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
         body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows  = page.rows
         slugs = rows.map(_.groups.getOrElse("app", ""))
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(slugs.toSet == Set("youtube", "music")) &&
@@ -1000,9 +1156,61 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/connection-events/series?bucket=10m&groupBy=domain", token)
         body <- resp.body.asString
-        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
       } yield assertTrue(rows.length == 2) &&
         assertTrue(rows.forall(_.groups.getOrElse("domain", "") == "a.com"))
+    },
+    test("GET /api/connection-events/series cursor pagination covers all rows (#862)") {
+      // 5 distinct domains in the same hour → 5 agg rows, paged 2 at a time.
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        now = Instant.now()
+        _ <- connRepo.insertBatch(
+          List("alpha", "bravo", "charlie", "delta", "echo").map(d =>
+            ConnectionEventInsert(
+              routerId,
+              None,
+              HostId.Fqdn(Hostname.unsafe(s"$d.example")),
+              None,
+              true,
+              "allowed",
+              now.minusSeconds(60),
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        pager  = (cursor: Option[String]) => {
+          val q =
+            cursor.fold(s"/api/connection-events/series?bucket=1h&groupBy=domain&limit=2")(c =>
+              s"/api/connection-events/series?bucket=1h&groupBy=domain&limit=2&cursor=$c",
+            )
+          getJson(routes, q, token)
+            .flatMap(_.body.asString)
+            .flatMap(b => ZIO.fromEither(b.fromJson[ConnectionEventSeriesPage]))
+        }
+        p1 <- pager(None)
+        p2 <- p1.nextCursor match {
+          case Some(c) => pager(Some(c))
+          case None    => ZIO.succeed(ConnectionEventSeriesPage(Nil, None))
+        }
+        p3 <- p2.nextCursor match {
+          case Some(c) => pager(Some(c))
+          case None    => ZIO.succeed(ConnectionEventSeriesPage(Nil, None))
+        }
+        all = p1.rows ++ p2.rows ++ p3.rows
+        domains = all.flatMap(_.groups.get("domain"))
+      } yield assertTrue(p1.rows.length == 2) &&
+        assertTrue(p2.rows.length == 2) &&
+        assertTrue(p3.rows.length == 1) &&
+        assertTrue(p3.nextCursor.isEmpty) &&
+        assertTrue(domains.distinct.length == 5) &&
+        assertTrue(domains == domains.sorted) // group_key ASC ordering
     },
   ) @@ TestAspect.sequential
 }
