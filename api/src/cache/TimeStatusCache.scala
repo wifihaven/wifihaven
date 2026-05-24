@@ -189,11 +189,11 @@ object TimeStatusCache {
 
     def invalidateProfile(profileId: ProfileId): UIO[Unit] = ZIO.succeed {
       def matches(k: Key): Boolean = k match {
-        case DailyKey(pid, _)         => pid == profileId
-        case WeeklyKey(pid, _, _, _)  => pid == profileId
+        case DailyKey(pid, _)        => pid == profileId
+        case WeeklyKey(pid, _, _, _) => pid == profileId
       }
-      val _ = todayCache.asMap().keySet().removeIf(matches(_))
-      val _ = pastCache.asMap().keySet().removeIf(matches(_))
+      val _                        = todayCache.asMap().keySet().removeIf(matches(_))
+      val _                        = pastCache.asMap().keySet().removeIf(matches(_))
     }
 
     def snapshot: UIO[StatsSnapshot] = ZIO.succeed {
