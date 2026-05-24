@@ -1,5 +1,6 @@
 package wifihaven.api.routes
 
+import wifihaven.api.AppTemplate
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.shared.*
@@ -69,6 +70,7 @@ object AppRoutes {
       appRepo: AppRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      templates: Map[AppTemplateId, AppTemplate] = Map.empty,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "apps"                                                ->
@@ -213,6 +215,33 @@ object AppRoutes {
               )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
+        },
+      Method.POST / "api" / "apps" / long("id") / "reset-to-template"            ->
+        handler { (id: Long, req: Request) =>
+          val aid = AppId(id)
+          for {
+            _    <- requireAdmin(req, auth)
+            app  <- appRepo
+              .findById(aid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("App not found")))
+            tid  <- ZIO
+              .fromOption(app.templateId)
+              .orElseFail(
+                Response
+                  .json("""{"error":"not_template_derived"}""")
+                  .status(Status.BadRequest),
+              )
+            tmpl <- ZIO
+              .fromOption(templates.get(tid))
+              .orElseFail(
+                Response
+                  .json(s"""{"error":"unknown_template","templateId":"${tid.value}"}""")
+                  .status(Status.NotFound),
+              )
+            _    <- appRepo.setHosts(aid, tmpl.hosts).mapError(ErrorMapper.dbErrorToResponse)
+            d    <- detail(appRepo, app).mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.json(d.toJson)
         },
       Method.DELETE / "api" / "apps" / long("id") / "policy" / long("profileId") ->
         handler { (id: Long, profileIdRaw: Long, req: Request) =>

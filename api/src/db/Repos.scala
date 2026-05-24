@@ -1633,6 +1633,7 @@ trait AppRepo {
   def listAll: Task[List[App]]
   def findById(id: AppId): Task[Option[App]]
   def findBySlug(slug: String): Task[Option[App]]
+  def findByTemplateId(templateId: AppTemplateId): Task[Option[App]]
   def create(
       name: String,
       slug: String,
@@ -1682,6 +1683,13 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
 
   def findBySlug(slug: String) =
     sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE slug=$slug"
+      .query[R]
+      .map(toApp)
+      .option
+      .transact(xa)
+
+  def findByTemplateId(templateId: AppTemplateId) =
+    sql"SELECT id,name,slug,template_id,icon,created_at FROM apps WHERE template_id=$templateId"
       .query[R]
       .map(toApp)
       .option

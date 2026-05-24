@@ -1,0 +1,29 @@
+# app_templates — starter library for the apps feature (#768).
+#
+# Each YAML file in this directory defines one app template. Templates are
+# seeded into the `apps` table at API startup (find-or-create by template_id).
+# Operator host edits win — if an `app_hosts` row already exists for the seeded
+# app, the seeder leaves the host list ALONE. The SPA's "reset to template"
+# action restores the host list via POST /api/apps/:id/reset-to-template.
+#
+# Schema (required fields are marked):
+#
+#   slug:  required, kebab-case [a-z0-9][a-z0-9-]{0,63}. Used as the app's
+#          `template_id` and as the initial `slug` of the seeded apps row.
+#          Must be unique across the directory; the file name (without `.yml`)
+#          must match the slug for clarity.
+#   name:  required, human-readable display name (e.g. "YouTube").
+#   icon:  optional. Either an emoji or a path to an SVG/PNG served by the SPA.
+#   hosts: required, list of apex hostnames (e.g. "youtube.com"). Don't include
+#          wildcards — the router matches subdomains inherently. Be conservative:
+#          prefer the few FQDNs each service truly needs; we iterate over time.
+#
+# File names beginning with `_` are reserved for documentation (this file) and
+# are ignored by the loader.
+
+slug: example
+name: Example App
+icon: "🧩"
+hosts:
+  - example.com
+  - cdn.example.com

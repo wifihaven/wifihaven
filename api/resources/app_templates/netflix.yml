@@ -1,0 +1,9 @@
+slug: netflix
+name: Netflix
+icon: "🎬"
+hosts:
+  - netflix.com
+  - nflxvideo.net
+  - nflximg.net
+  - nflxso.net
+  - nflxext.com

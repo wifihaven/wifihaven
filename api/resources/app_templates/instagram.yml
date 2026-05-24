@@ -1,0 +1,7 @@
+slug: instagram
+name: Instagram
+icon: "📷"
+hosts:
+  - instagram.com
+  - cdninstagram.com
+  - fbcdn.net

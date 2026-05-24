@@ -18,6 +18,7 @@ val logbackVersion     = "1.5.8"
 val embeddedPgVersion  = "2.1.0"
 val flywayPgVersion    = "10.17.3"
 val caffeineVersion    = "3.1.8"
+val snakeYamlVersion   = "2.3"
 
 trait CommonModule extends ScalaModule {
   def scalaVersion = scala3Version
@@ -81,6 +82,7 @@ object api extends CommonModule {
     mvn"ch.qos.logback:logback-classic:$logbackVersion",
     mvn"dev.zio::zio-interop-cats:23.1.0.3",
     mvn"com.github.ben-manes.caffeine:caffeine:$caffeineVersion",
+    mvn"org.yaml:snakeyaml:$snakeYamlVersion",
   )
   // Concatenate ServiceLoader registrations across all jars. Without this,
   // flyway-database-postgresql's plugin entries get dropped during assembly

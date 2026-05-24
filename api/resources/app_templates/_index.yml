@@ -1,0 +1,16 @@
+# Manifest listing every template file in this directory. The loader uses this
+# index so it doesn't have to scan the classpath (which is awkward when the
+# resources live inside a fat jar). Keep the list in sync when adding or
+# removing templates — the loader validates that each listed slug has a
+# corresponding `<slug>.yml` file.
+slugs:
+  - youtube
+  - tiktok
+  - roblox
+  - discord
+  - minecraft
+  - netflix
+  - instagram
+  - snapchat
+  - whatsapp
+  - twitch
