@@ -1,0 +1,35 @@
+# Social media platforms. Apex domains of the major consumer social
+# networks; each entry blocks the host plus its subdomains at the router.
+# Source: curated. Operators enable per-profile from the SPA blocklist
+# management page.
+id: social-media
+name: Social Media
+description: Major social networks (Facebook, Instagram, X, TikTok, Snapchat, Reddit, etc.). Some entries overlap with the bundled Instagram/TikTok/etc. apps; enabling both is fine — duplicates are deduped at the router.
+source: curated
+hosts:
+  - facebook.com
+  - fbcdn.net
+  - instagram.com
+  - cdninstagram.com
+  - twitter.com
+  - x.com
+  - t.co
+  - tiktok.com
+  - tiktokcdn.com
+  - bytecdn.net
+  - snapchat.com
+  - sc-cdn.net
+  - reddit.com
+  - redd.it
+  - redditstatic.com
+  - pinterest.com
+  - pinimg.com
+  - tumblr.com
+  - linkedin.com
+  - licdn.com
+  - threads.net
+  - bsky.app
+  - mastodon.social
+  - discord.com
+  - discord.gg
+  - discordapp.com

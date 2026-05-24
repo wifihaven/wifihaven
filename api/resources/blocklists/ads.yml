@@ -1,0 +1,46 @@
+# Ads & trackers. Apex hosts that primarily serve ad/tracking infra.
+# Source: hand-curated subset of common ad-tech apexes seen across the
+# StevenBlack/hosts (MIT) and EasyList (CC-BY-SA) families. Conservative
+# starter set — iterate via follow-up PRs as we observe real-world false
+# positives / gaps from operator feedback.
+id: ads
+name: Ads & Trackers
+description: Common ad networks and tracking infrastructure. Blocks the host at the apex; subdomains match automatically at the router.
+source: curated (subset of StevenBlack/hosts + EasyList apex domains)
+hosts:
+  - doubleclick.net
+  - googleadservices.com
+  - googlesyndication.com
+  - googletagmanager.com
+  - googletagservices.com
+  - google-analytics.com
+  - adservice.google.com
+  - adnxs.com
+  - adsrvr.org
+  - criteo.com
+  - criteo.net
+  - taboola.com
+  - outbrain.com
+  - scorecardresearch.com
+  - quantserve.com
+  - moatads.com
+  - rubiconproject.com
+  - pubmatic.com
+  - openx.net
+  - 2mdn.net
+  - serving-sys.com
+  - adroll.com
+  - bidswitch.net
+  - casalemedia.com
+  - mathtag.com
+  - mediavoice.com
+  - rfihub.com
+  - smartadserver.com
+  - yieldmo.com
+  - amazon-adsystem.com
+  - branch.io
+  - mixpanel.com
+  - hotjar.com
+  - fullstory.com
+  - mouseflow.com
+  - chartbeat.com

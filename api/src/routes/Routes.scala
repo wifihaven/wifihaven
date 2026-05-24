@@ -1269,18 +1269,38 @@ object LogRoutes {
 object BlocklistRoutes {
   def routes(auth: AuthService, blRepo: BlocklistRepo): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "blocklists"                                 ->
+      // #958: list every category with display metadata + host count for
+      // the SPA management page. Returns BlocklistSummary[] in declared
+      // order (by id).
+      Method.GET / "api" / "blocklists"                                  ->
         handler { (req: Request) =>
           requireAdmin(req, auth) *>
-            blRepo.countByCategory
-              .map(cs =>
-                Response.json(
-                  cs.map((c, n) => s"""{"category":"$c","count":$n}""").mkString("[", ",", "]"),
-                ),
-              )
+            blRepo.summaries
+              .map(rs => Response.json(rs.toJson))
               .mapError(ErrorMapper.dbErrorToResponse)
         },
-      Method.POST / "api" / "blocklists" / string("category") / "clear" ->
+      // #958: paginated host list for the "View hosts" disclosure on the
+      // SPA page. Returns a JSON object `{ id, hosts: [...] }`. Admin-
+      // only; routers use the unrelated GET /api/blocklists/<id> route
+      // (RouterRoutes) which returns the plain-text list with ETag.
+      Method.GET / "api" / "blocklists" / string("id") / "hosts"         ->
+        handler { (id: String, req: Request) =>
+          requireAdmin(req, auth) *>
+            ZIO
+              .fromEither(BlocklistId.parse(id))
+              .mapError(e => Response.badRequest(e))
+              .flatMap(bid =>
+                blRepo
+                  .loadCategory(bid)
+                  .map(hs =>
+                    Response.json(
+                      s"""{"id":${bid.value.toJson},"hosts":${hs.toList.sorted.map(_.value).toJson}}""",
+                    ),
+                  )
+                  .mapError(ErrorMapper.dbErrorToResponse),
+              )
+        },
+      Method.POST / "api" / "blocklists" / string("category") / "clear"  ->
         handler { (cat: String, req: Request) =>
           requireAdmin(req, auth) *>
             blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ErrorMapper.dbErrorToResponse) *>

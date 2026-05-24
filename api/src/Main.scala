@@ -44,6 +44,21 @@ object Main extends ZIOAppDefault {
       templates      <- AppTemplates.loadAll()
       _              <- AppTemplates.seed(appRepoForSeed, templates)
       _              <- ZIO.logInfo(s"app_templates seeded (${templates.size} templates)")
+      // #958: seed the bundled category blocklists (ads, social-media,
+      // gambling, adult). REPLACE semantics — YAML is the source of truth.
+      blRepoForSeed  <- ZIO.service[BlocklistRepo]
+      bundled        <- BundledBlocklists.loadAll()
+      _              <- BundledBlocklists.seed(blRepoForSeed, bundled)
+      _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      _              <- ZIO
+        .logWarning(
+          "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
+            "Disable in production.",
+        )
+        .when(cfg.seedTestBlocklists)
+      _              <- BundledBlocklists
+        .seed(blRepoForSeed, BundledBlocklists.devTestBlocklists)
+        .when(cfg.seedTestBlocklists)
       templatesById = templates.map(t => t.slug -> t).toMap
       routes <- allRoutes(templatesById)
       withCors = Cors.wrap(routes, cfg.cors)

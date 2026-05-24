@@ -184,6 +184,21 @@ trait BlocklistRepo {
   def countByCategory: Task[List[(BlocklistId, Int)]]
   def loadCategory(cat: BlocklistId): Task[Set[Hostname]]
   def loadAll: Task[Map[BlocklistId, Set[Hostname]]]
+
+  // #958: metadata-table operations backing the SPA management page and
+  // the bundled-list startup seeder. `summaries` joins blocklists with
+  // a count from blocklist_domains so the SPA renders host counts
+  // without N round-trips.
+  def upsertMeta(
+      id: BlocklistId,
+      name: String,
+      description: Option[String],
+      bundled: Boolean,
+      source: Option[String],
+      lastBuiltAt: java.time.Instant,
+  ): Task[Unit]
+  def summaries: Task[List[wifihaven.shared.BlocklistSummary]]
+  def findMeta(id: BlocklistId): Task[Option[wifihaven.shared.BlocklistSummary]]
 }
 
 trait TimeUsageRepo {
@@ -781,6 +796,54 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
     .to[List]
     .transact(xa)
     .map(_.groupBy(_._1).map((k, vs) => k -> vs.map(_._2).toSet))
+
+  def upsertMeta(
+      id: BlocklistId,
+      name: String,
+      description: Option[String],
+      bundled: Boolean,
+      source: Option[String],
+      lastBuiltAt: java.time.Instant,
+  ) =
+    sql"""INSERT INTO blocklists (id, display_name, description, bundled, source_url, last_built_at)
+          VALUES (${id.value}, $name, $description, $bundled, $source, $lastBuiltAt)
+          ON CONFLICT (id) DO UPDATE SET
+            display_name  = EXCLUDED.display_name,
+            description   = EXCLUDED.description,
+            bundled       = EXCLUDED.bundled,
+            source_url    = EXCLUDED.source_url,
+            last_built_at = EXCLUDED.last_built_at""".update.run
+      .transact(xa)
+      .unit
+
+  def summaries =
+    sql"""SELECT b.id, b.display_name, b.description, b.bundled, b.source_url,
+                 COALESCE(c.n, 0)::INT AS host_count, b.last_built_at
+          FROM blocklists b
+          LEFT JOIN (
+            SELECT category, COUNT(*) AS n
+            FROM blocklist_domains
+            GROUP BY category
+          ) c ON c.category = b.id
+          ORDER BY b.id"""
+      .query[wifihaven.shared.BlocklistSummary]
+      .to[List]
+      .transact(xa)
+
+  def findMeta(id: BlocklistId) =
+    sql"""SELECT b.id, b.display_name, b.description, b.bundled, b.source_url,
+                 COALESCE(c.n, 0)::INT AS host_count, b.last_built_at
+          FROM blocklists b
+          LEFT JOIN (
+            SELECT category, COUNT(*) AS n
+            FROM blocklist_domains
+            WHERE category = ${id.value}
+            GROUP BY category
+          ) c ON c.category = b.id
+          WHERE b.id = ${id.value}"""
+      .query[wifihaven.shared.BlocklistSummary]
+      .option
+      .transact(xa)
 }
 
 class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {

@@ -988,6 +988,22 @@ case class RouterDecisionResponse(
 
 case class Blocklist(version: BlocklistVersion, url: BlocklistUrl) derives JsonCodec
 
+// #958: SPA-facing metadata row for the blocklist management page.
+// `bundled` distinguishes API-shipped lists (host content overwritten on
+// each API startup) from operator/test-created categories whose hosts
+// only ever change via the API. `hostCount` is denormalized from
+// blocklist_domains; `lastBuiltAt` reflects the last startup seed of a
+// bundled list, NULL for non-bundled categories.
+case class BlocklistSummary(
+    id: BlocklistId,
+    name: String,
+    description: Option[String],
+    bundled: Boolean,
+    source: Option[String],
+    hostCount: Int,
+    lastBuiltAt: Option[java.time.Instant],
+) derives JsonCodec
+
 case class BlockRules(
     blocked: Boolean,
     blockReason: Option[MacBlockReason],

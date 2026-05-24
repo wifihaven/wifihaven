@@ -1,0 +1,36 @@
+# blocklists — bundled category lists for the apps/blocklist feature (#958).
+#
+# Each YAML file in this directory defines one bundled blocklist. Bundled
+# lists are shipped with the API release and seeded into the `blocklists`
+# + `blocklist_domains` tables on startup (find-or-replace by id).
+#
+# Unlike app templates, the host list for a bundled blocklist is API-
+# managed: each startup the seeder REPLACES the row's `blocklist_domains`
+# entries with the YAML's `hosts:` field. Operator-curated categories
+# (those not listed in `_index.yml`) are untouched.
+#
+# Schema (required fields are marked):
+#
+#   id:          required, [a-z0-9][a-z0-9_-]{0,63}. Used as the
+#                BlocklistId in the wire snapshot and as the table primary
+#                key. Must be unique across the directory; the file name
+#                (without `.yml`) must match the id.
+#   name:        required, human-readable display name (e.g. "Ads & Trackers").
+#                Shown in the SPA management page.
+#   description: required, short sentence explaining what this list blocks.
+#   source:      required, free-form attribution string. Cite the upstream
+#                list (URL + license) or "curated" if hand-rolled. Recorded
+#                in `blocklists.source_url`.
+#   hosts:       required, list of apex hostnames (e.g. "doubleclick.net").
+#                Don't include wildcards — the router matches subdomains
+#                inherently. Be conservative; iterate via follow-up PRs.
+#
+# File names beginning with `_` are reserved for documentation (this file)
+# and the manifest (`_index.yml`) and are ignored by the loader.
+
+id: example
+name: Example Blocklist
+description: Sample showing the schema; not loaded.
+source: curated
+hosts:
+  - example.com
