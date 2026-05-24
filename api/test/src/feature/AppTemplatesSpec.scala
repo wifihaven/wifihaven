@@ -84,7 +84,7 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         }
       } yield assertTrue(manifestSlugs == dirSlugs)
     },
-    test("manifest + all 10 starter templates parse and have unique slugs") {
+    test("manifest + all starter templates parse and have unique slugs") {
       for {
         templates <- AppTemplates.loadAll()
       } yield {
@@ -99,6 +99,10 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "snapchat",
           "whatsapp",
           "twitch",
+          "gimkit",
+          "khan-academy",
+          "math-academy",
+          "lexia",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&

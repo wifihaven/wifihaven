@@ -1,0 +1,7 @@
+slug: khan-academy
+name: Khan Academy
+icon: "📚"
+hosts:
+  - khanacademy.org
+  - kastatic.org
+  - kasandbox.org
