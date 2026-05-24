@@ -26,6 +26,18 @@ export function useInfiniteScroll(opts: {
       { rootMargin: opts.rootMargin ?? '400px' },
     )
     io.observe(el)
-    return () => io.disconnect()
+    // Fallback for environments where IntersectionObserver is throttled
+    // (background tabs, some embedded contexts): also listen to scroll and
+    // trigger when we're within rootMargin of the bottom.
+    const onScroll = () => {
+      const rect = el.getBoundingClientRect()
+      const margin = parseInt(opts.rootMargin ?? '400px', 10) || 400
+      if (rect.top - margin <= window.innerHeight) cbRef.current()
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      io.disconnect()
+      window.removeEventListener('scroll', onScroll)
+    }
   }, [opts.sentinelRef, opts.hasMore, opts.loading, opts.rootMargin])
 }

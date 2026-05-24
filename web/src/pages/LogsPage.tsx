@@ -293,6 +293,18 @@ function RawEventsView({
     </div>
     <div ref={sentinelRef} data-testid="scroll-sentinel" className="h-1" />
     {loading && <Spinner />}
+    {!loading && hasMore && cursor && (
+      <div className="flex justify-center py-3">
+        <button
+          type="button"
+          data-testid="load-more"
+          onClick={() => void load(cursor)}
+          className="text-xs text-gray-300 hover:text-emerald-300 px-3 py-1.5 border border-gray-700 hover:border-emerald-700 rounded"
+        >
+          Load more
+        </button>
+      </div>
+    )}
     {!hasMore && !loading && logs.length > 0 && (
       <div className="text-xs text-gray-500 text-center py-3" data-testid="end-of-stream">
         — end of history —
@@ -535,6 +547,18 @@ function AggregatedEventsView({
     </div>
     <div ref={sentinelRef} data-testid="scroll-sentinel" className="h-1" />
     {loading && <Spinner />}
+    {!loading && hasMore && cursor && (
+      <div className="flex justify-center py-3">
+        <button
+          type="button"
+          data-testid="load-more"
+          onClick={() => void load(cursor)}
+          className="text-xs text-gray-300 hover:text-emerald-300 px-3 py-1.5 border border-gray-700 hover:border-emerald-700 rounded"
+        >
+          Load more
+        </button>
+      </div>
+    )}
     {!hasMore && !loading && rows.length > 0 && (
       <div className="text-xs text-gray-500 text-center py-3" data-testid="end-of-stream">
         — end of history —
