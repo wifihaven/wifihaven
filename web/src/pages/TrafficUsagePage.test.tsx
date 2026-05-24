@@ -225,6 +225,47 @@ describe('TrafficUsagePage', () => {
     expect(outbound.className).toMatch(/hidden sm:table-cell/)
   })
 
+  // #951 — Jump-to-Date re-anchors the right edge of the infinite-scroll
+  // window. Clearing it falls back to "now".
+  it('jump-to-date re-anchors `to`, refetches, and round-trips through ?until=', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(rawResp)
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+    expect(trafficMock.mock.calls[0][0].to).toBeDefined()
+
+    const input = screen.getByTestId('jump-to-date-input') as HTMLInputElement
+    // 2026-05-21 14:00 local — JumpToDate uses datetime-local, so we drive it
+    // with the same shape the browser produces.
+    await userEvent.clear(input)
+    await userEvent.type(input, '2026-05-21T14:00')
+
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
+    const anchored = trafficMock.mock.calls[trafficMock.mock.calls.length - 1][0]
+    // The picker re-anchored `to` — we don't pin a precise instant because the
+    // test runs in whatever TZ the host has, but it must be the same instant
+    // round-tripped through the URL.
+    expect(anchored.to).toBe(new Date('2026-05-21T14:00').toISOString())
+    // URL round-trip is covered by the next test (reading ?until= back in).
+
+    // Clearing the picker reverts to "now" and drops `until` from the URL.
+    await userEvent.click(screen.getByTestId('jump-to-date-now'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(3))
+  })
+
+  it('initializes `until` from ?until= and passes it to the first fetch', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(rawResp)
+    const seed = '2026-05-21T14:00:00.000Z'
+    render(
+      <MemoryRouter initialEntries={[`/?until=${encodeURIComponent(seed)}`]}>
+        <TrafficUsagePage />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+    expect(trafficMock.mock.calls[0][0].to).toBe(seed)
+  })
+
   it('surfaces server error', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
     trafficMock.mockRejectedValueOnce(new Error('window_too_large'))

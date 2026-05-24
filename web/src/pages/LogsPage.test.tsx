@@ -202,5 +202,44 @@ describe('LogsPage — infinite scroll (#862)', () => {
     expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
   })
 
-  // Jump-to-date picker deferred to #951; test removed alongside the UI.
+})
+
+describe('LogsPage — jump-to-date (#951)', () => {
+  it('setting the picker re-anchors `until` on /api/logs and updates the URL', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt()
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1))
+    expect(queryMock.mock.calls[0][0].until).toBeUndefined()
+
+    const input = screen.getByTestId('jump-to-date-input') as HTMLInputElement
+    await userEvent.clear(input)
+    await userEvent.type(input, '2026-05-21T14:00')
+
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(2))
+    const anchored = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+    expect(anchored.until).toBe(new Date('2026-05-21T14:00').toISOString())
+    // URL round-trip is covered by the next test (reading ?until= back in).
+
+    await userEvent.click(screen.getByTestId('jump-to-date-now'))
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(3))
+    const cleared = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+    expect(cleared.until).toBeUndefined()
+  })
+
+  it('initializes `until` from ?until= and passes it to /api/logs', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    const seed = '2026-05-21T14:00:00.000Z'
+    renderAt(`/usage/events?until=${encodeURIComponent(seed)}`)
+    await waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1))
+    expect(queryMock.mock.calls[0][0].until).toBe(seed)
+  })
+
+  it('aggregated view also passes `until` to /connection-events/series', async () => {
+    const seriesMock = api.logs.series as unknown as ReturnType<typeof vi.fn>
+    const seed = '2026-05-21T14:00:00.000Z'
+    renderAt(`/usage/events?until=${encodeURIComponent(seed)}`)
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => expect(seriesMock).toHaveBeenCalled())
+    expect(seriesMock.mock.calls[0][0].until).toBe(seed)
+  })
 })

@@ -14,6 +14,7 @@ import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
+import { JumpToDate } from '@/components/usage/JumpToDate'
 import {
   fmtBytes,
   fmtDuration,
@@ -57,6 +58,9 @@ export function TrafficUsagePage() {
   // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
+  // #951: optional anchor for the right edge of the window. null = "now".
+  // Round-trips through ?until=<ISO> in the URL.
+  const [until, setUntilState]          = useState<string | null>(() => searchParams.get('until'))
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   // #862: append-on-scroll model. rawRows + aggRows accumulate across pages;
@@ -79,7 +83,15 @@ export function TrafficUsagePage() {
 
   // Filter key drives the reset effect — when any of these change, the cursor
   // walk restarts from None.
-  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}`
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
+
+  function setUntil(next: string | null) {
+    setUntilState(next)
+    const sp = new URLSearchParams(searchParams)
+    if (next) sp.set('until', next)
+    else sp.delete('until')
+    setSearchParams(sp, { replace: true })
+  }
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -88,7 +100,7 @@ export function TrafficUsagePage() {
       try {
         const limit = bucket === 'raw' ? RAW_PAGE_SIZE : AGG_PAGE_SIZE
         const band  = bucket === 'raw' ? RAW_BAND_MS : AGG_BAND_MS
-        const anchor = new Date().toISOString()
+        const anchor = until ?? new Date().toISOString()
         const from   = new Date(new Date(anchor).getTime() - band).toISOString()
         const resp: TrafficUsageResponse = await api.usage.traffic({
           macs:       macs.length       ? macs       : undefined,
@@ -114,7 +126,7 @@ export function TrafficUsagePage() {
         setLoading(false)
       }
     },
-    [bucket, groupBy, macs, profileIds],
+    [bucket, groupBy, macs, profileIds, until],
   )
 
   useEffect(() => {
@@ -162,9 +174,11 @@ export function TrafficUsagePage() {
         macs={macs}
         profileIds={profileIds}
         bucket={bucket}
+        until={until}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
+        onUntilChange={setUntil}
       />
 
       {error && <ErrorBanner message={error} />}
@@ -232,19 +246,21 @@ interface ShelfProps {
   macs: string[]
   profileIds: number[]
   bucket: TrafficUsageBucket
+  until: string | null
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
   onBucketChange: (b: TrafficUsageBucket) => void
+  onUntilChange: (v: string | null) => void
 }
 
 // #865: shelf carries the bucket selector + a chip summary of any active
 // column-header filters. Device / Profile dropdowns moved into column
 // headers as multi-select popovers.
-// #862: cursor-paged infinite scroll anchors at NOW; a Jump-to-Date picker
-// is deferred to #951.
+// #951: Jump-to-Date sits next to the bucket selector — re-anchors the
+// infinite-scroll cursor at the chosen instant (cleared = "now").
 export function FilterShelf({
-  devices, profiles, macs, profileIds, bucket,
-  onMacsChange, onProfileIdsChange, onBucketChange,
+  devices, profiles, macs, profileIds, bucket, until,
+  onMacsChange, onProfileIdsChange, onBucketChange, onUntilChange,
 }: ShelfProps) {
   const deviceLabel = (m: string) => devices.find(d => d.mac === m)?.name ?? m
   const profileLabel = (pid: number) =>
@@ -252,7 +268,10 @@ export function FilterShelf({
   const hasChips = macs.length > 0 || profileIds.length > 0
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
-      <BucketSelector value={bucket} onChange={onBucketChange} />
+      <div className="flex flex-wrap items-end gap-4">
+        <BucketSelector value={bucket} onChange={onBucketChange} />
+        <JumpToDate value={until} onChange={onUntilChange} />
+      </div>
       {hasChips && (
         <div className="flex flex-wrap items-center gap-2" data-testid="active-filters">
           <span className="text-[11px] uppercase tracking-wide text-gray-500">Filters:</span>
