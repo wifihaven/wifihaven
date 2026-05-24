@@ -32,6 +32,10 @@ private[policy] case class ProfileInputs(
     /** active minutes per site-limit domain, summed across all devices in the profile. */
     minutesByDomain: Map[String, Int],
     extensionsMinutes: Int,
+    // #763: hosts contributed by apps assigned to this profile (allowed / blocked modes).
+    // time_limited apps are folded into `siteLimits` above as one synthesized row per host.
+    appExtraAllowed: List[Hostname] = Nil,
+    appExtraBlocked: List[Hostname] = Nil,
 )
 
 class PolicyServiceLive(
@@ -44,6 +48,7 @@ class PolicyServiceLive(
     blocklistRepo: BlocklistRepo,
     trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
+    appRepo: AppRepo,
     clock: Clock,
 ) extends PolicyService {
 
@@ -60,17 +65,69 @@ class PolicyServiceLive(
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
       exts     <- extRepo.snapshotAllByProfile(today)
       cats     <- blocklistRepo.listCategories
-      catDomains <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
-      schedMap = scheds.toMap
-      tlMap    = tlims.toMap
-      stlMap   = stlims.toMap
+      catDomains  <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
+      // #763: load apps + per-app hosts + per-profile assignments so we can
+      // expand app modes into the per-profile BlockRules buckets below.
+      apps        <- appRepo.listAll
+      appHostsRaw <- ZIO.foreach(apps)(a => appRepo.getHosts(a.id).map(a.id -> _))
+      appAssigns  <- ZIO.foreach(profiles)(p =>
+        appRepo.listAssignmentsForProfile(p.id).map(p.id -> _),
+      )
+      appHostsMap = appHostsRaw.toMap
+      appAssignsMap = appAssigns.toMap
+      appSlugById   = apps.iterator.map(a => a.id -> a.slug).toMap
+      schedMap      = scheds.toMap
+      tlMap         = tlims.toMap
+      stlMap        = stlims.toMap
     } yield {
       val devsByProfile =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
 
       val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
         val pSched     = schedMap.getOrElse(p.id, Nil)
-        val pSiteLims  = stlMap.getOrElse(p.id, Nil)
+        val pSiteLims0 = stlMap.getOrElse(p.id, Nil)
+
+        // #763: expand this profile's app assignments into wire-shape buckets.
+        // - allowed-mode apps → union into extraAllowed (passed via ProfileInputs)
+        // - blocked-mode apps → union into extraBlocked
+        // - time_limited apps → synthesize one SiteTimeLimit row per host. The
+        //   wire's SiteTimeLimit carries a single domainPattern + budget, so
+        //   "one shared budget across N hosts" can't be expressed natively;
+        //   stop-gap is per-host independent budgets (each host gets its own
+        //   N-minute budget). Tracked separately (see PR description for #763).
+        val pAssigns                           = appAssignsMap.getOrElse(p.id, Nil)
+        val appAllowedHosts: List[Hostname]    = pAssigns
+          .collect {
+            case a if a.mode == AppMode.Allowed =>
+              appHostsMap.getOrElse(a.appId, Nil)
+          }
+          .flatten
+          .distinct
+        val appBlockedHosts: List[Hostname]    = pAssigns
+          .collect {
+            case a if a.mode == AppMode.Blocked =>
+              appHostsMap.getOrElse(a.appId, Nil)
+          }
+          .flatten
+          .distinct
+        val appSiteLimits: List[SiteTimeLimit] = pAssigns.collect {
+          case a if a.mode == AppMode.TimeLimited =>
+            val mins   = a.dailyMinutes.getOrElse(0)
+            val exempt = a.exemptFromDaily
+            val slug   = appSlugById.getOrElse(a.appId, a.appId.value.toString)
+            appHostsMap.getOrElse(a.appId, Nil).map { h =>
+              SiteTimeLimit(
+                id = SiteTimeLimitId(0L),
+                profileId = p.id,
+                domainPattern = h.value,
+                dailyMinutes = mins,
+                label = s"app:$slug",
+                exemptFromDaily = exempt,
+              )
+            }
+        }.flatten
+
+        val pSiteLims  = pSiteLims0 ++ appSiteLimits
         val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
         val deviceMacs = devicesIn.map(_.mac).toSet
         val pPresence  = presence.filter(r => deviceMacs.contains(r.mac))
@@ -101,6 +158,8 @@ class PolicyServiceLive(
           totalMinutesUsed = totalMins,
           minutesByDomain = byDomain,
           extensionsMinutes = extMins,
+          appExtraAllowed = appAllowedHosts,
+          appExtraBlocked = appBlockedHosts,
         )
         val rules  = PolicyService.computeBlockRules(inputs, now)
 
@@ -336,10 +395,10 @@ private case class SnapshotCore(
 object PolicyService {
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & SiteTimeLimitRepo &
-      DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & Clock,
+      DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & AppRepo & Clock,
     Nothing,
     PolicyService,
-  ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction(PolicyServiceLive(_, _, _, _, _, _, _, _, _, _, _))
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
   def blocklistContentVersion(domains: Iterable[String]): String = {
@@ -413,11 +472,16 @@ object PolicyService {
             (false, None)
         }
 
+    // #763: app expansion is additive. A host in both an allowed-mode app and
+    // a blocked-mode app will appear in both lists; the router's
+    // extraAllowed-beats-extraBlocked precedence then makes "allow wins" — same
+    // semantics it already applies to the per-profile own lists (see
+    // feedback_extraallowed_beats_blocked).
     BlockRules(
       blocked = blocked,
       blockReason = reason,
-      extraBlocked = (p.extraBlocked ++ siteLimitExtraBlocked).distinct,
-      extraAllowed = p.extraAllowed,
+      extraBlocked = (p.extraBlocked ++ in.appExtraBlocked ++ siteLimitExtraBlocked).distinct,
+      extraAllowed = (p.extraAllowed ++ in.appExtraAllowed).distinct,
       blocklistIds = p.blockedCategories,
       blockIpOnly = p.blockIpOnly, // #424: per-profile toggle (router enforcement #353)
     )

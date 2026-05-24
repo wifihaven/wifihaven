@@ -1081,6 +1081,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           // Build policy snapshot directly via PolicyService
           blocklistRepo <- ZIO.service[BlocklistRepo]
           hsRepo        <- ZIO.service[HouseholdSettingsRepo]
+          appRepo       <- ZIO.service[AppRepo]
           clock         <- ZIO.service[Clock]
           policyService = PolicyServiceLive(
             profileRepo,
@@ -1092,6 +1093,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             blocklistRepo,
             trafficRepo,
             extRepo,
+            appRepo,
             clock,
           )
           snapshot <- policyService.snapshot
