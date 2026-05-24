@@ -2,7 +2,7 @@
 # Boot a client VM as a qcow2 overlay on top of the cured base image.
 #
 # Usage:
-#   client-up.sh --mac aa:bb:cc:dd:ee:ff [--name client1] [--ssh-port 2223]
+#   client-up.sh --mac aa:bb:cc:dd:ee:ff [--name client1] [--ssh-port PORT]
 #
 # Two NICs:
 #   eth0 — virtio-net attached to ${WH_LAN_BRIDGE} (the router VM's LAN).
