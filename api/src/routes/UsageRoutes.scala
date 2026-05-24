@@ -2,7 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.usage.{UsageSeries, UsageTraffic}
+import wifihaven.api.usage.{AppMembership, UsageSeries, UsageTraffic}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -22,12 +22,22 @@ object UsageRoutes {
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
       profileRepo: ProfileRepo,
+      appRepo: AppRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "usage" / "traffic" ->
         handler { (req: Request) =>
-          trafficHandler(req, auth, deviceRepo, trafficRepo, profileRepo, userProfileRepo, clock)
+          trafficHandler(
+            req,
+            auth,
+            deviceRepo,
+            trafficRepo,
+            profileRepo,
+            userProfileRepo,
+            appRepo,
+            clock,
+          )
         },
       Method.GET / "api" / "usage" / "series"  ->
         handler { (req: Request) =>
@@ -187,6 +197,7 @@ object UsageRoutes {
       trafficRepo: TrafficReportRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      appRepo: AppRepo,
       clock: Clock,
   ): ZIO[Any, Response, Response] =
     for {
@@ -234,13 +245,7 @@ object UsageRoutes {
           ),
         )
         .when(groupBySet.contains(UsageTraffic.GroupBy.Apex))
-      _          <- ZIO
-        .fail(
-          Response.badRequest(
-            """{"error":"groupBy_not_implemented","groupBy":"app","reason":"apps track not implemented — see #857"}""",
-          ),
-        )
-        .when(groupBySet.contains(UsageTraffic.GroupBy.App))
+      // #769: groupBy=app is now implemented (joins through app_hosts).
       tzStr = req.url.queryParam("tz").getOrElse("UTC")
       zone <- ZIO.attempt(ZoneId.of(tzStr)).orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
       now  <- clock.now
@@ -322,13 +327,31 @@ object UsageRoutes {
             .listRawInRange(macs, fromI, toI)
             .mapError(ErrorMapper.dbErrorToResponse)
       profiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      profNames        = profiles.iterator.map(p => p.id -> p.name).toMap
-      devByMac         = allDevices.iterator.map(d => d.mac -> d).toMap
+      profNames = profiles.iterator.map(p => p.id -> p.name).toMap
+      devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
+      // #769: load (host → app memberships) for app grouping. Only fetched
+      // when the request actually drills on app — apps + their host inventory
+      // are small (~tens of rows in the typical household), but skipping the
+      // round-trip keeps the un-grouped path identical to pre-#769.
+      appsByHost <-
+        if (groupBySet.contains(UsageTraffic.GroupBy.App))
+          (for {
+            apps <- appRepo.listAll
+            byId = apps.iterator.map(a => a.id -> a).toMap
+            mappings <- appRepo.listAllHostMappings
+          } yield mappings
+            .flatMap { m =>
+              byId
+                .get(m.appId)
+                .map(a => m.host.value -> AppMembership(a.slug, a.name, a.icon, Some(a.id)))
+            }
+            .groupMap(_._1)(_._2)).mapError(ErrorMapper.dbErrorToResponse)
+        else ZIO.succeed(Map.empty[String, List[AppMembership]])
       // #846 audit: cap raw rows. The default 24h window can hit 40k+ rows;
       // SPA tables choke. `limit` defaults to 100 for the raw view and is
       // honored as-is for aggregated views (where row counts are naturally
       // bounded by window*group cardinality).
-      rawLimit         = req.url
+      rawLimit = req.url
         .queryParam("limit")
         .flatMap(_.toIntOption)
         .getOrElse(100)
@@ -361,7 +384,15 @@ object UsageRoutes {
             tz = zone.getId,
             rawRows = Nil,
             aggregateRows = UsageTraffic
-              .buildAggregate(rows, bucket, zone, effectiveGroupBy, devByMac, profNames),
+              .buildAggregate(
+                rows,
+                bucket,
+                zone,
+                effectiveGroupBy,
+                devByMac,
+                profNames,
+                appsByHost,
+              ),
           )
       }
     } yield Response.json(resp.toJson)

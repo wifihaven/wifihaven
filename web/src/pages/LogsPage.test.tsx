@@ -9,6 +9,7 @@ vi.mock('@/api/client', () => ({
     logs:     { query: vi.fn(), series: vi.fn() },
     devices:  { list:  vi.fn() },
     profiles: { list:  vi.fn() },
+    apps:     { list:  vi.fn() },
   },
 }))
 
@@ -55,6 +56,10 @@ beforeEach(() => {
   ;(api.logs.series   as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aggRow])
   ;(api.devices.list  as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(devices)
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(profileDetails)
+  // #769: default to "one app exists" so groupBy=app doesn't trip the empty-state.
+  ;(api.apps.list     as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { app: { id: 1, name: 'YouTube', slug: 'youtube' } },
+  ])
 })
 
 describe('LogsPage (Connection Events) — raw view', () => {
@@ -126,5 +131,35 @@ describe('LogsPage — aggregation', () => {
       const calls = (api.logs.series as ReturnType<typeof vi.fn>).mock.calls
       expect(calls[calls.length - 1][0].groupBy.sort()).toEqual(['device', 'domain'])
     })
+  })
+
+  // #769: when groupBy=app is active but no apps exist, render the empty-state
+  // instead of the aggregate table. The link points the operator at /apps.
+  it('renders empty-state when groupBy=app but household has no apps', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    renderAt('/usage/events?groupBy=app')
+    await screen.findByText('example.com')
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    expect(await screen.findByTestId('ce-app-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('ce-agg-table')).not.toBeInTheDocument()
+  })
+
+  // #769: with apps defined the toggle is functional and the response's
+  // appName/appIcon are surfaced in the row.
+  it('renders app icon + display name when groupBy=app and rows arrive', async () => {
+    (api.logs.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        ...aggRow,
+        groups: { app: 'youtube' },
+        appId: 1,
+        appName: 'YouTube',
+        appIcon: '📺',
+      },
+    ])
+    renderAt('/usage/events?groupBy=app')
+    await screen.findByText('example.com')
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    expect(await screen.findByText('YouTube')).toBeInTheDocument()
+    expect(screen.getByText('📺')).toBeInTheDocument()
   })
 })

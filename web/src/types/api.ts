@@ -128,7 +128,9 @@ export interface QueryLog {
 }
 
 // #847 + #846: aggregated connection-events row, with multi-column groupBy.
-// `groups` keyed by "domain" | "device" | "profile" depending on the request.
+// `groups` keyed by "domain" | "device" | "profile" | "app" depending on the
+// request. When `app` is grouped the slug lives in `groups.app` and the
+// display name + icon are surfaced as `appName` / `appIcon` (#769).
 export interface ConnectionEventAggRow {
   groups: Record<string, string>
   windowStart: string
@@ -139,9 +141,14 @@ export interface ConnectionEventAggRow {
   distinctDevices?: number
   distinctProfiles?: number
   distinctDomains?: number
+  distinctApps?: number
   soleDevice?: string | null
   soleProfile?: string | null
   soleDomain?: string | null
+  soleApp?: string | null
+  appId?: number | null
+  appName?: string | null
+  appIcon?: string | null
 }
 
 
@@ -340,8 +347,9 @@ export interface UsageSeriesResponse {
 // inspection. 1m bucket and apex/app groupBy are reserved (router cadence /
 // PSL / apps track) — server returns 400 with a typed `error` code.
 export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
-// #846: groupBy is composable. Apex is deferred to #856 (needs PSL), App to
-// #857 (needs apps track) — both still rejected server-side with typed errors.
+// #846: groupBy is composable. Apex is deferred to #856 (needs PSL). #769
+// turned `app` on — it now resolves to a server-side join through
+// `app_hosts`. The empty/synthetic bucket is keyed `__other__`.
 export type TrafficUsageGroupBy = 'domain' | 'device' | 'profile' | 'apex' | 'app'
 
 export interface TrafficUsageRawRow {
@@ -359,8 +367,8 @@ export interface TrafficUsageRawRow {
 
 export interface TrafficUsageAggregateRow {
   // Keyed by the column codes in the request's groupBy set ("domain" |
-  // "device" | "profile"). For columns NOT in the set, the SPA shows the
-  // distinct-count from `distinct*` below (drill-down deferred to #859).
+  // "device" | "profile" | "app"). For columns NOT in the set, the SPA shows
+  // the distinct-count from `distinct*` below (drill-down deferred to #859).
   groups: Record<string, string>
   windowStart: string
   windowEnd: string
@@ -370,11 +378,18 @@ export interface TrafficUsageAggregateRow {
   distinctDevices?: number
   distinctProfiles?: number
   distinctDomains?: number
+  distinctApps?: number
   // Populated only when the corresponding `distinct*` is 1 AND the column is
   // not in `groupBy` — lets the SPA render the value in place of "1".
   soleDevice?: string | null
   soleProfile?: string | null
   soleDomain?: string | null
+  soleApp?: string | null
+  // #769: present when `app` is in groupBy. The slug lives in `groups.app`;
+  // these carry the display metadata. `__other__` rows emit appName="Other".
+  appId?: number | null
+  appName?: string | null
+  appIcon?: string | null
 }
 
 export interface TrafficUsageResponse {

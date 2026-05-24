@@ -235,7 +235,7 @@ export const api = {
     },
     // #847 + #917: aggregated connection-events series. groupBy is sent as
     // repeated query params; empty = one row per time bucket. apex deferred
-    // to #856, app to #857.
+    // to #856; app turned on by #769.
     series: (params: {
       bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
       groupBy: Array<'domain' | 'device' | 'profile' | 'apex' | 'app'>
@@ -269,6 +269,13 @@ export const api = {
   // ── Dashboard "now" ────────────────────────────────────────────────────
   dashboard: {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
+  },
+
+  // ── Apps (#769 surfaces the empty-state on group-by=app) ───────────────
+  // Minimal client: just enough to detect "no apps exist yet" so the
+  // group-by=app empty-state can point the operator at #765's /apps screen.
+  apps: {
+    list: () => req<Array<{ app: { id: number; name: string; slug: string } }>>('GET', '/apps'),
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────

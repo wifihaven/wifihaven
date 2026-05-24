@@ -832,16 +832,116 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=apex", token)
       } yield assertTrue(resp.status == Status.BadRequest)
     },
-    test("GET /api/connection-events/series rejects groupBy=app with 400") {
+    // #769: groupBy=app is now accepted — rows join through app_hosts.
+    test("#769: GET /api/connection-events/series buckets connection events by app") {
       for {
         _        <- cleanDb
+        routerId <- seedRouter()
         connRepo <- ZIO.service[ConnectionEventRepo]
+        appRepo  <- ZIO.service[AppRepo]
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
+        // One app ("YouTube") owning two hosts; a third host belongs to no
+        // app and should bucket under __other__.
+        ytId     <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+        _        <- appRepo.setHosts(
+          ytId,
+          List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+        )
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("ytimg.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("ytimg.com")),
+              None,
+              false,
+              "blocked",
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+              HostId.Fqdn(Hostname.unsafe("facebook.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
         routes = LogRoutes.routes(auth, connRepo, upRepo)
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
-      } yield assertTrue(resp.status == Status.BadRequest)
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        yt = rows.find(_.groups.getOrElse("app", "") == "youtube").get
+        ot = rows.find(_.groups.getOrElse("app", "") == "__other__").get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.length == 2) &&
+        assertTrue(yt.countSucceeded == 2) &&
+        assertTrue(yt.countBlocked == 1) &&
+        assertTrue(yt.appName.contains("YouTube")) &&
+        assertTrue(yt.appIcon.contains("📺")) &&
+        assertTrue(yt.appId.isDefined) &&
+        assertTrue(ot.countSucceeded == 1) &&
+        assertTrue(ot.countBlocked == 0) &&
+        assertTrue(ot.appName.contains("Other")) &&
+        assertTrue(ot.appId.isEmpty)
+    },
+    test("#769: GET /api/connection-events/series with host in 2 apps fans out") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        appRepo  <- ZIO.service[AppRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        // "youtube.com" claimed by both YouTube + Music apps.
+        ytId     <- appRepo.create("YouTube", "youtube", None, None)
+        muId     <- appRepo.create("Music", "music", None, None)
+        _        <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+        _        <- appRepo.setHosts(muId, List(Hostname.unsafe("youtube.com")))
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("youtube.com")),
+              None,
+              true,
+              "allowed",
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
+        body <- resp.body.asString
+        rows <- ZIO.fromEither(body.fromJson[List[ConnectionEventAggRow]])
+        slugs = rows.map(_.groups.getOrElse("app", ""))
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(slugs.toSet == Set("youtube", "music")) &&
+        assertTrue(rows.forall(_.countSucceeded == 1))
     },
     test("GET /api/connection-events/series rejects bucket=off with 400") {
       for {

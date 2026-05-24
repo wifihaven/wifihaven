@@ -1153,11 +1153,7 @@ object LogRoutes {
             _      <- ZIO
               .fail(Response.badRequest("groupBy=apex not implemented — see #856 (needs PSL)"))
               .when(grpSet.exists(g => g.wire == "apex"))
-            _      <- ZIO
-              .fail(
-                Response.badRequest("groupBy=app not implemented — apps track #761-#769 / see #857"),
-              )
-              .when(grpSet.exists(g => g.wire == "app"))
+            // #769: groupBy=app is now implemented (joins through app_hosts).
             groupByCodes = grpSet.map(_.wire)
             deviceIds  <- parseMultiDeviceIdParam(req)
             profileIds <- parseMultiProfileIdParam(req)

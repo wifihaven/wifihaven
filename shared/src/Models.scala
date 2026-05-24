@@ -460,6 +460,7 @@ enum ConnectionEventGroupBy(val wire: String) {
   case Domain  extends ConnectionEventGroupBy("domain")
   case Device  extends ConnectionEventGroupBy("device")
   case Profile extends ConnectionEventGroupBy("profile")
+  case App     extends ConnectionEventGroupBy("app")
 }
 
 object ConnectionEventGroupBy {
@@ -482,10 +483,18 @@ case class ConnectionEventAggRow(
     distinctDevices: Int = 0,
     distinctProfiles: Int = 0,
     distinctDomains: Int = 0,
+    distinctApps: Int = 0,
     // #846 audit follow-up: see TrafficUsageAggregateRow.
     soleDevice: Option[String] = None,
     soleProfile: Option[String] = None,
     soleDomain: Option[String] = None,
+    soleApp: Option[String] = None,
+    // #769: populated when groupBy=app so the SPA can render the display
+    // name + icon instead of just the slug. `__other__` (hosts not in any
+    // app) emits appName="Other", appIcon=None, appId=None.
+    appId: Option[AppId] = None,
+    appName: Option[String] = None,
+    appIcon: Option[String] = None,
 ) derives JsonCodec
 
 case class SiteUsage(
@@ -708,6 +717,7 @@ case class TrafficUsageAggregateRow(
     distinctDevices: Int = 0,
     distinctProfiles: Int = 0,
     distinctDomains: Int = 0,
+    distinctApps: Int = 0,
     // #846 audit follow-up: when a non-grouped column has only one distinct
     // value contributing to the row, surface it so the SPA can render the
     // value instead of just "1". `None` when the column is in `groups`
@@ -715,6 +725,12 @@ case class TrafficUsageAggregateRow(
     soleDevice: Option[String] = None,
     soleProfile: Option[String] = None,
     soleDomain: Option[String] = None,
+    soleApp: Option[String] = None,
+    // #769: populated when groupBy=app so SPA can render display name + icon.
+    // `__other__` (hosts not in any app) emits appName="Other".
+    appId: Option[AppId] = None,
+    appName: Option[String] = None,
+    appIcon: Option[String] = None,
 ) derives JsonCodec
 
 case class TrafficUsageResponse(

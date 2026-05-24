@@ -83,10 +83,19 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       trafficRepo     <- ZIO.service[TrafficReportRepo]
       userProfileRepo <- ZIO.service[UserProfileRepo]
       profileRepo     <- ZIO.service[ProfileRepo]
+      appRepo         <- ZIO.service[AppRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
-      UsageRoutes.routes(auth, deviceRepo, trafficRepo, userProfileRepo, profileRepo, clock),
+      UsageRoutes.routes(
+        auth,
+        deviceRepo,
+        trafficRepo,
+        userProfileRepo,
+        profileRepo,
+        appRepo,
+        clock,
+      ),
       auth,
     )
 
@@ -821,7 +830,163 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         } yield assertTrue(resp.status == Status.BadRequest) &&
           assertTrue(body.contains("bucket_not_implemented"))
       },
-      test("rejects groupBy=apex and groupBy=app with groupBy_not_implemented") {
+      test("#769: 1h aggregated view with groupBy=app joins through app_hosts") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // App "YouTube" owns youtube.com + ytimg.com; google.com is not in any app.
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(
+            ytId,
+            List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+          )
+          start1 = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          start2 = start1.plusSeconds(300)
+          start3 = start1.plusSeconds(600)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start1,
+                start1.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("ytimg.com")),
+                today,
+                start2,
+                start2.plusSeconds(300),
+                300,
+                500L,
+                1500L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start3,
+                start3.plusSeconds(300),
+                300,
+                100L,
+                100L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+          yt = out.aggregateRows.find(_.groups.getOrElse("app", "") == "youtube").get
+          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "__other__").get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy == List("app")) &&
+          assertTrue(out.aggregateRows.length == 2) &&
+          // Bytes invariant: app + __other__ together cover everything that was inserted.
+          assertTrue(
+            out.aggregateRows.map(_.totalBytesIn).sum == 1600L,
+          ) &&
+          assertTrue(
+            out.aggregateRows.map(_.totalBytesOut).sum == 3600L,
+          ) &&
+          assertTrue(yt.totalBytesIn == 1500L) &&
+          assertTrue(yt.totalBytesOut == 3500L) &&
+          assertTrue(yt.appName.contains("YouTube")) &&
+          assertTrue(yt.appIcon.contains("📺")) &&
+          assertTrue(yt.appId.isDefined) &&
+          assertTrue(ot.totalBytesIn == 100L) &&
+          assertTrue(ot.appName.contains("Other")) &&
+          assertTrue(ot.appId.isEmpty)
+      },
+      test("#769: groupBy=app fans a multi-app host into one row per app") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, None)
+          muId        <- appRepo.create("Music", "music", None, None)
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          _           <- appRepo.setHosts(muId, List(Hostname.unsafe("youtube.com")))
+          start1 = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start1,
+                start1.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+          slugs = out.aggregateRows.map(_.groups.getOrElse("app", "")).toSet
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(slugs == Set("youtube", "music")) &&
+          // Both apps see the full bytes — operator intent at the app boundary
+          // is "how much did this app account for", not a strict partition.
+          assertTrue(out.aggregateRows.forall(_.totalBytesIn == 1000L)) &&
+          assertTrue(out.aggregateRows.forall(_.totalBytesOut == 2000L))
+      },
+      // #769: groupBy=app is now implemented; the apex case still rejects.
+      test("rejects groupBy=apex with groupBy_not_implemented") {
         for {
           _  <- cleanDb
           rb <- buildRoutes
@@ -832,16 +997,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             .addHeader(Header.Authorization.Bearer(token))
           apexResp <- routes.runZIO(apexReq)
           apexBody <- apexResp.body.asString
-          appReq = Request
-            .get(URL.decode(s"/api/usage/traffic?mac=$testMac&bucket=1h&groupBy=app").toOption.get)
-            .addHeader(Header.Authorization.Bearer(token))
-          appResp <- routes.runZIO(appReq)
-          appBody <- appResp.body.asString
         } yield assertTrue(apexResp.status == Status.BadRequest) &&
           assertTrue(apexBody.contains("groupBy_not_implemented")) &&
-          assertTrue(apexBody.contains("apex")) &&
-          assertTrue(appResp.status == Status.BadRequest) &&
-          assertTrue(appBody.contains("app"))
+          assertTrue(apexBody.contains("apex"))
       },
       test("rejects window beyond on-the-fly cap with 503") {
         val today = TestClock.schoolDayAfternoon.toLocalDate

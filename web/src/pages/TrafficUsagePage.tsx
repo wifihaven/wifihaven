@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type {
   Device,
@@ -21,12 +21,12 @@ import {
 
 // #846 — Traffic Usage page. Raw + aggregated views over traffic_reports.
 // Column headers double as groupBy toggles (Host=domain, Device=device,
-// Profile=profile). apex/app are not exposed here — apex deferred to #856,
-// app to #857.
+// Profile=profile, App=app). apex still deferred to #856; app turned on by
+// #769 (server-side join through app_hosts).
 
 const DEFAULT_RAW_LIMIT = 100
 
-const TRAFFIC_GROUP_KEYS: TrafficUsageGroupBy[] = ['domain', 'device', 'profile']
+const TRAFFIC_GROUP_KEYS: TrafficUsageGroupBy[] = ['domain', 'device', 'profile', 'app']
 
 function parseGroupByFromSearch(sp: URLSearchParams): TrafficUsageGroupBy[] {
   // #917: serialize as repeated ?groupBy=host&groupBy=device so links
@@ -50,10 +50,13 @@ export function TrafficUsagePage() {
   const [data, setData]         = useState<TrafficUsageResponse | null>(null)
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
+  // #769: surface the "no apps yet" empty-state on group-by=app.
+  const [appCount, setAppCount] = useState<number | null>(null)
 
   useEffect(() => {
     api.devices.list().then(setDevices).catch(() => setDevices([]))
     api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
+    api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
   }, [])
 
   // Window is bucket-derived, anchored at "now-at-fetch-time". No end-at
@@ -137,7 +140,16 @@ export function TrafficUsagePage() {
           onProfileIdsChange={setProfileIds}
         />
       )}
-      {data && bucket !== 'raw' && !loading && (
+      {data && bucket !== 'raw' && !loading && groupBy.includes('app') && appCount === 0 && (
+        <div
+          data-testid="traffic-app-empty"
+          className="rounded border border-emerald-900 bg-emerald-950/30 p-4 text-sm text-emerald-200"
+        >
+          No apps defined yet. <Link to="/apps" className="underline">Create one</Link> to group
+          traffic by app.
+        </div>
+      )}
+      {data && bucket !== 'raw' && !loading && !(groupBy.includes('app') && appCount === 0) && (
         <AggregateTable
           data={data}
           groupBy={groupBy}
@@ -397,6 +409,37 @@ interface AggProps extends FilterHeaderProps {
   onToggleGroup: (key: string) => void
 }
 
+// #769: app-column cell. When grouped, renders the app's icon + display
+// name (or "Other" for the synthetic `__other__` bucket). When not grouped,
+// falls back to the same sole / distinct-count behaviour as the other
+// columns.
+function AppCell({
+  active,
+  appName,
+  appIcon,
+  sole,
+  count,
+}: {
+  active: boolean
+  appName: string | null | undefined
+  appIcon: string | null | undefined
+  sole: string | null | undefined
+  count: number | undefined
+}) {
+  if (active) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {appIcon && (
+          <span aria-hidden="true" className="text-base leading-none">{appIcon}</span>
+        )}
+        <span>{appName ?? 'Other'}</span>
+      </span>
+    )
+  }
+  if (sole) return <span className="text-gray-400">{sole}</span>
+  return <span className="text-gray-500">{count ?? 0}</span>
+}
+
 // #846 follow-up: render strategy for non-grouped aggregated columns.
 //   - column IS in groupBy   → show the per-row value
 //   - column NOT in groupBy, distinct == 1 → show the sole value (dim)
@@ -471,6 +514,15 @@ function AggregateTable({
                 testIdPrefix="traffic-group"
               />
             </th>
+            <th className="text-left px-2 py-1">
+              <GroupableHeader
+                label="App"
+                groupKey="app"
+                groupBy={groupBy}
+                onToggle={onToggleGroup}
+                testIdPrefix="traffic-group"
+              />
+            </th>
             <th className="text-right px-2 py-1">Inbound</th>
             <th className="text-right px-2 py-1 hidden sm:table-cell">Outbound</th>
             <th className="text-right px-2 py-1 hidden md:table-cell">Time</th>
@@ -479,7 +531,7 @@ function AggregateTable({
         <tbody className="text-gray-300">
           {data.aggregateRows.length === 0 && (
             <tr>
-              <td colSpan={7} className="text-center text-gray-500 py-4">
+              <td colSpan={8} className="text-center text-gray-500 py-4">
                 No rows in window.
               </td>
             </tr>
@@ -513,6 +565,15 @@ function AggregateTable({
                   groupedValue={groupBy.includes('domain') ? r.groups.domain : undefined}
                   sole={r.soleDomain}
                   count={r.distinctDomains}
+                />
+              </td>
+              <td className="px-2 py-1">
+                <AppCell
+                  active={groupBy.includes('app')}
+                  appName={r.appName}
+                  appIcon={r.appIcon}
+                  sole={r.soleApp}
+                  count={r.distinctApps}
                 />
               </td>
               <td className="px-2 py-1 text-right font-mono">{fmtBytes(r.totalBytesIn)}</td>
