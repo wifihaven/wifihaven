@@ -22,10 +22,12 @@ case class DbUser(
     createdAt: Instant,
     mustChangePassword: Boolean = false,
 )
+// #865: mac/deviceId/profileId became multi-valued so the SPA's column-header
+// popovers can filter to a subset. Empty list = no filter on that column.
 case class LogFilter(
-    mac: Option[String] = None,
-    deviceId: Option[DeviceId] = None,
-    profileId: Option[ProfileId] = None,
+    macs: List[String] = Nil,
+    deviceIds: List[DeviceId] = Nil,
+    profileIds: List[ProfileId] = Nil,
     blocked: Option[Boolean] = None,
     domain: Option[String] = None,
     location: Option[String] = None,
@@ -1385,9 +1387,15 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
            LEFT JOIN routers r  ON r.id     = ce.router_id
            WHERE 1=1"""
     val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
-    val byMac = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
-    val byDev = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
-    val byPid = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
+    val byMac = cats.data.NonEmptyList
+      .fromList(f.macs)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
+    val byDev = cats.data.NonEmptyList
+      .fromList(f.deviceIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
+    val byPid = cats.data.NonEmptyList
+      .fromList(f.profileIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
     val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
     val byDom = f.domain.fold(fr"")(d =>
       // #720: domain filter has to look through the resolution too — otherwise
@@ -1433,9 +1441,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val deviceExpr  = fr"COALESCE(d.name, ce.mac::TEXT)"
     val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
 
-    // Default group: domain (matches pre-#846 behaviour). Multi-group composes
-    // freely across {domain, device, profile} — apex/app rejected at route.
-    val wantsDomain  = groupBy.contains("domain") || groupBy.isEmpty
+    // #917: strictly additive — empty set = no drill, one row per window.
+    // Multi-group composes freely across {domain, device, profile} (apex/app
+    // rejected at route).
+    val wantsDomain  = groupBy.contains("domain")
     val wantsDevice  = groupBy.contains("device")
     val wantsProfile = groupBy.contains("profile")
 
@@ -1481,9 +1490,15 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
            LEFT JOIN routers r  ON r.id  = ce.router_id
            WHERE 1=1"""
     val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
-    val byMac = f.mac.fold(fr"")(m => fr"AND ce.mac = $m")
-    val byDev = f.deviceId.fold(fr"")(id => fr"AND d.id = $id")
-    val byPid = f.profileId.fold(fr"")(pid => fr"AND d.profile_id = $pid")
+    val byMac = cats.data.NonEmptyList
+      .fromList(f.macs)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
+    val byDev = cats.data.NonEmptyList
+      .fromList(f.deviceIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
+    val byPid = cats.data.NonEmptyList
+      .fromList(f.profileIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
     val byBl  = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
     val byDom = f.domain.fold(fr"")(d =>
       fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",

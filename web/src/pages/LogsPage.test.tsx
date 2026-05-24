@@ -63,9 +63,17 @@ describe('LogsPage (Connection Events) — raw view', () => {
     expect(await screen.findByText('example.com')).toBeInTheDocument()
     expect(api.logs.query).toHaveBeenCalled()
     expect(screen.getByText("Kid's iPad")).toBeInTheDocument()
-    // 'Kids' appears in both the profile dropdown <option> and the data row
-    // <td>; finding at least one is enough to prove the column rendered.
     expect(screen.getAllByText('Kids').length).toBeGreaterThan(0)
+  })
+
+  // #861 — verify low-priority columns carry responsive `hidden` classes so
+  // the table fits at phone (~375px) and tablet (~768px) widths.
+  it('hides low-priority raw-view columns on narrow viewports', async () => {
+    renderAt()
+    await screen.findByText('example.com')
+    expect(screen.getByRole('columnheader', { name: /^Profile/ }).className).toMatch(/hidden md:table-cell/)
+    expect(screen.getByRole('columnheader', { name: 'Reason' }).className).toMatch(/hidden sm:table-cell/)
+    expect(screen.getByRole('columnheader', { name: 'Location' }).className).toMatch(/hidden lg:table-cell/)
   })
 
   it('shows empty state when no events', async () => {
@@ -76,20 +84,23 @@ describe('LogsPage (Connection Events) — raw view', () => {
 })
 
 describe('LogsPage — aggregation', () => {
-  it('switching to 1h triggers /series with groupBy=[domain] by default', async () => {
+  // #917: default state has no toggles on — one row per time bucket.
+  it('switching to 1h triggers /series with groupBy=[] by default', async () => {
     renderAt()
     await screen.findByText('example.com')
     await userEvent.click(screen.getByTestId('bucket-1h'))
     await waitFor(() => {
       expect(api.logs.series).toHaveBeenLastCalledWith(expect.objectContaining({
         bucket: '1h',
-        groupBy: ['domain'],
+        groupBy: [],
       }))
     })
     expect(await screen.findByTestId('ce-agg-table')).toBeInTheDocument()
   })
 
-  it('clicking the Device column header adds device to groupBy', async () => {
+  // #917: strictly additive — toggling a column on adds rows; toggling off
+  // removes them. We can go all the way back to []. Never the inverse.
+  it('clicking the Device column header strictly adds device to groupBy', async () => {
     renderAt()
     await screen.findByText('example.com')
     await userEvent.click(screen.getByTestId('bucket-1h'))
@@ -97,8 +108,23 @@ describe('LogsPage — aggregation', () => {
     await userEvent.click(screen.getByTestId('ce-group-device'))
     await waitFor(() => {
       const calls = (api.logs.series as ReturnType<typeof vi.fn>).mock.calls
-      const last = calls[calls.length - 1][0]
-      expect(last.groupBy.sort()).toEqual(['device', 'domain'])
+      expect(calls[calls.length - 1][0].groupBy).toEqual(['device'])
+    })
+    // Toggling off returns to [] (no implicit "must keep one" guard).
+    await userEvent.click(screen.getByTestId('ce-group-device'))
+    await waitFor(() => {
+      const calls = (api.logs.series as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls[calls.length - 1][0].groupBy).toEqual([])
+    })
+  })
+
+  it('initializes groupBy from URL (?groupBy=device&groupBy=domain)', async () => {
+    renderAt('/usage/events?groupBy=device&groupBy=domain')
+    await screen.findByText('example.com')
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => {
+      const calls = (api.logs.series as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls[calls.length - 1][0].groupBy.sort()).toEqual(['device', 'domain'])
     })
   })
 })

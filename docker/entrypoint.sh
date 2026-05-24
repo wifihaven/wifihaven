@@ -18,6 +18,7 @@ set -euo pipefail
 : "${WIFIHAVEN_LOG_LEVEL:=INFO}"
 : "${WIFIHAVEN_DEBUG:=}"
 : "${WIFIHAVEN_ALLOWED_ORIGINS:=}"
+: "${WIFIHAVEN_UI_ALLOWED_HOSTS:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -48,6 +49,9 @@ wifihaven {
   }
   cors {
     allowedOrigins = "${WIFIHAVEN_ALLOWED_ORIGINS}"
+  }
+  policy {
+    uiAllowedHosts = "${WIFIHAVEN_UI_ALLOWED_HOSTS}"
   }
 }
 EOF

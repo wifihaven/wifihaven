@@ -41,6 +41,7 @@ ensure_openwrt_image() {
 
   local gz="${WH_CACHE_DIR}/${WH_OPENWRT_IMAGE}"
   local img="${WH_ROUTER_BASE_IMG}"
+  local rc
 
   if [[ -f "${img}" ]]; then
     return 0
@@ -62,7 +63,13 @@ ensure_openwrt_image() {
 
   log "decompressing $(basename "${gz}")"
   require_cmd gunzip
-  gunzip -k -f "${gz}"
+  if ! gunzip -k -f "${gz}"; then
+    rc=$?
+    if (( rc != 2 )); then
+      die "gunzip failed (rc=${rc}) on ${gz}"
+    fi
+    log "gunzip warned on ${gz} (rc=2, trailing garbage ignored) — decompression result follows"
+  fi
   [[ -f "${img}" ]] || die "expected ${img} after gunzip"
 }
 

@@ -31,8 +31,8 @@ export function GroupableHeader({
         disabled
           ? disabledReason ?? ''
           : active
-          ? 'Click to remove from group-by'
-          : 'Click to group by this column'
+          ? `Roll ${label} back into the aggregate`
+          : `Break out rows by ${label}`
       }
       onClick={() => {
         if (!disabled) onToggle(groupKey)

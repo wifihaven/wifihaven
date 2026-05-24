@@ -59,8 +59,9 @@ object PolicySnapshotBlockIpOnlySpec
         trRepo <- ZIO.service[TrafficReportRepo]
         er     <- ZIO.service[TimeExtensionRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
+        ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, stlr, dr, blr, trRepo, er, clock)
+        svc = PolicyServiceLive(pr, sr, hsr, tlr, stlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         kidsId   = profiles0.find(_.name == "Kids").get.id
         adultsId = profiles0.find(_.name == "Adults").get.id
@@ -82,8 +83,9 @@ object PolicySnapshotBlockIpOnlySpec
         trRepo <- ZIO.service[TrafficReportRepo]
         er     <- ZIO.service[TimeExtensionRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
+        ar     <- ZIO.service[AppRepo]
         clock  <- ZIO.service[Clock]
-        svc = PolicyServiceLive(pr, sr, hsr, tlr, stlr, dr, blr, trRepo, er, clock)
+        svc = PolicyServiceLive(pr, sr, hsr, tlr, stlr, dr, blr, trRepo, er, ar, clock)
         profiles0 <- pr.listAll
         kids = profiles0.find(_.name == "Kids").get
         _     <- pr.update(kids.copy(blockIpOnly = false))

@@ -1089,11 +1089,15 @@ object LogRoutes {
       Method.GET / "api" / "logs"                         ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
+            claims     <- requireAuth(req, auth)
+            // #865: mac/deviceId/profileId accept comma-separated multi-value lists.
+            // Old single-value URLs (e.g. ?profileId=2) parse to a one-element list.
+            deviceIds  <- parseMultiDeviceIdParam(req)
+            profileIds <- parseMultiProfileIdParam(req)
             filter = LogFilter(
-              mac = req.url.queryParam("mac"),
-              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
-              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
+              macs = parseMultiValueParam(req, "mac"),
+              deviceIds = deviceIds,
+              profileIds = profileIds,
               blocked = req.url.queryParam("blocked").map(_ == "true"),
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
@@ -1128,14 +1132,19 @@ object LogRoutes {
             _      <- ZIO
               .fail(Response.badRequest("bucket=off not supported on /series — use /api/logs"))
               .when(bucket == ConnectionEventBucket.Off)
-            // #846: comma-separated multi-column groupBy. Apex/App still
-            // accepted as wire names but rejected with typed errors so the
-            // SPA can re-enable them later without an API change (#856, #857).
-            grpRaw <- ZIO
-              .fromOption(req.url.queryParam("groupBy"))
-              .orElseFail(Response.badRequest("groupBy query parameter required"))
+            // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
+            // For backwards-compat each value is also comma-split. Empty/absent
+            // is now valid — yields one row per window. Apex/App still rejected
+            // with typed errors (#856 PSL, #857 apps track).
             grpSet <- ZIO
-              .foreach(grpRaw.split(',').toList.map(_.trim).filter(_.nonEmpty)) { s =>
+              .foreach(
+                req.url.queryParams
+                  .getAll("groupBy")
+                  .toList
+                  .flatMap(_.split(',').toList)
+                  .map(_.trim)
+                  .filter(_.nonEmpty),
+              ) { s =>
                 ZIO
                   .fromOption(ConnectionEventGroupBy.fromWire(s))
                   .orElseFail(Response.badRequest(s"unknown groupBy: $s"))
@@ -1150,10 +1159,12 @@ object LogRoutes {
               )
               .when(grpSet.exists(g => g.wire == "app"))
             groupByCodes = grpSet.map(_.wire)
-            filter       = LogFilter(
-              mac = req.url.queryParam("mac"),
-              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
-              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
+            deviceIds  <- parseMultiDeviceIdParam(req)
+            profileIds <- parseMultiProfileIdParam(req)
+            filter = LogFilter(
+              macs = parseMultiValueParam(req, "mac"),
+              deviceIds = deviceIds,
+              profileIds = profileIds,
               blocked = req.url.queryParam("blocked").map(_ == "true"),
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
@@ -1402,4 +1413,27 @@ def parseProfileIdParam(req: Request): IO[Response, Option[ProfileId]] =
       s.toLongOption
         .map(l => ZIO.succeed(Some(ProfileId(l))))
         .getOrElse(ZIO.fail(Response.badRequest(s"invalid profileId: $s")))
+  }
+
+// #865: comma-separated multi-value query params. Old single-value URLs
+// ("profileId=2") parse as a one-element list, so previously-shared links
+// keep working. Absent param → empty list (no filter).
+def parseMultiValueParam(req: Request, name: String): List[String] =
+  req.url.queryParam(name) match {
+    case None    => Nil
+    case Some(s) => s.split(',').toList.map(_.trim).filter(_.nonEmpty)
+  }
+
+def parseMultiProfileIdParam(req: Request): IO[Response, List[ProfileId]] =
+  ZIO.foreach(parseMultiValueParam(req, "profileId")) { s =>
+    ZIO
+      .fromOption(s.toLongOption.map(ProfileId(_)))
+      .orElseFail(Response.badRequest(s"invalid profileId: $s"))
+  }
+
+def parseMultiDeviceIdParam(req: Request): IO[Response, List[DeviceId]] =
+  ZIO.foreach(parseMultiValueParam(req, "deviceId")) { s =>
+    ZIO
+      .fromOption(s.toLongOption.map(DeviceId(_)))
+      .orElseFail(Response.badRequest(s"invalid deviceId: $s"))
   }

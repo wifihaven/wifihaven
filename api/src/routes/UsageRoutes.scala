@@ -205,15 +205,16 @@ object UsageRoutes {
             ),
         )
         .when(bucket == UsageTraffic.Bucket.OneMin)
-      // #846: comma-separated multi-column groupBy. Apex deferred to #856,
-      // App to #857 — both still rejected with typed errors so the SPA can
-      // re-enable them later without an API change.
+      // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
+      // For backwards-compat each value is also comma-split, so the older
+      // single-param ?groupBy=host,device form keeps working. Empty/absent =
+      // strictly aggregate (one row per window). Apex deferred to #856, App
+      // to #857 — both still rejected with typed errors.
       groupBySet <- {
-        val raw = req.url
-          .queryParam("groupBy")
-          .getOrElse("")
-          .split(',')
+        val raw = req.url.queryParams
+          .getAll("groupBy")
           .toList
+          .flatMap(_.split(',').toList)
           .map(_.trim)
           .filter(_.nonEmpty)
         ZIO
@@ -266,40 +267,42 @@ object UsageRoutes {
           ),
         )
         .when(Duration.between(fromI, toI).compareTo(UsageTraffic.maxOnTheFlyDuration) > 0)
-      macOpt = req.url.queryParam("mac").map(s => MacAddress.unsafe(normalizeMac(s)))
-      profileIdOpt <- ZIO
-        .fromEither(
-          req.url.queryParam("profileId") match {
-            case None    => Right(None)
-            case Some(s) =>
-              s.toLongOption
-                .map(l => Some(ProfileId(l)))
-                .toRight(s"invalid profileId: $s")
-          },
-        )
-        .mapError(Response.badRequest)
+      // #865: mac and profileId are comma-separated multi-value lists. A
+      // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
+      // no filter on that column.
+      macsRaw = parseMultiValueParam(req, "mac").map(s => MacAddress.unsafe(normalizeMac(s)))
+      profileIds <- parseMultiProfileIdParam(req)
       // Retention gating per #814 is not yet wired (rollup tables + horizons endpoint
       // are dependencies). We still expose the 409 contract by emitting it when the
       // window straddles a horizon we DO know about — but until #814, the only
       // signal we have is "no data exists for this range", which is normal for
       // empty households. So: don't 409 here. SPA may downgrade the bucket pick
       // when #814 lands.
-      // Resolve mac filter from mac / profileId / "all visible to admin".
-      allDevices   <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      macs         <- (macOpt, profileIdOpt) match {
-        case (Some(mac), _) =>
-          // Require profile read access via the device's profile.
+      // Resolve mac filter from macs / profileIds / "all visible to admin".
+      // When both lists are non-empty, intersect: devices that match any
+      // selected mac AND belong to any selected profile.
+      allDevices <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      macs       <- (macsRaw, profileIds) match {
+        case (ms, _) if ms.nonEmpty     =>
           for {
-            dev <- ZIO
-              .fromOption(allDevices.find(_.mac == mac))
-              .orElseFail(Response.notFound("Device not found"))
-            _   <- requireProfileReadAccess(claims, dev.profileId, userProfileRepo)
-          } yield List(mac)
-        case (_, Some(pid)) =>
+            devs <- ZIO.foreach(ms) { mac =>
+              ZIO
+                .fromOption(allDevices.find(_.mac == mac))
+                .orElseFail(Response.notFound(s"Device not found: ${mac.value}"))
+            }
+            _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo)
+            }
+          } yield
+            if (profileIds.isEmpty) devs.map(_.mac)
+            else devs.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+        case (_, pids) if pids.nonEmpty =>
           for {
-            _ <- requireProfileReadAccess(claims, pid, userProfileRepo)
-          } yield allDevices.filter(_.profileId.contains(pid)).map(_.mac)
-        case _              =>
+            _ <- ZIO.foreach(pids)(pid =>
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo),
+            )
+          } yield allDevices.filter(d => d.profileId.exists(pids.contains)).map(_.mac)
+        case _                          =>
           // No filter: admin/adult only. Children must scope to their profile.
           if (claims.role == "admin" || claims.role == "adult")
             ZIO.succeed(allDevices.map(_.mac))
@@ -311,14 +314,14 @@ object UsageRoutes {
       // #858: zero-bytes-zero-seconds rows are filtered at SQL level in
       // listRawInRange so the application never sees them. TODO(#864) wire
       // a metric for "rows filtered" once observability lands.
-      rows         <-
-        if (macs.isEmpty && (macOpt.isDefined || profileIdOpt.isDefined))
+      rows       <-
+        if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
           ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
         else
           trafficRepo
             .listRawInRange(macs, fromI, toI)
             .mapError(ErrorMapper.dbErrorToResponse)
-      profiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      profiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
       profNames        = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac         = allDevices.iterator.map(d => d.mac -> d).toMap
       // #846 audit: cap raw rows. The default 24h window can hit 40k+ rows;
@@ -331,8 +334,9 @@ object UsageRoutes {
         .getOrElse(100)
         .max(1)
         .min(5000)
-      effectiveGroupBy =
-        if (groupBySet.nonEmpty) groupBySet else Set(UsageTraffic.GroupBy.Domain)
+      // #917: empty set is intentional — strictly aggregate ("one row per
+      // time bucket"). No implicit default.
+      effectiveGroupBy = groupBySet
       resp             = bucket match {
         case UsageTraffic.Bucket.Raw =>
           val allRaw    = UsageTraffic.buildRaw(rows, devByMac, profNames)

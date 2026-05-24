@@ -11,8 +11,8 @@
         "value" : "khanacademy.org"
       },
       "activeSeconds" : 240,
-      "bytesIn" : 1048576,
-      "bytesOut" : 8388608
+      "bytesIn" : 8388608,
+      "bytesOut" : 1048576
     },
     {
       "mac" : "76:2d:95:47:d1:8e",
@@ -21,8 +21,8 @@
         "value" : "192.168.10.99"
       },
       "activeSeconds" : 60,
-      "bytesIn" : 4096,
-      "bytesOut" : 16384
+      "bytesIn" : 16384,
+      "bytesOut" : 4096
     }
   ]
 }

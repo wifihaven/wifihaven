@@ -105,9 +105,12 @@ case "${ONLY}" in
   reassignment) MARK="reassignment" ;;
   unknown-device|unknown_device)
                 MARK="unknown_device" ;;
+  install-health|install_health)
+                MARK="install_health" ;;
   *) echo "unknown --only: ${ONLY}" >&2
      echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page," >&2
-     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device" >&2
+     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device," >&2
+     echo "       install-health" >&2
      exit 2 ;;
 esac
 

@@ -49,6 +49,11 @@ services:
       # #612: comma-separated browser origins allowed to call this API. Leave
       # empty for self-hosted single-origin installs (default). Never use "*".
       WIFIHAVEN_ALLOWED_ORIGINS: ${WIFIHAVEN_ALLOWED_ORIGINS:-}
+      # #944: hostnames always present in every profile's snapshot extraAllowed
+      # so a paused operator can still reach the admin UI to unpause. Set per
+      # deployment (prod OR staging hostnames, not both). Empty for self-hosted
+      # single-origin installs.
+      WIFIHAVEN_UI_ALLOWED_HOSTS: ${WIFIHAVEN_UI_ALLOWED_HOSTS:-}
       # #614: serve the bundled SPA from the JVM. Default true preserves the
       # self-hosted single-origin install. Set to false only when a CDN
       # (Render Static Sites / Cloudflare Pages) is the authoritative SPA.
