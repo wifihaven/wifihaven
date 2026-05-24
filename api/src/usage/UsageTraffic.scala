@@ -7,6 +7,23 @@ import java.time.{Duration, Instant, ZoneId}
 import java.time.temporal.{ChronoUnit, TemporalAdjusters}
 
 /**
+ * #769: per-host attribution to an app, sourced from `app_hosts` joined with `apps`. The aggregator
+ * uses this to bucket rows by app slug; hosts not in any app fall into the synthetic `__other__`
+ * bucket with `name="Other"`. Mapping is built once per request and held in memory — apps are
+ * household-scoped and typically number in the tens, so the full join table fits comfortably.
+ */
+case class AppMembership(
+    slug: String,
+    name: String,
+    icon: Option[String],
+    appId: Option[AppId],
+)
+
+object AppMembership {
+  val Other: AppMembership = AppMembership("__other__", "Other", None, None)
+}
+
+/**
  * #846: lightweight projection of a traffic_reports row for the Traffic Usage page. Carries
  * `Instant` fields directly (vs the wire-shaped String `TrafficReport`) so callers don't re-parse
  * strings just to bucket.
@@ -160,34 +177,65 @@ object UsageTraffic {
       groupBy: Set[GroupBy],
       deviceByMac: Map[MacAddress, Device],
       profileNameById: Map[ProfileId, String],
+      // #769: host → membership list. A host in two apps appears under both
+      // when grouping by app. Hosts absent from the map (or with an empty
+      // list) bucket to __other__.
+      appsByHost: Map[String, List[AppMembership]] = Map.empty,
   ): List[TrafficUsageAggregateRow] = {
     val step = stepOf(bucket)
 
-    def deviceLabel(mac: MacAddress): String  =
+    def deviceLabel(mac: MacAddress): String              =
       deviceByMac.get(mac).map(_.name).getOrElse(mac.value)
-    def profileLabel(mac: MacAddress): String =
+    def profileLabel(mac: MacAddress): String             =
       deviceByMac
         .get(mac)
         .flatMap(_.profileId)
         .flatMap(profileNameById.get)
         .getOrElse("(unassigned)")
+    def membershipsFor(host: String): List[AppMembership] =
+      appsByHost.getOrElse(host, Nil) match {
+        case Nil => List(AppMembership.Other)
+        case xs  => xs
+      }
 
-    val grouped = rows
-      .groupBy { r =>
+    val wantsApp = groupBy.contains(GroupBy.App)
+
+    // #769: when grouping by app and a host is in N apps, the row is
+    // attributed to all N. Pre-expand so the rest of the pipeline doesn't
+    // have to special-case fan-out. When NOT grouping by app, we leave rows
+    // un-expanded — distinctApps is still computed from `appsByHost`.
+    val expanded: List[(TrafficUsageDbRow, Option[AppMembership])] =
+      if (wantsApp)
+        rows.flatMap(r => membershipsFor(r.host.value).map(m => (r, Some(m))))
+      else
+        rows.map(r => (r, None))
+
+    val grouped = expanded
+      .groupBy { case (r, appOpt) =>
         val windowStart = floorTo(r.periodStart, bucket, zone)
         val keyParts    = scala.collection.mutable.LinkedHashMap.empty[String, String]
-        // Stable ordering: domain, device, profile.
+        // Stable ordering: domain, device, profile, app.
         if (groupBy.contains(GroupBy.Domain)) keyParts += ("domain"   -> r.host.value)
         if (groupBy.contains(GroupBy.Device)) keyParts += ("device"   -> deviceLabel(r.mac))
         if (groupBy.contains(GroupBy.Profile)) keyParts += ("profile" -> profileLabel(r.mac))
+        appOpt.foreach(a => keyParts += ("app" -> a.slug))
         (windowStart, keyParts.toMap)
       }
 
     grouped.toList
-      .map { case ((windowStart, groupsMap), bucketRows) =>
+      .map { case ((windowStart, groupsMap), bucketPairs) =>
+        val bucketRows    = bucketPairs.map(_._1)
         val devices       = bucketRows.iterator.map(r => deviceLabel(r.mac)).toSet
         val profiles      = bucketRows.iterator.map(r => profileLabel(r.mac)).toSet
         val domains       = bucketRows.iterator.map(_.host.value).toSet
+        // distinctApps spans all memberships contributing to the bucket. When
+        // grouping by app the bucket is per-membership so this is always 1;
+        // when not grouping by app we expand each row to its memberships and
+        // count the slugs so the SPA can render "{n} apps" in the un-drilled
+        // state.
+        val appsInBucket  =
+          if (wantsApp) bucketPairs.iterator.map(_._2.get.slug).toSet
+          else bucketRows.iterator.flatMap(r => membershipsFor(r.host.value).map(_.slug)).toSet
         val totalBytesIn  = bucketRows.iterator.map(_.bytesIn).sum
         val totalBytesOut = bucketRows.iterator.map(_.bytesOut).sum
         val totalSeconds  = bucketRows.iterator.map(_.activeSeconds.toLong).sum
@@ -196,6 +244,19 @@ object UsageTraffic {
         // render the value in place of the "1" count.
         def soleOf(k: GroupBy, vals: Set[String]): Option[String] =
           if (!groupBy.contains(k) && vals.size == 1) vals.headOption else None
+        // The unique app membership for this bucket when grouping by app —
+        // every row in the bucket is the same membership by construction.
+        val rowApp      = if (wantsApp) bucketPairs.head._2 else None
+        val soleAppName =
+          if (wantsApp) None
+          else if (appsInBucket.size == 1) {
+            val slug = appsInBucket.head
+            // Look up display name from any contributing host.
+            bucketRows.iterator
+              .flatMap(r => membershipsFor(r.host.value))
+              .find(_.slug == slug)
+              .map(_.name)
+          } else None
         TrafficUsageAggregateRow(
           groups = groupsMap,
           windowStart = windowStart.toString,
@@ -206,9 +267,14 @@ object UsageTraffic {
           distinctDevices = devices.size,
           distinctProfiles = profiles.size,
           distinctDomains = domains.size,
+          distinctApps = appsInBucket.size,
           soleDevice = soleOf(GroupBy.Device, devices),
           soleProfile = soleOf(GroupBy.Profile, profiles),
           soleDomain = soleOf(GroupBy.Domain, domains),
+          soleApp = soleAppName,
+          appId = rowApp.flatMap(_.appId),
+          appName = rowApp.map(_.name),
+          appIcon = rowApp.flatMap(_.icon),
         )
       }
       // #846 audit: newest window first, then biggest-bytes-first within window.

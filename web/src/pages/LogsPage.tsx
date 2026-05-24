@@ -9,11 +9,12 @@ import { FilterShelf } from './TrafficUsagePage'
 import { localTime, windowFromTo } from '@/components/usage/usageHelpers'
 
 // #846 — Connection Events page. Same look/feel as Traffic Usage; column
-// headers double as group-by toggles. apex/app deferred to #856/#857.
-type EventsGroupBy = 'domain' | 'device' | 'profile'
+// headers double as group-by toggles. apex deferred to #856; app turned on
+// by #769 (server-side join through app_hosts).
+type EventsGroupBy = 'domain' | 'device' | 'profile' | 'app'
 type EventsBucket  = TrafficUsageBucket  // shared with Traffic page; raw = /api/logs path
 
-const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'profile']
+const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'profile', 'app']
 
 function parseEventsGroupBy(sp: URLSearchParams): EventsGroupBy[] {
   // #917: repeated ?groupBy=device&groupBy=domain serialization; comma form
@@ -48,10 +49,14 @@ export function LogsPage() {
   const [profileIds, setProfileIds]     = useState<number[]>([])
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
+  // #769: surface the "no apps yet" empty-state when the operator drills on
+  // app but the household hasn't created any. `null` = not yet fetched.
+  const [appCount, setAppCount] = useState<number | null>(null)
 
   useEffect(() => {
     api.devices.list().then(setDevices).catch(() => setDevices([]))
     api.profiles.list().then(setProfiles).catch(() => setProfiles([]))
+    api.apps.list().then(xs => setAppCount(xs.length)).catch(() => setAppCount(0))
   }, [])
 
   function toggleGroup(key: string) {
@@ -110,6 +115,7 @@ export function LogsPage() {
             profileIds={profileIds}
             devices={devices}
             profiles={profiles}
+            appCount={appCount}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
           />}
@@ -272,15 +278,47 @@ function NonGroupedCell({
   return <span className="text-gray-500">{count ?? 0}</span>
 }
 
+// #769: app-column cell. When grouped, renders the app's icon + display name
+// (or "Other" for the synthetic `__other__` bucket). When not grouped, falls
+// back to the same sole / distinct-count behaviour as the other columns.
+function AppCell({
+  active,
+  appName,
+  appIcon,
+  sole,
+  count,
+}: {
+  active: boolean
+  appName: string | null | undefined
+  appIcon: string | null | undefined
+  sole: string | null | undefined
+  count: number | undefined
+}) {
+  if (active) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {appIcon && (
+          <span aria-hidden="true" className="text-base leading-none">{appIcon}</span>
+        )}
+        <span>{appName ?? 'Other'}</span>
+      </span>
+    )
+  }
+  if (sole) return <span className="text-gray-400">{sole}</span>
+  return <span className="text-gray-500">{count ?? 0}</span>
+}
+
 interface AggProps extends FilterApi {
   bucket: Exclude<EventsBucket, 'raw'>
   groupBy: EventsGroupBy[]
   onToggleGroup: (key: string) => void
+  appCount: number | null
 }
 
 function AggregatedEventsView({
   bucket, groupBy, onToggleGroup,
-  macs, profileIds, devices, profiles, onMacsChange, onProfileIdsChange,
+  macs, profileIds, devices, profiles, appCount,
+  onMacsChange, onProfileIdsChange,
 }: AggProps) {
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -307,6 +345,22 @@ function AggregatedEventsView({
 
   if (loading) return <Spinner />
   if (error)   return <ErrorBanner message={error} />
+
+  // #769: drilled into "App" but the household has no apps yet — the rows
+  // would all collapse to a single `__other__` bucket. Point the operator
+  // at the apps screen instead.
+  const showAppEmpty = groupBy.includes('app') && appCount === 0
+  if (showAppEmpty) {
+    return (
+      <div
+        data-testid="ce-app-empty"
+        className="rounded border border-emerald-900 bg-emerald-950/30 p-4 text-sm text-emerald-200"
+      >
+        No apps defined yet. <Link to="/apps" className="underline">Create one</Link> to group
+        connection events by app.
+      </div>
+    )
+  }
 
   return (
     <div className="overflow-x-auto" data-testid="ce-agg-table">
@@ -345,6 +399,10 @@ function AggregatedEventsView({
               <GroupableHeader label="Domain" groupKey="domain" groupBy={groupBy}
                 onToggle={onToggleGroup} testIdPrefix="ce-group" />
             </th>
+            <th className="text-left px-2 py-1">
+              <GroupableHeader label="App" groupKey="app" groupBy={groupBy}
+                onToggle={onToggleGroup} testIdPrefix="ce-group" />
+            </th>
             <th className="text-right px-2 py-1">OK</th>
             <th className="text-right px-2 py-1">Blocked</th>
             <th className="text-left px-2 py-1 hidden sm:table-cell">Last seen</th>
@@ -353,7 +411,7 @@ function AggregatedEventsView({
         <tbody className="text-gray-300">
           {rows.length === 0 && (
             <tr>
-              <td colSpan={7} className="text-center text-gray-500 py-4">
+              <td colSpan={8} className="text-center text-gray-500 py-4">
                 No events in window.
               </td>
             </tr>
@@ -385,6 +443,15 @@ function AggregatedEventsView({
                   groupedValue={groupBy.includes('domain') ? r.groups.domain : undefined}
                   sole={r.soleDomain}
                   count={r.distinctDomains}
+                />
+              </td>
+              <td className="px-2 py-1">
+                <AppCell
+                  active={groupBy.includes('app')}
+                  appName={r.appName}
+                  appIcon={r.appIcon}
+                  sole={r.soleApp}
+                  count={r.distinctApps}
                 />
               </td>
               <td className="px-2 py-1 text-emerald-400 text-right">{r.countSucceeded}</td>

@@ -9,6 +9,7 @@ vi.mock('@/api/client', () => ({
     usage:    { traffic: vi.fn() },
     devices:  { list:    vi.fn() },
     profiles: { list:    vi.fn() },
+    apps:     { list:    vi.fn() },
   },
 }))
 
@@ -75,6 +76,10 @@ describe('TrafficUsagePage', () => {
     ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.profiles.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.usage.traffic as ReturnType<typeof vi.fn>).mockResolvedValue(rawResp)
+    // #769: default to "one app exists" so groupBy=app doesn't trip the empty-state.
+    ;(api.apps.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { app: { id: 1, name: 'YouTube', slug: 'youtube' } },
+    ])
   })
 
   it('loads raw view by default and renders rows', async () => {

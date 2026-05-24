@@ -1436,37 +1436,62 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // defaults to "2026-05-21 22:00:00+00" (space separator) which `new Date(...)`
   // rejects as Invalid Date.
   def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String]) = {
-    val bucketIv    = fr"make_interval(secs => $bucketSeconds)"
-    val domainExpr  = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
-    val deviceExpr  = fr"COALESCE(d.name, ce.mac::TEXT)"
-    val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
-
+    val bucketIv     = fr"make_interval(secs => $bucketSeconds)"
+    val domainExpr   = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
+    val deviceExpr   = fr"COALESCE(d.name, ce.mac::TEXT)"
+    val profileExpr  = fr"COALESCE(p.name, '(unassigned)')"
     // #917: strictly additive — empty set = no drill, one row per window.
-    // Multi-group composes freely across {domain, device, profile} (apex/app
-    // rejected at route).
+    // Multi-group composes freely across {domain, device, profile, app}.
     val wantsDomain  = groupBy.contains("domain")
     val wantsDevice  = groupBy.contains("device")
     val wantsProfile = groupBy.contains("profile")
+    val wantsApp     = groupBy.contains("app")
 
-    // Always SELECT all three group expressions (NULL when not requested) so
+    // #769: app slug for each connection-event row by joining the resolved
+    // host through `app_hosts` (host equality on the canonical hostname; the
+    // CRUD layer strips a leading "*." before insert so "youtube.com" is the
+    // stored form). Rows with no app membership bucket to `__other__`. The
+    // join is gated on wantsApp so a host in multiple apps doesn't fan out
+    // the row count when the operator isn't drilling on app.
+    val appSlugExpr = if (wantsApp) fr"COALESCE(aps.slug, '__other__')" else fr"NULL::TEXT"
+    val appNameExpr = if (wantsApp) fr"COALESCE(aps.name, 'Other')" else fr"NULL::TEXT"
+    val appIconExpr = if (wantsApp) fr"aps.icon" else fr"NULL::TEXT"
+    val appIdExpr   = if (wantsApp) fr"aps.id" else fr"NULL::BIGINT"
+
+    // Always SELECT all group expressions (NULL when not requested) so
     // the result tuple has a constant shape and doobie can decode it.
     val selDomain  = if (wantsDomain) domainExpr else fr"NULL::TEXT"
     val selDevice  = if (wantsDevice) deviceExpr else fr"NULL::TEXT"
     val selProfile = if (wantsProfile) profileExpr else fr"NULL::TEXT"
+    val selAppSlug = appSlugExpr
+    val selAppName = appNameExpr
+    val selAppIcon = appIconExpr
+    val selAppId   = appIdExpr
 
-    // GROUP BY only the requested columns, plus the window bucket.
+    // GROUP BY only the requested columns, plus the window bucket. App needs
+    // (slug, name, icon, id) so the GROUP BY can carry through metadata; in
+    // practice (slug) alone uniquely identifies the row but name/icon/id are
+    // functionally dependent so adding them is safe and avoids MAX() casts.
     val groupByParts = List(
       Some(fr"window_start"),
       Option.when(wantsDomain)(domainExpr),
       Option.when(wantsDevice)(deviceExpr),
       Option.when(wantsProfile)(profileExpr),
+      Option.when(wantsApp)(appSlugExpr),
+      Option.when(wantsApp)(appNameExpr),
+      Option.when(wantsApp)(appIconExpr),
+      Option.when(wantsApp)(appIdExpr),
     ).flatten
     val groupByCols  = groupByParts.reduce(_ ++ fr"," ++ _)
 
     val base  =
       fr"""SELECT """ ++ selDomain ++ fr"AS grp_domain," ++
         selDevice ++ fr"AS grp_device," ++
-        selProfile ++ fr"""AS grp_profile,
+        selProfile ++ fr"AS grp_profile," ++
+        selAppSlug ++ fr"AS grp_app_slug," ++
+        selAppName ++ fr"AS grp_app_name," ++
+        selAppIcon ++ fr"AS grp_app_icon," ++
+        selAppId ++ fr"""AS grp_app_id,
                   to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
                           AT TIME ZONE 'UTC',
                           'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS window_start,
@@ -1478,17 +1503,27 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                   COUNT(DISTINCT """ ++ deviceExpr ++ fr""")::INT          AS distinct_devices,
                   COUNT(DISTINCT """ ++ profileExpr ++ fr""")::INT         AS distinct_profiles,
                   COUNT(DISTINCT """ ++ domainExpr ++ fr""")::INT          AS distinct_domains,
+                  COUNT(DISTINCT """ ++ appSlugExpr ++ fr""")::INT         AS distinct_apps,
                   CASE WHEN COUNT(DISTINCT """ ++ deviceExpr ++ fr""") = 1
                        THEN MAX(""" ++ deviceExpr ++ fr""") END            AS sole_device,
                   CASE WHEN COUNT(DISTINCT """ ++ profileExpr ++ fr""") = 1
                        THEN MAX(""" ++ profileExpr ++ fr""") END           AS sole_profile,
                   CASE WHEN COUNT(DISTINCT """ ++ domainExpr ++ fr""") = 1
-                       THEN MAX(""" ++ domainExpr ++ fr""") END            AS sole_domain
+                       THEN MAX(""" ++ domainExpr ++ fr""") END            AS sole_domain,
+                  CASE WHEN COUNT(DISTINCT """ ++ appSlugExpr ++ fr""") = 1
+                       THEN MAX(""" ++ appNameExpr ++ fr""") END           AS sole_app
            FROM connection_events ce
            LEFT JOIN devices d  ON d.mac = ce.mac
            LEFT JOIN profiles p ON p.id  = d.profile_id
-           LEFT JOIN routers r  ON r.id  = ce.router_id
-           WHERE 1=1"""
+           LEFT JOIN routers r  ON r.id  = ce.router_id""" ++
+        // #769: only join through app_hosts when grouping by app — a host in
+        // multiple apps would otherwise fan out the row count. The join is
+        // gated so wantsApp=false stays a single-row-per-event path.
+        (if (wantsApp)
+           fr"""LEFT JOIN app_hosts ah ON ah.host = """ ++ domainExpr ++ fr"""
+           LEFT JOIN apps aps   ON aps.id = ah.app_id"""
+         else fr"") ++
+        fr"""WHERE 1=1"""
     val since = fr"AND ce.ts > NOW() - make_interval(hours => ${f.hours})"
     val byMac = cats.data.NonEmptyList
       .fromList(f.macs)
@@ -1515,6 +1550,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             Option[String], // grp_domain
             Option[String], // grp_device
             Option[String], // grp_profile
+            Option[String], // grp_app_slug
+            Option[String], // grp_app_name
+            Option[String], // grp_app_icon
+            Option[Long],   // grp_app_id
             String,         // window_start
             Int,            // count_succeeded
             Int,            // count_blocked
@@ -1523,32 +1562,65 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             Int,            // distinct_devices
             Int,            // distinct_profiles
             Int,            // distinct_domains
+            Int,            // distinct_apps
             Option[String], // sole_device   (null when distinct != 1)
             Option[String], // sole_profile
             Option[String], // sole_domain
+            Option[String], // sole_app
         ),
       ]
-      .map { case (gd, gv, gp, ws, sc, bl, ls, td, dd, dpr, dm, sde, spr, sdo) =>
-        val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
-        gd.foreach(v => groupMap += ("domain" -> v))
-        gv.foreach(v => groupMap += ("device" -> v))
-        gp.foreach(v => groupMap += ("profile" -> v))
-        // Only surface sole* when the column is NOT in groupBy — when it IS,
-        // the value is already in `groups`.
-        ConnectionEventAggRow(
-          groups = groupMap.toMap,
-          windowStart = ws,
-          countSucceeded = sc,
-          countBlocked = bl,
-          lastSeen = ls,
-          topDevice = td,
-          distinctDevices = dd,
-          distinctProfiles = dpr,
-          distinctDomains = dm,
-          soleDevice = if (wantsDevice) None else sde,
-          soleProfile = if (wantsProfile) None else spr,
-          soleDomain = if (wantsDomain) None else sdo,
-        )
+      .map {
+        case (
+              gd,
+              gv,
+              gp,
+              gas,
+              gan,
+              gai,
+              gid,
+              ws,
+              sc,
+              bl,
+              ls,
+              td,
+              dd,
+              dpr,
+              dm,
+              dap,
+              sde,
+              spr,
+              sdo,
+              sap,
+            ) =>
+          val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
+          gd.foreach(v => groupMap += ("domain" -> v))
+          gv.foreach(v => groupMap += ("device" -> v))
+          gp.foreach(v => groupMap += ("profile" -> v))
+          gas.foreach(v => groupMap += ("app" -> v))
+          // Only surface sole* when the column is NOT in groupBy — when it IS,
+          // the value is already in `groups`.
+          ConnectionEventAggRow(
+            groups = groupMap.toMap,
+            windowStart = ws,
+            countSucceeded = sc,
+            countBlocked = bl,
+            lastSeen = ls,
+            topDevice = td,
+            distinctDevices = dd,
+            distinctProfiles = dpr,
+            distinctDomains = dm,
+            distinctApps = dap,
+            soleDevice = if (wantsDevice) None else sde,
+            soleProfile = if (wantsProfile) None else spr,
+            soleDomain = if (wantsDomain) None else sdo,
+            soleApp = if (wantsApp) None else sap,
+            // appId is the BIGINT primary key for the apps table; the
+            // synthetic "__other__" bucket has no row in apps so app_id is
+            // NULL on the wire.
+            appId = if (wantsApp) gid.map(AppId(_)) else None,
+            appName = if (wantsApp) gan else None,
+            appIcon = if (wantsApp) gai else None,
+          )
       }
       .to[List]
       .transact(xa)
@@ -1649,6 +1721,14 @@ trait AppRepo {
   def setHosts(appId: AppId, hosts: List[Hostname]): Task[Unit]
   def getHosts(appId: AppId): Task[List[Hostname]]
 
+  /**
+   * #769: full (host, app_id) inventory across all apps. Used by the group-by-app aggregation paths
+   * for Connection Events + Traffic Usage to bucket rows into their owning app, with `__other__`
+   * for hosts not in any app. One row per (host, app) pair — a host that's in two apps yields two
+   * entries.
+   */
+  def listAllHostMappings: Task[List[AppHost]]
+
   /** Upsert a (app, profile) assignment. Existing row at that key is overwritten. */
   def upsertAssignment(
       appId: AppId,
@@ -1720,6 +1800,13 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
   def getHosts(appId: AppId) =
     sql"SELECT host FROM app_hosts WHERE app_id=$appId ORDER BY host"
       .query[Hostname]
+      .to[List]
+      .transact(xa)
+
+  def listAllHostMappings =
+    sql"SELECT app_id, host FROM app_hosts"
+      .query[(AppId, Hostname)]
+      .map { case (id, h) => AppHost(id, h) }
       .to[List]
       .transact(xa)
 
