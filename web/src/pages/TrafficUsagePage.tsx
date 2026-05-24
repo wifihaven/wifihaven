@@ -172,6 +172,7 @@ export function TrafficUsagePage() {
       {bucket === 'raw' && (
         <RawTable
           rows={rawRows}
+          loading={loading}
           devices={devices}
           profiles={profiles}
           macs={macs}
@@ -192,6 +193,7 @@ export function TrafficUsagePage() {
       {bucket !== 'raw' && !(groupBy.includes('app') && appCount === 0) && (
         <AggregateTable
           rows={aggRows}
+          loading={loading}
           groupBy={groupBy}
           onToggleGroup={toggleGroup}
           devices={devices}
@@ -400,10 +402,11 @@ function ProfileHeaderCell({
 
 interface RawTableProps extends FilterHeaderProps {
   rows: TrafficUsageRawRow[]
+  loading: boolean
 }
 
 function RawTable({
-  rows, devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
+  rows, loading, devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
 }: RawTableProps) {
   return (
     <div className="overflow-x-auto" data-testid="raw-table">
@@ -436,7 +439,7 @@ function RawTable({
           </tr>
         </thead>
         <tbody className="text-gray-300">
-          {rows.length === 0 && (
+          {rows.length === 0 && !loading && (
             <tr>
               <td colSpan={7} className="text-center text-gray-500 py-4">
                 No rows in window.
@@ -462,6 +465,7 @@ function RawTable({
 
 interface AggProps extends FilterHeaderProps {
   rows: TrafficUsageAggregateRow[]
+  loading: boolean
   groupBy: TrafficUsageGroupBy[]
   onToggleGroup: (key: string) => void
 }
@@ -516,7 +520,7 @@ function NonGroupedCell({
 }
 
 function AggregateTable({
-  rows, groupBy, onToggleGroup,
+  rows, loading, groupBy, onToggleGroup,
   devices, profiles, macs, profileIds, onMacsChange, onProfileIdsChange,
 }: AggProps) {
   return (
@@ -586,7 +590,7 @@ function AggregateTable({
           </tr>
         </thead>
         <tbody className="text-gray-300">
-          {rows.length === 0 && (
+          {rows.length === 0 && !loading && (
             <tr>
               <td colSpan={8} className="text-center text-gray-500 py-4">
                 No rows in window.

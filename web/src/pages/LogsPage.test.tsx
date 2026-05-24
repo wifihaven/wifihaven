@@ -86,6 +86,22 @@ describe('LogsPage (Connection Events) — raw view', () => {
     renderAt()
     expect(await screen.findByText('No events in window.')).toBeInTheDocument()
   })
+
+  // #968: while a fetch is in flight, the empty-state copy must not appear
+  // above the loading spinner. Gate empty-state on !loading.
+  it('does not render empty-state copy while loading', async () => {
+    let resolve: (v: { rows: QueryLog[]; nextCursor: string | null }) => void = () => {}
+    ;(api.logs.query as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      new Promise<{ rows: QueryLog[]; nextCursor: string | null }>(r => { resolve = r }),
+    )
+    renderAt()
+    await waitFor(() => expect(api.logs.query).toHaveBeenCalled())
+    expect(screen.getByTestId('loading')).toBeInTheDocument()
+    expect(screen.queryByText('No events in window.')).not.toBeInTheDocument()
+    resolve({ rows: [], nextCursor: null })
+    await waitFor(() => expect(screen.getByText('No events in window.')).toBeInTheDocument())
+    expect(screen.queryByTestId('loading')).not.toBeInTheDocument()
+  })
 })
 
 describe('LogsPage — aggregation', () => {
