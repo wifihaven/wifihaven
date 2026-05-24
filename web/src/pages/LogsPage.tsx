@@ -13,7 +13,12 @@ import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 // requires `hours`, so we ask for a wide band and let the row cap bound.
 const RAW_PAGE_SIZE = 200
 const AGG_PAGE_SIZE = 500
-const HOURS_BAND    = 24 * 365
+// Raw uses keyset + LIMIT in SQL → wide band is fine (1y).
+// Aggregated still in-memory-buckets the whole band on the server (#809
+// will replace with rollup tables), so cap at 30d to stay inside the 31d
+// on-the-fly cap. Beyond 30d shows end-of-stream — Jump-to-Date is #951.
+const RAW_HOURS_BAND = 24 * 365
+const AGG_HOURS_BAND = 24 * 30
 
 // #846 — Connection Events page. Same look/feel as Traffic Usage; column
 // headers double as group-by toggles. apex deferred to #856; app turned on
@@ -54,8 +59,6 @@ export function LogsPage() {
   // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
-  // #862: end-at anchor for the infinite-scroll window. null = NOW.
-  const [until, setUntil]               = useState<string | null>(null)
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   // #769: surface the "no apps yet" empty-state when the operator drills on
@@ -97,11 +100,9 @@ export function LogsPage() {
         macs={macs}
         profileIds={profileIds}
         bucket={bucket}
-        until={until}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
-        onUntilChange={setUntil}
       />
 
       {bucket === 'raw'
@@ -110,7 +111,6 @@ export function LogsPage() {
             profileIds={profileIds}
             devices={devices}
             profiles={profiles}
-            until={until}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
           />
@@ -123,7 +123,6 @@ export function LogsPage() {
             devices={devices}
             profiles={profiles}
             appCount={appCount}
-            until={until}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
           />}
@@ -156,7 +155,6 @@ interface FilterApi {
   profileIds: number[]
   devices: Device[]
   profiles: ProfileDetail[]
-  until: string | null
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
 }
@@ -167,7 +165,7 @@ interface RawProps extends FilterApi {}
 // walks back. /api/logs still requires `hours`, so we ask for a wide band
 // (1y) and let the row cap bound.
 function RawEventsView({
-  macs, profileIds, devices, profiles, until, onMacsChange, onProfileIdsChange,
+  macs, profileIds, devices, profiles, onMacsChange, onProfileIdsChange,
 }: RawProps) {
   const [logs, setLogs]       = useState<QueryLog[]>([])
   const [cursor, setCursor]   = useState<string | null>(null)
@@ -185,7 +183,7 @@ function RawEventsView({
     return ids.length ? ids : undefined
   }, [macs, devices])
 
-  const filterKey = `${deviceIds?.join(',') ?? ''}|${profileIds.join(',')}|${until ?? ''}`
+  const filterKey = `${deviceIds?.join(',') ?? ''}|${profileIds.join(',')}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -193,11 +191,10 @@ function RawEventsView({
       setError(null)
       try {
         const page = await api.logs.query({
-          hours:      HOURS_BAND,
+          hours:      RAW_HOURS_BAND,
           deviceIds,
           profileIds: profileIds.length ? profileIds : undefined,
           limit:      RAW_PAGE_SIZE,
-          until:      until ?? undefined,
           cursor:     curs ?? undefined,
         })
         setLogs(prev => curs ? prev.concat(page.rows) : page.rows)
@@ -210,7 +207,7 @@ function RawEventsView({
         setLoading(false)
       }
     },
-    [deviceIds, profileIds, until],
+    [deviceIds, profileIds],
   )
 
   useEffect(() => {
@@ -371,7 +368,7 @@ interface AggProps extends FilterApi {
 
 function AggregatedEventsView({
   bucket, groupBy, onToggleGroup,
-  macs, profileIds, devices, profiles, appCount, until,
+  macs, profileIds, devices, profiles, appCount,
   onMacsChange, onProfileIdsChange,
 }: AggProps) {
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
@@ -381,7 +378,7 @@ function AggregatedEventsView({
   const [error, setError]     = useState<string | null>(null)
   const sentinelRef           = useRef<HTMLDivElement | null>(null)
 
-  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -393,9 +390,8 @@ function AggregatedEventsView({
           groupBy,
           macs:       macs.length ? macs : undefined,
           profileIds: profileIds.length ? profileIds : undefined,
-          hours:      HOURS_BAND,
+          hours:      AGG_HOURS_BAND,
           limit:      AGG_PAGE_SIZE,
-          until:      until ?? undefined,
           cursor:     curs ?? undefined,
         })
         setRows(prev => curs ? prev.concat(page.rows) : page.rows)
@@ -408,7 +404,7 @@ function AggregatedEventsView({
         setLoading(false)
       }
     },
-    [bucket, groupBy, macs, profileIds, until],
+    [bucket, groupBy, macs, profileIds],
   )
 
   useEffect(() => {

@@ -1590,10 +1590,10 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
          else fr"") ++
         fr"""WHERE 1=1"""
     // #862: window anchor moves from "now" to `until` (defaults to NOW()).
-    val anchor = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
-    val window =
+    val anchor  = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val window  =
       fr"AND ce.ts > " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND ce.ts <= " ++ anchor
-    val byMac  = cats.data.NonEmptyList
+    val byMac   = cats.data.NonEmptyList
       .fromList(f.macs)
       .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
     val byDev   = cats.data.NonEmptyList

@@ -1047,9 +1047,9 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
         body <- resp.body.asString
         page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
-        rows  = page.rows
-        yt = rows.find(_.groups.getOrElse("app", "") == "youtube").get
-        ot = rows.find(_.groups.getOrElse("app", "") == "__other__").get
+        rows = page.rows
+        yt   = rows.find(_.groups.getOrElse("app", "") == "youtube").get
+        ot   = rows.find(_.groups.getOrElse("app", "") == "__other__").get
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.length == 2) &&
         assertTrue(yt.countSucceeded == 2) &&

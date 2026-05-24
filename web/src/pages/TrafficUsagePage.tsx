@@ -14,7 +14,6 @@ import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
-import { JumpToDate } from '@/components/usage/JumpToDate'
 import {
   fmtBytes,
   fmtDuration,
@@ -33,8 +32,9 @@ import { useInfiniteScroll } from '@/hooks/useInfiniteScroll'
 const RAW_PAGE_SIZE = 200
 const AGG_PAGE_SIZE = 500
 // Raw view pushes keyset + LIMIT into SQL, so a wide band is fine.
-// Aggregated still in-memory-buckets the whole band → 30d cap (server enforces
-// 31d for aggregated). Operator can JumpToDate to scroll past the cap.
+// Aggregated still in-memory-buckets the whole band → 30d cap (server
+// enforces 31d for aggregated until rollup tables #809 land). Beyond 30d
+// you'll see end-of-stream — a 'Jump to date' picker is filed as #951.
 const RAW_BAND_MS = 365 * 24 * 60 * 60 * 1000
 const AGG_BAND_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -57,8 +57,6 @@ export function TrafficUsagePage() {
   // #865: multi-select filters. Empty = no filter on that column.
   const [macs, setMacs]                 = useState<string[]>([])
   const [profileIds, setProfileIds]     = useState<number[]>([])
-  // #862: jump-to-date anchors the right edge of the scroll window.
-  const [until, setUntil]               = useState<string | null>(null)
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   // #862: append-on-scroll model. rawRows + aggRows accumulate across pages;
@@ -81,7 +79,7 @@ export function TrafficUsagePage() {
 
   // Filter key drives the reset effect — when any of these change, the cursor
   // walk restarts from None.
-  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -90,7 +88,7 @@ export function TrafficUsagePage() {
       try {
         const limit = bucket === 'raw' ? RAW_PAGE_SIZE : AGG_PAGE_SIZE
         const band  = bucket === 'raw' ? RAW_BAND_MS : AGG_BAND_MS
-        const anchor = until ?? new Date().toISOString()
+        const anchor = new Date().toISOString()
         const from   = new Date(new Date(anchor).getTime() - band).toISOString()
         const resp: TrafficUsageResponse = await api.usage.traffic({
           macs:       macs.length       ? macs       : undefined,
@@ -116,7 +114,7 @@ export function TrafficUsagePage() {
         setLoading(false)
       }
     },
-    [bucket, groupBy, macs, profileIds, until],
+    [bucket, groupBy, macs, profileIds],
   )
 
   useEffect(() => {
@@ -164,11 +162,9 @@ export function TrafficUsagePage() {
         macs={macs}
         profileIds={profileIds}
         bucket={bucket}
-        until={until}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
-        onUntilChange={setUntil}
       />
 
       {error && <ErrorBanner message={error} />}
@@ -236,21 +232,19 @@ interface ShelfProps {
   macs: string[]
   profileIds: number[]
   bucket: TrafficUsageBucket
-  // #862: end-at anchor (null = NOW). JumpToDate re-anchors.
-  until: string | null
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
   onBucketChange: (b: TrafficUsageBucket) => void
-  onUntilChange: (v: string | null) => void
 }
 
 // #865: shelf carries the bucket selector + a chip summary of any active
 // column-header filters. Device / Profile dropdowns moved into column
 // headers as multi-select popovers.
-// #862: also hosts the JumpToDate picker (right-edge anchor for infinite scroll).
+// #862: cursor-paged infinite scroll anchors at NOW; a Jump-to-Date picker
+// is deferred to #951.
 export function FilterShelf({
-  devices, profiles, macs, profileIds, bucket, until,
-  onMacsChange, onProfileIdsChange, onBucketChange, onUntilChange,
+  devices, profiles, macs, profileIds, bucket,
+  onMacsChange, onProfileIdsChange, onBucketChange,
 }: ShelfProps) {
   const deviceLabel = (m: string) => devices.find(d => d.mac === m)?.name ?? m
   const profileLabel = (pid: number) =>
@@ -258,10 +252,7 @@ export function FilterShelf({
   const hasChips = macs.length > 0 || profileIds.length > 0
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
-      <div className="flex flex-wrap items-end gap-3">
-        <BucketSelector value={bucket} onChange={onBucketChange} />
-        <JumpToDate value={until} onChange={onUntilChange} />
-      </div>
+      <BucketSelector value={bucket} onChange={onBucketChange} />
       {hasChips && (
         <div className="flex flex-wrap items-center gap-2" data-testid="active-filters">
           <span className="text-[11px] uppercase tracking-wide text-gray-500">Filters:</span>

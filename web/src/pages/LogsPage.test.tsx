@@ -202,19 +202,5 @@ describe('LogsPage — infinite scroll (#862)', () => {
     expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
   })
 
-  it('jump-to-date re-anchors the window: `until` param is sent', async () => {
-    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
-    renderAt()
-    await screen.findByText('example.com')
-    queryMock.mockClear()
-
-    const input = screen.getByTestId('jump-to-date-input') as HTMLInputElement
-    await userEvent.type(input, '2026-05-22T10:30')
-
-    await waitFor(() => expect(queryMock).toHaveBeenCalled())
-    const calls = queryMock.mock.calls
-    const last = calls[calls.length - 1][0]
-    expect(last.until).toBeTruthy()
-    expect(typeof last.until).toBe('string')
-  })
+  // Jump-to-date picker deferred to #951; test removed alongside the UI.
 })
