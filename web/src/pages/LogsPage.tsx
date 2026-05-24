@@ -283,7 +283,7 @@ function RawEventsView({
           </tr>
         </thead>
         <tbody className="text-gray-300">
-          {logs.length === 0 && (
+          {logs.length === 0 && !loading && (
             <tr>
               <td colSpan={7} className="text-center text-gray-500 py-4">
                 No events in window.
@@ -507,7 +507,7 @@ function AggregatedEventsView({
           </tr>
         </thead>
         <tbody className="text-gray-300">
-          {rows.length === 0 && (
+          {rows.length === 0 && !loading && (
             <tr>
               <td colSpan={8} className="text-center text-gray-500 py-4">
                 No events in window.

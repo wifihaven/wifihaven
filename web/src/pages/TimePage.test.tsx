@@ -47,7 +47,8 @@ const limited: ProfileTimeStatus = {
   hostUsage: [
     { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 35, proportionalMins: 30 },
     { host: { type: 'fqdn', value: 'khan-academy.org' }, usedMins: 10, proportionalMins: 8 },
-    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5, proportionalMins: 2 },
+    // #957 — equal proportional/presence (within rounding) → collapse to one number.
+    { host: { type: 'ipv4', value: '192.0.2.1' }, usedMins: 5, proportionalMins: 5 },
   ],
 }
 
@@ -228,9 +229,19 @@ describe('TimePage — expanded card content', () => {
     expect(screen.getAllByText('30m left').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('YouTube')).toBeInTheDocument()
     expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('youtube.com')
-    // #715: row shows proportional (wall-clock attention) first, presence in parens.
-    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('30m')
-    expect(screen.getByTestId('time-host-1-youtube.com')).toHaveTextContent('(35m)')
+    // #957: row shows two labeled numbers — Attention (proportional, #715) and Seen (presence).
+    // youtube.com has proportionalMins=30, usedMins=35 → distinct labels both render.
+    const ytRow = screen.getByTestId('time-host-1-youtube.com')
+    expect(ytRow).toHaveTextContent('30m')
+    expect(ytRow).toHaveTextContent('35m')
+    expect(ytRow).not.toHaveTextContent('(35m)')
+    // Column header labels are visible without hover.
+    expect(screen.getAllByText('Attention').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Seen').length).toBeGreaterThan(0)
+    // #957: when attention and seen round to the same number, the Seen cell is blank
+    // so the row renders only one figure (no `5m 5m` duplication).
+    const ipRow = screen.getByTestId('time-host-1-192.0.2.1')
+    expect((ipRow.textContent ?? '').replace('192.0.2.1', '')).toBe('5m')
   })
 
   it('over-limit and no-limit details render when expanded', async () => {
@@ -348,9 +359,11 @@ describe('TimePage — week toggle (#723)', () => {
     expect(await screen.findByTestId('time-week-card-1')).toBeInTheDocument()
     expect(screen.getByText('3:30 used this week')).toBeInTheDocument()
     expect(screen.getByTestId('time-week-chart-1')).toBeInTheDocument()
-    // Weekly host row shows proportional (1:20 = 80m) first, then presence in parens (1:30 = 90m).
-    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('1:20')
-    expect(screen.getByTestId('time-week-host-1-youtube.com')).toHaveTextContent('(1:30)')
+    // #957: weekly host row shows two labeled numbers — Attention (1:20 = 80m) and Seen (1:30 = 90m).
+    const ytWeekRow = screen.getByTestId('time-week-host-1-youtube.com')
+    expect(ytWeekRow).toHaveTextContent('1:20')
+    expect(ytWeekRow).toHaveTextContent('1:30')
+    expect(ytWeekRow).not.toHaveTextContent('(1:30)')
     expect(screen.getByTestId('time-week-device-link-aa:bb:cc:dd:ee:01'))
       .toHaveAttribute('href', '/devices/aa%3Abb%3Acc%3Add%3Aee%3A01/timeline')
   })

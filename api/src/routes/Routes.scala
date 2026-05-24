@@ -1162,6 +1162,7 @@ object LogRoutes {
               until = untilOpt,
               cursorTs = cursorOpt.map(_.ts),
               cursorId = cursorOpt.map(_.id),
+              includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
             )
             logs    <- connRepo.query(filter).mapError(ErrorMapper.dbErrorToResponse)
             visible <- filterLogs(claims, logs, userProfileRepo)
@@ -1240,6 +1241,7 @@ object LogRoutes {
               until = untilOpt,
               cursorWs = cursorOpt.map(_.ws),
               cursorKey = cursorOpt.map(_.key),
+              includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
             )
             rows <- connRepo
               .querySeries(filter, bucket.seconds, groupByCodes)
