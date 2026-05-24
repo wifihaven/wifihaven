@@ -10,16 +10,46 @@ import {
 } from '@/components/usage/UsageHourlyBarChart'
 
 // #722 — per-profile daily timeline. Hourly stacked-bar chart of minutes-of-use
-// across all of a profile's devices, with a stack-by toggle (device | host)
-// that switches which dimension drives the stacks. Colors are derived from a
-// stable index of the top-N entries so the same host (or device) keeps its
-// color across re-renders.
+// across all of a profile's devices, with a stack-by toggle that switches which
+// dimension drives the stacks. Colors are derived from a stable index of the
+// top-N entries so the same host (or device) keeps its color across re-renders.
+//
+// #964 — group-by options expanded to {total, host, device, app}. Default is
+// `total` (no drill-down, single bar per hour = profile total) to match the
+// strictly-additive aggregation model from #917. `app` is gated until the apps
+// chain (#769) extends /api/usage/series; rendered as disabled with a tooltip.
 
 const TOP_N = 5
 const DEFAULT_TZ =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
-type StackBy = 'host' | 'device'
+type StackBy = 'total' | 'host' | 'device' | 'app'
+
+const STACK_BY_OPTIONS: ReadonlyArray<{
+  key: StackBy
+  label: string
+  disabled?: boolean
+  title?: string
+}> = [
+  { key: 'total',  label: 'Total' },
+  { key: 'host',   label: 'Host' },
+  { key: 'device', label: 'Device' },
+  {
+    key: 'app',
+    label: 'App',
+    disabled: true,
+    title: 'Grouping by app requires the apps chain (#769) — coming soon.',
+  },
+]
+
+function parseStackBy(s: string | null): StackBy {
+  switch (s) {
+    case 'host':   return 'host'
+    case 'device': return 'device'
+    // 'app' isn't selectable yet — fall through to total.
+    default:       return 'total'
+  }
+}
 
 function todayISO(): string {
   const d = new Date()
@@ -70,7 +100,7 @@ export function ProfileTimelinePage() {
   const [params, setParams] = useSearchParams()
 
   const initialDate = params.get('date') ?? todayISO()
-  const initialStack = (params.get('stackBy') === 'device' ? 'device' : 'host') as StackBy
+  const initialStack = parseStackBy(params.get('stackBy'))
   const [date, setDate]       = useState<string>(initialDate)
   const [stackBy, setStackBy] = useState<StackBy>(initialStack)
   const [data, setData]       = useState<UsageSeriesResponse | null>(null)
@@ -110,7 +140,7 @@ export function ProfileTimelinePage() {
         key: k, name: k, color: HOST_COLORS[i % HOST_COLORS.length],
       }))
       return { rows: buildHostRows(data.buckets, keys), series }
-    } else {
+    } else if (stackBy === 'device') {
       const top = (data.topDevices ?? []).filter(d => d.dayMins > 0)
       const keys = top.map(d => d.deviceMac)
       const series: ChartSeries[] = top.map((d, i) => ({
@@ -118,12 +148,26 @@ export function ProfileTimelinePage() {
       }))
       const rows = buildDeviceRows(data.bucketsByDevice ?? [], keys)
       return { rows, series }
+    } else {
+      // total — single stack per hour = profile total, no drill-down. Reuse
+      // the host-mode buckets (totalMins is identical across both bucket
+      // arrays since they're aggregations of the same source rows).
+      const rows = data.buckets.map(b => ({
+        hour: String(b.hour).padStart(2, '0'),
+        total: b.totalMins,
+        __total: b.totalMins,
+        [OTHER_KEY]: 0,
+      })) as { hour: string; total: number; [k: string]: number | string }[]
+      const series: ChartSeries[] = [
+        { key: '__total', name: 'Total', color: HOST_COLORS[0] },
+      ]
+      return { rows, series }
     }
   }, [data, stackBy])
 
   if (loading && !data) return <PageLoader />
 
-  const buckets = stackBy === 'host' ? data?.buckets : data?.bucketsByDevice
+  const buckets = stackBy === 'device' ? data?.bucketsByDevice : data?.buckets
   const dayTotal = buckets?.reduce((a, b) => a + b.totalMins, 0) ?? 0
   const isEmpty  = dayTotal === 0
 
@@ -172,20 +216,25 @@ export function ProfileTimelinePage() {
           </h2>
           <div className="flex items-center gap-3">
             <div className="inline-flex rounded-lg bg-gray-800 p-0.5 text-xs" role="tablist" aria-label="Stack by">
-              {(['host', 'device'] as StackBy[]).map(opt => (
+              {STACK_BY_OPTIONS.map(opt => (
                 <button
-                  key={opt}
+                  key={opt.key}
                   role="tab"
-                  aria-selected={stackBy === opt}
-                  data-testid={`profile-timeline-stack-${opt}`}
-                  onClick={() => setStackAndPush(opt)}
+                  aria-selected={stackBy === opt.key}
+                  aria-disabled={opt.disabled || undefined}
+                  disabled={opt.disabled}
+                  title={opt.title}
+                  data-testid={`profile-timeline-stack-${opt.key}`}
+                  onClick={() => { if (!opt.disabled) setStackAndPush(opt.key) }}
                   className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
-                    stackBy === opt
+                    stackBy === opt.key
                       ? 'bg-emerald-500 text-black'
-                      : 'text-gray-400 hover:text-gray-200'
+                      : opt.disabled
+                        ? 'text-gray-600 cursor-not-allowed'
+                        : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
-                  {opt === 'host' ? 'Host' : 'Device'}
+                  {opt.label}
                 </button>
               ))}
             </div>
@@ -206,7 +255,7 @@ export function ProfileTimelinePage() {
           <UsageHourlyBarChart
             rows={chart.rows}
             series={chart.series}
-            showLegend
+            showLegend={stackBy !== 'total'}
             // The chart receives device-mac keys when stack-by=device; map them
             // back to friendly names so the legend reads "Kid's iPad" not the mac.
             legendFormatter={stackBy === 'device'
@@ -267,7 +316,7 @@ export function ProfileTimelinePage() {
         </div>
       )}
 
-      {data && stackBy === 'device' && (data.topDevices ?? []).length > 0 && (
+      {data && (stackBy === 'device' || stackBy === 'total') && (data.topDevices ?? []).length > 0 && (
         <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
             Devices

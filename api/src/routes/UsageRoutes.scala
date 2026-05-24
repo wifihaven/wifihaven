@@ -72,7 +72,9 @@ object UsageRoutes {
               .flatMap(_.toIntOption)
               .getOrElse(5)
               .max(1)
-              .min(20)
+              // #964: cap bumped from 20 → 500 so the per-device 'other'
+              // drill-in can request the full long-tail of hosts in one shot.
+              .min(500)
             resp <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
                 buildForDevice(
