@@ -1147,7 +1147,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         // 2026-05-08T05:00:00Z = 2026-05-07T22:00 PDT → LA-local date 2026-05-07.
         laEveningStart = Instant.parse("2026-05-08T04:55:00Z")
         laEveningEnd   = Instant.parse("2026-05-08T05:00:00Z")
-        rec  = UsageRecord(
+        rec            = UsageRecord(
           MacAddress.unsafe(knownMac),
           None,
           HostId.Fqdn(Hostname.unsafe("youtube.com")),
@@ -1156,7 +1156,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           400L,
         )
         body = UsageReport(id, laEveningStart.toString, laEveningEnd.toString, List(rec)).toJson
-        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        resp      <- post(routes, "/api/router/usage", body, Some(tk))
         // Expected bucket: LA-local 2026-05-07. Wrong-bucket (UTC) would be 2026-05-08.
         laBucket  <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
@@ -1192,8 +1192,8 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           50L,
         )
         body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
-        _    <- post(routes, "/api/router/usage", body, Some(tk))
-        sb   <- tu.getSecondsAndBytes(
+        _  <- post(routes, "/api/router/usage", body, Some(tk))
+        sb <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
           HostId.Fqdn(Hostname.unsafe("youtube.com")),
           testDate,

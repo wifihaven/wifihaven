@@ -33,27 +33,27 @@ object RouterIngestRoutes {
       Method.POST / "api" / "router" / "usage"  ->
         handler { (req: Request) =>
           for {
-            router <- auth.authenticate(req)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            rep    <- ZIO
+            router   <- auth.authenticate(req)
+            body     <- req.body.asString.orElseFail(Response.badRequest(""))
+            rep      <- ZIO
               .fromEither(body.fromJson[UsageReport])
               .mapError(e => Response.badRequest(e))
-            _      <- ZIO
+            _        <- ZIO
               .fail(Response.badRequest("router_id mismatch"))
               .when(rep.routerId != router.id)
-            ps     <- parseInstant(rep.periodStart)
-            pe     <- parseInstant(rep.periodEnd)
-            _      <- ZIO.logDebug(
+            ps       <- parseInstant(rep.periodStart)
+            pe       <- parseInstant(rep.periodEnd)
+            _        <- ZIO.logDebug(
               s"router usage: router=${router.id} period=$ps..$pe records=${rep.records.size}",
             )
-            _      <- ZIO.foreachDiscard(rep.records)(r =>
+            _        <- ZIO.foreachDiscard(rep.records)(r =>
               ZIO.logDebug(
                 s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
                   s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
               ),
             )
             settings <- householdSettingsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            _ <- handleUsage(
+            _        <- handleUsage(
               router.id,
               ps,
               pe,
@@ -63,7 +63,7 @@ object RouterIngestRoutes {
               timeUsageRepo,
               deviceRepo,
             )
-            _ <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _        <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.POST / "api" / "router" / "events" ->
