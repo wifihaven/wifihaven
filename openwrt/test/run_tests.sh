@@ -28,3 +28,4 @@ sh test/boot_skeleton_spec.sh
 sh test/update_spec.sh
 sh test/install_spec.sh
 sh test/agent_spec.sh
+sh test/rotate_dnsmasq_log_spec.sh
