@@ -75,8 +75,8 @@ object Main extends ZIOAppDefault {
       // Bump to 4 MiB — well above any realistic single-bucket payload and below
       // Render's edge 413 threshold.
       serverConfig = Server.Config.default
-                       .port(cfg.http.port)
-                       .disableRequestStreaming(4 * 1024 * 1024)
+        .port(cfg.http.port)
+        .disableRequestStreaming(4 * 1024 * 1024)
       _ <- Server
         .serve(withCors)
         .provide(ZLayer.succeed(serverConfig) >>> Server.live)
