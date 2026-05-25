@@ -1,0 +1,9 @@
+# Fake-news domains. StevenBlack publishes an "alternates/fakenews-only"
+# file (MIT-licensed) maintained against the Melissa Zimdars fake-news
+# research corpus. We refresh on every API restart.
+id: fakenews
+name: Fake News
+description: Known misinformation and fake-news sites, fetched from StevenBlack/hosts (alternates/fakenews-only) on each API restart.
+source: "https://github.com/StevenBlack/hosts/tree/master/alternates/fakenews-only (MIT)"
+url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-only/hosts
+format: hosts-file

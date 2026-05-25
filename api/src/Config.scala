@@ -18,6 +18,13 @@ case class AppConfig(
   // Read from env, not HOCON, so it stays out of application.conf — debug
   // belongs to the runtime environment, not the persistent config.
   val debugEnabled: Boolean = AppConfig.envTruthy(sys.env.get("WIFIHAVEN_DEBUG"))
+
+  // #706 / #958: when set, the API startup seeder also inserts the dev-only
+  // `test_ads` and `test_social` blocklists. Prod must leave this UNSET so a
+  // fresh enrollment never carries those rows. The V32 cleanup migration
+  // wipes any historical leak on first boot after upgrade.
+  val seedTestBlocklists: Boolean =
+    AppConfig.envTruthy(sys.env.get("WIFIHAVEN_SEED_TEST_BLOCKLISTS"))
 }
 
 case class DbConfig(

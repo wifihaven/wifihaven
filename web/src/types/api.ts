@@ -630,3 +630,19 @@ export interface UpsertAppAssignmentRequest {
   dailyMinutes?: number | null
   exemptFromDaily?: boolean
 }
+
+// #958: BlocklistSummary as returned by GET /api/blocklists.
+export interface BlocklistSummary {
+  id: string
+  name: string
+  description?: string | null
+  bundled: boolean
+  source?: string | null
+  hostCount: number
+  lastBuiltAt?: string | null
+}
+
+export interface BlocklistHosts {
+  id: string
+  hosts: string[]
+}

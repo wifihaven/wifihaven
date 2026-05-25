@@ -6,7 +6,7 @@ import { useProfiles, useDevices, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
-  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
+  BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
   ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
@@ -95,7 +95,7 @@ export function ProfilesPage() {
   const devicesQuery  = useDevices()
   const profiles = profilesQuery.data ?? []
   const devices  = devicesQuery.data  ?? []
-  const [categories, setCategories] = useState<string[]>([])
+  const [categories, setCategories] = useState<BlocklistSummary[]>([])
   const [allUsers, setAllUsers] = useState<User[]>([])
   // Aux fetches (blocklists/users/household) aren't part of the #803 hot
   // loop — keep them as one-shot useEffect state. They only need to load
@@ -152,12 +152,12 @@ export function ProfilesPage() {
 
   async function loadAux() {
     const [cats, users, hs, appsList] = await Promise.all([
-      api.blocklists.counts().catch(() => []),
+      api.blocklists.list().catch(() => [] as BlocklistSummary[]),
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
       api.household.get().catch(() => null),
       api.apps.list().catch(() => [] as AppDetail[]),
     ])
-    setCategories(cats.map(c => c.category))
+    setCategories(cats)
     setAllUsers(users)
     setHousehold(hs)
     setApps([...appsList].sort((a, b) => a.app.name.localeCompare(b.app.name)))
@@ -518,7 +518,7 @@ function ProfileEditor({
   profileId: number | null
   form: FormState
   setForm: (updater: (f: FormState) => FormState) => void
-  categories: string[]
+  categories: BlocklistSummary[]
   apps: AppDetail[]
   onAppsChanged: () => void | Promise<void>
   saving: boolean
@@ -730,24 +730,25 @@ function ProfileEditor({
             : (
               <div className="flex flex-wrap gap-2">
                 {categories.map(c => {
-                  const on = form.blockedCategories.includes(c)
+                  const on = form.blockedCategories.includes(c.id)
                   return (
-                    <button key={c} type="button" onClick={() => toggleCat(c)}
-                      className={`text-xs font-mono px-3 py-1.5 rounded-lg border transition-colors ${
+                    <button key={c.id} type="button" onClick={() => toggleCat(c.id)}
+                      title={c.description ?? c.id}
+                      className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                         on
                           ? 'bg-red-500/20 text-red-300 border-red-500/40'
                           : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
                       }`}>
-                      {on ? '✓ ' : ''}{c}
+                      {on ? '✓ ' : ''}{c.name}
                     </button>
                   )
                 })}
               </div>
             )
           }
-          {form.blockedCategories.filter(c => !categories.includes(c)).length > 0 && (
+          {form.blockedCategories.filter(id => !categories.some(c => c.id === id)).length > 0 && (
             <p className="text-xs text-yellow-400 mt-2">
-              Also blocked (no longer in blocklist): {form.blockedCategories.filter(c => !categories.includes(c)).join(', ')}
+              Also blocked (no longer in blocklist): {form.blockedCategories.filter(id => !categories.some(c => c.id === id)).join(', ')}
             </p>
           )}
         </div>

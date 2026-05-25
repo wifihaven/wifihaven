@@ -1,0 +1,9 @@
+# Comprehensive adult-content list, fetched from StevenBlack
+# alternates/porn-only (MIT). Tens of thousands of apex domains;
+# companion to the small curated `adult` list.
+id: adult-extended
+name: Adult Content (StevenBlack)
+description: Comprehensive adult-content list, fetched from StevenBlack/hosts (alternates/porn-only) on each API restart.
+source: "https://github.com/StevenBlack/hosts/tree/master/alternates/porn-only (MIT)"
+url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
+format: hosts-file

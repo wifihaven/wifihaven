@@ -44,8 +44,28 @@ object Main extends ZIOAppDefault {
       templates      <- AppTemplates.loadAll()
       _              <- AppTemplates.seed(appRepoForSeed, templates)
       _              <- ZIO.logInfo(s"app_templates seeded (${templates.size} templates)")
+      // #958: seed the bundled category blocklists. Inline lists pull hosts
+      // straight from YAML; remote lists fetch from the declared upstream URL
+      // (cached in-memory after first success — see BlocklistCache). REPLACE
+      // semantics; remote-fetch failures leave existing DB rows untouched.
+      blRepoForSeed  <- ZIO.service[BlocklistRepo]
+      blCacheForSeed <- ZIO.service[BlocklistCache]
+      blFetcher      <- ZIO.service[BlocklistFetcher]
+      bundled        <- BundledBlocklists.loadAll()
+      _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
+      _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      _              <- ZIO
+        .logWarning(
+          "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
+            "Disable in production.",
+        )
+        .when(cfg.seedTestBlocklists)
+      _              <- BundledBlocklists
+        .seed(blRepoForSeed, blCacheForSeed, blFetcher, BundledBlocklists.devTestBlocklists)
+        .when(cfg.seedTestBlocklists)
       templatesById = templates.map(t => t.slug -> t).toMap
-      routes <- allRoutes(templatesById)
+      bundledById   = bundled.map(b => b.id -> b).toMap
+      routes <- allRoutes(templatesById, bundledById)
       withCors = Cors.wrap(routes, cfg.cors)
       _ <- ZIO
         .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
@@ -64,9 +84,14 @@ object Main extends ZIOAppDefault {
       Clock.live >+>
       AuthService.layer >+>
       PolicyService.layer >+>
-      TimeStatusCache.live()
+      TimeStatusCache.live() >+>
+      BlocklistCache.live >+>
+      BlocklistFetcher.live
 
-  private def allRoutes(templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate]) =
+  private def allRoutes(
+      templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
+      bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
+  ) =
     for {
       auth        <- ZIO.service[AuthService]
       userRepo    <- ZIO.service[UserRepo]
@@ -78,6 +103,8 @@ object Main extends ZIOAppDefault {
       stlRepo     <- ZIO.service[SiteTimeLimitRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
       blRepo      <- ZIO.service[BlocklistRepo]
+      blCache     <- ZIO.service[BlocklistCache]
+      blFetcher2  <- ZIO.service[BlocklistFetcher]
       usageRepo   <- ZIO.service[TimeUsageRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       routerRepo  <- ZIO.service[RouterRepo]
@@ -122,7 +149,7 @@ object Main extends ZIOAppDefault {
         upRepo,
         clock,
       ) ++
-      BlocklistRoutes.routes(auth, blRepo) ++
+      BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++
       RouterIngestRoutes.routes(

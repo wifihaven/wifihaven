@@ -1,0 +1,10 @@
+# Broader social-media + chat + dating list, fetched from StevenBlack
+# alternates/social-only (MIT). Companion to the hand-curated
+# `social-media` list — operators pick one based on how thoroughly they
+# want to cut device traffic.
+id: social-extended
+name: Social Media (StevenBlack)
+description: Comprehensive social-media + chat + dating list, fetched from StevenBlack/hosts (alternates/social-only) on each API restart.
+source: "https://github.com/StevenBlack/hosts/tree/master/alternates/social-only (MIT)"
+url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts
+format: hosts-file

@@ -15,7 +15,7 @@ vi.mock('@/api/client', () => ({
       setUsers: vi.fn(),
     },
     blocklists: {
-      counts: vi.fn(),
+      list: vi.fn(),
     },
     devices: {
       list: vi.fn(),
@@ -104,10 +104,10 @@ beforeEach(() => {
   vi.resetAllMocks()
   mockAuth = { isAdmin: true }
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
-  ;(api.blocklists.counts as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
-    { category: 'adult', count: 1000 },
-    { category: 'gambling', count: 500 },
-    { category: 'social', count: 200 },
+  ;(api.blocklists.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 'adult', name: 'Adult', bundled: true, hostCount: 1000 },
+    { id: 'gambling', name: 'Gambling', bundled: true, hostCount: 500 },
+    { id: 'social', name: 'Social', bundled: true, hostCount: 200 },
   ])
   ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -214,8 +214,8 @@ describe('ProfilesPage — create', () => {
 
     await user.type(screen.getByPlaceholderText('Kids'), 'Teens')
 
-    // toggle category "social"
-    await user.click(screen.getByRole('button', { name: 'social' }))
+    // toggle category "social" (label uses display name)
+    await user.click(screen.getByRole('button', { name: 'Social' }))
 
     // extra blocked / allowed (split lines, trim)
     const blockedTa = screen.getAllByPlaceholderText('One domain per line')[0]

@@ -1,0 +1,17 @@
+# Manifest listing every bundled blocklist file in this directory. The
+# loader uses this index so it doesn't have to scan the classpath (which
+# is awkward when resources live inside a fat jar). Keep the list in sync
+# when adding or removing blocklists — the loader validates that each
+# listed id has a corresponding `<id>.yml` file.
+ids:
+  # Inline, hand-curated lists (conservative starter set).
+  - ads
+  - social-media
+  - gambling
+  - adult
+  # URL-sourced lists fetched at startup; cached in-memory.
+  - ads-extended
+  - social-extended
+  - adult-extended
+  - fakenews
+  - malware

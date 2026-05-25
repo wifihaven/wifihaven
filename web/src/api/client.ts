@@ -1,5 +1,5 @@
 import type {
-  AppDetail, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  AppDetail, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventSeriesPage, QueryLogPage,
@@ -286,7 +286,8 @@ export const api = {
 
   // ── Blocklists ─────────────────────────────────────────────────────────
   blocklists: {
-    counts: () => req<{ category: string; count: number }[]>('GET', '/blocklists'),
+    list: () => req<BlocklistSummary[]>('GET', '/blocklists'),
+    hosts: (id: string) => req<BlocklistHosts>('GET', `/blocklists/${id}/hosts`),
     clearCategory: (cat: string) => req<void>('POST', `/blocklists/${cat}/clear`, {}),
   },
 

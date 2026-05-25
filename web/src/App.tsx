@@ -18,6 +18,7 @@ import { RoutersPage } from '@/pages/RoutersPage'
 import { AdminPage } from '@/pages/AdminPage'
 import { BlockedPage } from '@/pages/BlockedPage'
 import { AppsPage } from '@/pages/AppsPage'
+import { BlocklistsPage } from '@/pages/BlocklistsPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -58,7 +59,8 @@ function AppRoutes() {
         <Route path="logs"      element={<Navigate to="/usage/events" replace />} />
         <Route path="usage"          element={<RequirePwChanged><TrafficUsagePage /></RequirePwChanged>} />
         <Route path="usage/events"   element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
-        <Route path="apps"      element={<RequirePwChanged><RequireAdmin><AppsPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="apps"        element={<RequirePwChanged><RequireAdmin><AppsPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="blocklists"  element={<RequirePwChanged><RequireAdmin><BlocklistsPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="admin"     element={<RequirePwChanged><RequireAdmin><AdminPage /></RequireAdmin></RequirePwChanged>} />

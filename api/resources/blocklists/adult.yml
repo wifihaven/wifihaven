@@ -1,0 +1,32 @@
+# Adult / NSFW content. Intentionally tiny starter set of the very most
+# trafficked apex domains so this list is testable end-to-end without
+# shipping a multi-megabyte payload. Operators wanting comprehensive
+# coverage will want a URL-import (phase 2, #952) pointing at a
+# maintained upstream list such as OISD or StevenBlack/hosts (porn
+# extension). Source: top adult-site Alexa apexes (public knowledge).
+id: adult
+name: Adult Content
+description: Major pornography sites. Conservative starter list; comprehensive coverage requires the URL-import feature (phase 2).
+source: curated (top adult-site apex domains)
+hosts:
+  - pornhub.com
+  - xvideos.com
+  - xnxx.com
+  - xhamster.com
+  - redtube.com
+  - youporn.com
+  - tube8.com
+  - spankbang.com
+  - chaturbate.com
+  - stripchat.com
+  - cam4.com
+  - livejasmin.com
+  - bongacams.com
+  - onlyfans.com
+  - fansly.com
+  - clips4sale.com
+  - manyvids.com
+  - brazzers.com
+  - bangbros.com
+  - realitykings.com
+  - naughtyamerica.com
