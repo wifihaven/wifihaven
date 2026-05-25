@@ -177,10 +177,81 @@ describe('AppsPage — edit flow', () => {
       expect(api.apps.update).toHaveBeenCalledWith(10, {
         name: 'YT',
         icon: '📺',
+        iconType: 'emoji',
         templateId: null,
       })
       expect(api.apps.setHosts).toHaveBeenCalledWith(10, ['youtube.com', '*.ytimg.com'])
     })
+  })
+})
+
+describe('AppsPage — icon picker (#1004)', () => {
+  it('emoji tab: typed value is sent with iconType=emoji on create', async () => {
+    (api.apps.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...makeApp({ id: 20, name: 'Discord', slug: 'discord' }),
+    })
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await screen.findByText('YouTube')
+    await user.click(screen.getByRole('button', { name: /new app/i }))
+    await user.type(screen.getByPlaceholderText('YouTube'), 'Discord')
+    await user.type(screen.getByTestId('icon-picker-emoji-input'), '💬')
+    await user.click(screen.getByRole('button', { name: /create app/i }))
+    await waitFor(() => {
+      expect(api.apps.create).toHaveBeenCalledWith({
+        name: 'Discord',
+        icon: '💬',
+        iconType: 'emoji',
+        hosts: [],
+      })
+    })
+  })
+
+  it('URL tab: pasted URL is sent with iconType=url on edit', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await user.click(await screen.findByRole('button', { name: /youtube/i }))
+    await user.click(screen.getByTestId('icon-picker-tab-url'))
+    const urlInput = screen.getByTestId('icon-picker-url-input') as HTMLInputElement
+    await user.clear(urlInput)
+    await user.type(urlInput, 'https://example.com/icon.png')
+    await user.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => {
+      expect(api.apps.update).toHaveBeenCalledWith(10, {
+        name: 'YouTube',
+        icon: 'https://example.com/icon.png',
+        iconType: 'url',
+        templateId: null,
+      })
+    })
+  })
+
+  it('Favicon tab: picking a host saves DuckDuckGo URL with iconType=url', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await user.click(await screen.findByRole('button', { name: /youtube/i }))
+    await user.click(screen.getByTestId('icon-picker-tab-favicon'))
+    await user.click(screen.getByTestId('icon-picker-favicon-youtube.com'))
+    await user.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => {
+      expect(api.apps.update).toHaveBeenCalledWith(10, {
+        name: 'YouTube',
+        icon: 'https://icons.duckduckgo.com/ip3/youtube.com.ico',
+        iconType: 'url',
+        templateId: null,
+      })
+    })
+  })
+
+  it('Switching tabs preserves the name field', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await screen.findByText('YouTube')
+    await user.click(screen.getByRole('button', { name: /new app/i }))
+    await user.type(screen.getByPlaceholderText('YouTube'), 'Discord')
+    await user.click(screen.getByTestId('icon-picker-tab-url'))
+    await user.click(screen.getByTestId('icon-picker-tab-emoji'))
+    expect((screen.getByPlaceholderText('YouTube') as HTMLInputElement).value).toBe('Discord')
   })
 })
 

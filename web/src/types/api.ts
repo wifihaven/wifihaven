@@ -565,12 +565,18 @@ export interface CreateRouterResponse {
 
 export type AppMode = 'blocked' | 'allowed' | 'time_limited'
 
+// #1004 — how to render the `icon` string. `emoji` = literal text; `url` =
+// remote image (HTTPS); `png_base64` = inline data URL (sans the prefix).
+// Optional on the wire for older fixtures; renderers default to 'emoji'.
+export type IconType = 'emoji' | 'url' | 'png_base64'
+
 export interface App {
   id: number
   name: string
   slug: string
   templateId: number | null
   icon: string | null
+  iconType?: IconType
   createdAt: string
 }
 
@@ -593,6 +599,7 @@ export interface CreateAppRequest {
   name: string
   slug?: string
   icon?: string | null
+  iconType?: IconType
   templateId?: number | null
   hosts: string[]
 }
@@ -600,6 +607,7 @@ export interface CreateAppRequest {
 export interface UpdateAppRequest {
   name: string
   icon?: string | null
+  iconType?: IconType
   templateId?: number | null
 }
 

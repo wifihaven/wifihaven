@@ -10,6 +10,7 @@ import type {
   ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
+import { AppIcon } from '@/components/AppIcon'
 import { PageLoader } from './DashboardPage'
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
@@ -1032,7 +1033,9 @@ function AppRow({ app, profileId, onChanged }: {
       className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
     >
       <div className="flex items-center gap-3">
-        <span className="text-xl w-7 text-center" aria-hidden>{app.app.icon || '◳'}</span>
+        <span className="w-7 text-center inline-flex items-center justify-center">
+          <AppIcon icon={app.app.icon} iconType={app.app.iconType} size="md" />
+        </span>
         <div className="flex-1 min-w-0">
           <p className="text-sm text-white font-medium truncate">{app.app.name}</p>
           <p className="text-xs text-gray-500 font-mono truncate">{app.hosts.length} host{app.hosts.length === 1 ? '' : 's'}</p>
