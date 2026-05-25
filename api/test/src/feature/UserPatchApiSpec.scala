@@ -20,13 +20,13 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
+  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
@@ -74,21 +74,21 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     },
     test("multi-field patch updates username + role + profileIds together") {
       for {
-        id           <- setupUser(role = "adult")
-        profileRepo  <- ZIO.service[ProfileRepo]
-        profiles     <- profileRepo.listAll
-        kidsId       = profiles.find(_.name == "Kids").get.id
+        id          <- setupUser(role = "adult")
+        profileRepo <- ZIO.service[ProfileRepo]
+        profiles    <- profileRepo.listAll
+        kidsId = profiles.find(_.name == "Kids").get.id
         (routes, tk) <- routesAndToken
-        resp <- patch(
+        resp         <- patch(
           routes,
           tk,
           id,
           s"""{"username":"junior","role":"child","profileIds":[${kidsId.value}]}""",
         )
-        userRepo <- ZIO.service[UserRepo]
-        upRepo   <- ZIO.service[UserProfileRepo]
-        after    <- userRepo.findById(id)
-        pids     <- upRepo.listProfilesForUser(id)
+        userRepo     <- ZIO.service[UserRepo]
+        upRepo       <- ZIO.service[UserProfileRepo]
+        after        <- userRepo.findById(id)
+        pids         <- upRepo.listProfilesForUser(id)
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.exists(_.username == "junior")) &&
         assertTrue(after.exists(_.role == UserRole.Child)) &&
@@ -96,24 +96,19 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     },
     test("absent field preserves existing value") {
       for {
-        _            <- ZIO.unit
-        profileRepo  <- ZIO.service[ProfileRepo]
-        profiles0    <- ZIO.unit *> profileRepo.listAll.flatMap(_ => ZIO.succeed(())) // warm up cleanDb later
-        _            <- ZIO.unit
-        userRepo     <- ZIO.service[UserRepo]
-        // proper setup:
-        _ <- cleanDb
-        auth <- makeAuth
-        hash <- auth.hashPassword("secret")
-        id   <- userRepo.create("alice", hash, "adult")
-        _    <- userRepo.clearMustChangePassword(id)
-        profileRepo2 <- ZIO.service[ProfileRepo]
-        profiles     <- profileRepo2.listAll
-        kidsId       = profiles.find(_.name == "Kids").get.id
-        upRepo       <- ZIO.service[UserProfileRepo]
-        _            <- upRepo.setProfilesForUser(id, List(kidsId))
-        token        <- auth.login("admin", "changeme").map(_.token.value)
-        routes       = AuthRoutes.routes(auth, userRepo, upRepo)
+        _           <- cleanDb
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        profileRepo <- ZIO.service[ProfileRepo]
+        auth        <- makeAuth
+        hash        <- auth.hashPassword("secret")
+        id          <- userRepo.create("alice", hash, "adult")
+        _           <- userRepo.clearMustChangePassword(id)
+        profiles    <- profileRepo.listAll
+        kidsId = profiles.find(_.name == "Kids").get.id
+        _     <- upRepo.setProfilesForUser(id, List(kidsId))
+        token <- auth.login("admin", "changeme").map(_.token.value)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo)
         // Empty body — change nothing.
         resp  <- patch(routes, token, id, "{}")
         after <- userRepo.findById(id)
@@ -136,12 +131,12 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _            <- userRepo.clearMustChangePassword(id)
         profileRepo2 <- ZIO.service[ProfileRepo]
         profiles     <- profileRepo2.listAll
-        kidsId       = profiles.find(_.name == "Kids").get.id
-        _            <- upRepo.setProfilesForUser(id, List(kidsId))
-        token        <- auth.login("admin", "changeme").map(_.token.value)
-        routes       = AuthRoutes.routes(auth, userRepo, upRepo)
-        resp         <- patch(routes, token, id, """{"profileIds":[]}""")
-        pids         <- upRepo.listProfilesForUser(id)
+        kidsId = profiles.find(_.name == "Kids").get.id
+        _     <- upRepo.setProfilesForUser(id, List(kidsId))
+        token <- auth.login("admin", "changeme").map(_.token.value)
+        routes = AuthRoutes.routes(auth, userRepo, upRepo)
+        resp <- patch(routes, token, id, """{"profileIds":[]}""")
+        pids <- upRepo.listProfilesForUser(id)
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(pids.isEmpty)
     },
     test("null on non-nullable username returns 400") {
@@ -172,9 +167,9 @@ object UserPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         upRepo   <- ZIO.service[UserProfileRepo]
         auth     <- makeAuth
         // alice is the seeded adult; she shouldn't be able to PATCH herself.
-        token <- auth.login("alice", "secret").map(_.token.value)
+        token    <- auth.login("alice", "secret").map(_.token.value)
         routes = AuthRoutes.routes(auth, userRepo, upRepo)
-        resp  <- patch(routes, token, id, """{"username":"alice2"}""")
+        resp <- patch(routes, token, id, """{"username":"alice2"}""")
       } yield assertTrue(resp.status == Status.Forbidden)
     },
   ) @@ TestAspect.sequential

@@ -20,13 +20,13 @@ object AppPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
+  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
   private def url(p: String) = URL.decode(p).toOption.get
@@ -161,8 +161,8 @@ object AppPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres 
         uid         <- userRepo.create("mom", hash, "adult")
         _           <- userRepo.clearMustChangePassword(uid)
         token       <- auth.login("mom", "pass").map(_.token.value)
-        routes      = AppRoutes.routes(auth, appRepo, profileRepo, upRepo)
-        resp        <- patch(routes, token, id, """{"name":"X"}""")
+        routes = AppRoutes.routes(auth, appRepo, profileRepo, upRepo)
+        resp <- patch(routes, token, id, """{"name":"X"}""")
       } yield assertTrue(resp.status == Status.Forbidden)
     },
   ) @@ TestAspect.sequential

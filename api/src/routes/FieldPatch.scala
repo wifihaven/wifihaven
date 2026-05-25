@@ -30,7 +30,9 @@ enum FieldPatch[+T] {
 }
 
 object FieldPatch {
-  def from[T](obj: Json.Obj, key: String)(using dec: JsonDecoder[T]): Either[String, FieldPatch[T]] =
+  def from[T](obj: Json.Obj, key: String)(
+      using dec: JsonDecoder[T],
+  ): Either[String, FieldPatch[T]] =
     obj.get(key) match {
       case None            => Right(Absent)
       case Some(Json.Null) => Right(Cleared)

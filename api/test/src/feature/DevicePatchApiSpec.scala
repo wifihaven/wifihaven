@@ -20,13 +20,13 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
+  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
@@ -74,10 +74,10 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     },
     test("multi-field patch updates all supplied fields") {
       for {
-        _            <- setupDevice()
-        profileRepo  <- ZIO.service[ProfileRepo]
-        profiles     <- profileRepo.listAll
-        adultsId     = profiles.find(_.name == "Adults").get.id
+        _           <- setupDevice()
+        profileRepo <- ZIO.service[ProfileRepo]
+        profiles    <- profileRepo.listAll
+        adultsId = profiles.find(_.name == "Adults").get.id
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, s"""{"name":"Tablet","profileId":${adultsId.value}}""")
         deviceRepo   <- ZIO.service[DeviceRepo]
@@ -135,22 +135,22 @@ object DevicePatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     },
     test("403 when adult tries to move device to a profile they don't have access to") {
       for {
-        _            <- setupDevice()
-        profileRepo  <- ZIO.service[ProfileRepo]
-        userRepo     <- ZIO.service[UserRepo]
-        upRepo       <- ZIO.service[UserProfileRepo]
-        deviceRepo   <- ZIO.service[DeviceRepo]
-        auth         <- makeAuth
-        profiles     <- profileRepo.listAll
-        kidsId       = profiles.find(_.name == "Kids").get.id
-        adultsId     = profiles.find(_.name == "Adults").get.id
-        hash         <- auth.hashPassword("pass")
-        momId        <- userRepo.create("mom", hash, "adult")
-        _            <- userRepo.clearMustChangePassword(momId)
-        _            <- upRepo.setProfilesForUser(momId, List(kidsId))
-        token        <- auth.login("mom", "pass").map(_.token.value)
-        routes       = DeviceRoutes.routes(auth, deviceRepo, upRepo)
-        resp         <- routes.runZIO(
+        _           <- setupDevice()
+        profileRepo <- ZIO.service[ProfileRepo]
+        userRepo    <- ZIO.service[UserRepo]
+        upRepo      <- ZIO.service[UserProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        auth        <- makeAuth
+        profiles    <- profileRepo.listAll
+        kidsId   = profiles.find(_.name == "Kids").get.id
+        adultsId = profiles.find(_.name == "Adults").get.id
+        hash  <- auth.hashPassword("pass")
+        momId <- userRepo.create("mom", hash, "adult")
+        _     <- userRepo.clearMustChangePassword(momId)
+        _     <- upRepo.setProfilesForUser(momId, List(kidsId))
+        token <- auth.login("mom", "pass").map(_.token.value)
+        routes = DeviceRoutes.routes(auth, deviceRepo, upRepo)
+        resp  <- routes.runZIO(
           Request
             .patch(
               url(s"/api/devices/${Mac.value}"),

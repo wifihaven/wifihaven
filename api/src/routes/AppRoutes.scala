@@ -258,42 +258,42 @@ object AppRoutes {
         handler { (id: Long, req: Request) =>
           val aid = AppId(id)
           for {
-            _    <- requireAdmin(req, auth)
-            a    <- appRepo
+            _         <- requireAdmin(req, auth)
+            a         <- appRepo
               .findById(aid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("App not found")))
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
-            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
-            namePatch     <- ZIO
+            body      <- req.body.asString.orElseFail(Response.badRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
+            namePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "name"))
               .mapError(Response.badRequest(_))
-            iconPatch     <- ZIO
+            iconPatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "icon"))
               .mapError(Response.badRequest(_))
-            iconTypePatch <- ZIO
+            iconTypePatch   <- ZIO
               .fromEither(FieldPatch.from[IconType](obj, "iconType"))
               .mapError(Response.badRequest(_))
             templateIdPatch <- ZIO
               .fromEither(FieldPatch.from[AppTemplateId](obj, "templateId"))
               .mapError(Response.badRequest(_))
-            hostsPatch    <- ZIO
+            hostsPatch      <- ZIO
               .fromEither(FieldPatch.from[List[String]](obj, "hosts"))
               .mapError(Response.badRequest(_))
             newName = namePatch.applyTo(a.name).trim
-            _ <- namePatch match {
-              case FieldPatch.Cleared    => ZIO.fail(Response.badRequest("name cannot be cleared"))
+            _             <- namePatch match {
+              case FieldPatch.Cleared => ZIO.fail(Response.badRequest("name cannot be cleared"))
               case FieldPatch.Set(_) if newName.isEmpty =>
                 ZIO.fail(Response.badRequest("name is required"))
-              case _                     => ZIO.unit
+              case _                                    => ZIO.unit
             }
-            _ <- iconTypePatch match {
+            _             <- iconTypePatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(Response.badRequest("iconType cannot be cleared"))
               case _                  => ZIO.unit
             }
             hostsResolved <- hostsPatch match {
-              case FieldPatch.Cleared       =>
+              case FieldPatch.Cleared  =>
                 ZIO.fail(Response.badRequest("hosts cannot be cleared (send [] to remove all)"))
               case FieldPatch.Set(raw) =>
                 ZIO.fromEither(parseHosts(raw)).mapError(Response.badRequest(_)).map(Some(_))
@@ -305,8 +305,8 @@ object AppRoutes {
               iconType = iconTypePatch.applyTo(a.iconType),
               templateId = templateIdPatch.applyToNullable(a.templateId),
             )
-            _ <- appRepo.update(updated).mapError(ErrorMapper.dbErrorToResponse)
-            _ <- hostsResolved match {
+            _             <- appRepo.update(updated).mapError(ErrorMapper.dbErrorToResponse)
+            _             <- hostsResolved match {
               case Some(hs) => appRepo.setHosts(aid, hs).mapError(ErrorMapper.dbErrorToResponse)
               case None     => ZIO.unit
             }

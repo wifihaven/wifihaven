@@ -21,13 +21,13 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private val jwtCfg = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
+  private val jwtCfg   = JwtConfig(secret = "test-secret-at-least-32-chars!!", expiryHours = 1)
   private def makeAuth =
     for {
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
+  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
   private def url(p: String) = URL.decode(p).toOption.get
@@ -35,7 +35,11 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
   private val Seed = HouseholdSettings(
     dailyResetTime = LocalTime.of(0, 0),
     dailyResetTz = ZoneId.of("America/Los_Angeles"),
-    heartbeatFilter = HeartbeatFilter(enabled = false, bytesThreshold = 1024, heartbeatHostPatterns = List("foo.com")),
+    heartbeatFilter = HeartbeatFilter(
+      enabled = false,
+      bytesThreshold = 1024,
+      heartbeatHostPatterns = List("foo.com"),
+    ),
   )
 
   private def setupHousehold =
@@ -98,10 +102,11 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       for {
         _            <- setupHousehold
         (routes, tk) <- routesAndToken
-        body = """{"dailyResetTz":"America/New_York","heartbeatFilter":{"bytesThreshold":4096,"heartbeatHostPatterns":["bar.com"]}}"""
-        resp         <- patch(routes, tk, body)
-        repo         <- ZIO.service[HouseholdSettingsRepo]
-        after        <- repo.get
+        body =
+          """{"dailyResetTz":"America/New_York","heartbeatFilter":{"bytesThreshold":4096,"heartbeatHostPatterns":["bar.com"]}}"""
+        resp  <- patch(routes, tk, body)
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        after <- repo.get
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.dailyResetTz == ZoneId.of("America/New_York")) &&
         assertTrue(after.heartbeatFilter.enabled == false) && // preserved
@@ -132,8 +137,8 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         id       <- userRepo.create("mom", hash, "adult")
         _        <- userRepo.clearMustChangePassword(id)
         token    <- auth.login("mom", "pass").map(_.token.value)
-        routes   = HouseholdSettingsRoutes.routes(auth, repo)
-        resp     <- patch(routes, token, """{"dailyResetTime":"05:00:00"}""")
+        routes = HouseholdSettingsRoutes.routes(auth, repo)
+        resp <- patch(routes, token, """{"dailyResetTime":"05:00:00"}""")
       } yield assertTrue(resp.status == Status.Forbidden)
     },
     test("401 without token") {
@@ -142,7 +147,10 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         routes <- routesAndToken.map(_._1)
         resp   <- routes.runZIO(
           Request
-            .patch(url("/api/household/settings"), Body.fromString("""{"dailyResetTime":"05:00:00"}"""))
+            .patch(
+              url("/api/household/settings"),
+              Body.fromString("""{"dailyResetTime":"05:00:00"}"""),
+            )
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
       } yield assertTrue(resp.status == Status.Unauthorized)

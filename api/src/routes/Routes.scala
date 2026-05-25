@@ -146,28 +146,34 @@ object AuthRoutes {
             profilesPatch <- ZIO
               .fromEither(FieldPatch.from[List[ProfileId]](obj, "profileIds"))
               .mapError(Response.badRequest(_))
-            _ <- (usernamePatch, rolePatch, profilesPatch) match {
+            _             <- (usernamePatch, rolePatch, profilesPatch) match {
               case (FieldPatch.Cleared, _, _) =>
                 ZIO.fail(Response.badRequest("username cannot be cleared"))
               case (_, FieldPatch.Cleared, _) =>
                 ZIO.fail(Response.badRequest("role cannot be cleared"))
               case (_, _, FieldPatch.Cleared) =>
-                ZIO.fail(Response.badRequest("profileIds cannot be cleared (send [] to unassign all)"))
+                ZIO.fail(
+                  Response.badRequest("profileIds cannot be cleared (send [] to unassign all)"),
+                )
               case _                          => ZIO.unit
             }
-            _ <- usernamePatch match {
+            _             <- usernamePatch match {
               case FieldPatch.Set(u) =>
                 userRepo.updateUsername(uid, u).mapError(ErrorMapper.dbErrorToResponse)
               case _                 => ZIO.unit
             }
-            _ <- rolePatch match {
+            _             <- rolePatch match {
               case FieldPatch.Set(r) =>
-                userRepo.updateRole(uid, UserRole.asString(r)).mapError(ErrorMapper.dbErrorToResponse)
+                userRepo
+                  .updateRole(uid, UserRole.asString(r))
+                  .mapError(ErrorMapper.dbErrorToResponse)
               case _                 => ZIO.unit
             }
-            _ <- profilesPatch match {
+            _             <- profilesPatch match {
               case FieldPatch.Set(pids) =>
-                userProfileRepo.setProfilesForUser(uid, pids).mapError(ErrorMapper.dbErrorToResponse)
+                userProfileRepo
+                  .setProfilesForUser(uid, pids)
+                  .mapError(ErrorMapper.dbErrorToResponse)
               case _                    => ZIO.unit
             }
           } yield Response.ok
@@ -433,33 +439,33 @@ object DeviceRoutes {
           for {
             claims <- requireWriter(req, auth)
             normalized = MacAddress.unsafe(normalizeMac(mac))
-            existing <- deviceRepo
+            existing  <- deviceRepo
               .findByMac(normalized)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _    <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
-            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
+            _         <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
+            body      <- req.body.asString.orElseFail(Response.badRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
             namePatch <- ZIO
               .fromEither(FieldPatch.from[String](obj, "name"))
               .mapError(Response.badRequest(_))
             pidPatch  <- ZIO
               .fromEither(FieldPatch.from[ProfileId](obj, "profileId"))
               .mapError(Response.badRequest(_))
-            _ <- namePatch match {
+            _         <- namePatch match {
               case FieldPatch.Cleared => ZIO.fail(Response.badRequest("name cannot be cleared"))
               case _                  => ZIO.unit
             }
-            _ <- pidPatch match {
+            _         <- pidPatch match {
               case FieldPatch.Set(pid) => requireProfileAccess(claims, pid, userProfileRepo)
               case _                   => ZIO.unit
             }
             newName = namePatch.applyTo(existing.name)
-            newPid  = pidPatch.applyToNullable(existing.profileId)
-            _       <- deviceRepo
+            newPid = pidPatch.applyToNullable(existing.profileId)
+            _ <- deviceRepo
               .upsert(normalized, newName, newPid, "")
               .mapError(ErrorMapper.dbErrorToResponse)
-            _       <- ZIO.logInfo(
+            _ <- ZIO.logInfo(
               s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
             )
           } yield Response.ok
@@ -1449,14 +1455,14 @@ object HouseholdSettingsRoutes {
       repo: HouseholdSettingsRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "household" / "settings" ->
+      Method.GET / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           for {
             _ <- requireAuth(req, auth)
             s <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s.toJson)
         },
-      Method.PUT / "api" / "household" / "settings" ->
+      Method.PUT / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           for {
             _    <- requireAdmin(req, auth)
@@ -1477,32 +1483,32 @@ object HouseholdSettingsRoutes {
       Method.PATCH / "api" / "household" / "settings" ->
         handler { (req: Request) =>
           for {
-            _        <- requireAdmin(req, auth)
-            existing <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
-            body     <- req.body.asString.orElseFail(Response.badRequest(""))
-            obj      <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
+            _         <- requireAdmin(req, auth)
+            existing  <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
+            body      <- req.body.asString.orElseFail(Response.badRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
             timePatch <- ZIO
               .fromEither(FieldPatch.from[LocalTime](obj, "dailyResetTime"))
               .mapError(Response.badRequest(_))
             tzPatch   <- ZIO
               .fromEither(FieldPatch.from[ZoneId](obj, "dailyResetTz"))
               .mapError(Response.badRequest(_))
-            _ <- timePatch match {
+            _         <- timePatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(Response.badRequest("dailyResetTime cannot be cleared"))
               case _                  => ZIO.unit
             }
-            _ <- tzPatch match {
+            _         <- tzPatch match {
               case FieldPatch.Cleared =>
                 ZIO.fail(Response.badRequest("dailyResetTz cannot be cleared"))
               case _                  => ZIO.unit
             }
             mergedFilter <- obj.get("heartbeatFilter") match {
-              case None            => ZIO.succeed(existing.heartbeatFilter)
-              case Some(Json.Null) =>
+              case None              => ZIO.succeed(existing.heartbeatFilter)
+              case Some(Json.Null)   =>
                 ZIO.fail(Response.badRequest("heartbeatFilter cannot be cleared"))
               case Some(j: Json.Obj) => mergeHeartbeatFilter(existing.heartbeatFilter, j)
-              case Some(_)         =>
+              case Some(_)           =>
                 ZIO.fail(Response.badRequest("heartbeatFilter must be a JSON object"))
             }
             merged = HouseholdSettings(
@@ -1510,7 +1516,7 @@ object HouseholdSettingsRoutes {
               dailyResetTz = tzPatch.applyTo(existing.dailyResetTz),
               heartbeatFilter = mergedFilter,
             )
-            _ <- repo.update(merged).mapError(ErrorMapper.dbErrorToResponse)
+            _            <- repo.update(merged).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
     )
@@ -1529,7 +1535,7 @@ object HouseholdSettingsRoutes {
       hostsP   <- ZIO
         .fromEither(FieldPatch.from[List[String]](obj, "heartbeatHostPatterns"))
         .mapError(Response.badRequest(_))
-      _ <- (enabledP, bytesP, hostsP) match {
+      _        <- (enabledP, bytesP, hostsP) match {
         case (FieldPatch.Cleared, _, _) =>
           ZIO.fail(Response.badRequest("heartbeatFilter.enabled cannot be cleared"))
         case (_, FieldPatch.Cleared, _) =>
