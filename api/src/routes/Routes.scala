@@ -718,29 +718,36 @@ object TimeRoutes {
       Method.POST / "api" / "time" / "extend"                           ->
         handler { (req: Request) =>
           for {
-            claims <- requireWriter(req, auth)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            ger    <- ZIO
+            claims   <- requireWriter(req, auth)
+            body     <- req.body.asString.orElseFail(Response.badRequest(""))
+            ger      <- ZIO
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(e => Response.badRequest(e))
-            _      <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
-            today  <- clock.today
-            id     <- extRepo
+            _        <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
+            // #1010: bucket the grant under the household-local "today" so the
+            // policy-snapshot read path (also household-local) finds it.
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            id <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .mapError(ErrorMapper.dbErrorToResponse)
             // #946: bust the cached ProfileTimeStatus for this profile so the SPA's next
             // refetch reflects the new cap immediately instead of waiting up to todayTtl.
-            _      <- cache.invalidateProfile(ger.profileId)
+            _  <- cache.invalidateProfile(ger.profileId)
           } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
         },
       Method.GET / "api" / "time" / "extensions" / long("profileId")    ->
         handler { (profileId: Long, req: Request) =>
           val pid = ProfileId(profileId)
           for {
-            claims <- requireAuth(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
-            date   <- clock.today
-            exts   <- extRepo
+            claims   <- requireAuth(req, auth)
+            _        <- requireProfileAccess(claims, pid, userProfileRepo)
+            // #1010: same household-local "today" as the grant path.
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            date = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            exts <- extRepo
               .listForProfile(pid, date)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(exts.toJson)

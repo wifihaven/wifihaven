@@ -178,5 +178,60 @@ object SchedulingSpec extends ZIOSpecDefault {
         assertTrue(PolicyService.nextDailyResetAfter(settings, now) == expected)
       },
     ),
+    suite("householdLocalDate — #1010")(
+      test("default UTC household: calendar date is the UTC date") {
+        val settings = HouseholdSettings(LocalTime.of(0, 0), UTC, HeartbeatFilter.Off)
+        val now      = Instant.parse("2026-05-13T15:30:00Z")
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 5, 13),
+        )
+      },
+      test("LA household at 20:00 PDT: bucket is the local date (still yesterday in UTC)") {
+        val settings = HouseholdSettings(LocalTime.of(0, 0), LA, HeartbeatFilter.Off)
+        // 2026-05-07 20:00 PDT = 2026-05-08 03:00 UTC. UTC date has rolled but LA hasn't.
+        val now      = Instant.parse("2026-05-08T03:00:00Z")
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 5, 7),
+        )
+      },
+      test("LA household at 22:00 PT: still 'today' in LA, even though UTC says tomorrow") {
+        val settings = HouseholdSettings(LocalTime.of(0, 0), LA, HeartbeatFilter.Off)
+        // 22:00 PDT on 2026-05-13 = 05:00 UTC 2026-05-14. The kid in LA is still on 2026-05-13.
+        val now      = Instant.parse("2026-05-14T05:00:00Z")
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 5, 13),
+        )
+      },
+      test("LA household one minute past local midnight: bucket flips to the new day") {
+        val settings = HouseholdSettings(LocalTime.of(0, 0), LA, HeartbeatFilter.Off)
+        // 00:01 PDT 2026-05-14 = 07:01 UTC 2026-05-14
+        val now      = Instant.parse("2026-05-14T07:01:00Z")
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 5, 14),
+        )
+      },
+      test("non-midnight reset_time: 02:00 local before reset stays on prior day's bucket") {
+        // Reset at 04:00 LA. At 03:30 LA the day-bucket should still be the previous date.
+        val settings = HouseholdSettings(LocalTime.of(4, 0), LA, HeartbeatFilter.Off)
+        val now      = instantAt(2026, 5, 14, 3, 30, LA)
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 5, 13),
+        )
+      },
+      test("non-midnight reset_time: just after reset flips to the new bucket") {
+        val settings = HouseholdSettings(LocalTime.of(4, 0), LA, HeartbeatFilter.Off)
+        val now      = instantAt(2026, 5, 14, 4, 1, LA)
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 5, 14),
+        )
+      },
+      test("DST spring-forward: 06:30 LA on 2026-03-08 is still that calendar date") {
+        val settings = HouseholdSettings(LocalTime.of(0, 0), LA, HeartbeatFilter.Off)
+        val now      = instantAt(2026, 3, 8, 6, 30, LA)
+        assertTrue(
+          PolicyService.householdLocalDate(now, settings) == java.time.LocalDate.of(2026, 3, 8),
+        )
+      },
+    ),
   )
 }

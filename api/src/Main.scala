@@ -160,6 +160,7 @@ object Main extends ZIOAppDefault {
         deviceRepo,
         connRepo,
         alertRepo,
+        hsRepo,
       ) ++
       DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
       AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
