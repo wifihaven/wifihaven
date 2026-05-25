@@ -1,6 +1,7 @@
 package wifihaven.api.routes
 
 import wifihaven.api.AppTemplate
+import wifihaven.api.AppTemplates
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.shared.*
@@ -222,6 +223,22 @@ object AppRoutes {
               )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
+        },
+      // #1024: admin-triggered re-run of the startup app-template seeder. Same idempotent
+      // semantics as the boot pass (operator host edits preserved) — exposed as a route so the
+      // operator can backfill without a redeploy when prod is missing the starter set.
+      Method.POST / "api" / "apps" / "seed-from-templates"                       ->
+        handler { (req: Request) =>
+          for {
+            _       <- requireAdmin(req, auth)
+            summary <- AppTemplates
+              .seed(appRepo, templates.values.toList)
+              .mapError(e =>
+                Response
+                  .json(s"""{"error":"seed_failed","message":${e.getMessage.toJson}}""")
+                  .status(Status.InternalServerError),
+              )
+          } yield Response.json(summary.toJson)
         },
       Method.POST / "api" / "apps" / long("id") / "reset-to-template"            ->
         handler { (id: Long, req: Request) =>
