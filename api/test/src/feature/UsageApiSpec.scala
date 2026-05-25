@@ -83,10 +83,19 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       trafficRepo     <- ZIO.service[TrafficReportRepo]
       userProfileRepo <- ZIO.service[UserProfileRepo]
       profileRepo     <- ZIO.service[ProfileRepo]
+      appRepo         <- ZIO.service[AppRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
-      UsageRoutes.routes(auth, deviceRepo, trafficRepo, userProfileRepo, profileRepo, clock),
+      UsageRoutes.routes(
+        auth,
+        deviceRepo,
+        trafficRepo,
+        userProfileRepo,
+        profileRepo,
+        appRepo,
+        clock,
+      ),
       auth,
     )
 
@@ -197,6 +206,36 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(h10.totalMins == 35) &&
           assertTrue(h10.perHost.length == 2) &&
           assertTrue(h10.otherMins == 25) // 5 hosts × 5 min
+      },
+      test("topN=500 returns the full long-tail unaggregated (#964 drill-in)") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // 30 distinct hosts — comfortably more than the prior cap of 20 and
+          // well below the new cap of 500. With topN=500 every host should be
+          // surfaced in topHosts (the prior 20-cap would have truncated to 20).
+          _  <- ZIO.foreachDiscard(0 until 30) { i =>
+            insertRow(routerId, testMac, s"host$i.com", today, 10, (i % 12) * 5)
+          }
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode(s"/api/usage/series?mac=$testMac&date=$today&topN=500").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Prior cap (.min(20)) would have capped this at 20 — the bump to 500
+          // is what enables the per-device 'other' drill-in to see the full tail.
+          assertTrue(out.topHosts.length == 30)
       },
       test("tz parameter buckets by local-hour") {
         for {
@@ -378,7 +417,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.rawRows.forall(_.profileName.contains("Kids"))) &&
           assertTrue(out.rawRows.map(_.host.value).toSet == Set("youtube.com", "google.com"))
       },
-      test("1h aggregated view groups by domain and sums bytes/seconds; matches raw sums") {
+      test(
+        "1h aggregated view with groupBy=domain groups by domain and sums bytes/seconds; matches raw sums",
+      ) {
         val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
           _           <- cleanDb
@@ -442,7 +483,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           aggReq = Request
             .get(
               URL
-                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h")
+                .decode(
+                  s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=domain",
+                )
                 .toOption
                 .get,
             )
@@ -484,6 +527,170 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             aggOut.aggregateRows.map(_.groups("domain")).toSet ==
               Set("youtube.com", "google.com"),
           )
+      },
+      // #917: strictly additive aggregation. Default = one row per window.
+      test("#917: 1h aggregated view with no groupBy returns one row per window (full roll-up)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          // Three rows in the same hour bucket, two distinct domains.
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start.plusSeconds(300),
+                start.plusSeconds(600),
+                300,
+                500L,
+                1500L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start.plusSeconds(600),
+                start.plusSeconds(900),
+                300,
+                100L,
+                100L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy.isEmpty) &&
+          // Three input rows in a single hour, all aggregated into one row.
+          assertTrue(out.aggregateRows.length == 1) &&
+          assertTrue(out.aggregateRows.head.groups.isEmpty) &&
+          assertTrue(out.aggregateRows.head.totalBytesIn == 1600L) &&
+          assertTrue(out.aggregateRows.head.totalBytesOut == 3600L) &&
+          assertTrue(out.aggregateRows.head.totalSeconds == 900L) &&
+          assertTrue(out.aggregateRows.head.distinctDomains == 2)
+      },
+      test(
+        "#917: groupBy as repeated params (?groupBy=device&groupBy=domain) equivalent to comma form",
+      ) {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        val macA  = "aa:bb:cc:dd:ee:1a"
+        val macB  = "aa:bb:cc:dd:ee:1b"
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, macA, "iPad-A", kidsId)
+          _           <- TestLayers.seedDevice(deviceRepo, macB, "iPad-B", kidsId)
+          routerId    <- seedRouter
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macA),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                100L,
+                0L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(macB),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                200L,
+                0L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(
+                  s"/api/usage/traffic?profileId=${kidsId.value}&from=$from&to=$to&bucket=1h&groupBy=device&groupBy=domain",
+                )
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy.toSet == Set("device", "domain")) &&
+          assertTrue(out.aggregateRows.length == 2)
+      },
+      test("#917: unknown groupBy value returns 400 unknown_groupBy") {
+        for {
+          _  <- cleanDb
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL.decode(s"/api/usage/traffic?mac=$testMac&bucket=1h&groupBy=bogus").toOption.get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+        } yield assertTrue(resp.status == Status.BadRequest) &&
+          assertTrue(body.contains("unknown_groupBy")) &&
+          assertTrue(body.contains("bogus"))
       },
       test("multi-column groupBy=device,domain produces one row per (window, device, domain)") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
@@ -568,6 +775,77 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             ),
           )
       },
+      test("#865 mac= and profileId= accept comma-separated multi-value") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          adultsId    <- profileRepo.create("Adults", List.empty)
+          macAStr = "aa:bb:cc:dd:ee:01"
+          macBStr = "aa:bb:cc:dd:ee:02"
+          macCStr = "aa:bb:cc:dd:ee:03"
+          _        <- TestLayers.seedDevice(deviceRepo, macAStr, "Kid iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, macBStr, "Kid Phone", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, macCStr, "Adult Phone", adultsId)
+          routerId <- seedRouter
+          _        <- insertRow(routerId, macAStr, "youtube.com", today, 14, 0)
+          _        <- insertRow(routerId, macBStr, "tiktok.com", today, 14, 0)
+          _        <- insertRow(routerId, macCStr, "nyt.com", today, 14, 0)
+          rb       <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          // Two macs selected — only those two rows come back.
+          reqM = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$macAStr,$macBStr&from=$from&to=$to&bucket=raw")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          respM <- routes.runZIO(reqM)
+          bodyM <- respM.body.asString
+          outM  <- ZIO.fromEither(bodyM.fromJson[TrafficUsageResponse])
+          // Single-mac form still parses (backwards compat).
+          reqOne = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$macAStr&from=$from&to=$to&bucket=raw")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          respOne <- routes.runZIO(reqOne)
+          bodyOne <- respOne.body.asString
+          outOne  <- ZIO.fromEither(bodyOne.fromJson[TrafficUsageResponse])
+          // Two profiles selected — kids + adults, three rows.
+          reqP = Request
+            .get(
+              URL
+                .decode(
+                  s"/api/usage/traffic?profileId=${kidsId.value},${adultsId.value}&from=$from&to=$to&bucket=raw",
+                )
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          respP <- routes.runZIO(reqP)
+          bodyP <- respP.body.asString
+          outP  <- ZIO.fromEither(bodyP.fromJson[TrafficUsageResponse])
+        } yield assertTrue(respM.status == Status.Ok) &&
+          assertTrue(outM.rawRows.map(_.host.value).toSet == Set("youtube.com", "tiktok.com")) &&
+          assertTrue(
+            outOne.rawRows.length == 1 && outOne.rawRows.head.host.value == "youtube.com",
+          ) &&
+          assertTrue(
+            outP.rawRows.map(_.host.value).toSet == Set("youtube.com", "tiktok.com", "nyt.com"),
+          )
+      },
       test("rejects bucket=1m with bucket_not_implemented") {
         for {
           _  <- cleanDb
@@ -582,7 +860,163 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         } yield assertTrue(resp.status == Status.BadRequest) &&
           assertTrue(body.contains("bucket_not_implemented"))
       },
-      test("rejects groupBy=apex and groupBy=app with groupBy_not_implemented") {
+      test("#769: 1h aggregated view with groupBy=app joins through app_hosts") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // App "YouTube" owns youtube.com + ytimg.com; google.com is not in any app.
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(
+            ytId,
+            List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+          )
+          start1 = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          start2 = start1.plusSeconds(300)
+          start3 = start1.plusSeconds(600)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start1,
+                start1.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("ytimg.com")),
+                today,
+                start2,
+                start2.plusSeconds(300),
+                300,
+                500L,
+                1500L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start3,
+                start3.plusSeconds(300),
+                300,
+                100L,
+                100L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+          yt = out.aggregateRows.find(_.groups.getOrElse("app", "") == "youtube").get
+          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "__other__").get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.groupBy == List("app")) &&
+          assertTrue(out.aggregateRows.length == 2) &&
+          // Bytes invariant: app + __other__ together cover everything that was inserted.
+          assertTrue(
+            out.aggregateRows.map(_.totalBytesIn).sum == 1600L,
+          ) &&
+          assertTrue(
+            out.aggregateRows.map(_.totalBytesOut).sum == 3600L,
+          ) &&
+          assertTrue(yt.totalBytesIn == 1500L) &&
+          assertTrue(yt.totalBytesOut == 3500L) &&
+          assertTrue(yt.appName.contains("YouTube")) &&
+          assertTrue(yt.appIcon.contains("📺")) &&
+          assertTrue(yt.appId.isDefined) &&
+          assertTrue(ot.totalBytesIn == 100L) &&
+          assertTrue(ot.appName.contains("Other")) &&
+          assertTrue(ot.appId.isEmpty)
+      },
+      test("#769: groupBy=app fans a multi-app host into one row per app") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, None)
+          muId        <- appRepo.create("Music", "music", None, None)
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          _           <- appRepo.setHosts(muId, List(Hostname.unsafe("youtube.com")))
+          start1 = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start1,
+                start1.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+          slugs = out.aggregateRows.map(_.groups.getOrElse("app", "")).toSet
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(slugs == Set("youtube", "music")) &&
+          // Both apps see the full bytes — operator intent at the app boundary
+          // is "how much did this app account for", not a strict partition.
+          assertTrue(out.aggregateRows.forall(_.totalBytesIn == 1000L)) &&
+          assertTrue(out.aggregateRows.forall(_.totalBytesOut == 2000L))
+      },
+      // #769: groupBy=app is now implemented; the apex case still rejects.
+      test("rejects groupBy=apex with groupBy_not_implemented") {
         for {
           _  <- cleanDb
           rb <- buildRoutes
@@ -593,16 +1027,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             .addHeader(Header.Authorization.Bearer(token))
           apexResp <- routes.runZIO(apexReq)
           apexBody <- apexResp.body.asString
-          appReq = Request
-            .get(URL.decode(s"/api/usage/traffic?mac=$testMac&bucket=1h&groupBy=app").toOption.get)
-            .addHeader(Header.Authorization.Bearer(token))
-          appResp <- routes.runZIO(appReq)
-          appBody <- appResp.body.asString
         } yield assertTrue(apexResp.status == Status.BadRequest) &&
           assertTrue(apexBody.contains("groupBy_not_implemented")) &&
-          assertTrue(apexBody.contains("apex")) &&
-          assertTrue(appResp.status == Status.BadRequest) &&
-          assertTrue(appBody.contains("app"))
+          assertTrue(apexBody.contains("apex"))
       },
       test("rejects window beyond on-the-fly cap with 503") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
@@ -632,6 +1059,136 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           body <- resp.body.asString
         } yield assertTrue(resp.status == Status.ServiceUnavailable) &&
           assertTrue(body.contains("window_too_large"))
+      },
+      test("raw cursor pagination walks the full set without dups (#862)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // 7 rows in distinct 5-min slots, single domain to make ordering deterministic.
+          _           <- ZIO.foreachDiscard(0 until 7)(i =>
+            insertRow(routerId, testMac, s"site$i.com", today, 14, i * 5),
+          )
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from  = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to    = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          pager = (cursor: Option[String]) => {
+            val base = s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=raw&limit=3"
+            val q    = cursor.fold(base)(c => s"$base&cursor=$c")
+            val req  = Request
+              .get(URL.decode(q).toOption.get)
+              .addHeader(Header.Authorization.Bearer(token))
+            routes
+              .runZIO(req)
+              .flatMap(_.body.asString)
+              .flatMap(b => ZIO.fromEither(b.fromJson[TrafficUsageResponse]))
+          }
+          p1 <- pager(None)
+          p2 <- p1.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p1.copy(rawRows = Nil, nextCursor = None))
+          }
+          p3 <- p2.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p2.copy(rawRows = Nil, nextCursor = None))
+          }
+          all = p1.rawRows ++ p2.rawRows ++ p3.rawRows
+          hosts = all.map(_.host.value)
+        } yield assertTrue(p1.rawRows.length == 3) &&
+          assertTrue(p2.rawRows.length == 3) &&
+          assertTrue(p3.rawRows.length == 1) &&
+          assertTrue(p3.nextCursor.isEmpty) &&
+          assertTrue(hosts.distinct.length == 7) &&
+          // newest first: site6 → site0
+          assertTrue(
+            hosts == List(
+              "site6.com",
+              "site5.com",
+              "site4.com",
+              "site3.com",
+              "site2.com",
+              "site1.com",
+              "site0.com",
+            ),
+          )
+      },
+      test("raw cursor: bad cursor returns 400 (#862)") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          _           <- seedRouter
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&bucket=raw&cursor=not-valid")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.BadRequest)
+      },
+      test("aggregated cursor pagination across multi-window dataset (#862)") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // 5 rows in 5 different hours so 1h bucket yields 5 windows.
+          _           <- ZIO.foreachDiscard(0 until 5)(h =>
+            insertRow(routerId, testMac, "alpha.com", today, 10 + h, 0),
+          )
+          rb          <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from  = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to    = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          pager = (cursor: Option[String]) => {
+            val base = s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&limit=2"
+            val q    = cursor.fold(base)(c => s"$base&cursor=$c")
+            val req  = Request
+              .get(URL.decode(q).toOption.get)
+              .addHeader(Header.Authorization.Bearer(token))
+            routes
+              .runZIO(req)
+              .flatMap(_.body.asString)
+              .flatMap(b => ZIO.fromEither(b.fromJson[TrafficUsageResponse]))
+          }
+          p1 <- pager(None)
+          p2 <- p1.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p1.copy(aggregateRows = Nil, nextCursor = None))
+          }
+          p3 <- p2.nextCursor match {
+            case Some(c) => pager(Some(c))
+            case None    => ZIO.succeed(p2.copy(aggregateRows = Nil, nextCursor = None))
+          }
+          all = p1.aggregateRows ++ p2.aggregateRows ++ p3.aggregateRows
+          windows = all.map(_.windowStart)
+        } yield assertTrue(p1.aggregateRows.length == 2) &&
+          assertTrue(p2.aggregateRows.length == 2) &&
+          assertTrue(p3.aggregateRows.length == 1) &&
+          assertTrue(p3.nextCursor.isEmpty) &&
+          assertTrue(windows.distinct.length == 5) &&
+          assertTrue(windows == windows.sortBy(s => -java.time.Instant.parse(s).toEpochMilli))
       },
     ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential

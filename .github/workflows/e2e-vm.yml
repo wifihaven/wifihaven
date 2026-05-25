@@ -47,6 +47,13 @@ jobs:
     # queue serialized so a slow run doesn't pile up.
     timeout-minutes: 120
 
+    env:
+      # Per-job scope for the qemu `-name wh-*-${WH_RUN_ID}` suffix and the
+      # .run/<id>/ state dir (config.sh:91,145,40-44). Lets teardown's
+      # pkill backstop match only this run's qemu, never a sibling's, and
+      # is a prerequisite for relaxing the e2e-vm concurrency group (#895).
+      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
     steps:
       # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
       # left root-owned files under scripts/vm/.cache/imagebuilder/ (older
@@ -144,6 +151,11 @@ jobs:
         run: |
           scripts/vm/router-down.sh || true
           scripts/vm/client-down.sh || true
+          # Backstop: kill anything tagged with *this* run's id that the
+          # pidfile-driven down scripts missed (workspace reclaim, qemu
+          # reparented, etc.). Scoped via WH_RUN_ID so a sibling
+          # concurrent run is never touched.
+          pkill -f "qemu-system-x86_64.*-name wh-.*-${WH_RUN_ID}" || true
 
       - name: Tear down API stack
         if: always()

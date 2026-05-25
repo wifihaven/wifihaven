@@ -41,10 +41,16 @@ interface Props {
   series: ChartSeries[]   // named stacks (top-N). "Other" is rendered as a final stack if any row has __other > 0.
   showLegend?: boolean
   legendFormatter?: (name: string) => string
+  // #964 — when set, the "Other" bar + legend entry become click targets
+  // (cursor=pointer, dotted underline) so the per-device page can pop a
+  // drill-in showing what's in the long-tail bucket.
+  onOtherClick?: () => void
   testId?: string
 }
 
-export function UsageHourlyBarChart({ rows, series, showLegend = false, legendFormatter, testId }: Props) {
+export function UsageHourlyBarChart({ rows, series, showLegend = false, legendFormatter, onOtherClick, testId }: Props) {
+  const hasOther = rows.some(r => Number(r[OTHER_KEY] ?? 0) > 0)
+  const otherClickable = !!onOtherClick && hasOther
   return (
     <div data-testid={testId} className="h-72 -ml-2">
       <ResponsiveContainer width="100%" height="100%">
@@ -84,13 +90,35 @@ export function UsageHourlyBarChart({ rows, series, showLegend = false, legendFo
             <Legend
               iconType="square"
               wrapperStyle={{ fontSize: 12, color: '#9ca3af', paddingTop: 8 }}
-              formatter={(n: string) => (n === OTHER_KEY ? 'Other' : (legendFormatter ? legendFormatter(n) : n))}
+              formatter={(n: string) => {
+                if (n === OTHER_KEY) {
+                  return otherClickable ? (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      data-testid="usage-chart-other-legend"
+                      onClick={(e) => { e.stopPropagation(); onOtherClick?.() }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOtherClick?.() } }}
+                      className="cursor-pointer underline decoration-dotted underline-offset-2"
+                      title="See the hosts inside the Other bucket"
+                    >Other ↗</span>
+                  ) : 'Other'
+                }
+                return legendFormatter ? legendFormatter(n) : n
+              }}
             />
           )}
           {series.map(s => (
             <Bar key={s.key} dataKey={s.key} stackId="stacks" fill={s.color} name={s.name} />
           ))}
-          <Bar dataKey={OTHER_KEY} stackId="stacks" fill={OTHER_COLOR} name="Other" />
+          <Bar
+            dataKey={OTHER_KEY}
+            stackId="stacks"
+            fill={OTHER_COLOR}
+            name="Other"
+            cursor={otherClickable ? 'pointer' : undefined}
+            onClick={otherClickable ? () => onOtherClick?.() : undefined}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>

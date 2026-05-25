@@ -128,7 +128,9 @@ export interface QueryLog {
 }
 
 // #847 + #846: aggregated connection-events row, with multi-column groupBy.
-// `groups` keyed by "domain" | "device" | "profile" depending on the request.
+// `groups` keyed by "domain" | "device" | "profile" | "app" depending on the
+// request. When `app` is grouped the slug lives in `groups.app` and the
+// display name + icon are surfaced as `appName` / `appIcon` (#769).
 export interface ConnectionEventAggRow {
   groups: Record<string, string>
   windowStart: string
@@ -139,9 +141,14 @@ export interface ConnectionEventAggRow {
   distinctDevices?: number
   distinctProfiles?: number
   distinctDomains?: number
+  distinctApps?: number
   soleDevice?: string | null
   soleProfile?: string | null
   soleDomain?: string | null
+  soleApp?: string | null
+  appId?: number | null
+  appName?: string | null
+  appIcon?: string | null
 }
 
 
@@ -159,12 +166,20 @@ export interface DashboardNowHost {
   activeSeconds: number
 }
 
+export interface DashboardNowActivity {
+  topHost: HostId
+  // zio-json omits None — field is absent on the wire (treat absent as no run).
+  minutes?: number | null
+}
+
 export interface DashboardNowDevice {
   id: number
   name: string
   mac: string
   lastSeenSeconds: number
   topHosts: DashboardNowHost[]
+  // zio-json omits None — field is absent on the wire (treat absent as idle).
+  nowActivity?: DashboardNowActivity | null
 }
 
 export interface DashboardNowProfile {
@@ -332,8 +347,9 @@ export interface UsageSeriesResponse {
 // inspection. 1m bucket and apex/app groupBy are reserved (router cadence /
 // PSL / apps track) — server returns 400 with a typed `error` code.
 export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
-// #846: groupBy is composable. Apex is deferred to #856 (needs PSL), App to
-// #857 (needs apps track) — both still rejected server-side with typed errors.
+// #846: groupBy is composable. Apex is deferred to #856 (needs PSL). #769
+// turned `app` on — it now resolves to a server-side join through
+// `app_hosts`. The empty/synthetic bucket is keyed `__other__`.
 export type TrafficUsageGroupBy = 'domain' | 'device' | 'profile' | 'apex' | 'app'
 
 export interface TrafficUsageRawRow {
@@ -351,8 +367,8 @@ export interface TrafficUsageRawRow {
 
 export interface TrafficUsageAggregateRow {
   // Keyed by the column codes in the request's groupBy set ("domain" |
-  // "device" | "profile"). For columns NOT in the set, the SPA shows the
-  // distinct-count from `distinct*` below (drill-down deferred to #859).
+  // "device" | "profile" | "app"). For columns NOT in the set, the SPA shows
+  // the distinct-count from `distinct*` below (drill-down deferred to #859).
   groups: Record<string, string>
   windowStart: string
   windowEnd: string
@@ -362,11 +378,18 @@ export interface TrafficUsageAggregateRow {
   distinctDevices?: number
   distinctProfiles?: number
   distinctDomains?: number
+  distinctApps?: number
   // Populated only when the corresponding `distinct*` is 1 AND the column is
   // not in `groupBy` — lets the SPA render the value in place of "1".
   soleDevice?: string | null
   soleProfile?: string | null
   soleDomain?: string | null
+  soleApp?: string | null
+  // #769: present when `app` is in groupBy. The slug lives in `groups.app`;
+  // these carry the display metadata. `__other__` rows emit appName="Other".
+  appId?: number | null
+  appName?: string | null
+  appIcon?: string | null
 }
 
 export interface TrafficUsageResponse {
@@ -379,6 +402,19 @@ export interface TrafficUsageResponse {
   aggregateRows: TrafficUsageAggregateRow[]
   rawRowLimit?: number
   rawRowsTruncated?: boolean
+  // #862: opaque cursor for the next (older) page. null/undefined = end of stream.
+  nextCursor?: string | null
+}
+
+// #862: paged envelopes for /api/logs and /api/connection-events/series.
+export interface QueryLogPage {
+  rows: QueryLog[]
+  nextCursor?: string | null
+}
+
+export interface ConnectionEventSeriesPage {
+  rows: ConnectionEventAggRow[]
+  nextCursor?: string | null
 }
 
 // #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`
@@ -523,4 +559,90 @@ export interface CreateRouterResponse {
   routerId: string
   name: string
   enrollmentToken: string
+}
+
+// ── Apps (#761/#762/#765) ──────────────────────────────────────────────────
+
+export type AppMode = 'blocked' | 'allowed' | 'time_limited'
+
+export interface App {
+  id: number
+  name: string
+  slug: string
+  templateId: number | null
+  icon: string | null
+  createdAt: string
+}
+
+export interface AppPolicyAssignment {
+  id: number
+  appId: number
+  profileId: number
+  mode: AppMode
+  dailyMinutes: number | null
+  exemptFromDaily: boolean
+}
+
+export interface AppDetail {
+  app: App
+  hosts: string[]
+  assignments: AppPolicyAssignment[]
+}
+
+export interface CreateAppRequest {
+  name: string
+  slug?: string
+  icon?: string | null
+  templateId?: number | null
+  hosts: string[]
+}
+
+export interface UpdateAppRequest {
+  name: string
+  icon?: string | null
+  templateId?: number | null
+}
+
+export interface SetAppHostsRequest {
+  hosts: string[]
+}
+
+// #766 — recently-visited apex picker payload. One row per PSL-collapsed
+// registered domain for the device, sorted by total bytes desc. `subdomains`
+// is the set of observed FQDNs underneath the apex (empty when the apex
+// itself was the only hit). Bare-IP rows are excluded server-side.
+export interface RecentApex {
+  apex: string
+  bytes: number
+  hits: number
+  subdomains: string[]
+}
+
+export interface RecentApexesResponse {
+  deviceMac: string
+  deviceName: string
+  windowDays: number
+  items: RecentApex[]
+}
+
+export interface UpsertAppAssignmentRequest {
+  mode: AppMode
+  dailyMinutes?: number | null
+  exemptFromDaily?: boolean
+}
+
+// #958: BlocklistSummary as returned by GET /api/blocklists.
+export interface BlocklistSummary {
+  id: string
+  name: string
+  description?: string | null
+  bundled: boolean
+  source?: string | null
+  hostCount: number
+  lastBuiltAt?: string | null
+}
+
+export interface BlocklistHosts {
+  id: string
+  hosts: string[]
 }

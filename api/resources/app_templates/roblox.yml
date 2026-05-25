@@ -1,0 +1,8 @@
+slug: roblox
+name: Roblox
+icon: "🎮"
+icon_type: emoji
+hosts:
+  - roblox.com
+  - rbxcdn.com
+  - robloxlabs.com

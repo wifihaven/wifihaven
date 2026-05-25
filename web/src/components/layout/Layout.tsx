@@ -12,11 +12,13 @@ interface NavItem {
   children?: NavItem[]
 }
 
+// #972 — Screen Time merged into Profiles; the collapsed-card summary row on
+// /profiles carries the at-a-glance time view. /time still routes for one
+// release as a defensive measure (sub-7 / #978 removes it entirely).
 const primaryNav: NavItem[] = [
-  { to: '/dashboard', label: 'Dashboard',   icon: '◈' },
-  { to: '/devices',   label: 'Devices',     icon: '⬡' },
-  { to: '/profiles',  label: 'Profiles',    icon: '◉' },
-  { to: '/time',      label: 'Screen Time', icon: '◷' },
+  { to: '/dashboard', label: 'Dashboard', icon: '◈' },
+  { to: '/devices',   label: 'Devices',   icon: '⬡' },
+  { to: '/profiles',  label: 'Profiles',  icon: '◉' },
 ]
 
 const settingsNav: NavItem[] = [
@@ -29,6 +31,8 @@ const settingsNav: NavItem[] = [
       { to: '/usage/events', label: 'Connection Events', icon: '≡' },
     ],
   },
+  { to: '/apps',       label: 'Apps',       icon: '◳', adminOnly: true },
+  { to: '/blocklists', label: 'Blocklists', icon: '⊘', adminOnly: true },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },

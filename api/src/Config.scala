@@ -1,5 +1,6 @@
 package wifihaven.api
 
+import wifihaven.shared.types.Hostname
 import zio.*
 import zio.config.*
 import zio.config.magnolia.*
@@ -10,12 +11,20 @@ case class AppConfig(
     http: HttpConfig,
     jwt: JwtConfig,
     cors: CorsConfig,
+    policy: PolicyConfig = PolicyConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
   // Read from env, not HOCON, so it stays out of application.conf — debug
   // belongs to the runtime environment, not the persistent config.
   val debugEnabled: Boolean = AppConfig.envTruthy(sys.env.get("WIFIHAVEN_DEBUG"))
+
+  // #706 / #958: when set, the API startup seeder also inserts the dev-only
+  // `test_ads` and `test_social` blocklists. Prod must leave this UNSET so a
+  // fresh enrollment never carries those rows. The V32 cleanup migration
+  // wipes any historical leak on first boot after upgrade.
+  val seedTestBlocklists: Boolean =
+    AppConfig.envTruthy(sys.env.get("WIFIHAVEN_SEED_TEST_BLOCKLISTS"))
 }
 
 case class DbConfig(
@@ -48,6 +57,37 @@ case class CorsConfig(
 ) {
   val origins: List[String] =
     allowedOrigins.split(",").iterator.map(_.trim).filter(_.nonEmpty).toList
+}
+
+// #944: hosts always present in every profile's snapshot `extraAllowed` so a
+// paused household member can still reach the wifihaven admin UI to unpause
+// themselves. Set per deployment to the SPA + API hostnames this API serves
+// (prod or staging, not both). Empty disables the global allow list — the
+// default for self-hosted single-origin installs that don't need it. Hostname
+// only for now; port-aware allow/block requires plumbing port through
+// connection events / traffic reports / snapshot, tracked in #296.
+// Precursor to the DB-backed global profile in #937.
+case class PolicyConfig(
+    uiAllowedHosts: String = "",
+) {
+  val uiAllowedHostsParsed: List[Hostname] =
+    uiAllowedHosts
+      .split(",")
+      .iterator
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map { raw =>
+        Hostname
+          .parse(raw)
+          .fold(
+            err =>
+              throw new IllegalArgumentException(
+                s"wifihaven.policy.uiAllowedHosts: invalid hostname '$raw': $err",
+              ),
+            identity,
+          )
+      }
+      .toList
 }
 
 object AppConfig {

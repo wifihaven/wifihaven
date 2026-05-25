@@ -9,6 +9,7 @@ vi.mock('@/api/client', () => ({
     usage:    { traffic: vi.fn() },
     devices:  { list:    vi.fn() },
     profiles: { list:    vi.fn() },
+    apps:     { list:    vi.fn() },
   },
 }))
 
@@ -69,12 +70,33 @@ function renderPage() {
   )
 }
 
+// #951 — calendar popover seeds on "now"; click prev/next month until the
+// header shows the target. Bounded to keep a runaway test from spinning.
+async function navigateToMonth(targetYear: number, targetMonth0: number) {
+  const target = new Date(targetYear, targetMonth0, 1)
+  for (let i = 0; i < 60; i++) {
+    const popover = screen.getByTestId('jump-to-date-popover')
+    const header  = popover.querySelector('.uppercase')?.textContent ?? ''
+    const probe   = new Date(`${header} 1`)
+    if (!Number.isNaN(probe.getTime())
+        && probe.getFullYear() === target.getFullYear()
+        && probe.getMonth() === target.getMonth()) return
+    const goPrev = probe.getTime() > target.getTime()
+    await userEvent.click(screen.getByTestId(goPrev ? 'jump-to-date-prev-month' : 'jump-to-date-next-month'))
+  }
+  throw new Error(`navigateToMonth: gave up trying to reach ${targetYear}-${targetMonth0 + 1}`)
+}
+
 describe('TrafficUsagePage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.profiles.list as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.usage.traffic as ReturnType<typeof vi.fn>).mockResolvedValue(rawResp)
+    // #769: default to "one app exists" so groupBy=app doesn't trip the empty-state.
+    ;(api.apps.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { app: { id: 1, name: 'YouTube', slug: 'youtube' } },
+    ])
   })
 
   it('loads raw view by default and renders rows', async () => {
@@ -94,9 +116,15 @@ describe('TrafficUsagePage', () => {
     expect(api.usage.traffic).toHaveBeenCalledTimes(1)
   })
 
-  it('switching bucket to 1h preserves filters and shows aggregate table with default groupBy=domain', async () => {
+  // #917: default groupBy is [] — no implicit dimension.
+  it('switching bucket to 1h preserves filters and shows aggregate table with default groupBy=[]', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
-    trafficMock.mockResolvedValueOnce(rawResp).mockResolvedValueOnce(aggResp)
+    const aggEmptyResp: TrafficUsageResponse = {
+      ...aggResp,
+      groupBy: [],
+      aggregateRows: [{ ...aggResp.aggregateRows[0], groups: {} }],
+    }
+    trafficMock.mockResolvedValueOnce(rawResp).mockResolvedValueOnce(aggEmptyResp)
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     const firstCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[0][0]
@@ -105,32 +133,174 @@ describe('TrafficUsagePage', () => {
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
     const secondCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[1][0]
 
-    expect(secondCall.mac).toBe(firstCall.mac)
-    expect(secondCall.profileId).toBe(firstCall.profileId)
+    expect(secondCall.macs).toEqual(firstCall.macs)
+    expect(secondCall.profileIds).toEqual(firstCall.profileIds)
     // `from`/`to` are computed at fetch-time from new Date() so they differ
     // between calls; the bucket switch is what matters here.
     expect(secondCall.bucket).toBe('1h')
-    expect(secondCall.groupBy).toEqual(['domain'])
+    expect(secondCall.groupBy).toEqual([])
 
     await waitFor(() => expect(screen.getByTestId('aggregate-table')).toBeInTheDocument())
-    expect(screen.getByText('youtube.com')).toBeInTheDocument()
   })
 
-  it('clicking a column header toggles it into the groupBy set', async () => {
+  // #917: toggling a column on adds rows; toggling off removes them. Toggling
+  // *all* off lands back in the strictly-aggregate default.
+  it('clicking a column header toggles it into the groupBy set, additively', async () => {
     const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    const aggEmptyResp: TrafficUsageResponse = {
+      ...aggResp,
+      groupBy: [],
+      aggregateRows: [{ ...aggResp.aggregateRows[0], groups: {} }],
+    }
     trafficMock
-      .mockResolvedValueOnce(rawResp)
-      .mockResolvedValueOnce(aggResp)
-      .mockResolvedValueOnce({ ...aggResp, groupBy: ['device', 'domain'] })
+      .mockResolvedValueOnce(rawResp)        // initial raw
+      .mockResolvedValueOnce(aggEmptyResp)   // bucket=1h, groupBy=[]
+      .mockResolvedValueOnce(aggResp)        // + domain toggle
+      .mockResolvedValueOnce({ ...aggResp, groupBy: ['domain', 'device'] }) // + device toggle
+      .mockResolvedValueOnce(aggEmptyResp)   // - domain - device (back to empty)
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     await userEvent.click(screen.getByTestId('bucket-1h'))
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
 
-    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    // Adds the first dimension.
+    await userEvent.click(screen.getByTestId('traffic-group-domain'))
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(3))
-    const lastCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[2][0]
-    expect(lastCall.groupBy?.sort()).toEqual(['device', 'domain'])
+    expect((api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[2][0].groupBy).toEqual(['domain'])
+
+    // Adds the second dimension.
+    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(4))
+    expect((api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[3][0].groupBy?.sort())
+      .toEqual(['device', 'domain'])
+
+    // Toggling them all back off returns to the empty default — the prior
+    // implementation kept at least one on; #917 makes "no toggles" valid.
+    await userEvent.click(screen.getByTestId('traffic-group-domain'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(5))
+    await userEvent.click(screen.getByTestId('traffic-group-device'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(6))
+    expect((api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[5][0].groupBy).toEqual([])
+  })
+
+  // #917: URL state. groupBy round-trips as repeated ?groupBy= params so
+  // links restore the operator's drill-in.
+  it('initializes groupBy from URL query params (?groupBy=device&groupBy=domain)', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(aggResp)
+    render(
+      <MemoryRouter initialEntries={['/?groupBy=device&groupBy=domain']}>
+        <TrafficUsagePage />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+    // Default bucket is raw — switch to 1h to surface the groupBy in the call.
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
+    const aggCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[1][0]
+    expect(aggCall.groupBy?.sort()).toEqual(['device', 'domain'])
+  })
+
+  it('#865 selecting two devices in the header filter posts macs as an array and shows chips', async () => {
+    const devices = [
+      { id: 1, mac: 'aa:bb:cc:dd:ee:01', name: "Kid's iPad", profileId: 1, profileName: 'Kids', lastSeenIp: null, lastSeenAt: null },
+      { id: 2, mac: 'aa:bb:cc:dd:ee:02', name: 'Adult Laptop', profileId: 2, profileName: 'Adults', lastSeenIp: null, lastSeenAt: null },
+    ]
+    ;(api.devices.list as ReturnType<typeof vi.fn>).mockResolvedValue(devices)
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(rawResp)
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+
+    // Open the device-header filter popover and select both devices via the
+    // "all" affordance — exercises the multi-value wire shape in one click
+    // without depending on popover lifecycle between separate checkbox clicks.
+    await userEvent.click(screen.getByTestId('traffic-filter-device'))
+    await userEvent.click(screen.getByTestId('traffic-filter-device-all'))
+
+    await waitFor(() => {
+      const calls = trafficMock.mock.calls
+      const last = calls[calls.length - 1][0]
+      expect(last.macs?.slice().sort()).toEqual(['aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02'])
+    })
+    // Chip summary in the shelf renders the active filters.
+    expect(screen.getByTestId('chip-mac-aa:bb:cc:dd:ee:01')).toBeInTheDocument()
+    expect(screen.getByTestId('chip-mac-aa:bb:cc:dd:ee:02')).toBeInTheDocument()
+  })
+
+  // #861 — verify low-priority columns carry responsive `hidden` classes so
+  // the table fits at phone (~375px) and tablet (~768px) widths. jsdom doesn't
+  // do real layout, so we assert on classnames rather than measuring overflow.
+  // #865 widened the column headers with funnel popover buttons, so the
+  // accessible name picks up the funnel glyph — match by regex.
+  it('hides low-priority raw-table columns on narrow viewports', async () => {
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('raw-table')).toBeInTheDocument())
+    const profile = screen.getByRole('columnheader', { name: /^Profile/ })
+    expect(profile.className).toMatch(/hidden md:table-cell/)
+    const outbound = screen.getByRole('columnheader', { name: 'Outbound' })
+    expect(outbound.className).toMatch(/hidden sm:table-cell/)
+  })
+
+  // #951 — Jump-to-Date re-anchors the right edge of the infinite-scroll
+  // window. Clearing it falls back to "now".
+  it('jump-to-date re-anchors `to`, refetches, and round-trips through ?until=', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(rawResp)
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+    expect(trafficMock.mock.calls[0][0].to).toBeDefined()
+
+    // Open the calendar popover, click May 21, set time 14:00, apply.
+    await userEvent.click(screen.getByTestId('jump-to-date-trigger'))
+    await navigateToMonth(2026, 4) // 0-indexed: May = 4
+    await userEvent.click(screen.getByTestId('jump-to-date-day-2026-05-21'))
+    const hh = screen.getByTestId('jump-to-date-hh') as HTMLInputElement
+    const mm = screen.getByTestId('jump-to-date-mm') as HTMLInputElement
+    await userEvent.clear(hh); await userEvent.type(hh, '14')
+    await userEvent.clear(mm); await userEvent.type(mm, '00')
+    await userEvent.click(screen.getByTestId('jump-to-date-apply'))
+
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
+    const anchored = trafficMock.mock.calls[trafficMock.mock.calls.length - 1][0]
+    // The picker re-anchored `to` — local 2026-05-21 14:00 → UTC ISO.
+    expect(anchored.to).toBe(new Date(2026, 4, 21, 14, 0, 0, 0).toISOString())
+    // URL round-trip is covered by the next test (reading ?until= back in).
+
+    // Clearing the picker reverts to "now" and drops `until` from the URL.
+    await userEvent.click(screen.getByTestId('jump-to-date-now'))
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(3))
+  })
+
+  it('initializes `until` from ?until= and passes it to the first fetch', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    trafficMock.mockResolvedValue(rawResp)
+    const seed = '2026-05-21T14:00:00.000Z'
+    render(
+      <MemoryRouter initialEntries={[`/?until=${encodeURIComponent(seed)}`]}>
+        <TrafficUsagePage />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
+    expect(trafficMock.mock.calls[0][0].to).toBe(seed)
+  })
+
+  // #968: while a fetch is in flight, the "No rows in window." empty-state
+  // must not render above the spinner. Gate empty-state on !loading.
+  it('does not render empty-state copy while loading', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    let resolve: (v: TrafficUsageResponse) => void = () => {}
+    trafficMock.mockReturnValueOnce(new Promise<TrafficUsageResponse>(r => { resolve = r }))
+    renderPage()
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalled())
+    // Spinner is shown, empty-state copy is NOT.
+    expect(screen.getByTestId('loading')).toBeInTheDocument()
+    expect(screen.queryByText('No rows in window.')).not.toBeInTheDocument()
+    // Once the fetch resolves with no rows, the empty-state appears and the
+    // spinner clears.
+    resolve({ ...rawResp, rawRows: [] })
+    await waitFor(() => expect(screen.getByText('No rows in window.')).toBeInTheDocument())
+    expect(screen.queryByTestId('loading')).not.toBeInTheDocument()
   })
 
   it('surfaces server error', async () => {

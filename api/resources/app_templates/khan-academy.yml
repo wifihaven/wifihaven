@@ -1,0 +1,8 @@
+slug: khan-academy
+name: Khan Academy
+icon: "📚"
+icon_type: emoji
+hosts:
+  - khanacademy.org
+  - kastatic.org
+  - kasandbox.org

@@ -9,7 +9,9 @@ import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
-import java.time.LocalDate
+import java.time.{LocalDate, LocalTime, ZoneId}
+
+import zio.json.ast.Json
 
 // ── Auth routes ────────────────────────────────────────────────────────────
 
@@ -119,6 +121,62 @@ object AuthRoutes {
           requireAdmin(req, auth) *>
             userRepo.delete(UserId(id)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
+        },
+      // #997: field-scoped partial update. Body is a subset of the User read
+      // shape — `username`, `role`, `profileIds` (replace-set, matches the
+      // existing PUT /profiles semantics). Password changes stay on the
+      // dedicated change-password endpoint.
+      Method.PATCH / "api" / "users" / long("id")            ->
+        handler { (id: Long, req: Request) =>
+          val uid = UserId(id)
+          for {
+            _    <- requireAdmin(req, auth)
+            _    <- userRepo
+              .findById(uid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("User not found")))
+            body <- req.body.asString.orElseFail(Response.badRequest(""))
+            obj  <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
+            usernamePatch <- ZIO
+              .fromEither(FieldPatch.from[String](obj, "username"))
+              .mapError(Response.badRequest(_))
+            rolePatch     <- ZIO
+              .fromEither(FieldPatch.from[UserRole](obj, "role"))
+              .mapError(Response.badRequest(_))
+            profilesPatch <- ZIO
+              .fromEither(FieldPatch.from[List[ProfileId]](obj, "profileIds"))
+              .mapError(Response.badRequest(_))
+            _             <- (usernamePatch, rolePatch, profilesPatch) match {
+              case (FieldPatch.Cleared, _, _) =>
+                ZIO.fail(Response.badRequest("username cannot be cleared"))
+              case (_, FieldPatch.Cleared, _) =>
+                ZIO.fail(Response.badRequest("role cannot be cleared"))
+              case (_, _, FieldPatch.Cleared) =>
+                ZIO.fail(
+                  Response.badRequest("profileIds cannot be cleared (send [] to unassign all)"),
+                )
+              case _                          => ZIO.unit
+            }
+            _             <- usernamePatch match {
+              case FieldPatch.Set(u) =>
+                userRepo.updateUsername(uid, u).mapError(ErrorMapper.dbErrorToResponse)
+              case _                 => ZIO.unit
+            }
+            _             <- rolePatch match {
+              case FieldPatch.Set(r) =>
+                userRepo
+                  .updateRole(uid, UserRole.asString(r))
+                  .mapError(ErrorMapper.dbErrorToResponse)
+              case _                 => ZIO.unit
+            }
+            _             <- profilesPatch match {
+              case FieldPatch.Set(pids) =>
+                userProfileRepo
+                  .setProfilesForUser(uid, pids)
+                  .mapError(ErrorMapper.dbErrorToResponse)
+              case _                    => ZIO.unit
+            }
+          } yield Response.ok
         },
     )
 }
@@ -369,6 +427,47 @@ object DeviceRoutes {
             _        <- deviceRepo.delete(normalized).mapError(ErrorMapper.dbErrorToResponse)
             // #481: same rationale as PUT — make the next CI failure diagnostic.
             _        <- ZIO.logInfo(s"device deleted: mac=${normalized.value}")
+          } yield Response.ok
+        },
+      // #996: field-scoped partial update. Body is a subset of the Device read
+      // shape — `name` (set), `profileId` (set/null-to-clear). Absent fields
+      // preserve their current value. Same auth as DELETE: writer + access to
+      // the device's current profile, plus access to the destination profile
+      // if `profileId` is being reassigned.
+      Method.PATCH / "api" / "devices" / string("mac")  ->
+        handler { (mac: String, req: Request) =>
+          for {
+            claims <- requireWriter(req, auth)
+            normalized = MacAddress.unsafe(normalizeMac(mac))
+            existing  <- deviceRepo
+              .findByMac(normalized)
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
+            _         <- requireProfileAccess(claims, existing.profileId, userProfileRepo)
+            body      <- req.body.asString.orElseFail(Response.badRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
+            namePatch <- ZIO
+              .fromEither(FieldPatch.from[String](obj, "name"))
+              .mapError(Response.badRequest(_))
+            pidPatch  <- ZIO
+              .fromEither(FieldPatch.from[ProfileId](obj, "profileId"))
+              .mapError(Response.badRequest(_))
+            _         <- namePatch match {
+              case FieldPatch.Cleared => ZIO.fail(Response.badRequest("name cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            _         <- pidPatch match {
+              case FieldPatch.Set(pid) => requireProfileAccess(claims, pid, userProfileRepo)
+              case _                   => ZIO.unit
+            }
+            newName = namePatch.applyTo(existing.name)
+            newPid = pidPatch.applyToNullable(existing.profileId)
+            _ <- deviceRepo
+              .upsert(normalized, newName, newPid, "")
+              .mapError(ErrorMapper.dbErrorToResponse)
+            _ <- ZIO.logInfo(
+              s"device patched: mac=${normalized.value} name=$newName profileId=${newPid.map(_.value.toString).getOrElse("-")}",
+            )
           } yield Response.ok
         },
     )
@@ -718,26 +817,36 @@ object TimeRoutes {
       Method.POST / "api" / "time" / "extend"                           ->
         handler { (req: Request) =>
           for {
-            claims <- requireWriter(req, auth)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            ger    <- ZIO
+            claims   <- requireWriter(req, auth)
+            body     <- req.body.asString.orElseFail(Response.badRequest(""))
+            ger      <- ZIO
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(e => Response.badRequest(e))
-            _      <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
-            today  <- clock.today
-            id     <- extRepo
+            _        <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
+            // #1010: bucket the grant under the household-local "today" so the
+            // policy-snapshot read path (also household-local) finds it.
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            id <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .mapError(ErrorMapper.dbErrorToResponse)
+            // #946: bust the cached ProfileTimeStatus for this profile so the SPA's next
+            // refetch reflects the new cap immediately instead of waiting up to todayTtl.
+            _  <- cache.invalidateProfile(ger.profileId)
           } yield Response.json(s"""{"id":${id.value},"grantedMinutes":${ger.extraMinutes}}""")
         },
       Method.GET / "api" / "time" / "extensions" / long("profileId")    ->
         handler { (profileId: Long, req: Request) =>
           val pid = ProfileId(profileId)
           for {
-            claims <- requireAuth(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
-            date   <- clock.today
-            exts   <- extRepo
+            claims   <- requireAuth(req, auth)
+            _        <- requireProfileAccess(claims, pid, userProfileRepo)
+            // #1010: same household-local "today" as the grant path.
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            date = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            exts <- extRepo
               .listForProfile(pid, date)
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(exts.toJson)
@@ -1080,6 +1189,57 @@ object TimeRoutes {
 // ── Query log routes ───────────────────────────────────────────────────────
 
 object LogRoutes {
+  // #862: tiny parse helpers for pagination params. Pulled into top-level so
+  // both /api/logs and /api/connection-events/series use the same shape.
+  private def parseInstantOpt(req: Request, name: String): IO[Response, Option[java.time.Instant]] =
+    req.url.queryParam(name) match {
+      case None    => ZIO.succeed(None)
+      case Some(s) =>
+        ZIO
+          .attempt(Some(java.time.Instant.parse(s)))
+          .orElseFail(Response.badRequest(s"invalid $name: $s"))
+    }
+
+  private def parseLimit(req: Request, default: Int, max: Int): IO[Response, Int] =
+    req.url.queryParam("limit") match {
+      case None    => ZIO.succeed(default)
+      case Some(s) =>
+        s.toIntOption match {
+          case None    => ZIO.fail(Response.badRequest(s"invalid limit: $s"))
+          case Some(n) =>
+            if (n < 1) ZIO.fail(Response.badRequest("limit must be >= 1"))
+            else if (n > max) ZIO.fail(Response.badRequest(s"limit must be <= $max"))
+            else ZIO.succeed(n)
+        }
+    }
+
+  private def parseLogCursor(req: Request): IO[Response, Option[Cursor.LogCursor]] =
+    req.url.queryParam("cursor") match {
+      case None    => ZIO.succeed(None)
+      case Some(s) =>
+        ZIO
+          .fromEither(Cursor.decode[Cursor.LogCursor](s))
+          .mapBoth(Response.badRequest, Some(_))
+    }
+
+  private def parseAggCursor(req: Request): IO[Response, Option[Cursor.AggCursor]] =
+    req.url.queryParam("cursor") match {
+      case None    => ZIO.succeed(None)
+      case Some(s) =>
+        ZIO
+          .fromEither(Cursor.decode[Cursor.AggCursor](s))
+          .mapBoth(Response.badRequest, Some(_))
+    }
+
+  // #862: must mirror the SQL's group_key concatenation order exactly
+  // (domain, device, profile — only requested columns, US-separator).
+  private def aggGroupKey(r: ConnectionEventAggRow): String = {
+    val sep = ""
+    List("domain", "device", "profile").iterator
+      .flatMap(k => r.groups.get(k))
+      .mkString(sep)
+  }
+
   def routes(
       auth: AuthService,
       connRepo: ConnectionEventRepo,
@@ -1089,21 +1249,43 @@ object LogRoutes {
       Method.GET / "api" / "logs"                         ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
+            claims     <- requireAuth(req, auth)
+            // #865: mac/deviceId/profileId accept comma-separated multi-value lists.
+            // Old single-value URLs (e.g. ?profileId=2) parse to a one-element list.
+            deviceIds  <- parseMultiDeviceIdParam(req)
+            profileIds <- parseMultiProfileIdParam(req)
+            untilOpt   <- parseInstantOpt(req, "until")
+            cursorOpt  <- parseLogCursor(req)
+            // #862: page cap. 500 max, 200 default. Wider pages would let one
+            // tab freeze the SPA when scrolling fast.
+            limit      <- parseLimit(req, default = 200, max = 500)
             filter = LogFilter(
-              mac = req.url.queryParam("mac"),
-              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
-              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
+              macs = parseMultiValueParam(req, "mac"),
+              deviceIds = deviceIds,
+              profileIds = profileIds,
               blocked = req.url.queryParam("blocked").map(_ == "true"),
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
               hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24),
-              limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(200),
-              offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
+              limit = limit,
+              until = untilOpt,
+              cursorTs = cursorOpt.map(_.ts),
+              cursorId = cursorOpt.map(_.id),
+              includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
             )
             logs    <- connRepo.query(filter).mapError(ErrorMapper.dbErrorToResponse)
             visible <- filterLogs(claims, logs, userProfileRepo)
-          } yield Response.json(visible.toJson)
+            // #862: nextCursor is built from the *raw* last row, not the
+            // post-filter `visible` list — filterLogs may drop rows the child
+            // can't see, but the cursor must continue from where the SQL window
+            // left off so we don't skip rows on the next page.
+            nextCur =
+              if (logs.size < limit) None
+              else
+                logs.lastOption.map(l =>
+                  Cursor.encode(Cursor.LogCursor(java.time.Instant.parse(l.ts), l.id.value)),
+                )
+          } yield Response.json(QueryLogPage(visible, nextCur).toJson)
         },
       // #847: aggregated connection-event series. bucket+groupBy required; only
       // domain grouping is implemented (apex needs PSL #849, app needs apps
@@ -1128,14 +1310,19 @@ object LogRoutes {
             _      <- ZIO
               .fail(Response.badRequest("bucket=off not supported on /series — use /api/logs"))
               .when(bucket == ConnectionEventBucket.Off)
-            // #846: comma-separated multi-column groupBy. Apex/App still
-            // accepted as wire names but rejected with typed errors so the
-            // SPA can re-enable them later without an API change (#856, #857).
-            grpRaw <- ZIO
-              .fromOption(req.url.queryParam("groupBy"))
-              .orElseFail(Response.badRequest("groupBy query parameter required"))
+            // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
+            // For backwards-compat each value is also comma-split. Empty/absent
+            // is now valid — yields one row per window. Apex/App still rejected
+            // with typed errors (#856 PSL, #857 apps track).
             grpSet <- ZIO
-              .foreach(grpRaw.split(',').toList.map(_.trim).filter(_.nonEmpty)) { s =>
+              .foreach(
+                req.url.queryParams
+                  .getAll("groupBy")
+                  .toList
+                  .flatMap(_.split(',').toList)
+                  .map(_.trim)
+                  .filter(_.nonEmpty),
+              ) { s =>
                 ZIO
                   .fromOption(ConnectionEventGroupBy.fromWire(s))
                   .orElseFail(Response.badRequest(s"unknown groupBy: $s"))
@@ -1144,27 +1331,37 @@ object LogRoutes {
             _      <- ZIO
               .fail(Response.badRequest("groupBy=apex not implemented — see #856 (needs PSL)"))
               .when(grpSet.exists(g => g.wire == "apex"))
-            _      <- ZIO
-              .fail(
-                Response.badRequest("groupBy=app not implemented — apps track #761-#769 / see #857"),
-              )
-              .when(grpSet.exists(g => g.wire == "app"))
+            // #769: groupBy=app is now implemented (joins through app_hosts).
             groupByCodes = grpSet.map(_.wire)
-            filter       = LogFilter(
-              mac = req.url.queryParam("mac"),
-              deviceId = req.url.queryParam("deviceId").flatMap(_.toLongOption).map(DeviceId(_)),
-              profileId = req.url.queryParam("profileId").flatMap(_.toLongOption).map(ProfileId(_)),
+            deviceIds  <- parseMultiDeviceIdParam(req)
+            profileIds <- parseMultiProfileIdParam(req)
+            untilOpt   <- parseInstantOpt(req, "until")
+            cursorOpt  <- parseAggCursor(req)
+            limit      <- parseLimit(req, default = 500, max = 500)
+            filter = LogFilter(
+              macs = parseMultiValueParam(req, "mac"),
+              deviceIds = deviceIds,
+              profileIds = profileIds,
               blocked = req.url.queryParam("blocked").map(_ == "true"),
               domain = req.url.queryParam("domain"),
               location = req.url.queryParam("location"),
               hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24),
-              limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(500),
-              offset = req.url.queryParam("offset").flatMap(_.toIntOption).getOrElse(0),
+              limit = limit,
+              until = untilOpt,
+              cursorWs = cursorOpt.map(_.ws),
+              cursorKey = cursorOpt.map(_.key),
+              includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
             )
             rows <- connRepo
               .querySeries(filter, bucket.seconds, groupByCodes)
               .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(rows.toJson)
+            nextCur =
+              if (rows.size < limit) None
+              else
+                rows.lastOption.map(r =>
+                  Cursor.encode(Cursor.AggCursor(r.windowStart, aggGroupKey(r))),
+                )
+          } yield Response.json(ConnectionEventSeriesPage(rows, nextCur).toJson)
         },
       Method.GET / "api" / "stats"                        ->
         handler { (req: Request) =>
@@ -1179,24 +1376,80 @@ object LogRoutes {
 // ── Blocklist routes ───────────────────────────────────────────────────────
 
 object BlocklistRoutes {
-  def routes(auth: AuthService, blRepo: BlocklistRepo): Routes[Any, Response] =
+  def routes(
+      auth: AuthService,
+      blRepo: BlocklistRepo,
+      cache: wifihaven.api.BlocklistCache,
+      fetcher: wifihaven.api.BlocklistFetcher,
+      bundled: Map[BlocklistId, wifihaven.api.BundledBlocklist],
+  ): Routes[Any, Response] =
     Routes(
+      // #958: list every category with display metadata + host count for
+      // the SPA management page. Returns BlocklistSummary[] in declared
+      // order (by id).
       Method.GET / "api" / "blocklists"                                 ->
         handler { (req: Request) =>
           requireAdmin(req, auth) *>
-            blRepo.countByCategory
-              .map(cs =>
-                Response.json(
-                  cs.map((c, n) => s"""{"category":"$c","count":$n}""").mkString("[", ",", "]"),
-                ),
-              )
+            blRepo.summaries
+              .map(rs => Response.json(rs.toJson))
               .mapError(ErrorMapper.dbErrorToResponse)
+        },
+      // #958: paginated host list for the "View hosts" disclosure on the
+      // SPA page. Returns a JSON object `{ id, hosts: [...] }`. Admin-
+      // only; routers use the unrelated GET /api/blocklists/<id> route
+      // (RouterRoutes) which returns the plain-text list with ETag.
+      Method.GET / "api" / "blocklists" / string("id") / "hosts"        ->
+        handler { (id: String, req: Request) =>
+          requireAdmin(req, auth) *>
+            ZIO
+              .fromEither(BlocklistId.parse(id))
+              .mapError(e => Response.badRequest(e))
+              .flatMap(bid =>
+                blRepo
+                  .loadCategory(bid)
+                  .map(hs =>
+                    Response.json(
+                      s"""{"id":${bid.value.toJson},"hosts":${hs.toList.sorted
+                          .map(_.value)
+                          .toJson}}""",
+                    ),
+                  )
+                  .mapError(ErrorMapper.dbErrorToResponse),
+              )
         },
       Method.POST / "api" / "blocklists" / string("category") / "clear" ->
         handler { (cat: String, req: Request) =>
           requireAdmin(req, auth) *>
             blRepo.clearCategory(BlocklistId.unsafe(cat)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
+        },
+      // #958: trigger an out-of-band re-fetch + re-seed of a bundled list. Returns
+      // 200 {refreshedHosts:N} on success, 404 if the id isn't a bundled list, or
+      // 502 if the upstream fetch failed (existing DB rows are kept).
+      Method.POST / "api" / "blocklists" / string("id") / "refresh"     ->
+        handler { (id: String, req: Request) =>
+          for {
+            _   <- requireAdmin(req, auth)
+            bid <- ZIO.fromEither(BlocklistId.parse(id)).mapError(e => Response.badRequest(e))
+            b   <- ZIO
+              .fromOption(bundled.get(bid))
+              .orElseFail(
+                Response
+                  .status(Status.NotFound)
+                  .copy(body = Body.fromString(s"""{"error":"unknown bundled blocklist '$id'"}""")),
+              )
+            n   <- wifihaven.api.BundledBlocklists
+              .refresh(blRepo, cache, fetcher, b)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield n match {
+            case Some(count) => Response.json(s"""{"refreshedHosts":$count}""")
+            case None        =>
+              Response
+                .status(Status.BadGateway)
+                .copy(body =
+                  Body.fromString("""{"error":"upstream fetch failed; rows unchanged"}"""),
+                )
+          }
         },
     )
 }
@@ -1209,14 +1462,14 @@ object HouseholdSettingsRoutes {
       repo: HouseholdSettingsRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "household" / "settings" ->
+      Method.GET / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           for {
             _ <- requireAuth(req, auth)
             s <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s.toJson)
         },
-      Method.PUT / "api" / "household" / "settings" ->
+      Method.PUT / "api" / "household" / "settings"   ->
         handler { (req: Request) =>
           for {
             _    <- requireAdmin(req, auth)
@@ -1229,6 +1482,79 @@ object HouseholdSettingsRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
+      // #998: field-scoped partial update. Body is a subset of HouseholdSettings.
+      // Top-level fields (dailyResetTime, dailyResetTz) follow standard PATCH
+      // semantics. `heartbeatFilter` is deep-merged when present so the SPA can
+      // autosave a single inner toggle without resending the threshold and
+      // patterns alongside it.
+      Method.PATCH / "api" / "household" / "settings" ->
+        handler { (req: Request) =>
+          for {
+            _         <- requireAdmin(req, auth)
+            existing  <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
+            body      <- req.body.asString.orElseFail(Response.badRequest(""))
+            obj       <- ZIO.fromEither(FieldPatch.parseObj(body)).mapError(Response.badRequest(_))
+            timePatch <- ZIO
+              .fromEither(FieldPatch.from[LocalTime](obj, "dailyResetTime"))
+              .mapError(Response.badRequest(_))
+            tzPatch   <- ZIO
+              .fromEither(FieldPatch.from[ZoneId](obj, "dailyResetTz"))
+              .mapError(Response.badRequest(_))
+            _         <- timePatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(Response.badRequest("dailyResetTime cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            _         <- tzPatch match {
+              case FieldPatch.Cleared =>
+                ZIO.fail(Response.badRequest("dailyResetTz cannot be cleared"))
+              case _                  => ZIO.unit
+            }
+            mergedFilter <- obj.get("heartbeatFilter") match {
+              case None              => ZIO.succeed(existing.heartbeatFilter)
+              case Some(Json.Null)   =>
+                ZIO.fail(Response.badRequest("heartbeatFilter cannot be cleared"))
+              case Some(j: Json.Obj) => mergeHeartbeatFilter(existing.heartbeatFilter, j)
+              case Some(_)           =>
+                ZIO.fail(Response.badRequest("heartbeatFilter must be a JSON object"))
+            }
+            merged = HouseholdSettings(
+              dailyResetTime = timePatch.applyTo(existing.dailyResetTime),
+              dailyResetTz = tzPatch.applyTo(existing.dailyResetTz),
+              heartbeatFilter = mergedFilter,
+            )
+            _            <- repo.update(merged).mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+    )
+
+  private def mergeHeartbeatFilter(
+      existing: HeartbeatFilter,
+      obj: Json.Obj,
+  ): IO[Response, HeartbeatFilter] =
+    for {
+      enabledP <- ZIO
+        .fromEither(FieldPatch.from[Boolean](obj, "enabled"))
+        .mapError(Response.badRequest(_))
+      bytesP   <- ZIO
+        .fromEither(FieldPatch.from[Int](obj, "bytesThreshold"))
+        .mapError(Response.badRequest(_))
+      hostsP   <- ZIO
+        .fromEither(FieldPatch.from[List[String]](obj, "heartbeatHostPatterns"))
+        .mapError(Response.badRequest(_))
+      _        <- (enabledP, bytesP, hostsP) match {
+        case (FieldPatch.Cleared, _, _) =>
+          ZIO.fail(Response.badRequest("heartbeatFilter.enabled cannot be cleared"))
+        case (_, FieldPatch.Cleared, _) =>
+          ZIO.fail(Response.badRequest("heartbeatFilter.bytesThreshold cannot be cleared"))
+        case (_, _, FieldPatch.Cleared) =>
+          ZIO.fail(Response.badRequest("heartbeatFilter.heartbeatHostPatterns cannot be cleared"))
+        case _                          => ZIO.unit
+      }
+    } yield HeartbeatFilter(
+      enabled = enabledP.applyTo(existing.enabled),
+      bytesThreshold = bytesP.applyTo(existing.bytesThreshold),
+      heartbeatHostPatterns = hostsP.applyTo(existing.heartbeatHostPatterns),
     )
 }
 
@@ -1402,4 +1728,27 @@ def parseProfileIdParam(req: Request): IO[Response, Option[ProfileId]] =
       s.toLongOption
         .map(l => ZIO.succeed(Some(ProfileId(l))))
         .getOrElse(ZIO.fail(Response.badRequest(s"invalid profileId: $s")))
+  }
+
+// #865: comma-separated multi-value query params. Old single-value URLs
+// ("profileId=2") parse as a one-element list, so previously-shared links
+// keep working. Absent param → empty list (no filter).
+def parseMultiValueParam(req: Request, name: String): List[String] =
+  req.url.queryParam(name) match {
+    case None    => Nil
+    case Some(s) => s.split(',').toList.map(_.trim).filter(_.nonEmpty)
+  }
+
+def parseMultiProfileIdParam(req: Request): IO[Response, List[ProfileId]] =
+  ZIO.foreach(parseMultiValueParam(req, "profileId")) { s =>
+    ZIO
+      .fromOption(s.toLongOption.map(ProfileId(_)))
+      .orElseFail(Response.badRequest(s"invalid profileId: $s"))
+  }
+
+def parseMultiDeviceIdParam(req: Request): IO[Response, List[DeviceId]] =
+  ZIO.foreach(parseMultiValueParam(req, "deviceId")) { s =>
+    ZIO
+      .fromOption(s.toLongOption.map(DeviceId(_)))
+      .orElseFail(Response.badRequest(s"invalid deviceId: $s"))
   }

@@ -532,7 +532,8 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .addHeader(Header.Authorization.Bearer(token))
         resp <- routes.runZIO(req)
         body <- resp.body.asString
-        logs <- ZIO.fromEither(body.fromJson[List[QueryLog]])
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(logs.length == 2)
     },

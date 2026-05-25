@@ -36,5 +36,21 @@ else
   check "no dependency on coreutils stat -c" ok
 fi
 
+# #903: PR #899 shipped openwrt/files/usr/lib/lua/wifihaven/selfheal.lua with
+# unit-test coverage but originally forgot to require + call it from the
+# agent, so the heal never ran on startup. Wiring was added in a follow-up.
+# Guard both halves so a future refactor can't silently drop them again.
+if grep -q '^local selfheal[[:space:]]*=[[:space:]]*require("wifihaven\.selfheal")' "$SCRIPT"; then
+  check "selfheal module required at agent startup (#903)" ok
+else
+  check "selfheal module required at agent startup (#903)" "missing 'require(\"wifihaven.selfheal\")' — startup heal won't run"
+fi
+
+if grep -q 'selfheal\.selfheal_cron(' "$SCRIPT"; then
+  check "selfheal_cron called at agent startup (#903)" ok
+else
+  check "selfheal_cron called at agent startup (#903)" "module required but selfheal_cron() never invoked"
+fi
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

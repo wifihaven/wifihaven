@@ -1,0 +1,32 @@
+# Gambling sites and sportsbooks. Conservative starter list of major US/UK
+# brands. Source: curated. Iterate with more international coverage in
+# follow-up PRs.
+id: gambling
+name: Gambling
+description: Online casinos, poker, and sportsbooks.
+source: curated
+hosts:
+  - draftkings.com
+  - fanduel.com
+  - betmgm.com
+  - caesars.com
+  - bet365.com
+  - williamhill.com
+  - pokerstars.com
+  - partypoker.com
+  - bovada.lv
+  - mybookie.ag
+  - betonline.ag
+  - 888.com
+  - 888casino.com
+  - paddypower.com
+  - skybet.com
+  - pointsbet.com
+  - barstoolsportsbook.com
+  - foxbet.com
+  - hardrockcasino.com
+  - unibet.com
+  - betfair.com
+  - betway.com
+  - ladbrokes.com
+  - coral.co.uk

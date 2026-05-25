@@ -41,6 +41,7 @@ ensure_openwrt_image() {
 
   local gz="${WH_CACHE_DIR}/${WH_OPENWRT_IMAGE}"
   local img="${WH_ROUTER_BASE_IMG}"
+  local rc
 
   if [[ -f "${img}" ]]; then
     return 0
@@ -62,7 +63,13 @@ ensure_openwrt_image() {
 
   log "decompressing $(basename "${gz}")"
   require_cmd gunzip
-  gunzip -k -f "${gz}"
+  if ! gunzip -k -f "${gz}"; then
+    rc=$?
+    if (( rc != 2 )); then
+      die "gunzip failed (rc=${rc}) on ${gz}"
+    fi
+    log "gunzip warned on ${gz} (rc=2, trailing garbage ignored) — decompression result follows"
+  fi
   [[ -f "${img}" ]] || die "expected ${img} after gunzip"
 }
 
@@ -97,6 +104,43 @@ router_is_running() {
   [[ -f "${WH_ROUTER_PIDFILE}" ]] && kill -0 "$(cat "${WH_ROUTER_PIDFILE}")" 2>/dev/null
 }
 
+# Host-wide reservation dir for pool bridges (#907). Created mode 1777 by
+# lan-bridge-pool-bootstrap.sh so non-root pickers can write reservations.
+WH_BRIDGE_RESERVATION_DIR="${WH_BRIDGE_RESERVATION_DIR:-/run/wh-lan-bridge}"
+
+# Atomically (re)write the reservation marker for ${1}=bridge to ${2}=pid,
+# tagging it with WH_RUN_ID for human debugging. Silently no-ops if the
+# reservation dir does not exist (un-bootstrapped host).
+wh_write_bridge_reservation() {
+  local br="$1" pid="$2"
+  [[ -d "${WH_BRIDGE_RESERVATION_DIR}" ]] || return 0
+  local f="${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation"
+  local tmp="${f}.tmp.$$"
+  printf 'pid=%s\nrun_id=%s\n' "${pid}" "${WH_RUN_ID:-}" > "${tmp}" 2>/dev/null || return 0
+  mv -f "${tmp}" "${f}" 2>/dev/null || rm -f "${tmp}"
+}
+
+wh_clear_bridge_reservation() {
+  local br="$1"
+  [[ -d "${WH_BRIDGE_RESERVATION_DIR}" ]] || return 0
+  rm -f "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" 2>/dev/null || true
+}
+
+# Returns 0 if bridge has a live reservation. Reaps stale (dead-PID) markers
+# as a side effect so the picker can recycle them.
+wh_bridge_reserved() {
+  local br="$1"
+  local f="${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation"
+  [[ -f "${f}" ]] || return 1
+  local pid
+  pid="$(awk -F= '$1=="pid"{print $2; exit}' "${f}" 2>/dev/null)"
+  if [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "${f}" 2>/dev/null || true
+  return 1
+}
+
 # Pick a LAN bridge from the wh-lan* pool when one wasn't set explicitly (#891).
 #
 # Contract:
@@ -106,9 +150,15 @@ router_is_running() {
 #     (wh-lan0) stands, and lan-bridge-up.sh will create it. Byte-identical to
 #     pre-#891 behavior on un-bootstrapped hosts.
 #   - Otherwise, under a host-wide flock, picks the lowest-numbered wh-lan*
-#     bridge with no attached interfaces, records it in .run/<id>/lan-bridge,
-#     and exports WH_LAN_BRIDGE. The flock is held until this shell exits, so
-#     it bridges the gap between pick and qemu's synchronous tap attach.
+#     bridge that is (a) free of attached taps AND (b) has no live reservation
+#     marker, records the pick in .run/<id>/lan-bridge plus a host-wide
+#     reservation file, releases the flock, and exports WH_LAN_BRIDGE. The
+#     reservation is the durable in-use signal for subsequent picks; the flock
+#     is only held long enough to make the (check + write) atomic. The flock
+#     must NOT be held past return, because bash does not set FD_CLOEXEC on
+#     fds opened by `exec N>`, so qemu (forked from router-up.sh) inherits the
+#     fd and keeps the lock alive for its own lifetime — blocking every later
+#     pick on the host (#907).
 #
 # Exits non-zero with a clear message if every pool bridge is already in use.
 wh_pick_lan_bridge() {
@@ -148,6 +198,9 @@ wh_pick_lan_bridge() {
   mkdir -p "${WH_VM_DIR}/.run"
   local lock_file="${WH_VM_DIR}/.run/.bridge-pool.lock"
   exec 9>"${lock_file}"
+  # 60s was the original #891 budget when the flock had to span qemu boot;
+  # with the reservation marker we only hold it across (scan + write), so 60s
+  # is now generous. Kept as a backstop for runaway picker stalls.
   if ! flock -w 60 9; then
     die "could not acquire bridge-pool lock (${lock_file}) within 60s"
   fi
@@ -156,22 +209,32 @@ wh_pick_lan_bridge() {
   while IFS= read -r br; do
     local attached
     attached=$(ls "/sys/class/net/${br}/brif" 2>/dev/null | wc -l)
-    if (( attached == 0 )); then
+    local res="none"
+    if [[ -f "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" ]]; then
+      res="$(awk -F= '$1=="pid"{print $2; exit}' "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" 2>/dev/null)"
+    fi
+    log "pick-debug ${br}: attached=${attached} reservation_pid=${res}"
+    if (( attached == 0 )) && ! wh_bridge_reserved "${br}"; then
       chosen="${br}"
       break
     fi
   done <<<"${sorted}"
   if [[ -z "${chosen}" ]]; then
-    die "LAN bridge pool exhausted — every wh-lan* has interfaces attached: $(printf '%s ' "${pool[@]}")"
+    die "LAN bridge pool exhausted — every wh-lan* is in use (attached tap or live reservation): $(printf '%s ' "${pool[@]}")"
   fi
   mkdir -p "${WH_RUN_DIR}"
   printf '%s\n' "${chosen}" > "${WH_RUN_DIR}/lan-bridge"
+  # Reserve under the flock, tagged with the picking shell's PID. router-up.sh
+  # overwrites this with qemu's PID once daemonize returns, so the reservation
+  # survives the calling shell exiting while qemu still holds the tap.
+  wh_write_bridge_reservation "${chosen}" "$$"
   WH_LAN_BRIDGE="${chosen}"
   WH_LAN_BRIDGE_PICKED=1
   export WH_LAN_BRIDGE WH_LAN_BRIDGE_PICKED
   log "picked LAN bridge from pool: ${chosen}"
-  # Flock is held by FD 9 until this shell exits. qemu's tap attach happens
-  # synchronously inside qemu-system-x86_64 (before -daemonize returns), so by
-  # the time router-up.sh exits the bridge has an attached interface and the
-  # next concurrent run sees it as in-use.
+  # Release the flock immediately — the reservation marker is the durable
+  # in-use signal for the next picker, and holding FD 9 open past this point
+  # would leak into qemu (no FD_CLOEXEC on `exec N>`) and block every later
+  # pick on the host until qemu exits.
+  exec 9>&-
 }

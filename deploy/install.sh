@@ -20,6 +20,14 @@
 #   WIFIHAVEN_INSTALL_DIR    legacy alias for WIFIHAVEN_PREFIX.
 #   WIFIHAVEN_API_HOST_PORT  host port to bind           (default: 8080)
 #   WIFIHAVEN_API_BIND       host interface to bind on   (default: 0.0.0.0)
+#   WIFIHAVEN_UI_ALLOWED_HOSTS  comma-separated hostnames the admin UI is
+#                            reachable at (e.g. "api.lan" or
+#                            "wifihaven.example,api.wifihaven.example"). These
+#                            are always allowed by every profile so a paused
+#                            household member can still reach the UI to
+#                            unpause themselves (#944). Hostname-only for
+#                            now; port-aware allow/block tracked in #296.
+#                            Empty = no global allow list. (default: prompt)
 #   WIFIHAVEN_NEW_ADMIN_PW   new admin password          (default: prompt)
 #   WIFIHAVEN_NONINTERACTIVE if set, never prompt; fail if any value missing.
 
@@ -27,7 +35,7 @@ set -euo pipefail
 
 case "${1:-}" in
   -h|--help)
-    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
 esac
@@ -136,6 +144,14 @@ fi
 prompt WIFIHAVEN_INSTALL_DIR    "Install directory"                           "$DEFAULT_PREFIX"
 prompt WIFIHAVEN_API_HOST_PORT  "Host port for the API"                       "8080"
 prompt WIFIHAVEN_API_BIND       "Bind address (0.0.0.0 or 127.0.0.1)"         "0.0.0.0"
+# #944: hostnames the admin UI is reachable at — always allowed by every
+# profile so a paused household member can still reach the UI to unpause.
+# Empty default keeps the strict self-hosted behavior intact; the operator
+# can paste in e.g. "api.lan" or "wifihaven.example,api.wifihaven.example".
+# Port-aware allow/block tracked in #296.
+prompt WIFIHAVEN_UI_ALLOWED_HOSTS \
+                                "Admin UI hostname(s) (comma-sep, blank = none)" \
+                                ""
 
 # ── 3. Install directory ──────────────────────────────────────────────────
 
@@ -280,6 +296,10 @@ WIFIHAVEN_JWT_HOURS=24
 
 WIFIHAVEN_API_BIND=${WIFIHAVEN_API_BIND}
 WIFIHAVEN_API_PORT=${WIFIHAVEN_API_HOST_PORT}
+
+# #944: hostnames always added to every profile's snapshot extraAllowed so a
+# paused household member can still reach the admin UI to unpause themselves.
+WIFIHAVEN_UI_ALLOWED_HOSTS=${WIFIHAVEN_UI_ALLOWED_HOSTS}
 EOF
 chmod 600 .env
 ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"

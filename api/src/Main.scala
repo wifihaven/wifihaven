@@ -36,16 +36,50 @@ object Main extends ZIOAppDefault {
       // on subsequent boots because of ON CONFLICT DO NOTHING.
       hsRepo <- ZIO.service[HouseholdSettingsRepo]
       tz = java.time.ZoneId.systemDefault()
-      _      <- hsRepo.ensureDefault(tz)
-      _      <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
-      routes <- allRoutes
+      _              <- hsRepo.ensureDefault(tz)
+      _              <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+      // #768: seed the starter library of app templates. Idempotent — operator
+      // host edits on previously-seeded apps are preserved.
+      appRepoForSeed <- ZIO.service[AppRepo]
+      templates      <- AppTemplates.loadAll()
+      _              <- AppTemplates.seed(appRepoForSeed, templates)
+      _              <- ZIO.logInfo(s"app_templates seeded (${templates.size} templates)")
+      // #958: seed the bundled category blocklists. Inline lists pull hosts
+      // straight from YAML; remote lists fetch from the declared upstream URL
+      // (cached in-memory after first success — see BlocklistCache). REPLACE
+      // semantics; remote-fetch failures leave existing DB rows untouched.
+      blRepoForSeed  <- ZIO.service[BlocklistRepo]
+      blCacheForSeed <- ZIO.service[BlocklistCache]
+      blFetcher      <- ZIO.service[BlocklistFetcher]
+      bundled        <- BundledBlocklists.loadAll()
+      _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
+      _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      _              <- ZIO
+        .logWarning(
+          "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
+            "Disable in production.",
+        )
+        .when(cfg.seedTestBlocklists)
+      _              <- BundledBlocklists
+        .seed(blRepoForSeed, blCacheForSeed, blFetcher, BundledBlocklists.devTestBlocklists)
+        .when(cfg.seedTestBlocklists)
+      templatesById = templates.map(t => t.slug -> t).toMap
+      bundledById   = bundled.map(b => b.id -> b).toMap
+      routes <- allRoutes(templatesById, bundledById)
       withCors = Cors.wrap(routes, cfg.cors)
       _ <- ZIO
         .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
         .when(cfg.cors.origins.nonEmpty)
+      // #1017: zio-http 3.0.1's RequestStreaming.Disabled default cap is 100 KiB;
+      // /api/router/usage bodies routinely exceed that as mac_ip_tracking fills.
+      // Bump to 4 MiB — well above any realistic single-bucket payload and below
+      // Render's edge 413 threshold.
+      serverConfig = Server.Config.default
+        .port(cfg.http.port)
+        .disableRequestStreaming(4 * 1024 * 1024)
       _ <- Server
         .serve(withCors)
-        .provide(Server.defaultWithPort(cfg.http.port))
+        .provide(ZLayer.succeed(serverConfig) >>> Server.live)
     } yield ()).provide(serverEnv)
 
   private val serverEnv =
@@ -57,9 +91,14 @@ object Main extends ZIOAppDefault {
       Clock.live >+>
       AuthService.layer >+>
       PolicyService.layer >+>
-      TimeStatusCache.live()
+      TimeStatusCache.live() >+>
+      BlocklistCache.live >+>
+      BlocklistFetcher.live
 
-  private def allRoutes =
+  private def allRoutes(
+      templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
+      bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
+  ) =
     for {
       auth        <- ZIO.service[AuthService]
       userRepo    <- ZIO.service[UserRepo]
@@ -71,6 +110,8 @@ object Main extends ZIOAppDefault {
       stlRepo     <- ZIO.service[SiteTimeLimitRepo]
       deviceRepo  <- ZIO.service[DeviceRepo]
       blRepo      <- ZIO.service[BlocklistRepo]
+      blCache     <- ZIO.service[BlocklistCache]
+      blFetcher2  <- ZIO.service[BlocklistFetcher]
       usageRepo   <- ZIO.service[TimeUsageRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       routerRepo  <- ZIO.service[RouterRepo]
@@ -78,6 +119,7 @@ object Main extends ZIOAppDefault {
       connRepo    <- ZIO.service[ConnectionEventRepo]
       blockEvRepo <- ZIO.service[BlockEventRepo]
       alertRepo   <- ZIO.service[DeviceAlertRepo]
+      appRepo     <- ZIO.service[AppRepo]
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
@@ -104,7 +146,7 @@ object Main extends ZIOAppDefault {
         timeCache,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
-      UsageRoutes.routes(auth, deviceRepo, trafficRepo, upRepo, profileRepo, clock) ++
+      UsageRoutes.routes(auth, deviceRepo, trafficRepo, upRepo, profileRepo, appRepo, clock) ++
       DashboardNowRoutes.routes(
         auth,
         trafficRepo,
@@ -114,7 +156,7 @@ object Main extends ZIOAppDefault {
         upRepo,
         clock,
       ) ++
-      BlocklistRoutes.routes(auth, blRepo) ++
+      BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++
       RouterIngestRoutes.routes(
@@ -125,8 +167,10 @@ object Main extends ZIOAppDefault {
         deviceRepo,
         connRepo,
         alertRepo,
+        hsRepo,
       ) ++
       DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
+      AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
       DebugRoutes.routes(
         cfg.debugEnabled,
         deviceRepo,

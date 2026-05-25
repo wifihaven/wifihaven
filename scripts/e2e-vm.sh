@@ -21,13 +21,24 @@
 #
 # Environment overrides (read by conftest.py / conftest_fake.py):
 #   E2E_VM_API_PORT         API stack host port (default 18080; live mode)
-#   WH_FAKE_API_PORT        fake API host port (default 18090; fake mode)
+#   WH_FAKE_API_PORT        fake API host port (fake mode). If unset, defaults
+#                           to WH_PORT_BASE+1000 when WH_PORT_BASE is set (#907),
+#                           else a randomly-allocated free port (#902).
+#   WH_ROUTER_SSH_PORT      router VM WAN-side SSH hostfwd (auto-allocated if unset)
+#   WH_ROUTER_HTTP_PORT     router VM WAN-side HTTP hostfwd (auto-allocated if unset)
+#   WH_CLIENT_SSH_PORT_BASE client VM SSH hostfwd (auto-allocated if unset)
 #   E2E_VM_KEEP_STACK=1     don't tear down docker compose (live mode)
 #   E2E_VM_KEEP=1           don't tear down VMs (router + clients)
 #   E2E_VM_SKIP_STACK=1     assume stack already up at $E2E_VM_API_PORT
 #   E2E_VM_SKIP_VMS=1       skip VM-dependent tests (CI sanity mode)
 #   WH_ROUTER_IMAGE_PATH  use a custom-built router image instead of stock
 #                           (required for v1; see scripts/vm/build-router-image.sh)
+#
+# Host port allocation (#902): all host-side ports (fake-api bind, qemu
+# hostfwd) default to free ports allocated at session start, NOT fixed
+# constants. This sidesteps a self-hosted-runner failure mode where an
+# orphan qemu / fake-api from a prior job lingers and holds the previously
+# hard-coded port. Set the relevant env var to override.
 
 set -euo pipefail
 
@@ -94,9 +105,12 @@ case "${ONLY}" in
   reassignment) MARK="reassignment" ;;
   unknown-device|unknown_device)
                 MARK="unknown_device" ;;
+  install-health|install_health)
+                MARK="install_health" ;;
   *) echo "unknown --only: ${ONLY}" >&2
      echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page," >&2
-     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device" >&2
+     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device," >&2
+     echo "       install-health" >&2
      exit 2 ;;
 esac
 
@@ -133,6 +147,47 @@ if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" ]]; then
     echo "(set E2E_VM_SKIP_VMS=1 to skip VM-dependent scenarios)" >&2
     exit 1
   }
+fi
+
+# ── host port allocation (#902) ──────────────────────────────────────────────
+# Pick free ports for all host-side bindings so a lingering orphan from a
+# prior CI run on this same self-hosted runner can't collide. Only fill in
+# vars the caller hasn't already set.
+
+alloc_free_port() {
+  "${VENV_DIR}/bin/python3" - <<'PY'
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind(("127.0.0.1", 0))
+    print(s.getsockname()[1])
+PY
+}
+
+# If the caller set WH_PORT_BASE (the #891 concurrent-pair knob), defer to
+# config.sh's base-derived defaults rather than randomizing. Keeps the
+# explicit "give me a deterministic port window" workflow working.
+if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" && -z "${WH_PORT_BASE:-}" ]]; then
+  : "${WH_ROUTER_SSH_PORT:=$(alloc_free_port)}"
+  : "${WH_ROUTER_HTTP_PORT:=$(alloc_free_port)}"
+  : "${WH_CLIENT_SSH_PORT_BASE:=$(alloc_free_port)}"
+  export WH_ROUTER_SSH_PORT WH_ROUTER_HTTP_PORT WH_CLIENT_SSH_PORT_BASE
+  echo "host ports: router-ssh=${WH_ROUTER_SSH_PORT} router-http=${WH_ROUTER_HTTP_PORT} client-ssh=${WH_CLIENT_SSH_PORT_BASE}"
+fi
+
+if [[ "${MODE}" == "fake" ]]; then
+  # When the caller pinned a deterministic port window via WH_PORT_BASE
+  # (#891 concurrent-pair workflow), derive the fake-api port from it so a
+  # second arm gets a distinct, predictable port without needing a second env
+  # var. +1000 keeps it clear of the router/client SSH+HTTP triplet (base..base+2)
+  # for any reasonable WH_PORT_BASE spacing — concurrent pairs typically
+  # space WH_PORT_BASE by ~100 (see issue #907 acceptance repro), so the
+  # naive +100 here would collide A's fake-api with B's router-ssh.
+  if [[ -z "${WH_FAKE_API_PORT:-}" && -n "${WH_PORT_BASE:-}" ]]; then
+    WH_FAKE_API_PORT=$((WH_PORT_BASE + 1000))
+  fi
+  : "${WH_FAKE_API_PORT:=$(alloc_free_port)}"
+  export WH_FAKE_API_PORT
+  echo "host ports: fake-api=${WH_FAKE_API_PORT}"
 fi
 
 # ── run pytest ───────────────────────────────────────────────────────────────

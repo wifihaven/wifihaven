@@ -1,9 +1,11 @@
 import type {
-  CreateRouterRequest, CreateRouterResponse, CreateUserRequest, DashboardNow, DashboardStats, Device,
+  AppDetail, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
-  ConnectionEventAggRow, QueryLog, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  ConnectionEventSeriesPage, QueryLogPage,
+  RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
-  UpdateHouseholdSettingsRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
 
@@ -180,83 +182,99 @@ export const api = {
       if (params.topN)      qs.set('topN', String(params.topN))
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
     },
-    // #846 Traffic Usage page — multi-column groupBy via comma-separated set.
+    // #846 Traffic Usage page — multi-column groupBy.
+    // #917: groupBy as repeated query params; empty = strictly aggregate
+    // (one row per time bucket). The API still accepts the older comma form.
+    // #865: mac / profileId are multi-value, serialized as comma-separated.
+    // A single-element array round-trips to the legacy single-value form.
+    // #862: cursor + nextCursor for infinite scroll; `until` re-anchors the
+    // right edge of the window.
     traffic: (params: {
-      mac?: string
-      profileId?: number
+      macs?: string[]
+      profileIds?: number[]
       from?: string
       to?: string
       bucket?: TrafficUsageBucket
       groupBy?: TrafficUsageGroupBy[]
       tz?: string
       limit?: number
+      cursor?: string
     }) => {
       const qs = new URLSearchParams()
-      if (params.mac)                      qs.set('mac', params.mac)
-      if (params.profileId !== undefined)  qs.set('profileId', String(params.profileId))
+      if (params.macs?.length)             qs.set('mac', params.macs.join(','))
+      if (params.profileIds?.length)       qs.set('profileId', params.profileIds.join(','))
       if (params.from)                     qs.set('from', params.from)
       if (params.to)                       qs.set('to', params.to)
       if (params.bucket)                   qs.set('bucket', params.bucket)
-      if (params.groupBy?.length)          qs.set('groupBy', params.groupBy.join(','))
+      if (params.groupBy) for (const g of params.groupBy) qs.append('groupBy', g)
       if (params.tz)                       qs.set('tz', params.tz)
       if (params.limit !== undefined)      qs.set('limit', String(params.limit))
+      if (params.cursor)                   qs.set('cursor', params.cursor)
       return req<TrafficUsageResponse>('GET', `/usage/traffic?${qs}`)
     },
   },
 
   // ── Logs ───────────────────────────────────────────────────────────────
+  // #862: cursor + nextCursor on both endpoints. `until` anchors the right
+  // edge of the window (defaults to NOW() server-side) — supports a Jump-to-Date
+  // picker. `offset` is gone; keyset paging is stable under inserts.
   logs: {
     query: (params: {
-      mac?: string
-      deviceId?: number
-      profileId?: number
+      macs?: string[]
+      deviceIds?: number[]
+      profileIds?: number[]
       blocked?: boolean
       domain?: string
       location?: string
       hours?: number
       limit?: number
-      offset?: number
+      until?: string
+      cursor?: string
     }) => {
       const qs = new URLSearchParams()
-      if (params.mac)      qs.set('mac', params.mac)
-      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
-      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      if (params.macs?.length)       qs.set('mac', params.macs.join(','))
+      if (params.deviceIds?.length)  qs.set('deviceId', params.deviceIds.join(','))
+      if (params.profileIds?.length) qs.set('profileId', params.profileIds.join(','))
       if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
       if (params.domain)   qs.set('domain', params.domain)
       if (params.location) qs.set('location', params.location)
       if (params.hours)    qs.set('hours', String(params.hours))
       if (params.limit)    qs.set('limit', String(params.limit))
-      if (params.offset)   qs.set('offset', String(params.offset))
-      return req<QueryLog[]>('GET', `/logs?${qs}`)
+      if (params.until)    qs.set('until', params.until)
+      if (params.cursor)   qs.set('cursor', params.cursor)
+      return req<QueryLogPage>('GET', `/logs?${qs}`)
     },
-    // #847 + #846: aggregated connection-events series. Multi-column groupBy
-    // via comma-separated set. apex deferred to #856, app to #857.
+    // #847 + #917: aggregated connection-events series. groupBy is sent as
+    // repeated query params; empty = one row per time bucket. apex deferred
+    // to #856; app turned on by #769.
     series: (params: {
       bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
       groupBy: Array<'domain' | 'device' | 'profile' | 'apex' | 'app'>
-      mac?: string
-      deviceId?: number
-      profileId?: number
+      macs?: string[]
+      deviceIds?: number[]
+      profileIds?: number[]
       blocked?: boolean
       domain?: string
       location?: string
       hours?: number
       limit?: number
-      offset?: number
+      until?: string
+      cursor?: string
     }) => {
       const qs = new URLSearchParams()
       qs.set('bucket', params.bucket)
-      qs.set('groupBy', params.groupBy.join(','))
-      if (params.mac)      qs.set('mac', params.mac)
-      if (params.deviceId !== undefined)  qs.set('deviceId', String(params.deviceId))
-      if (params.profileId !== undefined) qs.set('profileId', String(params.profileId))
+      for (const g of params.groupBy) qs.append('groupBy', g)
+      if (params.macs?.length)       qs.set('mac', params.macs.join(','))
+      if (params.deviceIds?.length)  qs.set('deviceId', params.deviceIds.join(','))
+      if (params.profileIds?.length) qs.set('profileId', params.profileIds.join(','))
       if (params.blocked !== undefined) qs.set('blocked', String(params.blocked))
       if (params.domain)   qs.set('domain', params.domain)
       if (params.location) qs.set('location', params.location)
       if (params.hours)    qs.set('hours', String(params.hours))
       if (params.limit)    qs.set('limit', String(params.limit))
-      if (params.offset)   qs.set('offset', String(params.offset))
-      return req<ConnectionEventAggRow[]>('GET', `/connection-events/series?${qs}`)
+      if (params.until)    qs.set('until', params.until)
+      if (params.cursor)   qs.set('cursor', params.cursor)
+      return req<ConnectionEventSeriesPage>('GET', `/connection-events/series?${qs}`)
     },
     stats: () => req<DashboardStats>('GET', '/stats'),
   },
@@ -268,8 +286,40 @@ export const api = {
 
   // ── Blocklists ─────────────────────────────────────────────────────────
   blocklists: {
-    counts: () => req<{ category: string; count: number }[]>('GET', '/blocklists'),
+    list: () => req<BlocklistSummary[]>('GET', '/blocklists'),
+    hosts: (id: string) => req<BlocklistHosts>('GET', `/blocklists/${id}/hosts`),
     clearCategory: (cat: string) => req<void>('POST', `/blocklists/${cat}/clear`, {}),
+  },
+
+  // ── Apps (#762/#765) ───────────────────────────────────────────────────
+  apps: {
+    list: () => req<AppDetail[]>('GET', '/apps'),
+    get: (id: number) => req<AppDetail>('GET', `/apps/${id}`),
+    create: (data: CreateAppRequest) => req<AppDetail>('POST', '/apps', data),
+    update: (id: number, data: UpdateAppRequest) =>
+      req<void>('PUT', `/apps/${id}`, data),
+    delete: (id: number) => req<void>('DELETE', `/apps/${id}`),
+    setHosts: (id: number, hosts: string[]) =>
+      req<void>('PUT', `/apps/${id}/hosts`, { hosts } as SetAppHostsRequest),
+    // #766: recently-visited apexes for a device — drives the picker in the
+    // apps create/edit flow. Colons in the MAC are sent raw: zio-http doesn't
+    // auto-decode percent-encoded colons in path segments, so
+    // `encodeURIComponent` would turn the MAC into a 404 (same gotcha as
+    // time.statusDevice above).
+    recentApexes: (mac: string, opts: { windowDays?: number; limit?: number } = {}) => {
+      const qs = new URLSearchParams()
+      if (opts.windowDays != null) qs.set('windowDays', String(opts.windowDays))
+      if (opts.limit != null) qs.set('limit', String(opts.limit))
+      const q = qs.toString()
+      return req<RecentApexesResponse>(
+        'GET',
+        `/devices/${mac}/recent-apexes${q ? `?${q}` : ''}`,
+      )
+    },
+    setPolicy: (id: number, profileId: number, data: UpsertAppAssignmentRequest) =>
+      req<void>('PUT', `/apps/${id}/policy/${profileId}`, data),
+    deletePolicy: (id: number, profileId: number) =>
+      req<void>('DELETE', `/apps/${id}/policy/${profileId}`),
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

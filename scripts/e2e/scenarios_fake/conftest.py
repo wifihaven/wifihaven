@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -51,12 +52,25 @@ from lib.wait import wait_for_client_dns  # noqa: E402
 log = logging.getLogger(__name__)
 
 FAKE_API_HOST = os.environ.get("WH_FAKE_API_HOST", "127.0.0.1")
-FAKE_API_PORT = int(os.environ.get("WH_FAKE_API_PORT", "18090"))
 ROUTER_IMAGE_PATH = os.environ.get("WH_ROUTER_IMAGE_PATH")
 KEEP_VMS = os.environ.get("E2E_VM_KEEP", "0") == "1"
 SKIP_VMS = os.environ.get("E2E_VM_SKIP_VMS", "0") == "1"
 
 BASE_SNAPSHOT = "e2e-base-fake"
+
+
+def alloc_free_port(host: str = "127.0.0.1") -> int:
+    """Bind to port 0, read the kernel-assigned port, release immediately.
+
+    There's a brief race between release and the next bind, but the kernel
+    will not re-hand-out the same port within that window unless the host is
+    under extreme port pressure — fine for a single-process session-scoped
+    allocation. The point is to dodge orphans from prior CI runs on the same
+    self-hosted runner that pin the previous hard-coded port (#902).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
 
 
 # ── fake API server (background asyncio thread) ──────────────────────────────
@@ -148,7 +162,9 @@ class _FakeServer:
 
 @pytest.fixture(scope="session")
 def fake_server() -> _FakeServer:
-    server = _FakeServer(FAKE_API_HOST, FAKE_API_PORT)
+    env_port = os.environ.get("WH_FAKE_API_PORT")
+    port = int(env_port) if env_port else alloc_free_port(FAKE_API_HOST)
+    server = _FakeServer(FAKE_API_HOST, port)
     server.start()
     try:
         yield server
@@ -188,11 +204,11 @@ def router_session(fake_server, fake_api) -> EnrolledRouter:
 
 
 @pytest.fixture()
-def router(router_session, fake_api) -> EnrolledRouter:
+def router(router_session, fake_server, fake_api) -> EnrolledRouter:
     """Restore the router VM and reset the fake before each scenario."""
     router_restore(BASE_SNAPSHOT)
     fake_api.reset()
-    _wait_for_fake_slirp_ready(port=FAKE_API_PORT, timeout_s=60)
+    _wait_for_fake_slirp_ready(port=fake_server.port, timeout_s=60)
     return router_session
 
 

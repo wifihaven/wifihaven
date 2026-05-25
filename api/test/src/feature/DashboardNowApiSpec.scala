@@ -249,6 +249,117 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev.topHosts.head.activeSeconds == 360L,
       )
     },
+    test("nowActivity: consistent top host across 3 buckets → topHost + accurate minutes") {
+      for {
+        _        <- cleanDb
+        _        <- clearSeededProfiles
+        routerId <- seedRouter()
+        dr       <- ZIO.service[DeviceRepo]
+        pr       <- ZIO.service[ProfileRepo]
+        kid      <- pr.create("Kids", Nil)
+        _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
+        now0     <- Clock.instant
+        // Three 5-min buckets ending at: now-1m, now-6m, now-11m, all top youtube.com.
+        _        <- insertReport(
+          routerId,
+          mac1,
+          "youtube.com",
+          now0.minusSeconds(16 * 60),
+          activeSeconds = 250,
+        )
+        _        <- insertReport(
+          routerId,
+          mac1,
+          "youtube.com",
+          now0.minusSeconds(11 * 60),
+          activeSeconds = 280,
+        )
+        _        <- insertReport(
+          routerId,
+          mac1,
+          "youtube.com",
+          now0.minusSeconds(6 * 60),
+          activeSeconds = 290,
+        )
+        _        <- insertConn(routerId, mac1, now0.minusSeconds(5))
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token)
+        routes   <- buildRoutes(auth)
+        resp     <- getJson(routes, "/api/dashboard/now", token)
+        body     <- resp.body.asString
+        parsed   <- ZIO.fromEither(body.fromJson[DashboardNow])
+        dev = parsed.profiles.find(_.id == kid).get.activeDevices.head
+      } yield assertTrue(
+        dev.nowActivity.exists(_.topHost == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
+        dev.nowActivity.flatMap(_.minutes).contains(15),
+      )
+    },
+    test("nowActivity: top host varies bucket-to-bucket → latest bucket's top, no minutes") {
+      for {
+        _        <- cleanDb
+        _        <- clearSeededProfiles
+        routerId <- seedRouter()
+        dr       <- ZIO.service[DeviceRepo]
+        pr       <- ZIO.service[ProfileRepo]
+        kid      <- pr.create("Kids", Nil)
+        _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
+        now0     <- Clock.instant
+        // Latest bucket dominated by netflix; the earlier one by tiktok — should not extend the run.
+        _        <- insertReport(
+          routerId,
+          mac1,
+          "tiktok.com",
+          now0.minusSeconds(11 * 60),
+          activeSeconds = 290,
+        )
+        _        <- insertReport(
+          routerId,
+          mac1,
+          "netflix.com",
+          now0.minusSeconds(6 * 60),
+          activeSeconds = 280,
+        )
+        _        <- insertReport(
+          routerId,
+          mac1,
+          "tiktok.com",
+          now0.minusSeconds(6 * 60),
+          activeSeconds = 10,
+        )
+        _        <- insertConn(routerId, mac1, now0.minusSeconds(5))
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token)
+        routes   <- buildRoutes(auth)
+        resp     <- getJson(routes, "/api/dashboard/now", token)
+        body     <- resp.body.asString
+        parsed   <- ZIO.fromEither(body.fromJson[DashboardNow])
+        dev = parsed.profiles.find(_.id == kid).get.activeDevices.head
+      } yield assertTrue(
+        dev.nowActivity.exists(_.topHost == HostId.Fqdn(Hostname.unsafe("netflix.com"))),
+        dev.nowActivity.flatMap(_.minutes).isEmpty,
+      )
+    },
+    test("nowActivity: idle device (no rows) → None") {
+      for {
+        _        <- cleanDb
+        _        <- clearSeededProfiles
+        routerId <- seedRouter()
+        dr       <- ZIO.service[DeviceRepo]
+        pr       <- ZIO.service[ProfileRepo]
+        kid      <- pr.create("Kids", Nil)
+        _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
+        now0     <- Clock.instant
+        // Active via connection_events only — no traffic rows, so no nowActivity.
+        _        <- insertConn(routerId, mac1, now0.minusSeconds(5))
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token)
+        routes   <- buildRoutes(auth)
+        resp     <- getJson(routes, "/api/dashboard/now", token)
+        body     <- resp.body.asString
+        parsed   <- ZIO.fromEither(body.fromJson[DashboardNow])
+        dev = parsed.profiles.find(_.id == kid).get.activeDevices.head
+      } yield assertTrue(dev.nowActivity.isEmpty)
+    },
     test("multiple profiles, idle ones retained in id-asc order") {
       for {
         _        <- cleanDb

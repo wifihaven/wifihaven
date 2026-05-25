@@ -27,4 +27,4 @@ jobs:
     steps:
       - name: Hit ${{ matrix.env }} health endpoint
         run: |
-          curl -fsS --max-time 30 ${{ matrix.url }}
+          curl -fsS --max-time 60 -w "took %{time_total}s\n" ${{ matrix.url }}

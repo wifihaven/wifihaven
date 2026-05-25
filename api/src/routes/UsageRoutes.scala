@@ -2,7 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.usage.{UsageSeries, UsageTraffic}
+import wifihaven.api.usage.{AppMembership, RawTrafficCursorKey, UsageSeries, UsageTraffic}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -22,14 +22,77 @@ object UsageRoutes {
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
       profileRepo: ProfileRepo,
+      appRepo: AppRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "usage" / "traffic" ->
+      Method.GET / "api" / "usage" / "traffic"                         ->
         handler { (req: Request) =>
-          trafficHandler(req, auth, deviceRepo, trafficRepo, profileRepo, userProfileRepo, clock)
+          trafficHandler(
+            req,
+            auth,
+            deviceRepo,
+            trafficRepo,
+            profileRepo,
+            userProfileRepo,
+            appRepo,
+            clock,
+          )
         },
-      Method.GET / "api" / "usage" / "series"  ->
+      // #766: recently-visited FQDN apexes for one device, used by the
+      // apps create/edit "Pick from recent activity" picker.
+      Method.GET / "api" / "devices" / string("mac") / "recent-apexes" ->
+        handler { (macRaw: String, req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            mac = MacAddress.unsafe(normalizeMac(macRaw))
+            device <- deviceRepo
+              .findByMac(mac)
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            windowDays = req.url
+              .queryParam("windowDays")
+              .flatMap(_.toIntOption)
+              .getOrElse(7)
+              .max(1)
+              .min(30)
+            limit      = req.url
+              .queryParam("limit")
+              .flatMap(_.toIntOption)
+              .getOrElse(50)
+              .max(1)
+              .min(500)
+            now <- clock.instant
+            from = now.minus(Duration.ofDays(windowDays.toLong))
+            rows <- trafficRepo
+              .listFqdnHostAggregatesForDevice(mac, from, now)
+              .mapError(ErrorMapper.dbErrorToResponse)
+            grouped = rows
+              .groupBy { case (h, _, _) => Apex.orSelf(h) }
+              .iterator
+              .map { case (apex, members) =>
+                val bytes = members.iterator.map(_._2).sum
+                val hits  = members.iterator.map(_._3).sum
+                val subs  = members
+                  .map(_._1)
+                  .filter(_ != apex)
+                  .distinct
+                  .sortBy(_.value)
+                RecentApex(apex, bytes, hits, subs)
+              }
+              .toList
+              .sortBy(r => (-r.bytes, r.apex.value))
+              .take(limit)
+            resp    = RecentApexesResponse(
+              deviceMac = mac,
+              deviceName = device.name,
+              windowDays = windowDays,
+              items = grouped,
+            )
+          } yield Response.json(resp.toJson)
+        },
+      Method.GET / "api" / "usage" / "series"                          ->
         handler { (req: Request) =>
           for {
             claims <- requireAuth(req, auth)
@@ -62,7 +125,9 @@ object UsageRoutes {
               .flatMap(_.toIntOption)
               .getOrElse(5)
               .max(1)
-              .min(20)
+              // #964: cap bumped from 20 → 500 so the per-device 'other'
+              // drill-in can request the full long-tail of hosts in one shot.
+              .min(500)
             resp <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
                 buildForDevice(
@@ -187,6 +252,7 @@ object UsageRoutes {
       trafficRepo: TrafficReportRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
+      appRepo: AppRepo,
       clock: Clock,
   ): ZIO[Any, Response, Response] =
     for {
@@ -205,15 +271,16 @@ object UsageRoutes {
             ),
         )
         .when(bucket == UsageTraffic.Bucket.OneMin)
-      // #846: comma-separated multi-column groupBy. Apex deferred to #856,
-      // App to #857 — both still rejected with typed errors so the SPA can
-      // re-enable them later without an API change.
+      // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
+      // For backwards-compat each value is also comma-split, so the older
+      // single-param ?groupBy=host,device form keeps working. Empty/absent =
+      // strictly aggregate (one row per window). Apex deferred to #856, App
+      // to #857 — both still rejected with typed errors.
       groupBySet <- {
-        val raw = req.url
-          .queryParam("groupBy")
-          .getOrElse("")
-          .split(',')
+        val raw = req.url.queryParams
+          .getAll("groupBy")
           .toList
+          .flatMap(_.split(',').toList)
           .map(_.trim)
           .filter(_.nonEmpty)
         ZIO
@@ -233,13 +300,7 @@ object UsageRoutes {
           ),
         )
         .when(groupBySet.contains(UsageTraffic.GroupBy.Apex))
-      _          <- ZIO
-        .fail(
-          Response.badRequest(
-            """{"error":"groupBy_not_implemented","groupBy":"app","reason":"apps track not implemented — see #857"}""",
-          ),
-        )
-        .when(groupBySet.contains(UsageTraffic.GroupBy.App))
+      // #769: groupBy=app is now implemented (joins through app_hosts).
       tzStr = req.url.queryParam("tz").getOrElse("UTC")
       zone <- ZIO.attempt(ZoneId.of(tzStr)).orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
       now  <- clock.now
@@ -256,7 +317,12 @@ object UsageRoutes {
       _     <- ZIO
         .fail(Response.badRequest("from must be < to"))
         .when(!fromI.isBefore(toI))
-      _     <- ZIO
+      // #862: the 31-day cap only applies to aggregated views — those still
+      // read the whole [from, to) band into memory for in-app bucketing. The
+      // raw view pushes (period_start, mac, host) keyset paging + LIMIT into
+      // SQL, so a wide band is bounded by the per-page row cap.
+      bucketStrEarly = req.url.queryParam("bucket").getOrElse("raw")
+      _ <- ZIO
         .fail(
           Response(
             status = Status.ServiceUnavailable,
@@ -265,41 +331,46 @@ object UsageRoutes {
             ),
           ),
         )
-        .when(Duration.between(fromI, toI).compareTo(UsageTraffic.maxOnTheFlyDuration) > 0)
-      macOpt = req.url.queryParam("mac").map(s => MacAddress.unsafe(normalizeMac(s)))
-      profileIdOpt <- ZIO
-        .fromEither(
-          req.url.queryParam("profileId") match {
-            case None    => Right(None)
-            case Some(s) =>
-              s.toLongOption
-                .map(l => Some(ProfileId(l)))
-                .toRight(s"invalid profileId: $s")
-          },
+        .when(
+          bucketStrEarly != "raw" &&
+            Duration.between(fromI, toI).compareTo(UsageTraffic.maxOnTheFlyDuration) > 0,
         )
-        .mapError(Response.badRequest)
+      // #865: mac and profileId are comma-separated multi-value lists. A
+      // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
+      // no filter on that column.
+      macsRaw = parseMultiValueParam(req, "mac").map(s => MacAddress.unsafe(normalizeMac(s)))
+      profileIds <- parseMultiProfileIdParam(req)
       // Retention gating per #814 is not yet wired (rollup tables + horizons endpoint
       // are dependencies). We still expose the 409 contract by emitting it when the
       // window straddles a horizon we DO know about — but until #814, the only
       // signal we have is "no data exists for this range", which is normal for
       // empty households. So: don't 409 here. SPA may downgrade the bucket pick
       // when #814 lands.
-      // Resolve mac filter from mac / profileId / "all visible to admin".
-      allDevices   <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      macs         <- (macOpt, profileIdOpt) match {
-        case (Some(mac), _) =>
-          // Require profile read access via the device's profile.
+      // Resolve mac filter from macs / profileIds / "all visible to admin".
+      // When both lists are non-empty, intersect: devices that match any
+      // selected mac AND belong to any selected profile.
+      allDevices <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      macs       <- (macsRaw, profileIds) match {
+        case (ms, _) if ms.nonEmpty     =>
           for {
-            dev <- ZIO
-              .fromOption(allDevices.find(_.mac == mac))
-              .orElseFail(Response.notFound("Device not found"))
-            _   <- requireProfileReadAccess(claims, dev.profileId, userProfileRepo)
-          } yield List(mac)
-        case (_, Some(pid)) =>
+            devs <- ZIO.foreach(ms) { mac =>
+              ZIO
+                .fromOption(allDevices.find(_.mac == mac))
+                .orElseFail(Response.notFound(s"Device not found: ${mac.value}"))
+            }
+            _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo)
+            }
+          } yield
+            if (profileIds.isEmpty) devs.map(_.mac)
+            else devs.filter(d => d.profileId.exists(profileIds.contains)).map(_.mac)
+        case (_, pids) if pids.nonEmpty =>
           for {
-            _ <- requireProfileReadAccess(claims, pid, userProfileRepo)
-          } yield allDevices.filter(_.profileId.contains(pid)).map(_.mac)
-        case _              =>
+            _ <- ZIO.foreach(pids)(pid =>
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo),
+            )
+          } yield allDevices.filter(d => d.profileId.exists(pids.contains)).map(_.mac)
+        case _                          =>
           // No filter: admin/adult only. Children must scope to their profile.
           if (claims.role == "admin" || claims.role == "adult")
             ZIO.succeed(allDevices.map(_.mac))
@@ -311,53 +382,148 @@ object UsageRoutes {
       // #858: zero-bytes-zero-seconds rows are filtered at SQL level in
       // listRawInRange so the application never sees them. TODO(#864) wire
       // a metric for "rows filtered" once observability lands.
-      rows         <-
-        if (macs.isEmpty && (macOpt.isDefined || profileIdOpt.isDefined))
-          ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
-        else
-          trafficRepo
-            .listRawInRange(macs, fromI, toI)
-            .mapError(ErrorMapper.dbErrorToResponse)
-      profiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      profNames        = profiles.iterator.map(p => p.id -> p.name).toMap
-      devByMac         = allDevices.iterator.map(d => d.mac -> d).toMap
-      // #846 audit: cap raw rows. The default 24h window can hit 40k+ rows;
-      // SPA tables choke. `limit` defaults to 100 for the raw view and is
-      // honored as-is for aggregated views (where row counts are naturally
-      // bounded by window*group cardinality).
-      rawLimit         = req.url
+      profiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      profNames = profiles.iterator.map(p => p.id -> p.name).toMap
+      devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
+      // #769: load (host → app memberships) for app grouping. Only fetched
+      // when the request actually drills on app — apps + their host inventory
+      // are small (~tens of rows in the typical household), but skipping the
+      // round-trip keeps the un-grouped path identical to pre-#769.
+      appsByHost <-
+        if (groupBySet.contains(UsageTraffic.GroupBy.App))
+          (for {
+            apps <- appRepo.listAll
+            byId = apps.iterator.map(a => a.id -> a).toMap
+            mappings <- appRepo.listAllHostMappings
+          } yield mappings
+            .flatMap { m =>
+              byId
+                .get(m.appId)
+                .map(a => m.host.value -> AppMembership(a.slug, a.name, a.icon, Some(a.id)))
+            }
+            .groupMap(_._1)(_._2)).mapError(ErrorMapper.dbErrorToResponse)
+        else ZIO.succeed(Map.empty[String, List[AppMembership]])
+      // #862: cursor + nextCursor replace the old "single fixed window with
+      // rawRowsTruncated flag" UX. `limit` is the per-page cap (200 default,
+      // 500 max). For aggregated views the cap applies to GROUP BY output rows.
+      rawLimit = req.url
         .queryParam("limit")
         .flatMap(_.toIntOption)
-        .getOrElse(100)
+        .getOrElse(if (bucket == UsageTraffic.Bucket.Raw) 200 else 500)
         .max(1)
-        .min(5000)
-      effectiveGroupBy =
-        if (groupBySet.nonEmpty) groupBySet else Set(UsageTraffic.GroupBy.Domain)
-      resp             = bucket match {
+        .min(500)
+      // #917: empty groupBy is intentional — strictly aggregate ("one row per
+      // time bucket"). No implicit default.
+      effectiveGroupBy = groupBySet
+      resp <- bucket match {
         case UsageTraffic.Bucket.Raw =>
-          val allRaw    = UsageTraffic.buildRaw(rows, devByMac, profNames)
-          val truncated = allRaw.size > rawLimit
-          TrafficUsageResponse(
+          for {
+            rawCursor <- req.url.queryParam("cursor") match {
+              case None    => ZIO.succeed(Option.empty[RawTrafficCursorKey])
+              case Some(s) =>
+                ZIO
+                  .fromEither(
+                    wifihaven.api.db.Cursor.decode[wifihaven.api.db.Cursor.RawTrafficCursor](s),
+                  )
+                  .mapBoth(
+                    Response.badRequest,
+                    c => Some(RawTrafficCursorKey(c.ts, c.mac, c.host)),
+                  )
+            }
+            pagedRows <-
+              if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
+                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
+              else
+                trafficRepo
+                  .listRawInRange(macs, fromI, toI, rawCursor, Some(rawLimit))
+                  .mapError(ErrorMapper.dbErrorToResponse)
+            built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)
+            nextCur =
+              if (pagedRows.size < rawLimit) None
+              else
+                pagedRows.lastOption.map { r =>
+                  wifihaven.api.db.Cursor.encode(
+                    wifihaven.api.db.Cursor.RawTrafficCursor(
+                      r.periodStart,
+                      r.mac.value,
+                      r.host.value,
+                    ),
+                  )
+                }
+          } yield TrafficUsageResponse(
             bucket = bucket.code,
             groupBy = Nil,
             from = fromI.toString,
             to = toI.toString,
             tz = zone.getId,
-            rawRows = allRaw.take(rawLimit),
+            rawRows = built,
             aggregateRows = Nil,
             rawRowLimit = Some(rawLimit),
-            rawRowsTruncated = truncated,
+            rawRowsTruncated = false,
+            nextCursor = nextCur,
           )
         case _                       =>
-          TrafficUsageResponse(
+          // Aggregated path: still reads the whole raw band into memory,
+          // buckets in-app, then slices by cursor. Cheap because window*group
+          // cardinality is small. Rollup tables (#809) will replace this with
+          // a paged SQL fetch.
+          for {
+            rows      <-
+              if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
+                ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
+              else
+                trafficRepo
+                  .listRawInRange(macs, fromI, toI)
+                  .mapError(ErrorMapper.dbErrorToResponse)
+            cursorOpt <- req.url.queryParam("cursor") match {
+              case None    => ZIO.succeed(Option.empty[wifihaven.api.db.Cursor.AggCursor])
+              case Some(s) =>
+                ZIO
+                  .fromEither(
+                    wifihaven.api.db.Cursor.decode[wifihaven.api.db.Cursor.AggCursor](s),
+                  )
+                  .mapBoth(Response.badRequest, Some(_))
+            }
+            allAgg = UsageTraffic
+              .buildAggregate(
+                rows,
+                bucket,
+                zone,
+                effectiveGroupBy,
+                devByMac,
+                profNames,
+                appsByHost,
+              )
+            keyOf  = (r: TrafficUsageAggregateRow) => UsageTraffic.aggGroupKey(r, effectiveGroupBy)
+            sorted = allAgg.sortBy(r =>
+              (-java.time.Instant.parse(r.windowStart).toEpochMilli, keyOf(r)),
+            )
+            filtered = cursorOpt match {
+              case None    => sorted
+              case Some(c) =>
+                sorted.filter { r =>
+                  val cmp = r.windowStart.compare(c.ws)
+                  cmp < 0 || (cmp == 0 && keyOf(r).compare(c.key) > 0)
+                }
+            }
+            page     = filtered.take(rawLimit)
+            nextCur  =
+              if (page.size < rawLimit) None
+              else
+                page.lastOption.map { r =>
+                  wifihaven.api.db.Cursor.encode(
+                    wifihaven.api.db.Cursor.AggCursor(r.windowStart, keyOf(r)),
+                  )
+                }
+          } yield TrafficUsageResponse(
             bucket = bucket.code,
             groupBy = effectiveGroupBy.toList.map(_.code).sorted,
             from = fromI.toString,
             to = toI.toString,
             tz = zone.getId,
             rawRows = Nil,
-            aggregateRows = UsageTraffic
-              .buildAggregate(rows, bucket, zone, effectiveGroupBy, devByMac, profNames),
+            aggregateRows = page,
+            nextCursor = nextCur,
           )
       }
     } yield Response.json(resp.toJson)

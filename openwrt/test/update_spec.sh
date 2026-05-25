@@ -130,5 +130,197 @@ grep -q '0 4 \* \* \* /usr/sbin/wifihaven-update' "$BUILDER" \
   && check "build-ipk.sh cron is daily at 04:00" ok \
   || check "build-ipk.sh cron is daily at 04:00" "wrong cron expression"
 
+# ---- Integration tests: run the script with mocked PATH ----
+# #909: confirm that wifihaven-update calls /etc/init.d/wifihaven restart on the
+# success paths (apk + opkg), skips it on the no-op and failure paths, and
+# always writes the stamp before attempting the restart so a transient procd
+# failure can't trigger an install loop.
+
+# Each case writes mocks into $TESTDIR/bin, rewrites the script with sed to
+# redirect STATE_DIR and the init.d path, runs it under a PATH that contains
+# only our mocks, and inspects the resulting call logs.
+
+setup_mocks() {
+  TESTDIR=$(mktemp -d -t wifihaven-update-spec.XXXXXX)
+  BINDIR="$TESTDIR/bin"
+  STATE="$TESTDIR/state"
+  mkdir -p "$BINDIR" "$STATE"
+
+  cat > "$BINDIR/logger" <<EOF
+#!/bin/sh
+# usage: logger -t TAG message...; record full message minus '-t TAG'
+shift 2
+printf '%s\n' "\$*" >> "$TESTDIR/logger.out"
+EOF
+
+  cat > "$BINDIR/curl" <<'CURL_EOF'
+#!/bin/sh
+# Two callsites: META fetch (no -o) and asset download (-o TMP).
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2;;
+    -*) shift;;
+    *) shift;;
+  esac
+done
+if [ -n "$out" ]; then
+  if [ "${CURL_DOWNLOAD_FAIL:-0}" = "1" ]; then exit 22; fi
+  printf 'fakepkg' > "$out"
+else
+  printf '%s\n' '{"assets":[{"browser_download_url":"https://example.com/wifihaven.apk","digest":"sha256:NEW"},{"browser_download_url":"https://example.com/wifihaven.ipk","digest":"sha256:NEW"}]}'
+fi
+CURL_EOF
+
+  cat > "$BINDIR/jsonfilter" <<'EOF'
+#!/bin/sh
+# Pin-mock: only the expressions wifihaven-update queries. The META JSON is
+# fixed in the mock curl above and lists an apk asset at index 0 and an ipk
+# asset at index 1 so we can drive both PM branches without changing fixtures.
+expr=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -e) expr="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+cat >/dev/null
+case "$expr" in
+  '@.assets[0].browser_download_url') echo "https://example.com/wifihaven.apk";;
+  '@.assets[0].digest') echo "sha256:NEW";;
+  '@.assets[1].browser_download_url') echo "https://example.com/wifihaven.ipk";;
+  '@.assets[1].digest') echo "sha256:NEW";;
+  *) ;;  # empty → caller treats as end-of-array
+esac
+EOF
+
+  INITD="$BINDIR/wifihaven-initd"
+  cat > "$INITD" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TESTDIR/initd.calls"
+exit \${MOCK_INITD_EXIT:-0}
+EOF
+
+  PATCHED="$TESTDIR/wifihaven-update"
+  sed -e "s|STATE_DIR=/var/lib/wifihaven|STATE_DIR=$STATE|" \
+      -e "s|/etc/init.d/wifihaven|$INITD|g" \
+      "$SCRIPT" > "$PATCHED"
+  chmod +x "$PATCHED" "$BINDIR"/*
+}
+
+mock_apk() {
+  cat > "$BINDIR/apk" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TESTDIR/apk.calls"
+exit \${MOCK_APK_EXIT:-0}
+EOF
+  chmod +x "$BINDIR/apk"
+}
+
+mock_opkg() {
+  cat > "$BINDIR/opkg" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TESTDIR/opkg.calls"
+exit \${MOCK_OPKG_EXIT:-0}
+EOF
+  chmod +x "$BINDIR/opkg"
+}
+
+count_restart_calls() {
+  if [ -f "$TESTDIR/initd.calls" ]; then
+    grep -c '^restart' "$TESTDIR/initd.calls" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
+}
+
+stamp_value() {
+  cat "$STATE/last_update_digest" 2>/dev/null || echo ""
+}
+
+# Case A: successful apk add → restart called exactly once, stamp written
+setup_mocks
+mock_apk
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+N=$(count_restart_calls)
+[ "$N" = "1" ] \
+  && check "[apk ok] restart called exactly once" ok \
+  || check "[apk ok] restart called exactly once" "expected 1, got $N"
+[ "$(stamp_value)" = "sha256:NEW" ] \
+  && check "[apk ok] stamp written on success" ok \
+  || check "[apk ok] stamp written on success" "stamp = '$(stamp_value)'"
+grep -q 'wifihaven service restarted' "$TESTDIR/logger.out" \
+  && check "[apk ok] success log line emitted" ok \
+  || check "[apk ok] success log line emitted" "no success log"
+rm -rf "$TESTDIR"
+
+# Case B: successful opkg install → restart called exactly once
+setup_mocks
+mock_opkg
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+N=$(count_restart_calls)
+[ "$N" = "1" ] \
+  && check "[opkg ok] restart called exactly once" ok \
+  || check "[opkg ok] restart called exactly once" "expected 1, got $N"
+[ "$(stamp_value)" = "sha256:NEW" ] \
+  && check "[opkg ok] stamp written on success" ok \
+  || check "[opkg ok] stamp written on success" "stamp = '$(stamp_value)'"
+rm -rf "$TESTDIR"
+
+# Case C: no-op (stamp already matches) → restart NOT called, no apk invocation
+setup_mocks
+mock_apk
+printf 'sha256:NEW\n' > "$STATE/last_update_digest"
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+N=$(count_restart_calls)
+[ "$N" = "0" ] \
+  && check "[no-op] restart NOT called when stamp matches" ok \
+  || check "[no-op] restart NOT called when stamp matches" "expected 0, got $N"
+[ ! -f "$TESTDIR/apk.calls" ] \
+  && check "[no-op] apk NOT invoked when stamp matches" ok \
+  || check "[no-op] apk NOT invoked when stamp matches" "apk.calls exists"
+rm -rf "$TESTDIR"
+
+# Case D: install failure (apk exits nonzero) → restart NOT called, stamp not advanced
+setup_mocks
+mock_apk
+MOCK_APK_EXIT=1 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+N=$(count_restart_calls)
+[ "$N" = "0" ] \
+  && check "[apk fail] restart NOT called after failed install" ok \
+  || check "[apk fail] restart NOT called after failed install" "expected 0, got $N"
+[ -z "$(stamp_value)" ] \
+  && check "[apk fail] stamp NOT advanced after failed install" ok \
+  || check "[apk fail] stamp NOT advanced after failed install" "stamp = '$(stamp_value)'"
+rm -rf "$TESTDIR"
+
+# Case E: download failure → restart NOT called, no install attempted
+setup_mocks
+mock_apk
+CURL_DOWNLOAD_FAIL=1 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+N=$(count_restart_calls)
+[ "$N" = "0" ] \
+  && check "[download fail] restart NOT called" ok \
+  || check "[download fail] restart NOT called" "expected 0, got $N"
+[ ! -f "$TESTDIR/apk.calls" ] \
+  && check "[download fail] apk NOT invoked" ok \
+  || check "[download fail] apk NOT invoked" "apk.calls exists"
+rm -rf "$TESTDIR"
+unset CURL_DOWNLOAD_FAIL
+
+# Case F: stamp is written even when restart itself fails (no install loop).
+# Per #909: a wedged procd must NOT prevent the digest from advancing —
+# otherwise every cron tick would re-install and never settle.
+setup_mocks
+mock_apk
+MOCK_INITD_EXIT=1 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+[ "$(stamp_value)" = "sha256:NEW" ] \
+  && check "[restart fail] stamp still written" ok \
+  || check "[restart fail] stamp still written" "stamp = '$(stamp_value)'"
+grep -q 'restart failed' "$TESTDIR/logger.out" \
+  && check "[restart fail] warning logged" ok \
+  || check "[restart fail] warning logged" "no warning in log"
+rm -rf "$TESTDIR"
+
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

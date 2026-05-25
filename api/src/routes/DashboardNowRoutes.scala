@@ -26,6 +26,9 @@ object DashboardNowRoutes {
   private val TrafficActiveWindow  = java.time.Duration.ofMinutes(5)
   private val TopHostsWindow       = java.time.Duration.ofMinutes(30)
   private val TopHostsLimit        = 3
+  // #852 — nowActivity "watching X · Nm" runs back through consecutive earlier buckets where the
+  // same host is also top; cap so we never claim hours of foreground use from sparse data.
+  private val NowActivityMaxMinutes = 60
 
   def routes(
       auth: AuthService,
@@ -107,6 +110,7 @@ object DashboardNowRoutes {
             mac = d.mac,
             lastSeenSeconds = lastSeenSeconds,
             topHosts = topHostsFromRows(devRows),
+            nowActivity = nowActivityFromRows(devRows),
           )
         }
       }
@@ -120,6 +124,45 @@ object DashboardNowRoutes {
 
     DashboardNow(asOf = now.toString, profiles = profile)
   }
+
+  /**
+   * Per-device "what is this device watching right now". Reads rows from the latest populated 5-min
+   * bucket and returns its top host. If earlier consecutive buckets share the same top host,
+   * reports a `minutes` run (capped at 60); otherwise `minutes = None`. See #852.
+   */
+  def nowActivityFromRows(rows: List[TrafficRollupRow]): Option[DashboardNowActivity] = {
+    val buckets = rows
+      .groupBy(_.periodEnd)
+      .toList
+      .sortBy { case (end, _) => -end.getEpochSecond }
+    buckets.headOption.flatMap { case (_, latestRows) =>
+      bucketTopHost(latestRows).map { top =>
+        val tail       = buckets.tail
+        val streakRest = tail.takeWhile { case (_, rs) => bucketTopHost(rs).contains(top) }
+        val streakSecs = (latestRows :: streakRest.map(_._2)).map { rs =>
+          val s = rs.head.periodStart.getEpochSecond
+          val e = rs.head.periodEnd.getEpochSecond
+          math.max(0L, e - s)
+        }.sum
+        val minutes    = math.min(NowActivityMaxMinutes, math.max(1, (streakSecs / 60L).toInt))
+        // Only attach a duration once we have a multi-bucket signal — a single 5-min bucket isn't
+        // strong enough to claim "watching for N minutes".
+        val mins       = if (streakRest.nonEmpty) Some(minutes) else None
+        DashboardNowActivity(topHost = top, minutes = mins)
+      }
+    }
+  }
+
+  private def bucketTopHost(rows: List[TrafficRollupRow]): Option[HostId] =
+    rows
+      .groupBy(_.host)
+      .view
+      .mapValues(_.map(_.activeSeconds.toLong).sum)
+      .toList
+      .filter { case (_, s) => s > 0 }
+      .sortBy { case (h, s) => (-s, h.value) }
+      .headOption
+      .map(_._1)
 
   def topHostsFromRows(rows: List[TrafficRollupRow]): List[DashboardNowHost] =
     rows

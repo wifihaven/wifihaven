@@ -2,7 +2,7 @@
 # Boot a client VM as a qcow2 overlay on top of the cured base image.
 #
 # Usage:
-#   client-up.sh --mac aa:bb:cc:dd:ee:ff [--name client1] [--ssh-port 2223]
+#   client-up.sh --mac aa:bb:cc:dd:ee:ff [--name client1] [--ssh-port PORT]
 #
 # Two NICs:
 #   eth0 — virtio-net attached to ${WH_LAN_BRIDGE} (the router VM's LAN).
@@ -46,8 +46,30 @@ if [[ ! "${MAC}" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
   exit 2
 fi
 if [[ ! -f "${WH_CLIENT_BASE_IMG}" ]]; then
-  echo "client-up.sh: base image missing — run scripts/vm/build-client-base.sh first" >&2
-  exit 1
+  if [[ "${WH_AUTOBUILD_CLIENT_BASE:-0}" == "1" ]]; then
+    echo "client-up.sh: base image missing — auto-building (WH_AUTOBUILD_CLIENT_BASE=1, ~5 min)" >&2
+    "${HERE}/build-client-base.sh"
+  else
+    {
+      echo "client-up.sh: base image missing."
+      echo "  Build it:    scripts/vm/build-client-base.sh   (~5 min)"
+      echo "  Auto-build:  re-run with WH_AUTOBUILD_CLIENT_BASE=1"
+      sibling=""
+      if command -v git >/dev/null 2>&1; then
+        while IFS= read -r line; do
+          [[ "${line}" == "worktree "* ]] || continue
+          cand="${line#worktree }/scripts/vm/.cache/client-base.qcow2"
+          if [[ -f "${cand}" && "${cand}" != "${WH_CLIENT_BASE_IMG}" ]]; then
+            sibling="${cand}"; break
+          fi
+        done < <(git -C "${HERE}" worktree list --porcelain 2>/dev/null)
+      fi
+      if [[ -n "${sibling}" ]]; then
+        echo "  Or reuse:    mkdir -p '${WH_CACHE_DIR}' && ln -s '${sibling}' '${WH_CLIENT_BASE_IMG}'"
+      fi
+    } >&2
+    exit 1
+  fi
 fi
 if ! ip link show "${WH_LAN_BRIDGE}" >/dev/null 2>&1; then
   echo "client-up.sh: LAN bridge '${WH_LAN_BRIDGE}' does not exist." >&2

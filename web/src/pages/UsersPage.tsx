@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import type { CreateUserRequest, ProfileDetail, User, UserRole } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 
 const ROLES: UserRole[] = ['admin', 'adult', 'child']
 
@@ -275,6 +276,7 @@ function ProfilePicker({
 }
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  useEscapeClose(onClose)
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
       <div

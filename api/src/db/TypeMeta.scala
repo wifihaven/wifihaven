@@ -2,7 +2,7 @@ package wifihaven.api.db
 
 import doobie.*
 import doobie.postgres.implicits.*
-import wifihaven.shared.{AppMode, FailureMode, MacBlockReason, UserRole}
+import wifihaven.shared.{AppMode, FailureMode, IconType, MacBlockReason, UserRole}
 import wifihaven.shared.types.*
 
 import java.time.ZoneId
@@ -78,6 +78,12 @@ object TypeMeta {
       .parse(s)
       .getOrElse(throw new IllegalStateException(s"DB has unknown app mode: $s")),
   )(AppMode.asString)
+
+  given Meta[IconType] = Meta[String].imap(s =>
+    IconType
+      .parse(s)
+      .getOrElse(throw new IllegalStateException(s"DB has unknown icon type: $s")),
+  )(IconType.asString)
 
   given Meta[MacBlockReason] = Meta[String].imap(s =>
     MacBlockReason

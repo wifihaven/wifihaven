@@ -1,0 +1,10 @@
+slug: discord
+name: Discord
+icon: "💬"
+icon_type: emoji
+hosts:
+  - discord.com
+  - discordapp.com
+  - discordapp.net
+  - discord.gg
+  - discord.media

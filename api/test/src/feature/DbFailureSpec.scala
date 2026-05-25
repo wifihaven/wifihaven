@@ -82,8 +82,15 @@ object DbFailureSpec extends ZIOSpecDefault {
         macs: List[MacAddress],
         fromInstant: java.time.Instant,
         toInstant: java.time.Instant,
+        cursor: Option[wifihaven.api.usage.RawTrafficCursorKey] = None,
+        limit: Option[Int] = None,
     ) = throwing
     def earliestPeriodStart                                              = throwing
+    def listFqdnHostAggregatesForDevice(
+        mac: MacAddress,
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = throwing
   }
 
   private def brokenTimeUsageRepo: TimeUsageRepo = new TimeUsageRepo {
@@ -120,6 +127,12 @@ object DbFailureSpec extends ZIOSpecDefault {
     def raise(mac: MacAddress, firstSeenAt: Instant) = throwing
     def listAll(includeDismissed: Boolean)           = throwing
     def dismiss(id: DeviceAlertId, at: Instant)      = throwing
+  }
+
+  private def brokenHouseholdSettingsRepo: HouseholdSettingsRepo = new HouseholdSettingsRepo {
+    def get                                = throwing
+    def update(s: HouseholdSettings)       = throwing
+    def ensureDefault(z: java.time.ZoneId) = throwing
   }
 
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
@@ -172,6 +185,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenDeviceRepo,
         brokenConnectionEventRepo,
         brokenDeviceAlertRepo,
+        brokenHouseholdSettingsRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
@@ -196,6 +210,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenDeviceRepo,
         brokenConnectionEventRepo,
         brokenDeviceAlertRepo,
+        brokenHouseholdSettingsRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("not json"))
@@ -216,6 +231,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenDeviceRepo,
         brokenConnectionEventRepo,
         brokenDeviceAlertRepo,
+        brokenHouseholdSettingsRepo,
       )
       val req    = Request.post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
       for {

@@ -46,6 +46,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       blr    <- ZIO.service[BlocklistRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
       er     <- ZIO.service[TimeExtensionRepo]
+      ar     <- ZIO.service[AppRepo]
       clock  <- ZIO.service[Clock]
     } yield (new PolicyServiceLive(
       pr,
@@ -57,6 +58,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       blr,
       trRepo,
       er,
+      ar,
       clock,
     )): PolicyService
 

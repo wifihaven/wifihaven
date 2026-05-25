@@ -187,12 +187,40 @@ object AppMode {
   )
 }
 
+/**
+ * How the `icon` string on an [[App]] should be interpreted by the SPA. The DB stores `icon` as
+ * free-form TEXT so we can ship emojis today, swap to a URL or inline a base64 PNG tomorrow without
+ * a schema change. `icon_type` tells the renderer which it is.
+ */
+enum IconType {
+  case Emoji, Url, PngBase64
+}
+
+object IconType {
+  def asString(t: IconType): String      = t match {
+    case Emoji     => "emoji"
+    case Url       => "url"
+    case PngBase64 => "png_base64"
+  }
+  def parse(s: String): Option[IconType] = s match {
+    case "emoji"      => Some(Emoji)
+    case "url"        => Some(Url)
+    case "png_base64" => Some(PngBase64)
+    case _            => None
+  }
+  given JsonCodec[IconType]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown icon type: $s"),
+    asString,
+  )
+}
+
 case class App(
     id: AppId,
     name: String,
     slug: String,
     templateId: Option[AppTemplateId],
     icon: Option[String],
+    iconType: IconType,
     createdAt: java.time.Instant,
 ) derives JsonCodec
 
@@ -205,6 +233,58 @@ case class AppPolicyAssignment(
     mode: AppMode,
     dailyMinutes: Option[Int],
     exemptFromDaily: Boolean = true,
+) derives JsonCodec
+
+// #762: HTTP request/response shapes for the apps CRUD endpoints. Hosts are
+// accepted as strings on input (the server strips a leading `*.` then runs
+// Hostname.parse — both `foo.com` and `*.foo.com` canonicalize to apex).
+case class CreateAppRequest(
+    name: String,
+    slug: Option[String] = None,
+    icon: Option[String] = None,
+    iconType: Option[IconType] = None,
+    templateId: Option[AppTemplateId] = None,
+    hosts: List[String] = Nil,
+) derives JsonCodec
+
+case class UpdateAppRequest(
+    name: String,
+    icon: Option[String] = None,
+    iconType: Option[IconType] = None,
+    templateId: Option[AppTemplateId] = None,
+) derives JsonCodec
+
+case class SetAppHostsRequest(hosts: List[String]) derives JsonCodec
+
+case class UpsertAppAssignmentRequest(
+    mode: AppMode,
+    dailyMinutes: Option[Int] = None,
+    exemptFromDaily: Option[Boolean] = None,
+) derives JsonCodec
+
+case class AppDetail(
+    app: App,
+    hosts: List[Hostname],
+    assignments: List[AppPolicyAssignment],
+) derives JsonCodec
+
+// #766: recently-visited-hosts picker for the apps create/edit flow. The
+// endpoint returns FQDN traffic for a single device over a windowDays-day
+// window, collapsed to the PSL registered domain ("apex"). Bare-IP rows are
+// excluded — the picker only surfaces hosts the operator can express as a
+// host pattern. `subdomains` is the set of FQDNs observed beneath the apex.
+case class RecentApex(
+    apex: Hostname,
+    bytes: Long,
+    hits: Long,
+    subdomains: List[Hostname],
+) derives JsonCodec
+
+case class RecentApexesResponse(
+    deviceMac: MacAddress,
+    deviceName: String,
+    windowDays: Int,
+    items: List[RecentApex],
 ) derives JsonCodec
 
 case class TimeUsage(
@@ -429,6 +509,7 @@ enum ConnectionEventGroupBy(val wire: String) {
   case Domain  extends ConnectionEventGroupBy("domain")
   case Device  extends ConnectionEventGroupBy("device")
   case Profile extends ConnectionEventGroupBy("profile")
+  case App     extends ConnectionEventGroupBy("app")
 }
 
 object ConnectionEventGroupBy {
@@ -451,10 +532,18 @@ case class ConnectionEventAggRow(
     distinctDevices: Int = 0,
     distinctProfiles: Int = 0,
     distinctDomains: Int = 0,
+    distinctApps: Int = 0,
     // #846 audit follow-up: see TrafficUsageAggregateRow.
     soleDevice: Option[String] = None,
     soleProfile: Option[String] = None,
     soleDomain: Option[String] = None,
+    soleApp: Option[String] = None,
+    // #769: populated when groupBy=app so the SPA can render the display
+    // name + icon instead of just the slug. `__other__` (hosts not in any
+    // app) emits appName="Other", appIcon=None, appId=None.
+    appId: Option[AppId] = None,
+    appName: Option[String] = None,
+    appIcon: Option[String] = None,
 ) derives JsonCodec
 
 case class SiteUsage(
@@ -677,6 +766,7 @@ case class TrafficUsageAggregateRow(
     distinctDevices: Int = 0,
     distinctProfiles: Int = 0,
     distinctDomains: Int = 0,
+    distinctApps: Int = 0,
     // #846 audit follow-up: when a non-grouped column has only one distinct
     // value contributing to the row, surface it so the SPA can render the
     // value instead of just "1". `None` when the column is in `groups`
@@ -684,6 +774,12 @@ case class TrafficUsageAggregateRow(
     soleDevice: Option[String] = None,
     soleProfile: Option[String] = None,
     soleDomain: Option[String] = None,
+    soleApp: Option[String] = None,
+    // #769: populated when groupBy=app so SPA can render display name + icon.
+    // `__other__` (hosts not in any app) emits appName="Other".
+    appId: Option[AppId] = None,
+    appName: Option[String] = None,
+    appIcon: Option[String] = None,
 ) derives JsonCodec
 
 case class TrafficUsageResponse(
@@ -696,11 +792,35 @@ case class TrafficUsageResponse(
     aggregateRows: List[TrafficUsageAggregateRow] = Nil,
     rawRowLimit: Option[Int] = None,
     rawRowsTruncated: Boolean = false,
+    // #862: opaque cursor for the next (older) page. None = end of stream.
+    // Wire-distinct from rawRowsTruncated which signals "this single response
+    // hit the row cap" — nextCursor signals "more rows exist beyond this".
+    nextCursor: Option[String] = None,
+) derives JsonCodec
+
+// #862: page envelopes for /api/logs and /api/connection-events/series. Wraps
+// the per-row payload with a nextCursor field (None = no more older rows).
+case class QueryLogPage(
+    rows: List[QueryLog],
+    nextCursor: Option[String] = None,
+) derives JsonCodec
+
+case class ConnectionEventSeriesPage(
+    rows: List[ConnectionEventAggRow],
+    nextCursor: Option[String] = None,
 ) derives JsonCodec
 
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec
+
+/**
+ * "Watching right now" replacement for the removed `currentSession` line. Derived per-request from
+ * `traffic_reports` — `topHost` is the host with the most active_seconds in the latest populated
+ * 5-min bucket; `minutes` is the run of consecutive earlier buckets in which that same host was
+ * also top, capped at 60. None when we can't make a confident call. See #852.
+ */
+case class DashboardNowActivity(topHost: HostId, minutes: Option[Int]) derives JsonCodec
 
 case class DashboardNowDevice(
     id: DeviceId,
@@ -708,6 +828,7 @@ case class DashboardNowDevice(
     mac: MacAddress,
     lastSeenSeconds: Long,
     topHosts: List[DashboardNowHost],
+    nowActivity: Option[DashboardNowActivity],
 ) derives JsonCodec
 
 case class DashboardNowProfile(
@@ -885,6 +1006,22 @@ case class RouterDecisionResponse(
 // per-profile column and we keep it that way until there's a reason to consolidate.
 
 case class Blocklist(version: BlocklistVersion, url: BlocklistUrl) derives JsonCodec
+
+// #958: SPA-facing metadata row for the blocklist management page.
+// `bundled` distinguishes API-shipped lists (host content overwritten on
+// each API startup) from operator/test-created categories whose hosts
+// only ever change via the API. `hostCount` is denormalized from
+// blocklist_domains; `lastBuiltAt` reflects the last startup seed of a
+// bundled list, NULL for non-bundled categories.
+case class BlocklistSummary(
+    id: BlocklistId,
+    name: String,
+    description: Option[String],
+    bundled: Boolean,
+    source: Option[String],
+    hostCount: Int,
+    lastBuiltAt: Option[java.time.Instant],
+) derives JsonCodec
 
 case class BlockRules(
     blocked: Boolean,

@@ -1,0 +1,10 @@
+slug: youtube
+name: YouTube
+icon: "📺"
+icon_type: emoji
+hosts:
+  - youtube.com
+  - youtu.be
+  - ytimg.com
+  - googlevideo.com
+  - youtubei.googleapis.com

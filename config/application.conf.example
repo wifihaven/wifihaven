@@ -31,4 +31,18 @@ wifihaven {
     # Example: "https://wifihaven.example,https://www.wifihaven.example"
     allowedOrigins = ""
   }
+
+  policy {
+    # #944: hostnames always present in every profile's snapshot extraAllowed
+    # so a paused household member can still reach the admin UI to unpause
+    # themselves. Comma-separated. Set to the SPA + API hostnames this
+    # deployment serves (prod OR staging, NOT both — otherwise a prod router
+    # lets staging hosts through). Empty disables the global allow list.
+    # Hostname-only for now; port-aware allow/block tracked in #296.
+    # Example (prod):    "wifihaven.net,www.wifihaven.net,api.wifihaven.net"
+    # Example (staging): "staging.wifihaven.net,api-staging.wifihaven.net"
+    # Example (dev):     "api.lan"
+    # Precursor to the DB-backed global profile in #937.
+    uiAllowedHosts = ""
+  }
 }

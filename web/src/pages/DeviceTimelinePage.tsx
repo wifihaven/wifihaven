@@ -8,6 +8,7 @@ import type {
   DeviceTimeStatusWeek, UsageBucket, UsageSeriesResponse,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from '@/components/usage/UsageHourlyBarChart'
@@ -19,6 +20,9 @@ import { groupBucketsByLocalDay, formatMins, localBucketOffsetMin } from './Time
 // the `to` anchor in Week mode.
 
 const TOP_N = 5
+// #964 — when the operator clicks the chart's "Other" bucket we refetch with
+// a much larger topN to surface the full long-tail. Server caps topN at 500.
+const DRILL_IN_TOP_N = 500
 const DEFAULT_TZ =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
@@ -70,6 +74,10 @@ export function DeviceTimelinePage() {
   const [weekData, setWeekData] = useState<DeviceTimeStatusWeek | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [otherOpen, setOtherOpen] = useState(false)
+  const [otherLoading, setOtherLoading] = useState(false)
+  const [otherError, setOtherError] = useState<string | null>(null)
+  const [otherData, setOtherData] = useState<UsageSeriesResponse | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -88,6 +96,21 @@ export function DeviceTimelinePage() {
   }
   function setDateAndPush(next: string)     { setDate(next);     pushParams({ date: next }) }
   function setWindowAndPush(next: Window)   { setWindow(next);   pushParams({ window: next }) }
+
+  function openOtherDrillIn() {
+    setOtherOpen(true)
+    setOtherError(null)
+    // Refetch with a high topN so every host (including the long-tail that
+    // got folded into "Other" at TOP_N=5) comes back unaggregated. The chart
+    // payload itself is left unchanged — we want the modal to be additive,
+    // not to swap the chart underneath the operator.
+    setOtherLoading(true)
+    api.usage
+      .series({ mac, date, tz: DEFAULT_TZ, topN: DRILL_IN_TOP_N })
+      .then(setOtherData)
+      .catch(e => setOtherError(e.message ?? 'Failed to load'))
+      .finally(() => setOtherLoading(false))
+  }
 
   const dayChart = useMemo(() => {
     if (!dayData) return { rows: [], series: [] as ChartSeries[] }
@@ -196,12 +219,28 @@ export function DeviceTimelinePage() {
               No usage recorded on {date}.
             </div>
           ) : (
-            <UsageHourlyBarChart
-              rows={dayChart.rows}
-              series={dayChart.series}
-              showLegend
-              testId="device-timeline-chart"
-            />
+            <>
+              <UsageHourlyBarChart
+                rows={dayChart.rows}
+                series={dayChart.series}
+                showLegend
+                onOtherClick={openOtherDrillIn}
+                testId="device-timeline-chart"
+              />
+              {dayChart.rows.some(r => Number(r[OTHER_KEY] ?? 0) > 0) && (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={openOtherDrillIn}
+                    data-testid="device-timeline-other-button"
+                    className="text-[11px] text-gray-500 hover:text-emerald-400 underline decoration-dotted underline-offset-2"
+                    title="See the hosts inside the Other bucket for this day"
+                  >
+                    Inside “Other” ↗
+                  </button>
+                </div>
+              )}
+            </>
           )
         ) : (
           weekEmpty ? (
@@ -302,6 +341,130 @@ export function DeviceTimelinePage() {
           </p>
         </div>
       )}
+
+      {otherOpen && (
+        <OtherDrillInModal
+          date={date}
+          loading={otherLoading}
+          error={otherError}
+          data={otherData}
+          topN={TOP_N}
+          onClose={() => setOtherOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// #964 — "Other" drill-in modal. Lists the long-tail hosts that the top-N
+// chart folded into the Other bucket for the selected day. Reuses the same
+// /api/usage/series endpoint with a much larger topN so the SPA can subtract
+// the displayed top-N off the front and show the rest, sorted by minutes desc.
+interface OtherDrillInModalProps {
+  date: string
+  loading: boolean
+  error: string | null
+  data: UsageSeriesResponse | null
+  topN: number
+  onClose: () => void
+}
+
+function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherDrillInModalProps) {
+  useEscapeClose(onClose)
+  const tail = (data?.topHosts ?? []).filter(h => h.dayMins > 0).slice(topN)
+  const otherTotal = tail.reduce((a, h) => a + h.dayMins, 0)
+  const grandTotal = (data?.topHosts ?? []).reduce((a, h) => a + h.dayMins, 0)
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="other-drillin-title"
+      data-testid="device-timeline-other-modal"
+      className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg p-6 space-y-4 max-h-[80vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between">
+          <div>
+            <h3 id="other-drillin-title" className="text-lg font-bold text-white">
+              Inside the “Other” bucket
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Hosts below the top {topN} on {date}.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-300 text-xl leading-none"
+            aria-label="Close"
+          >×</button>
+        </div>
+
+        {loading && (
+          <div className="text-sm text-gray-500" data-testid="device-timeline-other-loading">
+            Loading the long-tail…
+          </div>
+        )}
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+            {error}
+          </div>
+        )}
+        {!loading && !error && tail.length === 0 && (
+          <div
+            data-testid="device-timeline-other-empty"
+            className="text-sm text-gray-500"
+          >
+            Nothing else recorded for this day — the top {topN} already cover everything.
+          </div>
+        )}
+        {!loading && !error && tail.length > 0 && (
+          <ul className="space-y-1 overflow-y-auto pr-1 -mr-1">
+            {tail.map(h => {
+              const isIp = h.host.type !== 'fqdn'
+              const shareOther = otherTotal > 0 ? (h.dayMins / otherTotal) * 100 : 0
+              const shareTotal = grandTotal > 0 ? (h.dayMins / grandTotal) * 100 : 0
+              return (
+                <li
+                  key={`${h.host.type}:${h.host.value}`}
+                  data-testid={`device-timeline-other-host-${h.host.value}`}
+                  className="flex items-center justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2 gap-2"
+                >
+                  <span
+                    className={`font-mono truncate min-w-0 ${isIp ? 'italic text-gray-500' : 'text-gray-300'}`}
+                    title={h.host.value}
+                  >
+                    {h.host.value}
+                    {isIp && (
+                      <span className="ml-1 text-[10px] uppercase tracking-wide text-gray-600">
+                        {h.host.type}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-gray-500 font-mono shrink-0 tabular-nums">
+                    {formatMins(h.dayMins)}
+                    <span className="text-gray-600 ml-2">
+                      {shareOther.toFixed(0)}% of Other · {shareTotal.toFixed(0)}% of day
+                    </span>
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        <div className="pt-2">
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 rounded-xl bg-gray-800 text-gray-300 text-sm font-medium hover:bg-gray-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
