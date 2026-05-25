@@ -7,9 +7,22 @@ import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.SafeConstructor
 import zio.*
+import zio.json.*
 
 import java.io.InputStream
 import scala.jdk.CollectionConverters.*
+
+/**
+ * Per-template outcome from a seed pass — returned by [[AppTemplates.seed]] and exposed via the
+ * admin reseed endpoint so the operator can see what changed (#1024).
+ */
+final case class AppTemplateSeedSummary(
+    created: List[String],
+    repopulated: List[String],
+    preserved: List[String],
+) derives JsonCodec {
+  def total: Int = created.size + repopulated.size + preserved.size
+}
 
 /**
  * #768: Starter library of common apps as YAML templates.
@@ -147,30 +160,62 @@ object AppTemplates {
   /**
    * Seed all templates into `apps`. For each template:
    *   - if no row exists for its `template_id`, create one and populate the host list;
-   *   - if a row exists, leave the host list alone (operator edits win — the SPA "reset to
-   *     template" endpoint restores defaults on demand).
+   *   - if a row exists with hosts, leave the host list alone (operator edits win — the SPA "reset
+   *     to template" endpoint restores defaults on demand);
+   *   - if a row exists with an empty host list, treat as never-populated and seed it now.
    *
-   * Idempotent — running twice is a no-op.
+   * Idempotent — running twice is a no-op. Returns a per-template outcome summary so callers (boot
+   * sequence, admin reseed endpoint) can log/respond with what changed. On per-template failure,
+   * propagates with the offending slug attached to the error message (#1024) so silent crashes are
+   * diagnosable.
    */
-  def seed(repo: AppRepo, templates: List[AppTemplate]): Task[Unit] =
-    ZIO.foreachDiscard(templates)(t => seedOne(repo, t))
-
-  private def seedOne(repo: AppRepo, t: AppTemplate): Task[Unit] =
-    repo.findByTemplateId(t.slug).flatMap {
-      case Some(existing) =>
-        // Operator edits win: if any hosts exist we don't touch them. If the row exists but the
-        // host list is empty, treat that as "never populated" and seed it now.
-        repo.getHosts(existing.id).flatMap { hosts =>
-          if hosts.nonEmpty then ZIO.unit
-          else repo.setHosts(existing.id, t.hosts)
-        }
-      case None           =>
-        for {
-          freeSlug <- findFreeSlug(repo, t.slug.value)
-          id       <- repo.create(t.name, freeSlug, Some(t.slug), t.icon, t.iconType)
-          _        <- repo.setHosts(id, t.hosts)
-        } yield ()
+  def seed(repo: AppRepo, templates: List[AppTemplate]): Task[AppTemplateSeedSummary] =
+    ZIO.foreach(templates)(t => seedOne(repo, t)).map { results =>
+      AppTemplateSeedSummary(
+        created = results.collect { case (slug, SeedOutcome.Created) => slug },
+        repopulated = results.collect { case (slug, SeedOutcome.Repopulated) => slug },
+        preserved = results.collect { case (slug, SeedOutcome.Preserved) => slug },
+      )
     }
+
+  private sealed trait SeedOutcome
+  private object SeedOutcome {
+    case object Created     extends SeedOutcome
+    case object Repopulated extends SeedOutcome
+    case object Preserved   extends SeedOutcome
+  }
+
+  private def seedOne(repo: AppRepo, t: AppTemplate): Task[(String, SeedOutcome)] =
+    repo
+      .findByTemplateId(t.slug)
+      .flatMap {
+        case Some(existing) =>
+          repo.getHosts(existing.id).flatMap { hosts =>
+            if hosts.nonEmpty then
+              ZIO.logDebug(
+                s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${hosts.size}) — preserved",
+              ) *>
+                ZIO.succeed((t.slug.value, SeedOutcome.Preserved))
+            else
+              repo.setHosts(existing.id, t.hosts) *>
+                ZIO.logInfo(
+                  s"app_templates: slug=${t.slug.value} exists with empty hosts — repopulated (${t.hosts.size} hosts)",
+                ) *>
+                ZIO.succeed((t.slug.value, SeedOutcome.Repopulated))
+          }
+        case None           =>
+          for {
+            freeSlug <- findFreeSlug(repo, t.slug.value)
+            id       <- repo.create(t.name, freeSlug, Some(t.slug), t.icon, t.iconType)
+            _        <- repo.setHosts(id, t.hosts)
+            _        <- ZIO.logInfo(
+              s"app_templates: created slug=${t.slug.value} (id=${id.value}, hosts=${t.hosts.size})",
+            )
+          } yield (t.slug.value, SeedOutcome.Created)
+      }
+      .tapErrorCause(c =>
+        ZIO.logErrorCause(s"app_templates: seed failed for slug=${t.slug.value}", c),
+      )
 
   /**
    * The seeded `apps.slug` defaults to the template id but must be globally unique. If an

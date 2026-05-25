@@ -42,8 +42,13 @@ object Main extends ZIOAppDefault {
       // host edits on previously-seeded apps are preserved.
       appRepoForSeed <- ZIO.service[AppRepo]
       templates      <- AppTemplates.loadAll()
-      _              <- AppTemplates.seed(appRepoForSeed, templates)
-      _              <- ZIO.logInfo(s"app_templates seeded (${templates.size} templates)")
+      seedSummary    <- AppTemplates.seed(appRepoForSeed, templates)
+      _              <- ZIO.logInfo(
+        s"app_templates seeded (${templates.size} templates): " +
+          s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
+          s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated.mkString("[", ",", "]")}, " +
+          s"preserved=${seedSummary.preserved.size}",
+      )
       // #958: seed the bundled category blocklists. Inline lists pull hosts
       // straight from YAML; remote lists fetch from the declared upstream URL
       // (cached in-memory after first success — see BlocklistCache). REPLACE

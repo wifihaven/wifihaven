@@ -1,6 +1,6 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{AppTemplate, AppTemplates, JwtConfig}
+import wifihaven.api.{AppTemplate, AppTemplateSeedSummary, AppTemplates, JwtConfig}
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
 import wifihaven.api.routes.*
@@ -236,6 +236,107 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
             .addHeader(Header.Authorization.Bearer(token)),
         )
       } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("seed returns summary: first run created=all; second run preserved=all (#1024)") {
+      for {
+        _         <- cleanDb
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        first     <- AppTemplates.seed(appRepo, templates)
+        second    <- AppTemplates.seed(appRepo, templates)
+      } yield assertTrue(first.created.size == templates.size) &&
+        assertTrue(first.repopulated.isEmpty) &&
+        assertTrue(first.preserved.isEmpty) &&
+        assertTrue(second.created.isEmpty) &&
+        assertTrue(second.repopulated.isEmpty) &&
+        assertTrue(second.preserved.size == templates.size)
+    },
+    test("seed summary: row exists with empty hosts is repopulated (#1024)") {
+      for {
+        _         <- cleanDb
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        _         <- AppTemplates.seed(appRepo, templates)
+        yt        <- appRepo
+          .findByTemplateId(AppTemplateId.unsafe("youtube"))
+          .someOrFailException
+        _         <- appRepo.setHosts(yt.id, Nil)
+        summary   <- AppTemplates.seed(appRepo, templates)
+      } yield assertTrue(summary.repopulated == List("youtube")) &&
+        assertTrue(summary.preserved.size == templates.size - 1) &&
+        assertTrue(summary.created.isEmpty)
+    },
+    test("POST /api/apps/seed-from-templates (admin) backfills and returns summary (#1024)") {
+      for {
+        _         <- cleanDb
+        token     <- adminToken
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        rs        <- makeRoutes(templates.map(t => t.slug -> t).toMap)
+        resp      <- rs.runZIO(
+          Request
+            .post(url("/api/apps/seed-from-templates"), Body.empty)
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        body      <- resp.body.asString
+        summary   <- ZIO.fromEither(body.fromJson[AppTemplateSeedSummary])
+        after     <- appRepo.listAll
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(summary.created.size == templates.size) &&
+        assertTrue(after.size == templates.size)
+    },
+    test("POST /api/apps/seed-from-templates is idempotent across calls (#1024)") {
+      for {
+        _         <- cleanDb
+        token     <- adminToken
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        rs        <- makeRoutes(templates.map(t => t.slug -> t).toMap)
+        req = Request
+          .post(url("/api/apps/seed-from-templates"), Body.empty)
+          .addHeader(Header.Authorization.Bearer(token))
+        _     <- rs.runZIO(req)
+        resp2 <- rs.runZIO(req)
+        body2 <- resp2.body.asString
+        sum2  <- ZIO.fromEither(body2.fromJson[AppTemplateSeedSummary])
+        all   <- appRepo.listAll
+      } yield assertTrue(resp2.status == Status.Ok) &&
+        assertTrue(sum2.created.isEmpty) &&
+        assertTrue(sum2.preserved.size == templates.size) &&
+        assertTrue(all.size == templates.size)
+    },
+    test("POST /api/apps/seed-from-templates rejects non-admin (#1024)") {
+      for {
+        _         <- cleanDb
+        userRepo  <- ZIO.service[UserRepo]
+        upRepo    <- ZIO.service[UserProfileRepo]
+        auth      <- makeAuth
+        _         <- createUser(userRepo, upRepo, auth, "mom", "adult")
+        token     <- auth.login("mom", "pass").map(_.token.value)
+        templates <- AppTemplates.loadAll()
+        rs        <- makeRoutes(templates.map(t => t.slug -> t).toMap)
+        resp      <- rs.runZIO(
+          Request
+            .post(url("/api/apps/seed-from-templates"), Body.empty)
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+      } yield assertTrue(resp.status == Status.Forbidden)
+    },
+    test("packaged jar contains every template YAML named in _index.yml (#1024)") {
+      // Tripwire for cause #2 in the issue: if the build ever stops shipping
+      // `api/resources/app_templates/*.yml` into the assembly, this fails loudly
+      // at test time instead of leaving prod with an empty apps list.
+      for {
+        templates <- AppTemplates.loadAll()
+        missing   <- ZIO.attemptBlocking {
+          templates.flatMap { t =>
+            Option(getClass.getResourceAsStream(s"/app_templates/${t.slug.value}.yml")) match {
+              case Some(in) => in.close(); None
+              case None     => Some(t.slug.value)
+            }
+          }
+        }
+      } yield assertTrue(missing.isEmpty)
     },
     test("POST /reset-to-template rejects non-admin (writer)") {
       for {
