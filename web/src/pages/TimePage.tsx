@@ -14,6 +14,7 @@ import {
   useUsageSeriesProfileToday,
 } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 import type {
   HostUsage,
   ProfileTimeBucket, ProfileTimeStatus, ProfileTimeStatusWeek,
@@ -217,6 +218,7 @@ export function TimePage() {
   })
 
   const [extProfileId, setExtProfileId] = useState<number | null>(null)
+  useEscapeClose(() => setExtProfileId(null), extProfileId !== null)
   const [extMins, setExtMins]   = useState(30)
   const [extNote, setExtNote]   = useState('')
 

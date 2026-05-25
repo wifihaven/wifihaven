@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '@/api/client'
 import type { CreateRouterResponse, RouterSummary } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 
 export function RoutersPage() {
   const [routers, setRouters] = useState<RouterSummary[]>([])
@@ -207,6 +208,7 @@ export function RoutersPage() {
 }
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  useEscapeClose(onClose)
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
       <div
