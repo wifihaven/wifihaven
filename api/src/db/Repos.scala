@@ -79,6 +79,8 @@ trait UserRepo {
   def findById(id: UserId): Task[Option[DbUser]]
   def create(u: String, h: String, r: String): Task[UserId]
   def updatePassword(id: UserId, h: String): Task[Unit]
+  def updateUsername(id: UserId, u: String): Task[Unit]
+  def updateRole(id: UserId, r: String): Task[Unit]
   def clearMustChangePassword(id: UserId): Task[Unit]
   def listAll: Task[List[DbUser]]
   def delete(id: UserId): Task[Unit]
@@ -460,6 +462,10 @@ class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
       .transact(xa)
   def updatePassword(id: UserId, h: String) =
     sql"UPDATE users SET password_hash=$h WHERE id=$id".update.run.transact(xa).unit
+  def updateUsername(id: UserId, u: String) =
+    sql"UPDATE users SET username=$u WHERE id=$id".update.run.transact(xa).unit
+  def updateRole(id: UserId, r: String)     =
+    sql"UPDATE users SET role=$r WHERE id=$id".update.run.transact(xa).unit
   def clearMustChangePassword(id: UserId)   =
     sql"UPDATE users SET must_change_password=false WHERE id=$id".update.run.transact(xa).unit
   def listAll                               =
