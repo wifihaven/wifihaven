@@ -166,8 +166,8 @@ object AppTemplates {
    *
    * Idempotent — running twice is a no-op. Returns a per-template outcome summary so callers (boot
    * sequence, admin reseed endpoint) can log/respond with what changed. On per-template failure,
-   * propagates with the offending slug attached to the error message (#1024) so silent crashes
-   * are diagnosable.
+   * propagates with the offending slug attached to the error message (#1024) so silent crashes are
+   * diagnosable.
    */
   def seed(repo: AppRepo, templates: List[AppTemplate]): Task[AppTemplateSeedSummary] =
     ZIO.foreach(templates)(t => seedOne(repo, t)).map { results =>

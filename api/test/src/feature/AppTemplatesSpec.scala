@@ -295,11 +295,11 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         req = Request
           .post(url("/api/apps/seed-from-templates"), Body.empty)
           .addHeader(Header.Authorization.Bearer(token))
-        _      <- rs.runZIO(req)
-        resp2  <- rs.runZIO(req)
-        body2  <- resp2.body.asString
-        sum2   <- ZIO.fromEither(body2.fromJson[AppTemplateSeedSummary])
-        all    <- appRepo.listAll
+        _     <- rs.runZIO(req)
+        resp2 <- rs.runZIO(req)
+        body2 <- resp2.body.asString
+        sum2  <- ZIO.fromEither(body2.fromJson[AppTemplateSeedSummary])
+        all   <- appRepo.listAll
       } yield assertTrue(resp2.status == Status.Ok) &&
         assertTrue(sum2.created.isEmpty) &&
         assertTrue(sum2.preserved.size == templates.size) &&
