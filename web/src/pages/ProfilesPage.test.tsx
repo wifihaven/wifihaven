@@ -494,7 +494,16 @@ describe('ProfilesPage — highlight from ?id= (#298)', () => {
 })
 
 describe('ProfilesPage — apps section (#767)', () => {
+  // YouTube starts with an existing 'allowed' assignment so its row is
+  // visible under the #1007 filter (only assigned apps show by default).
   const youtube = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [
+      { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+  const youtubeUnassigned = {
     app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
     hosts: ['youtube.com'],
     assignments: [] as { id: number; appId: number; profileId: number; mode: 'blocked'|'allowed'|'time_limited'; dailyMinutes: number|null; exemptFromDaily: boolean }[],
@@ -518,7 +527,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     expect(within(section).getByTestId('apps-section-empty-link')).toHaveAttribute('href', '/apps')
   })
 
-  it('renders one row per app and reflects current assignment', async () => {
+  it('renders one row per assigned app and reflects current assignment', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube, tiktok])
     const user = userEvent.setup()
     renderPage()
@@ -529,6 +538,102 @@ describe('ProfilesPage — apps section (#767)', () => {
     // TikTok is currently blocked for profile 1; the block button shows checked state.
     const tiktokBlock = screen.getByTestId('app-row-51-block')
     expect(tiktokBlock.textContent).toMatch(/✓/)
+  })
+
+  // #1007: only assigned apps appear in the per-profile picker by default.
+  it('hides unassigned apps; "+ Add app" reveals them via picker', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await screen.findByTestId('app-row-51')
+    // YouTube has no assignment → row hidden.
+    expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
+    // Picker reveals it.
+    await user.click(screen.getByTestId('apps-section-add'))
+    const picker = await screen.findByTestId('apps-section-picker')
+    expect(within(picker).getByTestId('apps-section-picker-add-50')).toBeInTheDocument()
+    expect(within(picker).queryByTestId('apps-section-picker-add-51')).not.toBeInTheDocument()
+  })
+
+  it('profile with zero assignments shows none-assigned hint, not all apps', async () => {
+    // Both apps belong to profile 2's universe (none assigned to profile 1).
+    const ytForProfile2 = {
+      app: youtube.app, hosts: youtube.hosts,
+      assignments: [{ id: 9, appId: 50, profileId: 2, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true }],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytForProfile2])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    expect(await screen.findByTestId('apps-section-none-assigned')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
+  })
+
+  it('picker filter narrows the unassigned list by name', async () => {
+    const slack = {
+      app: { id: 52, name: 'Slack', slug: 'slack', templateId: null, icon: '💬', createdAt: '2026-01-01' },
+      hosts: ['slack.com'],
+      assignments: [] as typeof tiktok.assignments,
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, slack, tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('apps-section-add'))
+    await user.type(screen.getByTestId('apps-section-picker-filter'), 'slack')
+    expect(screen.getByTestId('apps-section-picker-add-52')).toBeInTheDocument()
+    expect(screen.queryByTestId('apps-section-picker-add-50')).not.toBeInTheDocument()
+  })
+
+  it('adding from picker calls setPolicy with mode=allowed', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await screen.findByTestId('app-row-51')
+    await user.click(screen.getByTestId('apps-section-add'))
+    await user.click(await screen.findByTestId('apps-section-picker-add-50'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null }),
+    )
+  })
+
+  // #1007: exempt-from-daily toggle on the time-limit row.
+  it('time-limited row shows counts-toward-daily checkbox, defaulted unchecked (exempt=true)', async () => {
+    const khan = {
+      app: { id: 60, name: 'Khan', slug: 'khan', templateId: null, icon: '📚', createdAt: '2026-01-01' },
+      hosts: ['khanacademy.org'],
+      assignments: [
+        { id: 3, appId: 60, profileId: 1, mode: 'time_limited' as const, dailyMinutes: 60, exemptFromDaily: true },
+      ],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khan])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    const cb = await screen.findByTestId('app-row-60-counts-toward-daily') as HTMLInputElement
+    expect(cb.checked).toBe(false)
+    await user.click(cb)
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'time_limited', dailyMinutes: 60, exemptFromDaily: false }),
+    )
+  })
+
+  it('checkbox is not rendered when app is not time-limited', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktok])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await screen.findByTestId('app-row-51')
+    expect(screen.queryByTestId('app-row-51-counts-toward-daily')).not.toBeInTheDocument()
   })
 
   it('clicking block calls setPolicy with mode=blocked', async () => {
@@ -576,7 +681,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     await user.type(input, '45')
     await user.click(screen.getByTestId('app-row-50-time-limit'))
     await waitFor(() =>
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'time_limited', dailyMinutes: 45 }),
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'time_limited', dailyMinutes: 45, exemptFromDaily: true }),
     )
   })
 

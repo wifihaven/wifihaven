@@ -915,53 +915,144 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
   apps: AppDetail[]
   onChanged: () => void | Promise<void>
 }) {
+  // #1007: only show apps that already have an assignment for this profile.
+  // Unassigned apps stay manageable via the "+ Add app" picker below.
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerFilter, setPickerFilter] = useState('')
+  const assigned = useMemo(
+    () => (profileId == null ? [] : apps.filter(a => findAssignment(a, profileId) != null)),
+    [apps, profileId],
+  )
+  const unassigned = useMemo(
+    () => (profileId == null ? [] : apps.filter(a => findAssignment(a, profileId) == null)),
+    [apps, profileId],
+  )
+  const pickerMatches = useMemo(() => {
+    const q = pickerFilter.trim().toLowerCase()
+    if (!q) return unassigned
+    return unassigned.filter(a => a.app.name.toLowerCase().includes(q))
+  }, [unassigned, pickerFilter])
+
+  async function addApp(app: AppDetail) {
+    if (profileId == null) return
+    // Default to 'allowed' on add — the user can immediately switch to block /
+    // time-limit on the now-visible row. We pick a mode (rather than just
+    // "make row appear") because every assignment requires one.
+    await api.apps.setPolicy(app.app.id, profileId, { mode: 'allowed', dailyMinutes: null })
+    setPickerOpen(false)
+    setPickerFilter('')
+    await onChanged()
+  }
+
+  const headerCta = !isNew && profileId != null && apps.length > 0 && (
+    <button
+      type="button"
+      data-testid="apps-section-add"
+      onClick={() => setPickerOpen(v => !v)}
+      className="text-xs text-emerald-400 hover:text-emerald-300"
+    >
+      {pickerOpen ? 'Close' : '+ Add app'}
+    </button>
+  )
+
   return (
     <div data-testid="apps-section">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2 gap-3">
         <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
           Apps
         </label>
-        <Link
-          to="/apps"
-          data-testid="apps-section-manage-link"
-          className="text-xs text-emerald-400 hover:text-emerald-300"
-        >
-          Manage apps →
-        </Link>
+        <div className="flex items-center gap-3">
+          {headerCta}
+          <Link
+            to="/apps"
+            data-testid="apps-section-manage-link"
+            className="text-xs text-emerald-400 hover:text-emerald-300"
+          >
+            Manage apps →
+          </Link>
+        </div>
       </div>
-      {isNew || profileId == null
-        ? (
-            <p className="text-xs text-gray-500">
-              Save this profile first to assign apps.
+      {isNew || profileId == null ? (
+        <p className="text-xs text-gray-500">
+          Save this profile first to assign apps.
+        </p>
+      ) : apps.length === 0 ? (
+        <p className="text-xs text-gray-500">
+          No apps yet.{' '}
+          <Link
+            to="/apps"
+            data-testid="apps-section-empty-link"
+            className="text-emerald-400 hover:text-emerald-300 underline"
+          >
+            Create one
+          </Link>
+          {' '}to block, allow, or time-limit a group of hosts.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {assigned.length === 0 && !pickerOpen && (
+            <p className="text-xs text-gray-500" data-testid="apps-section-none-assigned">
+              No apps assigned to this profile.{' '}
+              <button
+                type="button"
+                data-testid="apps-section-none-assigned-add"
+                onClick={() => setPickerOpen(true)}
+                className="text-emerald-400 hover:text-emerald-300 underline"
+              >
+                Add one
+              </button>
+              {' '}from the {apps.length}-app library.
             </p>
-          )
-        : apps.length === 0
-          ? (
-              <p className="text-xs text-gray-500">
-                No apps yet.{' '}
-                <Link
-                  to="/apps"
-                  data-testid="apps-section-empty-link"
-                  className="text-emerald-400 hover:text-emerald-300 underline"
-                >
-                  Create one
-                </Link>
-                {' '}to block, allow, or time-limit a group of hosts.
-              </p>
-            )
-          : (
-              <div className="space-y-2">
-                {apps.map(a => (
-                  <AppRow
-                    key={a.app.id}
-                    app={a}
-                    profileId={profileId}
-                    onChanged={onChanged}
-                  />
-                ))}
-              </div>
-            )
-      }
+          )}
+          {assigned.map(a => (
+            <AppRow
+              key={a.app.id}
+              app={a}
+              profileId={profileId}
+              onChanged={onChanged}
+            />
+          ))}
+          {pickerOpen && (
+            <div
+              data-testid="apps-section-picker"
+              className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
+            >
+              <input
+                type="text"
+                autoFocus
+                value={pickerFilter}
+                onChange={e => setPickerFilter(e.target.value)}
+                placeholder="Filter apps…"
+                data-testid="apps-section-picker-filter"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs"
+              />
+              {pickerMatches.length === 0 ? (
+                <p className="text-xs text-gray-500" data-testid="apps-section-picker-empty">
+                  {unassigned.length === 0
+                    ? 'Every app in the library is already assigned.'
+                    : 'No apps match that filter.'}
+                </p>
+              ) : (
+                <div className="space-y-1 max-h-64 overflow-y-auto">
+                  {pickerMatches.map(a => (
+                    <button
+                      key={a.app.id}
+                      type="button"
+                      data-testid={`apps-section-picker-add-${a.app.id}`}
+                      onClick={() => addApp(a)}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-700 text-left"
+                    >
+                      <span className="text-base w-5 text-center" aria-hidden>{a.app.icon || '◳'}</span>
+                      <span className="text-sm text-white flex-1 truncate">{a.app.name}</span>
+                      <span className="text-xs text-gray-500">{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -980,13 +1071,14 @@ function AppRow({ app, profileId, onChanged }: {
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
 
-  async function apply(mode: AppMode, dailyMinutes: number | null) {
+  async function apply(mode: AppMode, dailyMinutes: number | null, exemptFromDaily?: boolean) {
     setBusy(true)
     setLocalError(null)
     try {
       await api.apps.setPolicy(app.app.id, profileId, {
         mode,
         dailyMinutes,
+        ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
       })
       await onChanged()
     } catch (e) {
@@ -1016,7 +1108,14 @@ function AppRow({ app, profileId, onChanged }: {
       setLocalError('Enter minutes > 0')
       return
     }
-    await apply('time_limited', n)
+    // #1007: preserve current exemptFromDaily when re-applying; default to TRUE
+    // (matches the schema default and the wire default in #761/#763).
+    await apply('time_limited', n, current?.exemptFromDaily ?? true)
+  }
+
+  async function toggleExempt(nextExempt: boolean) {
+    if (current?.mode !== 'time_limited' || current.dailyMinutes == null) return
+    await apply('time_limited', current.dailyMinutes, nextExempt)
   }
 
   const mode = current?.mode ?? null
@@ -1085,6 +1184,24 @@ function AppRow({ app, profileId, onChanged }: {
           </button>
         </div>
       </div>
+      {mode === 'time_limited' && (
+        <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            data-testid={`app-row-${app.app.id}-counts-toward-daily`}
+            checked={!(current?.exemptFromDaily ?? true)}
+            disabled={busy}
+            onChange={e => toggleExempt(!e.target.checked)}
+            className="w-3.5 h-3.5 accent-amber-500"
+          />
+          <span>
+            Counts toward daily limit
+            {!(current?.exemptFromDaily ?? true) && (
+              <span className="ml-1 text-amber-400">(usage reduces overall remaining time)</span>
+            )}
+          </span>
+        </label>
+      )}
       {localError && (
         <p className="text-xs text-red-400" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
       )}
