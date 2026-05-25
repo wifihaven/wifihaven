@@ -252,6 +252,21 @@ export function TimePage() {
 
   return (
     <div className="space-y-6">
+      {/* #972 — Screen Time has merged into Profiles; the at-a-glance summary
+          and +Time button now live in the collapsed cards there. This route
+          stays alive for one release for direct-link compatibility (#978
+          removes it entirely). */}
+      <div
+        data-testid="time-merged-banner"
+        className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm rounded-xl px-4 py-3"
+      >
+        Screen Time has moved into{' '}
+        <Link to="/profiles" className="underline font-medium hover:text-emerald-200">
+          Profiles
+        </Link>
+        . The +Time button and usage chart now live on each profile card.
+      </div>
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">Screen Time</h1>
         <span className="text-xs text-gray-500 font-mono">{new Date().toLocaleDateString()}</span>

@@ -2,16 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useProfiles, useDevices, useInvalidators } from '@/api/queries'
+import { useProfiles, useDevices, useInvalidators, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
   BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
+  ProfileTimeSummary,
   ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { PageLoader } from './DashboardPage'
+import { formatMins } from './TimePage'
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
 
@@ -89,18 +91,90 @@ function formToRequest(f: FormState): UpsertProfileRequest {
   }
 }
 
+// #972: chip states reflect the at-a-glance "what's this profile doing right
+// now" answer. Schedule-active check is approximated locally from the cached
+// ProfileDetail.schedules; subsection #973 may move this server-side.
+type PauseChip = 'active' | 'paused-manual' | 'paused-schedule' | 'time-exceeded'
+
+const WEEKDAY_SHORT_TO_KEY: Record<string, string> = {
+  Mon: 'mon', Tue: 'tue', Wed: 'wed', Thu: 'thu', Fri: 'fri', Sat: 'sat', Sun: 'sun',
+}
+
+function isScheduleActiveNow(
+  s: { days: string[]; startLocal: string; endLocal: string; tz: string },
+  now: Date = new Date(),
+): boolean {
+  let weekday = ''
+  let hh = '00'
+  let mm = '00'
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: s.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+    })
+    for (const p of fmt.formatToParts(now)) {
+      if (p.type === 'weekday') weekday = WEEKDAY_SHORT_TO_KEY[p.value] ?? ''
+      else if (p.type === 'hour') hh = p.value === '24' ? '00' : p.value
+      else if (p.type === 'minute') mm = p.value
+    }
+  } catch {
+    return false
+  }
+  const minOfDay = parseInt(hh, 10) * 60 + parseInt(mm, 10)
+  const [sh, sm] = s.startLocal.split(':').map(Number)
+  const [eh, em] = s.endLocal.split(':').map(Number)
+  if ([sh, sm, eh, em].some(n => !Number.isFinite(n))) return false
+  const start = sh * 60 + sm
+  const end   = eh * 60 + em
+  if (start === end) return false
+  // Same-day window — only active if today's weekday is in the day-set.
+  if (start < end) return s.days.includes(weekday) && minOfDay >= start && minOfDay < end
+  // Wraps midnight (e.g. 21:00 → 07:00). The "before-midnight" half belongs to
+  // the start day; the "after-midnight" half belongs to the next day.
+  const prevWeekday = previousWeekday(weekday)
+  if (minOfDay >= start) return s.days.includes(weekday)
+  if (minOfDay <  end)   return s.days.includes(prevWeekday)
+  return false
+}
+
+const ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+function previousWeekday(k: string): string {
+  const i = ORDER.indexOf(k)
+  if (i < 0) return ''
+  return ORDER[(i + 6) % 7]
+}
+
+function computeChip(pd: ProfileDetail, summary: ProfileTimeSummary | undefined): PauseChip {
+  if (pd.profile.paused) return 'paused-manual'
+  if (summary && summary.remainingMins != null && summary.remainingMins <= 0) return 'time-exceeded'
+  if (pd.schedules.some(s => isScheduleActiveNow(s))) return 'paused-schedule'
+  return 'active'
+}
+
+const CHIP_LABEL: Record<PauseChip, string> = {
+  'active':          'Active',
+  'paused-manual':   'Paused',
+  'paused-schedule': 'Paused (schedule)',
+  'time-exceeded':   'Time exceeded',
+}
+
+const CHIP_CLASS: Record<PauseChip, string> = {
+  'active':          'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  'paused-manual':   'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+  'paused-schedule': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  'time-exceeded':   'bg-red-500/10 text-red-400 border-red-500/20',
+}
+
 export function ProfilesPage() {
   const { isAdmin } = useAuth()
   const invalidators = useInvalidators()
   const profilesQuery = useProfiles()
   const devicesQuery  = useDevices()
-  const profiles = profilesQuery.data ?? []
-  const devices  = devicesQuery.data  ?? []
+  const summariesQuery = useTimeStatusSummary()
+  const profiles  = profilesQuery.data  ?? []
+  const devices   = devicesQuery.data   ?? []
+  const summaries = summariesQuery.data ?? []
   const [categories, setCategories] = useState<BlocklistSummary[]>([])
   const [allUsers, setAllUsers] = useState<User[]>([])
-  // Aux fetches (blocklists/users/household) aren't part of the #803 hot
-  // loop — keep them as one-shot useEffect state. They only need to load
-  // once when the page mounts.
   const [auxLoading, setAuxLoading] = useState(true)
   const loading = profilesQuery.isPending || devicesQuery.isPending || auxLoading
   const [editingId, setEditingId] = useState<number | 'new' | null>(null)
@@ -112,9 +186,35 @@ export function ProfilesPage() {
   const [userPick, setUserPick] = useState<number[]>([])
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [apps, setApps] = useState<AppDetail[]>([])
+  // #972 — collapse-by-default; toggle state lives in-memory only. Persistence
+  // across reloads is a deferred enhancement; the design doc calls this out.
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const toggleExpanded = (pid: number) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (next.has(pid)) next.delete(pid); else next.add(pid)
+    return next
+  })
+
+  // #972 — +Time mutation reused from the screen-time page. #946-fixed pattern:
+  // invalidate the full ['time','status'] subtree so both the summary row and
+  // any expanded detail re-render with the new remaining minutes.
+  const [extProfileId, setExtProfileId] = useState<number | null>(null)
+  const [extMins, setExtMins] = useState(30)
+  const [extNote, setExtNote] = useState('')
+  const grantMutation = useMutation({
+    mutationFn: (vars: { profileId: number; extraMinutes: number; note: string | null }) =>
+      api.time.grantExtension(vars),
+    onSuccess: () => {
+      setExtProfileId(null)
+      setExtMins(30)
+      setExtNote('')
+      return invalidators.timeStatus()
+    },
+  })
 
   // #298: LogsPage links to `/profiles?id=...`; scroll + highlight the
   // matching profile card so the parent sees what they clicked from logs.
+  // Also auto-expand it so the linked content is visible immediately.
   const [params] = useSearchParams()
   const queryId = params.get('id')
   const [highlightId, setHighlightId] = useState<number | null>(null)
@@ -123,6 +223,7 @@ export function ProfilesPage() {
     const id = Number(queryId)
     if (!Number.isFinite(id) || !profiles.some(p => p.profile.id === id)) return
     setHighlightId(id)
+    setExpanded(prev => prev.has(id) ? prev : new Set(prev).add(id))
     const el = document.querySelector(`[data-testid="profile-card-${id}"]`) as HTMLElement | null
     el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
     const t = setTimeout(() => setHighlightId(null), 2000)
@@ -152,6 +253,12 @@ export function ProfilesPage() {
     return m
   }, [allUsers])
 
+  const summaryByProfile = useMemo(() => {
+    const m = new Map<number, ProfileTimeSummary>()
+    for (const s of summaries) m.set(s.profileId, s)
+    return m
+  }, [summaries])
+
   async function loadAux() {
     const [cats, users, hs, appsList] = await Promise.all([
       api.blocklists.list().catch(() => [] as BlocklistSummary[]),
@@ -174,8 +281,6 @@ export function ProfilesPage() {
     loadAux().finally(() => setAuxLoading(false))
   }, [])
 
-  // After a profile mutation, refetch user→profile links too so the
-  // "linked users" badges stay in sync.
   async function refetchAux() {
     if (!isAdmin) return
     const users = await api.users.list().catch(() => [] as User[])
@@ -218,9 +323,8 @@ export function ProfilesPage() {
 
   async function togglePause(pd: ProfileDetail) {
     // #406: setting `paused` explicitly via the full-profile PUT is
-    // idempotent under concurrent clicks. The old POST /pause endpoint was
-    // a server-side toggle that race-flipped under double-click / retry.
-    // #423 tracks adding PATCH so we don't have to send the whole profile.
+    // idempotent under concurrent clicks. #423 tracks adding PATCH so we
+    // don't have to send the whole profile.
     const body = formToRequest(detailToForm(pd))
     body.paused = !pd.profile.paused
     await updateMutation.mutateAsync({ id: pd.profile.id, body })
@@ -272,7 +376,19 @@ export function ProfilesPage() {
     }
   }
 
+  const granting = grantMutation.isPending
+  async function grantExtension(profileId: number) {
+    await grantMutation.mutateAsync({
+      profileId,
+      extraMinutes: extMins,
+      note: extNote || null,
+    })
+  }
+
   if (loading) return <PageLoader />
+
+  const profileName = (id: number | null) =>
+    id == null ? '' : profiles.find(p => p.profile.id === id)?.profile.name ?? ''
 
   return (
     <div className="space-y-6">
@@ -288,155 +404,24 @@ export function ProfilesPage() {
         )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="space-y-3">
         {profiles.map(pd => (
-          <div key={pd.profile.id} data-testid={`profile-card-${pd.profile.id}`} className={`bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-4 transition-shadow ${highlightId === pd.profile.id ? 'ring-2 ring-emerald-500/60' : ''}`}>
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <h3 className="font-bold text-white text-lg">{pd.profile.name}</h3>
-                {pd.profile.paused && (
-                  <span className="text-xs text-red-400 bg-red-500/10 px-2 py-0.5 rounded mt-1 inline-block">Paused</span>
-                )}
-              </div>
-              {isAdmin && (
-                <div className="flex flex-wrap gap-2 shrink-0">
-                  <button onClick={() => togglePause(pd)}
-                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                      pd.profile.paused
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
-                        : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 hover:bg-yellow-500/20'
-                    }`}>
-                    {pd.profile.paused ? '▶ Resume' : '⏸ Pause'}
-                  </button>
-                  <button onClick={() => startEdit(pd)}
-                    className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
-                    Edit
-                  </button>
-                  <button onClick={() => startEditUsers(pd.profile.id)}
-                    className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
-                    Edit users
-                  </button>
-                  <button onClick={() => del(pd.profile.id, pd.profile.name)}
-                    className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {pd.profile.blockedCategories.length > 0 && (
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Blocked categories</p>
-                <div className="flex flex-wrap gap-2">
-                  {pd.profile.blockedCategories.map(c => (
-                    <span key={c} className="text-xs bg-red-500/10 text-red-400 px-2 py-1 rounded-lg font-mono">{c}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {(pd.profile.extraBlocked.length > 0 || pd.profile.extraAllowed.length > 0) && (
-              <div className="grid grid-cols-2 gap-3">
-                {pd.profile.extraBlocked.length > 0 && (
-                  <div>
-                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Blocked domains</p>
-                    <p className="text-xs text-gray-400 font-mono">{pd.profile.extraBlocked.length} entr{pd.profile.extraBlocked.length === 1 ? 'y' : 'ies'}</p>
-                  </div>
-                )}
-                {pd.profile.extraAllowed.length > 0 && (
-                  <div>
-                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Allowed domains</p>
-                    <p className="text-xs text-gray-400 font-mono">{pd.profile.extraAllowed.length} entr{pd.profile.extraAllowed.length === 1 ? 'y' : 'ies'}</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {pd.timeLimit && (
-              <p className="text-sm text-gray-400">
-                Daily limit: <span className="text-white font-medium">{pd.timeLimit.dailyMinutes} min</span>
-              </p>
-            )}
-
-            {pd.schedules.length > 0 && (
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Schedules</p>
-                {pd.schedules.map(s => (
-                  <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
-                    <span className="text-gray-300">{s.name}</span>
-                    <span className="text-yellow-400 font-mono text-xs">
-                      {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div data-testid={`profile-devices-${pd.profile.id}`}>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
-              {(devicesByProfile.get(pd.profile.id) ?? []).length === 0
-                ? <p className="text-xs text-gray-600">No devices assigned.</p>
-                : (
-                  <div className="space-y-1">
-                    {(devicesByProfile.get(pd.profile.id) ?? []).map(d => (
-                      <div key={d.id} data-testid={`profile-device-${d.id}`}
-                        className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
-                        <span className="text-gray-300">{d.name}</span>
-                        <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
-                      </div>
-                    ))}
-                  </div>
-                )
-              }
-            </div>
-
-            {isAdmin && (
-              <div data-testid={`profile-users-${pd.profile.id}`}>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Linked users</p>
-                {(usersByProfile.get(pd.profile.id) ?? []).length === 0
-                  ? <p className="text-xs text-gray-600">No users linked.</p>
-                  : (
-                    <div className="flex flex-wrap gap-2">
-                      {(usersByProfile.get(pd.profile.id) ?? []).map(u => (
-                        <span key={u.id} data-testid={`profile-user-${u.id}`}
-                          className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-1 rounded-lg">
-                          {u.username}
-                          <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${
-                            u.role === 'admin'
-                              ? 'bg-emerald-500/10 text-emerald-400'
-                              : u.role === 'adult'
-                                ? 'bg-blue-500/10 text-blue-400'
-                                : 'bg-yellow-500/10 text-yellow-400'
-                          }`}>{u.role}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )
-                }
-              </div>
-            )}
-
-            {pd.siteTimeLimits.length > 0 && (
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Site Limits</p>
-                {pd.siteTimeLimits.map(s => (
-                  <div key={s.id} className="flex justify-between items-center text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
-                    <span className="text-gray-300">{s.label}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-emerald-400 text-xs font-mono">{s.dailyMinutes}m · {s.domainPattern}</span>
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${
-                        s.exemptFromDaily
-                          ? 'bg-gray-700 text-gray-400'
-                          : 'bg-amber-500/20 text-amber-400'
-                      }`}>
-                        {s.exemptFromDaily ? 'exempt' : 'counts'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <ProfileShellRow
+            key={pd.profile.id}
+            pd={pd}
+            summary={summaryByProfile.get(pd.profile.id)}
+            devices={devicesByProfile.get(pd.profile.id) ?? []}
+            users={usersByProfile.get(pd.profile.id) ?? []}
+            isAdmin={isAdmin}
+            expanded={expanded.has(pd.profile.id)}
+            highlight={highlightId === pd.profile.id}
+            onToggle={() => toggleExpanded(pd.profile.id)}
+            onEdit={() => startEdit(pd)}
+            onEditUsers={() => startEditUsers(pd.profile.id)}
+            onDelete={() => del(pd.profile.id, pd.profile.name)}
+            onTogglePause={() => togglePause(pd)}
+            onGrantTime={() => setExtProfileId(pd.profile.id)}
+          />
         ))}
       </div>
 
@@ -508,6 +493,306 @@ export function ProfilesPage() {
           defaultTz={household?.dailyResetTz ?? browserTimezone()}
         />
       )}
+
+      {/* #972 — +Time modal lifted from TimePage so the +Time button in the
+          collapsed summary works on /profiles too. */}
+      {extProfileId !== null && (
+        <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-lg font-bold text-white">Grant Extra Time</h3>
+            <p className="text-sm text-gray-400">{profileName(extProfileId)}</p>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Extra minutes
+              </label>
+              <div className="flex gap-2">
+                {[15, 30, 45, 60].map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setExtMins(m)}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      extMins === m
+                        ? 'bg-emerald-500 text-black'
+                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                    }`}
+                  >
+                    {m}m
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Note (optional)
+              </label>
+              <input
+                type="text"
+                value={extNote}
+                onChange={e => setExtNote(e.target.value)}
+                placeholder="Homework finished, good behavior…"
+                className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setExtProfileId(null)}
+                className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium hover:bg-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => grantExtension(extProfileId)}
+                disabled={granting}
+                className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold hover:bg-emerald-400 disabled:opacity-50 transition-colors"
+              >
+                {granting ? 'Granting…' : `Grant ${extMins}m`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// #972 — collapsed accordion row for the merged Profiles page. Header carries
+// the summary (name, used/cap + bar, pause chip, +Time). Expanded body shows
+// the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
+// Delete) that subsections #973-#977 will replace with inline editors.
+function ProfileShellRow({
+  pd, summary, devices, users, isAdmin, expanded, highlight,
+  onToggle, onEdit, onEditUsers, onDelete, onTogglePause, onGrantTime,
+}: {
+  pd: ProfileDetail
+  summary: ProfileTimeSummary | undefined
+  devices: Device[]
+  users: User[]
+  isAdmin: boolean
+  expanded: boolean
+  highlight: boolean
+  onToggle: () => void
+  onEdit: () => void
+  onEditUsers: () => void
+  onDelete: () => void
+  onTogglePause: () => void
+  onGrantTime: () => void
+}) {
+  const chip = computeChip(pd, summary)
+  const hasLimit = summary?.dailyLimitMins != null
+  const usedMins = summary?.usedMins ?? 0
+  const limitBase = hasLimit ? (summary!.dailyLimitMins ?? 0) + (summary!.extensionMins ?? 0) : 0
+  const pct = hasLimit && limitBase > 0
+    ? Math.min(100, Math.round((usedMins / limitBase) * 100))
+    : 0
+  const overLimit = chip === 'time-exceeded'
+
+  return (
+    <div
+      data-testid={`profile-card-${pd.profile.id}`}
+      className={`bg-gray-900 rounded-2xl border transition-shadow ${
+        overLimit ? 'border-red-500/40' : 'border-gray-800'
+      } ${highlight ? 'ring-2 ring-emerald-500/60' : ''}`}
+    >
+      <div className="flex items-center gap-2 px-5 py-4">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          data-testid={`profile-row-toggle-${pd.profile.id}`}
+          className="flex-1 flex items-center gap-3 text-left min-w-0"
+        >
+          <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+          <span className="font-semibold text-white text-lg truncate">{pd.profile.name}</span>
+        </button>
+
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Used / cap with a thin inline progress bar */}
+          <div
+            data-testid={`profile-summary-time-${pd.profile.id}`}
+            className="hidden sm:flex flex-col items-end min-w-[7rem]"
+          >
+            <span className="text-xs font-mono text-gray-300">
+              {formatMins(usedMins)}
+              {hasLimit ? ` / ${formatMins(summary!.dailyLimitMins ?? 0)}` : ''}
+            </span>
+            {hasLimit && (
+              <div className="w-24 h-1 bg-gray-800 rounded-full overflow-hidden mt-1">
+                <div
+                  className={`h-full rounded-full ${overLimit ? 'bg-red-500' : 'bg-emerald-500'}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            )}
+          </div>
+
+          <span
+            data-testid={`profile-pause-chip-${pd.profile.id}`}
+            data-chip={chip}
+            className={`text-xs px-2 py-1 rounded-lg border ${CHIP_CLASS[chip]}`}
+          >
+            {CHIP_LABEL[chip]}
+          </span>
+
+          {isAdmin && hasLimit && (
+            <button
+              type="button"
+              onClick={onGrantTime}
+              data-testid={`profile-row-grant-${pd.profile.id}`}
+              className="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              + Time
+            </button>
+          )}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
+          {/* #972: stub expanded view — subsections #973-#977 replace the
+              escape-hatch buttons below with inline editors. */}
+          {isAdmin && (
+            <div className="flex flex-wrap gap-2">
+              <button onClick={onTogglePause}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                  pd.profile.paused
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                    : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 hover:bg-yellow-500/20'
+                }`}>
+                {pd.profile.paused ? '▶ Resume' : '⏸ Pause'}
+              </button>
+              <button onClick={onEdit}
+                data-testid={`profile-open-editor-${pd.profile.id}`}
+                className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
+                Edit
+              </button>
+              <button onClick={onEditUsers}
+                className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
+                Edit users
+              </button>
+              <button onClick={onDelete}
+                className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
+                Delete
+              </button>
+            </div>
+          )}
+
+          {pd.profile.blockedCategories.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Blocked categories</p>
+              <div className="flex flex-wrap gap-2">
+                {pd.profile.blockedCategories.map(c => (
+                  <span key={c} className="text-xs bg-red-500/10 text-red-400 px-2 py-1 rounded-lg font-mono">{c}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(pd.profile.extraBlocked.length > 0 || pd.profile.extraAllowed.length > 0) && (
+            <div className="grid grid-cols-2 gap-3">
+              {pd.profile.extraBlocked.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Blocked domains</p>
+                  <p className="text-xs text-gray-400 font-mono">{pd.profile.extraBlocked.length} entr{pd.profile.extraBlocked.length === 1 ? 'y' : 'ies'}</p>
+                </div>
+              )}
+              {pd.profile.extraAllowed.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Allowed domains</p>
+                  <p className="text-xs text-gray-400 font-mono">{pd.profile.extraAllowed.length} entr{pd.profile.extraAllowed.length === 1 ? 'y' : 'ies'}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {pd.timeLimit && (
+            <p className="text-sm text-gray-400">
+              Daily limit: <span className="text-white font-medium">{pd.timeLimit.dailyMinutes} min</span>
+            </p>
+          )}
+
+          {pd.schedules.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Schedules</p>
+              {pd.schedules.map(s => (
+                <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
+                  <span className="text-gray-300">{s.name}</span>
+                  <span className="text-yellow-400 font-mono text-xs">
+                    {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div data-testid={`profile-devices-${pd.profile.id}`}>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
+            {devices.length === 0
+              ? <p className="text-xs text-gray-600">No devices assigned.</p>
+              : (
+                <div className="space-y-1">
+                  {devices.map(d => (
+                    <div key={d.id} data-testid={`profile-device-${d.id}`}
+                      className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+                      <span className="text-gray-300">{d.name}</span>
+                      <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
+          </div>
+
+          {isAdmin && (
+            <div data-testid={`profile-users-${pd.profile.id}`}>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Linked users</p>
+              {users.length === 0
+                ? <p className="text-xs text-gray-600">No users linked.</p>
+                : (
+                  <div className="flex flex-wrap gap-2">
+                    {users.map(u => (
+                      <span key={u.id} data-testid={`profile-user-${u.id}`}
+                        className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-1 rounded-lg">
+                        {u.username}
+                        <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${
+                          u.role === 'admin'
+                            ? 'bg-emerald-500/10 text-emerald-400'
+                            : u.role === 'adult'
+                              ? 'bg-blue-500/10 text-blue-400'
+                              : 'bg-yellow-500/10 text-yellow-400'
+                        }`}>{u.role}</span>
+                      </span>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+          )}
+
+          {pd.siteTimeLimits.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Site Limits</p>
+              {pd.siteTimeLimits.map(s => (
+                <div key={s.id} className="flex justify-between items-center text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
+                  <span className="text-gray-300">{s.label}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 text-xs font-mono">{s.dailyMinutes}m · {s.domainPattern}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+                      s.exemptFromDaily
+                        ? 'bg-gray-700 text-gray-400'
+                        : 'bg-amber-500/20 text-amber-400'
+                    }`}>
+                      {s.exemptFromDaily ? 'exempt' : 'counts'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -540,8 +825,6 @@ function ProfileEditor({
   }
 
   function addSchedule() {
-    // Default tz comes from the parent (household's daily-reset tz, or
-    // browser tz fallback). Most homes want all schedules in the same zone.
     setForm(f => ({
       ...f,
       schedules: [

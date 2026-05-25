@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { Device, ProfileDetail, User } from '@/types/api'
+import type { Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
@@ -30,6 +30,10 @@ vi.mock('@/api/client', () => ({
       list: vi.fn(),
       setPolicy: vi.fn(),
       deletePolicy: vi.fn(),
+    },
+    time: {
+      summaryAll: vi.fn(),
+      grantExtension: vi.fn(),
     },
   },
 }))
@@ -96,6 +100,15 @@ const tabletDevice: Device = {
   profileName: 'Adults', lastSeenIp: null, lastSeenAt: null,
 }
 
+const kidsSummary: ProfileTimeSummary = {
+  profileId: 1, profileName: 'Kids', date: '2026-05-24',
+  dailyLimitMins: 120, usedMins: 45, extensionMins: 0, remainingMins: 75,
+}
+const adultsSummary: ProfileTimeSummary = {
+  profileId: 2, profileName: 'Adults', date: '2026-05-24',
+  dailyLimitMins: null, usedMins: 0, extensionMins: 0, remainingMins: null,
+}
+
 const aliceUser: User = { id: 10, username: 'alice', role: 'child', profileIds: [1] }
 const bobUser:   User = { id: 11, username: 'bob',   role: 'adult', profileIds: [2] }
 const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: [1, 2] }
@@ -122,24 +135,100 @@ beforeEach(() => {
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsSummary, adultsSummary])
+  ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 30 })
 })
 
-describe('ProfilesPage — list', () => {
-  it('renders profile names, paused badge, blocked categories, schedules, site limits, and daily limit', async () => {
+// #972 — cards are collapse-by-default; tests that need the expanded body
+// (Edit / Delete / Pause buttons, devices, linked users) must expand first.
+async function expand(pid: number, user = userEvent.setup()) {
+  await user.click(screen.getByTestId(`profile-row-toggle-${pid}`))
+}
+
+describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
+  it('renders one collapsed card per profile with name and pause chip', async () => {
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    const adultsCard = screen.getByTestId('profile-card-2')
     expect(within(kidsCard).getByText('Kids')).toBeInTheDocument()
-    expect(screen.getByText('Adults')).toBeInTheDocument()
-    expect(screen.getByText('Paused')).toBeInTheDocument()
-    // 'adult' (the blocked category) lives inside the Kids card; the bob/admin role
-    // badges read 'adult' too, so scope this lookup to the Kids card.
-    expect(within(kidsCard).getByText('adult')).toBeInTheDocument()
-    expect(within(kidsCard).getByText('gambling')).toBeInTheDocument()
-    expect(screen.getByText('Bedtime')).toBeInTheDocument()
-    expect(screen.getByText('21:00 → 07:00')).toBeInTheDocument()
-    expect(screen.getByText('YouTube')).toBeInTheDocument()
-    expect(screen.getByText('30m · youtube.com')).toBeInTheDocument()
-    expect(screen.getByText('120 min')).toBeInTheDocument()
+    expect(within(adultsCard).getByText('Adults')).toBeInTheDocument()
+    // collapsed body is hidden — categories / schedules / limit live inside it
+    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    expect(within(kidsCard).queryByText('120 min')).not.toBeInTheDocument()
+  })
+
+  it('summary row carries used/cap, pause chip, and +Time for limited profiles', async () => {
+    // override the Kids profile to drop the schedule so the "active" chip
+    // assertion is independent of when the test happens to run.
+    (api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...kidsProfile, schedules: [] },
+      adultsProfile,
+    ])
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    // "Kids" has dailyLimitMins=120, usedMins=45 → "45m / 2:00"
+    const time = within(kidsCard).getByTestId('profile-summary-time-1')
+    expect(time).toHaveTextContent('45m')
+    expect(time).toHaveTextContent('2:00')
+    const chip = within(kidsCard).getByTestId('profile-pause-chip-1')
+    expect(chip).toHaveAttribute('data-chip', 'active')
+    expect(within(kidsCard).getByTestId('profile-row-grant-1')).toBeInTheDocument()
+  })
+
+  it('paused profile renders the Paused chip', async () => {
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    const chip = within(adultsCard).getByTestId('profile-pause-chip-2')
+    expect(chip).toHaveAttribute('data-chip', 'paused-manual')
+    expect(chip).toHaveTextContent(/Paused/)
+  })
+
+  it('time-exceeded summary flips the chip and hides the bar fill at 100%', async () => {
+    (api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...kidsSummary, usedMins: 130, remainingMins: 0 },
+      adultsSummary,
+    ])
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    const chip = within(kidsCard).getByTestId('profile-pause-chip-1')
+    expect(chip).toHaveAttribute('data-chip', 'time-exceeded')
+  })
+
+  it('no +Time button for profiles without a daily limit', async () => {
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    expect(within(adultsCard).queryByTestId('profile-row-grant-2')).not.toBeInTheDocument()
+  })
+
+  it('clicking the row toggles the expanded body', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
+    expect(within(kidsCard).getByText('Bedtime')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('120 min')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('YouTube')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('21:00 → 07:00')).toBeInTheDocument()
+    await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
+    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — +Time mutation (#972 / #946)', () => {
+  it('opens the modal then submits grantExtension with the chosen minutes', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-grant-1'))
+    // 30m is the default; pick 60m to make the assertion specific
+    await user.click(screen.getByRole('button', { name: /^60m$/ }))
+    await user.click(screen.getByRole('button', { name: /^Grant 60m$/ }))
+    await waitFor(() =>
+      expect(api.time.grantExtension).toHaveBeenCalledWith({
+        profileId: 1, extraMinutes: 60, note: null,
+      }),
+    )
   })
 })
 
@@ -150,6 +239,7 @@ describe('ProfilesPage — pause / delete', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /Pause/ }))
     await waitFor(() =>
       expect(api.profiles.update).toHaveBeenCalledWith(
@@ -164,6 +254,7 @@ describe('ProfilesPage — pause / delete', () => {
     const user = userEvent.setup()
     renderPage()
     const adultsCard = await screen.findByTestId('profile-card-2')
+    await expand(2, user)
     await user.click(within(adultsCard).getByRole('button', { name: /Resume/ }))
     await waitFor(() =>
       expect(api.profiles.update).toHaveBeenCalledWith(
@@ -178,6 +269,7 @@ describe('ProfilesPage — pause / delete', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
     expect(confirmSpy).toHaveBeenCalled()
     await waitFor(() => expect(api.profiles.delete).toHaveBeenCalledWith(1))
@@ -189,6 +281,7 @@ describe('ProfilesPage — pause / delete', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
     expect(api.profiles.delete).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
@@ -269,6 +362,7 @@ describe('ProfilesPage — edit', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
 
     expect(screen.getByDisplayValue('Kids')).toBeInTheDocument()
@@ -310,6 +404,7 @@ describe('ProfilesPage — cross-device overlap toggle (#751)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
 
     expect(screen.getByTestId('profile-overlap-mode-sum')).toBeChecked()
@@ -343,9 +438,12 @@ describe('ProfilesPage — role gating', () => {
 
 describe('ProfilesPage — devices section', () => {
   it('renders devices grouped under their profile', async () => {
+    const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     const adultsCard = screen.getByTestId('profile-card-2')
+    await expand(1, user)
+    await expand(2, user)
 
     expect(within(kidsCard).getByTestId('profile-device-100')).toHaveTextContent('Kid Phone')
     expect(within(kidsCard).getByTestId('profile-device-100')).toHaveTextContent('aa:bb:cc:dd:ee:01')
@@ -357,9 +455,12 @@ describe('ProfilesPage — devices section', () => {
 
 describe('ProfilesPage — linked users section', () => {
   it('renders linked users for each profile (admin view)', async () => {
+    const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     const adultsCard = screen.getByTestId('profile-card-2')
+    await expand(1, user)
+    await expand(2, user)
 
     expect(within(kidsCard).getByTestId('profile-user-10')).toHaveTextContent('alice')
     expect(within(kidsCard).getByTestId('profile-user-12')).toHaveTextContent('carol')
@@ -382,6 +483,7 @@ describe('ProfilesPage — linked users section', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /Edit users/ }))
 
     const modal = await screen.findByTestId('edit-users-modal')
@@ -408,6 +510,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
     const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
@@ -421,6 +524,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     const user = userEvent.setup()
     renderPage()
     const adultsCard = await screen.findByTestId('profile-card-2')
+    await expand(2, user)
     await user.click(within(adultsCard).getByRole('button', { name: /^Edit$/ }))
     const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
     const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
@@ -432,6 +536,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(screen.getByTestId('profile-failure-mode-allow-all'))
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
@@ -444,6 +549,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(screen.getByTestId('profile-failure-mode-last-known-good'))
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
@@ -465,6 +571,7 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     expect(
       screen.getByText(/drop all forwarded traffic for this profile's devices/i),
@@ -521,6 +628,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     const section = await screen.findByTestId('apps-section')
     expect(within(section).getByText(/No apps yet/i)).toBeInTheDocument()
@@ -532,6 +640,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await screen.findByTestId('app-row-50')
     expect(screen.getByTestId('app-row-51')).toBeInTheDocument()
@@ -641,6 +750,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(await screen.findByTestId('app-row-50-block'))
     await waitFor(() =>
@@ -653,6 +763,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(await screen.findByTestId('app-row-50-allow'))
     await waitFor(() =>
@@ -665,6 +776,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(await screen.findByTestId('app-row-50-time-limit'))
     expect(api.apps.setPolicy).not.toHaveBeenCalled()
@@ -676,6 +788,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     const input = await screen.findByTestId('app-row-50-minutes')
     await user.type(input, '45')
@@ -690,6 +803,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     await user.click(await screen.findByTestId('app-row-51-clear'))
     await waitFor(() =>
@@ -713,6 +827,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     expect(await screen.findByTestId('apps-section-manage-link')).toHaveAttribute('href', '/apps')
   })
