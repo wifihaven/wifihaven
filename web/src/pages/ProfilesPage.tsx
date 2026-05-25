@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
   BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
@@ -107,6 +108,7 @@ export function ProfilesPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
+  useEscapeClose(() => setEditingUsersFor(null), editingUsersFor !== null)
   const [userPick, setUserPick] = useState<number[]>([])
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [apps, setApps] = useState<AppDetail[]>([])
@@ -527,6 +529,7 @@ function ProfileEditor({
   onSave: () => void
   defaultTz: string
 }) {
+  useEscapeClose(onCancel)
   function toggleCat(c: string) {
     setForm(f => ({
       ...f,

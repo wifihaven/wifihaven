@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { localTime } from './usageHelpers'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 
 // #862 / #951 — "Jump to" picker. Re-anchors the right edge of the infinite-
 // scroll window. `value === null` = "now" (no anchor); the caller passes that
@@ -78,6 +79,7 @@ function CalendarPopover({
   onPick: (iso: string) => void
   onClose: () => void
 }) {
+  useEscapeClose(onClose)
   // Seed the visible month + the selected day from `value`, or from "now"
   // if no anchor is set yet.
   const seed = useMemo(() => (value ? new Date(value) : new Date()), [value])

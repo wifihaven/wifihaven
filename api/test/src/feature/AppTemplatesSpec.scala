@@ -124,6 +124,16 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       } yield assertTrue(templates.forall(_.iconType == IconType.Emoji)) &&
         assertTrue(yt.iconType == IconType.Emoji)
     },
+    test("gimkit template covers both marketing site and the school game endpoint (#1005)") {
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val gimkit = templates.find(_.slug == AppTemplateId.unsafe("gimkit")).get
+        val hosts  = gimkit.hosts.map(_.value).toSet
+        assertTrue(hosts.contains("gimkit.com")) &&
+        assertTrue(hosts.contains("gimkitconnect.com"))
+      }
+    },
     test("each template's hosts parse as apex hostnames") {
       for {
         templates <- AppTemplates.loadAll()

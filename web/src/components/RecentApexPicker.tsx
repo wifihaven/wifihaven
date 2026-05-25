@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { useDevices } from '@/api/queries'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 import type { RecentApex, RecentApexesResponse } from '@/types/api'
 
 // #766: pick recently-visited apexes (PSL-collapsed FQDNs) for a device and
@@ -15,6 +16,7 @@ export function RecentApexPicker({
   onClose: () => void
   onAdd: (hosts: string[]) => void
 }) {
+  useEscapeClose(onClose)
   const { data: devices = [] } = useDevices()
   const sortedDevices = useMemo(() => {
     const copy = [...devices]

@@ -8,6 +8,7 @@ import type {
   DeviceTimeStatusWeek, UsageBucket, UsageSeriesResponse,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from '@/components/usage/UsageHourlyBarChart'
@@ -369,6 +370,7 @@ interface OtherDrillInModalProps {
 }
 
 function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherDrillInModalProps) {
+  useEscapeClose(onClose)
   const tail = (data?.topHosts ?? []).filter(h => h.dayMins > 0).slice(topN)
   const otherTotal = tail.reduce((a, h) => a + h.dayMins, 0)
   const grandTotal = (data?.topHosts ?? []).reduce((a, h) => a + h.dayMins, 0)
