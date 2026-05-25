@@ -70,9 +70,16 @@ object Main extends ZIOAppDefault {
       _ <- ZIO
         .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
         .when(cfg.cors.origins.nonEmpty)
+      // #1017: zio-http 3.0.1's RequestStreaming.Disabled default cap is 100 KiB;
+      // /api/router/usage bodies routinely exceed that as mac_ip_tracking fills.
+      // Bump to 4 MiB — well above any realistic single-bucket payload and below
+      // Render's edge 413 threshold.
+      serverConfig = Server.Config.default
+                       .port(cfg.http.port)
+                       .disableRequestStreaming(4 * 1024 * 1024)
       _ <- Server
         .serve(withCors)
-        .provide(Server.defaultWithPort(cfg.http.port))
+        .provide(ZLayer.succeed(serverConfig) >>> Server.live)
     } yield ()).provide(serverEnv)
 
   private val serverEnv =
