@@ -31,6 +31,9 @@ fi
 # the pool.
 if [[ "${WH_LAN_BRIDGE}" =~ ^wh-lan[0-9]+$ ]] && [[ -f /etc/qemu/bridge.conf ]] \
     && grep -qE "^[[:space:]]*allow[[:space:]]+${WH_LAN_BRIDGE}\b" /etc/qemu/bridge.conf; then
+  # Clear the bridge-pool reservation (#907) so the next picker can recycle
+  # this slot immediately rather than waiting for the reaper.
+  wh_clear_bridge_reservation "${WH_LAN_BRIDGE}"
   log "leaving pool bridge ${WH_LAN_BRIDGE} in place (managed by lan-bridge-pool-bootstrap.sh)"
   exit 0
 fi
