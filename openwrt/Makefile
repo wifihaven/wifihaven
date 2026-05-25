@@ -34,6 +34,7 @@ define Package/wifihaven/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-agent $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-dns-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-update $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-rotate-dnsmasq-log $(1)/usr/sbin/
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/wifihaven
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/usr/lib/lua/wifihaven/*.lua $(1)/usr/lib/lua/wifihaven/
@@ -77,12 +78,13 @@ define Package/wifihaven/postinst
 # at first boot — postinst runs during offline-install before procd/uhttpd
 # are up, so a uci-defaults stub is the right idiom here. Nothing for
 # postinst to do for the block-page handler.
-# Install cron entry for the auto-updater (daily, 04:00 router-local).
-# Replace any existing wifihaven-update entry so upgrades migrate the
-# cadence — older packages installed it at "0 */6 * * *".
+# Install cron entries. Replace any existing wifihaven entries so upgrades
+# migrate the cadence. Kept in sync with build-ipk.sh, build-apk.sh.
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
+[ -f /etc/crontabs/root ] && sed -i '/wifihaven-rotate-dnsmasq-log/d' /etc/crontabs/root
 echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
+echo '*/10 * * * * /usr/sbin/wifihaven-rotate-dnsmasq-log' >> /etc/crontabs/root
 /etc/init.d/cron enable 2>/dev/null || true
 /etc/init.d/cron restart 2>/dev/null || true
 endef
