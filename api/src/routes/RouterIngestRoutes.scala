@@ -1,13 +1,14 @@
 package wifihaven.api.routes
 
 import wifihaven.api.db.*
+import wifihaven.api.policy.PolicyService
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 
-import java.time.{Duration, Instant, ZoneOffset}
+import java.time.{Duration, Instant}
 
 /**
  * Router-side ingest endpoints. See docs/architecture-openwrt.md §5.4 / §5.5.
@@ -26,6 +27,7 @@ object RouterIngestRoutes {
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
       deviceAlertRepo: DeviceAlertRepo,
+      householdSettingsRepo: HouseholdSettingsRepo,
   ): Routes[Any, Response] =
     Routes(
       Method.POST / "api" / "router" / "usage"  ->
@@ -50,7 +52,17 @@ object RouterIngestRoutes {
                   s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
               ),
             )
-            _ <- handleUsage(router.id, ps, pe, rep.records, trafficRepo, timeUsageRepo, deviceRepo)
+            settings <- householdSettingsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            _ <- handleUsage(
+              router.id,
+              ps,
+              pe,
+              rep.records,
+              settings,
+              trafficRepo,
+              timeUsageRepo,
+              deviceRepo,
+            )
             _ <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
@@ -99,11 +111,14 @@ object RouterIngestRoutes {
       periodStart: Instant,
       periodEnd: Instant,
       records: List[UsageRecord],
+      settings: HouseholdSettings,
       trafficRepo: TrafficReportRepo,
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
   ): IO[Response, Unit] = {
-    val date    = periodStart.atZone(ZoneOffset.UTC).toLocalDate
+    // #1010: bucket usage by the household's logical "today" (TZ + non-midnight
+    // reset_time), matching the read-side date used by PolicyService.snapshot.
+    val date    = PolicyService.householdLocalDate(periodStart, settings)
     val inserts = records.map(r =>
       TrafficReportInsert(
         routerId,
@@ -123,7 +138,7 @@ object RouterIngestRoutes {
       // Only those rows should drive time_usage / device updates; replays return 0.
       newCount <- trafficRepo.insertBatch(inserts).mapError(ErrorMapper.dbErrorToResponse)
       _        <- ZIO.when(newCount > 0)(
-        applyDelta(routerId, periodEnd, records, timeUsageRepo, deviceRepo),
+        applyDelta(routerId, periodEnd, records, settings, timeUsageRepo, deviceRepo),
       )
     } yield ()
   }
@@ -143,10 +158,14 @@ object RouterIngestRoutes {
       @scala.annotation.unused routerId: RouterId,
       periodEnd: Instant,
       records: List[UsageRecord],
+      settings: HouseholdSettings,
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
   ): IO[Response, Unit] = {
-    val date      = periodEnd.atZone(ZoneOffset.UTC).toLocalDate
+    // #1010: bucket time_usage by the household's logical "today" so the
+    // cap-tracking read path (which uses the same household-local date) lines
+    // up with the rows we wrote.
+    val date      = PolicyService.householdLocalDate(periodEnd, settings)
     // A batch carries one record per (mac, dst_ip) but time_usage is keyed
     // by (mac, hostname, date), and activeSeconds is the bucket duration
     // (the report window, ~60 s — same value on every record that saw bytes>0). Two

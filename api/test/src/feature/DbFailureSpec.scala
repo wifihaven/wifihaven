@@ -129,6 +129,12 @@ object DbFailureSpec extends ZIOSpecDefault {
     def dismiss(id: DeviceAlertId, at: Instant)      = throwing
   }
 
+  private def brokenHouseholdSettingsRepo: HouseholdSettingsRepo = new HouseholdSettingsRepo {
+    def get                                       = throwing
+    def update(s: HouseholdSettings)              = throwing
+    def ensureDefault(z: java.time.ZoneId)        = throwing
+  }
+
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
     def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
     def recent(l: Int)                                                                  = throwing
@@ -179,6 +185,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenDeviceRepo,
         brokenConnectionEventRepo,
         brokenDeviceAlertRepo,
+        brokenHouseholdSettingsRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
@@ -203,6 +210,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenDeviceRepo,
         brokenConnectionEventRepo,
         brokenDeviceAlertRepo,
+        brokenHouseholdSettingsRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("not json"))
@@ -223,6 +231,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenDeviceRepo,
         brokenConnectionEventRepo,
         brokenDeviceAlertRepo,
+        brokenHouseholdSettingsRepo,
       )
       val req    = Request.post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
       for {

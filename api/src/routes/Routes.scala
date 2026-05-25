@@ -724,7 +724,11 @@ object TimeRoutes {
               .fromEither(body.fromJson[GrantExtensionRequest])
               .mapError(e => Response.badRequest(e))
             _      <- requireProfileAccess(claims, ger.profileId, userProfileRepo)
-            today  <- clock.today
+            // #1010: bucket the grant under the household-local "today" so the
+            // policy-snapshot read path (also household-local) finds it.
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            today    = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             id     <- extRepo
               .grantForProfile(ger.profileId, today, ger.extraMinutes, claims.sub, ger.note)
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -739,7 +743,10 @@ object TimeRoutes {
           for {
             claims <- requireAuth(req, auth)
             _      <- requireProfileAccess(claims, pid, userProfileRepo)
-            date   <- clock.today
+            // #1010: same household-local "today" as the grant path.
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            date     = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             exts   <- extRepo
               .listForProfile(pid, date)
               .mapError(ErrorMapper.dbErrorToResponse)

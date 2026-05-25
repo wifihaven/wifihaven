@@ -58,8 +58,9 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       dRepo <- ZIO.service[DeviceRepo]
       cRepo <- ZIO.service[ConnectionEventRepo]
       aRepo <- ZIO.service[DeviceAlertRepo]
+      hsr   <- ZIO.service[HouseholdSettingsRepo]
       auth = new RouterAuthLive(rRepo)
-    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo)
+    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
 
   private def makePolicyService =
     for {
@@ -1116,6 +1117,88 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         _      <- post(routes, "/api/router/events", body, Some(tk))
         alerts <- aRepo.listAll(includeDismissed = true)
       } yield assertTrue(alerts.size == 1)
+    },
+    // ── #1010: time_usage bucket follows household-local TZ, not UTC ─────────
+    test(
+      "#1010: usage at 22:00 PT (05:00 UTC next day) buckets to LA-local date, not UTC date",
+    ) {
+      // Household configured for LA. A usage period centered at 22:00 PDT on
+      // 2026-05-07 (= 05:00 UTC on 2026-05-08) must bucket into 2026-05-07,
+      // not the UTC date 2026-05-08 — otherwise a kid hitting cap at 15:00 PT
+      // would see their cap reset at 17:00 PT (UTC midnight) instead of
+      // 00:00 PT.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        hsr      <- ZIO.service[HouseholdSettingsRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        _        <- hsr.update(
+          HouseholdSettings(
+            java.time.LocalTime.of(0, 0),
+            java.time.ZoneId.of("America/Los_Angeles"),
+            HeartbeatFilter.Off,
+          ),
+        )
+        // 2026-05-08T05:00:00Z = 2026-05-07T22:00 PDT → LA-local date 2026-05-07.
+        laEveningStart = Instant.parse("2026-05-08T04:55:00Z")
+        laEveningEnd   = Instant.parse("2026-05-08T05:00:00Z")
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          None,
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          120L,
+          800L,
+          400L,
+        )
+        body = UsageReport(id, laEveningStart.toString, laEveningEnd.toString, List(rec)).toJson
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        // Expected bucket: LA-local 2026-05-07. Wrong-bucket (UTC) would be 2026-05-08.
+        laBucket  <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          java.time.LocalDate.of(2026, 5, 7),
+        )
+        utcBucket <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          java.time.LocalDate.of(2026, 5, 8),
+        )
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(laBucket == ((120L, 800L, 400L))) &&
+        assertTrue(utcBucket == ((0L, 0L, 0L)))
+    },
+    test("#1010: usage in default UTC household keeps UTC-date bucketing (regression)") {
+      // No TZ change: default daily_reset_tz='UTC'. Behavior unchanged from pre-#1010.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          None,
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          60L,
+          100L,
+          50L,
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        _    <- post(routes, "/api/router/usage", body, Some(tk))
+        sb   <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          testDate,
+        )
+      } yield assertTrue(sb == ((60L, 100L, 50L)))
     },
     test("events: dhcp_lease for a known MAC does NOT raise an alert") {
       for {
