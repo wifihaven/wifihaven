@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useDevices, useDeviceAlerts, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
 import type { Device, DeviceAlert } from '@/types/api'
 import { PageLoader } from './DashboardPage'
@@ -39,6 +40,7 @@ export function DevicesPage() {
   const profiles = profilesQuery.data ?? []
   const loading  = devicesQuery.isPending || profilesQuery.isPending
   const [editing,  setEditing]  = useState<Device | null>(null)
+  useEscapeClose(() => setEditing(null), editing !== null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
   const highlightMac = useHighlightFromQuery(devices)
 

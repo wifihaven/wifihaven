@@ -42,17 +42,22 @@ function renderLayout() {
 }
 
 describe('Layout — primary nav', () => {
-  it('renders the four primary items inline for admins', () => {
+  it('renders the three primary items inline for admins', () => {
     renderLayout()
-    for (const label of ['Dashboard', 'Devices', 'Profiles', 'Screen Time']) {
+    for (const label of ['Dashboard', 'Devices', 'Profiles']) {
       expect(screen.getAllByRole('link', { name: new RegExp(label) }).length).toBeGreaterThan(0)
     }
   })
 
-  it('renders the four primary items inline for non-admins', () => {
+  it('drops the Screen Time entry (merged into /profiles in #972)', () => {
+    renderLayout()
+    expect(screen.queryByRole('link', { name: /Screen Time/ })).not.toBeInTheDocument()
+  })
+
+  it('renders the three primary items inline for non-admins', () => {
     mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
     renderLayout()
-    for (const label of ['Dashboard', 'Devices', 'Profiles', 'Screen Time']) {
+    for (const label of ['Dashboard', 'Devices', 'Profiles']) {
       expect(screen.getAllByRole('link', { name: new RegExp(label) }).length).toBeGreaterThan(0)
     }
   })
@@ -92,17 +97,17 @@ describe('Layout — Settings dropdown', () => {
 })
 
 describe('Layout — mobile bottom nav', () => {
-  it('renders exactly 4 cells regardless of role', () => {
+  it('renders exactly 3 cells regardless of role', () => {
     const { container, unmount } = renderLayout()
     const bottomNav = container.querySelector('nav.md\\:hidden')
     expect(bottomNav).not.toBeNull()
-    expect(bottomNav!.querySelectorAll('a').length).toBe(4)
+    expect(bottomNav!.querySelectorAll('a').length).toBe(3)
     unmount()
 
     mockAuth = { username: 'bob', role: 'child', isAdmin: false, logout: logoutMock }
     const { container: c2 } = renderLayout()
     const bottomNav2 = c2.querySelector('nav.md\\:hidden')
-    expect(bottomNav2!.querySelectorAll('a').length).toBe(4)
+    expect(bottomNav2!.querySelectorAll('a').length).toBe(3)
   })
 })
 

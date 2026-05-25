@@ -69,12 +69,32 @@ WH_RUN_ID=b scripts/e2e-vm.sh --mode=fake
   ports per run (#902), so concurrent pairs no longer need a manual port
   window.
 - `WH_LAN_BRIDGE` — optional override. If set explicitly, skips pool pick.
-- For fake-mode, `WH_FAKE_API_PORT` is auto-allocated to a free port by
-  `scripts/e2e-vm.sh` (#902). Override only if you need a fixed port.
+- For fake-mode, `WH_FAKE_API_PORT` defaults to `WH_PORT_BASE + 1000` when
+  `WH_PORT_BASE` is set (so a second arm gets a distinct, predictable port
+  with one knob — #907), or a randomly-allocated free port otherwise (#902).
+  The +1000 offset keeps fake-api well clear of the router/client SSH+HTTP
+  triplet at `base..base+2`, so a typical second-arm spacing of `+100`
+  (e.g. `base=2222` and `base=2322`) doesn't pile A's fake-api on top of B's
+  router-ssh. Override only if you need a fixed port.
 
 **On a host without the pool**, the bridge picker is a no-op and the run
 falls back to creating `wh-lan0` on the fly — byte-identical to single-pair
 behavior on un-bootstrapped hosts.
+
+**Bridge-pool reservation (#907).** The picker's per-bridge in-use signal is
+"attached tap OR live reservation marker." Markers live at
+`/run/wh-lan-bridge/wh-lan<N>.reservation` and contain the holding process's
+PID plus its `WH_RUN_ID` for debugging. `router-up.sh` writes the marker
+under the host-wide flock with its own PID, then rewrites it with qemu's
+PID once `qemu -daemonize` returns — so the marker outlives the calling
+shell and covers the small window between flock-release and qemu's tap
+showing up in `/sys/class/net/<br>/brif`. `router-down.sh` and
+`lan-bridge-down.sh` clear the marker on tidy teardown. A SIGKILL'd run
+leaves a stale marker behind; the next picker reaps it automatically — a
+marker whose PID is no longer alive is treated as absent and the slot is
+recycled. `lan-bridge-pool-bootstrap.sh` creates `/run/wh-lan-bridge/` with
+mode 1777, so non-root pickers can drop their own markers without affecting
+others'.
 
 ## Client VM
 

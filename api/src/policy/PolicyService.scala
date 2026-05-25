@@ -8,7 +8,7 @@ import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 
 import java.security.MessageDigest
-import java.time.{DayOfWeek, Instant}
+import java.time.{DayOfWeek, Instant, LocalDate}
 
 trait PolicyService {
   def snapshot: Task[PolicySnapshot]
@@ -58,7 +58,7 @@ class PolicyServiceLive(
     for {
       settings <- householdSettingsRepo.get
       now      <- clock.instant
-      today = now.atZone(settings.dailyResetTz).toLocalDate
+      today = PolicyService.householdLocalDate(now, settings)
       profiles <- profileRepo.listAll
       devices  <- deviceRepo.listAll
       scheds   <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
@@ -216,7 +216,7 @@ class PolicyServiceLive(
     for {
       settings <- householdSettingsRepo.get
       now      <- clock.instant
-      today = now.atZone(settings.dailyResetTz).toLocalDate
+      today = PolicyService.householdLocalDate(now, settings)
       device <- deviceRepo.listAll.map(_.find(_.mac.value.equalsIgnoreCase(mac)))
       result <- device.flatMap(_.profileId) match {
         case None      =>
@@ -572,6 +572,21 @@ object PolicyService {
       if isOvernight && !zdt.toLocalTime.isBefore(s.startLocal) then today.plusDays(1)
       else today
     endDate.atTime(s.endLocal).atZone(s.tz).toInstant
+  }
+
+  /**
+   * #1010: the "logical day" bucket for `instant` under the household's daily-reset configuration.
+   * Projects into `dailyResetTz`; if the wall-clock time is before `dailyResetTime`, the bucket is
+   * the previous calendar date (the prior day's reset is still in force). For the default
+   * `daily_reset_time = '00:00'` this collapses to plain calendar date in the household zone.
+   *
+   * This is the canonical "what date does this Instant belong to" function — used both to write
+   * `time_usage.date` and to read today's cap/usage on the policy snapshot path.
+   */
+  def householdLocalDate(instant: Instant, settings: HouseholdSettings): LocalDate = {
+    val zdt = instant.atZone(settings.dailyResetTz)
+    if (zdt.toLocalTime.isBefore(settings.dailyResetTime)) zdt.toLocalDate.minusDays(1)
+    else zdt.toLocalDate
   }
 
   /**

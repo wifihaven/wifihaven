@@ -6,6 +6,7 @@ import { PageLoader } from './DashboardPage'
 import { RecentApexPicker } from '@/components/RecentApexPicker'
 import { IconPicker, type IconValue } from '@/components/IconPicker'
 import { AppIcon } from '@/components/AppIcon'
+import { useEscapeClose } from '@/hooks/useEscapeClose'
 
 interface EditFormState {
   name: string
@@ -213,13 +214,16 @@ function CreateAppModal({ onClose, onSaved }: {
             rows={4}
             value={hostsInput}
             onChange={e => setHostsInput(e.target.value)}
-            placeholder="youtube.com&#10;*.googlevideo.com"
+            placeholder="youtube.com&#10;googlevideo.com"
             className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-emerald-500"
           />
           <div className="flex items-center justify-between mt-2 gap-3">
-            <p className="text-xs text-gray-500">
-              One per line or comma-separated. <code>*.foo.com</code> and <code>foo.com</code>
-              both canonicalize to the apex.
+            <p
+              className="text-xs text-gray-500"
+              title="Wildcards are unnecessary — example.com automatically covers every subdomain."
+            >
+              One per line or comma-separated. Each host also covers its subdomains
+              <span className="ml-1 text-gray-600 cursor-help" aria-hidden="true">ⓘ</span>
             </p>
             <button
               type="button"
@@ -380,7 +384,8 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
                   addHosts()
                 }
               }}
-              placeholder="example.com or *.example.com"
+              placeholder="example.com"
+              title="Wildcards are unnecessary — example.com automatically covers every subdomain."
               className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 py-2 text-white font-mono text-sm focus:outline-none focus:border-emerald-500"
             />
             <button
@@ -493,6 +498,7 @@ function Field({ label, required, children }: {
 }
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  useEscapeClose(onClose)
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
       <div

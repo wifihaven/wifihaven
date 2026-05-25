@@ -41,7 +41,17 @@ fi
 
 rm -f "${WH_ROUTER_MONITOR_SOCK}" "${WH_ROUTER_PIDFILE}"
 
-log "booting OpenWRT ${WH_OPENWRT_VERSION} router VM"
+# When the boot image is the custom-built one (build-router-image.sh),
+# versions.sh is the source of truth for the active OpenWRT version — the
+# ipk/apk matrix flips between 23.05 and 25.12 there. WH_OPENWRT_VERSION
+# from config.sh only describes the stock download path. (#907)
+_router_log_version="${WH_OPENWRT_VERSION}"
+if [[ -n "${WH_ROUTER_IMAGE_PATH:-}" && -f "${HERE}/versions.sh" ]]; then
+  # shellcheck source=versions.sh
+  source "${HERE}/versions.sh"
+  _router_log_version="${OPENWRT_VERSION}"
+fi
+log "booting OpenWRT ${_router_log_version} router VM"
 log "  LAN: ${LAN_NETDEV}"
 log "  WAN: user-mode (ssh 127.0.0.1:${WH_ROUTER_SSH_PORT}, http 127.0.0.1:${WH_ROUTER_HTTP_PORT})"
 
@@ -59,6 +69,17 @@ qemu-system-x86_64 \
   -netdev "${WAN_NETDEV}" \
   -device "virtio-net-pci,netdev=wan,mac=${WH_ROUTER_MAC_WAN}" \
   -daemonize
+
+# Update the bridge-pool reservation (#907) to qemu's PID so the marker stays
+# live for the lifetime of the VM, not just the calling shell. Held flock is
+# released when this script exits, so the reservation IS the in-flight signal
+# the next pick sees.
+if [[ -n "${WH_LAN_BRIDGE_PICKED:-}" ]]; then
+  _qpid="$(cat "${WH_ROUTER_PIDFILE}" 2>/dev/null || echo)"
+  if [[ -n "${_qpid}" ]]; then
+    wh_write_bridge_reservation "${WH_LAN_BRIDGE}" "${_qpid}"
+  fi
+fi
 
 log "router VM started (pid $(cat "${WH_ROUTER_PIDFILE}" 2>/dev/null || echo '?'))"
 log ""

@@ -163,7 +163,7 @@ describe('AppsPage — edit flow', () => {
     expect(screen.queryByText('googlevideo.com')).not.toBeInTheDocument()
     // Add a new host via the Add button
     await user.type(
-      screen.getByPlaceholderText(/example\.com or \*\.example\.com/i),
+      screen.getByPlaceholderText(/^example\.com$/i),
       '*.ytimg.com',
     )
     await user.click(screen.getByRole('button', { name: 'Add' }))
@@ -318,5 +318,51 @@ describe('AppsPage — delete flow', () => {
     await waitFor(() => {
       expect(api.apps.delete).toHaveBeenCalledWith(11)
     })
+  })
+})
+
+describe('AppsPage — host input copy (#1006)', () => {
+  it('does not surface the redundant *.example.com wildcard in placeholders or help text', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await user.click(await screen.findByRole('button', { name: /new app/i }))
+    const textarea = screen.getByPlaceholderText(/youtube\.com/i) as HTMLTextAreaElement
+    expect(textarea.placeholder).not.toContain('*.')
+    // Open edit modal too — checks the single-host input placeholder.
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }))
+    await user.click(await screen.findByRole('button', { name: /youtube/i }))
+    const hostInput = screen.getByPlaceholderText(/^example\.com$/i) as HTMLInputElement
+    expect(hostInput.placeholder).not.toContain('*.')
+    // No visible UI string should mention *.example.com.
+    expect(screen.queryByText(/\*\.example\.com/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('AppsPage — Escape closes modals (#1008)', () => {
+  it('closes the create modal on Escape', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await screen.findByText('YouTube')
+    await user.click(screen.getByRole('button', { name: /new app/i }))
+    expect(screen.getByRole('button', { name: /create app/i })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /create app/i })).not.toBeInTheDocument()
+    })
+  })
+
+  it('Escape on a nested picker closes only the picker, not the underlying create modal', async () => {
+    const user = userEvent.setup()
+    render(withQuery(<AppsPage />))
+    await screen.findByText('YouTube')
+    await user.click(screen.getByRole('button', { name: /new app/i }))
+    await user.click(screen.getByRole('button', { name: /pick from recent activity/i }))
+    await screen.findByText(/top apexes a device hit/i)
+    await user.keyboard('{Escape}')
+    // Picker closes but the underlying create modal stays open.
+    await waitFor(() => {
+      expect(screen.queryByText(/top apexes a device hit/i)).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: /create app/i })).toBeInTheDocument()
   })
 })
