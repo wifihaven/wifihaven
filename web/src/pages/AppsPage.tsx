@@ -1,23 +1,31 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { useProfiles } from '@/api/queries'
-import type { AppDetail } from '@/types/api'
+import type { AppDetail, IconType } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { RecentApexPicker } from '@/components/RecentApexPicker'
+import { IconPicker, type IconValue } from '@/components/IconPicker'
+import { AppIcon } from '@/components/AppIcon'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 
 interface EditFormState {
   name: string
   icon: string
+  iconType: IconType
   hosts: string[]
 }
 
 function blankCreateForm(): EditFormState {
-  return { name: '', icon: '', hosts: [] }
+  return { name: '', icon: '', iconType: 'emoji', hosts: [] }
 }
 
 function detailToForm(d: AppDetail): EditFormState {
-  return { name: d.app.name, icon: d.app.icon ?? '', hosts: [...d.hosts] }
+  return {
+    name: d.app.name,
+    icon: d.app.icon ?? '',
+    iconType: d.app.iconType ?? 'emoji',
+    hosts: [...d.hosts],
+  }
 }
 
 function splitHosts(raw: string): string[] {
@@ -89,8 +97,8 @@ export function AppsPage() {
                   className="w-full text-left border-b border-gray-800 last:border-0 hover:bg-gray-800/40 transition-colors"
                 >
                   <div className="flex items-center gap-4 px-5 py-4">
-                    <span className="text-2xl w-8 text-center" aria-hidden>
-                      {a.app.icon || '◳'}
+                    <span className="w-8 text-center inline-flex items-center justify-center">
+                      <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="lg" />
                     </span>
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-white truncate">{a.app.name}</p>
@@ -163,9 +171,11 @@ function CreateAppModal({ onClose, onSaved }: {
     setSaving(true)
     setError(null)
     try {
+      const iconStr = form.icon.trim()
       await api.apps.create({
         name: form.name.trim(),
-        icon: form.icon.trim() || undefined,
+        icon: iconStr || undefined,
+        iconType: iconStr ? form.iconType : undefined,
         hosts: splitHosts(hostsInput),
       })
       await onSaved()
@@ -192,13 +202,11 @@ function CreateAppModal({ onClose, onSaved }: {
             className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500"
           />
         </Field>
-        <Field label="Icon (emoji, optional)">
-          <input
-            type="text" value={form.icon}
-            onChange={e => setForm(f => ({ ...f, icon: e.target.value }))}
-            placeholder="📺"
-            maxLength={4}
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500"
+        <Field label="Icon (optional)">
+          <IconPicker
+            value={{ icon: form.icon, iconType: form.iconType }}
+            onChange={(v: IconValue) => setForm(f => ({ ...f, icon: v.icon, iconType: v.iconType }))}
+            hosts={currentHosts}
           />
         </Field>
         <Field label="Initial hosts (optional)">
@@ -291,9 +299,11 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
     setSaving(true)
     setError(null)
     try {
+      const iconStr = form.icon.trim()
       await api.apps.update(detail.app.id, {
         name: form.name.trim(),
-        icon: form.icon.trim() || null,
+        icon: iconStr || null,
+        iconType: iconStr ? form.iconType : undefined,
         templateId: detail.app.templateId,
       })
       await api.apps.setHosts(detail.app.id, form.hosts)
@@ -339,13 +349,11 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
             className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500"
           />
         </Field>
-        <Field label="Icon (emoji, optional)">
-          <input
-            type="text" value={form.icon}
-            onChange={e => setForm(f => ({ ...f, icon: e.target.value }))}
-            placeholder="📺"
-            maxLength={4}
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500"
+        <Field label="Icon (optional)">
+          <IconPicker
+            value={{ icon: form.icon, iconType: form.iconType }}
+            onChange={(v: IconValue) => setForm(f => ({ ...f, icon: v.icon, iconType: v.iconType }))}
+            hosts={form.hosts}
           />
         </Field>
         <Field label="Hosts">
