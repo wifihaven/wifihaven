@@ -46,7 +46,7 @@ object BlocklistFetcher {
 
     override def fetch(url: String, format: BlocklistFormat): Task[List[Hostname]] =
       ZIO.attemptBlocking {
-        val req = HttpRequest
+        val req  = HttpRequest
           .newBuilder(URI.create(url))
           .header("User-Agent", UserAgent)
           .header("Accept", "text/plain, */*;q=0.5")
@@ -80,11 +80,11 @@ object BlocklistFetcher {
       if noComment.isEmpty then None
       else {
         // Split on any whitespace; either `host` or `0.0.0.0 host` shape.
-        val parts = noComment.split("\\s+").toList
+        val parts     = noComment.split("\\s+").toList
         val candidate = parts match {
-          case Nil          => None
-          case one :: Nil   => Some(one)
-          case _ :: rest    => rest.headOption
+          case Nil        => None
+          case one :: Nil => Some(one)
+          case _ :: rest  => rest.headOption
         }
         candidate.flatMap(c => Hostname.parse(c).toOption)
       }

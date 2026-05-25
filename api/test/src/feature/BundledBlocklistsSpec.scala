@@ -1,6 +1,13 @@
 package wifihaven.api.feature
 
-import wifihaven.api.{BlocklistCache, BlocklistFetcher, BlocklistFormat, BundledBlocklist, BundledBlocklistContent, BundledBlocklists}
+import wifihaven.api.{
+  BlocklistCache,
+  BlocklistFetcher,
+  BlocklistFormat,
+  BundledBlocklist,
+  BundledBlocklistContent,
+  BundledBlocklists,
+}
 import wifihaven.api.db.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -14,12 +21,12 @@ import zio.test.*
 /**
  * #958: bundled blocklist YAML loader + startup seeder + metadata repo.
  *
- * No test ever hits the network — remote-sourced YAML entries are exercised via a
- * `StubFetcher` that returns canned bytes. The real `BlocklistFetcher.Live` is covered indirectly
- * by the parser unit tests in `BlocklistFetcherSpec`.
+ * No test ever hits the network — remote-sourced YAML entries are exercised via a `StubFetcher`
+ * that returns canned bytes. The real `BlocklistFetcher.Live` is covered indirectly by the parser
+ * unit tests in `BlocklistFetcherSpec`.
  *
- * Cleanup of the #706 leaked test_* rows is covered by V32__cleanup_test_blocklists.sql running
- * on the embedded Postgres at TestDatabase.cleanAndMigrate.
+ * Cleanup of the #706 leaked test_* rows is covered by V32__cleanup_test_blocklists.sql running on
+ * the embedded Postgres at TestDatabase.cleanAndMigrate.
  */
 object BundledBlocklistsSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & doobie.Transactor[Task]] {
@@ -47,18 +54,20 @@ object BundledBlocklistsSpec
   private def newCache: UIO[BlocklistCache] =
     Ref.make(Map.empty[BlocklistId, BlocklistCache.Entry]).map(new BlocklistCache.Live(_))
 
-  /** Stub responses keyed by the URLs referenced by our bundled YAML files. Each
-   * upstream is given a tiny canned response so seeding completes without network. */
+  /**
+   * Stub responses keyed by the URLs referenced by our bundled YAML files. Each upstream is given a
+   * tiny canned response so seeding completes without network.
+   */
   private val stubbedUpstreams: Map[String, List[Hostname]] = Map(
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" ->
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"                          ->
       List("ads-extended-upstream.example", "tracker.example").map(Hostname.unsafe),
     "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-only/hosts" ->
       List("fakenews-upstream.example").map(Hostname.unsafe),
-    "https://urlhaus.abuse.ch/downloads/hostfile/" ->
+    "https://urlhaus.abuse.ch/downloads/hostfile/"                                              ->
       List("malware-upstream.example").map(Hostname.unsafe),
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts" ->
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts"   ->
       List("social-extended-upstream.example").map(Hostname.unsafe),
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts" ->
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts"     ->
       List("adult-extended-upstream.example").map(Hostname.unsafe),
   )
 
@@ -66,10 +75,12 @@ object BundledBlocklistsSpec
 
   /** All inline lists — used by tests that only care about offline behavior. */
   private def loadInlineOnly: Task[List[BundledBlocklist]] =
-    BundledBlocklists.loadAll().map(_.filter(_.content match {
-      case _: BundledBlocklistContent.Inline => true
-      case _                                 => false
-    }))
+    BundledBlocklists
+      .loadAll()
+      .map(_.filter(_.content match {
+        case _: BundledBlocklistContent.Inline => true
+        case _                                 => false
+      }))
 
   def spec = suite("BundledBlocklists")(
     test("_index.yml is in sync with the .yml files in blocklists/") {
@@ -105,7 +116,10 @@ object BundledBlocklistsSpec
       for {
         bundled <- BundledBlocklists.loadAll()
       } yield assertTrue(
-        bundled.collect { case b @ BundledBlocklist(_, _, _, _, BundledBlocklistContent.Inline(hs)) => hs }
+        bundled
+          .collect { case b @ BundledBlocklist(_, _, _, _, BundledBlocklistContent.Inline(hs)) =>
+            hs
+          }
           .flatten
           .forall(h => Hostname.parse(h.value).isRight),
       )
@@ -114,7 +128,8 @@ object BundledBlocklistsSpec
       for {
         bundled <- BundledBlocklists.loadAll()
       } yield assertTrue(
-        bundled.collect { case BundledBlocklist(_, _, _, _, BundledBlocklistContent.Remote(u, _)) => u }
+        bundled
+          .collect { case BundledBlocklist(_, _, _, _, BundledBlocklistContent.Remote(u, _)) => u }
           .forall(_.startsWith("https://")),
       )
     },
@@ -134,15 +149,15 @@ object BundledBlocklistsSpec
     },
     test("seeder is idempotent (running twice yields the same hosts)") {
       for {
-        _       <- cleanDb
-        blRepo  <- ZIO.service[BlocklistRepo]
-        cache   <- newCache
-        bundled <- loadInlineOnly
-        _       <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
-        first   <- blRepo.summaries.map(_.find(_.id == BlocklistId.unsafe("ads")))
-        firstAds <- blRepo.loadCategory(BlocklistId.unsafe("ads"))
-        _       <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
-        second  <- blRepo.summaries.map(_.find(_.id == BlocklistId.unsafe("ads")))
+        _         <- cleanDb
+        blRepo    <- ZIO.service[BlocklistRepo]
+        cache     <- newCache
+        bundled   <- loadInlineOnly
+        _         <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
+        first     <- blRepo.summaries.map(_.find(_.id == BlocklistId.unsafe("ads")))
+        firstAds  <- blRepo.loadCategory(BlocklistId.unsafe("ads"))
+        _         <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
+        second    <- blRepo.summaries.map(_.find(_.id == BlocklistId.unsafe("ads")))
         secondAds <- blRepo.loadCategory(BlocklistId.unsafe("ads"))
       } yield assertTrue(firstAds == secondAds) &&
         assertTrue(first.exists(_.hostCount == secondAds.size)) &&
@@ -170,29 +185,36 @@ object BundledBlocklistsSpec
       } yield assertTrue(!cats.contains(BlocklistId.unsafe("test_ads"))) &&
         assertTrue(!cats.contains(BlocklistId.unsafe("test_social")))
     },
-    test("V32 cleanup migration: removes test_* even after re-insertion + scrubs profiles.blocked_categories") {
+    test(
+      "V32 cleanup migration: removes test_* even after re-insertion + scrubs profiles.blocked_categories",
+    ) {
       for {
-        _        <- cleanDb
-        blRepo   <- ZIO.service[BlocklistRepo]
-        pr       <- ZIO.service[ProfileRepo]
-        _        <- blRepo.insertBatch(
+        _       <- cleanDb
+        blRepo  <- ZIO.service[BlocklistRepo]
+        pr      <- ZIO.service[ProfileRepo]
+        _       <- blRepo.insertBatch(
           List(
             ("adserver.example.com", "test_ads"),
             ("doubleclick.net", "test_ads"),
             ("facebook.com", "test_social"),
           ),
         )
-        pid      <- pr.create("Kids", List(BlocklistId.unsafe("test_ads"), BlocklistId.unsafe("test_social")))
-        xa       <- ZIO.service[doobie.Transactor[Task]]
-        _        <- {
+        pid     <- pr.create(
+          "Kids",
+          List(BlocklistId.unsafe("test_ads"), BlocklistId.unsafe("test_social")),
+        )
+        xa      <- ZIO.service[doobie.Transactor[Task]]
+        _       <- {
           import doobie.implicits.*
-          sql"DELETE FROM blocklist_domains WHERE category IN ('test_ads', 'test_social')".update.run.transact(xa)
+          sql"DELETE FROM blocklist_domains WHERE category IN ('test_ads', 'test_social')".update.run
+            .transact(xa)
         }
-        _        <- {
+        _       <- {
           import doobie.implicits.*
-          sql"DELETE FROM blocklists WHERE id IN ('test_ads', 'test_social')".update.run.transact(xa)
+          sql"DELETE FROM blocklists WHERE id IN ('test_ads', 'test_social')".update.run
+            .transact(xa)
         }
-        _        <- {
+        _       <- {
           import doobie.implicits.*
           sql"""UPDATE profiles
                 SET blocked_categories = array_remove(
@@ -202,8 +224,8 @@ object BundledBlocklistsSpec
                 WHERE blocked_categories && ARRAY['test_ads', 'test_social']::TEXT[]""".update.run
             .transact(xa)
         }
-        cats     <- blRepo.listCategories
-        profile  <- pr.findById(pid).someOrFailException
+        cats    <- blRepo.listCategories
+        profile <- pr.findById(pid).someOrFailException
       } yield assertTrue(!cats.contains(BlocklistId.unsafe("test_ads"))) &&
         assertTrue(!cats.contains(BlocklistId.unsafe("test_social"))) &&
         assertTrue(profile.blockedCategories.isEmpty)
@@ -213,9 +235,9 @@ object BundledBlocklistsSpec
         _      <- cleanDb
         blRepo <- ZIO.service[BlocklistRepo]
         cache  <- newCache
-        _      <- BundledBlocklists.seed(blRepo, cache, stubFetcher, BundledBlocklists.devTestBlocklists)
-        cats   <- blRepo.listCategories
-        ads    <- blRepo.loadCategory(BlocklistId.unsafe("test_ads"))
+        _ <- BundledBlocklists.seed(blRepo, cache, stubFetcher, BundledBlocklists.devTestBlocklists)
+        cats <- blRepo.listCategories
+        ads  <- blRepo.loadCategory(BlocklistId.unsafe("test_ads"))
       } yield assertTrue(cats.contains(BlocklistId.unsafe("test_ads"))) &&
         assertTrue(cats.contains(BlocklistId.unsafe("test_social"))) &&
         assertTrue(ads.contains(Hostname.unsafe("doubleclick.net")))
@@ -228,7 +250,7 @@ object BundledBlocklistsSpec
         bundled <- loadInlineOnly
         _       <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
         rs      <- blRepo.summaries
-        ads     = rs.find(_.id == BlocklistId.unsafe("ads"))
+        ads = rs.find(_.id == BlocklistId.unsafe("ads"))
       } yield assertTrue(rs.size == bundled.size) &&
         assertTrue(ads.exists(_.bundled)) &&
         assertTrue(ads.exists(_.hostCount > 0)) &&
@@ -244,7 +266,9 @@ object BundledBlocklistsSpec
         hosts   <- blRepo.loadCategory(BlocklistId.unsafe("ads-extended"))
         cached  <- cache.get(BlocklistId.unsafe("ads-extended"))
       } yield assertTrue(hosts.contains(Hostname.unsafe("ads-extended-upstream.example"))) &&
-        assertTrue(cached.exists(_.hosts.contains(Hostname.unsafe("ads-extended-upstream.example"))))
+        assertTrue(
+          cached.exists(_.hosts.contains(Hostname.unsafe("ads-extended-upstream.example"))),
+        )
     },
     test("remote fetch failure leaves existing DB rows untouched") {
       val failingFetcher = new StubFetcher(
@@ -271,8 +295,8 @@ object BundledBlocklistsSpec
         cache   <- newCache
         bundled <- BundledBlocklists.loadAll()
         _       <- BundledBlocklists.seed(blRepo, cache, stubFetcher, bundled)
-        adsExt   = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
-        n       <- BundledBlocklists.refresh(blRepo, cache, stubFetcher, adsExt)
+        adsExt = bundled.find(_.id == BlocklistId.unsafe("ads-extended")).get
+        n <- BundledBlocklists.refresh(blRepo, cache, stubFetcher, adsExt)
       } yield assertTrue(n.contains(2))
     },
   ) @@ TestAspect.sequential

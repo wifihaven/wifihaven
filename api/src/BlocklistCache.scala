@@ -11,8 +11,8 @@ import java.time.Instant
  * `blocklist_domains` is the durable copy; the cache is just a tap so we can re-seed without
  * re-hitting the network and so an admin "show me what's cached" endpoint has data to return).
  *
- * Entries are populated by `BundledBlocklists.seed` / `.refresh`; nothing in the cache means
- * "never successfully fetched in this process." Misses fall through to the DB on read paths.
+ * Entries are populated by `BundledBlocklists.seed` / `.refresh`; nothing in the cache means "never
+ * successfully fetched in this process." Misses fall through to the DB on read paths.
  */
 trait BlocklistCache {
   def get(id: BlocklistId): UIO[Option[BlocklistCache.Entry]]

@@ -19,9 +19,9 @@ import scala.jdk.CollectionConverters.*
  * last_built_at). Operator-curated categories (those not in the manifest) are untouched.
  *
  * Contrast with AppTemplates, where operator host edits win — a bundled blocklist is API-managed
- * content, so YAML is the source of truth and edits made directly in the DB are overwritten on
- * the next API restart. Operators tune which blocklists are *enabled* per profile, not which
- * hosts a bundled blocklist contains.
+ * content, so YAML is the source of truth and edits made directly in the DB are overwritten on the
+ * next API restart. Operators tune which blocklists are *enabled* per profile, not which hosts a
+ * bundled blocklist contains.
  */
 /** Tagged union of how a bundled list sources its hosts. */
 sealed trait BundledBlocklistContent
@@ -44,7 +44,9 @@ enum BlocklistFormat {
    */
   case HostsFile
 
-  /** One apex hostname per line; `#` comments; empty lines ignored. OISD's "domainswild" file etc. */
+  /**
+   * One apex hostname per line; `#` comments; empty lines ignored. OISD's "domainswild" file etc.
+   */
   case DomainList
 }
 
@@ -58,10 +60,12 @@ final case class BundledBlocklist(
 
 object BundledBlocklists {
 
-  private val ResourcePrefix         = "/blocklists"
+  private val ResourcePrefix          = "/blocklists"
   val DefaultManifestResource: String = s"$ResourcePrefix/_index.yml"
 
-  /** Load and parse all bundled blocklists listed in the manifest. Fails fast on any malformed file. */
+  /**
+   * Load and parse all bundled blocklists listed in the manifest. Fails fast on any malformed file.
+   */
   def loadAll(manifestResource: String = DefaultManifestResource): Task[List[BundledBlocklist]] =
     for {
       ids <- readManifest(manifestResource)
@@ -119,50 +123,55 @@ object BundledBlocklists {
       src   <- reqStr("source")
       hasHosts = root.containsKey("hosts")
       hasUrl   = root.containsKey("url")
-      _     <- Either.cond(
+      _       <- Either.cond(
         hasHosts ^ hasUrl,
         (),
         "exactly one of 'hosts' or 'url' must be set",
       )
-      content <- if (hasHosts) {
-        Option(root.get("hosts")) match {
-          case Some(xs: java.util.List[?]) =>
-            val strs = xs.asScala.toList.map(_.toString)
-            if strs.isEmpty then Left("hosts must contain at least one entry")
-            else
-              strs
-                .foldLeft[Either[String, List[Hostname]]](Right(Nil)) { (acc, raw) =>
-                  acc.flatMap(prev =>
-                    Hostname.parse(raw.trim).left.map(e => s"invalid host '$raw': $e").map(_ :: prev),
-                  )
+      content <-
+        if (hasHosts) {
+          Option(root.get("hosts")) match {
+            case Some(xs: java.util.List[?]) =>
+              val strs = xs.asScala.toList.map(_.toString)
+              if strs.isEmpty then Left("hosts must contain at least one entry")
+              else
+                strs
+                  .foldLeft[Either[String, List[Hostname]]](Right(Nil)) { (acc, raw) =>
+                    acc.flatMap(prev =>
+                      Hostname
+                        .parse(raw.trim)
+                        .left
+                        .map(e => s"invalid host '$raw': $e")
+                        .map(_ :: prev),
+                    )
+                  }
+                  .map(hs => BundledBlocklistContent.Inline(hs.reverse.distinct))
+            case _                           => Left("hosts must be a non-empty list of strings")
+          }
+        } else {
+          for {
+            url <- Option(root.get("url")) match {
+              case Some(s: String) if s.trim.nonEmpty => Right(s.trim)
+              case _                                  => Left("url must be a non-empty string")
+            }
+            _   <- Either.cond(
+              url.startsWith("https://") || url.startsWith("http://"),
+              (),
+              s"url must start with http(s)://: $url",
+            )
+            fmt <- Option(root.get("format")) match {
+              case None            => Right(BlocklistFormat.HostsFile)
+              case Some(s: String) =>
+                s.trim.toLowerCase match {
+                  case "hosts-file" | "hosts"               => Right(BlocklistFormat.HostsFile)
+                  case "domain-list" | "domains" | "domain" => Right(BlocklistFormat.DomainList)
+                  case other => Left(s"unknown format '$other' (expected hosts-file|domain-list)")
                 }
-                .map(hs => BundledBlocklistContent.Inline(hs.reverse.distinct))
-          case _                           => Left("hosts must be a non-empty list of strings")
+              case Some(other)     => Left(s"format must be a string if present, got $other")
+            }
+          } yield BundledBlocklistContent.Remote(url, fmt)
         }
-      } else {
-        for {
-          url <- Option(root.get("url")) match {
-            case Some(s: String) if s.trim.nonEmpty => Right(s.trim)
-            case _                                  => Left("url must be a non-empty string")
-          }
-          _   <- Either.cond(
-            url.startsWith("https://") || url.startsWith("http://"),
-            (),
-            s"url must start with http(s)://: $url",
-          )
-          fmt <- Option(root.get("format")) match {
-            case None            => Right(BlocklistFormat.HostsFile)
-            case Some(s: String) =>
-              s.trim.toLowerCase match {
-                case "hosts-file" | "hosts" => Right(BlocklistFormat.HostsFile)
-                case "domain-list" | "domains" | "domain" => Right(BlocklistFormat.DomainList)
-                case other => Left(s"unknown format '$other' (expected hosts-file|domain-list)")
-              }
-            case Some(other)     => Left(s"format must be a string if present, got $other")
-          }
-        } yield BundledBlocklistContent.Remote(url, fmt)
-      }
-      _     <- Either.cond(
+      _       <- Either.cond(
         source.endsWith(s"/${id.value}.yml"),
         (),
         s"id '${id.value}' does not match file name $source",
@@ -193,17 +202,17 @@ object BundledBlocklists {
   /**
    * Seed all bundled blocklists. For each:
    *   - resolve hosts: inline lists read directly from YAML; remote lists are fetched via
-   *     `BlocklistFetcher`, parsed by the declared format, and cached in-memory (the cache
-   *     enables future re-seed without re-fetching from upstream);
+   *     `BlocklistFetcher`, parsed by the declared format, and cached in-memory (the cache enables
+   *     future re-seed without re-fetching from upstream);
    *   - REPLACE the rows in blocklist_domains for this category (clear + insertBatch);
    *   - upsert the `blocklists` metadata row with display name, description, source, and the
    *     current instant as `last_built_at`.
    *
    * **Failure mode for remote lists**: if the upstream fetch fails (network down, 5xx, parse
-   * error), log a warning and leave the existing `blocklist_domains` rows for that id alone.
-   * This means a startup with no network preserves whatever was last seeded — a fresh enrollment
-   * with no network will end up with empty remote lists, which is the right answer (an empty
-   * blocklist blocks nothing; better than a stale or partial one).
+   * error), log a warning and leave the existing `blocklist_domains` rows for that id alone. This
+   * means a startup with no network preserves whatever was last seeded — a fresh enrollment with no
+   * network will end up with empty remote lists, which is the right answer (an empty blocklist
+   * blocks nothing; better than a stale or partial one).
    *
    * Idempotent — running twice with the same YAML content produces the same rows; only
    * `last_built_at` advances.
@@ -231,7 +240,14 @@ object BundledBlocklists {
         for {
           _ <- repo.clearCategory(b.id)
           _ <- repo.insertBatch(hosts.map(h => (h.value, b.id.value)))
-          _ <- repo.upsertMeta(b.id, b.name, Some(b.description), bundled = true, Some(b.source), now)
+          _ <- repo.upsertMeta(
+            b.id,
+            b.name,
+            Some(b.description),
+            bundled = true,
+            Some(b.source),
+            now,
+          )
         } yield ()
     }
 
@@ -241,7 +257,7 @@ object BundledBlocklists {
       fetcher: BlocklistFetcher,
       b: BundledBlocklist,
   ): Task[Option[List[Hostname]]] = b.content match {
-    case BundledBlocklistContent.Inline(hosts) =>
+    case BundledBlocklistContent.Inline(hosts)    =>
       ZIO.succeed(Some(hosts))
     case BundledBlocklistContent.Remote(url, fmt) =>
       fetcher
@@ -275,12 +291,21 @@ object BundledBlocklists {
           for {
             _ <- repo.clearCategory(b.id)
             _ <- repo.insertBatch(hosts.map(h => (h.value, b.id.value)))
-            _ <- repo.upsertMeta(b.id, b.name, Some(b.description), bundled = true, Some(b.source), now)
+            _ <- repo.upsertMeta(
+              b.id,
+              b.name,
+              Some(b.description),
+              bundled = true,
+              Some(b.source),
+              now,
+            )
           } yield Some(hosts.size)
       }
     }
 
-  /** #706: dev-only test categories, seeded on startup when WIFIHAVEN_SEED_TEST_BLOCKLISTS is set. */
+  /**
+   * #706: dev-only test categories, seeded on startup when WIFIHAVEN_SEED_TEST_BLOCKLISTS is set.
+   */
   val devTestBlocklists: List[BundledBlocklist] = List(
     BundledBlocklist(
       BlocklistId.unsafe("test_ads"),
