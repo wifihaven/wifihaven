@@ -65,23 +65,22 @@ jobs:
 
     env:
       PKG_FORMAT: ${{ matrix.pkg_format }}
-      # Per-arm run keying so two arms sharing the host (today: serialized
-      # by single-runner; later: real parallel) get distinct .run/<id>/
-      # dirs, MACs, and qemu -name. github.run_id+run_attempt makes this
-      # unique across workflow runs too — two PRs both triggering Gate 2
-      # would otherwise reuse the same WH_RUN_ID.
-      WH_RUN_ID: gate2-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
       # Distinct host port bases per arm (#891): router-ssh, router-http,
-      # client1-ssh use port_base, port_base+1, port_base+2. Today the
-      # single runner serializes the arms so reuse would be fine; the
-      # split is for forward-compat once a second runner is labeled `kvm`.
+      # client1-ssh use port_base, port_base+1, port_base+2; #907 adds
+      # WH_FAKE_API_PORT = WH_PORT_BASE + 1000. Today the single runner
+      # serializes the arms so reuse would be fine; the split is for
+      # forward-compat once a second runner is labeled `kvm`.
       WH_PORT_BASE: ${{ matrix.port_base }}
-
-    env:
       # Per-job scope for the qemu `-name wh-*-${WH_RUN_ID}` suffix and the
       # .run/<id>/ state dir (config.sh:91,145,40-44). Lets teardown's
       # pkill backstop match only this run's qemu, never a sibling's, and
       # is a prerequisite for relaxing the e2e-vm concurrency group (#895).
+      # Kept short so .run/<id>/router/monitor.sock fits the 108-byte Linux
+      # Unix-socket-path limit in deep workspace paths (cf. #907 bug 4 —
+      # acceptance: WH_RUN_ID ≤ 18 chars in the CI runner workspace).
+      # Sequential matrix arms (today's reality) reuse the same id safely
+      # because teardown completes between arms; a per-arm suffix would
+      # overrun the path budget.
       WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
