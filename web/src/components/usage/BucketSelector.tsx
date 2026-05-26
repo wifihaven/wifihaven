@@ -12,12 +12,7 @@ interface BucketOption {
 // period_start`; we don't promise a value here.
 const BUCKETS: BucketOption[] = [
   { value: 'raw', label: 'Raw' },
-  {
-    value: '1m',
-    label: '1m',
-    disabled: true,
-    disabledReason: 'requires faster router upload cadence — not implemented',
-  },
+  { value: '1m',  label: '1m' },
   { value: '10m', label: '10m' },
   { value: '1h',  label: '1h' },
   { value: '12h', label: '12h' },
