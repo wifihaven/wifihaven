@@ -297,11 +297,10 @@ export function ProfilesPage() {
     setError(null)
   }
 
-  function startEdit(pd: ProfileDetail) {
-    setForm(detailToForm(pd))
-    setEditingId(pd.profile.id)
-    setError(null)
-  }
+  // #973: the inline name + per-subsection editors replaced the "Edit
+  // existing profile" modal escape-hatch. The `detailToForm`/PUT path
+  // is still callable for "+ New Profile" via startNew/save below, but
+  // existing profiles edit field-by-field through the inline UI.
 
   const updateMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: UpsertProfileRequest }) =>
@@ -431,7 +430,6 @@ export function ProfilesPage() {
             highlight={highlightId === pd.profile.id}
             defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
-            onEdit={() => startEdit(pd)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
             onTogglePause={() => togglePause(pd)}
             onGrantTime={() => setExtProfileId(pd.profile.id)}
@@ -532,7 +530,7 @@ export function ProfilesPage() {
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
   pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight, defaultTz,
-  onToggle, onEdit, onDelete, onTogglePause, onGrantTime,
+  onToggle, onDelete, onTogglePause, onGrantTime,
   onAppsChanged, onProfileChanged, updateProfile,
   onToggleUserLink, pendingUserLinks, userLinkError,
 }: {
@@ -548,7 +546,6 @@ function ProfileShellRow({
   highlight: boolean
   defaultTz: string
   onToggle: () => void
-  onEdit: () => void
   onDelete: () => void
   onTogglePause: () => void
   onGrantTime: () => void
@@ -569,6 +566,42 @@ function ProfileShellRow({
     : 0
   const overLimit = chip === 'time-exceeded'
 
+  // #973 — inline name editor lives in the card header (no redundant
+  // "Name" subsection). When the card is expanded and the operator is an
+  // admin, the title-line spot becomes an unobtrusive editable input;
+  // debounced autosave does a full-profile PUT because PATCH /profiles/:id
+  // (#423) hasn't shipped yet.
+  const [editingName, setEditingName] = useState(pd.profile.name)
+  useEffect(() => { setEditingName(pd.profile.name) }, [pd.profile.name])
+  const { status: nameStatus, error: nameError } = useDebouncedSave(
+    editingName,
+    async (next: string) => {
+      const trimmed = next.trim()
+      if (!trimmed) throw new Error('Name is required')
+      await updateProfile({
+        name: trimmed,
+        blockedCategories: pd.profile.blockedCategories,
+        extraBlocked: pd.profile.extraBlocked,
+        extraAllowed: pd.profile.extraAllowed,
+        paused: pd.profile.paused,
+        timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
+        schedules: pd.schedules.map(s => ({
+          name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+        })),
+        siteTimeLimits: pd.siteTimeLimits.map(s => ({
+          domainPattern: s.domainPattern,
+          dailyMinutes: s.dailyMinutes,
+          label: s.label,
+          exemptFromDaily: s.exemptFromDaily,
+        })),
+        failureMode: pd.profile.failureMode,
+        crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+      })
+      await onProfileChanged()
+    },
+    { key: pd.profile.id },
+  )
+
   return (
     <div
       data-testid={`profile-card-${pd.profile.id}`}
@@ -581,12 +614,37 @@ function ProfileShellRow({
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${pd.profile.name}`}
           data-testid={`profile-row-toggle-${pd.profile.id}`}
-          className="flex-1 flex items-center gap-3 text-left min-w-0"
+          className="text-gray-500 shrink-0"
         >
-          <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
-          <span className="font-semibold text-white text-lg truncate">{pd.profile.name}</span>
+          <span className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
         </button>
+        {expanded && isAdmin ? (
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <input
+              type="text"
+              value={editingName}
+              onChange={e => setEditingName(e.target.value)}
+              data-testid={`profile-name-input-${pd.profile.id}`}
+              aria-label="Profile name"
+              className="flex-1 min-w-0 font-semibold text-white text-lg bg-transparent border-b border-transparent hover:border-gray-700 focus:border-emerald-500 focus:outline-none px-0 py-0.5"
+            />
+            <SaveStatusBadge
+              status={nameStatus}
+              error={nameError}
+              testId={`profile-name-status-${pd.profile.id}`}
+            />
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex-1 text-left min-w-0"
+          >
+            <span className="font-semibold text-white text-lg truncate">{pd.profile.name}</span>
+          </button>
+        )}
 
         <div className="flex items-center gap-3 shrink-0">
           {/* Used / cap with a thin inline progress bar */}
@@ -639,14 +697,12 @@ function ProfileShellRow({
 
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
-          {/* #973: inline name + devices subsections. Name autosaves via the
-              existing PUT /profiles/:id (full body) — PATCH for profiles is
-              still gated on #423. Devices autosave per-row via PATCH /devices.
-              Sub-issues #974-#977 own the remaining slots; the escape-hatch
-              Edit button below stays callable for those (modal cleanup is #978). */}
-          {isAdmin && (
-            <NameSubsection pd={pd} />
-          )}
+          {/* #973: inline devices subsection. Name is edited inline in the
+              card header above (no redundant collapsible). Devices autosave
+              per-row via PATCH /devices. The Edit-modal escape hatch is gone
+              — every editable field has an inline subsection now; failureMode
+              (#385) is the one orphan, tracked separately. Modal stays
+              callable for "+ New Profile"; #978 owns its final removal. */}
           {isAdmin && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
@@ -659,11 +715,6 @@ function ProfileShellRow({
                     : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 hover:bg-yellow-500/20'
                 }`}>
                 {pd.profile.paused ? '▶ Resume' : '⏸ Pause'}
-              </button>
-              <button onClick={onEdit}
-                data-testid={`profile-open-editor-${pd.profile.id}`}
-                className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
-                Edit
               </button>
               <button onClick={onDelete}
                 className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
@@ -2119,65 +2170,6 @@ function SaveStatusBadge({
     )
   }
   return <span data-testid={testId} data-status="idle" className="text-xs text-transparent select-none">·</span>
-}
-
-// #973 — inline name editor. Autosaves the whole-profile PUT (#423 will let us
-// swap to PATCH without changing UI shape).
-function NameSubsection({ pd }: { pd: ProfileDetail }) {
-  const invalidators = useInvalidators()
-  const [name, setName] = useState(pd.profile.name)
-  // Resync local state when the underlying profile name changes server-side
-  // (e.g. another tab edits it).
-  useEffect(() => { setName(pd.profile.name) }, [pd.profile.name])
-
-  const { status, error } = useDebouncedSave(
-    name,
-    async (next: string) => {
-      const trimmed = next.trim()
-      if (!trimmed) throw new Error('Name is required')
-      // Build the same body shape the modal sends so unspecified fields
-      // round-trip unchanged.
-      const body: UpsertProfileRequest = {
-        name: trimmed,
-        blockedCategories: pd.profile.blockedCategories,
-        extraBlocked: pd.profile.extraBlocked,
-        extraAllowed: pd.profile.extraAllowed,
-        paused: pd.profile.paused,
-        timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
-        schedules: pd.schedules.map(s => ({
-          name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-        })),
-        siteTimeLimits: pd.siteTimeLimits.map(s => ({
-          domainPattern: s.domainPattern,
-          dailyMinutes: s.dailyMinutes,
-          label: s.label,
-          exemptFromDaily: s.exemptFromDaily,
-        })),
-        failureMode: pd.profile.failureMode,
-        crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
-      }
-      await api.profiles.update(pd.profile.id, body)
-      await invalidators.profileMutated()
-    },
-    { key: pd.profile.id },
-  )
-
-  return (
-    <Subsection
-      testId={`profile-name-subsection-${pd.profile.id}`}
-      title="Name"
-      status={status}
-      error={error}
-    >
-      <input
-        type="text"
-        value={name}
-        onChange={e => setName(e.target.value)}
-        data-testid={`profile-name-input-${pd.profile.id}`}
-        className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
-      />
-    </Subsection>
-  )
 }
 
 // #973 — inline devices editor. Each row toggle issues PATCH /devices/:mac
