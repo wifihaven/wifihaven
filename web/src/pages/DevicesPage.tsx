@@ -136,7 +136,7 @@ export function DevicesPage() {
             >
               {unmanagedPolicy?.policy === 'allow'
                 ? 'seen on the network, no profile assigned — household policy allows them.'
-                : 'seen on the network, no profile assigned — household policy will block them once router-side enforcement (#654) ships.'}
+                : 'seen on the network, no profile assigned — blocked by household policy.'}
             </span>
           </h2>
           <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">

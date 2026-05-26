@@ -394,7 +394,55 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       } yield assertTrue(snap.devices.size == 2) &&
         assertTrue(unknown.isDefined) &&
         assertTrue(unknown.exists(_.profileId.isEmpty)) &&
-        assertTrue(known.exists(_.profileId.contains(kid)))
+        assertTrue(known.exists(_.profileId.contains(kid))) &&
+        // #961: default unmanagedMacPolicy = block ⇒ unenrolled device gets
+        // Manual-blocked rules at the wire so the router enforces without a
+        // contract change.
+        assertTrue(unknown.flatMap(_.rules).exists(_.blocked)) &&
+        assertTrue(
+          unknown.flatMap(_.rules).flatMap(_.blockReason).contains(MacBlockReason.Manual),
+        ) &&
+        // Known (profile-assigned) device keeps `rules = None` — resolution
+        // happens via the profile policy.
+        assertTrue(known.exists(_.rules.isEmpty))
+    },
+    test("#961 snapshot: unmanagedMacPolicy=allow leaves unenrolled rules empty") {
+      for {
+        _        <- cleanDb
+        pr       <- ZIO.service[ProfileRepo]
+        sr       <- ZIO.service[ScheduleRepo]
+        dr       <- ZIO.service[DeviceRepo]
+        rr       <- ZIO.service[RouterRepo]
+        hsr      <- ZIO.service[HouseholdSettingsRepo]
+        ber      <- ZIO.service[BlockEventRepo]
+        kid      <- TestLayers.seedKidsProfile(pr, sr)
+        _        <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        _        <- dr.upsertUnknown(
+          MacAddress.unsafe("ff:ff:ff:aa:bb:cc"),
+          "mystery",
+          Some(IpAddress.unsafe("10.0.0.99")),
+          java.time.Instant.now(),
+        )
+        existing <- hsr.get
+        _        <- hsr.update(
+          existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "allow", blockPage = true)),
+        )
+        ps       <- makePolicyService
+        (_, et)  <- seedRouter("gw-snap-unmanaged-allow")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        resp    <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
+        )
+        body    <- resp.body.asString
+        snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
+        unknown = snap.devices.get(MacAddress.unsafe("ff:ff:ff:aa:bb:cc"))
+      } yield assertTrue(unknown.exists(_.profileId.isEmpty)) &&
+        assertTrue(unknown.exists(_.rules.isEmpty))
     },
     test("admin can create router; non-admin gets 403; row stores enrollment hash, no token yet") {
       for {
