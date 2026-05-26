@@ -999,6 +999,24 @@ case class RouterDecisionResponse(
     expiresAt: Option[String],
 ) derives JsonCodec
 
+// #959: SPA-facing payload for the kid-side block page.
+//
+// `reasonClass` is one of a small enumerated set the SPA can switch on for
+// kid-friendly copy: "paused", "schedule", "time_limit", "site_time_limit",
+// "category", "extra_blocked". Internal granular reasons (e.g. the specific
+// site label, the schedule end time) are intentionally omitted per the #952
+// design doc Q4 decision — kids don't see "until 9:05pm" or "AdServerList".
+//
+// `blocked` is false when the (mac, host) pair resolves to Allow or the
+// device is unenrolled; the SPA renders a generic "not blocked" page in
+// that case rather than leaking household state.
+case class BlockedInfoResponse(
+    blocked: Boolean,
+    reasonClass: Option[String],
+    categoryName: Option[String],
+    profileName: Option[String],
+) derives JsonCodec
+
 // ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────
 //
 // Diverges from architecture.md §0.2 in one place: `failureMode` is per-profile

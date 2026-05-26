@@ -163,6 +163,7 @@ object Main extends ZIOAppDefault {
       ) ++
       BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
+      BlockedRoutes.routes(policy, deviceRepo, profileRepo, blRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++
       RouterIngestRoutes.routes(
         routerAuth,

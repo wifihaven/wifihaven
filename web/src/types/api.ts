@@ -654,3 +654,14 @@ export interface BlocklistHosts {
   id: string
   hosts: string[]
 }
+
+// #959: kid-side block-page payload from GET /api/blocked?mac=&host=.
+// `reasonClass` is one of: "paused" | "schedule" | "time_limit" |
+// "site_time_limit" | "category" | "extra_blocked". `blocked: false`
+// means the device is not blocked for this host (or is unenrolled).
+export interface BlockedInfoResponse {
+  blocked: boolean
+  reasonClass?: string | null
+  categoryName?: string | null
+  profileName?: string | null
+}
