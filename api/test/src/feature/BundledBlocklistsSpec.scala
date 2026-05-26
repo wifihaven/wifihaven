@@ -63,9 +63,9 @@ object BundledBlocklistsSpec
       List("ads-extended-upstream.example", "tracker.example").map(Hostname.unsafe),
     "https://urlhaus.abuse.ch/downloads/hostfile/"                                            ->
       List("malware-upstream.example").map(Hostname.unsafe),
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts"   ->
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts" ->
       List("social-extended-upstream.example").map(Hostname.unsafe),
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts"     ->
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts"   ->
       List("adult-extended-upstream.example").map(Hostname.unsafe),
   )
 
