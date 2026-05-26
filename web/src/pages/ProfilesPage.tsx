@@ -182,9 +182,11 @@ export function ProfilesPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
-  useEscapeClose(() => setEditingUsersFor(null), editingUsersFor !== null)
-  const [userPick, setUserPick] = useState<number[]>([])
+  // #977 — per-profile user-link autosave. Track in-flight toggles so the
+  // chip can show a spinner and refuse double-clicks without blocking
+  // unrelated profiles.
+  const [pendingUserLinks, setPendingUserLinks] = useState<Set<string>>(new Set())
+  const [userLinkErrorByProfile, setUserLinkErrorByProfile] = useState<Map<number, string>>(new Map())
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [apps, setApps] = useState<AppDetail[]>([])
   // #972 — collapse-by-default; toggle state lives in-memory only. Persistence
@@ -347,24 +349,31 @@ export function ProfilesPage() {
     }
   }
 
-  function startEditUsers(profileId: number) {
-    const current = usersByProfile.get(profileId) ?? []
-    setEditingUsersFor(profileId)
-    setUserPick(current.map(u => u.id))
-    setError(null)
-  }
-
-  async function saveUserLinks() {
-    if (editingUsersFor == null) return
-    setSaving(true)
-    setError(null)
+  async function toggleUserLink(profileId: number, userId: number) {
+    const key = `${profileId}:${userId}`
+    if (pendingUserLinks.has(key)) return
+    const current = (usersByProfile.get(profileId) ?? []).map(u => u.id)
+    const next = current.includes(userId)
+      ? current.filter(x => x !== userId)
+      : [...current, userId]
+    setPendingUserLinks(prev => {
+      const s = new Set(prev); s.add(key); return s
+    })
+    setUserLinkErrorByProfile(prev => {
+      if (!prev.has(profileId)) return prev
+      const m = new Map(prev); m.delete(profileId); return m
+    })
     try {
-      await setUsersMutation.mutateAsync({ id: editingUsersFor, userIds: userPick })
-      setEditingUsersFor(null)
+      await setUsersMutation.mutateAsync({ id: profileId, userIds: next })
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update user links')
+      const msg = e instanceof Error ? e.message : 'Failed to update users'
+      setUserLinkErrorByProfile(prev => {
+        const m = new Map(prev); m.set(profileId, msg); return m
+      })
     } finally {
-      setSaving(false)
+      setPendingUserLinks(prev => {
+        const s = new Set(prev); s.delete(key); return s
+      })
     }
   }
 
@@ -413,70 +422,21 @@ export function ProfilesPage() {
             summary={summaryByProfile.get(pd.profile.id)}
             devices={devicesByProfile.get(pd.profile.id) ?? []}
             users={usersByProfile.get(pd.profile.id) ?? []}
+            allUsers={allUsers}
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
             onToggle={() => toggleExpanded(pd.profile.id)}
             onEdit={() => startEdit(pd)}
-            onEditUsers={() => startEditUsers(pd.profile.id)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
             onTogglePause={() => togglePause(pd)}
             onGrantTime={() => setExtProfileId(pd.profile.id)}
+            onToggleUserLink={(userId) => toggleUserLink(pd.profile.id, userId)}
+            pendingUserLinks={pendingUserLinks}
+            userLinkError={userLinkErrorByProfile.get(pd.profile.id) ?? null}
           />
         ))}
       </div>
-
-      {editingUsersFor !== null && (
-        <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto"
-          onClick={() => setEditingUsersFor(null)}>
-          <div data-testid="edit-users-modal"
-            className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-white">
-              Edit users · {profiles.find(p => p.profile.id === editingUsersFor)?.profile.name ?? ''}
-            </h3>
-            {error && (
-              <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
-                {error}
-              </div>
-            )}
-            {allUsers.length === 0
-              ? <p className="text-sm text-gray-500">No users available.</p>
-              : (
-                <div className="flex flex-wrap gap-2">
-                  {allUsers.map(u => {
-                    const on = userPick.includes(u.id)
-                    return (
-                      <button key={u.id} type="button"
-                        data-testid={`user-pick-${u.id}`}
-                        onClick={() =>
-                          setUserPick(on ? userPick.filter(x => x !== u.id) : [...userPick, u.id])
-                        }
-                        className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
-                          on
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
-                        }`}>
-                        {on ? '✓ ' : ''}{u.username} <span className="text-xs opacity-70">({u.role})</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              )
-            }
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setEditingUsersFor(null)} disabled={saving}
-                className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
-                Cancel
-              </button>
-              <button onClick={saveUserLinks} disabled={saving}
-                className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {editingId !== null && (
         <ProfileEditor
@@ -564,23 +524,28 @@ export function ProfilesPage() {
 // the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
-  pd, summary, devices, users, isAdmin, expanded, highlight,
-  onToggle, onEdit, onEditUsers, onDelete, onTogglePause, onGrantTime,
+  pd, summary, devices, users, allUsers, isAdmin, expanded, highlight,
+  onToggle, onEdit, onDelete, onTogglePause, onGrantTime,
+  onToggleUserLink, pendingUserLinks, userLinkError,
 }: {
   pd: ProfileDetail
   summary: ProfileTimeSummary | undefined
   devices: Device[]
   users: User[]
+  allUsers: User[]
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
   onToggle: () => void
   onEdit: () => void
-  onEditUsers: () => void
   onDelete: () => void
   onTogglePause: () => void
   onGrantTime: () => void
+  onToggleUserLink: (userId: number) => void
+  pendingUserLinks: Set<string>
+  userLinkError: string | null
 }) {
+  const linkedUserIds = useMemo(() => new Set(users.map(u => u.id)), [users])
   const chip = computeChip(pd, summary)
   const hasLimit = summary?.dailyLimitMins != null
   const usedMins = summary?.usedMins ?? 0
@@ -669,10 +634,6 @@ function ProfileShellRow({
                 className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
                 Edit
               </button>
-              <button onClick={onEditUsers}
-                className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
-                Edit users
-              </button>
               <button onClick={onDelete}
                 className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
                 Delete
@@ -748,24 +709,47 @@ function ProfileShellRow({
 
           {isAdmin && (
             <div data-testid={`profile-users-${pd.profile.id}`}>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Linked users</p>
-              {users.length === 0
-                ? <p className="text-xs text-gray-600">No users linked.</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Users</p>
+              {userLinkError && (
+                <p className="text-xs text-red-400 mb-2"
+                  data-testid={`profile-users-error-${pd.profile.id}`}>
+                  {userLinkError}
+                </p>
+              )}
+              {allUsers.length === 0
+                ? <p className="text-xs text-gray-600">No users in this household yet.</p>
                 : (
                   <div className="flex flex-wrap gap-2">
-                    {users.map(u => (
-                      <span key={u.id} data-testid={`profile-user-${u.id}`}
-                        className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-1 rounded-lg">
-                        {u.username}
-                        <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${
-                          u.role === 'admin'
-                            ? 'bg-emerald-500/10 text-emerald-400'
-                            : u.role === 'adult'
-                              ? 'bg-blue-500/10 text-blue-400'
-                              : 'bg-yellow-500/10 text-yellow-400'
-                        }`}>{u.role}</span>
-                      </span>
-                    ))}
+                    {allUsers.map(u => {
+                      const on = linkedUserIds.has(u.id)
+                      const pending = pendingUserLinks.has(`${pd.profile.id}:${u.id}`)
+                      const roleClass = u.role === 'admin'
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : u.role === 'adult'
+                          ? 'bg-blue-500/10 text-blue-400'
+                          : 'bg-yellow-500/10 text-yellow-400'
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          disabled={pending}
+                          onClick={() => onToggleUserLink(u.id)}
+                          data-testid={on ? `profile-user-${u.id}` : `profile-user-toggle-${pd.profile.id}-${u.id}`}
+                          data-on={on ? 'true' : 'false'}
+                          aria-pressed={on}
+                          className={`text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                            on
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                              : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                          }`}
+                        >
+                          {pending ? '… ' : on ? '✓ ' : ''}{u.username}
+                          <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${roleClass}`}>
+                            {u.role}
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
                 )
               }
