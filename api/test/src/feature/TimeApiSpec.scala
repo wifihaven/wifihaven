@@ -189,12 +189,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
-          _           <- stlRepo.replaceForProfile(
+          appRepo     <- ZIO.service[AppRepo]
+          _           <- TestLayers.seedAppAssignment(
+            appRepo,
             kidsId,
-            List(
-              // default exemptFromDaily = true → does NOT count toward 120-min cap
-              SiteTimeLimitRequest("*.youtube.com", 30, "YouTube"),
-            ),
+            "*.youtube.com",
+            AppMode.TimeLimited,
+            dailyMinutes = Some(30),
+            exemptFromDaily = true,
           )
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
@@ -227,7 +229,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(status.remainingMins.contains(60)) &&
           assertTrue(
             status.siteUsage.exists(su =>
-              su.label == "YouTube" && su.usedMins == 20 && su.remainingMins == 10,
+              su.label == "app:*.youtube.com" && su.usedMins == 20 && su.remainingMins == 10,
             ),
           )
       },
@@ -245,12 +247,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
-          _           <- stlRepo.replaceForProfile(
+          appRepo     <- ZIO.service[AppRepo]
+          _           <- TestLayers.seedAppAssignment(
+            appRepo,
             kidsId,
-            List(
-              // exemptFromDaily=false → YouTube minutes count against the 120-min daily cap
-              SiteTimeLimitRequest("*.youtube.com", 60, "YouTube", exemptFromDaily = false),
-            ),
+            "*.youtube.com",
+            AppMode.TimeLimited,
+            dailyMinutes = Some(60),
+            exemptFromDaily = false,
           )
           _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
           routerId    <- seedRouter
@@ -282,7 +286,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(status.remainingMins.contains(60)) && // 120 - 60 = 60
           assertTrue(
             status.siteUsage.exists(su =>
-              su.label == "YouTube" && su.usedMins == 60 && su.remainingMins == 0,
+              su.label == "app:*.youtube.com" && su.usedMins == 60 && su.remainingMins == 0,
             ),
           )
       },
@@ -538,8 +542,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
                   Profile(
                     pid,
                     "Adults",
-                    Nil,
-                    Nil,
                     Nil,
                     paused = false,
                     FailureMode.LastKnownGood,
@@ -809,9 +811,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           token       <- auth.login("admin", "changeme").map(_.token.value)
           kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
           _           <- tlRepo.upsert(kidsId, 120)
-          _           <- stlRepo.replaceForProfile(
+          appRepo     <- ZIO.service[AppRepo]
+          _           <- TestLayers.seedAppAssignment(
+            appRepo,
             kidsId,
-            List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")),
+            "youtube.com",
+            AppMode.TimeLimited,
+            dailyMinutes = Some(30),
+            exemptFromDaily = true,
           )
           mac1 = "aa:bb:cc:dd:ee:01"
           mac2 = "aa:bb:cc:dd:ee:02"
@@ -844,7 +851,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
-          yt   = kids.siteUsage.find(_.label == "YouTube").get
+          yt   = kids.siteUsage.find(_.label == "app:youtube.com").get
         } yield assertTrue(yt.usedMins == 40) && // both devices summed
           assertTrue(yt.limitMins == 30) &&
           assertTrue(yt.remainingMins == 0) &&   // clamped to 0
@@ -1220,8 +1227,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
                     pid,
                     "Adults",
                     Nil,
-                    Nil,
-                    Nil,
                     paused = false,
                     FailureMode.LastKnownGood,
                     blockIpOnly = false,
@@ -1418,8 +1423,6 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
                   Profile(
                     pid,
                     "Adults",
-                    Nil,
-                    Nil,
                     Nil,
                     paused = false,
                     FailureMode.LastKnownGood,

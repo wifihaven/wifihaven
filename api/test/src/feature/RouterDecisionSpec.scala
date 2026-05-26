@@ -410,10 +410,10 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         pr  <- ZIO.service[ProfileRepo]
         dr  <- ZIO.service[DeviceRepo]
         sr  <- ZIO.service[ScheduleRepo]
+        ar  <- ZIO.service[AppRepo]
         ber <- ZIO.service[BlockEventRepo]
         kid <- pr.create("Kids", List.empty)
-        p   <- pr.findById(kid).map(_.get)
-        _   <- pr.update(p.copy(extraBlocked = List(Hostname.unsafe("badsite.com"))))
+        _   <- TestLayers.seedAppAssignment(ar, kid, "badsite.com", AppMode.Blocked)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
         ps  <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
@@ -447,24 +447,28 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       // Site cap is 200 (not hit). Daily cap is 120. 121 min of YouTube usage.
       // With exemptFromDaily=false the 121 min counts toward the 120 daily cap → time_limit.
       for
-        _    <- cleanDb
-        rr   <- ZIO.service[RouterRepo]
-        pr   <- ZIO.service[ProfileRepo]
-        dr   <- ZIO.service[DeviceRepo]
-        sr   <- ZIO.service[ScheduleRepo]
-        tlr  <- ZIO.service[TimeLimitRepo]
-        stlr <- ZIO.service[SiteTimeLimitRepo]
-        ber  <- ZIO.service[BlockEventRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
-        _    <- tlr.upsert(kid, 120)
-        _    <- stlr.replaceForProfile(
+        _   <- cleanDb
+        rr  <- ZIO.service[RouterRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        tlr <- ZIO.service[TimeLimitRepo]
+        ber <- ZIO.service[BlockEventRepo]
+        ar  <- ZIO.service[AppRepo]
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- tlr.upsert(kid, 120)
+        _   <- TestLayers.seedAppAssignment(
+          ar,
           kid,
-          List(SiteTimeLimitRequest("youtube.com", 200, "YouTube", exemptFromDaily = false)),
+          "youtube.com",
+          AppMode.TimeLimited,
+          dailyMinutes = Some(200),
+          exemptFromDaily = false,
         )
-        _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        rid  <- seedRouterRow
-        _    <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
-        ps   <- makePsDefault
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        rid <- seedRouterRow
+        _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
+        ps  <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "youtube.com")
@@ -479,27 +483,28 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       // Daily cap is 120. 121 min of YouTube usage, but YouTube is exempt from daily cap.
       // YouTube site cap is 200 (not hit either) → should allow.
       for
-        _    <- cleanDb
-        rr   <- ZIO.service[RouterRepo]
-        pr   <- ZIO.service[ProfileRepo]
-        dr   <- ZIO.service[DeviceRepo]
-        sr   <- ZIO.service[ScheduleRepo]
-        tlr  <- ZIO.service[TimeLimitRepo]
-        stlr <- ZIO.service[SiteTimeLimitRepo]
-        ber  <- ZIO.service[BlockEventRepo]
-        kid  <- TestLayers.seedKidsProfile(pr, sr)
-        _    <- tlr.upsert(kid, 120)
-        _    <- stlr.replaceForProfile(
+        _   <- cleanDb
+        rr  <- ZIO.service[RouterRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        tlr <- ZIO.service[TimeLimitRepo]
+        ber <- ZIO.service[BlockEventRepo]
+        ar  <- ZIO.service[AppRepo]
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- tlr.upsert(kid, 120)
+        _   <- TestLayers.seedAppAssignment(
+          ar,
           kid,
-          List(
-            // exemptFromDaily=true (default): YouTube time does NOT eat into 120-min daily cap
-            SiteTimeLimitRequest("youtube.com", 200, "YouTube", exemptFromDaily = true),
-          ),
+          "youtube.com",
+          AppMode.TimeLimited,
+          dailyMinutes = Some(200),
+          exemptFromDaily = true,
         )
-        _    <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
-        rid  <- seedRouterRow
-        _    <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
-        ps   <- makePsDefault
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)
+        rid <- seedRouterRow
+        _   <- seedTraffic(rid, "aa:bb:cc:11:22:33", "youtube.com", LocalDate.of(2025, 1, 6), 125)
+        ps  <- makePsDefault
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         tok  <- seedAndEnrollRouter(rr, routes)
         resp <- callDecide(routes, tok, "aa:bb:cc:11:22:33", "youtube.com")

@@ -77,7 +77,6 @@ class PolicyServiceLive(
       )
       appHostsMap = appHostsRaw.toMap
       appAssignsMap = appAssigns.toMap
-      appSlugById   = apps.iterator.map(a => a.id -> a.slug).toMap
       schedMap      = scheds.toMap
       tlMap         = tlims.toMap
       stlMap        = stlims.toMap
@@ -86,50 +85,29 @@ class PolicyServiceLive(
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
 
       val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
-        val pSched     = schedMap.getOrElse(p.id, Nil)
-        val pSiteLims0 = stlMap.getOrElse(p.id, Nil)
+        val pSched    = schedMap.getOrElse(p.id, Nil)
+        val pSiteLims = stlMap.getOrElse(p.id, Nil)
 
-        // #763: expand this profile's app assignments into wire-shape buckets.
-        // - allowed-mode apps → union into extraAllowed (passed via ProfileInputs)
-        // - blocked-mode apps → union into extraBlocked
-        // - time_limited apps → synthesize one SiteTimeLimit row per host. The
-        //   wire's SiteTimeLimit carries a single domainPattern + budget, so
-        //   "one shared budget across N hosts" can't be expressed natively;
-        //   stop-gap is per-host independent budgets (each host gets its own
-        //   N-minute budget). Tracked separately (see PR description for #763).
-        val pAssigns                           = appAssignsMap.getOrElse(p.id, Nil)
-        val appAllowedHosts: List[Hostname]    = pAssigns
+        // #763/#764: expand this profile's app assignments into wire-shape
+        // buckets. Post-#764, time_limited apps are surfaced via
+        // SiteTimeLimitRepo (which itself synthesizes from app tables), so
+        // here we only handle allowed/blocked modes.
+        val pAssigns                        = appAssignsMap.getOrElse(p.id, Nil)
+        val appAllowedHosts: List[Hostname] = pAssigns
           .collect {
             case a if a.mode == AppMode.Allowed =>
               appHostsMap.getOrElse(a.appId, Nil)
           }
           .flatten
           .distinct
-        val appBlockedHosts: List[Hostname]    = pAssigns
+        val appBlockedHosts: List[Hostname] = pAssigns
           .collect {
             case a if a.mode == AppMode.Blocked =>
               appHostsMap.getOrElse(a.appId, Nil)
           }
           .flatten
           .distinct
-        val appSiteLimits: List[SiteTimeLimit] = pAssigns.collect {
-          case a if a.mode == AppMode.TimeLimited =>
-            val mins   = a.dailyMinutes.getOrElse(0)
-            val exempt = a.exemptFromDaily
-            val slug   = appSlugById.getOrElse(a.appId, a.appId.value.toString)
-            appHostsMap.getOrElse(a.appId, Nil).map { h =>
-              SiteTimeLimit(
-                id = SiteTimeLimitId(0L),
-                profileId = p.id,
-                domainPattern = h.value,
-                dailyMinutes = mins,
-                label = s"app:$slug",
-                exemptFromDaily = exempt,
-              )
-            }
-        }.flatten
 
-        val pSiteLims  = pSiteLims0 ++ appSiteLimits
         val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
         val deviceMacs = devicesIn.map(_.mac).toSet
         val pPresence  = presence.filter(r => deviceMacs.contains(r.mac))
@@ -235,8 +213,8 @@ class PolicyServiceLive(
   /**
    * Per-host fallback decision. Reads DB rows directly rather than going through the snapshot,
    * since the snapshot's collapsed BlockRules no longer carries the raw schedule / site-limit /
-   * category state needed to make a per-host decision. Precedence: paused > schedule > extraAllowed
-   * > extraBlocked > site_time_limit > time_limit > category > allow.
+   * category state needed to make a per-host decision. Precedence: paused > schedule > allowed-app
+   * > blocked-app > site_time_limit > time_limit > category > allow.
    */
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
     for {
@@ -249,12 +227,32 @@ class PolicyServiceLive(
           ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
         case Some(pid) =>
           for {
-            pOpt   <- profileRepo.findById(pid)
-            scheds <- scheduleRepo.listForProfile(pid)
-            tl     <- timeLimitRepo.findForProfile(pid)
-            stlims <- siteTimeLimitRepo.listForProfile(pid)
+            pOpt          <- profileRepo.findById(pid)
+            scheds        <- scheduleRepo.listForProfile(pid)
+            tl            <- timeLimitRepo.findForProfile(pid)
+            stlims        <- siteTimeLimitRepo.listForProfile(pid)
+            // #764: post-migration, extraAllowed/extraBlocked are sourced
+            // exclusively from app_policy_assignments. Mirror the snapshot
+            // expansion (allowed/blocked modes) here so the per-host
+            // fallback agrees with the snapshot's precedence.
+            appAssigns    <- appRepo.listAssignmentsForProfile(pid)
+            appHostsByApp <- ZIO
+              .foreach(appAssigns.map(_.appId).distinct)(aid => appRepo.getHosts(aid).map(aid -> _))
+              .map(_.toMap)
+            appAllowed = appAssigns
+              .collect {
+                case a if a.mode == AppMode.Allowed => appHostsByApp.getOrElse(a.appId, Nil)
+              }
+              .flatten
+              .distinct
+            appBlocked = appAssigns
+              .collect {
+                case a if a.mode == AppMode.Blocked => appHostsByApp.getOrElse(a.appId, Nil)
+              }
+              .flatten
+              .distinct
             // Reuse the same per-profile usage calc used by snapshot, scoped to this profile.
-            devs   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(pid)))
+            devs          <- deviceRepo.listAll.map(_.filter(_.profileId.contains(pid)))
             macs = devs.map(_.mac).toSet
             pres <- trafficRepo.listPresenceRows(devs.map(_.mac), today)
             exts <- extRepo.snapshotAllByProfile(today).map(_.getOrElse(pid, 0))
@@ -269,11 +267,11 @@ class PolicyServiceLive(
                   scheduleBlock(scheds, now) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
-                      if matchesAny(h, p.extraAllowed) then
+                      if matchesAny(h, appAllowed) then
                         ZIO.succeed(
                           RouterDecisionResponse(ConnectionDecision.Allow, "extra_allowed", None),
                         )
-                      else if matchesAny(h, p.extraBlocked) then
+                      else if matchesAny(h, appBlocked) then
                         ZIO.succeed(
                           RouterDecisionResponse(ConnectionDecision.Block, "extra_blocked", None),
                         )
@@ -539,16 +537,16 @@ object PolicyService {
     BlockRules(
       blocked = blocked,
       blockReason = reason,
-      extraBlocked = (p.extraBlocked ++ in.appExtraBlocked ++ siteLimitExtraBlocked).distinct,
+      extraBlocked = (in.appExtraBlocked ++ siteLimitExtraBlocked).distinct,
       // #944: union the deployment's UI hosts into per-profile extraAllowed so
       // a household device can always reach the admin UI even when this
-      // profile is paused or lists one of these hosts in extraBlocked (allow
-      // beats block at the router). Configured via wifihaven.policy
+      // profile is paused or lists one of these hosts in a blocked-mode app
+      // (allow beats block at the router). Configured via wifihaven.policy
       // .uiAllowedHosts per-deployment so prod doesn't allow staging through
       // and vice versa. Will become DB-backed per #937.
-      extraAllowed = (p.extraAllowed ++ in.appExtraAllowed ++ uiAllowedHosts).distinct,
+      extraAllowed = (in.appExtraAllowed ++ uiAllowedHosts).distinct,
       blocklistIds = p.blockedCategories,
-      blockIpOnly = p.blockIpOnly, // #424: per-profile toggle (router enforcement #353)
+      blockIpOnly = p.blockIpOnly,
     )
   }
 

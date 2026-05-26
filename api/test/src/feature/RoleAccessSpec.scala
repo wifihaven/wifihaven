@@ -64,7 +64,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -77,7 +76,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
@@ -97,7 +95,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -111,7 +108,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
@@ -127,7 +123,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -140,11 +135,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
-        body   = UpsertProfileRequest("Hacked", Nil, Nil, Nil, false, Nil, None, Nil).toJson
+        body   = UpsertProfileRequest("Hacked", Nil, false, Nil, None).toJson
         req    = Request
           .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))
@@ -158,7 +152,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -179,19 +172,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
         body   = UpsertProfileRequest(
           "Kids Renamed",
           List(BlocklistId.unsafe("adult")),
-          Nil,
-          Nil,
           false,
           Nil,
           None,
-          Nil,
         ).toJson
         req    = Request
           .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
@@ -208,7 +197,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -222,19 +210,15 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
         body   = UpsertProfileRequest(
           "Pwned",
           Nil,
-          Nil,
-          Nil,
           false,
           Nil,
           None,
-          Nil,
         ).toJson
         req    = Request
           .put(URL.decode(s"/api/profiles/$otherId").toOption.get, Body.fromString(body))
@@ -249,7 +233,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -260,11 +243,10 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
-        body   = UpsertProfileRequest("New", Nil, Nil, Nil, false, Nil, None, Nil).toJson
+        body   = UpsertProfileRequest("New", Nil, false, Nil, None).toJson
         req    = Request
           .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))
@@ -293,7 +275,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -319,7 +300,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
@@ -398,7 +378,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -411,7 +390,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )
@@ -430,7 +408,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         userRepo    <- ZIO.service[UserRepo]
         upRepo      <- ZIO.service[UserProfileRepo]
         auth        <- makeAuth
@@ -444,7 +421,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           upRepo,
           userRepo,
         )

@@ -211,15 +211,19 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         pr        <- ZIO.service[ProfileRepo]
         sr        <- ZIO.service[ScheduleRepo]
         tlr       <- ZIO.service[TimeLimitRepo]
-        stlr      <- ZIO.service[SiteTimeLimitRepo]
         dr        <- ZIO.service[DeviceRepo]
         blr       <- ZIO.service[BlocklistRepo]
         rr        <- ZIO.service[RouterRepo]
+        ar        <- ZIO.service[AppRepo]
         kid       <- TestLayers.seedKidsProfile(pr, sr)
         _         <- tlr.upsert(kid, 120)
-        _         <- stlr.replaceForProfile(
+        _         <- TestLayers.seedAppAssignment(
+          ar,
           kid,
-          List(SiteTimeLimitRequest("youtube.com", 30, "YouTube")), // default exemptFromDaily=true
+          "youtube.com",
+          AppMode.TimeLimited,
+          dailyMinutes = Some(30),
+          exemptFromDaily = true,
         )
         adult     <- TestLayers.seedAdultsProfile(pr)
         _         <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", kid)

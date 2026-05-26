@@ -10,7 +10,7 @@ import type {
   AppDetail, AppMode, AppPolicyAssignment,
   BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
   ProfileTimeSummary,
-  ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest, User,
+  ScheduleRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
@@ -22,12 +22,9 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
 interface FormState {
   name: string
   blockedCategories: string[]
-  extraBlocked: string
-  extraAllowed: string
   paused: boolean
   timeLimit: string
   schedules: ScheduleRequest[]
-  siteTimeLimits: SiteTimeLimitRequest[]
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
 }
@@ -36,12 +33,9 @@ function emptyForm(): FormState {
   return {
     name: '',
     blockedCategories: [],
-    extraBlocked: '',
-    extraAllowed: '',
     paused: false,
     timeLimit: '',
     schedules: [],
-    siteTimeLimits: [],
     // #385: safe default for a brand-new profile is LastKnownGood
     // (matches the DB column default). The editor calls out the
     // BlockAll-for-kids recommendation in copy; admins still have to
@@ -58,18 +52,10 @@ function detailToForm(pd: ProfileDetail): FormState {
   return {
     name: pd.profile.name,
     blockedCategories: pd.profile.blockedCategories,
-    extraBlocked: pd.profile.extraBlocked.join('\n'),
-    extraAllowed: pd.profile.extraAllowed.join('\n'),
     paused: pd.profile.paused,
     timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
     schedules: pd.schedules.map(s => ({
       name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-    })),
-    siteTimeLimits: pd.siteTimeLimits.map(s => ({
-      domainPattern: s.domainPattern,
-      dailyMinutes: s.dailyMinutes,
-      label: s.label,
-      exemptFromDaily: s.exemptFromDaily,
     })),
     failureMode: pd.profile.failureMode,
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
@@ -77,17 +63,13 @@ function detailToForm(pd: ProfileDetail): FormState {
 }
 
 function formToRequest(f: FormState): UpsertProfileRequest {
-  const splitLines = (s: string) => s.split('\n').map(x => x.trim()).filter(Boolean)
   const tl = f.timeLimit.trim() === '' ? null : Number(f.timeLimit)
   return {
     name: f.name.trim(),
     blockedCategories: f.blockedCategories,
-    extraBlocked: splitLines(f.extraBlocked),
-    extraAllowed: splitLines(f.extraAllowed),
     paused: f.paused,
     timeLimit: tl !== null && Number.isFinite(tl) ? tl : null,
     schedules: f.schedules,
-    siteTimeLimits: f.siteTimeLimits,
     failureMode: f.failureMode,
     crossDeviceOverlapMode: f.crossDeviceOverlapMode,
   }
@@ -581,18 +563,10 @@ function ProfileShellRow({
       await updateProfile({
         name: trimmed,
         blockedCategories: pd.profile.blockedCategories,
-        extraBlocked: pd.profile.extraBlocked,
-        extraAllowed: pd.profile.extraAllowed,
         paused: pd.profile.paused,
         timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
         schedules: pd.schedules.map(s => ({
           name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-        })),
-        siteTimeLimits: pd.siteTimeLimits.map(s => ({
-          domainPattern: s.domainPattern,
-          dailyMinutes: s.dailyMinutes,
-          label: s.label,
-          exemptFromDaily: s.exemptFromDaily,
         })),
         failureMode: pd.profile.failureMode,
         crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
@@ -734,11 +708,9 @@ function ProfileShellRow({
             </div>
           )}
 
-          {/* #976: apps subsection — inline app-policy editor (with the
-              transitional extraAllowed/extraBlocked textareas tucked
-              underneath until #764 migrates them off the schema).
-              Replaces the read-only summary that used to live here; the
-              modal Edit still works while #978 cleans it up. */}
+          {/* #976: apps subsection — inline app-policy editor. Post-#764 the
+              legacy extraAllowed/extraBlocked textareas are gone; this owns
+              the per-host policy surface end-to-end. */}
           {isAdmin && (
             <AppsRulesSubsection
               pd={pd}
@@ -751,10 +723,7 @@ function ProfileShellRow({
 
           {/* #975 — inline time-limit + cross-device overlap subsection.
               Replaces the modal's daily-cap + schedules + overlap blocks for
-              this profile. Autosave-default; the subsection itself is
-              collapsed-by-default and its header carries the at-a-glance
-              summary (limit + schedule list) so the collapsed view still
-              reads "Daily limit: 120 min", "Bedtime · 21:00 → 07:00". */}
+              this profile. */}
           <TimeSubsection pd={pd} isAdmin={isAdmin} defaultTz={defaultTz} />
 
           {/* #973: read-only Devices listing for non-admins. Admins get the
@@ -829,26 +798,6 @@ function ProfileShellRow({
             </div>
           )}
 
-          {pd.siteTimeLimits.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Site Limits</p>
-              {pd.siteTimeLimits.map(s => (
-                <div key={s.id} className="flex justify-between items-center text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
-                  <span className="text-gray-300">{s.label}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-emerald-400 text-xs font-mono">{s.dailyMinutes}m · {s.domainPattern}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${
-                      s.exemptFromDaily
-                        ? 'bg-gray-700 text-gray-400'
-                        : 'bg-amber-500/20 text-amber-400'
-                    }`}>
-                      {s.exemptFromDaily ? 'exempt' : 'counts'}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -1261,27 +1210,6 @@ function ProfileEditor({
     }))
   }
 
-  function addSiteLimit() {
-    setForm(f => ({
-      ...f,
-      siteTimeLimits: [
-        ...f.siteTimeLimits,
-        { label: '', domainPattern: '', dailyMinutes: 30, exemptFromDaily: true },
-      ],
-    }))
-  }
-
-  function updateSiteLimit(i: number, patch: Partial<SiteTimeLimitRequest>) {
-    setForm(f => ({
-      ...f,
-      siteTimeLimits: f.siteTimeLimits.map((s, idx) => idx === i ? { ...s, ...patch } : s),
-    }))
-  }
-
-  function removeSiteLimit(i: number) {
-    setForm(f => ({ ...f, siteTimeLimits: f.siteTimeLimits.filter((_, idx) => idx !== i) }))
-  }
-
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto">
       <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-2xl my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto">
@@ -1445,25 +1373,6 @@ function ProfileEditor({
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Extra blocked domains</label>
-            <textarea value={form.extraBlocked}
-              onChange={e => setForm(f => ({ ...f, extraBlocked: e.target.value }))}
-              placeholder="One domain per line"
-              rows={4}
-              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500" />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Extra allowed domains</label>
-            <textarea value={form.extraAllowed}
-              onChange={e => setForm(f => ({ ...f, extraAllowed: e.target.value }))}
-              placeholder="One domain per line"
-              rows={4}
-              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500" />
-          </div>
-        </div>
-
         <div>
           <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Daily time limit (minutes)</label>
           <input type="number" min={0} value={form.timeLimit}
@@ -1527,53 +1436,8 @@ function ProfileEditor({
           </div>
         </div>
 
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">Site time limits</label>
-            <button type="button" onClick={addSiteLimit}
-              className="text-xs text-emerald-400 hover:text-emerald-300">+ Add site limit</button>
-          </div>
-          {form.siteTimeLimits.length === 0 && <p className="text-xs text-gray-500">No site-specific limits.</p>}
-          <div className="space-y-2">
-            {form.siteTimeLimits.map((s, i) => (
-              <div key={i} className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2">
-                <div className="grid grid-cols-12 gap-2">
-                  <input type="text" value={s.label}
-                    onChange={e => updateSiteLimit(i, { label: e.target.value })}
-                    placeholder="YouTube"
-                    className="col-span-4 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
-                  <input type="text" value={s.domainPattern}
-                    onChange={e => updateSiteLimit(i, { domainPattern: e.target.value })}
-                    placeholder="youtube.com"
-                    className="col-span-5 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm font-mono" />
-                  <input type="number" min={0} value={s.dailyMinutes}
-                    onChange={e => updateSiteLimit(i, { dailyMinutes: Number(e.target.value) || 0 })}
-                    className="col-span-2 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
-                  <button type="button" onClick={() => removeSiteLimit(i)}
-                    className="col-span-1 text-xs text-red-400 hover:text-red-300 bg-red-500/10 rounded-lg">×</button>
-                </div>
-                <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={!s.exemptFromDaily}
-                    onChange={e => updateSiteLimit(i, { exemptFromDaily: !e.target.checked })}
-                    className="w-3.5 h-3.5 accent-amber-500"
-                  />
-                  <span>
-                    Counts toward daily limit
-                    {!s.exemptFromDaily && (
-                      <span className="ml-1 text-amber-400">(usage reduces overall remaining time)</span>
-                    )}
-                  </span>
-                </label>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* #767 — apps picker. Lives alongside the legacy extraBlocked /
-            extraAllowed / siteTimeLimits inputs above; #764 will remove the
-            legacy fields once apps cover everything. */}
+        {/* #764: per-host policy lives in apps. Blocked / allowed / time-limited
+            single-host or multi-host apps are managed via AppsSection below. */}
         <AppsSection
           profileId={profileId}
           isNew={isNew}
@@ -1598,15 +1462,10 @@ function ProfileEditor({
 
 // #976 — apps subsection of the merged /profiles expanded card.
 // Default collapsed; opening reveals the same `<AppsSection>` the modal
-// shows, plus the transitional extraBlocked/extraAllowed textareas with
-// debounced autosave. The textareas disappear once #764 migrates those
-// fields onto apps; PATCH support (#423) would let us send only the
-// changed fields instead of a full PUT body, but the textareas are
-// short-lived enough that PUT is fine. Subsection is labelled "Apps"
-// (not "Rules") because time limits are their own subsection (#975)
-// and domain blocklists are on their way out.
+// shows. Post-#764 the legacy extraBlocked/extraAllowed textareas are
+// gone — per-host policy is owned end-to-end by app assignments.
 function AppsRulesSubsection({
-  pd, apps, onAppsChanged, onProfileChanged, updateProfile,
+  pd, apps, onAppsChanged, onProfileChanged: _onProfileChanged, updateProfile: _updateProfile,
 }: {
   pd: ProfileDetail
   apps: AppDetail[]
@@ -1651,125 +1510,8 @@ function AppsRulesSubsection({
             onChanged={onAppsChanged}
             testIdPrefix={`profile-${pd.profile.id}-apps-section`}
           />
-          <LegacyDomainListsEditor
-            pd={pd}
-            updateProfile={updateProfile}
-            onSaved={onProfileChanged}
-          />
         </div>
       )}
-    </div>
-  )
-}
-
-function profileDetailToUpsert(pd: ProfileDetail): UpsertProfileRequest {
-  return {
-    name: pd.profile.name,
-    blockedCategories: pd.profile.blockedCategories,
-    extraBlocked: pd.profile.extraBlocked,
-    extraAllowed: pd.profile.extraAllowed,
-    paused: pd.profile.paused,
-    timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
-    schedules: pd.schedules.map(s => ({
-      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-    })),
-    siteTimeLimits: pd.siteTimeLimits.map(s => ({
-      domainPattern: s.domainPattern,
-      dailyMinutes: s.dailyMinutes,
-      label: s.label,
-      exemptFromDaily: s.exemptFromDaily,
-    })),
-    failureMode: pd.profile.failureMode,
-    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
-  }
-}
-
-function LegacyDomainListsEditor({
-  pd, updateProfile, onSaved,
-}: {
-  pd: ProfileDetail
-  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
-  onSaved: () => void | Promise<unknown>
-}) {
-  const [blocked, setBlocked] = useState(pd.profile.extraBlocked.join('\n'))
-  const [allowed, setAllowed] = useState(pd.profile.extraAllowed.join('\n'))
-  const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const [errMsg, setErrMsg] = useState<string | null>(null)
-  // Track the persisted values so we can detect dirty state and re-seed
-  // when an external mutation lands (e.g. modal Save). Comparing against
-  // the raw join lets us avoid stomping in-flight edits.
-  const persistedBlocked = pd.profile.extraBlocked.join('\n')
-  const persistedAllowed = pd.profile.extraAllowed.join('\n')
-  useEffect(() => {
-    if (status === 'saving') return
-    setBlocked(persistedBlocked)
-    setAllowed(persistedAllowed)
-  }, [persistedBlocked, persistedAllowed])
-
-  const splitLines = (s: string) => s.split('\n').map(x => x.trim()).filter(Boolean)
-
-  useEffect(() => {
-    if (blocked === persistedBlocked && allowed === persistedAllowed) return
-    const t = setTimeout(async () => {
-      setStatus('saving')
-      setErrMsg(null)
-      try {
-        const body = profileDetailToUpsert(pd)
-        body.extraBlocked = splitLines(blocked)
-        body.extraAllowed = splitLines(allowed)
-        await updateProfile(body)
-        await onSaved()
-        setStatus('saved')
-      } catch (e) {
-        setStatus('error')
-        setErrMsg(e instanceof Error ? e.message : 'Failed to save')
-      }
-    }, 800)
-    return () => clearTimeout(t)
-  }, [blocked, allowed])
-
-  return (
-    <div data-testid={`profile-legacy-domains-${pd.profile.id}`}>
-      <div className="flex items-center justify-between mb-2">
-        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
-          Extra domains <span className="normal-case text-gray-600">(legacy — migrating to apps in #764)</span>
-        </label>
-        <span
-          data-testid={`profile-legacy-domains-status-${pd.profile.id}`}
-          className={`text-xs ${
-            status === 'saving' ? 'text-gray-400'
-              : status === 'saved' ? 'text-emerald-400'
-              : status === 'error' ? 'text-red-400'
-              : 'text-transparent'
-          }`}
-        >
-          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'error' ? (errMsg ?? 'Save failed') : '·'}
-        </span>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <p className="text-xs text-gray-500 mb-1">Blocked domains</p>
-          <textarea
-            value={blocked}
-            onChange={e => setBlocked(e.target.value)}
-            placeholder="One domain per line"
-            rows={3}
-            data-testid={`profile-legacy-blocked-${pd.profile.id}`}
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500"
-          />
-        </div>
-        <div>
-          <p className="text-xs text-gray-500 mb-1">Allowed domains</p>
-          <textarea
-            value={allowed}
-            onChange={e => setAllowed(e.target.value)}
-            placeholder="One domain per line"
-            rows={3}
-            data-testid={`profile-legacy-allowed-${pd.profile.id}`}
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500"
-          />
-        </div>
-      </div>
     </div>
   )
 }

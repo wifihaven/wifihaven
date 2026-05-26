@@ -54,12 +54,12 @@ const laptop: Device = {
 }
 
 const kidsProfile: ProfileDetail = {
-  profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum' },
-  schedules: [], timeLimit: null, siteTimeLimits: [],
+  profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum' },
+  schedules: [], timeLimit: null,
 }
 const adultsProfile: ProfileDetail = {
-  profile: { id: 2, name: 'Adults', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum' },
-  schedules: [], timeLimit: null, siteTimeLimits: [],
+  profile: { id: 2, name: 'Adults', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum' },
+  schedules: [], timeLimit: null,
 }
 
 beforeEach(() => {

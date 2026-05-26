@@ -189,7 +189,6 @@ object ProfileRoutes {
       profileRepo: ProfileRepo,
       scheduleRepo: ScheduleRepo,
       timeLimitRepo: TimeLimitRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
       userProfileRepo: UserProfileRepo,
       userRepo: UserRepo,
   ): Routes[Any, Response] =
@@ -205,8 +204,7 @@ object ProfileRoutes {
                 for {
                   scheds <- scheduleRepo.listForProfile(p.id)
                   tl     <- timeLimitRepo.findForProfile(p.id)
-                  stls   <- siteTimeLimitRepo.listForProfile(p.id)
-                } yield ProfileDetail(p, scheds, tl, stls)
+                } yield ProfileDetail(p, scheds, tl)
               }
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(details.toJson)
@@ -223,10 +221,7 @@ object ProfileRoutes {
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
             scheds <- scheduleRepo.listForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
             tl     <- timeLimitRepo.findForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
-            stls   <- siteTimeLimitRepo
-              .listForProfile(pid)
-              .mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(ProfileDetail(p, scheds, tl, stls).toJson)
+          } yield Response.json(ProfileDetail(p, scheds, tl).toJson)
         },
       Method.POST / "api" / "profiles"                       ->
         handler { (req: Request) =>
@@ -245,8 +240,6 @@ object ProfileRoutes {
                   id,
                   upr.name,
                   upr.blockedCategories,
-                  upr.extraBlocked,
-                  upr.extraAllowed,
                   upr.paused,
                   // #385: missing failureMode → LastKnownGood (preserves
                   // cached-snapshot enforcement; matches DB column default).
@@ -269,9 +262,6 @@ object ProfileRoutes {
             _    <- ZIO
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
               .mapError(ErrorMapper.dbErrorToResponse)
-            _    <- siteTimeLimitRepo
-              .replaceForProfile(id, upr.siteTimeLimits)
-              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":${id.value}}""")
         },
       Method.PUT / "api" / "profiles" / long("id")           ->
@@ -293,8 +283,6 @@ object ProfileRoutes {
                 p.copy(
                   name = upr.name,
                   blockedCategories = upr.blockedCategories,
-                  extraBlocked = upr.extraBlocked,
-                  extraAllowed = upr.extraAllowed,
                   paused = upr.paused,
                   // #385: if the caller omits failureMode, preserve the
                   // existing value rather than resetting to the column default.
@@ -309,12 +297,9 @@ object ProfileRoutes {
               )
               .mapError(ErrorMapper.dbErrorToResponse)
             // #481: log mutations that should bump the policy snapshot etag.
-            // Without this the only evidence of "did the API even receive the
-            // pause flip?" was the absence of logs, which was useless.
             _      <- ZIO.logInfo(
               s"profile updated: id=${pid.value} paused=${p.paused}→${upr.paused} " +
-                s"name=${upr.name} extraBlockedCount=${upr.extraBlocked.size} " +
-                s"extraAllowedCount=${upr.extraAllowed.size}",
+                s"name=${upr.name}",
             )
             _      <- scheduleRepo
               .replaceForProfile(pid, upr.schedules)
@@ -323,9 +308,6 @@ object ProfileRoutes {
               case Some(mins) => timeLimitRepo.upsert(pid, mins)
               case None       => timeLimitRepo.delete(pid)
             }).mapError(ErrorMapper.dbErrorToResponse)
-            _      <- siteTimeLimitRepo
-              .replaceForProfile(pid, upr.siteTimeLimits)
-              .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.DELETE / "api" / "profiles" / long("id")        ->

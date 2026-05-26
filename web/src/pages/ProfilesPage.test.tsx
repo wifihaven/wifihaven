@@ -61,8 +61,6 @@ const kidsProfile: ProfileDetail = {
     id: 1,
     name: 'Kids',
     blockedCategories: ['adult', 'gambling'],
-    extraBlocked: ['bad.com', 'evil.com'],
-    extraAllowed: ['school.com'],
     paused: false,
     failureMode: 'block-all',
     crossDeviceOverlapMode: 'sum',
@@ -71,9 +69,6 @@ const kidsProfile: ProfileDetail = {
     { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
   ],
   timeLimit: { id: 5, profileId: 1, dailyMinutes: 120 },
-  siteTimeLimits: [
-    { id: 7, profileId: 1, domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },
-  ],
 }
 
 const adultsProfile: ProfileDetail = {
@@ -81,15 +76,12 @@ const adultsProfile: ProfileDetail = {
     id: 2,
     name: 'Adults',
     blockedCategories: [],
-    extraBlocked: [],
-    extraAllowed: [],
     paused: true,
     failureMode: 'last-known-good',
     crossDeviceOverlapMode: 'sum',
   },
   schedules: [],
   timeLimit: null,
-  siteTimeLimits: [],
 }
 
 const phoneDevice: Device = {
@@ -228,7 +220,6 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
     expect(within(kidsCard).getByText('Bedtime')).toBeInTheDocument()
     expect(within(kidsCard).getByText('120 min')).toBeInTheDocument()
-    expect(within(kidsCard).getByText('YouTube')).toBeInTheDocument()
     expect(within(kidsCard).getByText('21:00 → 07:00')).toBeInTheDocument()
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
     expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
@@ -330,12 +321,6 @@ describe('ProfilesPage — create', () => {
     // toggle category "social" (label uses display name)
     await user.click(screen.getByRole('button', { name: 'Social' }))
 
-    // extra blocked / allowed (split lines, trim)
-    const blockedTa = screen.getAllByPlaceholderText('One domain per line')[0]
-    const allowedTa = screen.getAllByPlaceholderText('One domain per line')[1]
-    await user.type(blockedTa, '  tiktok.com  \n  insta.com  ')
-    await user.type(allowedTa, 'khan.org')
-
     // daily limit
     await user.type(screen.getByPlaceholderText('Leave blank for unlimited'), '90')
 
@@ -343,26 +328,16 @@ describe('ProfilesPage — create', () => {
     await user.click(screen.getByRole('button', { name: /\+ Add schedule/ }))
     await user.click(screen.getByRole('button', { name: 'sun' }))
 
-    // add site limit
-    await user.click(screen.getByRole('button', { name: /\+ Add site limit/ }))
-    await user.type(screen.getByPlaceholderText('YouTube'), 'YouTube')
-    await user.type(screen.getByPlaceholderText('youtube.com'), 'youtube.com')
-
     await user.click(screen.getByRole('button', { name: /^Save$/ }))
 
     await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
     expect(api.profiles.create).toHaveBeenCalledWith({
       name: 'Teens',
       blockedCategories: ['social'],
-      extraBlocked: ['tiktok.com', 'insta.com'],
-      extraAllowed: ['khan.org'],
       paused: false,
       timeLimit: 90,
       schedules: [
         { name: 'Bedtime', days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'], startLocal: '21:00', endLocal: '07:00', tz: 'America/Los_Angeles' },
-      ],
-      siteTimeLimits: [
-        { label: 'YouTube', domainPattern: 'youtube.com', dailyMinutes: 30, exemptFromDaily: true },
       ],
       // #385: form default for a brand-new profile is LastKnownGood
       // (matches DB column default; UI copy steers admins towards BlockAll
@@ -384,14 +359,14 @@ describe('ProfilesPage — create', () => {
 //   - timeLimit /
 //     schedules /
 //     crossDeviceOverlapMode → "ProfilesPage — inline time-limit subsection (#975)"
-//   - blockedCategories /
-//     extraBlocked /
-//     extraAllowed    → "ProfilesPage — apps subsection (#976)"
+//   - blockedCategories → "ProfilesPage — apps subsection (#976)"
 //   - paused          → "ProfilesPage — pause / delete" + inline subsection sync
 //   - app policies   → "ProfilesPage — apps section (#767)" exercises the
 //                      inline subsection's AppsSection (post-#976).
 //   - failureMode    → only reachable from "+ New Profile" until the inline
 //                      subsection follow-up lands; see the #385 describe below.
+// Post-#764 the legacy extraBlocked/extraAllowed/siteTimeLimits fields are
+// gone — per-host policy lives in apps, exercised by the apps subsection.
 
 describe('ProfilesPage — inline time-limit subsection (#975)', () => {
   it('collapsed-by-default subsection shows daily-limit + schedule summary', async () => {
@@ -949,12 +924,10 @@ describe('ProfilesPage — apps section (#767)', () => {
   })
 })
 
-// #976 — apps subsection inside the expanded card (per-app policy editor
-// + transitional extraBlocked/extraAllowed). Default collapsed; opening
-// reveals the same AppsSection the modal uses, scoped to a profile-
-// specific testid prefix. Labelled "Apps" (not "Rules") because time
-// limits live in their own subsection (#975) and domain blocklists are
-// on their way out (#764).
+// #976 — apps subsection inside the expanded card (per-app policy
+// editor). Default collapsed; opening reveals the same AppsSection the
+// modal uses, scoped to a profile-specific testid prefix. Post-#764 the
+// transitional legacy extraBlocked/extraAllowed textareas are gone.
 describe('ProfilesPage — apps subsection (#976)', () => {
   it('subsection summary reports the assigned-app count', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -979,38 +952,6 @@ describe('ProfilesPage — apps subsection (#976)', () => {
     expect(await screen.findByTestId('profile-1-apps-section')).toBeInTheDocument()
     // Inline app row rendered.
     expect(screen.getByTestId('app-row-50')).toBeInTheDocument()
-  })
-
-  it('legacy domain textareas seed from profile and debounce-autosave via PUT', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-      renderPage()
-      await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(screen.getByTestId('profile-apps-toggle-1'))
-      const blocked = await screen.findByTestId('profile-legacy-blocked-1') as HTMLTextAreaElement
-      const allowed = screen.getByTestId('profile-legacy-allowed-1') as HTMLTextAreaElement
-      expect(blocked.value).toBe('bad.com\nevil.com')
-      expect(allowed.value).toBe('school.com')
-
-      await user.clear(blocked)
-      await user.type(blocked, 'newbad.com')
-      // Not yet saved before debounce.
-      expect(api.profiles.update).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(900)
-      await waitFor(() =>
-        expect(api.profiles.update).toHaveBeenCalledWith(
-          1,
-          expect.objectContaining({
-            extraBlocked: ['newbad.com'],
-            extraAllowed: ['school.com'],
-          }),
-        ),
-      )
-    } finally {
-      vi.useRealTimers()
-    }
   })
 
   it('subsection hidden for non-admins', async () => {
@@ -1054,7 +995,7 @@ describe('ProfilesPage — #973 inline name subsection (autosave)', () => {
             paused: false,
             failureMode: 'block-all',
             crossDeviceOverlapMode: 'sum',
-            // round-trips schedules + siteTimeLimits + timeLimit unchanged
+            // round-trips schedules + timeLimit unchanged
             timeLimit: 120,
           }),
         ),

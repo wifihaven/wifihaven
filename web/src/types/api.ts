@@ -14,8 +14,6 @@ export interface Profile {
   id: number
   name: string
   blockedCategories: string[]
-  extraBlocked: string[]
-  extraAllowed: string[]
   paused: boolean
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
@@ -82,7 +80,6 @@ export interface ProfileDetail {
   profile: Profile
   schedules: Schedule[]
   timeLimit: TimeLimit | null
-  siteTimeLimits: SiteTimeLimit[]
 }
 
 export interface Device {
@@ -518,22 +515,12 @@ export interface ScheduleRequest {
   tz: string
 }
 
-export interface SiteTimeLimitRequest {
-  domainPattern: string
-  dailyMinutes: number
-  label: string
-  exemptFromDaily: boolean
-}
-
 export interface UpsertProfileRequest {
   name: string
   blockedCategories: string[]
-  extraBlocked: string[]
-  extraAllowed: string[]
   paused: boolean
   schedules: ScheduleRequest[]
   timeLimit: number | null
-  siteTimeLimits: SiteTimeLimitRequest[]
   failureMode: FailureMode
   // #751: omit to preserve existing value on update; defaults to 'sum' on create.
   crossDeviceOverlapMode?: CrossDeviceOverlapMode
