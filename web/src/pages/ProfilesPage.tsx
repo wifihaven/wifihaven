@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
+import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
   BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
@@ -182,9 +183,11 @@ export function ProfilesPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [editingUsersFor, setEditingUsersFor] = useState<number | null>(null)
-  useEscapeClose(() => setEditingUsersFor(null), editingUsersFor !== null)
-  const [userPick, setUserPick] = useState<number[]>([])
+  // #977 — per-profile user-link autosave. Track in-flight toggles so the
+  // chip can show a spinner and refuse double-clicks without blocking
+  // unrelated profiles.
+  const [pendingUserLinks, setPendingUserLinks] = useState<Set<string>>(new Set())
+  const [userLinkErrorByProfile, setUserLinkErrorByProfile] = useState<Map<number, string>>(new Map())
   const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [apps, setApps] = useState<AppDetail[]>([])
   // #972 — collapse-by-default; toggle state lives in-memory only. Persistence
@@ -294,11 +297,10 @@ export function ProfilesPage() {
     setError(null)
   }
 
-  function startEdit(pd: ProfileDetail) {
-    setForm(detailToForm(pd))
-    setEditingId(pd.profile.id)
-    setError(null)
-  }
+  // #973: the inline name + per-subsection editors replaced the "Edit
+  // existing profile" modal escape-hatch. The `detailToForm`/PUT path
+  // is still callable for "+ New Profile" via startNew/save below, but
+  // existing profiles edit field-by-field through the inline UI.
 
   const updateMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: UpsertProfileRequest }) =>
@@ -347,24 +349,31 @@ export function ProfilesPage() {
     }
   }
 
-  function startEditUsers(profileId: number) {
-    const current = usersByProfile.get(profileId) ?? []
-    setEditingUsersFor(profileId)
-    setUserPick(current.map(u => u.id))
-    setError(null)
-  }
-
-  async function saveUserLinks() {
-    if (editingUsersFor == null) return
-    setSaving(true)
-    setError(null)
+  async function toggleUserLink(profileId: number, userId: number) {
+    const key = `${profileId}:${userId}`
+    if (pendingUserLinks.has(key)) return
+    const current = (usersByProfile.get(profileId) ?? []).map(u => u.id)
+    const next = current.includes(userId)
+      ? current.filter(x => x !== userId)
+      : [...current, userId]
+    setPendingUserLinks(prev => {
+      const s = new Set(prev); s.add(key); return s
+    })
+    setUserLinkErrorByProfile(prev => {
+      if (!prev.has(profileId)) return prev
+      const m = new Map(prev); m.delete(profileId); return m
+    })
     try {
-      await setUsersMutation.mutateAsync({ id: editingUsersFor, userIds: userPick })
-      setEditingUsersFor(null)
+      await setUsersMutation.mutateAsync({ id: profileId, userIds: next })
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update user links')
+      const msg = e instanceof Error ? e.message : 'Failed to update users'
+      setUserLinkErrorByProfile(prev => {
+        const m = new Map(prev); m.set(profileId, msg); return m
+      })
     } finally {
-      setSaving(false)
+      setPendingUserLinks(prev => {
+        const s = new Set(prev); s.delete(key); return s
+      })
     }
   }
 
@@ -412,71 +421,27 @@ export function ProfilesPage() {
             pd={pd}
             summary={summaryByProfile.get(pd.profile.id)}
             devices={devicesByProfile.get(pd.profile.id) ?? []}
+            allDevices={devices}
             users={usersByProfile.get(pd.profile.id) ?? []}
+            apps={apps}
+            allUsers={allUsers}
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
+            defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
-            onEdit={() => startEdit(pd)}
-            onEditUsers={() => startEditUsers(pd.profile.id)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
             onTogglePause={() => togglePause(pd)}
             onGrantTime={() => setExtProfileId(pd.profile.id)}
+            onAppsChanged={reloadApps}
+            onProfileChanged={() => invalidators.profileMutated()}
+            updateProfile={(body) => updateMutation.mutateAsync({ id: pd.profile.id, body })}
+            onToggleUserLink={(userId) => toggleUserLink(pd.profile.id, userId)}
+            pendingUserLinks={pendingUserLinks}
+            userLinkError={userLinkErrorByProfile.get(pd.profile.id) ?? null}
           />
         ))}
       </div>
-
-      {editingUsersFor !== null && (
-        <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto"
-          onClick={() => setEditingUsersFor(null)}>
-          <div data-testid="edit-users-modal"
-            className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-white">
-              Edit users · {profiles.find(p => p.profile.id === editingUsersFor)?.profile.name ?? ''}
-            </h3>
-            {error && (
-              <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
-                {error}
-              </div>
-            )}
-            {allUsers.length === 0
-              ? <p className="text-sm text-gray-500">No users available.</p>
-              : (
-                <div className="flex flex-wrap gap-2">
-                  {allUsers.map(u => {
-                    const on = userPick.includes(u.id)
-                    return (
-                      <button key={u.id} type="button"
-                        data-testid={`user-pick-${u.id}`}
-                        onClick={() =>
-                          setUserPick(on ? userPick.filter(x => x !== u.id) : [...userPick, u.id])
-                        }
-                        className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
-                          on
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
-                        }`}>
-                        {on ? '✓ ' : ''}{u.username} <span className="text-xs opacity-70">({u.role})</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              )
-            }
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setEditingUsersFor(null)} disabled={saving}
-                className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
-                Cancel
-              </button>
-              <button onClick={saveUserLinks} disabled={saving}
-                className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {editingId !== null && (
         <ProfileEditor
@@ -564,23 +529,34 @@ export function ProfilesPage() {
 // the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
-  pd, summary, devices, users, isAdmin, expanded, highlight,
-  onToggle, onEdit, onEditUsers, onDelete, onTogglePause, onGrantTime,
+  pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight, defaultTz,
+  onToggle, onDelete, onTogglePause, onGrantTime,
+  onAppsChanged, onProfileChanged, updateProfile,
+  onToggleUserLink, pendingUserLinks, userLinkError,
 }: {
   pd: ProfileDetail
   summary: ProfileTimeSummary | undefined
   devices: Device[]
+  allDevices: Device[]
   users: User[]
+  apps: AppDetail[]
+  allUsers: User[]
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
+  defaultTz: string
   onToggle: () => void
-  onEdit: () => void
-  onEditUsers: () => void
   onDelete: () => void
   onTogglePause: () => void
   onGrantTime: () => void
+  onAppsChanged: () => void | Promise<void>
+  onProfileChanged: () => void | Promise<unknown>
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onToggleUserLink: (userId: number) => void
+  pendingUserLinks: Set<string>
+  userLinkError: string | null
 }) {
+  const linkedUserIds = useMemo(() => new Set(users.map(u => u.id)), [users])
   const chip = computeChip(pd, summary)
   const hasLimit = summary?.dailyLimitMins != null
   const usedMins = summary?.usedMins ?? 0
@@ -589,6 +565,42 @@ function ProfileShellRow({
     ? Math.min(100, Math.round((usedMins / limitBase) * 100))
     : 0
   const overLimit = chip === 'time-exceeded'
+
+  // #973 — inline name editor lives in the card header (no redundant
+  // "Name" subsection). When the card is expanded and the operator is an
+  // admin, the title-line spot becomes an unobtrusive editable input;
+  // debounced autosave does a full-profile PUT because PATCH /profiles/:id
+  // (#423) hasn't shipped yet.
+  const [editingName, setEditingName] = useState(pd.profile.name)
+  useEffect(() => { setEditingName(pd.profile.name) }, [pd.profile.name])
+  const { status: nameStatus, error: nameError } = useDebouncedSave(
+    editingName,
+    async (next: string) => {
+      const trimmed = next.trim()
+      if (!trimmed) throw new Error('Name is required')
+      await updateProfile({
+        name: trimmed,
+        blockedCategories: pd.profile.blockedCategories,
+        extraBlocked: pd.profile.extraBlocked,
+        extraAllowed: pd.profile.extraAllowed,
+        paused: pd.profile.paused,
+        timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
+        schedules: pd.schedules.map(s => ({
+          name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+        })),
+        siteTimeLimits: pd.siteTimeLimits.map(s => ({
+          domainPattern: s.domainPattern,
+          dailyMinutes: s.dailyMinutes,
+          label: s.label,
+          exemptFromDaily: s.exemptFromDaily,
+        })),
+        failureMode: pd.profile.failureMode,
+        crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+      })
+      await onProfileChanged()
+    },
+    { key: pd.profile.id },
+  )
 
   return (
     <div
@@ -602,12 +614,37 @@ function ProfileShellRow({
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${pd.profile.name}`}
           data-testid={`profile-row-toggle-${pd.profile.id}`}
-          className="flex-1 flex items-center gap-3 text-left min-w-0"
+          className="text-gray-500 shrink-0"
         >
-          <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
-          <span className="font-semibold text-white text-lg truncate">{pd.profile.name}</span>
+          <span className={`inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
         </button>
+        {expanded && isAdmin ? (
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <input
+              type="text"
+              value={editingName}
+              onChange={e => setEditingName(e.target.value)}
+              data-testid={`profile-name-input-${pd.profile.id}`}
+              aria-label="Profile name"
+              className="flex-1 min-w-0 font-semibold text-white text-lg bg-transparent border-b border-transparent hover:border-gray-700 focus:border-emerald-500 focus:outline-none px-0 py-0.5"
+            />
+            <SaveStatusBadge
+              status={nameStatus}
+              error={nameError}
+              testId={`profile-name-status-${pd.profile.id}`}
+            />
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex-1 text-left min-w-0"
+          >
+            <span className="font-semibold text-white text-lg truncate">{pd.profile.name}</span>
+          </button>
+        )}
 
         <div className="flex items-center gap-3 shrink-0">
           {/* Used / cap with a thin inline progress bar */}
@@ -615,9 +652,17 @@ function ProfileShellRow({
             data-testid={`profile-summary-time-${pd.profile.id}`}
             className="hidden sm:flex flex-col items-end min-w-[7rem]"
           >
+            {/* #975: surface granted +Time extensions in the cap text so a
+                fresh grant is visible in the summary row. The denominator is
+                base + extension (matches the bar denominator below); a
+                "(+Xm)" suffix calls out how much of that is a grant so the
+                operator can tell at a glance how much extra is in play. */}
             <span className="text-xs font-mono text-gray-300">
               {formatMins(usedMins)}
-              {hasLimit ? ` / ${formatMins(summary!.dailyLimitMins ?? 0)}` : ''}
+              {hasLimit ? ` / ${formatMins(limitBase)}` : ''}
+              {hasLimit && (summary!.extensionMins ?? 0) > 0 && (
+                <span className="text-emerald-400"> (+{formatMins(summary!.extensionMins ?? 0)})</span>
+              )}
             </span>
             {hasLimit && (
               <div className="w-24 h-1 bg-gray-800 rounded-full overflow-hidden mt-1">
@@ -652,8 +697,15 @@ function ProfileShellRow({
 
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
-          {/* #972: stub expanded view — subsections #973-#977 replace the
-              escape-hatch buttons below with inline editors. */}
+          {/* #973: inline devices subsection. Name is edited inline in the
+              card header above (no redundant collapsible). Devices autosave
+              per-row via PATCH /devices. The Edit-modal escape hatch is gone
+              — every editable field has an inline subsection now; failureMode
+              (#385) is the one orphan, tracked separately. Modal stays
+              callable for "+ New Profile"; #978 owns its final removal. */}
+          {isAdmin && (
+            <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
+          )}
           {isAdmin && (
             <div className="flex flex-wrap gap-2">
               <button onClick={onTogglePause}
@@ -663,15 +715,6 @@ function ProfileShellRow({
                     : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 hover:bg-yellow-500/20'
                 }`}>
                 {pd.profile.paused ? '▶ Resume' : '⏸ Pause'}
-              </button>
-              <button onClick={onEdit}
-                data-testid={`profile-open-editor-${pd.profile.id}`}
-                className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
-                Edit
-              </button>
-              <button onClick={onEditUsers}
-                className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
-                Edit users
               </button>
               <button onClick={onDelete}
                 className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
@@ -691,81 +734,95 @@ function ProfileShellRow({
             </div>
           )}
 
-          {(pd.profile.extraBlocked.length > 0 || pd.profile.extraAllowed.length > 0) && (
-            <div className="grid grid-cols-2 gap-3">
-              {pd.profile.extraBlocked.length > 0 && (
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Blocked domains</p>
-                  <p className="text-xs text-gray-400 font-mono">{pd.profile.extraBlocked.length} entr{pd.profile.extraBlocked.length === 1 ? 'y' : 'ies'}</p>
-                </div>
-              )}
-              {pd.profile.extraAllowed.length > 0 && (
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Allowed domains</p>
-                  <p className="text-xs text-gray-400 font-mono">{pd.profile.extraAllowed.length} entr{pd.profile.extraAllowed.length === 1 ? 'y' : 'ies'}</p>
-                </div>
-              )}
+          {/* #976: apps subsection — inline app-policy editor (with the
+              transitional extraAllowed/extraBlocked textareas tucked
+              underneath until #764 migrates them off the schema).
+              Replaces the read-only summary that used to live here; the
+              modal Edit still works while #978 cleans it up. */}
+          {isAdmin && (
+            <AppsRulesSubsection
+              pd={pd}
+              apps={apps}
+              onAppsChanged={onAppsChanged}
+              onProfileChanged={onProfileChanged}
+              updateProfile={updateProfile}
+            />
+          )}
+
+          {/* #975 — inline time-limit + cross-device overlap subsection.
+              Replaces the modal's daily-cap + schedules + overlap blocks for
+              this profile. Autosave-default; the subsection itself is
+              collapsed-by-default and its header carries the at-a-glance
+              summary (limit + schedule list) so the collapsed view still
+              reads "Daily limit: 120 min", "Bedtime · 21:00 → 07:00". */}
+          <TimeSubsection pd={pd} isAdmin={isAdmin} defaultTz={defaultTz} />
+
+          {/* #973: read-only Devices listing for non-admins. Admins get the
+              editable DevicesSubsection above; keeping a second copy here for
+              them would be redundant. */}
+          {!isAdmin && (
+            <div data-testid={`profile-devices-${pd.profile.id}`}>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
+              {devices.length === 0
+                ? <p className="text-xs text-gray-600">No devices assigned.</p>
+                : (
+                  <div className="space-y-1">
+                    {devices.map(d => (
+                      <div key={d.id} data-testid={`profile-device-${d.id}`}
+                        className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+                        <span className="text-gray-300">{d.name}</span>
+                        <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
             </div>
           )}
-
-          {pd.timeLimit && (
-            <p className="text-sm text-gray-400">
-              Daily limit: <span className="text-white font-medium">{pd.timeLimit.dailyMinutes} min</span>
-            </p>
-          )}
-
-          {pd.schedules.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Schedules</p>
-              {pd.schedules.map(s => (
-                <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
-                  <span className="text-gray-300">{s.name}</span>
-                  <span className="text-yellow-400 font-mono text-xs">
-                    {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div data-testid={`profile-devices-${pd.profile.id}`}>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
-            {devices.length === 0
-              ? <p className="text-xs text-gray-600">No devices assigned.</p>
-              : (
-                <div className="space-y-1">
-                  {devices.map(d => (
-                    <div key={d.id} data-testid={`profile-device-${d.id}`}
-                      className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
-                      <span className="text-gray-300">{d.name}</span>
-                      <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
-                    </div>
-                  ))}
-                </div>
-              )
-            }
-          </div>
 
           {isAdmin && (
             <div data-testid={`profile-users-${pd.profile.id}`}>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Linked users</p>
-              {users.length === 0
-                ? <p className="text-xs text-gray-600">No users linked.</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Users</p>
+              {userLinkError && (
+                <p className="text-xs text-red-400 mb-2"
+                  data-testid={`profile-users-error-${pd.profile.id}`}>
+                  {userLinkError}
+                </p>
+              )}
+              {allUsers.length === 0
+                ? <p className="text-xs text-gray-600">No users in this household yet.</p>
                 : (
                   <div className="flex flex-wrap gap-2">
-                    {users.map(u => (
-                      <span key={u.id} data-testid={`profile-user-${u.id}`}
-                        className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-1 rounded-lg">
-                        {u.username}
-                        <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${
-                          u.role === 'admin'
-                            ? 'bg-emerald-500/10 text-emerald-400'
-                            : u.role === 'adult'
-                              ? 'bg-blue-500/10 text-blue-400'
-                              : 'bg-yellow-500/10 text-yellow-400'
-                        }`}>{u.role}</span>
-                      </span>
-                    ))}
+                    {allUsers.map(u => {
+                      const on = linkedUserIds.has(u.id)
+                      const pending = pendingUserLinks.has(`${pd.profile.id}:${u.id}`)
+                      const roleClass = u.role === 'admin'
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : u.role === 'adult'
+                          ? 'bg-blue-500/10 text-blue-400'
+                          : 'bg-yellow-500/10 text-yellow-400'
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          disabled={pending}
+                          onClick={() => onToggleUserLink(u.id)}
+                          data-testid={on ? `profile-user-${u.id}` : `profile-user-toggle-${pd.profile.id}-${u.id}`}
+                          data-on={on ? 'true' : 'false'}
+                          aria-pressed={on}
+                          className={`text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                            on
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                              : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                          }`}
+                        >
+                          {pending ? '… ' : on ? '✓ ' : ''}{u.username}
+                          <span className={`ml-2 font-mono px-1.5 py-0.5 rounded ${roleClass}`}>
+                            {u.role}
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
                 )
               }
@@ -792,6 +849,354 @@ function ProfileShellRow({
               ))}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// #975 — inline time-limit + cross-device overlap subsection on the expanded
+// profile card. Autosave via debounced full-profile PUT (PATCH lands with
+// #423; this component swaps to it without UI changes when it ships).
+//
+// Subsection is collapsed-by-default. Collapsed header carries the at-a-
+// glance summary: "Daily limit: X min" + one row per schedule. Expanded body
+// holds the editable inputs (daily cap, schedules editor, overlap radios).
+// SaveStatus + the SaveStatusBadge component are imported from the shared
+// useDebouncedSave hook (#973).
+
+interface TimeFormState {
+  timeLimit: string
+  schedules: ScheduleRequest[]
+  crossDeviceOverlapMode: CrossDeviceOverlapMode
+}
+
+function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
+  return {
+    timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
+    schedules: pd.schedules.map(s => ({
+      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+    })),
+    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+  }
+}
+
+function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
+  if (a.timeLimit !== b.timeLimit) return false
+  if (a.crossDeviceOverlapMode !== b.crossDeviceOverlapMode) return false
+  if (a.schedules.length !== b.schedules.length) return false
+  for (let i = 0; i < a.schedules.length; i++) {
+    const x = a.schedules[i]
+    const y = b.schedules[i]
+    if (x.name !== y.name || x.startLocal !== y.startLocal ||
+        x.endLocal !== y.endLocal || x.tz !== y.tz) return false
+    if (x.days.length !== y.days.length) return false
+    for (let j = 0; j < x.days.length; j++) if (x.days[j] !== y.days[j]) return false
+  }
+  return true
+}
+
+function TimeSubsection({
+  pd, isAdmin, defaultTz,
+}: {
+  pd: ProfileDetail
+  isAdmin: boolean
+  defaultTz: string
+}) {
+  const invalidators = useInvalidators()
+  const [expanded, setExpanded] = useState(false)
+  const [form, setForm] = useState<TimeFormState>(() => timeFormFromDetail(pd))
+  const [status, setStatus] = useState<SaveStatus>('idle')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // Sync local state when the upstream pd changes AND the local form isn't
+  // mid-edit. Compare against the last-saved baseline; if the local form
+  // matches that baseline (no pending edits), adopt the new pd. Otherwise
+  // leave the user's in-flight edits alone — the next save will overwrite
+  // the server. The structural-equality short-circuit on setForm prevents an
+  // infinite effect loop when react-query refetches return an identical
+  // ProfileDetail with a fresh object identity.
+  const baselineRef = useRef<TimeFormState>(form)
+  const formRef = useRef<TimeFormState>(form)
+  formRef.current = form
+  useEffect(() => {
+    const incoming = timeFormFromDetail(pd)
+    const local = formRef.current
+    if (timeFormsEqual(local, baselineRef.current)) {
+      if (!timeFormsEqual(local, incoming)) {
+        setForm(incoming)
+      }
+    }
+    baselineRef.current = incoming
+  }, [pd])
+
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+  }, [])
+
+  const scheduleSave = (next: TimeFormState) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => { void doSave(next) }, 600)
+  }
+
+  async function doSave(next: TimeFormState) {
+    setStatus('saving')
+    setErrorMsg(null)
+    try {
+      const body = formToRequest(detailToForm(pd))
+      const tl = next.timeLimit.trim() === '' ? null : Number(next.timeLimit)
+      body.timeLimit = tl !== null && Number.isFinite(tl) && tl > 0 ? tl : null
+      body.schedules = next.schedules
+      body.crossDeviceOverlapMode = next.crossDeviceOverlapMode
+      await api.profiles.update(pd.profile.id, body)
+      baselineRef.current = next
+      setStatus('saved')
+      void invalidators.profileMutated()
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => {
+        setStatus(s => (s === 'saved' ? 'idle' : s))
+      }, 2000)
+    } catch (e) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to save')
+    }
+  }
+
+  const update = (patch: Partial<TimeFormState>) => {
+    setForm(prev => {
+      const next = { ...prev, ...patch }
+      scheduleSave(next)
+      return next
+    })
+  }
+
+  const updateSchedules = (mut: (s: ScheduleRequest[]) => ScheduleRequest[]) => {
+    setForm(prev => {
+      const next = { ...prev, schedules: mut(prev.schedules) }
+      scheduleSave(next)
+      return next
+    })
+  }
+
+  function addSchedule() {
+    updateSchedules(s => [
+      ...s,
+      { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz },
+    ])
+  }
+  function patchSchedule(i: number, p: Partial<ScheduleRequest>) {
+    updateSchedules(s => s.map((x, idx) => idx === i ? { ...x, ...p } : x))
+  }
+  function removeSchedule(i: number) {
+    updateSchedules(s => s.filter((_, idx) => idx !== i))
+  }
+  function toggleDay(i: number, d: string) {
+    updateSchedules(s => s.map((x, idx) => idx !== i ? x : {
+      ...x, days: x.days.includes(d) ? x.days.filter(y => y !== d) : [...x.days, d],
+    }))
+  }
+
+  const statusLabel =
+    status === 'saving' ? 'Saving…'
+    : status === 'saved' ? 'Saved'
+    : status === 'error' ? 'Save failed'
+    : ''
+
+  return (
+    <div data-testid={`profile-time-subsection-${pd.profile.id}`}
+      className="bg-gray-950/40 border border-gray-800 rounded-xl">
+      <button type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        data-testid={`profile-time-toggle-${pd.profile.id}`}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left">
+        <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Time limits</span>
+        <span className="flex-1" />
+        {statusLabel && (
+          <span
+            data-testid={`profile-time-status-${pd.profile.id}`}
+            data-status={status}
+            className={`text-xs font-mono ${
+              status === 'error' ? 'text-red-400'
+              : status === 'saving' ? 'text-gray-500'
+              : 'text-emerald-400'
+            }`}>
+            {statusLabel}
+          </span>
+        )}
+      </button>
+
+      {!expanded && (
+        <div className="px-4 pb-3 space-y-1">
+          {pd.timeLimit
+            ? (
+              <p className="text-sm text-gray-400">
+                Daily limit: <span className="text-white font-medium">{pd.timeLimit.dailyMinutes} min</span>
+              </p>
+            )
+            : <p className="text-xs text-gray-600">No daily limit.</p>
+          }
+          {pd.schedules.length > 0 && pd.schedules.map(s => (
+            <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+              <span className="text-gray-300">{s.name}</span>
+              <span className="text-yellow-400 font-mono text-xs">
+                {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
+              </span>
+            </div>
+          ))}
+          <p className="text-xs text-gray-600">
+            Cross-device overlap: <span className="text-gray-400">
+              {pd.profile.crossDeviceOverlapMode === 'sum' ? 'count each device' : 'combine overlap'}
+            </span>
+          </p>
+        </div>
+      )}
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 border-t border-gray-800 pt-3">
+          {errorMsg && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs rounded-lg px-3 py-2">
+              {errorMsg}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              Daily time limit (minutes)
+            </label>
+            <input type="number" min={0}
+              value={form.timeLimit}
+              disabled={!isAdmin}
+              data-testid={`profile-time-limit-${pd.profile.id}`}
+              onChange={e => update({ timeLimit: e.target.value })}
+              placeholder="Leave blank for unlimited"
+              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 disabled:opacity-60" />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Schedules
+              </label>
+              {isAdmin && (
+                <button type="button"
+                  data-testid={`profile-time-add-schedule-${pd.profile.id}`}
+                  onClick={addSchedule}
+                  className="text-xs text-emerald-400 hover:text-emerald-300">
+                  + Add schedule
+                </button>
+              )}
+            </div>
+            {form.schedules.length === 0 && (
+              <p className="text-xs text-gray-500">No schedules.</p>
+            )}
+            <div className="space-y-3">
+              {form.schedules.map((s, i) => (
+                <div key={i} className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
+                  data-testid={`profile-time-schedule-${pd.profile.id}-${i}`}>
+                  <div className="flex gap-2">
+                    <input type="text"
+                      value={s.name}
+                      disabled={!isAdmin}
+                      onChange={e => patchSchedule(i, { name: e.target.value })}
+                      placeholder="Bedtime"
+                      className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm disabled:opacity-60" />
+                    {isAdmin && (
+                      <button type="button"
+                        onClick={() => removeSchedule(i)}
+                        className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 rounded-lg">
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-2 items-center text-sm">
+                    <input type="time" value={s.startLocal}
+                      disabled={!isAdmin}
+                      onChange={e => patchSchedule(i, { startLocal: e.target.value })}
+                      data-testid={`profile-time-schedule-start-${pd.profile.id}-${i}`}
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white disabled:opacity-60" />
+                    <span className="text-gray-500">→</span>
+                    <input type="time" value={s.endLocal}
+                      disabled={!isAdmin}
+                      onChange={e => patchSchedule(i, { endLocal: e.target.value })}
+                      data-testid={`profile-time-schedule-end-${pd.profile.id}-${i}`}
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white disabled:opacity-60" />
+                  </div>
+                  <TimezonePicker
+                    value={s.tz}
+                    onChange={tz => patchSchedule(i, { tz })}
+                    testId={`profile-time-schedule-tz-${pd.profile.id}-${i}`}
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    {DAYS.map(d => {
+                      const on = s.days.includes(d)
+                      return (
+                        <button key={d} type="button"
+                          disabled={!isAdmin}
+                          onClick={() => toggleDay(i, d)}
+                          className={`text-xs px-2.5 py-1 rounded-lg border ${
+                            on
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : 'bg-gray-800 text-gray-500 border-gray-700'
+                          } disabled:opacity-60`}>
+                          {d}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* #751 cross-device overlap radios, lifted from the modal. */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              Cross-device overlap
+            </label>
+            <div className="space-y-2">
+              <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`overlap-${pd.profile.id}`}
+                  data-testid={`profile-time-overlap-sum-${pd.profile.id}`}
+                  disabled={!isAdmin}
+                  checked={form.crossDeviceOverlapMode === 'sum'}
+                  onChange={() => update({ crossDeviceOverlapMode: 'sum' })}
+                  className="mt-1 w-4 h-4 accent-emerald-500"
+                />
+                <span>
+                  <span className="font-medium text-white">Count each device separately</span>
+                  <span className="text-gray-500"> (default)</span>
+                  <span className="block text-xs text-gray-400 mt-0.5">
+                    add per-device totals. Two devices on this profile both active in the same 5-minute window count as 10 minutes against the daily cap.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`overlap-${pd.profile.id}`}
+                  data-testid={`profile-time-overlap-dedup-${pd.profile.id}`}
+                  disabled={!isAdmin}
+                  checked={form.crossDeviceOverlapMode === 'dedup'}
+                  onChange={() => update({ crossDeviceOverlapMode: 'dedup' })}
+                  className="mt-1 w-4 h-4 accent-emerald-500"
+                />
+                <span>
+                  <span className="font-medium text-white">Combine overlapping device usage</span>
+                  <span className="text-gray-500"> (one profile = one human)</span>
+                  <span className="block text-xs text-gray-400 mt-0.5">
+                    union the per-device active windows. Two devices both active in the same 5-minute window count as 5 minutes against the daily cap. Right when one person carries an iPad and a phone for the same profile.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1191,16 +1596,195 @@ function ProfileEditor({
   )
 }
 
+// #976 — apps subsection of the merged /profiles expanded card.
+// Default collapsed; opening reveals the same `<AppsSection>` the modal
+// shows, plus the transitional extraBlocked/extraAllowed textareas with
+// debounced autosave. The textareas disappear once #764 migrates those
+// fields onto apps; PATCH support (#423) would let us send only the
+// changed fields instead of a full PUT body, but the textareas are
+// short-lived enough that PUT is fine. Subsection is labelled "Apps"
+// (not "Rules") because time limits are their own subsection (#975)
+// and domain blocklists are on their way out.
+function AppsRulesSubsection({
+  pd, apps, onAppsChanged, onProfileChanged, updateProfile,
+}: {
+  pd: ProfileDetail
+  apps: AppDetail[]
+  onAppsChanged: () => void | Promise<void>
+  onProfileChanged: () => void | Promise<unknown>
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+}) {
+  const [open, setOpen] = useState(false)
+  const assignedAppCount = useMemo(
+    () => apps.filter(a => a.assignments.some(x => x.profileId === pd.profile.id)).length,
+    [apps, pd.profile.id],
+  )
+  const summary = assignedAppCount > 0
+    ? `${assignedAppCount} assigned`
+    : 'None assigned'
+
+  return (
+    <div
+      data-testid={`profile-apps-subsection-${pd.profile.id}`}
+      className="bg-gray-950/40 border border-gray-800 rounded-xl"
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(v => !v)}
+        data-testid={`profile-apps-toggle-${pd.profile.id}`}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+          <span className="text-sm font-semibold text-white">Apps</span>
+        </span>
+        <span className="text-xs text-gray-400">{summary}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-4 border-t border-gray-800 pt-3">
+          <AppsSection
+            profileId={pd.profile.id}
+            isNew={false}
+            apps={apps}
+            onChanged={onAppsChanged}
+            testIdPrefix={`profile-${pd.profile.id}-apps-section`}
+          />
+          <LegacyDomainListsEditor
+            pd={pd}
+            updateProfile={updateProfile}
+            onSaved={onProfileChanged}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function profileDetailToUpsert(pd: ProfileDetail): UpsertProfileRequest {
+  return {
+    name: pd.profile.name,
+    blockedCategories: pd.profile.blockedCategories,
+    extraBlocked: pd.profile.extraBlocked,
+    extraAllowed: pd.profile.extraAllowed,
+    paused: pd.profile.paused,
+    timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
+    schedules: pd.schedules.map(s => ({
+      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+    })),
+    siteTimeLimits: pd.siteTimeLimits.map(s => ({
+      domainPattern: s.domainPattern,
+      dailyMinutes: s.dailyMinutes,
+      label: s.label,
+      exemptFromDaily: s.exemptFromDaily,
+    })),
+    failureMode: pd.profile.failureMode,
+    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+  }
+}
+
+function LegacyDomainListsEditor({
+  pd, updateProfile, onSaved,
+}: {
+  pd: ProfileDetail
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onSaved: () => void | Promise<unknown>
+}) {
+  const [blocked, setBlocked] = useState(pd.profile.extraBlocked.join('\n'))
+  const [allowed, setAllowed] = useState(pd.profile.extraAllowed.join('\n'))
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  // Track the persisted values so we can detect dirty state and re-seed
+  // when an external mutation lands (e.g. modal Save). Comparing against
+  // the raw join lets us avoid stomping in-flight edits.
+  const persistedBlocked = pd.profile.extraBlocked.join('\n')
+  const persistedAllowed = pd.profile.extraAllowed.join('\n')
+  useEffect(() => {
+    if (status === 'saving') return
+    setBlocked(persistedBlocked)
+    setAllowed(persistedAllowed)
+  }, [persistedBlocked, persistedAllowed])
+
+  const splitLines = (s: string) => s.split('\n').map(x => x.trim()).filter(Boolean)
+
+  useEffect(() => {
+    if (blocked === persistedBlocked && allowed === persistedAllowed) return
+    const t = setTimeout(async () => {
+      setStatus('saving')
+      setErrMsg(null)
+      try {
+        const body = profileDetailToUpsert(pd)
+        body.extraBlocked = splitLines(blocked)
+        body.extraAllowed = splitLines(allowed)
+        await updateProfile(body)
+        await onSaved()
+        setStatus('saved')
+      } catch (e) {
+        setStatus('error')
+        setErrMsg(e instanceof Error ? e.message : 'Failed to save')
+      }
+    }, 800)
+    return () => clearTimeout(t)
+  }, [blocked, allowed])
+
+  return (
+    <div data-testid={`profile-legacy-domains-${pd.profile.id}`}>
+      <div className="flex items-center justify-between mb-2">
+        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          Extra domains <span className="normal-case text-gray-600">(legacy — migrating to apps in #764)</span>
+        </label>
+        <span
+          data-testid={`profile-legacy-domains-status-${pd.profile.id}`}
+          className={`text-xs ${
+            status === 'saving' ? 'text-gray-400'
+              : status === 'saved' ? 'text-emerald-400'
+              : status === 'error' ? 'text-red-400'
+              : 'text-transparent'
+          }`}
+        >
+          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'error' ? (errMsg ?? 'Save failed') : '·'}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Blocked domains</p>
+          <textarea
+            value={blocked}
+            onChange={e => setBlocked(e.target.value)}
+            placeholder="One domain per line"
+            rows={3}
+            data-testid={`profile-legacy-blocked-${pd.profile.id}`}
+            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Allowed domains</p>
+          <textarea
+            value={allowed}
+            onChange={e => setAllowed(e.target.value)}
+            placeholder="One domain per line"
+            rows={3}
+            data-testid={`profile-legacy-allowed-${pd.profile.id}`}
+            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function findAssignment(app: AppDetail, profileId: number | null): AppPolicyAssignment | null {
   if (profileId == null) return null
   return app.assignments.find(a => a.profileId === profileId) ?? null
 }
 
-function AppsSection({ profileId, isNew, apps, onChanged }: {
+function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section' }: {
   profileId: number | null
   isNew: boolean
   apps: AppDetail[]
   onChanged: () => void | Promise<void>
+  testIdPrefix?: string
 }) {
   // #1007: only show apps that already have an assignment for this profile.
   // Unassigned apps stay manageable via the "+ Add app" picker below.
@@ -1234,7 +1818,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
   const headerCta = !isNew && profileId != null && apps.length > 0 && (
     <button
       type="button"
-      data-testid="apps-section-add"
+      data-testid={`${testIdPrefix}-add`}
       onClick={() => setPickerOpen(v => !v)}
       className="text-xs text-emerald-400 hover:text-emerald-300"
     >
@@ -1243,7 +1827,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
   )
 
   return (
-    <div data-testid="apps-section">
+    <div data-testid={testIdPrefix}>
       <div className="flex items-center justify-between mb-2 gap-3">
         <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
           Apps
@@ -1252,7 +1836,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
           {headerCta}
           <Link
             to="/apps"
-            data-testid="apps-section-manage-link"
+            data-testid={`${testIdPrefix}-manage-link`}
             className="text-xs text-emerald-400 hover:text-emerald-300"
           >
             Manage apps →
@@ -1268,7 +1852,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
           No apps yet.{' '}
           <Link
             to="/apps"
-            data-testid="apps-section-empty-link"
+            data-testid={`${testIdPrefix}-empty-link`}
             className="text-emerald-400 hover:text-emerald-300 underline"
           >
             Create one
@@ -1278,11 +1862,11 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
       ) : (
         <div className="space-y-2">
           {assigned.length === 0 && !pickerOpen && (
-            <p className="text-xs text-gray-500" data-testid="apps-section-none-assigned">
+            <p className="text-xs text-gray-500" data-testid={`${testIdPrefix}-none-assigned`}>
               No apps assigned to this profile.{' '}
               <button
                 type="button"
-                data-testid="apps-section-none-assigned-add"
+                data-testid={`${testIdPrefix}-none-assigned-add`}
                 onClick={() => setPickerOpen(true)}
                 className="text-emerald-400 hover:text-emerald-300 underline"
               >
@@ -1301,7 +1885,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
           ))}
           {pickerOpen && (
             <div
-              data-testid="apps-section-picker"
+              data-testid={`${testIdPrefix}-picker`}
               className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
             >
               <input
@@ -1310,11 +1894,11 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
                 value={pickerFilter}
                 onChange={e => setPickerFilter(e.target.value)}
                 placeholder="Filter apps…"
-                data-testid="apps-section-picker-filter"
+                data-testid={`${testIdPrefix}-picker-filter`}
                 className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs"
               />
               {pickerMatches.length === 0 ? (
-                <p className="text-xs text-gray-500" data-testid="apps-section-picker-empty">
+                <p className="text-xs text-gray-500" data-testid={`${testIdPrefix}-picker-empty`}>
                   {unassigned.length === 0
                     ? 'Every app in the library is already assigned.'
                     : 'No apps match that filter.'}
@@ -1325,7 +1909,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
                     <button
                       key={a.app.id}
                       type="button"
-                      data-testid={`apps-section-picker-add-${a.app.id}`}
+                      data-testid={`${testIdPrefix}-picker-add-${a.app.id}`}
                       onClick={() => addApp(a)}
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-700 text-left"
                     >
@@ -1357,6 +1941,15 @@ function AppRow({ app, profileId, onChanged }: {
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  // Re-seed the input when the persisted policy changes from outside
+  // (e.g. another tab, or after our own setPolicy round-trip lands).
+  // Without this the input keeps stale values once `current` updates.
+  useEffect(() => {
+    if (busy) return
+    const next = current?.mode === 'time_limited' && current.dailyMinutes != null
+      ? String(current.dailyMinutes) : ''
+    setMinutesDraft(next)
+  }, [current?.mode, current?.dailyMinutes])
 
   async function apply(mode: AppMode, dailyMinutes: number | null, exemptFromDaily?: boolean) {
     setBusy(true)
@@ -1389,28 +1982,52 @@ function AppRow({ app, profileId, onChanged }: {
     }
   }
 
-  async function applyTimeLimited() {
-    const n = Number(minutesDraft)
-    if (!Number.isFinite(n) || n <= 0) {
-      setLocalError('Enter minutes > 0')
-      return
-    }
-    // #1007: preserve current exemptFromDaily when re-applying; default to TRUE
-    // (matches the schema default and the wire default in #761/#763).
-    await apply('time_limited', n, current?.exemptFromDaily ?? true)
-  }
-
   async function toggleExempt(nextExempt: boolean) {
     if (current?.mode !== 'time_limited' || current.dailyMinutes == null) return
     await apply('time_limited', current.dailyMinutes, nextExempt)
   }
 
   const mode = current?.mode ?? null
+  const isTimeLimited = mode === 'time_limited'
+  const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+
+  // Operator feedback: the old UX made you type minutes AND click a
+  // separate "Time-limit" button, then showed the duration twice. Now
+  // the minutes input IS the time-limit control: editing it and tabbing
+  // away (or pressing Enter) saves the policy. Empty input is a no-op
+  // (we revert to the current value); 0/negative shows an inline error.
+  async function commitMinutes() {
+    const trimmed = minutesDraft.trim()
+    if (trimmed === '') {
+      setLocalError(null)
+      // Clearing the input on a time-limited app removes the limit by
+      // switching the app to plain Allow (keeps it assigned to the
+      // profile so the row stays visible — use the Clear button to drop
+      // the assignment entirely). For apps that weren't time-limited in
+      // the first place this is a no-op.
+      if (isTimeLimited) {
+        await apply('allowed', null)
+      }
+      return
+    }
+    const n = Number(trimmed)
+    if (!Number.isFinite(n) || n <= 0) {
+      setLocalError('Enter minutes > 0')
+      return
+    }
+    setLocalError(null)
+    // No-op if the policy is already time_limited at exactly this value.
+    if (isTimeLimited && currentMinutes === n) return
+    // #1007: preserve current exemptFromDaily when re-applying; default
+    // to TRUE (matches the schema default and the wire default in
+    // #761/#763) when transitioning into time_limited.
+    await apply('time_limited', n, current?.exemptFromDaily ?? true)
+  }
+
   const baseBtn = 'text-xs px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-50'
   const off = 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
   const onBlocked = 'bg-red-500/20 text-red-300 border-red-500/40'
   const onAllowed = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-  const onTimeLimited = 'bg-amber-500/20 text-amber-300 border-amber-500/40'
 
   return (
     <div
@@ -1456,21 +2073,24 @@ function AppRow({ app, profileId, onChanged }: {
             min={1}
             value={minutesDraft}
             onChange={e => setMinutesDraft(e.target.value)}
-            placeholder="min"
-            data-testid={`app-row-${app.app.id}-minutes`}
-            className="w-16 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs"
-          />
-          <button
-            type="button"
-            data-testid={`app-row-${app.app.id}-time-limit`}
+            onBlur={commitMinutes}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                (e.currentTarget as HTMLInputElement).blur()
+              }
+            }}
             disabled={busy}
-            onClick={applyTimeLimited}
-            className={`${baseBtn} ${mode === 'time_limited' ? onTimeLimited : off}`}
-          >
-            {mode === 'time_limited' && current?.dailyMinutes != null
-              ? `✓ ${current.dailyMinutes}m / day`
-              : 'Time-limit'}
-          </button>
+            placeholder="min"
+            aria-label="Daily time-limit minutes"
+            data-testid={`app-row-${app.app.id}-minutes`}
+            className={`w-16 rounded-lg px-2 py-1 text-white text-xs border transition-colors disabled:opacity-50 ${
+              isTimeLimited
+                ? 'bg-amber-500/10 border-amber-500/40 text-amber-200 placeholder-amber-200/40'
+                : 'bg-gray-900 border-gray-700'
+            }`}
+          />
+          <span className="text-xs text-gray-500">min/day</span>
         </div>
       </div>
       {mode === 'time_limited' && (
@@ -1495,5 +2115,150 @@ function AppRow({ app, profileId, onChanged }: {
         <p className="text-xs text-red-400" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
       )}
     </div>
+  )
+}
+
+// #973 — collapsible inline subsection wrapper. Header carries the title and
+// a live "Saved / Saving…" indicator. Default open when first mounted (the
+// design doc calls out name/icon/color as open-on-first-expand; we apply the
+// same default to Devices too since both are common edit targets).
+function Subsection({
+  testId, title, status, error, children, defaultOpen = true,
+}: {
+  testId: string
+  title: string
+  status: SaveStatus
+  error: string | null
+  children: React.ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div data-testid={testId} className="bg-gray-950/40 border border-gray-800 rounded-xl">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        data-testid={`${testId}-toggle`}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`text-gray-500 text-xs transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+          <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">{title}</span>
+        </span>
+        <SaveStatusBadge status={status} error={error} testId={`${testId}-status`} />
+      </button>
+      {open && <div className="px-4 pb-4 pt-1 space-y-3">{children}</div>}
+    </div>
+  )
+}
+
+function SaveStatusBadge({
+  status, error, testId,
+}: { status: SaveStatus; error: string | null; testId: string }) {
+  if (status === 'saving') {
+    return <span data-testid={testId} data-status="saving" className="text-xs text-gray-500">Saving…</span>
+  }
+  if (status === 'saved') {
+    return <span data-testid={testId} data-status="saved" className="text-xs text-emerald-400">Saved</span>
+  }
+  if (status === 'error') {
+    return (
+      <span data-testid={testId} data-status="error" className="text-xs text-red-400" title={error ?? ''}>
+        Save failed
+      </span>
+    )
+  }
+  return <span data-testid={testId} data-status="idle" className="text-xs text-transparent select-none">·</span>
+}
+
+// #973 — inline devices editor. Each row toggle issues PATCH /devices/:mac
+// with {profileId} (assign) or {profileId: null} (detach). The status badge
+// reflects the most-recent toggle.
+function DevicesSubsection({
+  pd, assigned, allDevices,
+}: { pd: ProfileDetail; assigned: Device[]; allDevices: Device[] }) {
+  const invalidators = useInvalidators()
+  const [status, setStatus] = useState<SaveStatus>('idle')
+  const [error, setError]   = useState<string | null>(null)
+  const [busyMac, setBusyMac] = useState<string | null>(null)
+
+  // #973 — unassigned-or-elsewhere devices are pickable. Detaching from another
+  // profile here would clobber that profile's assignment, so only show
+  // currently-unassigned devices in the add-picker.
+  const pickable = useMemo(
+    () => allDevices.filter(d => d.profileId == null),
+    [allDevices],
+  )
+
+  async function setProfile(d: Device, nextPid: number | null) {
+    setBusyMac(d.mac)
+    setStatus('saving')
+    setError(null)
+    try {
+      await api.devices.patch(d.mac, { profileId: nextPid })
+      await invalidators.deviceMutated()
+      setStatus('saved')
+      setTimeout(() => setStatus(s => (s === 'saved' ? 'idle' : s)), 1500)
+    } catch (e) {
+      setStatus('error')
+      setError(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setBusyMac(null)
+    }
+  }
+
+  return (
+    <Subsection
+      testId={`profile-devices-subsection-${pd.profile.id}`}
+      title={`Devices (${assigned.length})`}
+      status={status}
+      error={error}
+    >
+      {assigned.length === 0
+        ? <p className="text-xs text-gray-600">No devices assigned.</p>
+        : (
+          <div className="space-y-1">
+            {assigned.map(d => (
+              <div key={d.id} data-testid={`profile-device-${d.id}`}
+                className="flex items-center justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <span className="text-gray-300 truncate">{d.name}</span>
+                  <span className="ml-2 text-gray-500 font-mono text-xs">{d.mac}</span>
+                </div>
+                <button
+                  type="button"
+                  data-testid={`profile-device-${d.id}-detach`}
+                  disabled={busyMac === d.mac}
+                  onClick={() => setProfile(d, null)}
+                  className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-2.5 py-1 rounded-lg disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )
+      }
+      {pickable.length > 0 && (
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Unassigned devices</p>
+          <div className="flex flex-wrap gap-2">
+            {pickable.map(d => (
+              <button
+                key={d.id}
+                type="button"
+                data-testid={`profile-device-add-${d.id}`}
+                disabled={busyMac === d.mac}
+                onClick={() => setProfile(d, pd.profile.id)}
+                className="text-xs px-3 py-1.5 rounded-lg border bg-gray-800 text-gray-300 border-gray-700 hover:border-emerald-500/40 disabled:opacity-50"
+              >
+                + {d.name} <span className="text-gray-500 font-mono">{d.mac}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Subsection>
   )
 }

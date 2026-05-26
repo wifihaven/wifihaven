@@ -404,13 +404,33 @@ case class HouseholdSettings(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
+    unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
 ) derives JsonCodec
 
 case class UpdateHouseholdSettingsRequest(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
+    unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
 ) derives JsonCodec
+
+/**
+ * #961: how the household treats MACs that have appeared on the network but are not yet enrolled
+ * into any profile.
+ *
+ *   - policy = "block": deny egress; HTTP/80 DNATs to the block page when `blockPage` is true
+ *     (router-side enforcement deferred to follow-up blocked-on-#654).
+ *   - policy = "allow": unmanaged MACs flow freely; admin still gets a #711 alert.
+ */
+case class UnmanagedMacPolicy(
+    policy: String,
+    blockPage: Boolean,
+) derives JsonCodec
+
+object UnmanagedMacPolicy {
+  val Default: UnmanagedMacPolicy = UnmanagedMacPolicy(policy = "allow", blockPage = true)
+  val ValidPolicies: Set[String]  = Set("block", "allow")
+}
 
 /**
  * #714: knobs for the server-side heartbeat filter applied at the Presence aggregation stage. The
@@ -997,6 +1017,24 @@ case class RouterDecisionResponse(
     decision: ConnectionDecision,
     reason: String,
     expiresAt: Option[String],
+) derives JsonCodec
+
+// #959: SPA-facing payload for the kid-side block page.
+//
+// `reasonClass` is one of a small enumerated set the SPA can switch on for
+// kid-friendly copy: "paused", "schedule", "time_limit", "site_time_limit",
+// "category", "extra_blocked". Internal granular reasons (e.g. the specific
+// site label, the schedule end time) are intentionally omitted per the #952
+// design doc Q4 decision — kids don't see "until 9:05pm" or "AdServerList".
+//
+// `blocked` is false when the (mac, host) pair resolves to Allow or the
+// device is unenrolled; the SPA renders a generic "not blocked" page in
+// that case rather than leaking household state.
+case class BlockedInfoResponse(
+    blocked: Boolean,
+    reasonClass: Option[String],
+    categoryName: Option[String],
+    profileName: Option[String],
 ) derives JsonCodec
 
 // ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────

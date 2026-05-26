@@ -846,19 +846,83 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             outP.rawRows.map(_.host.value).toSet == Set("youtube.com", "tiktok.com", "nyt.com"),
           )
       },
-      test("rejects bucket=1m with bucket_not_implemented") {
+      // #1035: 1m bucket is now enabled — per-minute bucketing for fine-grained
+      // diagnosis. Three 5-min raw rows in distinct minutes should produce
+      // three 1m aggregate rows.
+      test("#1035: bucket=1m aggregates per minute") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
-          _  <- cleanDb
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          // Three rows in three distinct minute-aligned slots (0s, 60s, 120s).
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(60),
+                60,
+                100L,
+                200L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start.plusSeconds(60),
+                start.plusSeconds(120),
+                60,
+                50L,
+                150L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start.plusSeconds(120),
+                start.plusSeconds(180),
+                60,
+                10L,
+                10L,
+              ),
+            ),
+          )
           rb <- buildRoutes
           (routes, auth) = rb
           token <- auth.login("admin", "changeme").map(_.token.value)
-          req = Request
-            .get(URL.decode(s"/api/usage/traffic?mac=$testMac&bucket=1m").toOption.get)
+          from = start.toString
+          to   = start.plusSeconds(60 * 60).toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1m")
+                .toOption
+                .get,
+            )
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
           body <- resp.body.asString
-        } yield assertTrue(resp.status == Status.BadRequest) &&
-          assertTrue(body.contains("bucket_not_implemented"))
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.bucket == "1m") &&
+          assertTrue(out.aggregateRows.length == 3) &&
+          assertTrue(out.aggregateRows.map(_.totalBytesIn).sum == 160L) &&
+          assertTrue(out.aggregateRows.map(_.totalBytesOut).sum == 360L)
       },
       test("#769: 1h aggregated view with groupBy=app joins through app_hosts") {
         val today = TestClock.schoolDayAfternoon.toLocalDate

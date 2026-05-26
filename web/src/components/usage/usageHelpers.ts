@@ -15,7 +15,9 @@ export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw' | '1m'>,
 
 // Raw view is row-count bounded; API enforces a `limit` (default 100). We
 // anchor the window at `to` and walk back a generous distance — the row cap
-// handles the truncation.
+// handles the truncation. `1m` shares this look-back: in prod the router
+// posts every ~1m, so 1m bucketing is essentially "raw, collapsed by minute
+// across hosts" — same scale, same paging story.
 export const RAW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000  // 1 week look-back ceiling
 
 export function windowFromTo(bucket: TrafficUsageBucket, to: string): { from: string; to: string } {

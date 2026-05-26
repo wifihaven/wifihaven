@@ -1,10 +1,11 @@
 import type {
-  AppDetail, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  AppDetail, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
+  PatchDeviceRequest,
   UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
@@ -114,12 +115,18 @@ export const api = {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
     update: (data: UpdateHouseholdSettingsRequest) =>
       req<void>('PUT', '/household/settings', data),
+    patch: (data: Record<string, unknown>) =>
+      req<void>('PATCH', '/household/settings', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────
   devices: {
     list: () => req<Device[]>('GET', '/devices'),
     upsert: (data: UpsertDeviceRequest) => req<{ id: number }>('PUT', '/devices', data),
+    // #973 / #996: field-scoped partial update; the route accepts raw MAC path
+    // segments (zio-http does not decode percent-encoded colons in paths).
+    patch: (mac: string, data: PatchDeviceRequest) =>
+      req<void>('PATCH', `/devices/${mac}`, data),
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
   },
 
@@ -320,6 +327,15 @@ export const api = {
       req<void>('PUT', `/apps/${id}/policy/${profileId}`, data),
     deletePolicy: (id: number, profileId: number) =>
       req<void>('DELETE', `/apps/${id}/policy/${profileId}`),
+  },
+
+  // #959: kid-side block-page lookup. Unauthenticated — hit from a blocked
+  // device after the router DNATs to the SPA's /blocked route.
+  blocked: {
+    info: (mac: string, host: string) => {
+      const qs = new URLSearchParams({ mac, host })
+      return req<BlockedInfoResponse>('GET', `/blocked?${qs}`, undefined, true)
+    },
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────

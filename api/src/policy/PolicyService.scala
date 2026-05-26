@@ -168,8 +168,34 @@ class PolicyServiceLive(
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
       }.toMap
 
+      // #961: unmanaged-MAC enforcement is applied here at snapshot-build time,
+      // not via a new wire field. For devices with no profile assignment we
+      // emit explicit per-MAC `rules` keyed off the household policy:
+      //   - policy = "block": Manual-blocked with `uiAllowedHosts` in
+      //     extraAllowed so the SPA hostnames remain reachable from the
+      //     unmanaged device (otherwise the block-page redirect can't load).
+      //   - policy = "allow": `rules = None`, same as today (router treats as
+      //     unenrolled / allow-all).
+      // The router's existing per-MAC override path enforces this without any
+      // code change on the openwrt side — the contract fixture already
+      // exercises a profileless+blocked device shape.
+      val unmanagedRules: Option[BlockRules] =
+        if (settings.unmanagedMacPolicy.policy == "block")
+          Some(
+            BlockRules(
+              blocked = true,
+              blockReason = Some(MacBlockReason.Manual),
+              extraBlocked = Nil,
+              extraAllowed = uiAllowedHosts,
+              blocklistIds = Nil,
+              blockIpOnly = false,
+            ),
+          )
+        else None
+
       val devicePolicies: Map[MacAddress, DevicePolicy] = devices.iterator.map { d =>
-        d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = None)
+        val rules = if (d.profileId.isEmpty) unmanagedRules else None
+        d.mac -> DevicePolicy(profileId = d.profileId, name = d.name, rules = rules)
       }.toMap
 
       val catDomainsMap                            = catDomains.toMap

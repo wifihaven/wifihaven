@@ -40,16 +40,27 @@ export interface HeartbeatFilter {
   heartbeatHostPatterns: string[] // #788 FQDN allowlist; *.foo.com / foo.com semantics
 }
 
+// #961 — how the household treats MACs that have appeared on the network
+// but are not yet enrolled into any profile. Router-side enforcement of
+// `block` is deferred behind Gate 2 (#654); for v1 the field is persisted
+// + surfaced in the SPA only.
+export interface UnmanagedMacPolicy {
+  policy: 'block' | 'allow'
+  blockPage: boolean
+}
+
 export interface HouseholdSettings {
   dailyResetTime: string  // "HH:mm" wall-clock time in `dailyResetTz`
   dailyResetTz: string    // IANA timezone
   heartbeatFilter: HeartbeatFilter
+  unmanagedMacPolicy: UnmanagedMacPolicy
 }
 
 export interface UpdateHouseholdSettingsRequest {
   dailyResetTime: string
   dailyResetTz: string
   heartbeatFilter: HeartbeatFilter
+  unmanagedMacPolicy: UnmanagedMacPolicy
 }
 
 export interface TimeLimit {
@@ -534,6 +545,13 @@ export interface UpsertDeviceRequest {
   profileId: number
 }
 
+// #996: field-scoped partial update for devices. `name` may be set (not cleared);
+// `profileId` may be set or cleared (null detaches the device from any profile).
+export interface PatchDeviceRequest {
+  name?: string
+  profileId?: number | null
+}
+
 export interface GrantExtensionRequest {
   profileId: number
   extraMinutes: number
@@ -653,4 +671,15 @@ export interface BlocklistSummary {
 export interface BlocklistHosts {
   id: string
   hosts: string[]
+}
+
+// #959: kid-side block-page payload from GET /api/blocked?mac=&host=.
+// `reasonClass` is one of: "paused" | "schedule" | "time_limit" |
+// "site_time_limit" | "category" | "extra_blocked". `blocked: false`
+// means the device is not blocked for this host (or is unenrolled).
+export interface BlockedInfoResponse {
+  blocked: boolean
+  reasonClass?: string | null
+  categoryName?: string | null
+  profileName?: string | null
 }
