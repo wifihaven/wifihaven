@@ -10,6 +10,7 @@ vi.mock('@/api/client', () => ({
     devices: {
       list: vi.fn(),
       upsert: vi.fn(),
+      patch: vi.fn(),
       delete: vi.fn(),
     },
     profiles: {
@@ -71,8 +72,10 @@ beforeEach(() => {
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
   ;(api.devices.upsert as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.devices.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.alerts.approve as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.alerts.deny as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     dailyResetTime: '00:00',
     dailyResetTz: 'UTC',
@@ -243,6 +246,89 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
     expect(FakeN.requestPermission).toHaveBeenCalled()
     // @ts-expect-error cleanup
     delete window.Notification
+  })
+
+  describe('inline edit on click (#1052)', () => {
+    it('clicking the alert row opens the inline editor with the MAC visible', async () => {
+      (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+      const user = userEvent.setup()
+      renderPage()
+      await screen.findByTestId('new-device-alerts-banner')
+      await user.click(screen.getByTestId(`new-device-alert-row-${alert.mac}`))
+      const editor = await screen.findByTestId('new-device-alert-editor')
+      expect(within(editor).getByText(alert.mac)).toBeInTheDocument()
+      expect(within(editor).getByDisplayValue('device-999999')).toBeInTheDocument()
+    })
+
+    it('Save calls PATCH /devices then approve(id) in that order', async () => {
+      (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+      const order: string[] = []
+      ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        order.push('patch')
+      })
+      ;(api.alerts.approve as unknown as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        order.push('approve')
+      })
+
+      const user = userEvent.setup()
+      renderPage()
+      await screen.findByTestId('new-device-alerts-banner')
+      await user.click(screen.getByTestId(`new-device-alert-row-${alert.mac}`))
+      const editor = await screen.findByTestId('new-device-alert-editor')
+
+      const nameInput = within(editor).getByDisplayValue('device-999999')
+      await user.clear(nameInput)
+      await user.type(nameInput, 'Living Room TV')
+      await user.selectOptions(within(editor).getByTestId('new-device-alert-profile'), '2')
+
+      await user.click(within(editor).getByRole('button', { name: /^Save$/ }))
+
+      await waitFor(() =>
+        expect(api.devices.patch).toHaveBeenCalledWith(alert.mac, {
+          name: 'Living Room TV',
+          profileId: 2,
+        })
+      )
+      await waitFor(() => expect(api.alerts.approve).toHaveBeenCalledWith(alert.id))
+      expect(order).toEqual(['patch', 'approve'])
+    })
+
+    it('Cancel closes editor without dismissing the alert', async () => {
+      (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+      const user = userEvent.setup()
+      renderPage()
+      await screen.findByTestId('new-device-alerts-banner')
+      await user.click(screen.getByTestId(`new-device-alert-row-${alert.mac}`))
+      await screen.findByTestId('new-device-alert-editor')
+      await user.click(screen.getByRole('button', { name: /^Cancel$/ }))
+      await waitFor(() =>
+        expect(screen.queryByTestId('new-device-alert-editor')).not.toBeInTheDocument()
+      )
+      expect(api.devices.patch).not.toHaveBeenCalled()
+      expect(api.alerts.approve).not.toHaveBeenCalled()
+      expect(api.alerts.deny).not.toHaveBeenCalled()
+    })
+
+    it('saving without picking a profile denies (not approves) the alert', async () => {
+      (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+      const user = userEvent.setup()
+      renderPage()
+      await screen.findByTestId('new-device-alerts-banner')
+      await user.click(screen.getByTestId(`new-device-alert-row-${alert.mac}`))
+      const editor = await screen.findByTestId('new-device-alert-editor')
+
+      const nameInput = within(editor).getByDisplayValue('device-999999')
+      await user.clear(nameInput)
+      await user.type(nameInput, 'Mystery Device')
+      // leave profile select at default '— No profile —'
+      await user.click(within(editor).getByRole('button', { name: /^Save$/ }))
+
+      await waitFor(() =>
+        expect(api.devices.patch).toHaveBeenCalledWith(alert.mac, { name: 'Mystery Device' })
+      )
+      await waitFor(() => expect(api.alerts.deny).toHaveBeenCalledWith(alert.id))
+      expect(api.alerts.approve).not.toHaveBeenCalled()
+    })
   })
 
   it('hides "Enable browser notifications" when permission is already granted', async () => {
