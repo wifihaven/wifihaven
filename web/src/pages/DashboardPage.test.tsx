@@ -12,7 +12,7 @@ vi.mock('@/api/client', () => ({
     dashboard: {
       now: vi.fn(),
     },
-    deviceAlerts: {
+    alerts: {
       list: vi.fn(),
     },
   },
@@ -77,7 +77,7 @@ const mockStats = () => api.logs.stats as unknown as ReturnType<typeof vi.fn>
 const mockQuery = () => api.logs.query as unknown as ReturnType<typeof vi.fn>
 const mockNow   = () => api.dashboard.now as unknown as ReturnType<typeof vi.fn>
 
-const mockAlerts = () => api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>
+const mockAlerts = () => api.alerts.list as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.resetAllMocks()

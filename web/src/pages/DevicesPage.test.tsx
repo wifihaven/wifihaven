@@ -15,9 +15,11 @@ vi.mock('@/api/client', () => ({
     profiles: {
       list: vi.fn(),
     },
-    deviceAlerts: {
+    alerts: {
       list: vi.fn(),
-      dismiss: vi.fn(),
+      approve: vi.fn(),
+      deny: vi.fn(),
+      createAccessRequest: vi.fn(),
     },
     household: {
       get: vi.fn(),
@@ -69,8 +71,8 @@ beforeEach(() => {
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
   ;(api.devices.upsert as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.devices.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
-  ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
-  ;(api.deviceAlerts.dismiss as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.alerts.approve as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     dailyResetTime: '00:00',
     dailyResetTz: 'UTC',
@@ -179,12 +181,19 @@ describe('DevicesPage — role gating', () => {
 describe('DevicesPage — new-device alerts banner (#711)', () => {
   const alert = {
     id: 42,
+    kind: 'new_device' as const,
+    status: 'pending' as const,
     mac: 'aa:bb:cc:99:99:99',
     deviceName: 'device-999999',
     profileId: null,
     profileName: null,
-    firstSeenAt: '2026-05-22T12:00:00Z',
-    dismissedAt: null,
+    host: null,
+    requestKind: null,
+    note: null,
+    grantedMinutes: null,
+    createdAt: '2026-05-22T12:00:00Z',
+    decidedAt: null,
+    decidedBy: null,
   }
 
   it('does not render banner when there are no pending alerts', async () => {
@@ -194,27 +203,27 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
   })
 
   it('renders the banner with the MAC + Dismiss when an alert is pending', async () => {
-    (api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
     renderPage()
     const banner = await screen.findByTestId('new-device-alerts-banner')
     expect(within(banner).getByText('aa:bb:cc:99:99:99')).toBeInTheDocument()
     expect(within(banner).getByRole('button', { name: /Dismiss/ })).toBeInTheDocument()
   })
 
-  it('clicks Dismiss → calls api.deviceAlerts.dismiss(id) and refetches', async () => {
-    (api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+  it('clicks Dismiss → calls api.alerts.approve(id) and refetches', async () => {
+    (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('new-device-alerts-banner')
     await user.click(screen.getByRole('button', { name: /Dismiss/ }))
-    await waitFor(() => expect(api.deviceAlerts.dismiss).toHaveBeenCalledWith(42))
+    await waitFor(() => expect(api.alerts.approve).toHaveBeenCalledWith(42))
     // banner refetch invoked
-    await waitFor(() => expect(api.deviceAlerts.list).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(api.alerts.list).toHaveBeenCalledTimes(2))
   })
 
   it('non-admins see the banner but no Dismiss button', async () => {
     mockAuth = { isAdmin: false }
-    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
     renderPage()
     const banner = await screen.findByTestId('new-device-alerts-banner')
     expect(within(banner).getByText('aa:bb:cc:99:99:99')).toBeInTheDocument()
@@ -225,7 +234,7 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
     class FakeN { static permission: NotificationPermission = 'default'; static requestPermission = vi.fn(async () => 'granted' as NotificationPermission); constructor() {} }
     // @ts-expect-error inject
     window.Notification = FakeN
-    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
     renderPage()
     await screen.findByTestId('new-device-alerts-banner')
     const btn = await screen.findByTestId('enable-notifications-btn')
@@ -240,7 +249,7 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
     class FakeN { static permission: NotificationPermission = 'granted'; static requestPermission = vi.fn(); constructor() {} }
     // @ts-expect-error inject
     window.Notification = FakeN
-    ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
+    ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
     renderPage()
     await screen.findByTestId('new-device-alerts-banner')
     expect(screen.queryByTestId('enable-notifications-btn')).not.toBeInTheDocument()

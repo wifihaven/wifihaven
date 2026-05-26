@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  DashboardNow, Device, DeviceAlert, HouseholdSettings, ProfileDetail, ProfileTimeStatus,
+  Alert, DashboardNow, Device, HouseholdSettings, ProfileDetail, ProfileTimeStatus,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, UsageSeriesResponse,
 } from '@/types/api'
 
@@ -27,7 +27,7 @@ const STALE = {
 export const qk = {
   profiles: () => ['profiles'] as const,
   devices: () => ['devices'] as const,
-  deviceAlerts: () => ['device-alerts'] as const,
+  alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
   timeStatusToday: () => ['time', 'status', 'today'] as const,
   timeStatusDate: (date: string) => ['time', 'status', 'date', date] as const,
@@ -75,12 +75,13 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
   })
 }
 
-// #711 — pending new-device alerts. Refetched on a 30s interval so the banner
-// reflects a freshly-connected device without the admin reloading the page.
-export function useDeviceAlerts(opts?: QueryOpts<DeviceAlert[]>) {
+// Pending alerts feed (#711 formerly polled /api/device-alerts; refactor reads
+// /api/alerts). Refetched on a 30s interval so banners reflect a freshly-raised
+// alert without a manual reload. Components filter by `kind` as needed.
+export function useAlerts(includeAll = false, opts?: QueryOpts<Alert[]>) {
   return useQuery({
-    queryKey: qk.deviceAlerts(),
-    queryFn: () => api.deviceAlerts.list(false),
+    queryKey: qk.alerts(includeAll),
+    queryFn: () => api.alerts.list(includeAll),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
@@ -204,7 +205,7 @@ export function useInvalidators() {
   return {
     profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
-    deviceAlerts: () => qc.invalidateQueries({ queryKey: qk.deviceAlerts() }),
+    alerts: () => qc.invalidateQueries({ queryKey: ['alerts'] }),
     dashboardNow: () => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),
     profileMutated: () => Promise.all([

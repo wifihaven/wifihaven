@@ -1,7 +1,7 @@
 import type {
-  AppDetail, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
-  DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
+  DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
@@ -130,14 +130,17 @@ export const api = {
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
   },
 
-  // ── Device alerts (#711) ───────────────────────────────────────────────
-  deviceAlerts: {
-    list: (includeDismissed = false) =>
-      req<DeviceAlert[]>(
-        'GET',
-        `/device-alerts${includeDismissed ? '?dismissed=true' : ''}`,
-      ),
-    dismiss: (id: number) => req<void>('POST', `/device-alerts/${id}/dismiss`),
+  // ── Alerts (formerly /api/device-alerts, #711) ─────────────────────────
+  // Generic admin-action feed. #960 adds a public POST /api/access-requests
+  // here for the kid-side flow; today the only writer is the agent ingest
+  // path that raises new_device alerts.
+  alerts: {
+    list: (includeAll = false) =>
+      req<Alert[]>('GET', `/alerts${includeAll ? '?all=true' : ''}`),
+    approve: (id: number, data: ApproveAlertRequest = {}) =>
+      req<Alert>('POST', `/alerts/${id}/approve`, data),
+    deny: (id: number) =>
+      req<Alert>('POST', `/alerts/${id}/deny`),
   },
 
   // ── Time ───────────────────────────────────────────────────────────────

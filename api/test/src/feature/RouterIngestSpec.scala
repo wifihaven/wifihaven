@@ -57,7 +57,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       tu    <- ZIO.service[TimeUsageRepo]
       dRepo <- ZIO.service[DeviceRepo]
       cRepo <- ZIO.service[ConnectionEventRepo]
-      aRepo <- ZIO.service[DeviceAlertRepo]
+      aRepo <- ZIO.service[AlertRepo]
       hsr   <- ZIO.service[HouseholdSettingsRepo]
       auth = new RouterAuthLive(rRepo)
     } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
@@ -1081,7 +1081,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
-        aRepo    <- ZIO.service[DeviceAlertRepo]
+        aRepo    <- ZIO.service[AlertRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
         ev   = RouterEvent(
@@ -1093,16 +1093,16 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _      <- post(routes, "/api/router/events", body, Some(tk))
-        alerts <- aRepo.listAll(includeDismissed = false)
+        alerts <- aRepo.list(includeAll = false)
       } yield assertTrue(alerts.size == 1) &&
         assertTrue(alerts.head.mac == MacAddress.unsafe(unknownMac)) &&
-        assertTrue(alerts.head.dismissedAt.isEmpty)
+        assertTrue(alerts.head.status == AlertStatus.Pending)
     },
     test("events: repeated first_seen_mac for the same MAC raises only one alert") {
       for {
         _        <- cleanDb
         rRepo    <- ZIO.service[RouterRepo]
-        aRepo    <- ZIO.service[DeviceAlertRepo]
+        aRepo    <- ZIO.service[AlertRepo]
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
         ev   = RouterEvent(
@@ -1115,7 +1115,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         body = RouterEventsRequest(id, List(ev)).toJson
         _      <- post(routes, "/api/router/events", body, Some(tk))
         _      <- post(routes, "/api/router/events", body, Some(tk))
-        alerts <- aRepo.listAll(includeDismissed = true)
+        alerts <- aRepo.list(includeAll = true)
       } yield assertTrue(alerts.size == 1)
     },
     // ── #1010: time_usage bucket follows household-local TZ, not UTC ─────────
@@ -1206,7 +1206,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rRepo    <- ZIO.service[RouterRepo]
         pRepo    <- ZIO.service[ProfileRepo]
         dRepo    <- ZIO.service[DeviceRepo]
-        aRepo    <- ZIO.service[DeviceAlertRepo]
+        aRepo    <- ZIO.service[AlertRepo]
         routes   <- buildRoutes
         _        <- seedKnownDevice(dRepo, pRepo)
         (id, tk) <- seedRouter(rRepo)
@@ -1219,7 +1219,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         )
         body = RouterEventsRequest(id, List(ev)).toJson
         _      <- post(routes, "/api/router/events", body, Some(tk))
-        alerts <- aRepo.listAll(includeDismissed = true)
+        alerts <- aRepo.list(includeAll = true)
       } yield assertTrue(alerts.isEmpty)
     },
   ) @@ TestAspect.sequential

@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDevices, useDeviceAlerts, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
+import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
-import type { Device, DeviceAlert } from '@/types/api'
+import type { Alert, Device } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 // Apply the LogsPage click-through highlight (#298): when the URL carries
@@ -203,23 +203,23 @@ export function DevicesPage() {
   )
 }
 
-// ── New-device alerts banner (#711) ────────────────────────────────────────
+// ── New-device alerts banner (#711, now backed by unified /api/alerts) ─────
 //
-// Shown above the device list whenever pending alerts exist. Admins can
-// dismiss each one inline; non-admins see the count but can't dismiss
-// (admin-only on the API side, so the button would 403). The banner
-// refetches on a 30 s interval (see useDeviceAlerts) so a freshly-connected
-// device shows up without a manual reload.
+// Shown above the device list whenever pending new-device alerts exist.
+// Admins can approve each one inline (formerly "dismiss" — the unified
+// alert model uses approve/deny across all kinds; new_device approval has
+// no side effect). The banner refetches on a 30 s interval (see useAlerts)
+// so a freshly-connected device shows up without a manual reload.
 
 function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
-  const alertsQuery  = useDeviceAlerts()
+  const alertsQuery  = useAlerts()
   const invalidators = useInvalidators()
-  const alerts: DeviceAlert[] = alertsQuery.data ?? []
+  const alerts: Alert[] = (alertsQuery.data ?? []).filter(a => a.kind === 'new_device')
   const notificationPermission = useNotificationPermission()
 
-  const dismissMutation = useMutation({
-    mutationFn: (id: number) => api.deviceAlerts.dismiss(id),
-    onSuccess: () => invalidators.deviceAlerts(),
+  const approveMutation = useMutation({
+    mutationFn: (id: number) => api.alerts.approve(id),
+    onSuccess: () => invalidators.alerts(),
   })
 
   if (alerts.length === 0) return null
@@ -251,14 +251,14 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
             className="flex items-center gap-3 text-sm bg-gray-900/60 rounded-lg px-3 py-2"
           >
             <div className="flex-1 min-w-0">
-              <p className="text-white truncate">{a.deviceName}</p>
+              <p className="text-white truncate">{a.deviceName ?? a.mac}</p>
               <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
-              <p className="text-xs text-gray-600">first seen {new Date(a.firstSeenAt).toLocaleString()}</p>
+              <p className="text-xs text-gray-600">first seen {new Date(a.createdAt).toLocaleString()}</p>
             </div>
             {isAdmin && (
               <button
-                onClick={() => dismissMutation.mutate(a.id)}
-                disabled={dismissMutation.isPending}
+                onClick={() => approveMutation.mutate(a.id)}
+                disabled={approveMutation.isPending}
                 className="text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors shrink-0"
               >
                 Dismiss
