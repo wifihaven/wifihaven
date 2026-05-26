@@ -162,4 +162,30 @@ object TestLayers {
       profileId: ProfileId,
   ): Task[DeviceId] =
     deviceRepo.upsert(MacAddress.unsafe(mac), name, Some(profileId), "192.168.1.100")
+
+  /**
+   * Post-#764: ensure a single-host app exists with `slug = host` (creating it if missing) and
+   * upsert an assignment for `(app, profileId)` with the given mode. Used by tests that previously
+   * wrote to legacy profiles.extra_blocked/extra_allowed/site_time_limits columns.
+   */
+  def seedAppAssignment(
+      appRepo: AppRepo,
+      profileId: ProfileId,
+      host: String,
+      mode: wifihaven.shared.AppMode,
+      dailyMinutes: Option[Int] = None,
+      exemptFromDaily: Boolean = true,
+  ): Task[Unit] =
+    for {
+      existing <- appRepo.findBySlug(host)
+      appId    <- existing match {
+        case Some(a) => ZIO.succeed(a.id)
+        case None    =>
+          for {
+            id <- appRepo.create(host, host, None, None)
+            _  <- appRepo.setHosts(id, List(wifihaven.shared.types.Hostname.unsafe(host)))
+          } yield id
+      }
+      _        <- appRepo.upsertAssignment(appId, profileId, mode, dailyMinutes, exemptFromDaily)
+    } yield ()
 }

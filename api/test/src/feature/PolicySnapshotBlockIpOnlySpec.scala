@@ -100,7 +100,6 @@ object PolicySnapshotBlockIpOnlySpec
         profileRepo <- ZIO.service[ProfileRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
         auth        <- makeAuth
         token       <- auth.login("admin", "changeme").map(_.token.value)
         profiles0   <- profileRepo.listAll
@@ -112,7 +111,6 @@ object PolicySnapshotBlockIpOnlySpec
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           userProfileRepo,
           userRepoSvc,
         )
@@ -120,12 +118,9 @@ object PolicySnapshotBlockIpOnlySpec
           val body = UpsertProfileRequest(
             name = "Kids",
             blockedCategories = Nil,
-            extraBlocked = Nil,
-            extraAllowed = Nil,
             paused = false,
             schedules = Nil,
             timeLimit = None,
-            siteTimeLimits = Nil,
             blockIpOnly = ipOnly,
           ).toJson
           Request
@@ -158,7 +153,6 @@ object PolicySnapshotBlockIpOnlySpec
         profileRepo     <- ZIO.service[ProfileRepo]
         schedRepo       <- ZIO.service[ScheduleRepo]
         tlRepo          <- ZIO.service[TimeLimitRepo]
-        stlRepo         <- ZIO.service[SiteTimeLimitRepo]
         auth            <- makeAuth
         token           <- auth.login("admin", "changeme").map(_.token.value)
         userProfileRepo <- ZIO.service[UserProfileRepo]
@@ -168,7 +162,6 @@ object PolicySnapshotBlockIpOnlySpec
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
           userProfileRepo,
           userRepoSvc,
         )
@@ -176,12 +169,9 @@ object PolicySnapshotBlockIpOnlySpec
           val body = UpsertProfileRequest(
             name = name,
             blockedCategories = Nil,
-            extraBlocked = Nil,
-            extraAllowed = Nil,
             paused = false,
             schedules = Nil,
             timeLimit = None,
-            siteTimeLimits = Nil,
             blockIpOnly = ipOnly,
           ).toJson
           Request

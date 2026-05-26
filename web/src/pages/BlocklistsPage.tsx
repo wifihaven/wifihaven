@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { useProfiles, useInvalidators } from '@/api/queries'
-import type { BlocklistSummary, ProfileDetail, ScheduleRequest, SiteTimeLimitRequest, UpsertProfileRequest } from '@/types/api'
+import type { BlocklistSummary, ProfileDetail, ScheduleRequest, UpsertProfileRequest } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 const HOSTS_PER_PAGE = 50
@@ -54,8 +54,6 @@ export function BlocklistsPage() {
       const body: UpsertProfileRequest = {
         name: profile.profile.name,
         blockedCategories: nextCats,
-        extraBlocked: profile.profile.extraBlocked,
-        extraAllowed: profile.profile.extraAllowed,
         paused: profile.profile.paused,
         schedules: profile.schedules.map<ScheduleRequest>(s => ({
           name: s.name,
@@ -65,12 +63,6 @@ export function BlocklistsPage() {
           tz: s.tz,
         })),
         timeLimit: profile.timeLimit?.dailyMinutes ?? null,
-        siteTimeLimits: profile.siteTimeLimits.map<SiteTimeLimitRequest>(s => ({
-          domainPattern: s.domainPattern,
-          dailyMinutes: s.dailyMinutes,
-          label: s.label,
-          exemptFromDaily: s.exemptFromDaily,
-        })),
         failureMode: profile.profile.failureMode,
         crossDeviceOverlapMode: profile.profile.crossDeviceOverlapMode,
       }

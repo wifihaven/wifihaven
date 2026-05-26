@@ -128,10 +128,15 @@ trait TimeLimitRepo {
   def listAll: Task[List[TimeLimit]]
 }
 
+/**
+ * Post-#764 the `site_time_limits` table is dropped. This repo now synthesizes the legacy
+ * `SiteTimeLimit` shape from `app_policy_assignments` rows with mode='time_limited', emitting one
+ * row per (assignment × host) — mirroring the snapshot expansion in `PolicyService`. Synthetic ids
+ * are 0L; callers that need stable ids should switch to AppRepo directly.
+ */
 trait SiteTimeLimitRepo {
   def listForProfile(pid: ProfileId): Task[List[SiteTimeLimit]]
   def listAll: Task[List[SiteTimeLimit]]
-  def replaceForProfile(pid: ProfileId, limits: List[SiteTimeLimitRequest]): Task[Unit]
 }
 
 trait DeviceRepo {
@@ -533,8 +538,6 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       ProfileId,
       String,
       List[String],
-      List[String],
-      List[String],
       Boolean,
       String,
       Boolean,
@@ -544,21 +547,19 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     r._1,
     r._2,
     r._3.map(BlocklistId.unsafe),
-    r._4.map(Hostname.unsafe),
-    r._5.map(Hostname.unsafe),
+    r._4,
+    FailureMode.parse(r._5).getOrElse(FailureMode.LastKnownGood),
     r._6,
-    FailureMode.parse(r._7).getOrElse(FailureMode.LastKnownGood),
-    r._8,
-    CrossDeviceOverlapMode.parse(r._9).getOrElse(CrossDeviceOverlapMode.Sum),
+    CrossDeviceOverlapMode.parse(r._7).getOrElse(CrossDeviceOverlapMode.Sum),
   )
   def listAll                                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles ORDER BY id"
+    sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles ORDER BY id"
       .query[R]
       .map(toP)
       .to[List]
       .transact(xa)
   def findById(id: ProfileId)                       =
-    sql"SELECT id,name,blocked_categories,extra_blocked,extra_allowed,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles WHERE id=$id"
+    sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles WHERE id=$id"
       .query[R]
       .map(toP)
       .option
@@ -572,8 +573,6 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     sql"""UPDATE profiles SET
             name=${p.name},
             blocked_categories=${p.blockedCategories.map(_.value).toArray},
-            extra_blocked=${p.extraBlocked.map(_.value).toArray},
-            extra_allowed=${p.extraAllowed.map(_.value).toArray},
             paused=${p.paused},
             failure_mode=${FailureMode.asString(p.failureMode)},
             block_ip_only=${p.blockIpOnly},
@@ -668,27 +667,34 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
 }
 
 class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
-  private type R = (SiteTimeLimitId, ProfileId, String, Int, String, Boolean)
-  private def toS(r: R)              = SiteTimeLimit(r._1, r._2, r._3, r._4, r._5, r._6)
+  // (profileId, host, dailyMinutes, slug, exemptFromDaily)
+  private type R = (ProfileId, String, Int, String, Boolean)
+  private def toS(r: R) =
+    SiteTimeLimit(SiteTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
+
   def listForProfile(pid: ProfileId) =
-    sql"SELECT id,profile_id,domain_pattern,daily_minutes,label,exempt_from_daily FROM site_time_limits WHERE profile_id=$pid ORDER BY id"
+    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
+            FROM app_policy_assignments apa
+            JOIN apps a       ON a.id = apa.app_id
+            JOIN app_hosts ah ON ah.app_id = apa.app_id
+           WHERE apa.profile_id = $pid AND apa.mode = 'time_limited'
+           ORDER BY apa.id, ah.host"""
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
-  def listAll                        =
-    sql"SELECT id,profile_id,domain_pattern,daily_minutes,label,exempt_from_daily FROM site_time_limits ORDER BY id"
+
+  def listAll =
+    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
+            FROM app_policy_assignments apa
+            JOIN apps a       ON a.id = apa.app_id
+            JOIN app_hosts ah ON ah.app_id = apa.app_id
+           WHERE apa.mode = 'time_limited'
+           ORDER BY apa.id, ah.host"""
       .query[R]
       .map(toS)
       .to[List]
       .transact(xa)
-  def replaceForProfile(pid: ProfileId, ls: List[SiteTimeLimitRequest]) = {
-    val del = sql"DELETE FROM site_time_limits WHERE profile_id=$pid".update.run
-    val ins = ls.map(l =>
-      sql"INSERT INTO site_time_limits(profile_id,domain_pattern,daily_minutes,label,exempt_from_daily) VALUES($pid,${l.domainPattern},${l.dailyMinutes},${l.label},${l.exemptFromDaily})".update.run,
-    )
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
-  }
 }
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {

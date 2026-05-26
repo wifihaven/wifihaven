@@ -20,6 +20,9 @@ import zio.test.Assertion.*
  *
  * These exercise the full stack: HTTP handler → service → real Postgres. No mocks except Clock and
  * upstream DNS socket.
+ *
+ * Post-#764: profile-side `extraBlocked`/`extraAllowed`/`siteTimeLimits` were migrated into the
+ * apps schema and dropped from the wire — those concerns are exercised via app endpoints/specs.
  */
 object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -38,30 +41,27 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
   )
 
+  private def mkRoutes =
+    for {
+      profileRepo     <- ZIO.service[ProfileRepo]
+      schedRepo       <- ZIO.service[ScheduleRepo]
+      tlRepo          <- ZIO.service[TimeLimitRepo]
+      auth            <- makeAuth
+      userProfileRepo <- ZIO.service[UserProfileRepo]
+      userRepoSvc     <- ZIO.service[UserRepo]
+    } yield (
+      auth,
+      ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, userProfileRepo, userRepoSvc),
+    )
+
   def spec = suite("Profile API")(
     suite("GET /api/profiles")(
       test("returns seeded default profiles") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          auth            <- makeAuth
-          userRepo        <- ZIO.service[UserRepo]
-          token           <- auth.login("admin", "changeme").map(_.token.value)
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
-          req    = Request
+          _              <- cleanDb
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
             .get(URL.decode("/api/profiles").toOption.get)
             .addHeader(Header.Authorization.Bearer(token))
           resp    <- routes.runZIO(req)
@@ -74,23 +74,8 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
       test("returns 401 without token") {
         for {
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          auth            <- makeAuth
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
-          req    = Request.get(URL.decode("/api/profiles").toOption.get)
+          (_, routes) <- mkRoutes
+          req = Request.get(URL.decode("/api/profiles").toOption.get)
           resp <- routes.runZIO(req)
         } yield assertTrue(resp.status == Status.Unauthorized)
       },
@@ -98,29 +83,15 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     suite("POST /api/profiles")(
       test("admin can create a profile with schedules and time limits") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token.value)
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
-          body   = UpsertProfileRequest(
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          schedRepo      <- ZIO.service[ScheduleRepo]
+          tlRepo         <- ZIO.service[TimeLimitRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          body = UpsertProfileRequest(
             name = "Teenager",
             blockedCategories = List(BlocklistId.unsafe("adult"), BlocklistId.unsafe("gambling")),
-            extraBlocked = List(Hostname.unsafe("tiktok.com")),
-            extraAllowed = List(Hostname.unsafe("khanacademy.org")),
             paused = false,
             schedules = List(
               ScheduleRequest(
@@ -132,58 +103,33 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               ),
             ),
             timeLimit = Some(180),
-            siteTimeLimits = List(
-              SiteTimeLimitRequest("*.youtube.com", 45, "YouTube"),
-            ),
           ).toJson
-          req    = Request
+          req  = Request
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
           resp     <- routes.runZIO(req)
-          // Verify everything was persisted
           profiles <- profileRepo.listAll
           teen     <- ZIO
             .fromOption(profiles.find(_.name == "Teenager"))
             .orElseFail(new Exception("Profile not found"))
           scheds   <- schedRepo.listForProfile(teen.id)
           tl       <- tlRepo.findForProfile(teen.id)
-          stls     <- stlRepo.listForProfile(teen.id)
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(teen.blockedCategories.contains(BlocklistId.unsafe("adult"))) &&
-          assertTrue(teen.extraBlocked.contains(Hostname.unsafe("tiktok.com"))) &&
-          assertTrue(teen.extraAllowed.contains(Hostname.unsafe("khanacademy.org"))) &&
           assertTrue(scheds.length == 1) &&
           assertTrue(scheds.head.startLocal == java.time.LocalTime.of(22, 0)) &&
-          assertTrue(tl.exists(_.dailyMinutes == 180)) &&
-          assertTrue(stls.length == 1) &&
-          assertTrue(stls.head.label == "YouTube") &&
-          assertTrue(stls.head.dailyMinutes == 45)
+          assertTrue(tl.exists(_.dailyMinutes == 180))
       },
       test("failureMode defaults to LastKnownGood when omitted from create request (#385)") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token.value)
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
-          // Send create body with no failureMode field at all.
-          body   =
-            """{"name":"Defaulted","blockedCategories":[],"extraBlocked":[],"extraAllowed":[],"paused":false,"schedules":[],"timeLimit":null,"siteTimeLimits":[]}"""
-          req    = Request
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          body =
+            """{"name":"Defaulted","blockedCategories":[],"paused":false,"schedules":[],"timeLimit":null}"""
+          req  = Request
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
@@ -194,36 +140,19 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
       test("failureMode=AllowAll in create request persists AllowAll (#385 admin override)") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token.value)
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
-          body   = UpsertProfileRequest(
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          body = UpsertProfileRequest(
             name = "AdultsAllowAll",
             blockedCategories = Nil,
-            extraBlocked = Nil,
-            extraAllowed = Nil,
             paused = false,
             schedules = Nil,
             timeLimit = None,
-            siteTimeLimits = Nil,
             failureMode = Some(FailureMode.AllowAll),
           ).toJson
-          req    = Request
+          req  = Request
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
@@ -234,35 +163,18 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
       test("PUT /api/profiles/:id updates failureMode") {
         for {
-          _           <- cleanDb
-          profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
-          tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-          auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token.value)
-          profiles0   <- profileRepo.listAll
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          profiles0      <- profileRepo.listAll
           kidsId = profiles0.find(_.name == "Kids").get.id
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
           body   = UpsertProfileRequest(
             name = "Kids",
             blockedCategories = Nil,
-            extraBlocked = Nil,
-            extraAllowed = Nil,
             paused = false,
             schedules = Nil,
             timeLimit = None,
-            siteTimeLimits = Nil,
             failureMode = Some(FailureMode.AllowAll),
           ).toJson
           req    = Request
@@ -276,29 +188,14 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
       test("child user cannot create profiles") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          userRepo        <- ZIO.service[UserRepo]
-          auth            <- makeAuth
-          hash            <- auth.hashPassword("readpass")
-          _               <- userRepo.create("reader", hash, "child")
-          token           <- auth.login("reader", "readpass").map(_.token.value)
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
-          body   = UpsertProfileRequest("Test", Nil, Nil, Nil, false, Nil, None, Nil).toJson
-          req    = Request
+          _              <- cleanDb
+          userRepo       <- ZIO.service[UserRepo]
+          (auth, routes) <- mkRoutes
+          hash           <- auth.hashPassword("readpass")
+          _              <- userRepo.create("reader", hash, "child")
+          token          <- auth.login("reader", "readpass").map(_.token.value)
+          body = UpsertProfileRequest("Test", Nil, false, Nil, None).toJson
+          req  = Request
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
@@ -308,32 +205,17 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     suite("PUT /api/profiles/:id")(
       test("update profile name, categories, and time limit") {
         for {
-          _           <- cleanDb
-          profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
-          tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-          auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token.value)
-          // Get the Kids profile id
-          profiles    <- profileRepo.listAll
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          schedRepo      <- ZIO.service[ScheduleRepo]
+          tlRepo         <- ZIO.service[TimeLimitRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          profiles       <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
           body   = UpsertProfileRequest(
             name = "Kids Updated",
             blockedCategories = List(BlocklistId.unsafe("adult")),
-            extraBlocked = Nil,
-            extraAllowed = List(Hostname.unsafe("pbs.org")),
             paused = false,
             schedules = List(
               ScheduleRequest(
@@ -345,7 +227,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               ),
             ),
             timeLimit = Some(120),
-            siteTimeLimits = Nil,
           ).toJson
           req    = Request
             .put(
@@ -360,7 +241,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           scheds  <- schedRepo.listForProfile(kidsId)
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(updated.exists(_.name == "Kids Updated")) &&
-          assertTrue(updated.exists(_.extraAllowed.contains(Hostname.unsafe("pbs.org")))) &&
           assertTrue(tl.exists(_.dailyMinutes == 120)) &&
           assertTrue(scheds.exists(_.startLocal == java.time.LocalTime.of(20, 0)))
       },
@@ -372,36 +252,19 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       // via the full PUT, which is idempotent by construction.
       test("two consecutive PUT(paused=true) leave state at paused=true") {
         for {
-          _           <- cleanDb
-          profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
-          tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-          auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token.value)
-          profiles    <- profileRepo.listAll
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          profiles       <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
           mkReq  = (paused: Boolean) => {
             val body = UpsertProfileRequest(
               name = "Kids",
               blockedCategories = Nil,
-              extraBlocked = Nil,
-              extraAllowed = Nil,
               paused = paused,
               schedules = Nil,
               timeLimit = None,
-              siteTimeLimits = Nil,
             ).toJson
             Request
               .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
@@ -423,26 +286,12 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
       test("legacy POST /api/profiles/:id/pause is removed (404)") {
         for {
-          _           <- cleanDb
-          profileRepo <- ZIO.service[ProfileRepo]
-          schedRepo   <- ZIO.service[ScheduleRepo]
-          tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-          auth        <- makeAuth
-          token       <- auth.login("admin", "changeme").map(_.token.value)
-          profiles    <- profileRepo.listAll
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          profiles       <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          userRepoSvc     <- ZIO.service[UserRepo]
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepoSvc,
-          )
           req    = Request
             .post(URL.decode(s"/api/profiles/$kidsId/pause").toOption.get, Body.empty)
             .addHeader(Header.Authorization.Bearer(token))
@@ -453,29 +302,16 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
     suite("Profile ↔ user linking")(
       test("PUT /api/profiles/:id/users sets the link set; GET returns those users") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          userRepo        <- ZIO.service[UserRepo]
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          auth            <- makeAuth
-          token           <- auth.login("admin", "changeme").map(_.token.value)
-          hash            <- auth.hashPassword("pw")
-          aliceId         <- userRepo.create("alice", hash, "child")
-          bobId           <- userRepo.create("bob", hash, "adult")
-          profiles        <- profileRepo.listAll
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          userRepo       <- ZIO.service[UserRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          hash           <- auth.hashPassword("pw")
+          aliceId        <- userRepo.create("alice", hash, "child")
+          bobId          <- userRepo.create("bob", hash, "adult")
+          profiles       <- profileRepo.listAll
           kidsId  = profiles.find(_.name == "Kids").get.id
-          routes  = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepo,
-          )
           putBody = SetProfileUsersRequest(List(aliceId, bobId)).toJson
           putReq  = Request
             .put(URL.decode(s"/api/profiles/$kidsId/users").toOption.get, Body.fromString(putBody))
@@ -496,30 +332,16 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           userRepo        <- ZIO.service[UserRepo]
           userProfileRepo <- ZIO.service[UserProfileRepo]
-          auth            <- makeAuth
+          (auth, routes)  <- mkRoutes
           token           <- auth.login("admin", "changeme").map(_.token.value)
           hash            <- auth.hashPassword("pw")
           aliceId         <- userRepo.create("alice", hash, "child")
           profiles        <- profileRepo.listAll
           kidsId   = profiles.find(_.name == "Kids").get.id
           adultsId = profiles.find(_.name == "Adults").get.id
-          // Alice is linked to BOTH profiles.
           _ <- userProfileRepo.setProfilesForUser(aliceId, List(kidsId, adultsId))
-          routes  = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepo,
-          )
-          // Remove alice from Kids by setting empty user list for Kids.
           putBody = SetProfileUsersRequest(Nil).toJson
           putReq  = Request
             .put(URL.decode(s"/api/profiles/$kidsId/users").toOption.get, Body.fromString(putBody))
@@ -531,28 +353,15 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
       test("non-admin gets 403 on PUT /api/profiles/:id/users") {
         for {
-          _               <- cleanDb
-          profileRepo     <- ZIO.service[ProfileRepo]
-          schedRepo       <- ZIO.service[ScheduleRepo]
-          tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
-          userRepo        <- ZIO.service[UserRepo]
-          userProfileRepo <- ZIO.service[UserProfileRepo]
-          auth            <- makeAuth
-          hash            <- auth.hashPassword("pw")
-          _               <- userRepo.create("adult1", hash, "adult")
-          token           <- auth.login("adult1", "pw").map(_.token.value)
-          profiles        <- profileRepo.listAll
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          userRepo       <- ZIO.service[UserRepo]
+          (auth, routes) <- mkRoutes
+          hash           <- auth.hashPassword("pw")
+          _              <- userRepo.create("adult1", hash, "adult")
+          token          <- auth.login("adult1", "pw").map(_.token.value)
+          profiles       <- profileRepo.listAll
           kidsId = profiles.find(_.name == "Kids").get.id
-          routes = ProfileRoutes.routes(
-            auth,
-            profileRepo,
-            schedRepo,
-            tlRepo,
-            stlRepo,
-            userProfileRepo,
-            userRepo,
-          )
           body   = SetProfileUsersRequest(Nil).toJson
           req    = Request
             .put(URL.decode(s"/api/profiles/$kidsId/users").toOption.get, Body.fromString(body))

@@ -134,7 +134,7 @@ object Main extends ZIOAppDefault {
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield HealthRoutes.routes(dbHealthCheck) ++
       AuthRoutes.routes(auth, userRepo, upRepo) ++
-      ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, stlRepo, upRepo, userRepo) ++
+      ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
       HouseholdSettingsRoutes.routes(auth, hsRepo) ++
       DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
       TimeRoutes.routes(

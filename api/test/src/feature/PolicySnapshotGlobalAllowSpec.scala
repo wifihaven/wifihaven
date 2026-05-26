@@ -60,7 +60,7 @@ object PolicySnapshotGlobalAllowSpec
   private val expected: Set[String] = uiHosts.map(_.value).toSet
 
   def spec = suite("policy snapshot — global allow hosts (#944)")(
-    test("empty uiAllowedHosts → snapshot extraAllowed is just the profile's own list") {
+    test("empty uiAllowedHosts → snapshot extraAllowed is just the app-derived list") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -76,7 +76,7 @@ object PolicySnapshotGlobalAllowSpec
         clk  <- ZIO.service[Clock]
         ps0  <- pr.listAll
         kids = ps0.find(_.name == "Kids").get
-        _ <- pr.update(kids.copy(extraAllowed = List(Hostname.unsafe("user.example"))))
+        _ <- TestLayers.seedAppAssignment(ar, kids.id, "user.example", AppMode.Allowed)
         svc = PolicyServiceLive(
           pr,
           sr,
@@ -99,10 +99,10 @@ object PolicySnapshotGlobalAllowSpec
       for {
         _         <- cleanDb
         pr        <- ZIO.service[ProfileRepo]
-        // Seed an existing user-configured extraAllowed entry on one profile.
+        ar        <- ZIO.service[AppRepo]
         profiles0 <- pr.listAll
         kids = profiles0.find(_.name == "Kids").get
-        _    <- pr.update(kids.copy(extraAllowed = List(Hostname.unsafe("already-in.example"))))
+        _    <- TestLayers.seedAppAssignment(ar, kids.id, "already-in.example", AppMode.Allowed)
         ps   <- makePs
         snap <- ps.snapshot
       } yield {
@@ -141,9 +141,10 @@ object PolicySnapshotGlobalAllowSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
+        ar  <- ZIO.service[AppRepo]
         ps0 <- pr.listAll
         kids = ps0.find(_.name == "Kids").get
-        _    <- pr.update(kids.copy(extraBlocked = List(Hostname.unsafe("wifihaven.net"))))
+        _    <- TestLayers.seedAppAssignment(ar, kids.id, "wifihaven.net", AppMode.Blocked)
         svc  <- makePs
         snap <- svc.snapshot
       } yield {

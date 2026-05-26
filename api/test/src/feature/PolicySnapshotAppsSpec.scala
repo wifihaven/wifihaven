@@ -54,25 +54,21 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
     ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))
 
   def spec = suite("PolicySnapshot — app expansion (#763)")(
-    test("allowed-mode app: hosts unioned into extraAllowed (alongside profile's own list)") {
+    test("allowed-mode app: hosts unioned into extraAllowed") {
       for {
-        _           <- cleanDb
-        pr          <- ZIO.service[ProfileRepo]
-        ar          <- ZIO.service[AppRepo]
-        kids        <- kidsId
-        // Profile keeps an existing per-profile extraAllowed entry.
-        kidsProfile <- pr.findById(kids).map(_.get)
-        _           <- pr.update(
-          kidsProfile.copy(extraAllowed = List(Hostname.unsafe("khan-own.org"))),
-        )
-        appId       <- ar.create("Khan", "khan", None, None)
-        _           <- ar.setHosts(
+        _     <- cleanDb
+        ar    <- ZIO.service[AppRepo]
+        kids  <- kidsId
+        // A second allowed-mode app contributes a host alongside the multi-host one.
+        _     <- TestLayers.seedAppAssignment(ar, kids, "khan-own.org", AppMode.Allowed)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(
           appId,
           List(Hostname.unsafe("khanacademy.org"), Hostname.unsafe("kastatic.org")),
         )
-        _           <- ar.upsertAssignment(appId, kids, AppMode.Allowed, None, true)
-        svc         <- makePs
-        snap        <- svc.snapshot
+        _     <- ar.upsertAssignment(appId, kids, AppMode.Allowed, None, true)
+        svc   <- makePs
+        snap  <- svc.snapshot
       } yield {
         val ea = snap.profiles(kids).rules.extraAllowed.map(_.value).toSet
         assertTrue(ea.contains("khan-own.org")) &&

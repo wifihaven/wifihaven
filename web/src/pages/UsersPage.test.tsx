@@ -21,13 +21,13 @@ import { api } from '@/api/client'
 import { UsersPage } from './UsersPage'
 
 const kidsProfile = {
-  profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false },
-  schedules: [], siteTimeLimits: [], timeLimit: null,
+  profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false },
+  schedules: [], timeLimit: null,
 } as unknown as ProfileDetail
 
 const adultsProfile = {
-  profile: { id: 2, name: 'Adults', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false },
-  schedules: [], siteTimeLimits: [], timeLimit: null,
+  profile: { id: 2, name: 'Adults', blockedCategories: [], paused: false },
+  schedules: [], timeLimit: null,
 } as unknown as ProfileDetail
 
 const aliceUser: User = { id: 10, username: 'alice', role: 'admin', profileIds: [] }

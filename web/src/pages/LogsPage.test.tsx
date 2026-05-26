@@ -39,7 +39,7 @@ const devices: Device[] = [
   { id: 10, mac: 'aa:bb:cc:dd:ee:01', name: "Kid's iPad", profileId: 1, profileName: 'Kids', lastSeenIp: null, lastSeenAt: null },
 ]
 const profileDetails: ProfileDetail[] = [
-  { profile: { id: 1, name: 'Kids', blockedCategories: [], extraBlocked: [], extraAllowed: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum' }, schedules: [], timeLimit: null, siteTimeLimits: [] },
+  { profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum' }, schedules: [], timeLimit: null },
 ]
 
 function renderAt(path = '/usage/events') {

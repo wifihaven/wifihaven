@@ -128,8 +128,6 @@ case class Profile(
     id: ProfileId,
     name: String,
     blockedCategories: List[BlocklistId],
-    extraBlocked: List[Hostname],
-    extraAllowed: List[Hostname],
     paused: Boolean,
     failureMode: FailureMode = FailureMode.LastKnownGood,
     blockIpOnly: Boolean = false,
@@ -381,12 +379,9 @@ case class SetProfileUsersRequest(userIds: List[UserId]) derives JsonCodec
 case class UpsertProfileRequest(
     name: String,
     blockedCategories: List[BlocklistId],
-    extraBlocked: List[Hostname],
-    extraAllowed: List[Hostname],
     paused: Boolean,
     schedules: List[ScheduleRequest],
     timeLimit: Option[Int],
-    siteTimeLimits: List[SiteTimeLimitRequest],
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,
     crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
@@ -469,13 +464,6 @@ case class HeartbeatExplainRow(
     bytes: Long,
     classified: String,
     reasons: List[String],
-) derives JsonCodec
-
-case class SiteTimeLimitRequest(
-    domainPattern: String,
-    dailyMinutes: Int,
-    label: String,
-    exemptFromDaily: Boolean = true,
 ) derives JsonCodec
 
 case class UpsertDeviceRequest(
@@ -706,7 +694,6 @@ case class ProfileDetail(
     profile: Profile,
     schedules: List[Schedule],
     timeLimit: Option[TimeLimit],
-    siteTimeLimits: List[SiteTimeLimit],
 ) derives JsonCodec
 
 // #716 / #721 — per-device hourly usage timeline. The endpoint returns 24
@@ -863,17 +850,10 @@ case class DashboardNow(
     profiles: List[DashboardNowProfile],
 ) derives JsonCodec
 
-case class CachedProfile(
-    profile: Profile,
-    schedules: List[Schedule],
-    timeLimit: Option[Int],
-    siteTimeLimits: List[SiteTimeLimit],
-)
-
 case class DnsCache(
-    deviceProfiles: Map[MacAddress, CachedProfile],
+    deviceProfiles: Map[MacAddress, Profile],
     blocklists: Map[BlocklistId, Set[Hostname]],
-    defaultProfile: Option[CachedProfile],
+    defaultProfile: Option[Profile],
 )
 
 object DnsCache {
