@@ -1930,11 +1930,15 @@ function AppRow({ app, profileId, onChanged }: {
   async function commitMinutes() {
     const trimmed = minutesDraft.trim()
     if (trimmed === '') {
-      // Restore to the persisted value so the input doesn't sit empty
-      // looking unsaved. Doesn't clear the policy — operator must use
-      // Clear / Block / Allow for that.
-      setMinutesDraft(currentMinutes != null ? String(currentMinutes) : '')
       setLocalError(null)
+      // Clearing the input on a time-limited app removes the limit by
+      // switching the app to plain Allow (keeps it assigned to the
+      // profile so the row stays visible — use the Clear button to drop
+      // the assignment entirely). For apps that weren't time-limited in
+      // the first place this is a no-op.
+      if (isTimeLimited) {
+        await apply('allowed', null)
+      }
       return
     }
     const n = Number(trimmed)

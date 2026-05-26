@@ -948,7 +948,7 @@ describe('ProfilesPage — apps section (#767)', () => {
     expect(await screen.findByTestId('app-row-50-error')).toHaveTextContent(/minutes > 0/i)
   })
 
-  it('blank minutes on blur is a no-op (no save, no error)', async () => {
+  it('blank minutes on blur is a no-op when the app is not time-limited', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
@@ -960,6 +960,29 @@ describe('ProfilesPage — apps section (#767)', () => {
     await user.tab()
     expect(api.apps.setPolicy).not.toHaveBeenCalled()
     expect(screen.queryByTestId('app-row-50-error')).not.toBeInTheDocument()
+  })
+
+  it('clearing the minutes input on a time-limited app reverts to Allow', async () => {
+    const khan = {
+      app: { id: 60, name: 'Khan', slug: 'khan', templateId: null, icon: '📚', createdAt: '2026-01-01' },
+      hosts: ['khanacademy.org'],
+      assignments: [
+        { id: 3, appId: 60, profileId: 1, mode: 'time_limited' as const, dailyMinutes: 60, exemptFromDaily: true },
+      ],
+    }
+    ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khan])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    const input = await screen.findByTestId('app-row-60-minutes') as HTMLInputElement
+    expect(input.value).toBe('60')
+    await user.clear(input)
+    await user.tab()
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'allowed', dailyMinutes: null }),
+    )
   })
 
   it('clearing an assigned app calls deletePolicy', async () => {
