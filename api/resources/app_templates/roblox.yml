@@ -1,7 +1,8 @@
 slug: roblox
 name: Roblox
-icon: "🎮"
-icon_type: emoji
+# Emoji fallback: 🎮
+icon: "https://icons.duckduckgo.com/ip3/roblox.com.ico"
+icon_type: url
 hosts:
   - roblox.com
   - rbxcdn.com

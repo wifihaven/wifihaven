@@ -1,7 +1,8 @@
 slug: youtube
 name: YouTube
-icon: "📺"
-icon_type: emoji
+# Emoji fallback: 📺
+icon: "https://icons.duckduckgo.com/ip3/youtube.com.ico"
+icon_type: url
 hosts:
   - youtube.com
   - youtu.be

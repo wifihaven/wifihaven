@@ -1,7 +1,8 @@
 slug: tiktok
 name: TikTok
-icon: "🎵"
-icon_type: emoji
+# Emoji fallback: 🎵
+icon: "https://icons.duckduckgo.com/ip3/tiktok.com.ico"
+icon_type: url
 hosts:
   - tiktok.com
   - tiktokcdn.com

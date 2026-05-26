@@ -1,7 +1,8 @@
 slug: khan-academy
 name: Khan Academy
-icon: "📚"
-icon_type: emoji
+# Emoji fallback: 📚
+icon: "https://icons.duckduckgo.com/ip3/khanacademy.org.ico"
+icon_type: url
 hosts:
   - khanacademy.org
   - kastatic.org

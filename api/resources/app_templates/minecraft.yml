@@ -1,7 +1,8 @@
 slug: minecraft
 name: Minecraft
-icon: "⛏️"
-icon_type: emoji
+# Emoji fallback: ⛏️
+icon: "https://icons.duckduckgo.com/ip3/minecraft.net.ico"
+icon_type: url
 hosts:
   - minecraft.net
   - mojang.com

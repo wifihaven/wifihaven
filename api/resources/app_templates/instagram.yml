@@ -1,7 +1,8 @@
 slug: instagram
 name: Instagram
-icon: "📷"
-icon_type: emoji
+# Emoji fallback: 📷
+icon: "https://icons.duckduckgo.com/ip3/instagram.com.ico"
+icon_type: url
 hosts:
   - instagram.com
   - cdninstagram.com
