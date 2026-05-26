@@ -335,22 +335,28 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
     else
       active_seconds = 0
     end
-    local rec = {
-      mac           = c.mac,
-      host          = host,
-      activeSeconds = active_seconds,
-      -- Wire semantics (#905): bytesIn is from the device's POV — traffic
-      -- arriving from the internet (rx counter). bytesOut is traffic leaving
-      -- the device toward the internet (tx counter). The internal record
-      -- fields here are named for their nft-set source (bytes = tx,
-      -- bytes_out = rx) and the swap happens only at the wire boundary.
-      bytesIn       = c.bytes_out or 0,
-      bytesOut      = c.bytes     or 0,
-    }
-    if leases then
-      rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
+    -- mac_ip_tracking set elements live for 6h after their last packet (#1032);
+    -- skip flows with no traffic this bucket rather than emit 0/0/0 records
+    -- that inflated bucket bodies past the zio-http cap in #1017. The
+    -- bytes>0/no-sample branch above still emits because active_seconds > 0.
+    if active_seconds > 0 or (c.bytes or 0) > 0 or (c.bytes_out or 0) > 0 then
+      local rec = {
+        mac           = c.mac,
+        host          = host,
+        activeSeconds = active_seconds,
+        -- Wire semantics (#905): bytesIn is from the device's POV — traffic
+        -- arriving from the internet (rx counter). bytesOut is traffic leaving
+        -- the device toward the internet (tx counter). The internal record
+        -- fields here are named for their nft-set source (bytes = tx,
+        -- bytes_out = rx) and the swap happens only at the wire boundary.
+        bytesIn       = c.bytes_out or 0,
+        bytesOut      = c.bytes     or 0,
+      }
+      if leases then
+        rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
+      end
+      records[#records + 1] = rec
     end
-    records[#records + 1] = rec
   end
 
   return {

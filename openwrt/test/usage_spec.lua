@@ -447,6 +447,47 @@ describe("usage.build_report", function()
     assert.equal(0, #r.records)
   end)
 
+  -- #1032: mac_ip_tracking set elements live for 6h after their last packet, so
+  -- post-bucket-reset the agent sees a counters entry for every flow seen in
+  -- the last 6h — most with bytes=0 and no active samples. Emitting them
+  -- inflated bucket bodies past the zio-http cap (#1017). Drop the all-zero
+  -- records at build time.
+  it("drops counters with no traffic and no active samples (#1032)", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 50000, packets = 100 },
+      { mac = "de:ad:be:ef:00:01", dst_ip = "8.8.8.8", bytes = 0,     packets = 0   },
+      { mac = "fa:ce:b0:0c:00:01", dst_ip = "9.9.9.9", bytes = 0,     packets = 0   },
+    }
+    local t = usage.new_tracker()
+    t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"] = BUCKET_S / SAMPLE_S
+    local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, t, SAMPLE_S, BUCKET_S)
+    assert.equal(1, #r.records)
+    assert.equal("aa:bb:cc:11:22:33", r.records[1].mac)
+    assert.equal(50000,               r.records[1].bytesOut)
+    assert.equal(BUCKET_S,            r.records[1].activeSeconds)
+  end)
+
+  -- #1032 regression guard: a flow that appeared *after* the last sample tick
+  -- has no tracker samples but bytes > 0 — the post-tick branch credits one
+  -- sample of activeSeconds and must still emit a record.
+  it("still emits a record when bytes>0 but no active sample was caught (#1032)", function()
+    local counters = {
+      { mac = "aa:bb:cc:11:22:33", dst_ip = "1.2.3.4", bytes = 100, packets = 2 },
+      { mac = "de:ad:be:ef:00:01", dst_ip = "8.8.8.8", bytes = 0,   packets = 0,
+        bytes_out = 250, packets_out = 3 },
+    }
+    local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, usage.new_tracker(), SAMPLE_S, BUCKET_S)
+    assert.equal(2, #r.records)
+    local by_mac = {}
+    for _, rec in ipairs(r.records) do by_mac[rec.mac] = rec end
+    assert.equal(SAMPLE_S, by_mac["aa:bb:cc:11:22:33"].activeSeconds)
+    assert.equal(100,      by_mac["aa:bb:cc:11:22:33"].bytesOut)
+    assert.equal(SAMPLE_S, by_mac["de:ad:be:ef:00:01"].activeSeconds)
+    assert.equal(250,      by_mac["de:ad:be:ef:00:01"].bytesIn)
+  end)
+
 end)
 
 -- ── tracker (sub-minute activity sampler, #295, #516) ────────────────────
@@ -614,12 +655,14 @@ describe("usage.build_report with tracker", function()
     assert.equal(SAMPLE_S, r.records[1].activeSeconds)
   end)
 
-  it("activeSeconds = 0 when tracker has no entry and bytes = 0", function()
+  -- #1032: previously emitted a 0/0/0 record; now dropped to keep bucket
+  -- bodies from inflating with dead mac_ip_tracking elements (see #1017).
+  it("drops the record entirely when tracker has no entry and bytes = 0 (#1032)", function()
     local t = usage.new_tracker()
     local r = usage.build_report(
       { s("aa:bb:cc:11:22:33", "1.2.3.4", 0) },
       NF_SETS, P_START, P_END, ROUTER, nil, nil, t, SAMPLE_S, BUCKET_S)
-    assert.equal(0, r.records[1].activeSeconds)
+    assert.equal(0, #r.records)
   end)
 
   it("assigns activeSeconds per (mac, dst_ip) independently from the same tracker", function()
