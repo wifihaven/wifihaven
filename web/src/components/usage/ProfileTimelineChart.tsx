@@ -12,7 +12,7 @@ import type {
 } from '@/types/api'
 import {
   formatMins, groupBucketsByLocalDay, localBucketOffsetMin,
-} from '@/pages/TimePage'
+} from '@/lib/timeFormat'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from './UsageHourlyBarChart'
