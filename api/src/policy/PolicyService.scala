@@ -356,7 +356,7 @@ class PolicyServiceLive(
     // Time-limit blocks expire at the next household daily-reset Instant.
     val resetAt      = PolicyService.nextDailyResetAfter(settings, now).toString
     val siteLimitHit = siteLimits.find { sl =>
-      matchesDomainPattern(hostname, sl.domainPattern) &&
+      HostMatch.matchesPattern(hostname, sl.domainPattern) &&
       minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes
     }
     siteLimitHit
@@ -369,7 +369,7 @@ class PolicyServiceLive(
       )
       .orElse {
         val isExemptSite = siteLimits.exists { sl =>
-          sl.exemptFromDaily && matchesDomainPattern(hostname, sl.domainPattern)
+          sl.exemptFromDaily && HostMatch.matchesPattern(hostname, sl.domainPattern)
         }
         if isExemptSite then None
         else
@@ -393,22 +393,15 @@ class PolicyServiceLive(
     }
 
   private def matchesAny(domain: String, patterns: List[Hostname]): Boolean =
-    patterns.exists(p => matchesDomainPattern(domain, p.value))
+    patterns.exists(p => HostMatch.matchesPattern(domain, p.value))
 
   // Pattern matching is FQDN-only by design (#391). The decision endpoint
   // receives `RouterDecisionRequest.hostname: Hostname`, which the type system
   // already constrains to FQDN-shape (Hostname.parse rejects IPv4 literals),
-  // so an IP literal can't even reach this matcher.
-  private def matchesDomainPattern(domain: String, pattern: String): Boolean =
-    if pattern.startsWith("*.") then {
-      val suffix = pattern.drop(1)
-      domain.endsWith(suffix) || domain == pattern.drop(2)
-    } else domain == pattern || domain.endsWith(s".$pattern")
-
-  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean = {
-    val parts = domain.split('.').toList
-    (0 until parts.length - 1).exists(i => list.contains(parts.drop(i).mkString(".")))
-  }
+  // so an IP literal can't even reach this matcher. Shared with Presence and
+  // UsageTraffic via HostMatch (#1085).
+  private def matchesDomainOrParent(domain: String, list: Set[String]): Boolean =
+    HostMatch.hasApexMatch(domain, list)
 
 }
 
