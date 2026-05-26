@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       setUsers: vi.fn(),
+      usageByApp: vi.fn(),
     },
     blocklists: {
       list: vi.fn(),
@@ -35,9 +36,29 @@ vi.mock('@/api/client', () => ({
     time: {
       summaryAll: vi.fn(),
       grantExtension: vi.fn(),
+      statusAllWeek: vi.fn(),
+    },
+    usage: {
+      series: vi.fn(),
     },
   },
 }))
+
+// recharts pulls in canvas + ResizeObserver under jsdom; the expanded card
+// always mounts ProfileTimelineChart, so stub the chart primitives globally.
+vi.mock('recharts', () => {
+  const Pass = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>
+  return {
+    Bar: () => null,
+    BarChart: Pass,
+    CartesianGrid: () => null,
+    Legend: () => null,
+    ResponsiveContainer: Pass,
+    Tooltip: () => null,
+    XAxis: () => null,
+    YAxis: () => null,
+  }
+})
 
 vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => mockAuth,
@@ -129,8 +150,32 @@ beforeEach(() => {
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26', apps: [],
+  })
   ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsSummary, adultsSummary])
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 30 })
+  ;(api.time.statusAllWeek as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  // #1036 — ProfileTimelineChart fires /api/usage/series whenever a card is
+  // expanded (Today is the default tab). Default to an empty payload; specific
+  // tests can override to populate top hosts/devices.
+  ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    ({ profileId, date }: { profileId: number; date: string }) =>
+      Promise.resolve({
+        profileId,
+        profileName: profileId === 1 ? 'Kids' : 'Adults',
+        date,
+        tz: 'UTC',
+        topHosts: [],
+        buckets: Array.from({ length: 24 }, (_, h) => ({
+          hour: h, totalMins: 0, perHost: [], otherMins: 0,
+        })),
+        topDevices: [],
+        bucketsByDevice: Array.from({ length: 24 }, (_, h) => ({
+          hour: h, totalMins: 0, perDevice: [], otherMins: 0,
+        })),
+      }),
+  )
 })
 
 // #972 — cards are collapse-by-default; tests that need the expanded body
@@ -1078,5 +1123,86 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
     expect(within(kidsCard).queryByTestId('profile-devices-subsection-1')).not.toBeInTheDocument()
     // The pre-#973 read-only listing is the fallback for non-admins.
     expect(within(kidsCard).getByTestId('profile-devices-1')).toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
+  const youtubeTimeLimited = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [
+      { id: 2, appId: 50, profileId: 1, mode: 'time_limited' as const, dailyMinutes: 60, exemptFromDaily: true },
+    ],
+  }
+  const youtubeAllowed = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [
+      { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+
+  it('renders a usage bar with used/cap text on a time-limited app', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeTimeLimited])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 1800, presenceSeconds: 1800, hosts: [],
+      }],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const bar = await screen.findByTestId('app-row-50-usage')
+    // 1800s → 30m of 60m limit.
+    expect(bar).toHaveTextContent('30m')
+    expect(bar).toHaveTextContent('1:00')
+    // Bar fill width matches 30/60 = 50%.
+    const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
+    expect(fill.style.width).toBe('50%')
+    // Under cap → emerald, not red.
+    expect(fill.className).toContain('bg-emerald-500')
+  })
+
+  it('shows the bar in red once usage meets/exceeds the cap', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeTimeLimited])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 4200, presenceSeconds: 4200, hosts: [],
+      }],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const bar = await screen.findByTestId('app-row-50-usage')
+    const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
+    // 70m > 60m → clamped to 100%, painted red.
+    expect(fill.style.width).toBe('100%')
+    expect(fill.className).toContain('bg-red-500')
+  })
+
+  it('does not render the bar for an app without a daily limit', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeAllowed])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 1800, presenceSeconds: 1800, hosts: [],
+      }],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-50')
+    expect(screen.queryByTestId('app-row-50-usage')).not.toBeInTheDocument()
   })
 })

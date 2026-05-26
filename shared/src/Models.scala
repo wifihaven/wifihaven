@@ -789,6 +789,42 @@ case class ProfileDetail(
     timeLimit: Option[TimeLimit],
 ) derives JsonCodec
 
+/**
+ * #1061 — per-app time-used breakdown for one profile over a date window.
+ *
+ * `proportionalSeconds` is the wall-clock-attention number (#715): each 5-min bucket's duration is
+ * split across hosts by byte share, then summed across the hosts that belong to this app. Summing
+ * across apps within a profile ≈ the profile's wall-clock seconds — the right number to drive a
+ * per-app screen-time UI.
+ *
+ * `presenceSeconds` is bucket-dedupes at the app level: a bucket where any host belongs to this app
+ * contributes its full duration once. Surfaces "did the profile interact with this app at all"
+ * volume; not additive across apps.
+ *
+ * `appId = None` is the synthetic "Other" bucket: rows whose host isn't in any `app_hosts`
+ * membership.
+ *
+ * The drill-down `hosts` list reuses [[HostUsage]] (#262) so the SPA can render the per-host rows
+ * with the same Attention/Seen formatter as the existing per-profile breakdown.
+ */
+case class ProfileAppUsage(
+    appId: Option[AppId],
+    appName: String,
+    appIcon: Option[String],
+    appIconType: Option[IconType],
+    proportionalSeconds: Long,
+    presenceSeconds: Long,
+    hosts: List[HostUsage],
+) derives JsonCodec
+
+case class ProfileUsageByApp(
+    profileId: ProfileId,
+    profileName: String,
+    from: String,
+    to: String,
+    apps: List[ProfileAppUsage],
+) derives JsonCodec
+
 // #716 / #721 — per-device hourly usage timeline. The endpoint returns 24
 // buckets for the requested local date (in the requested `tz`, UTC by
 // default). Each bucket's `totalMins` is the device's bucket-deduplicated

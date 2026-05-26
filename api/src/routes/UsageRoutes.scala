@@ -92,6 +92,40 @@ object UsageRoutes {
             )
           } yield Response.json(resp.toJson)
         },
+      // #1061 — per-app time-used breakdown for one profile over [from,to].
+      // Read-only companion to #767's rules editor; powers the per-app subsection
+      // on the expanded /profiles card. Joins through `app_hosts` and folds rows
+      // whose host isn't in any app into a synthetic `appId=null` ("Other")
+      // bucket. Sorted by proportional seconds desc.
+      Method.GET / "api" / "profiles" / long("id") / "usage-by-app"    ->
+        handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
+          for {
+            claims <- requireAuth(req, auth)
+            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
+            today  <- clock.today
+            fromS = req.url.queryParam("from").getOrElse(today.toString)
+            toS   = req.url.queryParam("to").getOrElse(fromS)
+            from <- ZIO
+              .attempt(LocalDate.parse(fromS))
+              .orElseFail(Response.badRequest(s"invalid from: $fromS"))
+            to   <- ZIO
+              .attempt(LocalDate.parse(toS))
+              .orElseFail(Response.badRequest(s"invalid to: $toS"))
+            _    <- ZIO
+              .fail(Response.badRequest("from must be <= to"))
+              .when(from.isAfter(to))
+            resp <- buildUsageByApp(
+              pid,
+              from,
+              to,
+              profileRepo,
+              deviceRepo,
+              trafficRepo,
+              appRepo,
+            )
+          } yield Response.json(resp.toJson)
+        },
       Method.GET / "api" / "usage" / "series"                          ->
         handler { (req: Request) =>
           for {
@@ -157,6 +191,99 @@ object UsageRoutes {
           } yield Response.json(resp.toJson)
         },
     )
+
+  // #1061 — per-app rollup. Joins `app_hosts` to map each host → owning app (a
+  // host in two apps deterministically picks the lowest appId so a bucket isn't
+  // counted twice for the same minute). Aggregates two parallel numbers per app:
+  //   - proportionalSeconds (#715): sum of host byte-share-weighted bucket-seconds
+  //   - presenceSeconds: each (mac, period_start) bucket contributes once per
+  //     distinct app touched in that bucket. Not additive across apps (this is
+  //     intentional — surfaces "was this app touched at all" volume).
+  // Hosts not in any app land in the synthetic `appId=null` "Other" bucket.
+  private def buildUsageByApp(
+      pid: ProfileId,
+      from: LocalDate,
+      to: LocalDate,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      trafficRepo: TrafficReportRepo,
+      appRepo: AppRepo,
+  ): IO[Response, ProfileUsageByApp] =
+    for {
+      profile <- profileRepo
+        .findById(pid)
+        .mapError(ErrorMapper.dbErrorToResponse)
+        .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
+      allDevs <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
+      presence <- (if (macs.isEmpty) ZIO.succeed(Nil)
+                   else trafficRepo.listPresenceRows(macs, from, to))
+        .mapError(ErrorMapper.dbErrorToResponse)
+      appList  <- appRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      mappings <- appRepo.listAllHostMappings.mapError(ErrorMapper.dbErrorToResponse)
+    } yield {
+      val appById                            = appList.iterator.map(a => a.id -> a).toMap
+      // Deterministic host → owning-app: lowest appId wins when a host is in
+      // multiple apps. Avoids double-counting one bucket of activity into two
+      // apps for the per-profile screen-time view (matches #1061 acceptance).
+      val appOfHost: HostId => Option[AppId] = {
+        val byHost = mappings
+          .groupBy(_.host)
+          .view
+          .mapValues(ms => ms.iterator.map(_.appId).minByOption(_.value))
+          .toMap
+        h => h.asFqdn.flatMap(fqdn => byHost.getOrElse(fqdn, None))
+      }
+
+      val propByHost    = wifihaven.api.presence.Presence.proportionalHostSeconds(presence)
+      val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence)
+      val propMinByHost =
+        wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+
+      val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
+      val hostsByApp =
+        scala.collection.mutable.Map.empty[Option[AppId], List[HostUsage]]
+      for ((h, secs)   <- propByHost) {
+        val key = appOfHost(h)
+        appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs.round))
+        val hu  = HostUsage(h, seenByHost.getOrElse(h, 0), propMinByHost.getOrElse(h, 0))
+        hostsByApp.updateWith(key)(prev => Some(hu :: prev.getOrElse(Nil)))
+      }
+      // Per-app bucket-dedup for presence-seconds.
+      val appPresence = scala.collection.mutable.Map.empty[Option[AppId], Long]
+      for ((_, bucket) <- presence.groupBy(r => (r.mac, r.periodStart))) {
+        val secs = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
+        val keys = bucket.iterator.map(r => appOfHost(r.host)).toSet
+        for (a <- keys)
+          appPresence.updateWith(a)(prev => Some(prev.getOrElse(0L) + secs))
+      }
+
+      val allKeys = (appProp.keySet ++ appPresence.keySet).toList
+      val rows    = allKeys.map { key =>
+        val name  = key.flatMap(appById.get).map(_.name).getOrElse("Other")
+        val icon  = key.flatMap(appById.get).flatMap(_.icon)
+        val it    = key.flatMap(appById.get).map(_.iconType)
+        val hosts = hostsByApp
+          .getOrElse(key, Nil)
+          .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
+        ProfileAppUsage(
+          appId = key,
+          appName = name,
+          appIcon = icon,
+          appIconType = it,
+          proportionalSeconds = appProp.getOrElse(key, 0L),
+          presenceSeconds = appPresence.getOrElse(key, 0L),
+          hosts = hosts,
+        )
+      }
+      ProfileUsageByApp(
+        profileId = pid,
+        profileName = profile.name,
+        from = from.toString,
+        to = to.toString,
+        apps = rows.sortBy(r => (-r.proportionalSeconds, -r.presenceSeconds, r.appName)),
+      )
+    }
 
   private def buildForDevice(
       mac: MacAddress,
