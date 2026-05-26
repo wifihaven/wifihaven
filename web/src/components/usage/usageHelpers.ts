@@ -5,8 +5,7 @@ import type { TrafficUsageBucket } from '@/types/api'
 // Bucket → wall-clock window we anchor at "to". Picked so each bucket level
 // shows a useful but bounded number of rows without paging (proper paging
 // lands in #862). Raw is unique — it's bounded by row-count, not window-width.
-export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw'>, number> = {
-  '1m':  6 * 60 * 60 * 1000,         // 6 hours → 360 rows
+export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw' | '1m'>, number> = {
   '10m': 24 * 60 * 60 * 1000,        // 1 day
   '1h':  7 * 24 * 60 * 60 * 1000,    // 1 week
   '12h': 14 * 24 * 60 * 60 * 1000,   // 2 weeks
@@ -16,12 +15,16 @@ export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw'>, number
 
 // Raw view is row-count bounded; API enforces a `limit` (default 100). We
 // anchor the window at `to` and walk back a generous distance — the row cap
-// handles the truncation.
+// handles the truncation. `1m` shares this look-back: in prod the router
+// posts every ~1m, so 1m bucketing is essentially "raw, collapsed by minute
+// across hosts" — same scale, same paging story.
 export const RAW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000  // 1 week look-back ceiling
 
 export function windowFromTo(bucket: TrafficUsageBucket, to: string): { from: string; to: string } {
   const t = new Date(to).getTime()
-  const width = bucket === 'raw' ? RAW_WINDOW_MS : BUCKET_WINDOW_MS[bucket]
+  const width = bucket === 'raw' || bucket === '1m'
+    ? RAW_WINDOW_MS
+    : BUCKET_WINDOW_MS[bucket]
   return { from: new Date(t - width).toISOString(), to: new Date(t).toISOString() }
 }
 
