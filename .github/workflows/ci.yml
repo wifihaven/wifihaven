@@ -169,6 +169,12 @@ jobs:
           chmod +x /tmp/cs
           /tmp/cs install --install-dir /usr/local/bin --quiet scalafmt
 
+      - name: Verify git hooks configured (informational, #1050)
+        # Informational only — CI itself doesn't need hooks; this surfaces
+        # when a contributor's local hooks weren't installed so they can fix
+        # it before the next scalafmt CI failure.
+        run: bash scripts/verify-hooks-configured.sh
+
       - name: scalafmt --check
         run: scalafmt --check --non-interactive
 
