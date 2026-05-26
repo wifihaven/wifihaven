@@ -405,11 +405,23 @@ case class Alert(
 ) derives JsonCodec
 
 /**
- * Admin POST body for /api/alerts/{id}/approve. Empty today — new_device approval is just a status
- * transition. The shape is defined here (rather than inline in the route) so #960 can extend it
- * with grant-specific fields without changing the endpoint contract.
+ * Public POST shape — no auth, posted from the block page CTA. Creates an
+ * `Alert(kind=AccessRequest, …)` row server-side. The (mac, host) pair is all we need to identify
+ * the kid; the block page already has them on the URL.
+ */
+case class CreateAccessRequest(
+    mac: MacAddress,
+    host: Hostname,
+    kind: AccessRequestKind,
+    note: Option[String] = None,
+) derives JsonCodec
+
+/**
+ * Admin POST body for /api/alerts/{id}/approve. `minutes` is read by extension grants; the field is
+ * ignored for other kinds (a new-device approval has no side-effect to parameterise).
  */
 case class ApproveAlertRequest(
+    minutes: Option[Int] = None,
 ) derives JsonCodec
 
 case class QueryLog(

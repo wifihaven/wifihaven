@@ -21,12 +21,17 @@ function titleOf(a: Alert): string {
 
 function bodyOf(a: Alert): string {
   const who = a.deviceName ?? a.profileName ?? a.mac
-  // access_request shape (host/requestKind) is non-null only when #960's
-  // POST /api/access-requests is wired; before that this branch is unreached.
-  if (a.kind === 'access_request') {
-    return `${who} sent a request`
+  if (a.kind === 'new_device') {
+    return `${who} (${a.mac})`
   }
-  return `${who} (${a.mac})`
+  // access_request: host + requestKind are non-null per the server-side
+  // CHECK constraint, but be defensive in the UI just in case.
+  switch (a.requestKind) {
+    case 'extension': return `${who} is asking for more screen time`
+    case 'exemption': return `${who} is asking to unblock ${a.host ?? '(?)'}`
+    case 'unpause':   return `${who} is asking to be unpaused`
+    default:          return `${who} sent a request`
+  }
 }
 
 function tagOf(a: Alert): string {

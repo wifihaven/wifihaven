@@ -119,7 +119,19 @@ export interface Alert {
 
 /** Admin POST body for /approve. Empty today — new_device approval is just a
  *  status transition. #960 extends this with grant-specific fields. */
-export interface ApproveAlertRequest {}
+/** Block-page POST shape (no auth) — kid asks for access. */
+export interface CreateAccessRequest {
+  mac: string
+  host: string
+  kind: AccessRequestKind
+  note?: string
+}
+
+/** Admin POST body for /approve. `minutes` is consumed by extension grants;
+ *  ignored for the other kinds. */
+export interface ApproveAlertRequest {
+  minutes?: number
+}
 
 // Tagged-union host identifier (#391). Wire shape carried by every endpoint
 // that surfaces a "what host did the device contact" field. FQDN is a
