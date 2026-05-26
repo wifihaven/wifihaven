@@ -9,7 +9,8 @@ import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-
 import { api } from '@/api/client'
 import type {
   Alert, DashboardNow, Device, HouseholdSettings, ProfileDetail, ProfileTimeStatus,
-  ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, UsageSeriesResponse,
+  ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
+  UsageSeriesResponse,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -44,6 +45,9 @@ export const qk = {
   // #776 — hourly chart on the Today card.
   usageSeriesProfile: (profileId: number, date: string, tz: string) =>
     ['usage', 'series', 'profile', profileId, date, tz] as const,
+  // #1061 — per-app time-used breakdown for one profile over [from,to].
+  profileUsageByApp: (profileId: number, from: string, to: string) =>
+    ['profiles', profileId, 'usage-by-app', from, to] as const,
 }
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>
@@ -192,6 +196,21 @@ export function useUsageSeriesProfileToday(
   return useQuery({
     queryKey: qk.usageSeriesProfile(profileId, date, tz),
     queryFn: () => api.usage.series({ profileId, date, tz }),
+    staleTime: STALE.timeStatusToday,
+    ...opts,
+  })
+}
+
+// #1061 — per-app rollup for the expanded profile card subsection.
+export function useProfileUsageByApp(
+  profileId: number,
+  from: string,
+  to: string,
+  opts?: QueryOpts<ProfileUsageByApp>,
+) {
+  return useQuery({
+    queryKey: qk.profileUsageByApp(profileId, from, to),
+    queryFn: () => api.profiles.usageByApp(profileId, from, to),
     staleTime: STALE.timeStatusToday,
     ...opts,
   })
