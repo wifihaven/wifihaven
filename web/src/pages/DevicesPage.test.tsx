@@ -75,6 +75,7 @@ beforeEach(() => {
   ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.alerts.approve as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.alerts.deny as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     dailyResetTime: '00:00',
     dailyResetTz: 'UTC',
@@ -305,9 +306,10 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
       )
       expect(api.devices.patch).not.toHaveBeenCalled()
       expect(api.alerts.approve).not.toHaveBeenCalled()
+      expect(api.alerts.deny).not.toHaveBeenCalled()
     })
 
-    it('saving without picking a profile still succeeds (profileId optional, #841)', async () => {
+    it('saving without picking a profile denies (not approves) the alert', async () => {
       (api.alerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alert])
       const user = userEvent.setup()
       renderPage()
@@ -324,7 +326,8 @@ describe('DevicesPage — new-device alerts banner (#711)', () => {
       await waitFor(() =>
         expect(api.devices.patch).toHaveBeenCalledWith(alert.mac, { name: 'Mystery Device' })
       )
-      await waitFor(() => expect(api.alerts.approve).toHaveBeenCalledWith(alert.id))
+      await waitFor(() => expect(api.alerts.deny).toHaveBeenCalledWith(alert.id))
+      expect(api.alerts.approve).not.toHaveBeenCalled()
     })
   })
 

@@ -225,6 +225,11 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
     onSuccess: () => invalidators.alerts(),
   })
 
+  const denyMutation = useMutation({
+    mutationFn: (id: number) => api.alerts.deny(id),
+    onSuccess: () => invalidators.alerts(),
+  })
+
   if (alerts.length === 0) return null
 
   return (
@@ -288,8 +293,15 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
           alert={editing}
           profiles={profiles}
           onClose={() => setEditing(null)}
-          onSaved={async () => {
-            await approveMutation.mutateAsync(editing.id)
+          onSaved={async ({ finalProfileId }) => {
+            // A profile means the operator has decided this device belongs on
+            // the network — approve. No profile means they saw it and chose
+            // not to enroll it — deny so it doesn't sit in the pending feed.
+            if (finalProfileId !== null) {
+              await approveMutation.mutateAsync(editing.id)
+            } else {
+              await denyMutation.mutateAsync(editing.id)
+            }
             setEditing(null)
             await invalidators.deviceMutated()
           }}
@@ -305,7 +317,7 @@ function NewDeviceAlertEditor({
   alert: Alert
   profiles: ProfileDetail[]
   onClose: () => void
-  onSaved: () => Promise<void>
+  onSaved: (args: { finalProfileId: number | null }) => Promise<void>
 }) {
   const [name, setName] = useState(alert.deviceName ?? '')
   // null = leave unassigned (per #841, profileId is optional).
@@ -327,7 +339,7 @@ function NewDeviceAlertEditor({
       if (Object.keys(patch).length > 0) {
         await patchMutation.mutateAsync(patch)
       }
-      await onSaved()
+      await onSaved({ finalProfileId: profileId })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed')
     }
