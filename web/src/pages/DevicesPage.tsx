@@ -6,7 +6,7 @@ import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidato
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
-import type { Alert, Device } from '@/types/api'
+import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 // Apply the LogsPage click-through highlight (#298): when the URL carries
@@ -213,9 +213,12 @@ export function DevicesPage() {
 
 function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
   const alertsQuery  = useAlerts()
+  const profilesQuery = useProfiles()
   const invalidators = useInvalidators()
   const alerts: Alert[] = (alertsQuery.data ?? []).filter(a => a.kind === 'new_device')
+  const profiles = profilesQuery.data ?? []
   const notificationPermission = useNotificationPermission()
+  const [editing, setEditing] = useState<Alert | null>(null)
 
   const approveMutation = useMutation({
     mutationFn: (id: number) => api.alerts.approve(id),
@@ -250,11 +253,24 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
             data-testid={`new-device-alert-${a.mac}`}
             className="flex items-center gap-3 text-sm bg-gray-900/60 rounded-lg px-3 py-2"
           >
-            <div className="flex-1 min-w-0">
-              <p className="text-white truncate">{a.deviceName ?? a.mac}</p>
-              <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
-              <p className="text-xs text-gray-600">first seen {new Date(a.createdAt).toLocaleString()}</p>
-            </div>
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => setEditing(a)}
+                data-testid={`new-device-alert-row-${a.mac}`}
+                className="flex-1 min-w-0 text-left hover:text-emerald-400 transition-colors"
+              >
+                <p className="text-white truncate">{a.deviceName ?? a.mac}</p>
+                <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
+                <p className="text-xs text-gray-600">first seen {new Date(a.createdAt).toLocaleString()}</p>
+              </button>
+            ) : (
+              <div className="flex-1 min-w-0">
+                <p className="text-white truncate">{a.deviceName ?? a.mac}</p>
+                <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
+                <p className="text-xs text-gray-600">first seen {new Date(a.createdAt).toLocaleString()}</p>
+              </div>
+            )}
             {isAdmin && (
               <button
                 onClick={() => approveMutation.mutate(a.id)}
@@ -267,6 +283,99 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
           </li>
         ))}
       </ul>
+      {editing && (
+        <NewDeviceAlertEditor
+          alert={editing}
+          profiles={profiles}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            await approveMutation.mutateAsync(editing.id)
+            setEditing(null)
+            await invalidators.deviceMutated()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function NewDeviceAlertEditor({
+  alert, profiles, onClose, onSaved,
+}: {
+  alert: Alert
+  profiles: ProfileDetail[]
+  onClose: () => void
+  onSaved: () => Promise<void>
+}) {
+  const [name, setName] = useState(alert.deviceName ?? '')
+  // null = leave unassigned (per #841, profileId is optional).
+  const [profileId, setProfileId] = useState<number | null>(alert.profileId)
+  const [error, setError] = useState<string | null>(null)
+  useEscapeClose(onClose, true)
+
+  const patchMutation = useMutation({
+    mutationFn: (data: PatchDeviceRequest) => api.devices.patch(alert.mac, data),
+  })
+
+  async function save() {
+    setError(null)
+    const patch: PatchDeviceRequest = {}
+    const trimmed = name.trim()
+    if (trimmed && trimmed !== alert.deviceName) patch.name = trimmed
+    if (profileId !== alert.profileId) patch.profileId = profileId
+    try {
+      if (Object.keys(patch).length > 0) {
+        await patchMutation.mutateAsync(patch)
+      }
+      await onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
+      <div
+        data-testid="new-device-alert-editor"
+        className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm p-6 space-y-4"
+      >
+        <h3 className="text-lg font-bold text-white">New device</h3>
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">MAC Address</label>
+          <p className="text-sm font-mono text-gray-300 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+            {alert.mac}
+          </p>
+        </div>
+        <Field label="Name" value={name} onChange={setName} placeholder="Kid's iPad" />
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Profile</label>
+          <select
+            data-testid="new-device-alert-profile"
+            value={profileId ?? ''}
+            onChange={e => setProfileId(e.target.value === '' ? null : Number(e.target.value))}
+            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white"
+          >
+            <option value="">— No profile —</option>
+            {profiles.map(p => (
+              <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>
+            ))}
+          </select>
+        </div>
+        {error && (
+          <p data-testid="new-device-alert-editor-error" className="text-sm text-red-400">{error}</p>
+        )}
+        <div className="flex gap-3 pt-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium"
+          >Cancel</button>
+          <button
+            onClick={save}
+            disabled={patchMutation.isPending}
+            className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-60"
+          >Save</button>
+        </div>
+      </div>
     </div>
   )
 }
