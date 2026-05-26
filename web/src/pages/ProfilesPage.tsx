@@ -413,6 +413,7 @@ export function ProfilesPage() {
             summary={summaryByProfile.get(pd.profile.id)}
             devices={devicesByProfile.get(pd.profile.id) ?? []}
             users={usersByProfile.get(pd.profile.id) ?? []}
+            apps={apps}
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
@@ -422,6 +423,9 @@ export function ProfilesPage() {
             onDelete={() => del(pd.profile.id, pd.profile.name)}
             onTogglePause={() => togglePause(pd)}
             onGrantTime={() => setExtProfileId(pd.profile.id)}
+            onAppsChanged={reloadApps}
+            onProfileChanged={() => invalidators.profileMutated()}
+            updateProfile={(body) => updateMutation.mutateAsync({ id: pd.profile.id, body })}
           />
         ))}
       </div>
@@ -564,13 +568,15 @@ export function ProfilesPage() {
 // the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
-  pd, summary, devices, users, isAdmin, expanded, highlight,
+  pd, summary, devices, users, apps, isAdmin, expanded, highlight,
   onToggle, onEdit, onEditUsers, onDelete, onTogglePause, onGrantTime,
+  onAppsChanged, onProfileChanged, updateProfile,
 }: {
   pd: ProfileDetail
   summary: ProfileTimeSummary | undefined
   devices: Device[]
   users: User[]
+  apps: AppDetail[]
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
@@ -580,6 +586,9 @@ function ProfileShellRow({
   onDelete: () => void
   onTogglePause: () => void
   onGrantTime: () => void
+  onAppsChanged: () => void | Promise<void>
+  onProfileChanged: () => void | Promise<unknown>
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
 }) {
   const chip = computeChip(pd, summary)
   const hasLimit = summary?.dailyLimitMins != null
@@ -691,21 +700,18 @@ function ProfileShellRow({
             </div>
           )}
 
-          {(pd.profile.extraBlocked.length > 0 || pd.profile.extraAllowed.length > 0) && (
-            <div className="grid grid-cols-2 gap-3">
-              {pd.profile.extraBlocked.length > 0 && (
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Blocked domains</p>
-                  <p className="text-xs text-gray-400 font-mono">{pd.profile.extraBlocked.length} entr{pd.profile.extraBlocked.length === 1 ? 'y' : 'ies'}</p>
-                </div>
-              )}
-              {pd.profile.extraAllowed.length > 0 && (
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Allowed domains</p>
-                  <p className="text-xs text-gray-400 font-mono">{pd.profile.extraAllowed.length} entr{pd.profile.extraAllowed.length === 1 ? 'y' : 'ies'}</p>
-                </div>
-              )}
-            </div>
+          {/* #976: rules subsection — inline app-policy editor + legacy
+              extraAllowed/extraBlocked textareas. Replaces the read-only
+              summary that used to live here; the modal Edit still works
+              while #978 cleans it up. */}
+          {isAdmin && (
+            <RulesSubsection
+              pd={pd}
+              apps={apps}
+              onAppsChanged={onAppsChanged}
+              onProfileChanged={onProfileChanged}
+              updateProfile={updateProfile}
+            />
           )}
 
           {pd.timeLimit && (
@@ -1191,16 +1197,197 @@ function ProfileEditor({
   )
 }
 
+// #976 — rules subsection of the merged /profiles expanded card.
+// Default collapsed; opening reveals the same `<AppsSection>` the modal
+// shows, followed by legacy extraBlocked/extraAllowed textareas with
+// debounced autosave (1s after last keystroke). The legacy textareas
+// disappear once #764 migrates those fields onto apps; PATCH support
+// (#423) would let us send only the changed fields instead of a full
+// PUT body, but the textareas are short-lived enough that PUT is fine.
+function RulesSubsection({
+  pd, apps, onAppsChanged, onProfileChanged, updateProfile,
+}: {
+  pd: ProfileDetail
+  apps: AppDetail[]
+  onAppsChanged: () => void | Promise<void>
+  onProfileChanged: () => void | Promise<unknown>
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+}) {
+  const [open, setOpen] = useState(false)
+  const assignedAppCount = useMemo(
+    () => apps.filter(a => a.assignments.some(x => x.profileId === pd.profile.id)).length,
+    [apps, pd.profile.id],
+  )
+  const blockedCount = pd.profile.extraBlocked.length
+  const allowedCount = pd.profile.extraAllowed.length
+  const summaryParts: string[] = []
+  if (assignedAppCount > 0) summaryParts.push(`${assignedAppCount} app${assignedAppCount === 1 ? '' : 's'}`)
+  if (blockedCount > 0) summaryParts.push(`${blockedCount} blocked`)
+  if (allowedCount > 0) summaryParts.push(`${allowedCount} allowed`)
+  const summary = summaryParts.length > 0 ? summaryParts.join(' · ') : 'No rules'
+
+  return (
+    <div
+      data-testid={`profile-rules-subsection-${pd.profile.id}`}
+      className="bg-gray-950/40 border border-gray-800 rounded-xl"
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(v => !v)}
+        data-testid={`profile-rules-toggle-${pd.profile.id}`}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+          <span className="text-sm font-semibold text-white">Rules</span>
+        </span>
+        <span className="text-xs text-gray-400">{summary}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-4 border-t border-gray-800 pt-3">
+          <AppsSection
+            profileId={pd.profile.id}
+            isNew={false}
+            apps={apps}
+            onChanged={onAppsChanged}
+            testIdPrefix={`profile-${pd.profile.id}-apps-section`}
+          />
+          <LegacyDomainListsEditor
+            pd={pd}
+            updateProfile={updateProfile}
+            onSaved={onProfileChanged}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function profileDetailToUpsert(pd: ProfileDetail): UpsertProfileRequest {
+  return {
+    name: pd.profile.name,
+    blockedCategories: pd.profile.blockedCategories,
+    extraBlocked: pd.profile.extraBlocked,
+    extraAllowed: pd.profile.extraAllowed,
+    paused: pd.profile.paused,
+    timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
+    schedules: pd.schedules.map(s => ({
+      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+    })),
+    siteTimeLimits: pd.siteTimeLimits.map(s => ({
+      domainPattern: s.domainPattern,
+      dailyMinutes: s.dailyMinutes,
+      label: s.label,
+      exemptFromDaily: s.exemptFromDaily,
+    })),
+    failureMode: pd.profile.failureMode,
+    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+  }
+}
+
+function LegacyDomainListsEditor({
+  pd, updateProfile, onSaved,
+}: {
+  pd: ProfileDetail
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onSaved: () => void | Promise<unknown>
+}) {
+  const [blocked, setBlocked] = useState(pd.profile.extraBlocked.join('\n'))
+  const [allowed, setAllowed] = useState(pd.profile.extraAllowed.join('\n'))
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  // Track the persisted values so we can detect dirty state and re-seed
+  // when an external mutation lands (e.g. modal Save). Comparing against
+  // the raw join lets us avoid stomping in-flight edits.
+  const persistedBlocked = pd.profile.extraBlocked.join('\n')
+  const persistedAllowed = pd.profile.extraAllowed.join('\n')
+  useEffect(() => {
+    if (status === 'saving') return
+    setBlocked(persistedBlocked)
+    setAllowed(persistedAllowed)
+  }, [persistedBlocked, persistedAllowed])
+
+  const splitLines = (s: string) => s.split('\n').map(x => x.trim()).filter(Boolean)
+
+  useEffect(() => {
+    if (blocked === persistedBlocked && allowed === persistedAllowed) return
+    const t = setTimeout(async () => {
+      setStatus('saving')
+      setErrMsg(null)
+      try {
+        const body = profileDetailToUpsert(pd)
+        body.extraBlocked = splitLines(blocked)
+        body.extraAllowed = splitLines(allowed)
+        await updateProfile(body)
+        await onSaved()
+        setStatus('saved')
+      } catch (e) {
+        setStatus('error')
+        setErrMsg(e instanceof Error ? e.message : 'Failed to save')
+      }
+    }, 800)
+    return () => clearTimeout(t)
+  }, [blocked, allowed])
+
+  return (
+    <div data-testid={`profile-legacy-domains-${pd.profile.id}`}>
+      <div className="flex items-center justify-between mb-2">
+        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          Extra domains <span className="normal-case text-gray-600">(legacy — migrating to apps in #764)</span>
+        </label>
+        <span
+          data-testid={`profile-legacy-domains-status-${pd.profile.id}`}
+          className={`text-xs ${
+            status === 'saving' ? 'text-gray-400'
+              : status === 'saved' ? 'text-emerald-400'
+              : status === 'error' ? 'text-red-400'
+              : 'text-transparent'
+          }`}
+        >
+          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : status === 'error' ? (errMsg ?? 'Save failed') : '·'}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Blocked domains</p>
+          <textarea
+            value={blocked}
+            onChange={e => setBlocked(e.target.value)}
+            placeholder="One domain per line"
+            rows={3}
+            data-testid={`profile-legacy-blocked-${pd.profile.id}`}
+            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Allowed domains</p>
+          <textarea
+            value={allowed}
+            onChange={e => setAllowed(e.target.value)}
+            placeholder="One domain per line"
+            rows={3}
+            data-testid={`profile-legacy-allowed-${pd.profile.id}`}
+            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function findAssignment(app: AppDetail, profileId: number | null): AppPolicyAssignment | null {
   if (profileId == null) return null
   return app.assignments.find(a => a.profileId === profileId) ?? null
 }
 
-function AppsSection({ profileId, isNew, apps, onChanged }: {
+function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section' }: {
   profileId: number | null
   isNew: boolean
   apps: AppDetail[]
   onChanged: () => void | Promise<void>
+  testIdPrefix?: string
 }) {
   // #1007: only show apps that already have an assignment for this profile.
   // Unassigned apps stay manageable via the "+ Add app" picker below.
@@ -1234,7 +1421,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
   const headerCta = !isNew && profileId != null && apps.length > 0 && (
     <button
       type="button"
-      data-testid="apps-section-add"
+      data-testid={`${testIdPrefix}-add`}
       onClick={() => setPickerOpen(v => !v)}
       className="text-xs text-emerald-400 hover:text-emerald-300"
     >
@@ -1243,7 +1430,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
   )
 
   return (
-    <div data-testid="apps-section">
+    <div data-testid={testIdPrefix}>
       <div className="flex items-center justify-between mb-2 gap-3">
         <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
           Apps
@@ -1252,7 +1439,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
           {headerCta}
           <Link
             to="/apps"
-            data-testid="apps-section-manage-link"
+            data-testid={`${testIdPrefix}-manage-link`}
             className="text-xs text-emerald-400 hover:text-emerald-300"
           >
             Manage apps →
@@ -1268,7 +1455,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
           No apps yet.{' '}
           <Link
             to="/apps"
-            data-testid="apps-section-empty-link"
+            data-testid={`${testIdPrefix}-empty-link`}
             className="text-emerald-400 hover:text-emerald-300 underline"
           >
             Create one
@@ -1278,11 +1465,11 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
       ) : (
         <div className="space-y-2">
           {assigned.length === 0 && !pickerOpen && (
-            <p className="text-xs text-gray-500" data-testid="apps-section-none-assigned">
+            <p className="text-xs text-gray-500" data-testid={`${testIdPrefix}-none-assigned`}>
               No apps assigned to this profile.{' '}
               <button
                 type="button"
-                data-testid="apps-section-none-assigned-add"
+                data-testid={`${testIdPrefix}-none-assigned-add`}
                 onClick={() => setPickerOpen(true)}
                 className="text-emerald-400 hover:text-emerald-300 underline"
               >
@@ -1301,7 +1488,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
           ))}
           {pickerOpen && (
             <div
-              data-testid="apps-section-picker"
+              data-testid={`${testIdPrefix}-picker`}
               className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
             >
               <input
@@ -1310,11 +1497,11 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
                 value={pickerFilter}
                 onChange={e => setPickerFilter(e.target.value)}
                 placeholder="Filter apps…"
-                data-testid="apps-section-picker-filter"
+                data-testid={`${testIdPrefix}-picker-filter`}
                 className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs"
               />
               {pickerMatches.length === 0 ? (
-                <p className="text-xs text-gray-500" data-testid="apps-section-picker-empty">
+                <p className="text-xs text-gray-500" data-testid={`${testIdPrefix}-picker-empty`}>
                   {unassigned.length === 0
                     ? 'Every app in the library is already assigned.'
                     : 'No apps match that filter.'}
@@ -1325,7 +1512,7 @@ function AppsSection({ profileId, isNew, apps, onChanged }: {
                     <button
                       key={a.app.id}
                       type="button"
-                      data-testid={`apps-section-picker-add-${a.app.id}`}
+                      data-testid={`${testIdPrefix}-picker-add-${a.app.id}`}
                       onClick={() => addApp(a)}
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-700 text-left"
                     >

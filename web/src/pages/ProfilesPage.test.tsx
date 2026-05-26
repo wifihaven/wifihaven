@@ -838,3 +838,76 @@ describe('ProfilesPage — apps section (#767)', () => {
     expect(await screen.findByTestId('apps-section-manage-link')).toHaveAttribute('href', '/apps')
   })
 })
+
+// #976 — rules subsection inside the expanded card (apps editor + legacy
+// extraBlocked/extraAllowed). Default collapsed; opening reveals the same
+// AppsSection the modal uses, scoped to a profile-specific testid prefix.
+describe('ProfilesPage — rules subsection (#976)', () => {
+  it('subsection summary reflects assigned-app count and legacy domain counts', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '▶', createdAt: '2026-01-01' },
+        hosts: ['youtube.com'],
+        assignments: [
+          { id: 1, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true },
+        ],
+      },
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const toggle = await screen.findByTestId('profile-rules-toggle-1')
+    // kids has 2 extraBlocked + 1 extraAllowed (from the seeded profile) + 1 assigned app.
+    expect(within(kidsCard).getByTestId('profile-rules-subsection-1')).toHaveTextContent(/1 app/)
+    expect(within(kidsCard).getByTestId('profile-rules-subsection-1')).toHaveTextContent(/2 blocked/)
+    expect(within(kidsCard).getByTestId('profile-rules-subsection-1')).toHaveTextContent(/1 allowed/)
+    // Body collapsed: inline AppsSection not mounted yet.
+    expect(screen.queryByTestId('profile-1-apps-section')).not.toBeInTheDocument()
+    await user.click(toggle)
+    expect(await screen.findByTestId('profile-1-apps-section')).toBeInTheDocument()
+    // Inline app row rendered.
+    expect(screen.getByTestId('app-row-50')).toBeInTheDocument()
+  })
+
+  it('legacy textareas seed from profile and debounce-autosave via PUT', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      renderPage()
+      await screen.findByTestId('profile-card-1')
+      await expand(1, user)
+      await user.click(screen.getByTestId('profile-rules-toggle-1'))
+      const blocked = await screen.findByTestId('profile-legacy-blocked-1') as HTMLTextAreaElement
+      const allowed = screen.getByTestId('profile-legacy-allowed-1') as HTMLTextAreaElement
+      expect(blocked.value).toBe('bad.com\nevil.com')
+      expect(allowed.value).toBe('school.com')
+
+      await user.clear(blocked)
+      await user.type(blocked, 'newbad.com')
+      // Not yet saved before debounce.
+      expect(api.profiles.update).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(900)
+      await waitFor(() =>
+        expect(api.profiles.update).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            extraBlocked: ['newbad.com'],
+            extraAllowed: ['school.com'],
+          }),
+        ),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('subsection survives without admin gating only for admins', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(screen.queryByTestId('profile-rules-toggle-1')).not.toBeInTheDocument()
+  })
+})
