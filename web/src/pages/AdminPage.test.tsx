@@ -7,12 +7,13 @@ vi.mock('@/api/client', () => ({
     household: {
       get: vi.fn(),
       update: vi.fn(),
+      patch: vi.fn(),
     },
   },
 }))
 
 import { api } from '@/api/client'
-import type { HeartbeatFilter, HouseholdSettings } from '@/types/api'
+import type { HeartbeatFilter, HouseholdSettings, UnmanagedMacPolicy } from '@/types/api'
 import { AdminPage } from './AdminPage'
 
 const DEFAULT_HF: HeartbeatFilter = {
@@ -20,6 +21,8 @@ const DEFAULT_HF: HeartbeatFilter = {
   bytesThreshold: 2048,
   heartbeatHostPatterns: [],
 }
+
+const DEFAULT_UMM: UnmanagedMacPolicy = { policy: 'block', blockPage: true }
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -30,13 +33,35 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
     heartbeatFilter: { ...DEFAULT_HF },
+    unmanagedMacPolicy: { ...DEFAULT_UMM },
   }
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-    async () => ({ ...stored, heartbeatFilter: { ...stored.heartbeatFilter } }),
+    async () => ({
+      ...stored,
+      heartbeatFilter: { ...stored.heartbeatFilter },
+      unmanagedMacPolicy: { ...stored.unmanagedMacPolicy },
+    }),
   )
   ;(api.household.update as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async (next: HouseholdSettings) => {
-      stored = { ...next, heartbeatFilter: { ...next.heartbeatFilter } }
+      stored = {
+        ...next,
+        heartbeatFilter: { ...next.heartbeatFilter },
+        unmanagedMacPolicy: { ...next.unmanagedMacPolicy },
+      }
+    },
+  )
+  ;(api.household.patch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async (patch: Partial<HouseholdSettings>) => {
+      stored = {
+        ...stored,
+        ...patch,
+        heartbeatFilter: { ...stored.heartbeatFilter, ...(patch.heartbeatFilter ?? {}) },
+        unmanagedMacPolicy: {
+          ...stored.unmanagedMacPolicy,
+          ...(patch.unmanagedMacPolicy ?? {}),
+        },
+      }
     },
   )
 })
@@ -47,6 +72,7 @@ function seedServer(s: Partial<HouseholdSettings>) {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
     heartbeatFilter: { ...DEFAULT_HF },
+    unmanagedMacPolicy: { ...DEFAULT_UMM },
     ...s,
   })
 }
@@ -100,6 +126,7 @@ describe('AdminPage — daily reset card', () => {
         dailyResetTime: '06:00',
         dailyResetTz: 'America/Los_Angeles',
         heartbeatFilter: DEFAULT_HF,
+        unmanagedMacPolicy: DEFAULT_UMM,
       }),
     )
     const summary = await screen.findByTestId('household-summary')
@@ -145,6 +172,7 @@ describe('AdminPage — daily reset card', () => {
         dailyResetTime: '00:00',
         dailyResetTz: 'America/New_York',
         heartbeatFilter: DEFAULT_HF,
+        unmanagedMacPolicy: DEFAULT_UMM,
       }),
     )
   })
@@ -175,6 +203,7 @@ describe('AdminPage — daily reset card', () => {
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Denver',
         heartbeatFilter: DEFAULT_HF,
+        unmanagedMacPolicy: DEFAULT_UMM,
       }),
     )
   })
@@ -198,6 +227,7 @@ describe('AdminPage — daily reset card', () => {
         dailyResetTime: '00:00',
         dailyResetTz: 'Europe/London',
         heartbeatFilter: DEFAULT_HF,
+        unmanagedMacPolicy: DEFAULT_UMM,
       }),
     )
   })
@@ -214,6 +244,7 @@ describe('AdminPage — daily reset card', () => {
           dailyResetTime: next.dailyResetTime,
           dailyResetTz: 'America/Los_Angeles',
           heartbeatFilter: { ...DEFAULT_HF },
+          unmanagedMacPolicy: { ...DEFAULT_UMM },
         })
       },
     )
@@ -291,6 +322,7 @@ describe('AdminPage — heartbeat filter card', () => {
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Los_Angeles',
         heartbeatFilter: { enabled: true, bytesThreshold: 2048, heartbeatHostPatterns: [] },
+        unmanagedMacPolicy: DEFAULT_UMM,
       }),
     )
     const summary = await screen.findByTestId('heartbeat-filter-summary')
@@ -316,6 +348,7 @@ describe('AdminPage — heartbeat filter card', () => {
         dailyResetTime: '00:00',
         dailyResetTz: 'America/Los_Angeles',
         heartbeatFilter: { enabled: true, bytesThreshold: 8192, heartbeatHostPatterns: [] },
+        unmanagedMacPolicy: DEFAULT_UMM,
       }),
     )
     const summary = await screen.findByTestId('heartbeat-filter-summary')
@@ -342,4 +375,39 @@ describe('AdminPage — heartbeat filter card', () => {
     expect((screen.getByTestId('heartbeat-filter-bytes') as HTMLInputElement).value).toBe('2048')
   })
 
+})
+
+// #961 — admin control surface for the unmanagedMacPolicy field.
+describe('AdminPage — unmanaged-MAC policy card', () => {
+  it('summary defaults to "Block by default" with block-page enabled', async () => {
+    render(<AdminPage />)
+    const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
+    expect(summary).toHaveTextContent(/Block by default/i)
+    expect(summary).toHaveTextContent(/block page/i)
+  })
+
+  it('summary shows "Allow by default" when policy is allow', async () => {
+    seedServer({ unmanagedMacPolicy: { policy: 'allow', blockPage: true } })
+    render(<AdminPage />)
+    const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
+    expect(summary).toHaveTextContent(/Allow by default/i)
+  })
+
+  it('switching to allow persists via PATCH and updates the summary', async () => {
+    const user = userEvent.setup()
+    render(<AdminPage />)
+    await screen.findByTestId('unmanaged-mac-policy-summary')
+    await user.click(screen.getByTestId('unmanaged-mac-policy-edit'))
+
+    await user.click(screen.getByTestId('unmanaged-mac-policy-allow'))
+    await user.click(screen.getByTestId('unmanaged-mac-policy-save'))
+
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({
+        unmanagedMacPolicy: { policy: 'allow', blockPage: true },
+      }),
+    )
+    const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
+    expect(summary).toHaveTextContent(/Allow by default/i)
+  })
 })

@@ -1477,8 +1477,18 @@ object HouseholdSettingsRoutes {
             upd  <- ZIO
               .fromEither(body.fromJson[UpdateHouseholdSettingsRequest])
               .mapError(e => Response.badRequest(e))
+            _    <- ZIO
+              .fromEither(validateUnmanagedMacPolicy(upd.unmanagedMacPolicy))
+              .mapError(Response.badRequest(_))
             _    <- repo
-              .update(HouseholdSettings(upd.dailyResetTime, upd.dailyResetTz, upd.heartbeatFilter))
+              .update(
+                HouseholdSettings(
+                  upd.dailyResetTime,
+                  upd.dailyResetTz,
+                  upd.heartbeatFilter,
+                  upd.unmanagedMacPolicy,
+                ),
+              )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
@@ -1518,10 +1528,19 @@ object HouseholdSettingsRoutes {
               case Some(_)           =>
                 ZIO.fail(Response.badRequest("heartbeatFilter must be a JSON object"))
             }
+            mergedUmm    <- obj.get("unmanagedMacPolicy") match {
+              case None              => ZIO.succeed(existing.unmanagedMacPolicy)
+              case Some(Json.Null)   =>
+                ZIO.fail(Response.badRequest("unmanagedMacPolicy cannot be cleared"))
+              case Some(j: Json.Obj) => mergeUnmanagedMacPolicy(existing.unmanagedMacPolicy, j)
+              case Some(_)           =>
+                ZIO.fail(Response.badRequest("unmanagedMacPolicy must be a JSON object"))
+            }
             merged = HouseholdSettings(
               dailyResetTime = timePatch.applyTo(existing.dailyResetTime),
               dailyResetTz = tzPatch.applyTo(existing.dailyResetTz),
               heartbeatFilter = mergedFilter,
+              unmanagedMacPolicy = mergedUmm,
             )
             _            <- repo.update(merged).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
@@ -1556,7 +1575,39 @@ object HouseholdSettingsRoutes {
       bytesThreshold = bytesP.applyTo(existing.bytesThreshold),
       heartbeatHostPatterns = hostsP.applyTo(existing.heartbeatHostPatterns),
     )
+
+  private def mergeUnmanagedMacPolicy(
+      existing: UnmanagedMacPolicy,
+      obj: Json.Obj,
+  ): IO[Response, UnmanagedMacPolicy] =
+    for {
+      policyP    <- ZIO
+        .fromEither(FieldPatch.from[String](obj, "policy"))
+        .mapError(Response.badRequest(_))
+      blockPageP <- ZIO
+        .fromEither(FieldPatch.from[Boolean](obj, "blockPage"))
+        .mapError(Response.badRequest(_))
+      _          <- (policyP, blockPageP) match {
+        case (FieldPatch.Cleared, _) =>
+          ZIO.fail(Response.badRequest("unmanagedMacPolicy.policy cannot be cleared"))
+        case (_, FieldPatch.Cleared) =>
+          ZIO.fail(Response.badRequest("unmanagedMacPolicy.blockPage cannot be cleared"))
+        case _                       => ZIO.unit
+      }
+      merged      = UnmanagedMacPolicy(
+                      policy = policyP.applyTo(existing.policy),
+                      blockPage = blockPageP.applyTo(existing.blockPage),
+                    )
+      _          <- ZIO.fromEither(validateUnmanagedMacPolicy(merged)).mapError(Response.badRequest(_))
+    } yield merged
 }
+
+private def validateUnmanagedMacPolicy(p: UnmanagedMacPolicy): Either[String, Unit] =
+  if (UnmanagedMacPolicy.ValidPolicies.contains(p.policy)) Right(())
+  else
+    Left(
+      s"unmanagedMacPolicy.policy must be one of ${UnmanagedMacPolicy.ValidPolicies.mkString(", ")}; got '${p.policy}'",
+    )
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

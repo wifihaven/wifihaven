@@ -404,13 +404,35 @@ case class HouseholdSettings(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
+    unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
 ) derives JsonCodec
 
 case class UpdateHouseholdSettingsRequest(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
+    unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
 ) derives JsonCodec
+
+/**
+ * #961: how the household treats MACs that have appeared on the network but
+ * are not yet enrolled into any profile.
+ *
+ *   - policy = "block": deny egress; HTTP/80 DNATs to the block page when
+ *     `blockPage` is true (router-side enforcement deferred to follow-up
+ *     blocked-on-#654).
+ *   - policy = "allow": unmanaged MACs flow freely; admin still gets a #711
+ *     alert.
+ */
+case class UnmanagedMacPolicy(
+    policy: String,
+    blockPage: Boolean,
+) derives JsonCodec
+
+object UnmanagedMacPolicy {
+  val Default: UnmanagedMacPolicy = UnmanagedMacPolicy(policy = "block", blockPage = true)
+  val ValidPolicies: Set[String]  = Set("block", "allow")
+}
 
 /**
  * #714: knobs for the server-side heartbeat filter applied at the Presence aggregation stage. The

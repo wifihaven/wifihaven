@@ -50,6 +50,10 @@ function legacyCopy(reason: string, until?: string | null): string {
   if (reason === 'TimeLimit') return 'Out of time today.'
   if (reason === 'Manual') return 'This device has been blocked by a parent.'
   if (reason === 'ExtraBlocked') return 'This site is blocked by the household.'
+  // #961 — unmanaged-MAC fallthrough. Sent by the router when an HTTP/80
+  // request originates from a MAC not enrolled in any profile and the
+  // household policy is `block`.
+  if (reason === 'device_not_enrolled') return 'This device is not enrolled. Ask the household admin to add it.'
   if (reason.startsWith('site_time_limit')) return 'Out of time on this site today.'
   if (reason.startsWith('category:')) return `Blocked category: ${reason.slice('category:'.length)}.`
   if (reason === 'extra_blocked') return 'Blocked by your parent.'

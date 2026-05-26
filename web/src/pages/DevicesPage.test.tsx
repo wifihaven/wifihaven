@@ -19,6 +19,9 @@ vi.mock('@/api/client', () => ({
       list: vi.fn(),
       dismiss: vi.fn(),
     },
+    household: {
+      get: vi.fn(),
+    },
   },
 }))
 
@@ -68,6 +71,12 @@ beforeEach(() => {
   ;(api.devices.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.deviceAlerts.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.deviceAlerts.dismiss as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    dailyResetTime: '00:00',
+    dailyResetTz: 'UTC',
+    heartbeatFilter: { enabled: false, bytesThreshold: 0, heartbeatHostPatterns: [] },
+    unmanagedMacPolicy: { policy: 'block', blockPage: true },
+  })
 })
 
 describe('DevicesPage — list', () => {
