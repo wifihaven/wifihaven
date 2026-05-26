@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
@@ -416,6 +416,7 @@ export function ProfilesPage() {
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
+            defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
             onEdit={() => startEdit(pd)}
             onEditUsers={() => startEditUsers(pd.profile.id)}
@@ -564,7 +565,7 @@ export function ProfilesPage() {
 // the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
-  pd, summary, devices, users, isAdmin, expanded, highlight,
+  pd, summary, devices, users, isAdmin, expanded, highlight, defaultTz,
   onToggle, onEdit, onEditUsers, onDelete, onTogglePause, onGrantTime,
 }: {
   pd: ProfileDetail
@@ -574,6 +575,7 @@ function ProfileShellRow({
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
+  defaultTz: string
   onToggle: () => void
   onEdit: () => void
   onEditUsers: () => void
@@ -714,7 +716,11 @@ function ProfileShellRow({
             </p>
           )}
 
-          {pd.schedules.length > 0 && (
+          {/* #974 — inline schedule subsection with debounced autosave.
+              Admins get the editor; non-admins see a read-only list. */}
+          {isAdmin ? (
+            <ProfileScheduleSection pd={pd} defaultTz={defaultTz} />
+          ) : pd.schedules.length > 0 && (
             <div>
               <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Schedules</p>
               {pd.schedules.map(s => (
@@ -792,6 +798,211 @@ function ProfileShellRow({
               ))}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// #974 — inline schedule editor mounted in the expanded profile card.
+// Collapsible (closed by default per design doc); debounced autosave PUTs
+// the full profile on every edit. PATCH (#423) would be tighter but PUT
+// is what's wired today, so we stay endpoint-compatible until #423 lands.
+// Per operator preference: autosave, not per-section Save buttons.
+function ProfileScheduleSection({ pd, defaultTz }: {
+  pd: ProfileDetail
+  defaultTz: string
+}) {
+  const invalidators = useInvalidators()
+  const [open, setOpen] = useState(false)
+  // Local draft; reseeds from `pd` when the server snapshot changes and we
+  // have no pending edits in flight (no in-flight debounce, no error).
+  const [schedules, setSchedules] = useState<ScheduleRequest[]>(() =>
+    pd.schedules.map(s => ({
+      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+    })),
+  )
+  const [status, setStatus] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle')
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dirtyRef = useRef(false)
+
+  // Reseed from server when we're not mid-edit. Comparing JSON keeps this
+  // a no-op when the round-trip echoes back identical schedules.
+  const serverJson = useMemo(() => JSON.stringify(
+    pd.schedules.map(s => ({ name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz })),
+  ), [pd.schedules])
+  useEffect(() => {
+    if (dirtyRef.current) return
+    setSchedules(JSON.parse(serverJson))
+  }, [serverJson])
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+  }, [])
+
+  function mutate(next: ScheduleRequest[]) {
+    dirtyRef.current = true
+    setSchedules(next)
+    setStatus('dirty')
+    setErrMsg(null)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (savedTimerRef.current) { clearTimeout(savedTimerRef.current); savedTimerRef.current = null }
+    timerRef.current = setTimeout(() => void flush(next), 500)
+  }
+
+  async function flush(next: ScheduleRequest[]) {
+    setStatus('saving')
+    try {
+      const body = formToRequest({ ...detailToForm(pd), schedules: next })
+      await api.profiles.update(pd.profile.id, body)
+      dirtyRef.current = false
+      setStatus('saved')
+      await invalidators.profileMutated()
+      savedTimerRef.current = setTimeout(() => setStatus(s => s === 'saved' ? 'idle' : s), 2000)
+    } catch (e) {
+      setStatus('error')
+      setErrMsg(e instanceof Error ? e.message : 'Failed to save')
+    }
+  }
+
+  function addSchedule() {
+    mutate([...schedules, { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz }])
+  }
+  function updateSchedule(i: number, patch: Partial<ScheduleRequest>) {
+    mutate(schedules.map((s, idx) => idx === i ? { ...s, ...patch } : s))
+  }
+  function removeSchedule(i: number) {
+    mutate(schedules.filter((_, idx) => idx !== i))
+  }
+  function toggleDay(i: number, d: string) {
+    mutate(schedules.map((s, idx) => idx !== i ? s : {
+      ...s,
+      days: s.days.includes(d) ? s.days.filter(x => x !== d) : [...s.days, d],
+    }))
+  }
+
+  const statusLabel = status === 'saving' ? 'Saving…'
+    : status === 'saved' ? 'Saved'
+    : status === 'dirty' ? 'Unsaved…'
+    : status === 'error' ? 'Save failed'
+    : ''
+  const statusClass = status === 'error' ? 'text-red-400'
+    : status === 'saved' ? 'text-emerald-400'
+    : 'text-gray-500'
+
+  return (
+    <div data-testid={`profile-schedule-section-${pd.profile.id}`} className="border border-gray-800 rounded-xl">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        data-testid={`profile-schedule-toggle-${pd.profile.id}`}
+        className="w-full flex items-center gap-3 px-3 py-2 text-left"
+      >
+        <span className={`text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+        <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Schedules</span>
+        <span className="text-xs text-gray-500">
+          {schedules.length === 0 ? 'none' : `${schedules.length} schedule${schedules.length === 1 ? '' : 's'}`}
+        </span>
+        <span className="ml-auto flex items-center gap-2">
+          {statusLabel && (
+            <span
+              data-testid={`profile-schedule-status-${pd.profile.id}`}
+              className={`text-xs ${statusClass}`}
+            >{statusLabel}</span>
+          )}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-3 border-t border-gray-800 pt-3">
+          {errMsg && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs rounded-lg px-3 py-2">
+              {errMsg}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={addSchedule}
+              data-testid={`profile-schedule-add-${pd.profile.id}`}
+              className="text-xs text-emerald-400 hover:text-emerald-300"
+            >+ Add schedule</button>
+          </div>
+
+          {schedules.length === 0 && (
+            <p className="text-xs text-gray-500">No schedules.</p>
+          )}
+
+          <div className="space-y-3">
+            {schedules.map((s, i) => (
+              <div
+                key={i}
+                data-testid={`profile-schedule-row-${pd.profile.id}-${i}`}
+                className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
+              >
+                <div className="flex gap-2">
+                  <input
+                    type="text" value={s.name}
+                    onChange={e => updateSchedule(i, { name: e.target.value })}
+                    placeholder="Bedtime"
+                    data-testid={`profile-schedule-${pd.profile.id}-${i}-name`}
+                    className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeSchedule(i)}
+                    data-testid={`profile-schedule-${pd.profile.id}-${i}-remove`}
+                    className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 rounded-lg"
+                  >Remove</button>
+                </div>
+                <div className="flex gap-2 items-center text-sm">
+                  <input
+                    type="time" value={s.startLocal}
+                    onChange={e => updateSchedule(i, { startLocal: e.target.value })}
+                    data-testid={`profile-schedule-${pd.profile.id}-${i}-start`}
+                    className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
+                  />
+                  <span className="text-gray-500">→</span>
+                  <input
+                    type="time" value={s.endLocal}
+                    onChange={e => updateSchedule(i, { endLocal: e.target.value })}
+                    data-testid={`profile-schedule-${pd.profile.id}-${i}-end`}
+                    className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white"
+                  />
+                </div>
+                <div className="text-xs text-gray-400">
+                  Timezone (the same wall-clock window applies every day, even across DST)
+                </div>
+                <TimezonePicker
+                  value={s.tz}
+                  onChange={tz => updateSchedule(i, { tz })}
+                  testId={`profile-schedule-${pd.profile.id}-${i}-tz`}
+                />
+                <div className="flex flex-wrap gap-1">
+                  {DAYS.map(d => {
+                    const on = s.days.includes(d)
+                    return (
+                      <button
+                        key={d} type="button"
+                        onClick={() => toggleDay(i, d)}
+                        data-testid={`profile-schedule-${pd.profile.id}-${i}-day-${d}`}
+                        className={`text-xs px-2.5 py-1 rounded-lg border ${
+                          on
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : 'bg-gray-800 text-gray-500 border-gray-700'
+                        }`}
+                      >{d}</button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

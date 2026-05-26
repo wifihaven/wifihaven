@@ -204,14 +204,16 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
-    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    expect(within(kidsCard).queryByText('120 min')).not.toBeInTheDocument()
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
-    expect(within(kidsCard).getByText('Bedtime')).toBeInTheDocument()
+    // #974 — schedule subsection is collapsible (closed by default); the
+    // header always shows the schedule count summary when expanded.
+    expect(within(kidsCard).getByTestId('profile-schedule-section-1')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('1 schedule')).toBeInTheDocument()
     expect(within(kidsCard).getByText('120 min')).toBeInTheDocument()
     expect(within(kidsCard).getByText('YouTube')).toBeInTheDocument()
-    expect(within(kidsCard).getByText('21:00 → 07:00')).toBeInTheDocument()
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
-    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    expect(within(kidsCard).queryByText('120 min')).not.toBeInTheDocument()
   })
 })
 
@@ -836,5 +838,133 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     expect(await screen.findByTestId('apps-section-manage-link')).toHaveAttribute('href', '/apps')
+  })
+})
+
+describe('ProfilesPage — inline schedule subsection (#974)', () => {
+  async function openScheduleSection(pid: number, user: ReturnType<typeof userEvent.setup>) {
+    await expand(pid, user)
+    await user.click(screen.getByTestId(`profile-schedule-toggle-${pid}`))
+  }
+
+  it('section is collapsed by default and toggles open', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    // Subsection header is visible, but rows are not until opened.
+    expect(within(kidsCard).getByTestId('profile-schedule-section-1')).toBeInTheDocument()
+    expect(within(kidsCard).queryByTestId('profile-schedule-row-1-0')).not.toBeInTheDocument()
+    await user.click(within(kidsCard).getByTestId('profile-schedule-toggle-1'))
+    expect(within(kidsCard).getByTestId('profile-schedule-row-1-0')).toBeInTheDocument()
+    // Existing schedule round-tripped into the editor's input.
+    expect(within(kidsCard).getByTestId('profile-schedule-1-0-name')).toHaveValue('Bedtime')
+  })
+
+  it('autosaves a debounced PUT on schedule rename', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await openScheduleSection(1, user)
+    const nameInput = screen.getByTestId('profile-schedule-1-0-name')
+    await user.clear(nameInput)
+    await user.type(nameInput, 'Nightly')
+
+    await waitFor(
+      () => expect(api.profiles.update).toHaveBeenCalledTimes(1),
+      { timeout: 2000 },
+    )
+    const [pid, body] = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(pid).toBe(1)
+    expect(body.schedules).toEqual([
+      { name: 'Nightly', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
+    ])
+    // Other fields round-trip unchanged (PUT carries the full profile).
+    expect(body.name).toBe('Kids')
+    expect(body.failureMode).toBe('block-all')
+  })
+
+  it('coalesces a burst of edits into a single PUT', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await openScheduleSection(1, user)
+    await user.click(screen.getByTestId('profile-schedule-1-0-day-wed'))
+    await user.click(screen.getByTestId('profile-schedule-1-0-day-thu'))
+    await user.click(screen.getByTestId('profile-schedule-1-0-day-fri'))
+    await waitFor(
+      () => expect(api.profiles.update).toHaveBeenCalledTimes(1),
+      { timeout: 2000 },
+    )
+    const body = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect([...body.schedules[0].days].sort()).toEqual(['fri', 'mon', 'thu', 'tue', 'wed'])
+  })
+
+  it('adding then removing a schedule via the section autosaves', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await openScheduleSection(1, user)
+    await user.click(screen.getByTestId('profile-schedule-add-1'))
+    await waitFor(
+      () => expect(api.profiles.update).toHaveBeenCalledTimes(1),
+      { timeout: 2000 },
+    )
+    let body = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect(body.schedules).toHaveLength(2)
+
+    await user.click(screen.getByTestId('profile-schedule-1-1-remove'))
+    await waitFor(
+      () => expect(api.profiles.update).toHaveBeenCalledTimes(2),
+      { timeout: 2000 },
+    )
+    body = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[1][1]
+    expect(body.schedules).toHaveLength(1)
+    expect(body.schedules[0].name).toBe('Bedtime')
+  })
+
+  it('shows Saving… then Saved on a successful autosave', async () => {
+    let resolveUpdate: () => void = () => {}
+    ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<void>(res => { resolveUpdate = res }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await openScheduleSection(1, user)
+    await user.click(screen.getByTestId('profile-schedule-1-0-day-wed'))
+    await waitFor(
+      () => expect(screen.getByTestId('profile-schedule-status-1')).toHaveTextContent('Saving'),
+      { timeout: 2000 },
+    )
+    resolveUpdate()
+    await waitFor(
+      () => expect(screen.getByTestId('profile-schedule-status-1')).toHaveTextContent('Saved'),
+      { timeout: 2000 },
+    )
+  })
+
+  it('shows Save failed when the autosave PUT rejects', async () => {
+    ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await openScheduleSection(1, user)
+    await user.click(screen.getByTestId('profile-schedule-1-0-day-wed'))
+    await waitFor(
+      () => expect(screen.getByTestId('profile-schedule-status-1')).toHaveTextContent('Save failed'),
+      { timeout: 2000 },
+    )
+    expect(screen.getByText('boom')).toBeInTheDocument()
+  })
+
+  it('non-admins see a read-only schedule summary, no editor', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(within(kidsCard).queryByTestId('profile-schedule-section-1')).not.toBeInTheDocument()
+    expect(within(kidsCard).getByText('Bedtime')).toBeInTheDocument()
   })
 })
