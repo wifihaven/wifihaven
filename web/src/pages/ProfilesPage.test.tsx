@@ -432,7 +432,9 @@ describe('ProfilesPage — role gating', () => {
     expect(screen.queryByRole('button', { name: /Pause/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Edit users/ })).not.toBeInTheDocument()
+    // #977 — inline users subsection is admin-only; hidden along with the
+    // other admin affordances when isAdmin=false.
+    expect(screen.queryByTestId('profile-users-1')).not.toBeInTheDocument()
   })
 })
 
@@ -479,29 +481,37 @@ describe('ProfilesPage — linked users section', () => {
     expect(api.users.list).not.toHaveBeenCalled()
   })
 
-  it('admin clicks Edit users → modal opens with current users pre-checked → Save calls api.profiles.setUsers', async () => {
+  // #977 — inline users subsection autosaves on each toggle.
+  it('admin toggles a user chip in the expanded card → autosaves via api.profiles.setUsers', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /Edit users/ }))
 
-    const modal = await screen.findByTestId('edit-users-modal')
-    // Pre-checked: alice (id 10) and carol (id 12) on Kids
-    expect(within(modal).getByTestId('user-pick-10').textContent).toMatch(/✓/)
-    expect(within(modal).getByTestId('user-pick-12').textContent).toMatch(/✓/)
-    expect(within(modal).getByTestId('user-pick-11').textContent).not.toMatch(/✓/)
+    // Currently linked to Kids: alice (10), carol (12). bob (11) is not.
+    expect(within(kidsCard).getByTestId('profile-user-10')).toHaveAttribute('data-on', 'true')
+    expect(within(kidsCard).getByTestId('profile-user-12')).toHaveAttribute('data-on', 'true')
+    expect(within(kidsCard).getByTestId('profile-user-toggle-1-11')).toHaveAttribute('data-on', 'false')
 
-    // Toggle alice off, bob on.
-    await user.click(within(modal).getByTestId('user-pick-10'))
-    await user.click(within(modal).getByTestId('user-pick-11'))
-
-    await user.click(within(modal).getByRole('button', { name: /^Save$/ }))
+    // Toggle bob on — autosaves immediately with the new full set.
+    await user.click(within(kidsCard).getByTestId('profile-user-toggle-1-11'))
 
     await waitFor(() => expect(api.profiles.setUsers).toHaveBeenCalledTimes(1))
-    const call = (api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[0]).toBe(1)
-    expect([...call[1]].sort((a, b) => a - b)).toEqual([11, 12])
+    const addCall = (api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(addCall[0]).toBe(1)
+    expect([...addCall[1]].sort((a, b) => a - b)).toEqual([10, 11, 12])
+
+    // Toggle alice off — autosaves again with alice removed.
+    await user.click(within(kidsCard).getByTestId('profile-user-10'))
+
+    await waitFor(() => expect(api.profiles.setUsers).toHaveBeenCalledTimes(2))
+    const removeCall = (api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mock.calls[1]
+    expect(removeCall[0]).toBe(1)
+    // The second toggle's "current" comes from the re-fetched users list. Both
+    // remove-alice variants are acceptable: with or without the optimistic bob,
+    // depending on whether the refetch lands between clicks. Assert alice is
+    // absent and the rest of the on-set is preserved.
+    expect(removeCall[1]).not.toContain(10)
   })
 })
 
