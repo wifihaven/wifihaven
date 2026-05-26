@@ -59,11 +59,9 @@ object BundledBlocklistsSpec
    * tiny canned response so seeding completes without network.
    */
   private val stubbedUpstreams: Map[String, List[Hostname]] = Map(
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"                          ->
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"                        ->
       List("ads-extended-upstream.example", "tracker.example").map(Hostname.unsafe),
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-only/hosts" ->
-      List("fakenews-upstream.example").map(Hostname.unsafe),
-    "https://urlhaus.abuse.ch/downloads/hostfile/"                                              ->
+    "https://urlhaus.abuse.ch/downloads/hostfile/"                                            ->
       List("malware-upstream.example").map(Hostname.unsafe),
     "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts"   ->
       List("social-extended-upstream.example").map(Hostname.unsafe),
