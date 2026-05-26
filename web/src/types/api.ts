@@ -322,6 +322,30 @@ export interface ProfileTimeStatus {
   hostUsage: HostUsage[]
 }
 
+// #1061 — per-app time-used breakdown for one profile over a date window.
+// `appId = null` is the synthetic "Other" bucket: hosts not in any app_hosts
+// membership. `proportionalSeconds` is the wall-clock-attention number (#715),
+// `presenceSeconds` is bucket-deduped at the app level. The drill-down `hosts`
+// list reuses HostUsage so the SPA renders rows with the same Attention/Seen
+// formatter.
+export interface ProfileAppUsage {
+  appId: number | null
+  appName: string
+  appIcon: string | null
+  appIconType?: IconType | null
+  proportionalSeconds: number
+  presenceSeconds: number
+  hosts: HostUsage[]
+}
+
+export interface ProfileUsageByApp {
+  profileId: number
+  profileName: string
+  from: string
+  to: string
+  apps: ProfileAppUsage[]
+}
+
 // #716 / #721 — per-device hourly usage timeline. `totalMins` is the device's
 // bucket-deduplicated wall-clock minutes for the hour (matches the daily cap).
 // `perHost.mins + otherMins == totalMins` — per-host minutes are proportionally
