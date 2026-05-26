@@ -8,6 +8,7 @@ import wifihaven.api.db.*
 import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
+import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.shared.Clock
 import zio.*
 import zio.http.*
@@ -69,6 +70,11 @@ object Main extends ZIOAppDefault {
       _              <- BundledBlocklists
         .seed(blRepoForSeed, blCacheForSeed, blFetcher, BundledBlocklists.devTestBlocklists)
         .when(cfg.seedTestBlocklists)
+      // #811: daily retention sweep. Forks a daemon fiber that runs at 03:00 UTC.
+      // Multi-instance-safe via Postgres advisory lock — losing instances skip
+      // the tick rather than racing on the same DELETE.
+      xaForJobs      <- ZIO.service[Transactor[Task]]
+      _              <- RetentionSweepJob.start(xaForJobs)
       templatesById = templates.map(t => t.slug -> t).toMap
       bundledById   = bundled.map(b => b.id -> b).toMap
       routes <- allRoutes(templatesById, bundledById)
