@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { BlockedPage } from './BlockedPage'
+import { api } from '@/api/client'
 
 function renderBlocked(params: Record<string, string>) {
   const search = '?' + new URLSearchParams(params).toString()
@@ -63,20 +64,62 @@ describe('BlockedPage — reason display', () => {
   })
 })
 
-describe('BlockedPage — no request-extension UI (#577)', () => {
-  it('does not show a "Request extension" button', () => {
-    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
-    expect(screen.queryByRole('button', { name: /request extension/i })).not.toBeInTheDocument()
-  })
-
-  it('does not show a parent-login dialog', () => {
+describe('BlockedPage — ask-a-parent CTA (#960)', () => {
+  it('still has no parent-login dialog (no kid-side credentials)', () => {
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('shows a static "ask a parent" instruction instead', () => {
+  it('shows an extension CTA for TimeLimit blocks', () => {
     renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
+    expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument()
+  })
+
+  it('shows an exemption CTA for ExtraBlocked / category blocks', () => {
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'foo.com', reason: 'ExtraBlocked' })
+    expect(screen.getByTestId('ask-parent-exemption')).toBeInTheDocument()
+  })
+
+  it('shows unpause + extension CTAs for Paused', () => {
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com', reason: 'Paused' })
+    expect(screen.getByTestId('ask-parent-unpause')).toBeInTheDocument()
+    expect(screen.getByTestId('ask-parent-extension')).toBeInTheDocument()
+  })
+
+  it('falls back to the static instruction when the mac param is missing', () => {
+    // The block-page redirect always supplies mac=, but be tolerant: when it
+    // is missing we cannot identify the kid's profile, so hide the CTA and
+    // render the older static message instead of posting an anonymous row.
+    renderBlocked({ host: 'youtube.com', reason: 'TimeLimit' })
+    expect(screen.queryByTestId('ask-parent')).not.toBeInTheDocument()
     expect(screen.getByText(/ask a parent/i)).toBeInTheDocument()
+  })
+
+  describe('posting the request', () => {
+    beforeEach(() => vi.restoreAllMocks())
+
+    it('POSTs the kid-known (mac, host, kind) and shows a confirmation', async () => {
+      const create = vi
+        .spyOn(api.alerts, 'createAccessRequest')
+        .mockResolvedValue({} as never)
+      renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
+      fireEvent.click(screen.getByTestId('ask-parent-extension'))
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(1))
+      expect(create).toHaveBeenCalledWith({
+        mac: 'aa:bb:cc:11:22:33',
+        host: 'youtube.com',
+        kind: 'extension',
+        note: undefined,
+      })
+      expect(await screen.findByTestId('ask-parent-sent')).toBeInTheDocument()
+    })
+
+    it('surfaces a network error inline without leaving the CTA disabled forever', async () => {
+      vi.spyOn(api.alerts, 'createAccessRequest').mockRejectedValue(new Error('offline'))
+      renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com', reason: 'TimeLimit' })
+      fireEvent.click(screen.getByTestId('ask-parent-extension'))
+      expect(await screen.findByTestId('ask-parent-error')).toHaveTextContent('offline')
+    })
   })
 })
 

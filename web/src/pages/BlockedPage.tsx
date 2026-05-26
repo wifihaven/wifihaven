@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import type { BlockedInfoResponse } from '@/types/api'
+import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 
 // #959: kid-side block page.
 //
@@ -104,8 +104,124 @@ export function BlockedPage() {
           <p className="text-gray-400 text-sm">{body}</p>
           {profileLine && <p className="text-gray-500 text-xs">{profileLine}</p>}
         </div>
-        <p className="text-gray-500 text-sm">Ask a parent to adjust your settings.</p>
+        {mac && host
+          ? <AskParent mac={mac} host={host} info={info} legacyReason={legacyReason} />
+          : <p className="text-gray-500 text-sm">Ask a parent to adjust your settings.</p>
+        }
       </div>
+    </div>
+  )
+}
+
+/**
+ * #960: kid-side CTA. Maps the block reason (API `reasonClass` first, legacy
+ * `reason` query param as fallback) to the request kinds that make sense for
+ * that reason — e.g. `time_limit` offers only "ask for more time", a category
+ * block offers only "ask to unblock this site". POSTs to the public
+ * `/api/access-requests` endpoint; no kid-side credentials.
+ */
+function offeredKindsFor(info: BlockedInfoResponse | null, legacy: string): AccessRequestKind[] {
+  const cls = info?.blocked ? info.reasonClass : null
+  if (cls === 'paused')          return ['unpause', 'extension']
+  if (cls === 'schedule')        return ['unpause', 'extension']
+  if (cls === 'time_limit')      return ['extension']
+  if (cls === 'site_time_limit') return ['extension', 'exemption']
+  if (cls === 'category')        return ['exemption']
+  if (cls === 'extra_blocked')   return ['exemption']
+  // Fall back to the legacy reason string for stale router agents.
+  if (legacy === 'Paused')                 return ['unpause', 'extension']
+  if (legacy === 'Schedule')               return ['unpause', 'extension']
+  if (legacy === 'TimeLimit')              return ['extension']
+  if (legacy === 'ExtraBlocked')           return ['exemption']
+  if (legacy === 'Manual')                 return ['exemption']
+  if (legacy === 'extra_blocked')          return ['exemption']
+  if (legacy.startsWith('category:'))      return ['exemption']
+  if (legacy.startsWith('site_time_limit'))return ['extension', 'exemption']
+  // Unknown reason — offer everything so the kid still has a way through.
+  return ['extension', 'exemption', 'unpause']
+}
+
+function kindLabel(k: AccessRequestKind): string {
+  switch (k) {
+    case 'extension': return 'Ask for more time'
+    case 'exemption': return 'Ask to unblock this site'
+    case 'unpause':   return 'Ask to unpause'
+  }
+}
+
+function AskParent({
+  mac,
+  host,
+  info,
+  legacyReason,
+}: {
+  mac: string
+  host: string
+  info: BlockedInfoResponse | null
+  legacyReason: string
+}) {
+  const kinds = offeredKindsFor(info, legacyReason)
+  const [note, setNote] = useState('')
+  const [sending, setSending] = useState<AccessRequestKind | null>(null)
+  const [sent, setSent] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (sent) {
+    return (
+      <div
+        data-testid="ask-parent-sent"
+        className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl px-4 py-3 text-sm text-emerald-200"
+      >
+        Sent. A parent will review and decide.
+      </div>
+    )
+  }
+
+  const ask = async (kind: AccessRequestKind) => {
+    setSending(kind)
+    setError(null)
+    try {
+      await api.alerts.createAccessRequest({
+        mac,
+        host,
+        kind,
+        note: note.trim() ? note.trim() : undefined,
+      })
+      setSent(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setSending(null)
+    }
+  }
+
+  return (
+    <div className="space-y-3" data-testid="ask-parent">
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value.slice(0, 280))}
+        placeholder="Optional: tell them why (280 chars max)"
+        rows={2}
+        className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 resize-none"
+      />
+      <div className="space-y-2">
+        {kinds.map(k => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => ask(k)}
+            disabled={sending !== null}
+            data-testid={`ask-parent-${k}`}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
+            {sending === k ? 'Asking…' : kindLabel(k)}
+          </button>
+        ))}
+      </div>
+      {error && (
+        <p className="text-xs text-red-400" data-testid="ask-parent-error">
+          {error}
+        </p>
+      )}
     </div>
   )
 }

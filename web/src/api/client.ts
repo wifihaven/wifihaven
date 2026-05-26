@@ -1,7 +1,7 @@
 import type {
-  AppDetail, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
-  DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
+  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
@@ -130,14 +130,19 @@ export const api = {
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
   },
 
-  // ── Device alerts (#711) ───────────────────────────────────────────────
-  deviceAlerts: {
-    list: (includeDismissed = false) =>
-      req<DeviceAlert[]>(
-        'GET',
-        `/device-alerts${includeDismissed ? '?dismissed=true' : ''}`,
-      ),
-    dismiss: (id: number) => req<void>('POST', `/device-alerts/${id}/dismiss`),
+  // ── Alerts (unifies #711 + #960) ───────────────────────────────────────
+  alerts: {
+    list: (includeAll = false) =>
+      req<Alert[]>('GET', `/alerts${includeAll ? '?all=true' : ''}`),
+    approve: (id: number, data: ApproveAlertRequest = {}) =>
+      req<Alert>('POST', `/alerts/${id}/approve`, data),
+    deny: (id: number) =>
+      req<Alert>('POST', `/alerts/${id}/deny`),
+    // POST /api/access-requests is the one public, unauthenticated endpoint
+    // in this surface — the block page calls it with (mac, host, kind). It
+    // creates an access_request-kinded alert server-side.
+    createAccessRequest: (data: CreateAccessRequest) =>
+      req<Alert>('POST', '/access-requests', data, true),
   },
 
   // ── Time ───────────────────────────────────────────────────────────────

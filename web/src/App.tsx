@@ -1,7 +1,7 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
-import { DeviceAlertNotifier } from '@/hooks/useNotifyOnNewAlerts'
+import { AlertsNotifier } from '@/hooks/useNotifyOnNewAlerts'
 import { Layout } from '@/components/layout/Layout'
 import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -47,7 +47,7 @@ function AppRoutes() {
         change-password form even when the server-side flag is set (#586).
         All other protected routes redirect to /account until the flag clears.
       */}
-      <Route path="/" element={<RequireAuth><><DeviceAlertNotifier /><Layout /></></RequireAuth>}>
+      <Route path="/" element={<RequireAuth><><AlertsNotifier /><Layout /></></RequireAuth>}>
         <Route path="account" element={<AccountPage />} />
         <Route index element={<RequirePwChanged><Navigate to="/dashboard" replace /></RequirePwChanged>} />
         <Route path="dashboard" element={<RequirePwChanged><DashboardPage /></RequirePwChanged>} />

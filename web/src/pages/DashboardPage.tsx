@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow, useDeviceAlerts } from '@/api/queries'
+import { useDashboardNow } from '@/api/queries'
 import type {
   DashboardNowDevice,
   DashboardNowProfile,
@@ -9,6 +8,7 @@ import type {
   QueryLog,
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
+import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
@@ -28,6 +28,8 @@ export function DashboardPage() {
       <h1 className="text-xl font-bold text-white">Dashboard</h1>
 
       <NewDevicesHint />
+
+      <AccessRequestsBanner />
 
       <NowSection />
 
@@ -86,24 +88,6 @@ export function DashboardPage() {
         </div>
       </section>
     </div>
-  )
-}
-
-// #711 — minimal dashboard hint that there are unreviewed new devices. The
-// authoritative list + dismiss live on the Devices page.
-function NewDevicesHint() {
-  const { data = [] } = useDeviceAlerts()
-  if (data.length === 0) return null
-  return (
-    <Link
-      data-testid="dashboard-new-devices-hint"
-      to="/devices"
-      className="block bg-yellow-500/5 border border-yellow-500/30 rounded-2xl px-5 py-3 text-sm text-yellow-200 hover:bg-yellow-500/10 transition-colors"
-    >
-      {data.length === 1
-        ? '1 new device on the network — review on the Devices page →'
-        : `${data.length} new devices on the network — review on the Devices page →`}
-    </Link>
   )
 }
 

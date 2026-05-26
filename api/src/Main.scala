@@ -5,6 +5,7 @@ import doobie.implicits.*
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.shared.Clock
@@ -98,7 +99,8 @@ object Main extends ZIOAppDefault {
       PolicyService.layer >+>
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
-      BlocklistFetcher.live
+      BlocklistFetcher.live >+>
+      Notifier.live
 
   private def allRoutes(
       templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
@@ -123,8 +125,9 @@ object Main extends ZIOAppDefault {
       trafficRepo <- ZIO.service[TrafficReportRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
       blockEvRepo <- ZIO.service[BlockEventRepo]
-      alertRepo   <- ZIO.service[DeviceAlertRepo]
+      alertRepo   <- ZIO.service[AlertRepo]
       appRepo     <- ZIO.service[AppRepo]
+      notifier    <- ZIO.service[Notifier]
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
@@ -163,7 +166,6 @@ object Main extends ZIOAppDefault {
       ) ++
       BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-      BlockedRoutes.routes(policy, deviceRepo, profileRepo, blRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++
       RouterIngestRoutes.routes(
         routerAuth,
@@ -175,7 +177,17 @@ object Main extends ZIOAppDefault {
         alertRepo,
         hsRepo,
       ) ++
-      DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
+      AlertRoutes.routes(
+        auth,
+        alertRepo,
+        deviceRepo,
+        profileRepo,
+        extRepo,
+        appRepo,
+        hsRepo,
+        notifier,
+        clock,
+      ) ++
       AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
       DebugRoutes.routes(
         cfg.debugEnabled,

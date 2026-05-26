@@ -26,7 +26,7 @@ object RouterIngestRoutes {
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
-      deviceAlertRepo: DeviceAlertRepo,
+      alertRepo: AlertRepo,
       householdSettingsRepo: HouseholdSettingsRepo,
   ): Routes[Any, Response] =
     Routes(
@@ -96,8 +96,8 @@ object RouterIngestRoutes {
                   s"reason=${e.reason.getOrElse("-")} ts=${e.ts}",
               ),
             )
-            _ <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, deviceAlertRepo)
-            _ <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
+            _      <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
           handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
         },
@@ -235,7 +235,7 @@ object RouterIngestRoutes {
       events: List[RouterEvent],
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
-      deviceAlertRepo: DeviceAlertRepo,
+      alertRepo: AlertRepo,
   ): IO[Response, Unit] = {
     val connInserts = events.collect {
       case e if e.`type` == "connection_attempt" =>
@@ -275,7 +275,7 @@ object RouterIngestRoutes {
       // reverse arrival order ("ipv4 race-loser observed first, fqdn lands
       // moments later").
       _         <- ZIO.foreachDiscard(enriched)(backfillFromFqdn(_, connEventRepo))
-      _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo, deviceAlertRepo))
+      _         <- ZIO.foreachDiscard(events)(applyDhcpOrFirstSeen(_, deviceRepo, alertRepo))
     } yield ()
   }
 
@@ -326,7 +326,7 @@ object RouterIngestRoutes {
   private def applyDhcpOrFirstSeen(
       e: RouterEvent,
       deviceRepo: DeviceRepo,
-      deviceAlertRepo: DeviceAlertRepo,
+      alertRepo: AlertRepo,
   ): IO[Response, Unit] =
     if e.`type` != "dhcp_lease" && e.`type` != "first_seen_mac" then ZIO.unit
     else
@@ -364,8 +364,8 @@ object RouterIngestRoutes {
                   )
                   .mapError(ErrorMapper.dbErrorToResponse)
                   .unit *>
-                  deviceAlertRepo
-                    .raise(mac, ts)
+                  alertRepo
+                    .raiseNewDevice(mac, ts)
                     .mapError(ErrorMapper.dbErrorToResponse)
             }
           } yield ()

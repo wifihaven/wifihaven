@@ -123,10 +123,26 @@ object DbFailureSpec extends ZIOSpecDefault {
     def delete(mac: MacAddress)                                                          = throwing
   }
 
-  private def brokenDeviceAlertRepo: DeviceAlertRepo = new DeviceAlertRepo {
-    def raise(mac: MacAddress, firstSeenAt: Instant) = throwing
-    def listAll(includeDismissed: Boolean)           = throwing
-    def dismiss(id: DeviceAlertId, at: Instant)      = throwing
+  private def brokenAlertRepo: AlertRepo = new AlertRepo {
+    def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant)                    = throwing
+    def createAccessRequest(
+        mac: MacAddress,
+        profileId: Option[ProfileId],
+        host: Hostname,
+        requestKind: AccessRequestKind,
+        note: Option[String],
+        createdAt: Instant,
+    ) = throwing
+    def findRecentAccessRequest(mac: MacAddress, host: Hostname, since: Instant) = throwing
+    def findById(id: AlertId)                                                    = throwing
+    def list(includeAll: Boolean)                                                = throwing
+    def decide(
+        id: AlertId,
+        newStatus: AlertStatus,
+        decidedAt: Instant,
+        decidedBy: String,
+        grantedMinutes: Option[Int],
+    ) = throwing
   }
 
   private def brokenHouseholdSettingsRepo: HouseholdSettingsRepo = new HouseholdSettingsRepo {
@@ -184,7 +200,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
-        brokenDeviceAlertRepo,
+        brokenAlertRepo,
         brokenHouseholdSettingsRepo,
       )
       val req    = Request
@@ -209,7 +225,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
-        brokenDeviceAlertRepo,
+        brokenAlertRepo,
         brokenHouseholdSettingsRepo,
       )
       val req    = Request
@@ -230,7 +246,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenTimeUsageRepo,
         brokenDeviceRepo,
         brokenConnectionEventRepo,
-        brokenDeviceAlertRepo,
+        brokenAlertRepo,
         brokenHouseholdSettingsRepo,
       )
       val req    = Request.post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
