@@ -79,9 +79,8 @@ installs the matching artifact. Full walkthrough: [`docs/install-openwrt.md`](do
 # Prereqs: JDK 21, Node 22, mill 1.1.5, scalafmt (cs install scalafmt)
 git clone git@github.com:wifihaven/wifihaven.git
 cd wifihaven
-scripts/install-hooks.sh         # set up pre-commit / pre-push hooks
 
-# Run all tests
+# Run all tests (also auto-installs git hooks via build.mill — see "Git hooks")
 mill __.test
 
 # Run the API locally (uses an embedded Postgres for tests; for dev you
@@ -307,19 +306,27 @@ CI (`.github/workflows/ci.yml`) runs:
 
 ## Git hooks
 
-`.githooks/` ships pre-commit and pre-push hooks. Install once per clone:
-
-```bash
-scripts/install-hooks.sh
-```
-
-This sets `core.hooksPath = .githooks`, so updates flow with the repo.
+`.githooks/` ships pre-commit and pre-push hooks. They install automatically
+the first time you run `mill` in a fresh checkout or worktree — `build.mill`
+checks `core.hooksPath` on load and runs `scripts/install-hooks.sh` if it
+isn't already pointing at `.githooks`. Idempotent and silent in the steady
+state.
 
 - **pre-commit (~5s)** — `scalafmt --check` and `eslint` on staged files only
 - **pre-push (~5s)** — `scalafmt --check`, `tsc --noEmit`, `eslint` on the
   whole tree
 
 Both can be bypassed in an emergency with `--no-verify`.
+
+### Troubleshooting
+
+If hooks aren't firing (e.g. you cloned but haven't yet run mill, or
+`core.hooksPath` was changed by another tool), run the installer manually:
+
+```bash
+scripts/install-hooks.sh
+scripts/verify-hooks-configured.sh   # confirms core.hooksPath=.githooks
+```
 
 ## License
 
