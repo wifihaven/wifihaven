@@ -48,6 +48,10 @@ object Main extends ZIOAppDefault {
         s"app_templates seeded (${templates.size} templates): " +
           s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
           s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated.mkString("[", ",", "]")}, " +
+          s"augmented=${seedSummary.augmented.size} " +
+          seedSummary.augmented
+            .map(a => s"${a.slug}+[${a.addedHosts.mkString(",")}]")
+            .mkString("[", ",", "]") + ", " +
           s"preserved=${seedSummary.preserved.size}",
       )
       // #958: seed the bundled category blocklists. Inline lists pull hosts
