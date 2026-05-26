@@ -1769,7 +1769,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
       setLocalError(null)
       // Clearing the input on a time-limited app removes the limit by
       // switching the app to plain Allow (keeps it assigned to the
-      // profile so the row stays visible — use the Clear button to drop
+      // profile so the row stays visible — use the Remove button to drop
       // the assignment entirely). For apps that weren't time-limited in
       // the first place this is a no-op.
       if (isTimeLimited) {
@@ -1816,7 +1816,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
             disabled={busy}
             onClick={clear}
             className={`${baseBtn} ${off}`}
-          >Clear</button>
+          >Remove</button>
         )}
       </div>
       <div className="flex flex-wrap gap-2 items-center">
