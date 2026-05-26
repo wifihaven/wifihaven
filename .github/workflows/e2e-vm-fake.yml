@@ -13,8 +13,10 @@ name: VM e2e (fake API — Gate 2)
 #   - workflow_dispatch — manual debugging from the Actions tab
 #
 # Concurrency: shares the e2e-vm group with the live-mode VM e2e workflow
-# so runs serialize on the single self-hosted KVM runner — the CI runner
-# is the same host as local dev and collisions are real.
+# so cross-workflow runs serialize on the self-hosted KVM runner. #891
+# parameterized bridge/ports/MACs so two qemu pairs can share a host,
+# but the group stays until two concurrent runs are observed clean on
+# the runner (per #891's follow-up note).
 
 on:
   workflow_call:
@@ -34,24 +36,51 @@ concurrency:
 
 jobs:
   e2e-fake:
-    name: VM e2e (fake API) suite
+    name: VM e2e (fake API) — ${{ matrix.pkg_format }}
     # Block fork PRs on the self-hosted runner; same guard as e2e-vm.yml.
     # (workflow_call and workflow_dispatch are always allowed.)
     if: >-
       github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
-    # Local wall time for the full fake-mode pack is ~15m (per #684
-    # validation: `24 passed in 927s`). 30m covers a cold router-image
-    # build on the runner plus headroom; concurrency=e2e-vm serializes so
-    # a slow run can't pile up.
+    # Local wall time for the full fake-mode pack is ~15–20m (per #685
+    # validation: ipk arm green 3x at 18m avg). 30m covers a cold image
+    # build on the runner plus headroom.
     timeout-minutes: 30
+    # #685: matrix over ipk-23.05 and apk-25.12 router images. fail-fast=false
+    # so a regression in one flavor still reports the other arm's status
+    # (needed to surface apk-only regressions like the #531 history case).
+    # No max-parallel: with #891's bridge/port/MAC parameterization the two
+    # arms can share a host. In practice today the single self-hosted kvm
+    # runner still serializes them via runner availability; once a second
+    # runner is added the arms parallelize automatically.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg_format: ipk
+            port_base: 2222
+          - pkg_format: apk
+            port_base: 2322
 
     env:
+      PKG_FORMAT: ${{ matrix.pkg_format }}
+      # Distinct host port bases per arm (#891): router-ssh, router-http,
+      # client1-ssh use port_base, port_base+1, port_base+2; #907 adds
+      # WH_FAKE_API_PORT = WH_PORT_BASE + 1000. Today the single runner
+      # serializes the arms so reuse would be fine; the split is for
+      # forward-compat once a second runner is labeled `kvm`.
+      WH_PORT_BASE: ${{ matrix.port_base }}
       # Per-job scope for the qemu `-name wh-*-${WH_RUN_ID}` suffix and the
       # .run/<id>/ state dir (config.sh:91,145,40-44). Lets teardown's
       # pkill backstop match only this run's qemu, never a sibling's, and
       # is a prerequisite for relaxing the e2e-vm concurrency group (#895).
+      # Kept short so .run/<id>/router/monitor.sock fits the 108-byte Linux
+      # Unix-socket-path limit in deep workspace paths (cf. #907 bug 4 —
+      # acceptance: WH_RUN_ID ≤ 18 chars in the CI runner workspace).
+      # Sequential matrix arms (today's reality) reuse the same id safely
+      # because teardown completes between arms; a per-arm suffix would
+      # overrun the path budget.
       WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
@@ -82,17 +111,36 @@ jobs:
           qemu-system-x86_64 --version | head -n1
           docker --version
 
+      - name: Resolve router image path
+        id: image
+        run: |
+          # Source versions.sh so the image filename stays in sync with
+          # whichever OpenWRT pin scripts/vm/versions.sh selects for this
+          # flavor (#685: derived, not hardcoded in YAML).
+          . scripts/vm/versions.sh
+          IMG="$GITHUB_WORKSPACE/scripts/vm/.cache/openwrt-wifihaven-${PKG_FORMAT}-${OPENWRT_VERSION_SHORT}.img"
+          echo "path=$IMG" >> "$GITHUB_OUTPUT"
+          echo "Resolved image: $IMG"
+
+      # Download the per-flavor image from the sibling build-vm-image job
+      # when Master Router CD invokes us with consume_vm_image_artifact=true.
+      # The artifact pattern matches openwrt-wifihaven-<flavor>-<version>-<sha>
+      # (cf. router-image-build.yml's upload). Today build-vm-image only
+      # builds .ipk; the .apk arm's download is a no-op and the next step
+      # falls through to a local build. Follow-up: extend build-vm-image
+      # to matrix-build both flavors.
       - name: Download VM image artifact (from build-vm-image)
         if: inputs.consume_vm_image_artifact
+        continue-on-error: true
         uses: actions/download-artifact@v6
         with:
-          pattern: openwrt-wifihaven-*-${{ github.sha }}
+          pattern: openwrt-wifihaven-${{ matrix.pkg_format }}-*-${{ github.sha }}
           path: scripts/vm/.cache
           merge-multiple: true
 
       - name: Build router image (if not cached / not downloaded)
         run: |
-          if [[ -f scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img ]]; then
+          if [[ -f "${{ steps.image.outputs.path }}" ]]; then
             echo "router image present, skipping build"
           else
             scripts/vm/build-router-image.sh
@@ -101,7 +149,7 @@ jobs:
       - name: Build client base (if not cached)
         run: scripts/vm/build-client-base.sh
 
-      - name: Pre-flight kill of stale wh VMs
+      - name: Pre-flight kill of stale wh VMs (this WH_RUN_ID only)
         run: |
           scripts/vm/router-down.sh || true
           scripts/vm/client-down.sh || true
@@ -111,14 +159,14 @@ jobs:
       # stack bring-up / teardown / log capture is needed here.
       - name: Run e2e fake-mode suite
         env:
-          WH_ROUTER_IMAGE_PATH: ${{ github.workspace }}/scripts/vm/.cache/openwrt-wifihaven-ipk-23.05.img
+          WH_ROUTER_IMAGE_PATH: ${{ steps.image.outputs.path }}
         run: scripts/e2e-vm.sh --mode=fake
 
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-vm-fake-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          name: e2e-vm-fake-failure-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             scripts/vm/.run/**
             !scripts/vm/.run/**/*.qcow2
