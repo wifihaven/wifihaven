@@ -157,6 +157,65 @@ jobs:
           path: openwrt/wifihaven_*.apk
           if-no-files-found: error
 
+      # Qemu VM image build (#893) — produces the bootable router images that
+      # downstream Gate 3b (#655) fetches by stable URL to test API/UI changes
+      # against the last-published router. Gated on publish_release so PR /
+      # main-push validation runs don't pay the ~2× IB cost; this is only the
+      # release pipeline's concern. Reuses the .ipk/.apk built above via
+      # IPK_PATH/APK_PATH so we don't recompile the wifihaven package.
+      - name: Build qemu VM image (ipk / OpenWRT 23.05)
+        if: inputs.publish_release == true
+        env:
+          PKG_FORMAT: ipk
+          IPK_SOURCE: path
+        run: |
+          set -euo pipefail
+          IPK_PATH="$(ls "$PWD"/openwrt/wifihaven_*.ipk | head -n1)"
+          export IPK_PATH
+          chmod +x scripts/vm/build-router-image.sh
+          scripts/vm/build-router-image.sh
+
+      - name: Build qemu VM image (apk / OpenWRT 25.12)
+        if: inputs.publish_release == true
+        env:
+          PKG_FORMAT: apk
+          APK_SOURCE: path
+        run: |
+          set -euo pipefail
+          APK_PATH="$(ls "$PWD"/openwrt/wifihaven_*.apk | head -n1)"
+          export APK_PATH
+          scripts/vm/build-router-image.sh
+
+      # Package each VM image as a release tarball. Contents: the bootable
+      # ext4-combined .img only — scripts/vm/router-up.sh (lib.sh:ensure_openwrt_image)
+      # consumes a single raw .img and creates its own qcow2 overlay, so no
+      # kernel/initrd sidecars are needed. Asset filenames are version-derived
+      # from versions.sh so a future OPENWRT_VERSION_{IPK,APK} bump renames the
+      # asset cleanly; the .sha256 file lets downstream verify the fetch.
+      - name: Package qemu VM images as release tarballs
+        if: inputs.publish_release == true
+        run: |
+          set -euo pipefail
+          # Resolve the major.minor for each flavor (matches build-router-image.sh's
+          # OUTPUT_IMG path).
+          ipk_short="$(PKG_FORMAT=ipk bash -c '. scripts/vm/versions.sh; echo "$OPENWRT_VERSION_SHORT"')"
+          apk_short="$(PKG_FORMAT=apk bash -c '. scripts/vm/versions.sh; echo "$OPENWRT_VERSION_SHORT"')"
+          ipk_img="scripts/vm/.cache/openwrt-wifihaven-ipk-${ipk_short}.img"
+          apk_img="scripts/vm/.cache/openwrt-wifihaven-apk-${apk_short}.img"
+          [ -f "$ipk_img" ] || { echo "missing $ipk_img" >&2; exit 1; }
+          [ -f "$apk_img" ] || { echo "missing $apk_img" >&2; exit 1; }
+          mkdir -p release
+          ipk_tar="release/wifihaven-router-openwrt-${ipk_short}-ipk.tar.gz"
+          apk_tar="release/wifihaven-router-openwrt-${apk_short}-apk.tar.gz"
+          tar -czf "$ipk_tar" -C "$(dirname "$ipk_img")" "$(basename "$ipk_img")"
+          tar -czf "$apk_tar" -C "$(dirname "$apk_img")" "$(basename "$apk_img")"
+          ( cd release && sha256sum \
+              "$(basename "$ipk_tar")" \
+              "$(basename "$apk_tar")" \
+              > wifihaven-router-images.sha256 )
+          echo "--- release assets ---"
+          ls -lh release/
+
       # Rolling pre-release. Post-#498 this is the ONLY release path — fires
       # only when the caller passes publish_release=true (Master Router
       # CD's publish-openwrt job, after the manual-approval gate). Direct
@@ -178,3 +237,6 @@ jobs:
             openwrt/wifihaven_*.apk
             openwrt/luci/luci-app-wifihaven_*.ipk
             openwrt/luci/luci-app-wifihaven_*.apk
+            release/wifihaven-router-openwrt-*-ipk.tar.gz
+            release/wifihaven-router-openwrt-*-apk.tar.gz
+            release/wifihaven-router-images.sha256
