@@ -197,9 +197,11 @@ object UsageTraffic {
       groupBy: Set[GroupBy],
       deviceByMac: Map[MacAddress, Device],
       profileNameById: Map[ProfileId, String],
-      // #769: host → membership list. A host in two apps appears under both
-      // when grouping by app. Hosts absent from the map (or with an empty
-      // list) bucket to __other__.
+      // #769: apex → membership list. Keys are apex-form (app_hosts already
+      // canonicalizes at create/edit). #1085 added suffix-aware lookup so
+      // traffic rows on `www.youtube.com` attribute to the `youtube.com` apex
+      // entry. A host in two apps appears under both when grouping by app.
+      // Hosts that match no apex bucket to __other__.
       appsByHost: Map[String, List[AppMembership]] = Map.empty,
   ): List[TrafficUsageAggregateRow] = {
     val step = stepOf(bucket)
@@ -212,11 +214,15 @@ object UsageTraffic {
         .flatMap(_.profileId)
         .flatMap(profileNameById.get)
         .getOrElse("(unassigned)")
-    def membershipsFor(host: String): List[AppMembership] =
-      appsByHost.getOrElse(host, Nil) match {
-        case Nil => List(AppMembership.Other)
-        case xs  => xs
-      }
+    // #1085: app_hosts rows are stored apex-form (`youtube.com`), but traffic
+    // rows carry FQDNs (`www.youtube.com`). Delegate to HostMatch.lookupApex,
+    // which is the single host→apex matcher shared with PolicyService and
+    // Presence — keeps usage attribution semantically aligned with the
+    // policy enforcement path.
+    def membershipsFor(host: HostId): List[AppMembership] = {
+      val matched = host.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, appsByHost))
+      matched.getOrElse(List(AppMembership.Other))
+    }
 
     val wantsApp = groupBy.contains(GroupBy.App)
 
@@ -226,7 +232,7 @@ object UsageTraffic {
     // un-expanded — distinctApps is still computed from `appsByHost`.
     val expanded: List[(TrafficUsageDbRow, Option[AppMembership])] =
       if (wantsApp)
-        rows.flatMap(r => membershipsFor(r.host.value).map(m => (r, Some(m))))
+        rows.flatMap(r => membershipsFor(r.host).map(m => (r, Some(m))))
       else
         rows.map(r => (r, None))
 
@@ -255,7 +261,7 @@ object UsageTraffic {
         // state.
         val appsInBucket  =
           if (wantsApp) bucketPairs.iterator.map(_._2.get.slug).toSet
-          else bucketRows.iterator.flatMap(r => membershipsFor(r.host.value).map(_.slug)).toSet
+          else bucketRows.iterator.flatMap(r => membershipsFor(r.host).map(_.slug)).toSet
         val totalBytesIn  = bucketRows.iterator.map(_.bytesIn).sum
         val totalBytesOut = bucketRows.iterator.map(_.bytesOut).sum
         val totalSeconds  = bucketRows.iterator.map(_.activeSeconds.toLong).sum
@@ -273,7 +279,7 @@ object UsageTraffic {
             val slug = appsInBucket.head
             // Look up display name from any contributing host.
             bucketRows.iterator
-              .flatMap(r => membershipsFor(r.host.value))
+              .flatMap(r => membershipsFor(r.host))
               .find(_.slug == slug)
               .map(_.name)
           } else None
