@@ -1,5 +1,5 @@
 import type {
-  AppDetail, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
+  AppDetail, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   DeviceAlert, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
   ConnectionEventSeriesPage, QueryLogPage,
@@ -320,6 +320,15 @@ export const api = {
       req<void>('PUT', `/apps/${id}/policy/${profileId}`, data),
     deletePolicy: (id: number, profileId: number) =>
       req<void>('DELETE', `/apps/${id}/policy/${profileId}`),
+  },
+
+  // #959: kid-side block-page lookup. Unauthenticated — hit from a blocked
+  // device after the router DNATs to the SPA's /blocked route.
+  blocked: {
+    info: (mac: string, host: string) => {
+      const qs = new URLSearchParams({ mac, host })
+      return req<BlockedInfoResponse>('GET', `/blocked?${qs}`, undefined, true)
+    },
   },
 
   // ── Routers (admin) ────────────────────────────────────────────────────
