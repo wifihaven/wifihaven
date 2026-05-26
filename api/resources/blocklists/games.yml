@@ -1,0 +1,78 @@
+# Online games and gaming platforms. Conservative starter list of major
+# consumer titles + storefronts; subdomains are matched at the router so
+# only apex hosts need to be listed.
+#
+# Cross-refs: gimkitconnect.com retained here per #1015. Many of these
+# domains overlap with bundled apps (Roblox, Fortnite, Minecraft, etc.);
+# enabling both is fine — duplicates are deduped at the router.
+id: games
+name: Games
+description: Online games, game storefronts, and gaming platforms (Roblox, Fortnite, Steam, Riot, Minecraft, etc.). Hand-curated v1; replace with URL-sourced when a suitable public list is available.
+source: curated
+hosts:
+  # Roblox
+  - roblox.com
+  - rbxcdn.com
+  # Epic Games / Fortnite
+  - fortnite.com
+  - epicgames.com
+  - unrealengine.com
+  # Valve / Steam
+  - steampowered.com
+  - store.steampowered.com
+  - steamcommunity.com
+  - steamstatic.com
+  - steamcontent.com
+  # Electronic Arts
+  - ea.com
+  - easports.com
+  - origin.com
+  # Riot Games
+  - riotgames.com
+  - leagueoflegends.com
+  - valorant.com
+  # Mojang / Minecraft
+  - minecraft.net
+  - mojang.com
+  # Supercell
+  - supercell.com
+  - brawlstars.com
+  - clashofclans.com
+  - clashroyale.com
+  # Gimkit (cross-ref #1005)
+  - gimkit.com
+  - gimkitconnect.com
+  # Other major platforms / publishers
+  - blizzard.com
+  - battle.net
+  - activision.com
+  - callofduty.com
+  - ubisoft.com
+  - ubi.com
+  - rockstargames.com
+  - take2games.com
+  - nintendo.com
+  - playstation.com
+  - xbox.com
+  - gog.com
+  - itch.io
+  - poki.com
+  - miniclip.com
+  - kongregate.com
+  - crazygames.com
+  - coolmathgames.com
+  - y8.com
+  - addictinggames.com
+  - newgrounds.com
+  - agar.io
+  - slither.io
+  - krunker.io
+  - ioground.com
+  - innersloth.com
+  - hoyoverse.com
+  - mihoyo.com
+  - pubg.com
+  - pubgmobile.com
+  - garena.com
+  - tencentgames.com
+  - epicgames.dev
