@@ -84,6 +84,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       userProfileRepo <- ZIO.service[UserProfileRepo]
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
+      rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -94,6 +95,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         userProfileRepo,
         profileRepo,
         appRepo,
+        rollupRepo,
         clock,
       ),
       auth,
@@ -1095,7 +1097,12 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(apexBody.contains("groupBy_not_implemented")) &&
           assertTrue(apexBody.contains("apex"))
       },
-      test("rejects window beyond on-the-fly cap with 503") {
+      // #809/#813: the prior 31-day on-the-fly cap is gone. Wide windows now
+      // route to traffic_hourly / traffic_daily instead of 503ing. The test
+      // below pins the new contract: a 40-day request succeeds (200) reading
+      // the daily rollup tier. Empty rollup table = empty aggregateRows but
+      // not an error.
+      test("wide windows route to the daily rollup (#809 #813)") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
           _           <- cleanDb
@@ -1120,9 +1127,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             )
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
-          body <- resp.body.asString
-        } yield assertTrue(resp.status == Status.ServiceUnavailable) &&
-          assertTrue(body.contains("window_too_large"))
+        } yield assertTrue(resp.status == Status.Ok)
       },
       test("raw cursor pagination walks the full set without dups (#862)") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
