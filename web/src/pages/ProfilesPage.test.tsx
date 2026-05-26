@@ -19,6 +19,7 @@ vi.mock('@/api/client', () => ({
     },
     devices: {
       list: vi.fn(),
+      patch: vi.fn(),
     },
     users: {
       list: vi.fn(),
@@ -127,6 +128,7 @@ beforeEach(() => {
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
+  ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     dailyResetTime: '00:00',
@@ -375,71 +377,21 @@ describe('ProfilesPage — create', () => {
   })
 })
 
-describe('ProfilesPage — edit', () => {
-  it('pre-fills editor from selected profile and calls api.profiles.update', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-
-    expect(screen.getByDisplayValue('Kids')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('120')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('school.com')).toBeInTheDocument()
-
-    // #265: Paused checkbox helper text must describe *all internet traffic*, not just DNS.
-    expect(
-      screen.getByText(/blocks all internet traffic for devices on this profile/i),
-    ).toBeInTheDocument()
-    expect(screen.queryByText(/blocks all DNS/i)).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
-    expect(api.profiles.update).toHaveBeenCalledWith(1, {
-      name: 'Kids',
-      blockedCategories: ['adult', 'gambling'],
-      extraBlocked: ['bad.com', 'evil.com'],
-      extraAllowed: ['school.com'],
-      paused: false,
-      timeLimit: 120,
-      schedules: [
-        { name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
-      ],
-      siteTimeLimits: [
-        { domainPattern: 'youtube.com', dailyMinutes: 30, label: 'YouTube', exemptFromDaily: true },
-      ],
-      // #385: edit preserves the existing failureMode unless changed.
-      failureMode: 'block-all',
-      // #751: edit round-trips the existing crossDeviceOverlapMode.
-      crossDeviceOverlapMode: 'sum',
-    })
-  })
-})
-
-describe('ProfilesPage — cross-device overlap toggle (#751)', () => {
-  it('round-trips the dedup selection to api.profiles.update', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-
-    expect(screen.getByTestId('profile-overlap-mode-sum')).toBeChecked()
-    expect(screen.getByTestId('profile-overlap-mode-dedup')).not.toBeChecked()
-
-    await user.click(screen.getByTestId('profile-overlap-mode-dedup'))
-    expect(screen.getByTestId('profile-overlap-mode-dedup')).toBeChecked()
-
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
-    expect(api.profiles.update).toHaveBeenCalledWith(
-      1,
-      expect.objectContaining({ crossDeviceOverlapMode: 'dedup' }),
-    )
-  })
-})
+// #973: the "Edit existing profile via modal" path was removed when the
+// inline subsections covered every editable field. Coverage of the
+// per-field write paths now lives in the per-subsection describes:
+//   - name           → "ProfilesPage — #973 inline name subsection"
+//   - timeLimit /
+//     schedules /
+//     crossDeviceOverlapMode → "ProfilesPage — inline time-limit subsection (#975)"
+//   - blockedCategories /
+//     extraBlocked /
+//     extraAllowed    → "ProfilesPage — apps subsection (#976)"
+//   - paused          → "ProfilesPage — pause / delete" + inline subsection sync
+//   - app policies   → "ProfilesPage — apps section (#767)" exercises the
+//                      inline subsection's AppsSection (post-#976).
+//   - failureMode    → only reachable from "+ New Profile" until the inline
+//                      subsection follow-up lands; see the #385 describe below.
 
 describe('ProfilesPage — inline time-limit subsection (#975)', () => {
   it('collapsed-by-default subsection shows daily-limit + schedule summary', async () => {
@@ -561,7 +513,9 @@ describe('ProfilesPage — role gating', () => {
     await screen.findByText('Kids')
     expect(screen.queryByRole('button', { name: /\+ New Profile/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Pause/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
+    // #973: the standalone "Edit" escape-hatch button is gone — every
+    // editable field has an inline subsection now, and admin-only ones
+    // are role-gated at the subsection level (see other tests below).
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument()
     // #977 — inline users subsection is admin-only; hidden along with the
     // other admin affordances when isAdmin=false.
@@ -647,73 +601,28 @@ describe('ProfilesPage — linked users section', () => {
 })
 
 describe('ProfilesPage — #385 failureMode (three modes)', () => {
-  it('edit form pre-fills failureMode from the profile (BlockAll for Kids)', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
-    const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
-    const allowAll      = screen.getByTestId('profile-failure-mode-allow-all')       as HTMLInputElement
-    expect(blockAll.checked).toBe(true)
-    expect(lastKnownGood.checked).toBe(false)
-    expect(allowAll.checked).toBe(false)
-  })
+  // #973: with the "Edit" escape-hatch button removed from the expanded
+  // card, the failureMode radios are only reachable via the "+ New Profile"
+  // modal until the inline failureMode subsection follow-up lands. These
+  // tests exercise that path; the existing-profile edit path is tracked in
+  // a separate issue.
 
-  it('edit form pre-fills failureMode from the profile (LastKnownGood for Adults)', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const adultsCard = await screen.findByTestId('profile-card-2')
-    await expand(2, user)
-    await user.click(within(adultsCard).getByRole('button', { name: /^Edit$/ }))
-    const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
-    const blockAll      = screen.getByTestId('profile-failure-mode-block-all')       as HTMLInputElement
-    expect(lastKnownGood.checked).toBe(true)
-    expect(blockAll.checked).toBe(false)
-  })
-
-  it('selecting AllowAll and saving sends the new value', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    await user.click(screen.getByTestId('profile-failure-mode-allow-all'))
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
-    const call = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[1].failureMode).toBe('allow-all')
-  })
-
-  it('selecting LastKnownGood and saving sends the new value', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    await user.click(screen.getByTestId('profile-failure-mode-last-known-good'))
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-    await waitFor(() => expect(api.profiles.update).toHaveBeenCalledTimes(1))
-    const call = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[1].failureMode).toBe('last-known-good')
-  })
-
-  it('new profile form defaults to LastKnownGood (column default)', async () => {
+  async function openNewProfileModal() {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
+    return user
+  }
+
+  it('new profile form defaults to LastKnownGood (column default)', async () => {
+    await openNewProfileModal()
     const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
     expect(lastKnownGood.checked).toBe(true)
   })
 
   it('renders explanatory copy for each of the three modes', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await openNewProfileModal()
     expect(
       screen.getByText(/drop all forwarded traffic for this profile's devices/i),
     ).toBeInTheDocument()
@@ -723,6 +632,26 @@ describe('ProfilesPage — #385 failureMode (three modes)', () => {
     expect(
       screen.getByText(/clear every block for this profile's devices/i),
     ).toBeInTheDocument()
+  })
+
+  it('selecting AllowAll on a new profile and saving sends the new value', async () => {
+    const user = await openNewProfileModal()
+    await user.type(screen.getByPlaceholderText('Kids'), 'Adults2')
+    await user.click(screen.getByTestId('profile-failure-mode-allow-all'))
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
+    const call = (api.profiles.create as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[0].failureMode).toBe('allow-all')
+  })
+
+  it('selecting BlockAll on a new profile and saving sends the new value', async () => {
+    const user = await openNewProfileModal()
+    await user.type(screen.getByPlaceholderText('Kids'), 'Kids2')
+    await user.click(screen.getByTestId('profile-failure-mode-block-all'))
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
+    const call = (api.profiles.create as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[0].failureMode).toBe('block-all')
   })
 })
 
@@ -768,21 +697,21 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    const section = await screen.findByTestId('apps-section')
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const section = await screen.findByTestId('profile-1-apps-section')
     expect(within(section).getByText(/No apps yet/i)).toBeInTheDocument()
-    expect(within(section).getByTestId('apps-section-empty-link')).toHaveAttribute('href', '/apps')
+    expect(within(section).getByTestId('profile-1-apps-section-empty-link')).toHaveAttribute('href', '/apps')
   })
 
   it('renders one row per assigned app and reflects current assignment', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube, tiktok])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-50')
     expect(screen.getByTestId('app-row-51')).toBeInTheDocument()
     // TikTok is currently blocked for profile 1; the block button shows checked state.
@@ -795,17 +724,17 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-51')
     // YouTube has no assignment → row hidden.
     expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
     // Picker reveals it.
-    await user.click(screen.getByTestId('apps-section-add'))
-    const picker = await screen.findByTestId('apps-section-picker')
-    expect(within(picker).getByTestId('apps-section-picker-add-50')).toBeInTheDocument()
-    expect(within(picker).queryByTestId('apps-section-picker-add-51')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add'))
+    const picker = await screen.findByTestId('profile-1-apps-section-picker')
+    expect(within(picker).getByTestId('profile-1-apps-section-picker-add-50')).toBeInTheDocument()
+    expect(within(picker).queryByTestId('profile-1-apps-section-picker-add-51')).not.toBeInTheDocument()
   })
 
   it('profile with zero assignments shows none-assigned hint, not all apps', async () => {
@@ -817,10 +746,10 @@ describe('ProfilesPage — apps section (#767)', () => {
     ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytForProfile2])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    expect(await screen.findByTestId('apps-section-none-assigned')).toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    expect(await screen.findByTestId('profile-1-apps-section-none-assigned')).toBeInTheDocument()
     expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
   })
 
@@ -833,26 +762,26 @@ describe('ProfilesPage — apps section (#767)', () => {
     ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, slack, tiktok])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-51')
-    await user.click(screen.getByTestId('apps-section-add'))
-    await user.type(screen.getByTestId('apps-section-picker-filter'), 'slack')
-    expect(screen.getByTestId('apps-section-picker-add-52')).toBeInTheDocument()
-    expect(screen.queryByTestId('apps-section-picker-add-50')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-1-apps-section-add'))
+    await user.type(screen.getByTestId('profile-1-apps-section-picker-filter'), 'slack')
+    expect(screen.getByTestId('profile-1-apps-section-picker-add-52')).toBeInTheDocument()
+    expect(screen.queryByTestId('profile-1-apps-section-picker-add-50')).not.toBeInTheDocument()
   })
 
   it('adding from picker calls setPolicy with mode=allowed', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeUnassigned, tiktok])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-51')
-    await user.click(screen.getByTestId('apps-section-add'))
-    await user.click(await screen.findByTestId('apps-section-picker-add-50'))
+    await user.click(screen.getByTestId('profile-1-apps-section-add'))
+    await user.click(await screen.findByTestId('profile-1-apps-section-picker-add-50'))
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null }),
     )
@@ -870,9 +799,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khan])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     const cb = await screen.findByTestId('app-row-60-counts-toward-daily') as HTMLInputElement
     expect(cb.checked).toBe(false)
     await user.click(cb)
@@ -885,9 +814,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktok])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-51')
     expect(screen.queryByTestId('app-row-51-counts-toward-daily')).not.toBeInTheDocument()
   })
@@ -896,9 +825,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await user.click(await screen.findByTestId('app-row-50-block'))
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'blocked', dailyMinutes: null }),
@@ -909,9 +838,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await user.click(await screen.findByTestId('app-row-50-allow'))
     await waitFor(() =>
       expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null }),
@@ -922,9 +851,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     const input = await screen.findByTestId('app-row-50-minutes') as HTMLInputElement
     await user.type(input, '45')
     // Tab away — the input IS the time-limit control, no separate button.
@@ -938,9 +867,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     const input = await screen.findByTestId('app-row-50-minutes') as HTMLInputElement
     await user.type(input, '0')
     await user.tab()
@@ -952,9 +881,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     const input = await screen.findByTestId('app-row-50-minutes')
     await user.click(input)
     await user.tab()
@@ -973,9 +902,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khan])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     const input = await screen.findByTestId('app-row-60-minutes') as HTMLInputElement
     expect(input.value).toBe('60')
     await user.clear(input)
@@ -989,9 +918,9 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktok])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await user.click(await screen.findByTestId('app-row-51-clear'))
     await waitFor(() =>
       expect(api.apps.deletePolicy).toHaveBeenCalledWith(51, 1),
@@ -1013,10 +942,10 @@ describe('ProfilesPage — apps section (#767)', () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    expect(await screen.findByTestId('apps-section-manage-link')).toHaveAttribute('href', '/apps')
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    expect(await screen.findByTestId('profile-1-apps-section-manage-link')).toHaveAttribute('href', '/apps')
   })
 })
 
@@ -1091,5 +1020,122 @@ describe('ProfilesPage — apps subsection (#976)', () => {
     await screen.findByTestId('profile-card-1')
     await expand(1, user)
     expect(screen.queryByTestId('profile-apps-toggle-1')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — #973 inline name subsection (autosave)', () => {
+  it('renders the inline name editor pre-filled when the card is expanded', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const input = within(kidsCard).getByTestId('profile-name-input-1') as HTMLInputElement
+    expect(input.value).toBe('Kids')
+  })
+
+  it('debounced autosave fires once per change with the new name baked into the full PUT body', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const input = within(kidsCard).getByTestId('profile-name-input-1')
+
+    await user.clear(input)
+    await user.type(input, 'Kiddos')
+
+    // Real 500ms debounce — give waitFor a window wide enough to cover it.
+    await waitFor(
+      () =>
+        expect(api.profiles.update).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            name: 'Kiddos',
+            blockedCategories: ['adult', 'gambling'],
+            paused: false,
+            failureMode: 'block-all',
+            crossDeviceOverlapMode: 'sum',
+            // round-trips schedules + siteTimeLimits + timeLimit unchanged
+            timeLimit: 120,
+          }),
+        ),
+      { timeout: 2000 },
+    )
+    expect(api.profiles.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('blank name surfaces an error and is not persisted', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const input = within(kidsCard).getByTestId('profile-name-input-1')
+    await user.clear(input)
+    await waitFor(
+      () => {
+        const badge = within(kidsCard).getByTestId('profile-name-status-1')
+        expect(badge).toHaveAttribute('data-status', 'error')
+      },
+      { timeout: 2000 },
+    )
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProfilesPage — #973 inline devices subsection', () => {
+  const orphanDevice: Device = {
+    id: 200, mac: 'aa:bb:cc:dd:ee:99', name: 'Spare Laptop', profileId: null,
+    profileName: null, lastSeenIp: null, lastSeenAt: null,
+  }
+
+  it('renders assigned devices with a Remove button and a picker of unassigned devices', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      phoneDevice, tabletDevice, orphanDevice,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-devices-subsection-1')
+    expect(within(sub).getByTestId('profile-device-100')).toBeInTheDocument()
+    expect(within(sub).getByTestId('profile-device-100-detach')).toBeInTheDocument()
+    expect(within(sub).getByTestId('profile-device-add-200')).toBeInTheDocument()
+    // Devices already on another profile do not show up in the picker.
+    expect(within(sub).queryByTestId('profile-device-add-101')).not.toBeInTheDocument()
+  })
+
+  it('clicking + on an unassigned device PATCHes /devices with the profileId', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      phoneDevice, tabletDevice, orphanDevice,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-device-add-200'))
+    await waitFor(() =>
+      expect(api.devices.patch).toHaveBeenCalledWith('aa:bb:cc:dd:ee:99', { profileId: 1 }),
+    )
+  })
+
+  it('clicking Remove on an assigned device PATCHes /devices with profileId=null', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-device-100-detach'))
+    await waitFor(() =>
+      expect(api.devices.patch).toHaveBeenCalledWith('aa:bb:cc:dd:ee:01', { profileId: null }),
+    )
+  })
+
+  it('hides the editable subsection for non-admins (read-only listing instead)', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(within(kidsCard).queryByTestId('profile-devices-subsection-1')).not.toBeInTheDocument()
+    // The pre-#973 read-only listing is the fallback for non-admins.
+    expect(within(kidsCard).getByTestId('profile-devices-1')).toBeInTheDocument()
   })
 })

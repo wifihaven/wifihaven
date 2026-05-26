@@ -5,6 +5,7 @@ import type {
   ConnectionEventSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
+  PatchDeviceRequest,
   UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
@@ -120,6 +121,10 @@ export const api = {
   devices: {
     list: () => req<Device[]>('GET', '/devices'),
     upsert: (data: UpsertDeviceRequest) => req<{ id: number }>('PUT', '/devices', data),
+    // #973 / #996: field-scoped partial update; the route accepts raw MAC path
+    // segments (zio-http does not decode percent-encoded colons in paths).
+    patch: (mac: string, data: PatchDeviceRequest) =>
+      req<void>('PATCH', `/devices/${mac}`, data),
     delete: (mac: string) => req<void>('DELETE', `/devices/${encodeURIComponent(mac)}`),
   },
 
