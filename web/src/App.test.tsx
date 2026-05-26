@@ -9,7 +9,6 @@ vi.mock('@/pages/DashboardPage', () => ({
 }))
 vi.mock('@/pages/DevicesPage',  () => ({ DevicesPage:  () => <div>Devices stub</div> }))
 vi.mock('@/pages/ProfilesPage', () => ({ ProfilesPage: () => <div>Profiles stub</div> }))
-vi.mock('@/pages/TimePage',     () => ({ TimePage:     () => <div>Time stub</div> }))
 vi.mock('@/pages/LogsPage',     () => ({ LogsPage:     () => <div>Logs stub</div> }))
 vi.mock('@/pages/AccountPage',  () => ({ AccountPage:  () => <div>Account stub</div> }))
 vi.mock('@/pages/LoginPage',    () => ({ LoginPage:    () => <div>Login stub</div> }))

@@ -206,7 +206,13 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       } yield assertTrue(ytHosts.nonEmpty) &&
         assertTrue(ytHosts.contains(Hostname.unsafe("youtube.com")))
     },
-    test("operator host edits survive subsequent seeds") {
+    test(
+      "operator-added hosts survive subsequent seeds (template hosts are additively re-added per #1087)",
+    ) {
+      // Pre-#1087 contract was "operator host list wins outright"; post-#1087 the seeder
+      // additively merges missing template hosts back in so drift is recovered. Operator
+      // *additions* are still preserved — only operator *deletions* of template hosts are
+      // reversed, which is the intended trade-off (drift recovery > removal stickiness).
       for {
         _         <- cleanDb
         appRepo   <- ZIO.service[AppRepo]
@@ -215,11 +221,13 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         yt        <- appRepo
           .findByTemplateId(AppTemplateId.unsafe("youtube"))
           .someOrFailException
-        customHosts = List(Hostname.unsafe("operator-only.example.com"))
-        _     <- appRepo.setHosts(yt.id, customHosts)
+        ytTmpl       = templates.find(_.slug == AppTemplateId.unsafe("youtube")).get
+        operatorHost = Hostname.unsafe("operator-only.example.com")
+        _     <- appRepo.setHosts(yt.id, ytTmpl.hosts :+ operatorHost)
         _     <- AppTemplates.seed(appRepo, templates)
         after <- appRepo.getHosts(yt.id)
-      } yield assertTrue(after == customHosts)
+      } yield assertTrue(after.contains(operatorHost)) &&
+        assertTrue(ytTmpl.hosts.forall(after.contains))
     },
     test("POST /reset-to-template restores template hosts (admin)") {
       for {
@@ -274,6 +282,102 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
             .addHeader(Header.Authorization.Bearer(token)),
         )
       } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test(
+      "seed additively merges hosts that were added to the template after initial seed (#1087)",
+    ) {
+      // Simulates the Gimkit drift: row was seeded back when the template had only one host;
+      // template later grew a second host (gimkitconnect.com). Subsequent seeds must add the
+      // missing host without disturbing what was already there.
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        gimkitSlug = AppTemplateId.unsafe("gimkit")
+        seedOnly   = AppTemplate(
+          gimkitSlug,
+          "Gimkit",
+          None,
+          IconType.Emoji,
+          List(Hostname.unsafe("gimkit.com")),
+        )
+        full       = AppTemplate(
+          gimkitSlug,
+          "Gimkit",
+          None,
+          IconType.Emoji,
+          List(Hostname.unsafe("gimkit.com"), Hostname.unsafe("gimkitconnect.com")),
+        )
+        _       <- AppTemplates.seed(appRepo, List(seedOnly))
+        summary <- AppTemplates.seed(appRepo, List(full))
+        gimkit  <- appRepo.findByTemplateId(gimkitSlug).someOrFailException
+        after   <- appRepo.getHosts(gimkit.id)
+      } yield assertTrue(after.toSet == full.hosts.toSet) &&
+        assertTrue(after.contains(Hostname.unsafe("gimkit.com"))) &&
+        assertTrue(after.contains(Hostname.unsafe("gimkitconnect.com"))) &&
+        assertTrue(summary.created.isEmpty) &&
+        assertTrue(summary.preserved.isEmpty) &&
+        assertTrue(summary.repopulated.isEmpty) &&
+        assertTrue(summary.augmented.map(_.slug) == List("gimkit")) &&
+        assertTrue(summary.augmented.head.addedHosts == List("gimkitconnect.com"))
+    },
+    test(
+      "seed augment preserves operator-added hosts and still adds missing template hosts (#1087)",
+    ) {
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        gimkitSlug = AppTemplateId.unsafe("gimkit")
+        seedOnly   = AppTemplate(
+          gimkitSlug,
+          "Gimkit",
+          None,
+          IconType.Emoji,
+          List(Hostname.unsafe("gimkit.com")),
+        )
+        full       = AppTemplate(
+          gimkitSlug,
+          "Gimkit",
+          None,
+          IconType.Emoji,
+          List(Hostname.unsafe("gimkit.com"), Hostname.unsafe("gimkitconnect.com")),
+        )
+        _      <- AppTemplates.seed(appRepo, List(seedOnly))
+        gimkit <- appRepo.findByTemplateId(gimkitSlug).someOrFailException
+        operatorHost = Hostname.unsafe("myhouseholdspecific.example")
+        _       <- appRepo.setHosts(gimkit.id, List(Hostname.unsafe("gimkit.com"), operatorHost))
+        summary <- AppTemplates.seed(appRepo, List(full))
+        after   <- appRepo.getHosts(gimkit.id)
+      } yield assertTrue(after.contains(operatorHost)) &&
+        assertTrue(after.contains(Hostname.unsafe("gimkitconnect.com"))) &&
+        assertTrue(after.contains(Hostname.unsafe("gimkit.com"))) &&
+        assertTrue(summary.augmented.map(_.slug) == List("gimkit")) &&
+        assertTrue(summary.augmented.head.addedHosts == List("gimkitconnect.com"))
+    },
+    test("seed augment is idempotent: second pass produces preserved, not augmented (#1087)") {
+      for {
+        _       <- cleanDb
+        appRepo <- ZIO.service[AppRepo]
+        gimkitSlug = AppTemplateId.unsafe("gimkit")
+        seedOnly   = AppTemplate(
+          gimkitSlug,
+          "Gimkit",
+          None,
+          IconType.Emoji,
+          List(Hostname.unsafe("gimkit.com")),
+        )
+        full       = AppTemplate(
+          gimkitSlug,
+          "Gimkit",
+          None,
+          IconType.Emoji,
+          List(Hostname.unsafe("gimkit.com"), Hostname.unsafe("gimkitconnect.com")),
+        )
+        _      <- AppTemplates.seed(appRepo, List(seedOnly))
+        first  <- AppTemplates.seed(appRepo, List(full))
+        second <- AppTemplates.seed(appRepo, List(full))
+      } yield assertTrue(first.augmented.size == 1) &&
+        assertTrue(second.augmented.isEmpty) &&
+        assertTrue(second.preserved == List("gimkit"))
     },
     test("seed returns summary: first run created=all; second run preserved=all (#1024)") {
       for {
