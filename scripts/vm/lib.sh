@@ -63,11 +63,15 @@ ensure_openwrt_image() {
 
   log "decompressing $(basename "${gz}")"
   require_cmd gunzip
-  if ! gunzip -k -f "${gz}"; then
-    rc=$?
-    if (( rc != 2 )); then
-      die "gunzip failed (rc=${rc}) on ${gz}"
-    fi
+  # `if ! gunzip` loses gunzip's real rc ($? inside `then` is the negation's,
+  # always 0), which let "rc=2 = trailing garbage, tolerate" silently treat
+  # every warning as a fatal rc=0. Capture rc directly via ||.
+  local rc=0
+  gunzip -k -f "${gz}" || rc=$?
+  if (( rc != 0 && rc != 2 )); then
+    die "gunzip failed (rc=${rc}) on ${gz}"
+  fi
+  if (( rc == 2 )); then
     log "gunzip warned on ${gz} (rc=2, trailing garbage ignored) — decompression result follows"
   fi
   [[ -f "${img}" ]] || die "expected ${img} after gunzip"
