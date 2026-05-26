@@ -183,6 +183,24 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     expect(chip).toHaveTextContent(/Paused/)
   })
 
+  it('summary row reflects granted +Time extension in the cap text', async () => {
+    // #975 follow-up: pre-fix the row read "45m / 2:00" even after a +30m
+    // grant — the bar denominator grew but the text ignored extensionMins,
+    // making fresh grants look like no-ops. Post-fix the denominator is
+    // base+extension and an "(+Xm)" suffix calls the grant out explicitly.
+    (api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...kidsSummary, extensionMins: 30, remainingMins: 105 },
+      adultsSummary,
+    ])
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    const time = within(kidsCard).getByTestId('profile-summary-time-1')
+    expect(time).toHaveTextContent('45m')
+    // 120 base + 30 extension = 150 = "2:30"
+    expect(time).toHaveTextContent('2:30')
+    expect(time).toHaveTextContent('(+30m)')
+  })
+
   it('time-exceeded summary flips the chip and hides the bar fill at 100%', async () => {
     (api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       { ...kidsSummary, usedMins: 130, remainingMins: 0 },
@@ -420,6 +438,119 @@ describe('ProfilesPage — cross-device overlap toggle (#751)', () => {
       1,
       expect.objectContaining({ crossDeviceOverlapMode: 'dedup' }),
     )
+  })
+})
+
+describe('ProfilesPage — inline time-limit subsection (#975)', () => {
+  it('collapsed-by-default subsection shows daily-limit + schedule summary', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const sub = within(kidsCard).getByTestId('profile-time-subsection-1')
+    // Collapsed: editor body is hidden, but the summary readout matches what the
+    // expanded card used to show pre-#975 ("Daily limit: 120 min" + "Bedtime …").
+    expect(within(sub).getByText(/Daily limit:/)).toBeInTheDocument()
+    expect(within(sub).getByText('120 min')).toBeInTheDocument()
+    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
+    expect(within(sub).getByText(/21:00 → 07:00/)).toBeInTheDocument()
+    // Editable inputs only appear after expand.
+    expect(within(sub).queryByTestId('profile-time-limit-1')).not.toBeInTheDocument()
+
+    await user.click(within(sub).getByTestId('profile-time-toggle-1'))
+    expect(within(sub).getByTestId('profile-time-limit-1')).toHaveValue(120)
+    expect(within(sub).getByTestId('profile-time-overlap-sum-1')).toBeChecked()
+  })
+
+  it('autosaves the daily cap after debounce — single PUT, no Save button', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const kidsCard = await screen.findByTestId('profile-card-1')
+      await expand(1, user)
+      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+
+      const input = within(kidsCard).getByTestId('profile-time-limit-1')
+      await user.clear(input)
+      await user.type(input, '90')
+
+      // Pre-debounce: no save yet.
+      expect(api.profiles.update).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.profiles.update).toHaveBeenCalledTimes(1)
+      expect(api.profiles.update).toHaveBeenLastCalledWith(
+        1,
+        expect.objectContaining({ timeLimit: 90, name: 'Kids' }),
+      )
+
+      // "Saved" indicator surfaces after the PUT resolves.
+      await waitFor(() => {
+        const status = within(kidsCard).getByTestId('profile-time-status-1')
+        expect(status).toHaveAttribute('data-status', 'saved')
+        expect(status).toHaveTextContent('Saved')
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('autosaves the cross-device overlap toggle', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const kidsCard = await screen.findByTestId('profile-card-1')
+      await expand(1, user)
+      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+
+      await user.click(within(kidsCard).getByTestId('profile-time-overlap-dedup-1'))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.profiles.update).toHaveBeenLastCalledWith(
+        1,
+        expect.objectContaining({ crossDeviceOverlapMode: 'dedup' }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clearing the daily cap sends timeLimit:null', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const kidsCard = await screen.findByTestId('profile-card-1')
+      await expand(1, user)
+      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+
+      await user.clear(within(kidsCard).getByTestId('profile-time-limit-1'))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.profiles.update).toHaveBeenLastCalledWith(
+        1,
+        expect.objectContaining({ timeLimit: null }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('non-admins see read-only subsection — no editable inputs', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const input = within(kidsCard).getByTestId('profile-time-limit-1')
+    expect(input).toBeDisabled()
+    expect(within(kidsCard).getByTestId('profile-time-overlap-sum-1')).toBeDisabled()
+    expect(within(kidsCard).queryByTestId('profile-time-add-schedule-1')).not.toBeInTheDocument()
   })
 })
 
