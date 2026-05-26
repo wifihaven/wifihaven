@@ -22,7 +22,7 @@ const DEFAULT_HF: HeartbeatFilter = {
   heartbeatHostPatterns: [],
 }
 
-const DEFAULT_UMM: UnmanagedMacPolicy = { policy: 'block', blockPage: true }
+const DEFAULT_UMM: UnmanagedMacPolicy = { policy: 'allow', blockPage: true }
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -379,35 +379,35 @@ describe('AdminPage — heartbeat filter card', () => {
 
 // #961 — admin control surface for the unmanagedMacPolicy field.
 describe('AdminPage — unmanaged-MAC policy card', () => {
-  it('summary defaults to "Block by default" with block-page enabled', async () => {
+  it('summary defaults to "Allow by default"', async () => {
+    render(<AdminPage />)
+    const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
+    expect(summary).toHaveTextContent(/Allow by default/i)
+  })
+
+  it('summary shows "Block by default" when policy is block', async () => {
+    seedServer({ unmanagedMacPolicy: { policy: 'block', blockPage: true } })
     render(<AdminPage />)
     const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
     expect(summary).toHaveTextContent(/Block by default/i)
     expect(summary).toHaveTextContent(/block page/i)
   })
 
-  it('summary shows "Allow by default" when policy is allow', async () => {
-    seedServer({ unmanagedMacPolicy: { policy: 'allow', blockPage: true } })
-    render(<AdminPage />)
-    const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
-    expect(summary).toHaveTextContent(/Allow by default/i)
-  })
-
-  it('switching to allow persists via PATCH and updates the summary', async () => {
+  it('switching to block persists via PATCH and updates the summary', async () => {
     const user = userEvent.setup()
     render(<AdminPage />)
     await screen.findByTestId('unmanaged-mac-policy-summary')
     await user.click(screen.getByTestId('unmanaged-mac-policy-edit'))
 
-    await user.click(screen.getByTestId('unmanaged-mac-policy-allow'))
+    await user.click(screen.getByTestId('unmanaged-mac-policy-block'))
     await user.click(screen.getByTestId('unmanaged-mac-policy-save'))
 
     await waitFor(() =>
       expect(api.household.patch).toHaveBeenCalledWith({
-        unmanagedMacPolicy: { policy: 'allow', blockPage: true },
+        unmanagedMacPolicy: { policy: 'block', blockPage: true },
       }),
     )
     const summary = await screen.findByTestId('unmanaged-mac-policy-summary')
-    expect(summary).toHaveTextContent(/Allow by default/i)
+    expect(summary).toHaveTextContent(/Block by default/i)
   })
 })

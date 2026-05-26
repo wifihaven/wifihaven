@@ -428,7 +428,7 @@ case class UnmanagedMacPolicy(
 ) derives JsonCodec
 
 object UnmanagedMacPolicy {
-  val Default: UnmanagedMacPolicy = UnmanagedMacPolicy(policy = "block", blockPage = true)
+  val Default: UnmanagedMacPolicy = UnmanagedMacPolicy(policy = "allow", blockPage = true)
   val ValidPolicies: Set[String]  = Set("block", "allow")
 }
 

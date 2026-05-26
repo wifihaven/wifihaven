@@ -395,18 +395,15 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(unknown.isDefined) &&
         assertTrue(unknown.exists(_.profileId.isEmpty)) &&
         assertTrue(known.exists(_.profileId.contains(kid))) &&
-        // #961: default unmanagedMacPolicy = block ⇒ unenrolled device gets
-        // Manual-blocked rules at the wire so the router enforces without a
-        // contract change.
-        assertTrue(unknown.flatMap(_.rules).exists(_.blocked)) &&
-        assertTrue(
-          unknown.flatMap(_.rules).flatMap(_.blockReason).contains(MacBlockReason.Manual),
-        ) &&
-        // Known (profile-assigned) device keeps `rules = None` — resolution
-        // happens via the profile policy.
+        // #961: default unmanagedMacPolicy = allow ⇒ unenrolled device keeps
+        // `rules = None` and flows freely. Switching to "block" is covered
+        // by the next test.
+        assertTrue(unknown.exists(_.rules.isEmpty)) &&
+        // Known (profile-assigned) device also has `rules = None` — its
+        // resolution happens via the profile policy.
         assertTrue(known.exists(_.rules.isEmpty))
     },
-    test("#961 snapshot: unmanagedMacPolicy=allow leaves unenrolled rules empty") {
+    test("#961 snapshot: unmanagedMacPolicy=block emits Manual-blocked rules for unenrolled MAC") {
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
@@ -425,10 +422,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         )
         existing <- hsr.get
         _        <- hsr.update(
-          existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "allow", blockPage = true)),
+          existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "block", blockPage = true)),
         )
         ps       <- makePolicyService
-        (_, et)  <- seedRouter("gw-snap-unmanaged-allow")
+        (_, et)  <- seedRouter("gw-snap-unmanaged-block")
         routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
         regResp <- doRegister(routes, et)
         regBody <- regResp.body.asString
@@ -442,7 +439,10 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         snap    <- ZIO.fromEither(body.fromJson[PolicySnapshot])
         unknown = snap.devices.get(MacAddress.unsafe("ff:ff:ff:aa:bb:cc"))
       } yield assertTrue(unknown.exists(_.profileId.isEmpty)) &&
-        assertTrue(unknown.exists(_.rules.isEmpty))
+        assertTrue(unknown.flatMap(_.rules).exists(_.blocked)) &&
+        assertTrue(
+          unknown.flatMap(_.rules).flatMap(_.blockReason).contains(MacBlockReason.Manual),
+        )
     },
     test("admin can create router; non-admin gets 403; row stores enrollment hash, no token yet") {
       for {

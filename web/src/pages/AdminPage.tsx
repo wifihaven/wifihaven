@@ -136,23 +136,23 @@ function UnmanagedMacPolicyCard({
               <input
                 type="radio"
                 name="unmanaged-mac-policy"
-                value="block"
-                checked={form.policy === 'block'}
-                onChange={() => setForm({ ...form, policy: 'block' })}
-                data-testid="unmanaged-mac-policy-block"
-              />
-              Block unmanaged MACs (recommended)
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-200">
-              <input
-                type="radio"
-                name="unmanaged-mac-policy"
                 value="allow"
                 checked={form.policy === 'allow'}
                 onChange={() => setForm({ ...form, policy: 'allow' })}
                 data-testid="unmanaged-mac-policy-allow"
               />
-              Allow unmanaged MACs (alert-only)
+              Allow unmanaged MACs (default; alert-only)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-200">
+              <input
+                type="radio"
+                name="unmanaged-mac-policy"
+                value="block"
+                checked={form.policy === 'block'}
+                onChange={() => setForm({ ...form, policy: 'block' })}
+                data-testid="unmanaged-mac-policy-block"
+              />
+              Block unmanaged MACs
             </label>
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-200">

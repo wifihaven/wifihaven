@@ -75,7 +75,7 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'UTC',
     heartbeatFilter: { enabled: false, bytesThreshold: 0, heartbeatHostPatterns: [] },
-    unmanagedMacPolicy: { policy: 'block', blockPage: true },
+    unmanagedMacPolicy: { policy: 'allow', blockPage: true },
   })
 })
 

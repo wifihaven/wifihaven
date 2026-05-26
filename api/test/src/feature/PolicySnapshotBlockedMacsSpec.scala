@@ -203,7 +203,7 @@ object PolicySnapshotBlockedMacsSpec
         snap <- ps.snapshot
       } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "Schedule"))
     },
-    test("#961 unassigned device is Manual-blocked under default unmanagedMacPolicy=block") {
+    test("#961 unassigned device not blocked under default unmanagedMacPolicy=allow") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -219,9 +219,9 @@ object PolicySnapshotBlockedMacsSpec
         )
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
-      } yield assertTrue(blockedMacs(snap).contains("ff:ff:ff:aa:bb:cc" -> "Manual"))
+      } yield assertTrue(!blockedMacs(snap).exists(_._1 == "ff:ff:ff:aa:bb:cc"))
     },
-    test("#961 unassigned device not blocked when unmanagedMacPolicy=allow") {
+    test("#961 unassigned device is Manual-blocked when unmanagedMacPolicy=block") {
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
@@ -238,11 +238,11 @@ object PolicySnapshotBlockedMacsSpec
         )
         existing <- hsr.get
         _        <- hsr.update(
-          existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "allow", blockPage = true)),
+          existing.copy(unmanagedMacPolicy = UnmanagedMacPolicy(policy = "block", blockPage = true)),
         )
         ps       <- makePsAt(TestClock.bedtime)
         snap     <- ps.snapshot
-      } yield assertTrue(!blockedMacs(snap).exists(_._1 == "ff:ff:ff:aa:bb:cc"))
+      } yield assertTrue(blockedMacs(snap).contains("ff:ff:ff:aa:bb:cc" -> "Manual"))
     },
     test("etag flips when wall clock crosses a schedule edge, even with no DB change") {
       for {

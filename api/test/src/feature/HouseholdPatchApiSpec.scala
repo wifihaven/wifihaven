@@ -128,14 +128,14 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         resp         <- patch(routes, tk, """{"heartbeatFilter":null}""")
       } yield assertTrue(resp.status == Status.BadRequest)
     },
-    test("#961 default unmanagedMacPolicy is block/blockPage=true") {
+    test("#961 default unmanagedMacPolicy is allow/blockPage=true") {
       for {
         _     <- cleanDb
         repo  <- ZIO.service[HouseholdSettingsRepo]
         _     <- repo.ensureDefault(ZoneId.of("UTC"))
         after <- repo.get
       } yield assertTrue(after.unmanagedMacPolicy == UnmanagedMacPolicy.Default) &&
-        assertTrue(after.unmanagedMacPolicy.policy == "block") &&
+        assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
         assertTrue(after.unmanagedMacPolicy.blockPage)
     },
     test("#961 unmanagedMacPolicy deep-merges (toggle blockPage preserves policy)") {
@@ -146,18 +146,18 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         repo         <- ZIO.service[HouseholdSettingsRepo]
         after        <- repo.get
       } yield assertTrue(resp.status == Status.Ok) &&
-        assertTrue(after.unmanagedMacPolicy.policy == "block") &&
+        assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
         assertTrue(!after.unmanagedMacPolicy.blockPage)
     },
-    test("#961 unmanagedMacPolicy.policy=allow round-trips") {
+    test("#961 unmanagedMacPolicy.policy=block round-trips") {
       for {
         _            <- setupHousehold
         (routes, tk) <- routesAndToken
-        resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"policy":"allow"}}""")
+        resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"policy":"block"}}""")
         repo         <- ZIO.service[HouseholdSettingsRepo]
         after        <- repo.get
       } yield assertTrue(resp.status == Status.Ok) &&
-        assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
+        assertTrue(after.unmanagedMacPolicy.policy == "block") &&
         assertTrue(after.unmanagedMacPolicy.blockPage)
     },
     test("#961 unknown policy value returns 400") {
