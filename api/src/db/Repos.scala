@@ -2282,6 +2282,7 @@ object Repos {
   val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
   val alertRepo             = ZLayer.fromFunction(AlertRepoLive(_))
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
+  val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo
 }

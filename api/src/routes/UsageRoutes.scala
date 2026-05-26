@@ -2,6 +2,7 @@ package wifihaven.api.routes
 
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
+import wifihaven.api.db.{RollupRepo, RollupRow}
 import wifihaven.api.usage.{AppMembership, RawTrafficCursorKey, UsageSeries, UsageTraffic}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -23,6 +24,7 @@ object UsageRoutes {
       userProfileRepo: UserProfileRepo,
       profileRepo: ProfileRepo,
       appRepo: AppRepo,
+      rollupRepo: RollupRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
@@ -33,6 +35,7 @@ object UsageRoutes {
             auth,
             deviceRepo,
             trafficRepo,
+            rollupRepo,
             profileRepo,
             userProfileRepo,
             appRepo,
@@ -372,11 +375,94 @@ object UsageRoutes {
   // GET /api/usage/traffic?from=&to=&bucket=&groupBy=&mac=&profileId=&tz=
   // Returns either raw rows (bucket=raw) or aggregated rows (bucket=10m..1w).
   // 1m/apex/app are rejected with typed errors per #846.
+  // ── #813 source-tier routing ──────────────────────────────────────────────
+  //
+  // Pick which table backs the aggregated path based on window width.
+  // Document boundaries:
+  //   ≤ 24h           → traffic_reports (5-min raw rows)
+  //   > 24h and ≤ 14d → traffic_hourly
+  //   > 14d           → traffic_daily
+  //
+  // An explicit `bucket=` overrides the window-width pick by demanding at
+  // least that granularity, but only when feasible: asking for `bucket=10m`
+  // on a 30-day window auto-promotes to 1h and sets the response header
+  // `X-Bucket-Promoted-From: 10m` so the SPA can surface a notice (#814 will
+  // own the UX). We auto-promote rather than 400 because the SPA currently
+  // sends bucket strictly from a static dropdown — silent promotion is more
+  // forgiving than a hard reject during the rollout.
+  private enum SourceTier {
+    case Raw, Hourly, Daily
+  }
+
+  // Finest bucket each tier can serve. Anything finer must be promoted.
+  private def minBucketFor(t: SourceTier): UsageTraffic.Bucket = t match {
+    case SourceTier.Raw    => UsageTraffic.Bucket.Raw // 5m
+    case SourceTier.Hourly => UsageTraffic.Bucket.OneHour
+    case SourceTier.Daily  => UsageTraffic.Bucket.OneDay
+  }
+
+  // Ordered fine-to-coarse so "promote to next coarser" is just an index step.
+  private val bucketRank: List[UsageTraffic.Bucket] = List(
+    UsageTraffic.Bucket.Raw,
+    UsageTraffic.Bucket.OneMin,
+    UsageTraffic.Bucket.TenMin,
+    UsageTraffic.Bucket.OneHour,
+    UsageTraffic.Bucket.TwelveHour,
+    UsageTraffic.Bucket.OneDay,
+    UsageTraffic.Bucket.OneWeek,
+  )
+
+  private case class TierPick(
+      tier: SourceTier,
+      effectiveBucket: UsageTraffic.Bucket,
+      promotedFrom: Option[UsageTraffic.Bucket],
+  )
+
+  private def pickTier(
+      requested: UsageTraffic.Bucket,
+      window: java.time.Duration,
+  ): TierPick = {
+    val hours            = window.toHours
+    val tier: SourceTier =
+      if (hours <= 24) SourceTier.Raw
+      else if (hours <= 14 * 24) SourceTier.Hourly
+      else SourceTier.Daily
+    // Tier is window-driven. The request's `bucket=` controls the *displayed*
+    // bucket, not the data source. If the request asks for finer fidelity
+    // than the chosen tier can provide (e.g. bucket=10m on a 30-day window),
+    // we promote it to the tier's finest bucket and signal via the
+    // X-Bucket-Promoted-From response header — silent promotion is gentler
+    // than a 400 while #814 is still rolling out the SPA gating.
+    val minBucket        = minBucketFor(tier)
+    val requestedRank    = bucketRank.indexOf(requested)
+    val minRank          = bucketRank.indexOf(minBucket)
+    if (requestedRank >= minRank) TierPick(tier, requested, None)
+    else TierPick(tier, minBucket, Some(requested))
+  }
+
+  // Convert rollup rows back into the shape buildAggregate consumes. The
+  // hostname is already post-resolved by the rollup writer, so no extra
+  // LATERAL join is needed at read time — this is the whole point of the
+  // rollup tables.
+  private def asDbRows(rows: List[RollupRow]): List[wifihaven.api.usage.TrafficUsageDbRow] =
+    rows.map { r =>
+      wifihaven.api.usage.TrafficUsageDbRow(
+        mac = r.mac,
+        host = r.host,
+        periodStart = r.bucketStart,
+        periodEnd = r.bucketEnd,
+        activeSeconds = r.activeSeconds,
+        bytesIn = r.bytesIn,
+        bytesOut = r.bytesOut,
+      )
+    }
+
   private def trafficHandler(
       req: Request,
       auth: AuthService,
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
+      rollupRepo: RollupRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
       appRepo: AppRepo,
@@ -436,24 +522,11 @@ object UsageRoutes {
       _     <- ZIO
         .fail(Response.badRequest("from must be < to"))
         .when(!fromI.isBefore(toI))
-      // #862: the 31-day cap only applies to aggregated views — those still
-      // read the whole [from, to) band into memory for in-app bucketing. The
-      // raw view pushes (period_start, mac, host) keyset paging + LIMIT into
-      // SQL, so a wide band is bounded by the per-page row cap.
-      bucketStrEarly = req.url.queryParam("bucket").getOrElse("raw")
-      _ <- ZIO
-        .fail(
-          Response(
-            status = Status.ServiceUnavailable,
-            body = Body.fromString(
-              """{"error":"window_too_large","reason":"on-the-fly aggregation cap is 31 days until rollup tables (#809) land"}""",
-            ),
-          ),
-        )
-        .when(
-          bucketStrEarly != "raw" &&
-            Duration.between(fromI, toI).compareTo(UsageTraffic.maxOnTheFlyDuration) > 0,
-        )
+      // #862/#809: the prior 31-day window cap is gone. The aggregated path
+      // now routes wide windows to traffic_hourly / traffic_daily (see
+      // `pickTier` below) so a 90-day query reads ~50 daily rows per host
+      // instead of millions of 5-min rows. The raw path still pushes keyset
+      // paging into SQL so its wide-window cost stays bounded by the page cap.
       // #865: mac and profileId are comma-separated multi-value lists. A
       // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
       // no filter on that column.
@@ -569,31 +642,48 @@ object UsageRoutes {
                     ),
                   )
                 }
-          } yield TrafficUsageResponse(
-            bucket = bucket.code,
-            groupBy = Nil,
-            from = fromI.toString,
-            to = toI.toString,
-            tz = zone.getId,
-            rawRows = built,
-            aggregateRows = Nil,
-            rawRowLimit = Some(rawLimit),
-            rawRowsTruncated = false,
-            nextCursor = nextCur,
+          } yield (
+            TrafficUsageResponse(
+              bucket = bucket.code,
+              groupBy = Nil,
+              from = fromI.toString,
+              to = toI.toString,
+              tz = zone.getId,
+              rawRows = built,
+              aggregateRows = Nil,
+              rawRowLimit = Some(rawLimit),
+              rawRowsTruncated = false,
+              nextCursor = nextCur,
+            ),
+            Option.empty[UsageTraffic.Bucket],
           )
         case _                       =>
-          // Aggregated path: still reads the whole raw band into memory,
-          // buckets in-app, then slices by cursor. Cheap because window*group
-          // cardinality is small. Rollup tables (#809) will replace this with
-          // a paged SQL fetch.
+          // Aggregated path: pick the smallest table that can serve the
+          // requested window (#813). Fall back to in-app bucketing on the
+          // chosen rows — the rollup tables store hourly / daily sums so the
+          // 90-day case touches ~50 rows per host, not millions.
+          val pick = pickTier(bucket, Duration.between(fromI, toI))
           for {
             rows      <-
               if (macs.isEmpty && (macsRaw.nonEmpty || profileIds.nonEmpty))
                 ZIO.succeed(List.empty[wifihaven.api.usage.TrafficUsageDbRow])
               else
-                trafficRepo
-                  .listRawInRange(macs, fromI, toI)
-                  .mapError(ErrorMapper.dbErrorToResponse)
+                pick.tier match {
+                  case SourceTier.Raw    =>
+                    trafficRepo
+                      .listRawInRange(macs, fromI, toI)
+                      .mapError(ErrorMapper.dbErrorToResponse)
+                  case SourceTier.Hourly =>
+                    rollupRepo
+                      .listHourlyInRange(macs, fromI, toI)
+                      .map(asDbRows)
+                      .mapError(ErrorMapper.dbErrorToResponse)
+                  case SourceTier.Daily  =>
+                    rollupRepo
+                      .listDailyInRange(macs, fromI, toI)
+                      .map(asDbRows)
+                      .mapError(ErrorMapper.dbErrorToResponse)
+                }
             cursorOpt <- req.url.queryParam("cursor") match {
               case None    => ZIO.succeed(Option.empty[wifihaven.api.db.Cursor.AggCursor])
               case Some(s) =>
@@ -606,7 +696,7 @@ object UsageRoutes {
             allAgg = UsageTraffic
               .buildAggregate(
                 rows,
-                bucket,
+                pick.effectiveBucket,
                 zone,
                 effectiveGroupBy,
                 devByMac,
@@ -634,16 +724,23 @@ object UsageRoutes {
                     wifihaven.api.db.Cursor.AggCursor(r.windowStart, keyOf(r)),
                   )
                 }
-          } yield TrafficUsageResponse(
-            bucket = bucket.code,
-            groupBy = effectiveGroupBy.toList.map(_.code).sorted,
-            from = fromI.toString,
-            to = toI.toString,
-            tz = zone.getId,
-            rawRows = Nil,
-            aggregateRows = page,
-            nextCursor = nextCur,
+          } yield (
+            TrafficUsageResponse(
+              bucket = pick.effectiveBucket.code,
+              groupBy = effectiveGroupBy.toList.map(_.code).sorted,
+              from = fromI.toString,
+              to = toI.toString,
+              tz = zone.getId,
+              rawRows = Nil,
+              aggregateRows = page,
+              nextCursor = nextCur,
+            ),
+            pick.promotedFrom,
           )
       }
-    } yield Response.json(resp.toJson)
+    } yield {
+      val (body, promotedFrom) = resp
+      val base                 = Response.json(body.toJson)
+      promotedFrom.fold(base)(b => base.addHeader("X-Bucket-Promoted-From", b.code))
+    }
 }

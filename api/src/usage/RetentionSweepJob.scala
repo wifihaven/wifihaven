@@ -15,7 +15,7 @@ import java.time.{Duration as JDuration, ZoneOffset, ZonedDateTime}
  *   - `traffic_reports` — drop rows older than 30 days
  *   - `connection_events` — drop rows older than 30 days
  *   - `traffic_hourly` — drop rows older than 90 days (gated on #809 table presence)
- *   - `traffic_daily` — drop rows older than 180 days (gated on #809 table presence)
+ *   - `traffic_daily` — drop rows older than 180 days (gated on #809 table presence; `date` col)
  *
  * Multi-instance-safe via a session-scoped Postgres advisory lock. Losing the race makes the tick a
  * no-op. The lock auto-releases if the connection drops, so a crashing instance can't wedge it.
@@ -81,7 +81,9 @@ object RetentionSweepJob {
         deleteOlderThan("traffic_hourly", "bucket_start", HourlyRetentionDays)
       }
       daily  <- ifTableExists("traffic_daily") {
-        deleteOlderThan("traffic_daily", "bucket_start", DailyRetentionDays)
+        // V38's traffic_daily uses `date` (DATE), not `bucket_start` — see
+        // docs/design/usage-retention.md §3.
+        deleteOlderThan("traffic_daily", "date", DailyRetentionDays)
       }
     } yield {
       val base = List(

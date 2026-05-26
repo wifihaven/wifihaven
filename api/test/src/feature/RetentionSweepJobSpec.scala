@@ -97,12 +97,17 @@ object RetentionSweepJobSpec
       } yield assertTrue(rows == 1) &&
         assertTrue(res.exists(_.exists(r => r.table == "connection_events" && r.rowsDeleted == 2)))
     },
-    test("gracefully no-ops on rollup tables (#809) when they don't exist yet") {
-      // Migration V37 is the latest; traffic_hourly / traffic_daily ship in #809.
-      // The sweep must skip them silently rather than raising "relation does not exist".
+    test("gracefully no-ops on rollup tables when they don't exist") {
+      // #809's V38 created traffic_hourly / traffic_daily, but the sweep must
+      // still tolerate their absence (defense for older deployments mid-rollout
+      // and for any future operator-driven DROP). Simulate by dropping both
+      // tables, then assert the sweep skips them rather than raising "relation
+      // does not exist".
       for {
         _   <- cleanDb
         xa  <- ZIO.service[Transactor[Task]]
+        _   <- sql"DROP TABLE traffic_hourly CASCADE".update.run.transact(xa)
+        _   <- sql"DROP TABLE traffic_daily CASCADE".update.run.transact(xa)
         res <- RetentionSweepJob.sweepOnce(xa)
       } yield assertTrue(
         res.exists(rs =>
@@ -112,6 +117,36 @@ object RetentionSweepJobSpec
             !rs.exists(_.table == "traffic_daily"),
         ),
       )
+    },
+    test("deletes traffic_hourly older than 90d and traffic_daily older than 180d") {
+      for {
+        _    <- cleanDb
+        xa   <- ZIO.service[Transactor[Task]]
+        rid  <- seedRouter
+        // hourly: 100d old expires, 89d old kept
+        _    <- sql"""INSERT INTO traffic_hourly
+                       (router_id, mac, hostname, bucket_start, active_seconds,
+                        bytes_in, bytes_out, sample_count)
+                     VALUES
+                       ($rid, 'dd:dd:dd:dd:dd:01', 'example.com',
+                        NOW() - INTERVAL '100 days', 1, 1, 1, 1),
+                       ($rid, 'dd:dd:dd:dd:dd:02', 'example.com',
+                        NOW() - INTERVAL '89 days', 1, 1, 1, 1)""".update.run.transact(xa)
+        // daily: 200d old expires, 179d old kept (uses `date` column)
+        _    <- sql"""INSERT INTO traffic_daily
+                       (router_id, mac, hostname, date, active_seconds,
+                        bytes_in, bytes_out, sample_count)
+                     VALUES
+                       ($rid, 'ee:ee:ee:ee:ee:01', 'example.com',
+                        (NOW() - INTERVAL '200 days')::date, 1, 1, 1, 1),
+                       ($rid, 'ee:ee:ee:ee:ee:02', 'example.com',
+                        (NOW() - INTERVAL '179 days')::date, 1, 1, 1, 1)""".update.run.transact(xa)
+        res  <- RetentionSweepJob.sweepOnce(xa)
+        hRow <- sql"SELECT count(*) FROM traffic_hourly".query[Int].unique.transact(xa)
+        dRow <- sql"SELECT count(*) FROM traffic_daily".query[Int].unique.transact(xa)
+      } yield assertTrue(hRow == 1) && assertTrue(dRow == 1) &&
+        assertTrue(res.exists(_.exists(r => r.table == "traffic_hourly" && r.rowsDeleted == 1))) &&
+        assertTrue(res.exists(_.exists(r => r.table == "traffic_daily" && r.rowsDeleted == 1)))
     },
     test("acquires + releases advisory lock cleanly across consecutive ticks") {
       // If the previous tick failed to release the lock, the next tick would

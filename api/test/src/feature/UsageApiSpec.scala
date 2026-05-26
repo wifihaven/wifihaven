@@ -84,6 +84,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       userProfileRepo <- ZIO.service[UserProfileRepo]
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
+      rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -94,6 +95,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         userProfileRepo,
         profileRepo,
         appRepo,
+        rollupRepo,
         clock,
       ),
       auth,
@@ -1079,6 +1081,98 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.aggregateRows.forall(_.totalBytesIn == 1000L)) &&
           assertTrue(out.aggregateRows.forall(_.totalBytesOut == 2000L))
       },
+      test("#1085: groupBy=app suffix-matches FQDNs against apex app_hosts") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // App "YouTube" owns apex youtube.com + ytimg.com; traffic arrives
+          // on FQDN subdomains (www.youtube.com, i.ytimg.com) — must still
+          // attribute to YouTube, not __other__.
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(
+            ytId,
+            List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+          )
+          start1 = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          start2 = start1.plusSeconds(300)
+          start3 = start1.plusSeconds(600)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("www.youtube.com")),
+                today,
+                start1,
+                start1.plusSeconds(300),
+                300,
+                1000L,
+                2000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("i.ytimg.com")),
+                today,
+                start2,
+                start2.plusSeconds(300),
+                300,
+                500L,
+                1500L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("api.mcsrvstat.us")),
+                today,
+                start3,
+                start3.plusSeconds(300),
+                300,
+                100L,
+                100L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          from = today.atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          to   = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.toString
+          req  = Request
+            .get(
+              URL
+                .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
+          yt = out.aggregateRows.find(_.groups.getOrElse("app", "") == "youtube").get
+          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "__other__").get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.aggregateRows.length == 2) &&
+          // www.youtube.com + i.ytimg.com both roll up to YouTube.
+          assertTrue(yt.totalBytesIn == 1500L) &&
+          assertTrue(yt.totalBytesOut == 3500L) &&
+          assertTrue(yt.appName.contains("YouTube")) &&
+          // Only api.mcsrvstat.us (no apex match) lands in Other.
+          assertTrue(ot.totalBytesIn == 100L) &&
+          assertTrue(ot.totalBytesOut == 100L) &&
+          assertTrue(ot.appId.isEmpty)
+      },
       // #769: groupBy=app is now implemented; the apex case still rejects.
       test("rejects groupBy=apex with groupBy_not_implemented") {
         for {
@@ -1095,7 +1189,12 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(apexBody.contains("groupBy_not_implemented")) &&
           assertTrue(apexBody.contains("apex"))
       },
-      test("rejects window beyond on-the-fly cap with 503") {
+      // #809/#813: the prior 31-day on-the-fly cap is gone. Wide windows now
+      // route to traffic_hourly / traffic_daily instead of 503ing. The test
+      // below pins the new contract: a 40-day request succeeds (200) reading
+      // the daily rollup tier. Empty rollup table = empty aggregateRows but
+      // not an error.
+      test("wide windows route to the daily rollup (#809 #813)") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
           _           <- cleanDb
@@ -1120,9 +1219,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             )
             .addHeader(Header.Authorization.Bearer(token))
           resp <- routes.runZIO(req)
-          body <- resp.body.asString
-        } yield assertTrue(resp.status == Status.ServiceUnavailable) &&
-          assertTrue(body.contains("window_too_large"))
+        } yield assertTrue(resp.status == Status.Ok)
       },
       test("raw cursor pagination walks the full set without dups (#862)") {
         val today = TestClock.schoolDayAfternoon.toLocalDate

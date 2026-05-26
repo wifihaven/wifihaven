@@ -43,11 +43,11 @@ case class PresenceRow(
 object Presence {
 
   /**
-   * *.foo.com or foo.com — same semantics as the matchers in PolicyService and Routes.
+   * *.foo.com or foo.com — delegates to [[wifihaven.shared.types.HostMatch.matchesPattern]], shared
+   * with PolicyService and UsageTraffic (#1085).
    */
   def matchesPattern(domain: String, pattern: String): Boolean =
-    if pattern.startsWith("*.") then domain.endsWith(pattern.drop(1)) || domain == pattern.drop(2)
-    else domain == pattern || domain.endsWith(s".$pattern")
+    HostMatch.matchesPattern(domain, pattern)
 
   private def bucketSeconds(bucket: Iterable[PresenceRow]): Long =
     bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
