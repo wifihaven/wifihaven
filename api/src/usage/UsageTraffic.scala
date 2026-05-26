@@ -215,27 +215,13 @@ object UsageTraffic {
         .flatMap(profileNameById.get)
         .getOrElse("(unassigned)")
     // #1085: app_hosts rows are stored apex-form (`youtube.com`), but traffic
-    // rows carry FQDNs (`www.youtube.com`). Exact match first (covers the
-    // already-apex case), then walk dot-separated tails up to 5 hops and
-    // return the first apex that's in the map. Bounded since real households
-    // have tens of apex entries and FQDNs rarely exceed 5 labels of interest.
+    // rows carry FQDNs (`www.youtube.com`). Delegate to HostMatch.lookupApex,
+    // which is the single host→apex matcher shared with PolicyService and
+    // Presence — keeps usage attribution semantically aligned with the
+    // policy enforcement path.
     def membershipsFor(host: HostId): List[AppMembership] = {
-      def tailLookup(h: String, hops: Int): List[AppMembership] =
-        appsByHost.get(h) match {
-          case Some(xs) => xs
-          case None     =>
-            val dot = h.indexOf('.')
-            if (dot < 0 || hops <= 0) Nil
-            else tailLookup(h.substring(dot + 1), hops - 1)
-        }
-      val matched                                               = host.asFqdn match {
-        case Some(fqdn) => tailLookup(fqdn.value, 5)
-        case None       => Nil
-      }
-      matched match {
-        case Nil => List(AppMembership.Other)
-        case xs  => xs
-      }
+      val matched = host.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, appsByHost))
+      matched.getOrElse(List(AppMembership.Other))
     }
 
     val wantsApp = groupBy.contains(GroupBy.App)
