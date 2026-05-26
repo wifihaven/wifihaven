@@ -4,11 +4,10 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
-import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
-  BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
+  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
   ProfileTimeSummary,
   ScheduleRequest, UpsertProfileRequest, User,
 } from '@/types/api'
@@ -16,7 +15,7 @@ import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { PageLoader } from './DashboardPage'
-import { formatMins } from './TimePage'
+import { formatMins } from '@/lib/timeFormat'
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
 
@@ -28,25 +27,6 @@ interface FormState {
   schedules: ScheduleRequest[]
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
-}
-
-function emptyForm(): FormState {
-  return {
-    name: '',
-    blockedCategories: [],
-    paused: false,
-    timeLimit: '',
-    schedules: [],
-    // #385: safe default for a brand-new profile is LastKnownGood
-    // (matches the DB column default). The editor calls out the
-    // BlockAll-for-kids recommendation in copy; admins still have to
-    // pick BlockAll explicitly when creating a child profile.
-    failureMode: 'last-known-good',
-    // #751: default to the historical behaviour ("two siblings on the same
-    // profile both active count as two") for new profiles. Admins opt in to
-    // dedup explicitly when one profile = one human with multiple devices.
-    crossDeviceOverlapMode: 'sum',
-  }
 }
 
 function detailToForm(pd: ProfileDetail): FormState {
@@ -158,14 +138,16 @@ export function ProfilesPage() {
   const profiles  = profilesQuery.data  ?? []
   const devices   = devicesQuery.data   ?? []
   const summaries = summariesQuery.data ?? []
-  const [categories, setCategories] = useState<BlocklistSummary[]>([])
   const [allUsers, setAllUsers] = useState<User[]>([])
   const [auxLoading, setAuxLoading] = useState(true)
   const loading = profilesQuery.isPending || devicesQuery.isPending || auxLoading
-  const [editingId, setEditingId] = useState<number | 'new' | null>(null)
-  const [form, setForm] = useState<FormState>(emptyForm())
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // #978 — the old "+ New Profile" modal (ProfileEditor) is gone; new profiles
+  // are created from a tiny name-only inline form and then fleshed out via the
+  // inline subsections on the expanded card. `creatingName` doubles as the
+  // form's open/closed state (null = closed) and its current draft value.
+  const [creatingName, setCreatingName] = useState<string | null>(null)
+  const [creatingError, setCreatingError] = useState<string | null>(null)
+  const [creatingSaving, setCreatingSaving] = useState(false)
   // #977 — per-profile user-link autosave. Track in-flight toggles so the
   // chip can show a spinner and refuse double-clicks without blocking
   // unrelated profiles.
@@ -247,13 +229,14 @@ export function ProfilesPage() {
   }, [summaries])
 
   async function loadAux() {
-    const [cats, users, hs, appsList] = await Promise.all([
-      api.blocklists.list().catch(() => [] as BlocklistSummary[]),
+    // #978 — the old modal pulled the blocklist category list for its picker;
+    // the inline app-policy subsection owns that surface now, so we don't need
+    // to fan out to /blocklists here anymore.
+    const [users, hs, appsList] = await Promise.all([
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
       api.household.get().catch(() => null),
       api.apps.list().catch(() => [] as AppDetail[]),
     ])
-    setCategories(cats)
     setAllUsers(users)
     setHousehold(hs)
     setApps([...appsList].sort((a, b) => a.app.name.localeCompare(b.app.name)))
@@ -274,16 +257,10 @@ export function ProfilesPage() {
     setAllUsers(users)
   }
 
-  function startNew() {
-    setForm(emptyForm())
-    setEditingId('new')
-    setError(null)
-  }
-
-  // #973: the inline name + per-subsection editors replaced the "Edit
-  // existing profile" modal escape-hatch. The `detailToForm`/PUT path
-  // is still callable for "+ New Profile" via startNew/save below, but
-  // existing profiles edit field-by-field through the inline UI.
+  // #973: inline subsections replaced the "Edit existing profile" modal
+  // escape-hatch field-by-field. #978: the "+ New Profile" modal is gone too;
+  // the inline create form below drops the new profile with defaults so the
+  // operator immediately edits it via the same inline surfaces.
 
   const updateMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: UpsertProfileRequest }) =>
@@ -293,8 +270,48 @@ export function ProfilesPage() {
 
   const createMutation = useMutation({
     mutationFn: (body: UpsertProfileRequest) => api.profiles.create(body),
-    onSuccess: () => Promise.all([invalidators.profileMutated(), refetchAux()]),
+    onSuccess: (created) => {
+      // #978 — auto-expand the freshly created card so the operator can fill
+      // in the rest inline; the modal used to do this implicitly by closing
+      // onto the (newly-loaded) list.
+      setExpanded(prev => new Set(prev).add(created.id))
+      return Promise.all([invalidators.profileMutated(), refetchAux()])
+    },
   })
+
+  function startNew() {
+    setCreatingName('')
+    setCreatingError(null)
+  }
+  function cancelNew() {
+    setCreatingName(null)
+    setCreatingError(null)
+  }
+  async function saveNew() {
+    const trimmed = (creatingName ?? '').trim()
+    if (!trimmed) { setCreatingError('Name is required'); return }
+    setCreatingSaving(true)
+    setCreatingError(null)
+    try {
+      // #978 — defaults mirror the old modal's emptyForm() so the new profile
+      // boots in the same safe-by-default state (LastKnownGood failover, Sum
+      // overlap, no blocked categories, no schedules, no daily cap).
+      await createMutation.mutateAsync({
+        name: trimmed,
+        blockedCategories: [],
+        paused: false,
+        timeLimit: null,
+        schedules: [],
+        failureMode: 'last-known-good',
+        crossDeviceOverlapMode: 'sum',
+      })
+      setCreatingName(null)
+    } catch (e) {
+      setCreatingError(e instanceof Error ? e.message : 'Failed to create')
+    } finally {
+      setCreatingSaving(false)
+    }
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.profiles.delete(id),
@@ -314,22 +331,6 @@ export function ProfilesPage() {
     const body = formToRequest(detailToForm(pd))
     body.paused = !pd.profile.paused
     await updateMutation.mutateAsync({ id: pd.profile.id, body })
-  }
-
-  async function save() {
-    if (!form.name.trim()) { setError('Name is required'); return }
-    setSaving(true)
-    setError(null)
-    try {
-      const body = formToRequest(form)
-      if (editingId === 'new') await createMutation.mutateAsync(body)
-      else if (typeof editingId === 'number') await updateMutation.mutateAsync({ id: editingId, body })
-      setEditingId(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save')
-    } finally {
-      setSaving(false)
-    }
   }
 
   async function toggleUserLink(profileId: number, userId: number) {
@@ -387,7 +388,7 @@ export function ProfilesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">Profiles</h1>
-        {isAdmin && (
+        {isAdmin && creatingName === null && (
           <button
             onClick={startNew}
             className="bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
@@ -396,6 +397,63 @@ export function ProfilesPage() {
           </button>
         )}
       </div>
+
+      {/* #978 — inline name-only new-profile form. Replaces the old
+          ProfileEditor modal; everything else is filled in via the inline
+          subsections on the new profile's expanded card. */}
+      {isAdmin && creatingName !== null && (
+        <div
+          data-testid="profile-create-form"
+          className="bg-gray-900 rounded-2xl border border-emerald-500/30 p-4 space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white">New Profile</h2>
+          </div>
+          {creatingError && (
+            <div
+              data-testid="profile-create-error"
+              className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2"
+            >
+              {creatingError}
+            </div>
+          )}
+          <div className="flex gap-2 items-stretch">
+            <input
+              type="text"
+              value={creatingName}
+              onChange={e => setCreatingName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !creatingSaving) { e.preventDefault(); saveNew() }
+                if (e.key === 'Escape') { e.preventDefault(); cancelNew() }
+              }}
+              autoFocus
+              placeholder="Kids"
+              data-testid="profile-create-name"
+              className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+            />
+            <button
+              onClick={cancelNew}
+              disabled={creatingSaving}
+              data-testid="profile-create-cancel"
+              className="px-4 py-2.5 rounded-xl bg-gray-800 text-gray-300 text-sm font-medium hover:bg-gray-700 disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveNew}
+              disabled={creatingSaving}
+              data-testid="profile-create-save"
+              className="px-4 py-2.5 rounded-xl bg-emerald-500 text-black text-sm font-semibold hover:bg-emerald-400 disabled:opacity-50 transition-colors"
+            >
+              {creatingSaving ? 'Creating…' : 'Create'}
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500">
+            Fill in time limits, schedules, apps, and users from the new
+            profile's expanded card once it's created.
+          </p>
+        </div>
+      )}
 
       <div className="space-y-3">
         {profiles.map(pd => (
@@ -426,25 +484,9 @@ export function ProfilesPage() {
         ))}
       </div>
 
-      {editingId !== null && (
-        <ProfileEditor
-          isNew={editingId === 'new'}
-          profileId={typeof editingId === 'number' ? editingId : null}
-          form={form}
-          setForm={setForm}
-          categories={categories}
-          apps={apps}
-          onAppsChanged={reloadApps}
-          saving={saving}
-          error={error}
-          onCancel={() => setEditingId(null)}
-          onSave={save}
-          defaultTz={household?.dailyResetTz ?? browserTimezone()}
-        />
-      )}
-
-      {/* #972 — +Time modal lifted from TimePage so the +Time button in the
-          collapsed summary works on /profiles too. */}
+      {/* #972 — +Time modal (originally lifted from the deleted TimePage in
+          #978) so the +Time button in the collapsed summary works on
+          /profiles too. */}
       {extProfileId !== null && (
         <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
           <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm p-6 space-y-4">
@@ -508,9 +550,9 @@ export function ProfilesPage() {
 }
 
 // #972 — collapsed accordion row for the merged Profiles page. Header carries
-// the summary (name, used/cap + bar, pause chip, +Time). Expanded body shows
-// the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
-// Delete) that subsections #973-#977 will replace with inline editors.
+// the summary (name, used/cap + bar, pause chip, +Time). Expanded body holds
+// the inline subsections (#973-#977) that replaced the old per-profile modal,
+// plus the read-only devices listing and the Delete control.
 function ProfileShellRow({
   pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight, defaultTz,
   onToggle, onDelete, onTogglePause, onGrantTime,
@@ -673,17 +715,18 @@ function ProfileShellRow({
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
           {/* #1036 — always-visible per-profile timeline chart at the top of
-              the expanded view. Restores the /time chart (Today/Week toggle +
-              host/device group-by + Other drill-in) before #978 drops that
-              route. Read-only; lives above the edit subsections. */}
+              the expanded view. Carries the Today/Week toggle + host/device
+              group-by + Other drill-in that the deleted /time page used to
+              own. Read-only; lives above the edit subsections. */}
           <ProfileTimelineChart profileId={pd.profile.id} />
 
           {/* #973: inline devices subsection. Name is edited inline in the
               card header above (no redundant collapsible). Devices autosave
-              per-row via PATCH /devices. The Edit-modal escape hatch is gone
-              — every editable field has an inline subsection now; failureMode
-              (#385) is the one orphan, tracked separately. Modal stays
-              callable for "+ New Profile"; #978 owns its final removal. */}
+              per-row via PATCH /devices. Post-#978 the Edit-modal escape
+              hatch is fully gone — every editable field has an inline
+              subsection now; failureMode (#385) is the one orphan, tracked
+              separately. The "+ New Profile" name-only form (top of page)
+              replaces the modal's create flow. */}
           {isAdmin && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
@@ -1159,313 +1202,6 @@ function TimeSubsection({
   )
 }
 
-function ProfileEditor({
-  isNew, profileId, form, setForm, categories, apps, onAppsChanged,
-  saving, error, onCancel, onSave, defaultTz,
-}: {
-  isNew: boolean
-  profileId: number | null
-  form: FormState
-  setForm: (updater: (f: FormState) => FormState) => void
-  categories: BlocklistSummary[]
-  apps: AppDetail[]
-  onAppsChanged: () => void | Promise<void>
-  saving: boolean
-  error: string | null
-  onCancel: () => void
-  onSave: () => void
-  defaultTz: string
-}) {
-  useEscapeClose(onCancel)
-  function toggleCat(c: string) {
-    setForm(f => ({
-      ...f,
-      blockedCategories: f.blockedCategories.includes(c)
-        ? f.blockedCategories.filter(x => x !== c)
-        : [...f.blockedCategories, c],
-    }))
-  }
-
-  function addSchedule() {
-    setForm(f => ({
-      ...f,
-      schedules: [
-        ...f.schedules,
-        { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz },
-      ],
-    }))
-  }
-
-  function updateSchedule(i: number, patch: Partial<ScheduleRequest>) {
-    setForm(f => ({
-      ...f,
-      schedules: f.schedules.map((s, idx) => idx === i ? { ...s, ...patch } : s),
-    }))
-  }
-
-  function removeSchedule(i: number) {
-    setForm(f => ({ ...f, schedules: f.schedules.filter((_, idx) => idx !== i) }))
-  }
-
-  function toggleDay(i: number, d: string) {
-    setForm(f => ({
-      ...f,
-      schedules: f.schedules.map((s, idx) => idx !== i ? s : {
-        ...s,
-        days: s.days.includes(d) ? s.days.filter(x => x !== d) : [...s.days, d],
-      }),
-    }))
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-2xl my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto">
-        <h3 className="text-lg font-bold text-white">{isNew ? 'New Profile' : 'Edit Profile'}</h3>
-
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
-            {error}
-          </div>
-        )}
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Name</label>
-          <input type="text" value={form.name}
-            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-            placeholder="Kids"
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500" />
-        </div>
-
-        <label className="flex items-center gap-3 text-sm text-gray-300">
-          <input type="checkbox" checked={form.paused}
-            onChange={e => setForm(f => ({ ...f, paused: e.target.checked }))}
-            className="w-4 h-4 accent-emerald-500" />
-          Paused — blocks all internet traffic for devices on this profile.
-        </label>
-
-        {/* #385: per-profile failover when the router can't reach the API.
-            Three modes (BlockAll / AllowAll / LastKnownGood) — the
-            previous binary closed/open collapsed two semantically distinct
-            behaviours into one. */}
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-            Failure mode
-          </label>
-          <div className="space-y-2">
-            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
-              <input
-                type="radio"
-                name="failureMode"
-                data-testid="profile-failure-mode-block-all"
-                checked={form.failureMode === 'block-all'}
-                onChange={() => setForm(f => ({ ...f, failureMode: 'block-all' }))}
-                className="mt-1 w-4 h-4 accent-emerald-500"
-              />
-              <span>
-                <span className="font-medium text-white">Block all traffic</span>
-                <span className="text-gray-500"> (recommended for children)</span>
-                <span className="block text-xs text-gray-400 mt-0.5">
-                  when the router can't reach the API for 5 minutes, drop all forwarded traffic for this profile's devices. The block page still loads.
-                </span>
-              </span>
-            </label>
-            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
-              <input
-                type="radio"
-                name="failureMode"
-                data-testid="profile-failure-mode-last-known-good"
-                checked={form.failureMode === 'last-known-good'}
-                onChange={() => setForm(f => ({ ...f, failureMode: 'last-known-good' }))}
-                className="mt-1 w-4 h-4 accent-emerald-500"
-              />
-              <span>
-                <span className="font-medium text-white">Last-known rules</span>
-                <span className="text-gray-500"> (recommended for adults — default)</span>
-                <span className="block text-xs text-gray-400 mt-0.5">
-                  when the router can't reach the API, keep enforcing the cached snapshot exactly — categorical blocks, schedules, and time limits all still apply.
-                </span>
-              </span>
-            </label>
-            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
-              <input
-                type="radio"
-                name="failureMode"
-                data-testid="profile-failure-mode-allow-all"
-                checked={form.failureMode === 'allow-all'}
-                onChange={() => setForm(f => ({ ...f, failureMode: 'allow-all' }))}
-                className="mt-1 w-4 h-4 accent-emerald-500"
-              />
-              <span>
-                <span className="font-medium text-white">Allow all traffic</span>
-                <span className="text-gray-500"> (only for trusted profiles)</span>
-                <span className="block text-xs text-gray-400 mt-0.5">
-                  when the router can't reach the API, clear every block for this profile's devices. The cached categorical / schedule rules stop applying.
-                </span>
-              </span>
-            </label>
-          </div>
-        </div>
-
-        {/* #751: how the profile's screen-time total handles two devices on
-            the same profile being active in the same 5-min bucket. */}
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-            Cross-device overlap
-          </label>
-          <div className="space-y-2">
-            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
-              <input
-                type="radio"
-                name="crossDeviceOverlapMode"
-                data-testid="profile-overlap-mode-sum"
-                checked={form.crossDeviceOverlapMode === 'sum'}
-                onChange={() => setForm(f => ({ ...f, crossDeviceOverlapMode: 'sum' }))}
-                className="mt-1 w-4 h-4 accent-emerald-500"
-              />
-              <span>
-                <span className="font-medium text-white">Count each device separately</span>
-                <span className="text-gray-500"> (default)</span>
-                <span className="block text-xs text-gray-400 mt-0.5">
-                  add per-device totals. Two devices on this profile both active in the same 5-minute window count as 10 minutes against the daily cap.
-                </span>
-              </span>
-            </label>
-            <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
-              <input
-                type="radio"
-                name="crossDeviceOverlapMode"
-                data-testid="profile-overlap-mode-dedup"
-                checked={form.crossDeviceOverlapMode === 'dedup'}
-                onChange={() => setForm(f => ({ ...f, crossDeviceOverlapMode: 'dedup' }))}
-                className="mt-1 w-4 h-4 accent-emerald-500"
-              />
-              <span>
-                <span className="font-medium text-white">Combine overlapping device usage</span>
-                <span className="text-gray-500"> (one profile = one human)</span>
-                <span className="block text-xs text-gray-400 mt-0.5">
-                  union the per-device active windows. Two devices both active in the same 5-minute window count as 5 minutes against the daily cap. Right when one person carries an iPad and a phone for the same profile.
-                </span>
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Blocked categories</label>
-          {categories.length === 0
-            ? <p className="text-sm text-gray-500">No categories loaded yet.</p>
-            : (
-              <div className="flex flex-wrap gap-2">
-                {categories.map(c => {
-                  const on = form.blockedCategories.includes(c.id)
-                  return (
-                    <button key={c.id} type="button" onClick={() => toggleCat(c.id)}
-                      title={c.description ?? c.id}
-                      className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                        on
-                          ? 'bg-red-500/20 text-red-300 border-red-500/40'
-                          : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
-                      }`}>
-                      {on ? '✓ ' : ''}{c.name}
-                    </button>
-                  )
-                })}
-              </div>
-            )
-          }
-          {form.blockedCategories.filter(id => !categories.some(c => c.id === id)).length > 0 && (
-            <p className="text-xs text-yellow-400 mt-2">
-              Also blocked (no longer in blocklist): {form.blockedCategories.filter(id => !categories.some(c => c.id === id)).join(', ')}
-            </p>
-          )}
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Daily time limit (minutes)</label>
-          <input type="number" min={0} value={form.timeLimit}
-            onChange={e => setForm(f => ({ ...f, timeLimit: e.target.value }))}
-            placeholder="Leave blank for unlimited"
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500" />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">Schedules</label>
-            <button type="button" onClick={addSchedule}
-              className="text-xs text-emerald-400 hover:text-emerald-300">+ Add schedule</button>
-          </div>
-          {form.schedules.length === 0 && <p className="text-xs text-gray-500">No schedules.</p>}
-          <div className="space-y-3">
-            {form.schedules.map((s, i) => (
-              <div key={i} className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2">
-                <div className="flex gap-2">
-                  <input type="text" value={s.name}
-                    onChange={e => updateSchedule(i, { name: e.target.value })}
-                    placeholder="Bedtime"
-                    className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm" />
-                  <button type="button" onClick={() => removeSchedule(i)}
-                    className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 rounded-lg">Remove</button>
-                </div>
-                <div className="flex gap-2 items-center text-sm">
-                  <input type="time" value={s.startLocal}
-                    onChange={e => updateSchedule(i, { startLocal: e.target.value })}
-                    data-testid={`schedule-${i}-start`}
-                    className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white" />
-                  <span className="text-gray-500">→</span>
-                  <input type="time" value={s.endLocal}
-                    onChange={e => updateSchedule(i, { endLocal: e.target.value })}
-                    data-testid={`schedule-${i}-end`}
-                    className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white" />
-                </div>
-                <div className="text-xs text-gray-400">
-                  Timezone (the same wall-clock window applies every day, even across DST)
-                </div>
-                <TimezonePicker
-                  value={s.tz}
-                  onChange={tz => updateSchedule(i, { tz })}
-                  testId={`schedule-${i}-tz`}
-                />
-                <div className="flex flex-wrap gap-1">
-                  {DAYS.map(d => {
-                    const on = s.days.includes(d)
-                    return (
-                      <button key={d} type="button" onClick={() => toggleDay(i, d)}
-                        className={`text-xs px-2.5 py-1 rounded-lg border ${
-                          on
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : 'bg-gray-800 text-gray-500 border-gray-700'
-                        }`}>{d}</button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* #764: per-host policy lives in apps. Blocked / allowed / time-limited
-            single-host or multi-host apps are managed via AppsSection below. */}
-        <AppsSection
-          profileId={profileId}
-          isNew={isNew}
-          apps={apps}
-          onChanged={onAppsChanged}
-        />
-
-        <div className="flex gap-3 pt-2 sticky bottom-0 bg-gray-900">
-          <button onClick={onCancel} disabled={saving}
-            className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
-            Cancel
-          </button>
-          <button onClick={onSave} disabled={saving}
-            className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 // #976 — apps subsection of the merged /profiles expanded card.
 // Default collapsed; opening reveals the same `<AppsSection>` the modal

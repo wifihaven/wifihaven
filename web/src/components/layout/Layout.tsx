@@ -13,8 +13,8 @@ interface NavItem {
 }
 
 // #972 — Screen Time merged into Profiles; the collapsed-card summary row on
-// /profiles carries the at-a-glance time view. /time still routes for one
-// release as a defensive measure (sub-7 / #978 removes it entirely).
+// /profiles carries the at-a-glance time view. The /time route and its nav
+// entry were removed entirely in #978.
 const primaryNav: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: '◈' },
   { to: '/devices',   label: 'Devices',   icon: '⬡' },

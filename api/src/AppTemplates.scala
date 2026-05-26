@@ -20,9 +20,20 @@ final case class AppTemplateSeedSummary(
     created: List[String],
     repopulated: List[String],
     preserved: List[String],
+    augmented: List[AppTemplateAugmented],
 ) derives JsonCodec {
-  def total: Int = created.size + repopulated.size + preserved.size
+  def total: Int = created.size + repopulated.size + preserved.size + augmented.size
 }
+
+/**
+ * Per-template entry for the additive-merge outcome (#1087): the slug plus the host names that were
+ * added to the existing row because the template grew new hosts after the original seed.
+ * Operator-added hosts are never removed; only template hosts missing from the row are added.
+ */
+final case class AppTemplateAugmented(
+    slug: String,
+    addedHosts: List[String],
+) derives JsonCodec
 
 /**
  * #768: Starter library of common apps as YAML templates.
@@ -160,9 +171,10 @@ object AppTemplates {
   /**
    * Seed all templates into `apps`. For each template:
    *   - if no row exists for its `template_id`, create one and populate the host list;
-   *   - if a row exists with hosts, leave the host list alone (operator edits win — the SPA "reset
-   *     to template" endpoint restores defaults on demand);
-   *   - if a row exists with an empty host list, treat as never-populated and seed it now.
+   *   - if a row exists with an empty host list, treat as never-populated and seed it now;
+   *   - if a row exists and is missing any hosts that the template declares, additively merge the
+   *     missing ones in — operator-added hosts are never removed (#1087);
+   *   - otherwise leave the host list alone.
    *
    * Idempotent — running twice is a no-op. Returns a per-template outcome summary so callers (boot
    * sequence, admin reseed endpoint) can log/respond with what changed. On per-template failure,
@@ -175,14 +187,18 @@ object AppTemplates {
         created = results.collect { case (slug, SeedOutcome.Created) => slug },
         repopulated = results.collect { case (slug, SeedOutcome.Repopulated) => slug },
         preserved = results.collect { case (slug, SeedOutcome.Preserved) => slug },
+        augmented = results.collect { case (slug, SeedOutcome.Augmented(added)) =>
+          AppTemplateAugmented(slug, added.map(_.value))
+        },
       )
     }
 
   private sealed trait SeedOutcome
   private object SeedOutcome {
-    case object Created     extends SeedOutcome
-    case object Repopulated extends SeedOutcome
-    case object Preserved   extends SeedOutcome
+    case object Created                               extends SeedOutcome
+    case object Repopulated                           extends SeedOutcome
+    case object Preserved                             extends SeedOutcome
+    final case class Augmented(added: List[Hostname]) extends SeedOutcome
   }
 
   private def seedOne(repo: AppRepo, t: AppTemplate): Task[(String, SeedOutcome)] =
@@ -191,17 +207,28 @@ object AppTemplates {
       .flatMap {
         case Some(existing) =>
           repo.getHosts(existing.id).flatMap { hosts =>
-            if hosts.nonEmpty then
-              ZIO.logDebug(
-                s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${hosts.size}) — preserved",
-              ) *>
-                ZIO.succeed((t.slug.value, SeedOutcome.Preserved))
-            else
+            if hosts.isEmpty then
               repo.setHosts(existing.id, t.hosts) *>
                 ZIO.logInfo(
                   s"app_templates: slug=${t.slug.value} exists with empty hosts — repopulated (${t.hosts.size} hosts)",
                 ) *>
                 ZIO.succeed((t.slug.value, SeedOutcome.Repopulated))
+            else {
+              val existingSet = hosts.toSet
+              val missing     = t.hosts.filterNot(existingSet.contains)
+              if missing.isEmpty then
+                ZIO.logDebug(
+                  s"app_templates: slug=${t.slug.value} exists (id=${existing.id.value}, hosts=${hosts.size}) — preserved",
+                ) *>
+                  ZIO.succeed((t.slug.value, SeedOutcome.Preserved))
+              else
+                repo.setHosts(existing.id, (hosts ++ missing).distinct) *>
+                  ZIO.logInfo(
+                    s"app_templates: slug=${t.slug.value} augmented (added ${missing.size} hosts: " +
+                      s"${missing.map(_.value).mkString(",")})",
+                  ) *>
+                  ZIO.succeed((t.slug.value, SeedOutcome.Augmented(missing)))
+            }
           }
         case None           =>
           for {

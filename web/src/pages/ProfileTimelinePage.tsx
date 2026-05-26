@@ -175,8 +175,8 @@ export function ProfileTimelinePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="min-w-0">
-          <Link to="/time" className="text-xs text-gray-500 hover:text-emerald-400">
-            ← Screen time
+          <Link to="/profiles" className="text-xs text-gray-500 hover:text-emerald-400">
+            ← Profiles
           </Link>
           <h1 className="text-xl font-bold text-white truncate" data-testid="profile-timeline-name">
             {data?.profileName ?? `Profile ${profileId}`}
@@ -268,12 +268,12 @@ export function ProfileTimelinePage() {
         {/* Profile total uses sum-of-per-device-minutes semantics. Two siblings
             both active in the same 5-min window count as 10 minutes here, but
             the per-host stack still even-shares within each device's bucket
-            (#715). The numbers reconcile with the Screen Time daily totals on
-            /time, within that overlap caveat. */}
+            (#715). The numbers reconcile with the daily totals shown on the
+            /profiles card, within that overlap caveat. */}
         <p className="text-[11px] text-gray-600 mt-3">
           Stacks total to wall-clock minutes per hour. Per-host minutes are proportional
           within each 5-minute window; overlapping device activity counts once per device
-          (matches the Screen Time daily total).
+          (matches the daily total shown on the profile card).
         </p>
       </div>
 

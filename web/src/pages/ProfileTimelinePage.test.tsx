@@ -30,11 +30,11 @@ import { ProfileTimelinePage } from './ProfileTimelinePage'
 
 const PID = 7
 
-function renderPage(initialEntries: string[] = [`/time/${PID}/timeline`]) {
+function renderPage(initialEntries: string[] = [`/profiles/${PID}/timeline`]) {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
       <Routes>
-        <Route path="/time/:profileId/timeline" element={<ProfileTimelinePage />} />
+        <Route path="/profiles/:profileId/timeline" element={<ProfileTimelinePage />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -101,7 +101,7 @@ describe('ProfileTimelinePage', () => {
   it('passes profileId (not mac) to the usage API', async () => {
     const mock = api.usage.series as unknown as ReturnType<typeof vi.fn>
     mock.mockResolvedValue(emptyResponse('2026-05-20'))
-    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
     await waitFor(() => expect(mock).toHaveBeenCalled())
     expect(mock.mock.calls[0][0]).toMatchObject({ profileId: PID, date: '2026-05-20' })
   })
@@ -110,7 +110,7 @@ describe('ProfileTimelinePage', () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       emptyResponse('2026-05-20'),
     )
-    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-empty')).toBeInTheDocument(),
     )
@@ -121,7 +121,7 @@ describe('ProfileTimelinePage', () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
-    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
     )
@@ -136,7 +136,7 @@ describe('ProfileTimelinePage', () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
-    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
     )
@@ -158,7 +158,7 @@ describe('ProfileTimelinePage', () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
-    renderPage([`/time/${PID}/timeline?date=2026-05-20`])
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
     )
@@ -171,7 +171,7 @@ describe('ProfileTimelinePage', () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
-    renderPage([`/time/${PID}/timeline?date=2026-05-20&stackBy=device`])
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20&stackBy=device`])
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeInTheDocument(),
     )
