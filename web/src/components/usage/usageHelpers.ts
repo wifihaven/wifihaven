@@ -5,7 +5,8 @@ import type { TrafficUsageBucket } from '@/types/api'
 // Bucket → wall-clock window we anchor at "to". Picked so each bucket level
 // shows a useful but bounded number of rows without paging (proper paging
 // lands in #862). Raw is unique — it's bounded by row-count, not window-width.
-export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw' | '1m'>, number> = {
+export const BUCKET_WINDOW_MS: Record<Exclude<TrafficUsageBucket, 'raw'>, number> = {
+  '1m':  6 * 60 * 60 * 1000,         // 6 hours → 360 rows
   '10m': 24 * 60 * 60 * 1000,        // 1 day
   '1h':  7 * 24 * 60 * 60 * 1000,    // 1 week
   '12h': 14 * 24 * 60 * 60 * 1000,   // 2 weeks
@@ -20,9 +21,7 @@ export const RAW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000  // 1 week look-back ceilin
 
 export function windowFromTo(bucket: TrafficUsageBucket, to: string): { from: string; to: string } {
   const t = new Date(to).getTime()
-  const width = bucket === 'raw' || bucket === '1m'
-    ? RAW_WINDOW_MS
-    : BUCKET_WINDOW_MS[bucket]
+  const width = bucket === 'raw' ? RAW_WINDOW_MS : BUCKET_WINDOW_MS[bucket]
   return { from: new Date(t - width).toISOString(), to: new Date(t).toISOString() }
 }
 
