@@ -62,15 +62,21 @@ def test_usage_flows_to_fake_for_client_mac(router, client, fake_api):
     # we poll the fake's /test/usage capture buffer and time out gracefully
     # if no report has been flushed yet. The router-side enforcement signal
     # (events captured above) is the load-bearing observable.
-    def has_usage_for_mac():
+    # Records are per-(mac, host); /test/usage returns rows for every host the
+    # MAC touched, including incidental client-side traffic (NTP, DNS, etc).
+    # Filter to the host the workload actually requested — otherwise a 76/76
+    # symmetric NTP record can shadow the GET-only HTTP record (#1049).
+    def has_usage_for_mac_and_host():
         for r in (fake_api.usage().get("reports") or []):
             for rec in (r.get("body", {}).get("records") or []):
-                if (rec.get("mac") or "").lower() == client.mac.lower():
+                if (rec.get("mac") or "").lower() != client.mac.lower():
+                    continue
+                if (rec.get("host") or {}).get("value") == ALLOWED_HOST:
                     return rec
         return None
     rec = wait_until(
-        has_usage_for_mac, timeout_s=360, interval_s=10,
-        description=f"fake usage report with row for {client.mac}",
+        has_usage_for_mac_and_host, timeout_s=360, interval_s=10,
+        description=f"fake usage report with row for {client.mac} host={ALLOWED_HOST}",
     )
     # Wire-shape sanity: matches shared/contract/router-to-api/usage_report.json.
     assert "activeSeconds" in rec

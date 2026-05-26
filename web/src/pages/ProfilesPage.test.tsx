@@ -36,9 +36,29 @@ vi.mock('@/api/client', () => ({
     time: {
       summaryAll: vi.fn(),
       grantExtension: vi.fn(),
+      statusAllWeek: vi.fn(),
+    },
+    usage: {
+      series: vi.fn(),
     },
   },
 }))
+
+// recharts pulls in canvas + ResizeObserver under jsdom; the expanded card
+// always mounts ProfileTimelineChart, so stub the chart primitives globally.
+vi.mock('recharts', () => {
+  const Pass = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>
+  return {
+    Bar: () => null,
+    BarChart: Pass,
+    CartesianGrid: () => null,
+    Legend: () => null,
+    ResponsiveContainer: Pass,
+    Tooltip: () => null,
+    XAxis: () => null,
+    YAxis: () => null,
+  }
+})
 
 vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => mockAuth,
@@ -135,6 +155,27 @@ beforeEach(() => {
   })
   ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsSummary, adultsSummary])
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 30 })
+  ;(api.time.statusAllWeek as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  // #1036 — ProfileTimelineChart fires /api/usage/series whenever a card is
+  // expanded (Today is the default tab). Default to an empty payload; specific
+  // tests can override to populate top hosts/devices.
+  ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    ({ profileId, date }: { profileId: number; date: string }) =>
+      Promise.resolve({
+        profileId,
+        profileName: profileId === 1 ? 'Kids' : 'Adults',
+        date,
+        tz: 'UTC',
+        topHosts: [],
+        buckets: Array.from({ length: 24 }, (_, h) => ({
+          hour: h, totalMins: 0, perHost: [], otherMins: 0,
+        })),
+        topDevices: [],
+        bucketsByDevice: Array.from({ length: 24 }, (_, h) => ({
+          hour: h, totalMins: 0, perDevice: [], otherMins: 0,
+        })),
+      }),
+  )
 })
 
 // #972 — cards are collapse-by-default; tests that need the expanded body

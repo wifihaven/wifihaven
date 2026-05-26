@@ -14,6 +14,7 @@ import type {
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
+import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from './TimePage'
 
@@ -671,6 +672,12 @@ function ProfileShellRow({
 
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
+          {/* #1036 — always-visible per-profile timeline chart at the top of
+              the expanded view. Restores the /time chart (Today/Week toggle +
+              host/device group-by + Other drill-in) before #978 drops that
+              route. Read-only; lives above the edit subsections. */}
+          <ProfileTimelineChart profileId={pd.profile.id} />
+
           {/* #973: inline devices subsection. Name is edited inline in the
               card header above (no redundant collapsible). Devices autosave
               per-row via PATCH /devices. The Edit-modal escape hatch is gone
