@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
+import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
   BlocklistSummary, CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
@@ -412,6 +413,7 @@ export function ProfilesPage() {
             pd={pd}
             summary={summaryByProfile.get(pd.profile.id)}
             devices={devicesByProfile.get(pd.profile.id) ?? []}
+            allDevices={devices}
             users={usersByProfile.get(pd.profile.id) ?? []}
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
@@ -564,12 +566,13 @@ export function ProfilesPage() {
 // the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
-  pd, summary, devices, users, isAdmin, expanded, highlight,
+  pd, summary, devices, allDevices, users, isAdmin, expanded, highlight,
   onToggle, onEdit, onEditUsers, onDelete, onTogglePause, onGrantTime,
 }: {
   pd: ProfileDetail
   summary: ProfileTimeSummary | undefined
   devices: Device[]
+  allDevices: Device[]
   users: User[]
   isAdmin: boolean
   expanded: boolean
@@ -652,8 +655,17 @@ function ProfileShellRow({
 
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
-          {/* #972: stub expanded view — subsections #973-#977 replace the
-              escape-hatch buttons below with inline editors. */}
+          {/* #973: inline name + devices subsections. Name autosaves via the
+              existing PUT /profiles/:id (full body) — PATCH for profiles is
+              still gated on #423. Devices autosave per-row via PATCH /devices.
+              Sub-issues #974-#977 own the remaining slots; the escape-hatch
+              Edit button below stays callable for those (modal cleanup is #978). */}
+          {isAdmin && (
+            <NameSubsection pd={pd} />
+          )}
+          {isAdmin && (
+            <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
+          )}
           {isAdmin && (
             <div className="flex flex-wrap gap-2">
               <button onClick={onTogglePause}
@@ -728,23 +740,28 @@ function ProfileShellRow({
             </div>
           )}
 
-          <div data-testid={`profile-devices-${pd.profile.id}`}>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
-            {devices.length === 0
-              ? <p className="text-xs text-gray-600">No devices assigned.</p>
-              : (
-                <div className="space-y-1">
-                  {devices.map(d => (
-                    <div key={d.id} data-testid={`profile-device-${d.id}`}
-                      className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
-                      <span className="text-gray-300">{d.name}</span>
-                      <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
-                    </div>
-                  ))}
-                </div>
-              )
-            }
-          </div>
+          {/* #973: read-only Devices listing for non-admins. Admins get the
+              editable DevicesSubsection above; keeping a second copy here for
+              them would be redundant. */}
+          {!isAdmin && (
+            <div data-testid={`profile-devices-${pd.profile.id}`}>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
+              {devices.length === 0
+                ? <p className="text-xs text-gray-600">No devices assigned.</p>
+                : (
+                  <div className="space-y-1">
+                    {devices.map(d => (
+                      <div key={d.id} data-testid={`profile-device-${d.id}`}
+                        className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+                        <span className="text-gray-300">{d.name}</span>
+                        <span className="text-gray-500 font-mono text-xs">{d.mac}</span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+          )}
 
           {isAdmin && (
             <div data-testid={`profile-users-${pd.profile.id}`}>
@@ -1495,5 +1512,209 @@ function AppRow({ app, profileId, onChanged }: {
         <p className="text-xs text-red-400" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
       )}
     </div>
+  )
+}
+
+// #973 — collapsible inline subsection wrapper. Header carries the title and
+// a live "Saved / Saving…" indicator. Default open when first mounted (the
+// design doc calls out name/icon/color as open-on-first-expand; we apply the
+// same default to Devices too since both are common edit targets).
+function Subsection({
+  testId, title, status, error, children, defaultOpen = true,
+}: {
+  testId: string
+  title: string
+  status: SaveStatus
+  error: string | null
+  children: React.ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div data-testid={testId} className="bg-gray-950/40 border border-gray-800 rounded-xl">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        data-testid={`${testId}-toggle`}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`text-gray-500 text-xs transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+          <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">{title}</span>
+        </span>
+        <SaveStatusBadge status={status} error={error} testId={`${testId}-status`} />
+      </button>
+      {open && <div className="px-4 pb-4 pt-1 space-y-3">{children}</div>}
+    </div>
+  )
+}
+
+function SaveStatusBadge({
+  status, error, testId,
+}: { status: SaveStatus; error: string | null; testId: string }) {
+  if (status === 'saving') {
+    return <span data-testid={testId} data-status="saving" className="text-xs text-gray-500">Saving…</span>
+  }
+  if (status === 'saved') {
+    return <span data-testid={testId} data-status="saved" className="text-xs text-emerald-400">Saved</span>
+  }
+  if (status === 'error') {
+    return (
+      <span data-testid={testId} data-status="error" className="text-xs text-red-400" title={error ?? ''}>
+        Save failed
+      </span>
+    )
+  }
+  return <span data-testid={testId} data-status="idle" className="text-xs text-transparent select-none">·</span>
+}
+
+// #973 — inline name editor. Autosaves the whole-profile PUT (#423 will let us
+// swap to PATCH without changing UI shape).
+function NameSubsection({ pd }: { pd: ProfileDetail }) {
+  const invalidators = useInvalidators()
+  const [name, setName] = useState(pd.profile.name)
+  // Resync local state when the underlying profile name changes server-side
+  // (e.g. another tab edits it).
+  useEffect(() => { setName(pd.profile.name) }, [pd.profile.name])
+
+  const { status, error } = useDebouncedSave(
+    name,
+    async (next: string) => {
+      const trimmed = next.trim()
+      if (!trimmed) throw new Error('Name is required')
+      // Build the same body shape the modal sends so unspecified fields
+      // round-trip unchanged.
+      const body: UpsertProfileRequest = {
+        name: trimmed,
+        blockedCategories: pd.profile.blockedCategories,
+        extraBlocked: pd.profile.extraBlocked,
+        extraAllowed: pd.profile.extraAllowed,
+        paused: pd.profile.paused,
+        timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
+        schedules: pd.schedules.map(s => ({
+          name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+        })),
+        siteTimeLimits: pd.siteTimeLimits.map(s => ({
+          domainPattern: s.domainPattern,
+          dailyMinutes: s.dailyMinutes,
+          label: s.label,
+          exemptFromDaily: s.exemptFromDaily,
+        })),
+        failureMode: pd.profile.failureMode,
+        crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+      }
+      await api.profiles.update(pd.profile.id, body)
+      await invalidators.profileMutated()
+    },
+    { key: pd.profile.id },
+  )
+
+  return (
+    <Subsection
+      testId={`profile-name-subsection-${pd.profile.id}`}
+      title="Name"
+      status={status}
+      error={error}
+    >
+      <input
+        type="text"
+        value={name}
+        onChange={e => setName(e.target.value)}
+        data-testid={`profile-name-input-${pd.profile.id}`}
+        className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+      />
+    </Subsection>
+  )
+}
+
+// #973 — inline devices editor. Each row toggle issues PATCH /devices/:mac
+// with {profileId} (assign) or {profileId: null} (detach). The status badge
+// reflects the most-recent toggle.
+function DevicesSubsection({
+  pd, assigned, allDevices,
+}: { pd: ProfileDetail; assigned: Device[]; allDevices: Device[] }) {
+  const invalidators = useInvalidators()
+  const [status, setStatus] = useState<SaveStatus>('idle')
+  const [error, setError]   = useState<string | null>(null)
+  const [busyMac, setBusyMac] = useState<string | null>(null)
+
+  // #973 — unassigned-or-elsewhere devices are pickable. Detaching from another
+  // profile here would clobber that profile's assignment, so only show
+  // currently-unassigned devices in the add-picker.
+  const pickable = useMemo(
+    () => allDevices.filter(d => d.profileId == null),
+    [allDevices],
+  )
+
+  async function setProfile(d: Device, nextPid: number | null) {
+    setBusyMac(d.mac)
+    setStatus('saving')
+    setError(null)
+    try {
+      await api.devices.patch(d.mac, { profileId: nextPid })
+      await invalidators.deviceMutated()
+      setStatus('saved')
+      setTimeout(() => setStatus(s => (s === 'saved' ? 'idle' : s)), 1500)
+    } catch (e) {
+      setStatus('error')
+      setError(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setBusyMac(null)
+    }
+  }
+
+  return (
+    <Subsection
+      testId={`profile-devices-subsection-${pd.profile.id}`}
+      title={`Devices (${assigned.length})`}
+      status={status}
+      error={error}
+    >
+      {assigned.length === 0
+        ? <p className="text-xs text-gray-600">No devices assigned.</p>
+        : (
+          <div className="space-y-1">
+            {assigned.map(d => (
+              <div key={d.id} data-testid={`profile-device-${d.id}`}
+                className="flex items-center justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <span className="text-gray-300 truncate">{d.name}</span>
+                  <span className="ml-2 text-gray-500 font-mono text-xs">{d.mac}</span>
+                </div>
+                <button
+                  type="button"
+                  data-testid={`profile-device-${d.id}-detach`}
+                  disabled={busyMac === d.mac}
+                  onClick={() => setProfile(d, null)}
+                  className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-2.5 py-1 rounded-lg disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )
+      }
+      {pickable.length > 0 && (
+        <div>
+          <p className="text-xs text-gray-500 mb-1">Unassigned devices</p>
+          <div className="flex flex-wrap gap-2">
+            {pickable.map(d => (
+              <button
+                key={d.id}
+                type="button"
+                data-testid={`profile-device-add-${d.id}`}
+                disabled={busyMac === d.mac}
+                onClick={() => setProfile(d, pd.profile.id)}
+                className="text-xs px-3 py-1.5 rounded-lg border bg-gray-800 text-gray-300 border-gray-700 hover:border-emerald-500/40 disabled:opacity-50"
+              >
+                + {d.name} <span className="text-gray-500 font-mono">{d.mac}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Subsection>
   )
 }

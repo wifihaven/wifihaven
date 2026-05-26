@@ -19,6 +19,7 @@ vi.mock('@/api/client', () => ({
     },
     devices: {
       list: vi.fn(),
+      patch: vi.fn(),
     },
     users: {
       list: vi.fn(),
@@ -127,6 +128,7 @@ beforeEach(() => {
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
+  ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
   ;(api.household.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     dailyResetTime: '00:00',
@@ -365,9 +367,13 @@ describe('ProfilesPage — edit', () => {
     await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
 
-    expect(screen.getByDisplayValue('Kids')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('120')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('school.com')).toBeInTheDocument()
+    // #973: the inline name editor in the expanded card also displays "Kids",
+    // so the modal's name field is queried via the modal's title context.
+    const modalHeading = await screen.findByRole('heading', { name: /^Edit Profile$/ })
+    const modal = modalHeading.closest('div.bg-gray-900') as HTMLElement
+    expect(within(modal).getByDisplayValue('Kids')).toBeInTheDocument()
+    expect(within(modal).getByDisplayValue('120')).toBeInTheDocument()
+    expect(within(modal).getByDisplayValue('school.com')).toBeInTheDocument()
 
     // #265: Paused checkbox helper text must describe *all internet traffic*, not just DNS.
     expect(
@@ -836,5 +842,122 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     expect(await screen.findByTestId('apps-section-manage-link')).toHaveAttribute('href', '/apps')
+  })
+})
+
+describe('ProfilesPage — #973 inline name subsection (autosave)', () => {
+  it('renders the inline name editor pre-filled when the card is expanded', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const input = within(kidsCard).getByTestId('profile-name-input-1') as HTMLInputElement
+    expect(input.value).toBe('Kids')
+  })
+
+  it('debounced autosave fires once per change with the new name baked into the full PUT body', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const input = within(kidsCard).getByTestId('profile-name-input-1')
+
+    await user.clear(input)
+    await user.type(input, 'Kiddos')
+
+    // Real 500ms debounce — give waitFor a window wide enough to cover it.
+    await waitFor(
+      () =>
+        expect(api.profiles.update).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            name: 'Kiddos',
+            blockedCategories: ['adult', 'gambling'],
+            paused: false,
+            failureMode: 'block-all',
+            crossDeviceOverlapMode: 'sum',
+            // round-trips schedules + siteTimeLimits + timeLimit unchanged
+            timeLimit: 120,
+          }),
+        ),
+      { timeout: 2000 },
+    )
+    expect(api.profiles.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('blank name surfaces an error and is not persisted', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const input = within(kidsCard).getByTestId('profile-name-input-1')
+    await user.clear(input)
+    await waitFor(
+      () => {
+        const badge = within(kidsCard).getByTestId('profile-name-subsection-1-status')
+        expect(badge).toHaveAttribute('data-status', 'error')
+      },
+      { timeout: 2000 },
+    )
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProfilesPage — #973 inline devices subsection', () => {
+  const orphanDevice: Device = {
+    id: 200, mac: 'aa:bb:cc:dd:ee:99', name: 'Spare Laptop', profileId: null,
+    profileName: null, lastSeenIp: null, lastSeenAt: null,
+  }
+
+  it('renders assigned devices with a Remove button and a picker of unassigned devices', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      phoneDevice, tabletDevice, orphanDevice,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-devices-subsection-1')
+    expect(within(sub).getByTestId('profile-device-100')).toBeInTheDocument()
+    expect(within(sub).getByTestId('profile-device-100-detach')).toBeInTheDocument()
+    expect(within(sub).getByTestId('profile-device-add-200')).toBeInTheDocument()
+    // Devices already on another profile do not show up in the picker.
+    expect(within(sub).queryByTestId('profile-device-add-101')).not.toBeInTheDocument()
+  })
+
+  it('clicking + on an unassigned device PATCHes /devices with the profileId', async () => {
+    (api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      phoneDevice, tabletDevice, orphanDevice,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-device-add-200'))
+    await waitFor(() =>
+      expect(api.devices.patch).toHaveBeenCalledWith('aa:bb:cc:dd:ee:99', { profileId: 1 }),
+    )
+  })
+
+  it('clicking Remove on an assigned device PATCHes /devices with profileId=null', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-device-100-detach'))
+    await waitFor(() =>
+      expect(api.devices.patch).toHaveBeenCalledWith('aa:bb:cc:dd:ee:01', { profileId: null }),
+    )
+  })
+
+  it('hides the editable subsection for non-admins (read-only listing instead)', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(within(kidsCard).queryByTestId('profile-devices-subsection-1')).not.toBeInTheDocument()
+    // The pre-#973 read-only listing is the fallback for non-admins.
+    expect(within(kidsCard).getByTestId('profile-devices-1')).toBeInTheDocument()
   })
 })

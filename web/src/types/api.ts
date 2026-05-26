@@ -534,6 +534,13 @@ export interface UpsertDeviceRequest {
   profileId: number
 }
 
+// #996: field-scoped partial update for devices. `name` may be set (not cleared);
+// `profileId` may be set or cleared (null detaches the device from any profile).
+export interface PatchDeviceRequest {
+  name?: string
+  profileId?: number | null
+}
+
 export interface GrantExtensionRequest {
   profileId: number
   extraMinutes: number
