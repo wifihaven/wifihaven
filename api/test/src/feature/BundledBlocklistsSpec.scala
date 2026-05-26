@@ -230,6 +230,72 @@ object BundledBlocklistsSpec
         assertTrue(!cats.contains(BlocklistId.unsafe("test_social"))) &&
         assertTrue(profile.blockedCategories.isEmpty)
     },
+    test("V33 canonicalization: V1's Kids seed has canonical slugs after fresh migrate") {
+      // V1__init.sql seeds Kids with ['adult','gambling','social_media','proxy'];
+      // V33 rewrites 'social_media' -> 'social-media' and strips 'proxy'.
+      for {
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        kids <- pr.listAll.map(_.find(_.name == "Kids")).someOrFailException
+      } yield assertTrue(kids.blockedCategories.contains(BlocklistId.unsafe("social-media"))) &&
+        assertTrue(!kids.blockedCategories.contains(BlocklistId.unsafe("social_media"))) &&
+        assertTrue(!kids.blockedCategories.contains(BlocklistId.unsafe("proxy"))) &&
+        assertTrue(kids.blockedCategories.contains(BlocklistId.unsafe("adult"))) &&
+        assertTrue(kids.blockedCategories.contains(BlocklistId.unsafe("gambling")))
+    },
+    test("V33 canonicalization: idempotent — rewrites 'social_media' and strips 'proxy'") {
+      // Inject a profile carrying the legacy slugs after migrate, then re-run the V33 SQL
+      // and verify it canonicalizes (and a second run is a no-op).
+      import doobie.implicits.*
+      for {
+        _      <- cleanDb
+        pr     <- ZIO.service[ProfileRepo]
+        xa     <- ZIO.service[doobie.Transactor[Task]]
+        pid    <- pr.create("Legacy", List(BlocklistId.unsafe("adult")))
+        pidVal  = pid.value
+        _      <- sql"""UPDATE profiles
+                        SET blocked_categories = ARRAY['adult','social_media','proxy']::TEXT[]
+                        WHERE id = $pidVal""".update.run.transact(xa)
+        runReplace = sql"""UPDATE profiles
+                           SET blocked_categories = array_replace(blocked_categories, 'social_media', 'social-media')
+                           WHERE 'social_media' = ANY(blocked_categories)""".update.run.transact(xa)
+        runRemove  = sql"""UPDATE profiles
+                           SET blocked_categories = array_remove(blocked_categories, 'proxy')
+                           WHERE 'proxy' = ANY(blocked_categories)""".update.run.transact(xa)
+        _      <- runReplace *> runRemove
+        after1 <- pr.findById(pid).someOrFailException
+        _      <- runReplace *> runRemove
+        after2 <- pr.findById(pid).someOrFailException
+      } yield assertTrue(after1.blockedCategories == after2.blockedCategories) &&
+        assertTrue(after1.blockedCategories.contains(BlocklistId.unsafe("social-media"))) &&
+        assertTrue(!after1.blockedCategories.contains(BlocklistId.unsafe("social_media"))) &&
+        assertTrue(!after1.blockedCategories.contains(BlocklistId.unsafe("proxy"))) &&
+        assertTrue(after1.blockedCategories.contains(BlocklistId.unsafe("adult")))
+    },
+    test("V33 canonicalization: leaves canonical slugs untouched") {
+      import doobie.implicits.*
+      for {
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        xa  <- ZIO.service[doobie.Transactor[Task]]
+        pid <- pr.create(
+          "Canonical",
+          List(BlocklistId.unsafe("social-media"), BlocklistId.unsafe("adult")),
+        )
+        _   <- sql"""UPDATE profiles
+                     SET blocked_categories = array_replace(blocked_categories, 'social_media', 'social-media')
+                     WHERE 'social_media' = ANY(blocked_categories)""".update.run.transact(xa)
+        _   <- sql"""UPDATE profiles
+                     SET blocked_categories = array_remove(blocked_categories, 'proxy')
+                     WHERE 'proxy' = ANY(blocked_categories)""".update.run.transact(xa)
+        after <- pr.findById(pid).someOrFailException
+      } yield assertTrue(
+        after.blockedCategories.toSet == Set(
+          BlocklistId.unsafe("social-media"),
+          BlocklistId.unsafe("adult"),
+        ),
+      )
+    },
     test("dev test seeder seeds test_ads + test_social when invoked") {
       for {
         _      <- cleanDb
