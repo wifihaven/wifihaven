@@ -200,15 +200,15 @@ jobs:
       - name: Wait for staging to be healthy
         run: |
           # Poll /api/health until it returns 200 with db ok. Render's image
-          # rollout typically takes 30-90s; allow up to 8 minutes.
+          # rollout typically takes 30-90s; allow up to 15 minutes.
           # We check both the HTTP status AND the body to confirm THIS run's
           # deploy is live (not the previous image still serving while the
           # new one is starting). The `version` field (if exposed) would be
           # more authoritative; for now /api/health 200 + db ok is enough —
           # the smoke-staging job that follows will catch any real breakage.
-          deadline=$(( $(date +%s) + 480 ))
+          deadline=$(( $(date +%s) + 900 ))
           while (( $(date +%s) < deadline )); do
-            if curl --fail --silent --max-time 10 \
+            if curl --fail --silent --max-time 15 \
                  "${STAGING_API_URL}/api/health" | grep -q '"db":\s*"ok"'; then
               echo "Staging is healthy."
               exit 0
