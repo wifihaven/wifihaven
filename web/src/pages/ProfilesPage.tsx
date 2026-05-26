@@ -1872,6 +1872,15 @@ function AppRow({ app, profileId, onChanged }: {
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  // Re-seed the input when the persisted policy changes from outside
+  // (e.g. another tab, or after our own setPolicy round-trip lands).
+  // Without this the input keeps stale values once `current` updates.
+  useEffect(() => {
+    if (busy) return
+    const next = current?.mode === 'time_limited' && current.dailyMinutes != null
+      ? String(current.dailyMinutes) : ''
+    setMinutesDraft(next)
+  }, [current?.mode, current?.dailyMinutes])
 
   async function apply(mode: AppMode, dailyMinutes: number | null, exemptFromDaily?: boolean) {
     setBusy(true)
@@ -1904,28 +1913,48 @@ function AppRow({ app, profileId, onChanged }: {
     }
   }
 
-  async function applyTimeLimited() {
-    const n = Number(minutesDraft)
-    if (!Number.isFinite(n) || n <= 0) {
-      setLocalError('Enter minutes > 0')
-      return
-    }
-    // #1007: preserve current exemptFromDaily when re-applying; default to TRUE
-    // (matches the schema default and the wire default in #761/#763).
-    await apply('time_limited', n, current?.exemptFromDaily ?? true)
-  }
-
   async function toggleExempt(nextExempt: boolean) {
     if (current?.mode !== 'time_limited' || current.dailyMinutes == null) return
     await apply('time_limited', current.dailyMinutes, nextExempt)
   }
 
   const mode = current?.mode ?? null
+  const isTimeLimited = mode === 'time_limited'
+  const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+
+  // Operator feedback: the old UX made you type minutes AND click a
+  // separate "Time-limit" button, then showed the duration twice. Now
+  // the minutes input IS the time-limit control: editing it and tabbing
+  // away (or pressing Enter) saves the policy. Empty input is a no-op
+  // (we revert to the current value); 0/negative shows an inline error.
+  async function commitMinutes() {
+    const trimmed = minutesDraft.trim()
+    if (trimmed === '') {
+      // Restore to the persisted value so the input doesn't sit empty
+      // looking unsaved. Doesn't clear the policy — operator must use
+      // Clear / Block / Allow for that.
+      setMinutesDraft(currentMinutes != null ? String(currentMinutes) : '')
+      setLocalError(null)
+      return
+    }
+    const n = Number(trimmed)
+    if (!Number.isFinite(n) || n <= 0) {
+      setLocalError('Enter minutes > 0')
+      return
+    }
+    setLocalError(null)
+    // No-op if the policy is already time_limited at exactly this value.
+    if (isTimeLimited && currentMinutes === n) return
+    // #1007: preserve current exemptFromDaily when re-applying; default
+    // to TRUE (matches the schema default and the wire default in
+    // #761/#763) when transitioning into time_limited.
+    await apply('time_limited', n, current?.exemptFromDaily ?? true)
+  }
+
   const baseBtn = 'text-xs px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-50'
   const off = 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
   const onBlocked = 'bg-red-500/20 text-red-300 border-red-500/40'
   const onAllowed = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-  const onTimeLimited = 'bg-amber-500/20 text-amber-300 border-amber-500/40'
 
   return (
     <div
@@ -1971,21 +2000,24 @@ function AppRow({ app, profileId, onChanged }: {
             min={1}
             value={minutesDraft}
             onChange={e => setMinutesDraft(e.target.value)}
-            placeholder="min"
-            data-testid={`app-row-${app.app.id}-minutes`}
-            className="w-16 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs"
-          />
-          <button
-            type="button"
-            data-testid={`app-row-${app.app.id}-time-limit`}
+            onBlur={commitMinutes}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                (e.currentTarget as HTMLInputElement).blur()
+              }
+            }}
             disabled={busy}
-            onClick={applyTimeLimited}
-            className={`${baseBtn} ${mode === 'time_limited' ? onTimeLimited : off}`}
-          >
-            {mode === 'time_limited' && current?.dailyMinutes != null
-              ? `✓ ${current.dailyMinutes}m / day`
-              : 'Time-limit'}
-          </button>
+            placeholder="min"
+            aria-label="Daily time-limit minutes"
+            data-testid={`app-row-${app.app.id}-minutes`}
+            className={`w-16 rounded-lg px-2 py-1 text-white text-xs border transition-colors disabled:opacity-50 ${
+              isTimeLimited
+                ? 'bg-amber-500/10 border-amber-500/40 text-amber-200 placeholder-amber-200/40'
+                : 'bg-gray-900 border-gray-700'
+            }`}
+          />
+          <span className="text-xs text-gray-500">min/day</span>
         </div>
       </div>
       {mode === 'time_limited' && (

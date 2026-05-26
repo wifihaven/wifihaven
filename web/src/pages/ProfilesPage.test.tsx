@@ -918,19 +918,37 @@ describe('ProfilesPage — apps section (#767)', () => {
     )
   })
 
-  it('time-limit requires positive minutes; rejects empty', async () => {
+  it('typing a positive value into the minutes input then blurring saves as time_limited', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
-    await user.click(await screen.findByTestId('app-row-50-time-limit'))
+    const input = await screen.findByTestId('app-row-50-minutes') as HTMLInputElement
+    await user.type(input, '45')
+    // Tab away — the input IS the time-limit control, no separate button.
+    await user.tab()
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'time_limited', dailyMinutes: 45, exemptFromDaily: true }),
+    )
+  })
+
+  it('zero/negative minutes shows inline error and does not save', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
+    const input = await screen.findByTestId('app-row-50-minutes') as HTMLInputElement
+    await user.type(input, '0')
+    await user.tab()
     expect(api.apps.setPolicy).not.toHaveBeenCalled()
     expect(await screen.findByTestId('app-row-50-error')).toHaveTextContent(/minutes > 0/i)
   })
 
-  it('time-limit with minutes calls setPolicy with mode=time_limited + dailyMinutes', async () => {
+  it('blank minutes on blur is a no-op (no save, no error)', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
     const user = userEvent.setup()
     renderPage()
@@ -938,11 +956,10 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(within(kidsCard).getByRole('button', { name: /^Edit$/ }))
     const input = await screen.findByTestId('app-row-50-minutes')
-    await user.type(input, '45')
-    await user.click(screen.getByTestId('app-row-50-time-limit'))
-    await waitFor(() =>
-      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'time_limited', dailyMinutes: 45, exemptFromDaily: true }),
-    )
+    await user.click(input)
+    await user.tab()
+    expect(api.apps.setPolicy).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('app-row-50-error')).not.toBeInTheDocument()
   })
 
   it('clearing an assigned app calls deletePolicy', async () => {
