@@ -125,7 +125,7 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           .toInstant
         _      <- seedReports(rid, start, 12, bytesPerBucket = 100L)
         rollup <- ZIO.service[RollupRepo]
-        rolled <- rollup.rerollHourly(start.minusSeconds(3600))
+        rolled <- rollup.rerollHourly(start.minusSeconds(3600)).map(_.getOrElse(0))
         // Read back what landed
         rows   <- rollup.listHourlyInRange(List(mac), start, start.plusSeconds(3600 * 2))
       } yield assertTrue(
@@ -208,6 +208,43 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         recent.head.status == "error",
         recent.head.error.contains("boom"),
       )
+    },
+    test("rerollHourly gates concurrent calls behind pg_try_advisory_xact_lock (#818)") {
+      // Hold the rollup advisory lock on a raw JDBC connection (separate from
+      // the doobie pool the repo uses), then verify rerollHourly returns None
+      // — i.e. it tried, didn't get the lock, and skipped. This is the
+      // multi-instance contract: two API processes racing on the same tick,
+      // one wins, the other skips without blocking.
+      for {
+        _   <- cleanDb
+        rid <- seedRouter
+        start = LocalDate.of(2026, 3, 1).atStartOfDay(ZoneOffset.UTC).toInstant
+        _       <- seedReports(rid, start, 6, bytesPerBucket = 25L)
+        rollup  <- ZIO.service[RollupRepo]
+        pg      <- ZIO.service[EmbeddedPostgres]
+        // Hold the session-level lock on a dedicated connection for the
+        // duration of the racing rerollHourly call. `pg_advisory_lock` blocks
+        // if the lock is contended; we use `pg_try_advisory_lock` here so the
+        // setup call returns immediately (the lock is free at this point).
+        skipped <- ZIO.scoped {
+          for {
+            conn <- ZIO.acquireRelease(
+              ZIO.attempt(pg.getPostgresDatabase.getConnection),
+            )(c => ZIO.attempt(c.close()).ignore)
+            _    <- ZIO.attempt {
+              val rs = conn
+                .createStatement()
+                .executeQuery(s"SELECT pg_advisory_lock(${RollupLockKeys.Hourly})")
+              rs.close()
+            }
+            // While the lock is held above, the repo's reroll must skip.
+            res  <- rollup.rerollHourly(start.minusSeconds(3600))
+          } yield res
+        }
+        // After the holding scope releases (connection closed → session lock
+        // released), a fresh call succeeds.
+        ok      <- rollup.rerollHourly(start.minusSeconds(3600))
+      } yield assertTrue(skipped.isEmpty, ok.isDefined)
     },
     test("listHourlyInRange filters by mac and window") {
       for {

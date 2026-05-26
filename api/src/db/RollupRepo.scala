@@ -41,19 +41,44 @@ case class RollupRun(
     rowsUpserted: Int,
 )
 
+// Stable advisory-lock keys (#818). Picked once, never reused. If you add a
+// new rollup job, pick a fresh int64 here — overlapping keys would cross-
+// serialize unrelated jobs.
+//
+// Heartbeat filter (#714) note: the filter is applied at *read* time in
+// `Presence.totalMinutesByMac` for screen-time totals and consumed only by
+// `/api/usage/series` and `PolicyService`. The rollup tables back
+// `/api/usage/traffic`, which doesn't filter heartbeats — so the rollup sums
+// match what the endpoint would have computed from raw rows. If a future
+// change wants heartbeat filtering on `/api/usage/traffic`, the rollups
+// can't apply it post-hoc — the per-5-min `active_seconds/period_seconds`
+// ratio is summed away. That work would need a parallel `heartbeat_seconds`
+// column in the rollups, written at reroll time with the current household
+// filter settings.
+object RollupLockKeys {
+  val Hourly: Long = 0x1108L << 32 | 0x0001L
+  val Daily: Long  = 0x1108L << 32 | 0x0002L
+}
+
 trait RollupRepo {
 
   /**
    * Re-aggregate the trailing N hours of `traffic_reports` into `traffic_hourly`. Idempotent: the
-   * UPSERT replaces existing rows with the freshly summed values. Returns the row count touched.
+   * UPSERT replaces existing rows with the freshly summed values.
+   *
+   * Returns `Some(n)` with the rows touched on success, `None` when the advisory lock was held by
+   * another API instance (skip-this-tick). The lock is acquired transaction-scoped via
+   * `pg_try_advisory_xact_lock`, so it auto-releases when the doobie tx commits or rolls back — no
+   * manual release path needed and no risk of a stale lock surviving a crash.
    */
-  def rerollHourly(since: Instant): Task[Int]
+  def rerollHourly(since: Instant): Task[Option[Int]]
 
   /**
    * Re-aggregate the trailing window of `traffic_reports` into `traffic_daily`. `sinceDate` is the
-   * earliest date to re-roll, inclusive. Idempotent via UPSERT.
+   * earliest date to re-roll, inclusive. Idempotent via UPSERT. Same advisory-lock contract as
+   * [[rerollHourly]] — `None` means another instance is rolling concurrently.
    */
-  def rerollDaily(sinceDate: LocalDate): Task[Int]
+  def rerollDaily(sinceDate: LocalDate): Task[Option[Int]]
 
   /**
    * Record one tick of a rollup fiber in `rollup_runs` for /api/admin/rollup-status. `error` is set
@@ -127,7 +152,19 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
         WHERE (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
       """
 
-  def rerollHourly(since: Instant): Task[Int] = {
+  // Run `upsert` inside a transaction guarded by a transaction-scoped advisory
+  // lock. If the lock is already held (another instance is mid-roll), commits
+  // immediately with None and the upsert never runs. The lock auto-releases
+  // on commit / rollback — no manual unlock path to leak.
+  private def withLock(key: Long)(upsert: doobie.ConnectionIO[Int]): Task[Option[Int]] = {
+    val tx = for {
+      got <- sql"SELECT pg_try_advisory_xact_lock($key)".query[Boolean].unique
+      n   <- if (got) upsert.map(Option(_)) else doobie.free.connection.pure(Option.empty[Int])
+    } yield n
+    tx.transact(xa)
+  }
+
+  def rerollHourly(since: Instant): Task[Option[Int]] = {
     val sql =
       resolvedCte ++
         fr"""
@@ -152,10 +189,10 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           sample_count   = EXCLUDED.sample_count,
           rolled_at      = EXCLUDED.rolled_at
         """
-    sql.update.run.transact(xa)
+    withLock(RollupLockKeys.Hourly)(sql.update.run)
   }
 
-  def rerollDaily(sinceDate: LocalDate): Task[Int] = {
+  def rerollDaily(sinceDate: LocalDate): Task[Option[Int]] = {
     val sql =
       resolvedCte ++
         fr"""
@@ -179,7 +216,7 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           sample_count   = EXCLUDED.sample_count,
           rolled_at      = EXCLUDED.rolled_at
         """
-    sql.update.run.transact(xa)
+    withLock(RollupLockKeys.Daily)(sql.update.run)
   }
 
   def recordRun(

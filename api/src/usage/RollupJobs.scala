@@ -11,12 +11,12 @@ import java.time.{Duration, LocalDate, ZoneId}
 // window we re-roll always extends N hours / days back from "now", and the
 // UPSERT shape means re-rolling already-rolled buckets is a no-op semantically.
 //
-// Multi-instance safety: we don't currently run more than one API process per
-// household, but #818 calls out that this should not catch fire if it ever
-// does. The UPSERT is the safety net — two instances racing on the same
-// bucket produce the same row. A pg_try_advisory_lock would still be cheaper
-// (one instance does the work) but adds Flyway-version-skew risk; defer
-// until #818 explicitly wires the lock pattern in.
+// Multi-instance safety (#818): each tick is gated by a transaction-scoped
+// `pg_try_advisory_xact_lock` keyed off `RollupLockKeys` — only one instance
+// rolls per tick, the rest log a skip and move on. The UPSERT is still the
+// correctness floor (re-rolling the same bucket twice can't corrupt anything)
+// but the lock keeps redundant DB work from doubling as the household scales
+// to multiple API processes.
 //
 // Failure handling: catch all errors, record them in rollup_runs, never let
 // the fiber die. The admin /api/admin/rollup-status endpoint shows the last N
@@ -57,14 +57,14 @@ object RollupJobs {
 
   // ── tick bodies ────────────────────────────────────────────────────────────
 
-  private def oneHourlyTick(repo: RollupRepo, clock: Clock): Task[Int] =
+  private def oneHourlyTick(repo: RollupRepo, clock: Clock): Task[Option[Int]] =
     for {
       now <- clock.instant
       since = now.minus(HourlyLookback).truncatedTo(java.time.temporal.ChronoUnit.HOURS)
       n <- repo.rerollHourly(since)
     } yield n
 
-  private def oneDailyTick(repo: RollupRepo, clock: Clock, zone: ZoneId): Task[Int] =
+  private def oneDailyTick(repo: RollupRepo, clock: Clock, zone: ZoneId): Task[Option[Int]] =
     for {
       now <- clock.instant
       sinceDate = LocalDate.ofInstant(now, zone).minus(DailyLookback)
@@ -77,17 +77,22 @@ object RollupJobs {
       job: String,
       repo: RollupRepo,
       clock: Clock,
-      body: Clock => Task[Int],
+      body: Clock => Task[Option[Int]],
   ): UIO[Unit] =
     for {
       started  <- clock.instant
       result   <- body(clock).either
       finished <- clock.instant
       _        <- result match {
-        case Right(n) =>
+        case Right(Some(n)) =>
           ZIO.logInfo(s"rollup $job tick ok rows=$n") *>
             repo.recordRun(job, started, finished, "ok", None, n).ignore
-        case Left(e)  =>
+        case Right(None)    =>
+          // Another instance held the advisory lock — expected under
+          // multi-instance deploys, log at debug and don't write a
+          // rollup_runs row (would noise up the admin view).
+          ZIO.logDebug(s"rollup $job tick skipped (advisory lock held)")
+        case Left(e)        =>
           ZIO.logErrorCause(s"rollup $job tick failed", Cause.fail(e)) *>
             repo
               .recordRun(job, started, finished, "error", Some(e.getMessage.take(500)), 0)
