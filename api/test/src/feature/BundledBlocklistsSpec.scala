@@ -352,6 +352,22 @@ object BundledBlocklistsSpec
         after   <- blRepo.loadCategory(BlocklistId.unsafe("malware"))
       } yield assertTrue(before.nonEmpty) && assertTrue(before == after)
     },
+    test("games: bundled list is loaded and includes the major gaming platforms (#1068)") {
+      for {
+        bundled <- BundledBlocklists.loadAll()
+        games = bundled.find(_.id == BlocklistId.unsafe("games"))
+        hosts = games.toList.flatMap(_.content match {
+          case BundledBlocklistContent.Inline(hs) => hs
+          case _                                  => Nil
+        })
+      } yield assertTrue(games.isDefined) &&
+        assertTrue(hosts.contains(Hostname.unsafe("roblox.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("fortnite.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("steampowered.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("minecraft.net"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("riotgames.com"))) &&
+        assertTrue(hosts.contains(Hostname.unsafe("gimkitconnect.com")))
+    },
     test("refresh(): re-fetches a single bundled list and returns new host count") {
       for {
         _       <- cleanDb
