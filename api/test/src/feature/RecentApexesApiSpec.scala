@@ -124,6 +124,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       userProfileRepo <- ZIO.service[UserProfileRepo]
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
+      rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -134,6 +135,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         userProfileRepo,
         profileRepo,
         appRepo,
+        rollupRepo,
         clock,
       ),
       auth,

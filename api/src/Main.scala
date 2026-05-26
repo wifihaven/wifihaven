@@ -8,6 +8,7 @@ import wifihaven.api.db.*
 import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
+import wifihaven.api.usage.RollupJobs
 import wifihaven.shared.Clock
 import zio.*
 import zio.http.*
@@ -64,6 +65,15 @@ object Main extends ZIOAppDefault {
       bundled        <- BundledBlocklists.loadAll()
       _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
       _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      // #809: scheduled re-aggregation of traffic_reports into the rollup
+      // tables. Hourly tick re-rolls the trailing 2h every 5 min; daily tick
+      // re-rolls yesterday + today every hour. Both are forkDaemon so they
+      // run for the lifetime of the process and never block startup.
+      rollupRepo     <- ZIO.service[wifihaven.api.db.RollupRepo]
+      clockForJobs   <- ZIO.service[Clock]
+      _              <- RollupJobs.hourlyLoop(rollupRepo, clockForJobs).forkDaemon
+      _              <- RollupJobs.dailyLoop(rollupRepo, clockForJobs, tz).forkDaemon
+      _              <- ZIO.logInfo("rollup fibers forked (hourly + daily)")
       _              <- ZIO
         .logWarning(
           "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
@@ -127,6 +137,7 @@ object Main extends ZIOAppDefault {
       extRepo     <- ZIO.service[TimeExtensionRepo]
       routerRepo  <- ZIO.service[RouterRepo]
       trafficRepo <- ZIO.service[TrafficReportRepo]
+      rollupRepo2 <- ZIO.service[RollupRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
       blockEvRepo <- ZIO.service[BlockEventRepo]
       alertRepo   <- ZIO.service[AlertRepo]
@@ -158,7 +169,16 @@ object Main extends ZIOAppDefault {
         timeCache,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
-      UsageRoutes.routes(auth, deviceRepo, trafficRepo, upRepo, profileRepo, appRepo, clock) ++
+      UsageRoutes.routes(
+        auth,
+        deviceRepo,
+        trafficRepo,
+        upRepo,
+        profileRepo,
+        appRepo,
+        rollupRepo2,
+        clock,
+      ) ++
       DashboardNowRoutes.routes(
         auth,
         trafficRepo,
@@ -171,6 +191,7 @@ object Main extends ZIOAppDefault {
       BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++
+      RollupAdminRoutes.routes(auth, rollupRepo2) ++
       RouterIngestRoutes.routes(
         routerAuth,
         routerRepo,
