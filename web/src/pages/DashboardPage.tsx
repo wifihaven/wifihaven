@@ -8,7 +8,7 @@ import type {
   QueryLog,
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
-import { NewDevicesHint } from '@/components/AlertsPanel'
+import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
@@ -28,6 +28,8 @@ export function DashboardPage() {
       <h1 className="text-xl font-bold text-white">Dashboard</h1>
 
       <NewDevicesHint />
+
+      <AccessRequestsBanner />
 
       <NowSection />
 

@@ -187,6 +187,29 @@ trait AlertRepo {
    */
   def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant): Task[Unit]
 
+  /**
+   * #960: create an access-request alert. `profileId` is denormalised at insert time so the row
+   * survives a later device→profile reassignment.
+   */
+  def createAccessRequest(
+      mac: MacAddress,
+      profileId: Option[ProfileId],
+      host: Hostname,
+      requestKind: AccessRequestKind,
+      note: Option[String],
+      createdAt: Instant,
+  ): Task[AlertId]
+
+  /**
+   * Debounce probe for access-request creates: most recent pending access_request row for `(mac,
+   * host)` since `since`, if any.
+   */
+  def findRecentAccessRequest(
+      mac: MacAddress,
+      host: Hostname,
+      since: Instant,
+  ): Task[Option[Alert]]
+
   def findById(id: AlertId): Task[Option[Alert]]
 
   /** Pending-only when `includeAll=false`. Ordered newest first. */
@@ -855,6 +878,39 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
           WHERE NOT EXISTS (
             SELECT 1 FROM alerts WHERE mac = $mac AND kind = 'new_device'
           )""".update.run.transact(xa).unit
+
+  def createAccessRequest(
+      mac: MacAddress,
+      profileId: Option[ProfileId],
+      host: Hostname,
+      requestKind: AccessRequestKind,
+      note: Option[String],
+      createdAt: Instant,
+  ): Task[AlertId] = {
+    val rkStr = AccessRequestKind.asString(requestKind)
+    sql"""INSERT INTO alerts (kind, status, mac, profile_id, host, request_kind, note, created_at)
+          VALUES ('access_request', 'pending', $mac, $profileId, $host, $rkStr, $note, $createdAt)
+          RETURNING id"""
+      .query[AlertId]
+      .unique
+      .transact(xa)
+  }
+
+  def findRecentAccessRequest(
+      mac: MacAddress,
+      host: Hostname,
+      since: Instant,
+  ): Task[Option[Alert]] =
+    (baseSelect ++ fr"""WHERE a.kind = 'access_request'
+                           AND a.mac = $mac
+                           AND a.host = $host
+                           AND a.created_at >= $since
+                         ORDER BY a.created_at DESC
+                         LIMIT 1""")
+      .query[R]
+      .map(toAlert)
+      .option
+      .transact(xa)
 
   def findById(id: AlertId): Task[Option[Alert]] =
     (baseSelect ++ fr"WHERE a.id = ${id.value}")

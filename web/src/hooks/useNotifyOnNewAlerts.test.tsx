@@ -31,6 +31,23 @@ const newDevice: Alert = {
   decidedBy: null,
 }
 
+const accessReq: Alert = {
+  id: 9,
+  kind: 'access_request',
+  status: 'pending',
+  mac: 'aa:bb:cc:44:55:66',
+  deviceName: 'kid-laptop',
+  profileId: 1,
+  profileName: 'Kids',
+  host: 'tiktok.com',
+  requestKind: 'exemption',
+  note: null,
+  grantedMinutes: null,
+  createdAt: '2026-05-26T10:00:00Z',
+  decidedAt: null,
+  decidedBy: null,
+}
+
 class FakeNotification {
   static permission: NotificationPermission = 'granted'
   static instances: FakeNotification[] = []
@@ -116,6 +133,18 @@ describe('useNotifyOnNewAlerts — unified engine (#960 unifies #711)', () => {
     await waitFor(() => expect(FakeNotification.instances).toHaveLength(1))
     expect(FakeNotification.instances[0].title).toBe('New device on the network')
     expect(FakeNotification.instances[0].options?.body).toContain('aa:bb:cc:11:22:33')
+  })
+
+  it('fires an access-request-flavoured Notification for kind=access_request (#960)', async () => {
+    mockList().mockResolvedValueOnce([])
+    renderHook(() => useNotifyOnNewAlerts(), { wrapper: wrap })
+    await waitFor(() => expect(mockList()).toHaveBeenCalled())
+    await awaitFirstFetch()
+
+    await refetchWith([accessReq])
+    await waitFor(() => expect(FakeNotification.instances).toHaveLength(1))
+    expect(FakeNotification.instances[0].title).toMatch(/access request/i)
+    expect(FakeNotification.instances[0].options?.body).toContain('tiktok.com')
   })
 
   it('does NOT fire when permission is not granted', async () => {
