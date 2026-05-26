@@ -193,7 +193,8 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
                   aria-disabled={inactive || undefined}
                   disabled={opt.disabled}
                   title={opt.title ?? (win === 'week'
-                    ? 'Group-by drill-down is available for Today.' : undefined)}
+                    ? 'Per-day stacked breakdown for Week needs backend support (#1078).'
+                    : undefined)}
                   data-testid={`profile-timeline-${profileId}-stack-${opt.key}`}
                   onClick={() => { if (!opt.disabled) setStackBy(opt.key) }}
                   className={`px-3 py-1 rounded-md font-medium transition-colors ${
