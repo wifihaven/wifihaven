@@ -3,6 +3,9 @@ name: CI
 on:
   pull_request:
     # Run on PRs targeting any branch
+  merge_group:
+    # Run on gh-readonly-queue/* refs so the merge queue gates on the same
+    # check PRs do (#1094).
   workflow_call:
     # Invoked by master-api-ui.yml and master-router.yml on push to main so
     # the CD pipelines gate publish on the same test matrix PRs run. Direct
