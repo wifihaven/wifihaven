@@ -139,7 +139,11 @@ object RouterRoutes {
                     // The decision endpoint is FQDN-only by design (DNS-time decision);
                     // wrap the Hostname in HostId.Fqdn for the tagged-union insert (#391).
                     List(
-                      BlockEventInsert(Some(dreq.mac), HostId.Fqdn(dreq.hostname), result.reason),
+                      BlockEventInsert(
+                        Some(dreq.mac),
+                        HostId.Fqdn(dreq.hostname),
+                        BlockReason.fromWire(result.reason),
+                      ),
                     ),
                   )
                   .mapError(ErrorMapper.dbErrorToResponse)

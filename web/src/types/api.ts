@@ -150,6 +150,25 @@ export function hostIsFqdn(h: HostId): boolean {
   return h.type === 'fqdn'
 }
 
+// #962: typed BlockReason mirroring shared.BlockReason. Kind-tagged JSON; the
+// API persists this shape in JSONB on block_events/connection_events and
+// returns it verbatim on /api/logs. Render via blockReasonText (lib/blockReason).
+export type BlockReason =
+  | { kind: 'allow' }
+  | { kind: 'blocked' }
+  | { kind: 'extraAllowed' }
+  | { kind: 'extraBlocked' }
+  | { kind: 'noProfile' }
+  | { kind: 'unmanaged' }
+  | { kind: 'paused' }
+  | { kind: 'schedule' }
+  | { kind: 'timeLimit' }
+  | { kind: 'manual' }
+  | { kind: 'category'; slug: string }
+  | { kind: 'siteTimeLimit'; label: string }
+  | { kind: 'appBlocked'; appId: string }
+  | { kind: 'unknown'; raw: string }
+
 export interface QueryLog {
   id: number
   mac: string | null
@@ -159,7 +178,7 @@ export interface QueryLog {
   host: HostId
   qtype: number
   blocked: boolean
-  reason: string
+  reason: BlockReason
   location: string | null
   ts: string
 }

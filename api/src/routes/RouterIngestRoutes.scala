@@ -243,7 +243,9 @@ object RouterIngestRoutes {
           h    <- e.host.toRight("connection_attempt missing host")
           ts   <- scala.util.Try(Instant.parse(e.ts)).toEither.left.map(_.getMessage)
           allw <- e.allowed.toRight("connection_attempt missing allowed")
-          rsn = e.reason.getOrElse(if allw then "allow" else "blocked")
+          // #962: router still sends free-form text on the wire (no router-side
+          // change in this PR); convert to typed BlockReason at the API boundary.
+          rsn = BlockReason.fromWire(e.reason.getOrElse(if allw then "allow" else "blocked"))
         } yield ConnectionEventInsert(routerId, e.mac, h, e.destIp, allw, rsn, ts, e.eventId)
     }
     for {

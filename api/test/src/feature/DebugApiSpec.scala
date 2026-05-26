@@ -103,7 +103,7 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             HostId.Fqdn(Hostname.unsafe(s"site$i.example")),
             Some(IpAddress.unsafe(s"10.0.0.$i")),
             true,
-            "allow",
+            BlockReason.fromWire("allow"),
             java.time.Instant.parse("2026-05-11T12:00:00Z"),
           ),
         )

@@ -66,7 +66,7 @@ object TimeUsageBackfillSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
             host = HostId.IPv4(destIp),
             destIp = Some(destIp),
             allowed = true,
-            reason = "allow",
+            reason = BlockReason.Allow,
             ts = ts,
             eventId = Some(UUID.randomUUID()),
             resolvedHost = Some(resolved),

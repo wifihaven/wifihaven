@@ -9,6 +9,7 @@ import type {
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
+import { blockReasonText } from '@/types/blockReason'
 
 export function DashboardPage() {
   const [stats,  setStats]  = useState<DashboardStats | null>(null)
@@ -233,7 +234,7 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
             <td className={`px-4 py-2 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
               {l.blocked ? '✗ blocked' : '✓ ok'}
             </td>
-            <td className="px-4 py-2 text-gray-600 hidden md:table-cell">{l.reason}</td>
+            <td className="px-4 py-2 text-gray-600 hidden md:table-cell">{blockReasonText(l.reason)}</td>
           </tr>
         ))}
       </tbody>

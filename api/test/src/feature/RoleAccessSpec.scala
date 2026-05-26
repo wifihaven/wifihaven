@@ -486,7 +486,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               HostId.Fqdn(Hostname.unsafe("youtube.com")),
               None,
               true,
-              "allowed",
+              BlockReason.fromWire("allowed"),
               java.time.Instant.now().minusSeconds(300),
             ),
             ConnectionEventInsert(
@@ -495,7 +495,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               HostId.Fqdn(Hostname.unsafe("nytimes.com")),
               None,
               true,
-              "allowed",
+              BlockReason.fromWire("allowed"),
               java.time.Instant.now().minusSeconds(300),
             ),
           ),

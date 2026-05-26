@@ -140,7 +140,15 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       } yield assertTrue(ingestResp.status == Status.Ok) &&
         assertTrue(page.rows.size == 5) &&
         assertTrue(page.rows.forall(_.blocked)) &&
-        assertTrue(reasons == Set("Paused", "Schedule", "TimeLimit", "Manual", "Unmanaged"))
+        assertTrue(
+          reasons == Set[BlockReason](
+            MacBlockReason.Paused,
+            MacBlockReason.Schedule,
+            MacBlockReason.TimeLimit,
+            MacBlockReason.Manual,
+            MacBlockReason.Unmanaged,
+          ),
+        )
     },
     test("synthesized blocked-MAC events appear in /api/connection-events/series with bucket=1h") {
       val ts0 = recentTs
@@ -171,8 +179,9 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
     },
     test("ingest tolerates an `Unmanaged` reason string (forward-compat with #1122 router)") {
       // Pre-#1122 agents emit `Manual` for the default-block path; #1122 agents
-      // emit `Unmanaged`. The API stores the reason as a free-form string, so
-      // both must be acceptable without ingest rejection.
+      // emit `Unmanaged`. The API normalizes the wire reason into a typed
+      // BlockReason on ingest (#962), so `Unmanaged` must map to
+      // MacBlockReason.Unmanaged without ingest rejection.
       val ts = recentTs
       for {
         _         <- cleanDb
@@ -188,7 +197,7 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         page <- ZIO.fromEither(lb.fromJson[QueryLogPage])
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(page.rows.size == 1) &&
-        assertTrue(page.rows.head.reason == "Unmanaged")
+        assertTrue(page.rows.head.reason == MacBlockReason.Unmanaged)
     },
   ) @@ TestAspect.sequential
 }

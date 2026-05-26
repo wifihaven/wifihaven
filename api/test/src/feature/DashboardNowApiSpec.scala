@@ -82,7 +82,7 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
             HostId.Fqdn(Hostname.unsafe("example.com")),
             None,
             true,
-            "allow",
+            BlockReason.fromWire("allow"),
             ts,
           ),
         ),
