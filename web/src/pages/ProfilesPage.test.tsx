@@ -1085,76 +1085,83 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
   })
 })
 
-describe('ProfilesPage — per-app time-used subsection (#1061)', () => {
-  it('renders apps and drill-in hosts after expanding the subsection', async () => {
-    (api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      profileId: 1,
-      profileName: 'Kids',
-      from: '2026-05-26',
-      to: '2026-05-26',
-      apps: [
-        {
-          appId: 11,
-          appName: 'YouTube',
-          appIcon: '📺',
-          appIconType: 'emoji',
-          proportionalSeconds: 600,
-          presenceSeconds: 600,
-          hosts: [
-            { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 10, proportionalMins: 10 },
-          ],
-        },
-        {
-          appId: null,
-          appName: 'Other',
-          appIcon: null,
-          proportionalSeconds: 120,
-          presenceSeconds: 300,
-          hosts: [
-            { host: { type: 'fqdn', value: 'random.example' }, usedMins: 5, proportionalMins: 2 },
-          ],
-        },
-      ],
+describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
+  const youtubeTimeLimited = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [
+      { id: 2, appId: 50, profileId: 1, mode: 'time_limited' as const, dailyMinutes: 60, exemptFromDaily: true },
+    ],
+  }
+  const youtubeAllowed = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [
+      { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+
+  it('renders a usage bar with used/cap text on a time-limited app', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeTimeLimited])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 1800, presenceSeconds: 1800, hosts: [],
+      }],
     })
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    // Subsection is in the expanded card body; collapsed-by-default until clicked.
-    const sub = within(kidsCard).getByTestId('profile-usage-by-app-1')
-    await user.click(within(sub).getByTestId('profile-usage-by-app-toggle-1'))
-    // Both app rows render once the query resolves.
-    const yt = await within(sub).findByTestId('profile-usage-by-app-row-1-11')
-    expect(yt).toHaveTextContent('YouTube')
-    expect(yt).toHaveTextContent('10m')
-    const other = within(sub).getByTestId('profile-usage-by-app-row-1-other')
-    expect(other).toHaveTextContent('Other')
-    // Drill-in: clicking the YouTube row reveals its host breakdown.
-    await user.click(yt)
-    const hosts = within(sub).getByTestId('profile-usage-by-app-hosts-1-11')
-    expect(within(hosts).getByText('youtube.com')).toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const bar = await screen.findByTestId('app-row-50-usage')
+    // 1800s → 30m of 60m limit.
+    expect(bar).toHaveTextContent('30m')
+    expect(bar).toHaveTextContent('1:00')
+    // Bar fill width matches 30/60 = 50%.
+    const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
+    expect(fill.style.width).toBe('50%')
+    // Under cap → emerald, not red.
+    expect(fill.className).toContain('bg-emerald-500')
   })
 
-  it('Today and Week toggle hit the API with different from/to dates', async () => {
-    const usageMock = api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>
-    usageMock.mockResolvedValue({
-      profileId: 1, profileName: 'Kids', from: '', to: '', apps: [],
+  it('shows the bar in red once usage meets/exceeds the cap', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeTimeLimited])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 4200, presenceSeconds: 4200, hosts: [],
+      }],
     })
     const user = userEvent.setup()
     renderPage()
-    const kidsCard = await screen.findByTestId('profile-card-1')
+    await screen.findByTestId('profile-card-1')
     await expand(1, user)
-    const sub = within(kidsCard).getByTestId('profile-usage-by-app-1')
-    await user.click(within(sub).getByTestId('profile-usage-by-app-toggle-1'))
-    await waitFor(() => expect(usageMock).toHaveBeenCalled())
-    const todayCall = usageMock.mock.calls[usageMock.mock.calls.length - 1]
-    // Today: from === to.
-    expect(todayCall[1]).toBe(todayCall[2])
-    await user.click(within(sub).getByTestId('profile-usage-by-app-window-1-week'))
-    await waitFor(() => {
-      const lastCall = usageMock.mock.calls[usageMock.mock.calls.length - 1]
-      // Week: from is 6 days before to.
-      expect(lastCall[1]).not.toBe(lastCall[2])
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const bar = await screen.findByTestId('app-row-50-usage')
+    const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
+    // 70m > 60m → clamped to 100%, painted red.
+    expect(fill.style.width).toBe('100%')
+    expect(fill.className).toContain('bg-red-500')
+  })
+
+  it('does not render the bar for an app without a daily limit', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeAllowed])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 1800, presenceSeconds: 1800, hosts: [],
+      }],
     })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-50')
+    expect(screen.queryByTestId('app-row-50-usage')).not.toBeInTheDocument()
   })
 })
