@@ -1594,11 +1594,11 @@ object HouseholdSettingsRoutes {
           ZIO.fail(Response.badRequest("unmanagedMacPolicy.blockPage cannot be cleared"))
         case _                       => ZIO.unit
       }
-      merged      = UnmanagedMacPolicy(
-                      policy = policyP.applyTo(existing.policy),
-                      blockPage = blockPageP.applyTo(existing.blockPage),
-                    )
-      _          <- ZIO.fromEither(validateUnmanagedMacPolicy(merged)).mapError(Response.badRequest(_))
+      merged = UnmanagedMacPolicy(
+        policy = policyP.applyTo(existing.policy),
+        blockPage = blockPageP.applyTo(existing.blockPage),
+      )
+      _ <- ZIO.fromEither(validateUnmanagedMacPolicy(merged)).mapError(Response.badRequest(_))
     } yield merged
 }
 
@@ -1606,7 +1606,8 @@ private def validateUnmanagedMacPolicy(p: UnmanagedMacPolicy): Either[String, Un
   if (UnmanagedMacPolicy.ValidPolicies.contains(p.policy)) Right(())
   else
     Left(
-      s"unmanagedMacPolicy.policy must be one of ${UnmanagedMacPolicy.ValidPolicies.mkString(", ")}; got '${p.policy}'",
+      s"unmanagedMacPolicy.policy must be one of ${UnmanagedMacPolicy.ValidPolicies
+          .mkString(", ")}; got '${p.policy}'",
     )
 
 // ── Helpers ────────────────────────────────────────────────────────────────

@@ -415,14 +415,12 @@ case class UpdateHouseholdSettingsRequest(
 ) derives JsonCodec
 
 /**
- * #961: how the household treats MACs that have appeared on the network but
- * are not yet enrolled into any profile.
+ * #961: how the household treats MACs that have appeared on the network but are not yet enrolled
+ * into any profile.
  *
- *   - policy = "block": deny egress; HTTP/80 DNATs to the block page when
- *     `blockPage` is true (router-side enforcement deferred to follow-up
- *     blocked-on-#654).
- *   - policy = "allow": unmanaged MACs flow freely; admin still gets a #711
- *     alert.
+ *   - policy = "block": deny egress; HTTP/80 DNATs to the block page when `blockPage` is true
+ *     (router-side enforcement deferred to follow-up blocked-on-#654).
+ *   - policy = "allow": unmanaged MACs flow freely; admin still gets a #711 alert.
  */
 case class UnmanagedMacPolicy(
     policy: String,
