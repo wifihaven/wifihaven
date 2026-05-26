@@ -107,13 +107,22 @@ describe('TrafficUsagePage', () => {
     expect(screen.getByText('youtube.com')).toBeInTheDocument()
   })
 
-  it('disabled 1m bucket button does not dispatch a request', async () => {
+  it('switching bucket to 1m dispatches an aggregated request', async () => {
+    const trafficMock = api.usage.traffic as ReturnType<typeof vi.fn>
+    const aggEmptyResp: TrafficUsageResponse = {
+      ...aggResp,
+      groupBy: [],
+      aggregateRows: [{ ...aggResp.aggregateRows[0], groups: {} }],
+    }
+    trafficMock.mockResolvedValueOnce(rawResp).mockResolvedValueOnce(aggEmptyResp)
     renderPage()
     await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(1))
     const btn = screen.getByTestId('bucket-1m')
-    expect(btn).toBeDisabled()
-    await userEvent.click(btn, { pointerEventsCheck: 0 })
-    expect(api.usage.traffic).toHaveBeenCalledTimes(1)
+    expect(btn).not.toBeDisabled()
+    await userEvent.click(btn)
+    await waitFor(() => expect(api.usage.traffic).toHaveBeenCalledTimes(2))
+    const secondCall = (api.usage.traffic as ReturnType<typeof vi.fn>).mock.calls[1][0]
+    expect(secondCall.bucket).toBe('1m')
   })
 
   // #917: default groupBy is [] — no implicit dimension.

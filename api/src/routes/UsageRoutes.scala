@@ -263,14 +263,6 @@ object UsageRoutes {
         .orElseFail(
           Response.badRequest(s"""{"error":"unknown_bucket","bucket":"$bucketS"}"""),
         )
-      _          <- ZIO
-        .fail(
-          Response
-            .badRequest(
-              """{"error":"bucket_not_implemented","bucket":"1m","reason":"requires faster router upload cadence"}""",
-            ),
-        )
-        .when(bucket == UsageTraffic.Bucket.OneMin)
       // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
       // For backwards-compat each value is also comma-split, so the older
       // single-param ?groupBy=host,device form keeps working. Empty/absent =
