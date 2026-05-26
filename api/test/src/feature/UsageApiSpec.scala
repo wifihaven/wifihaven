@@ -862,7 +862,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           routerId    <- seedRouter
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
           // Three rows in three distinct minute-aligned slots (0s, 60s, 120s).
-          _ <- trafficRepo.insertBatch(
+          _  <- trafficRepo.insertBatch(
             List(
               TrafficReportInsert(
                 routerId,
@@ -905,9 +905,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           rb <- buildRoutes
           (routes, auth) = rb
           token <- auth.login("admin", "changeme").map(_.token.value)
-          from   = start.toString
-          to     = start.plusSeconds(60 * 60).toString
-          req = Request
+          from = start.toString
+          to   = start.plusSeconds(60 * 60).toString
+          req  = Request
             .get(
               URL
                 .decode(s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1m")
