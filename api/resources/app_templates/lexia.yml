@@ -1,7 +1,8 @@
 slug: lexia
 name: Lexia
-icon: "📖"
-icon_type: emoji
+# Emoji fallback: 📖
+icon: "https://icons.duckduckgo.com/ip3/lexialearning.com.ico"
+icon_type: url
 hosts:
   - lexialearning.com
   - lexiacore5.com

@@ -112,7 +112,14 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(templates.map(_.slug).distinct.size == templates.size)
       }
     },
-    test("templates carry icon_type, seeded apps round-trip it through the DB") {
+    test("every starter template has icon_type=url with a non-empty URL (#1041)") {
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield assertTrue(templates.forall(_.iconType == IconType.Url)) &&
+        assertTrue(templates.forall(_.icon.exists(_.startsWith("http")))) &&
+        assertTrue(templates.forall(_.icon.exists(_.nonEmpty)))
+    },
+    test("seeded apps round-trip icon_type=url through the DB (#1041)") {
       for {
         _         <- cleanDb
         appRepo   <- ZIO.service[AppRepo]
@@ -121,8 +128,39 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         yt        <- appRepo
           .findByTemplateId(AppTemplateId.unsafe("youtube"))
           .someOrFailException
-      } yield assertTrue(templates.forall(_.iconType == IconType.Emoji)) &&
-        assertTrue(yt.iconType == IconType.Emoji)
+      } yield assertTrue(yt.iconType == IconType.Url) &&
+        assertTrue(yt.icon.exists(_.startsWith("http")))
+    },
+    test("backfill seeds favicon icons when no apps exist for the slug (#1041)") {
+      for {
+        _         <- cleanDb
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        _         <- AppTemplates.seed(appRepo, templates)
+        seeded    <- appRepo.listAll
+      } yield assertTrue(seeded.nonEmpty) &&
+        assertTrue(seeded.forall(_.iconType == IconType.Url)) &&
+        assertTrue(seeded.forall(_.icon.exists(_.startsWith("http"))))
+    },
+    test("backfill preserves operator's existing emoji icon (#1041)") {
+      for {
+        _         <- cleanDb
+        appRepo   <- ZIO.service[AppRepo]
+        templates <- AppTemplates.loadAll()
+        // Operator has already created an app for the youtube slug with an emoji icon.
+        ytTmpl = templates.find(_.slug == AppTemplateId.unsafe("youtube")).get
+        existingId <- appRepo.create(
+          "Operator YouTube",
+          "operator-youtube",
+          Some(ytTmpl.slug),
+          Some("📺"),
+          IconType.Emoji,
+        )
+        _          <- appRepo.setHosts(existingId, List(Hostname.unsafe("youtube.com")))
+        _          <- AppTemplates.seed(appRepo, templates)
+        after      <- appRepo.findById(existingId).someOrFailException
+      } yield assertTrue(after.iconType == IconType.Emoji) &&
+        assertTrue(after.icon.contains("📺"))
     },
     test("gimkit template covers both marketing site and the school game endpoint (#1005)") {
       for {

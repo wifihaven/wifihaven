@@ -1,7 +1,8 @@
 slug: twitch
 name: Twitch
-icon: "🟣"
-icon_type: emoji
+# Emoji fallback: 🟣
+icon: "https://icons.duckduckgo.com/ip3/twitch.tv.ico"
+icon_type: url
 hosts:
   - twitch.tv
   - ttvnw.net

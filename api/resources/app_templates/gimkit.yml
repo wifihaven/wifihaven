@@ -1,7 +1,8 @@
 slug: gimkit
 name: Gimkit
-icon: "💰"
-icon_type: emoji
+# Emoji fallback: 💰
+icon: "https://icons.duckduckgo.com/ip3/gimkit.com.ico"
+icon_type: url
 hosts:
   - gimkit.com
   - gimkitconnect.com

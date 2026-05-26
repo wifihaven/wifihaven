@@ -1,7 +1,8 @@
 slug: netflix
 name: Netflix
-icon: "🎬"
-icon_type: emoji
+# Emoji fallback: 🎬
+icon: "https://icons.duckduckgo.com/ip3/netflix.com.ico"
+icon_type: url
 hosts:
   - netflix.com
   - nflxvideo.net

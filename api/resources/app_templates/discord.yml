@@ -1,7 +1,8 @@
 slug: discord
 name: Discord
-icon: "💬"
-icon_type: emoji
+# Emoji fallback: 💬
+icon: "https://icons.duckduckgo.com/ip3/discord.com.ico"
+icon_type: url
 hosts:
   - discord.com
   - discordapp.com

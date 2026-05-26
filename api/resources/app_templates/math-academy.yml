@@ -1,6 +1,7 @@
 slug: math-academy
 name: Math Academy
-icon: "🧮"
-icon_type: emoji
+# Emoji fallback: 🧮
+icon: "https://icons.duckduckgo.com/ip3/mathacademy.com.ico"
+icon_type: url
 hosts:
   - mathacademy.com

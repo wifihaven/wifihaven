@@ -1,7 +1,8 @@
 slug: snapchat
 name: Snapchat
-icon: "👻"
-icon_type: emoji
+# Emoji fallback: 👻
+icon: "https://icons.duckduckgo.com/ip3/snapchat.com.ico"
+icon_type: url
 hosts:
   - snapchat.com
   - sc-cdn.net
