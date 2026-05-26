@@ -92,17 +92,34 @@ export interface Device {
   lastSeenAt: string | null
 }
 
-// #711: notification raised when the agent auto-creates a Device row for a
-// previously-unseen MAC. `dismissedAt` is null while pending.
-export interface DeviceAlert {
+// Generic admin-action feed (formerly DeviceAlert, #711). The schema (V34)
+// supports two kinds — `new_device` and `access_request`; #960 is the writer
+// for access_request, so today every row in the feed has kind='new_device'.
+export type AlertKind = 'new_device' | 'access_request'
+export type AlertStatus = 'pending' | 'approved' | 'denied'
+export type AccessRequestKind = 'extension' | 'exemption' | 'unpause'
+
+export interface Alert {
   id: number
+  kind: AlertKind
+  status: AlertStatus
   mac: string
-  deviceName: string
+  deviceName: string | null
   profileId: number | null
   profileName: string | null
-  firstSeenAt: string
-  dismissedAt: string | null
+  // access_request-only payload — null on new_device rows.
+  host: string | null
+  requestKind: AccessRequestKind | null
+  note: string | null
+  grantedMinutes: number | null
+  createdAt: string
+  decidedAt: string | null
+  decidedBy: string | null
 }
+
+/** Admin POST body for /approve. Empty today — new_device approval is just a
+ *  status transition. #960 extends this with grant-specific fields. */
+export interface ApproveAlertRequest {}
 
 // Tagged-union host identifier (#391). Wire shape carried by every endpoint
 // that surfaces a "what host did the device contact" field. FQDN is a

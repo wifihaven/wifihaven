@@ -1,104 +1,47 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { useDeviceAlerts } from '@/api/queries'
+import { useAlerts } from '@/api/queries'
+import { useNotifyOnNewItems, useNotificationPermission } from './useNotifyOnNewItems'
+import type { Alert } from '@/types/api'
 
-// #711 follow-up: browser Notifications for new-device alerts.
+// In-tab browser Notifications for pending alerts (#711, now reading from
+// the unified `/api/alerts` feed). Today every alert is kind=new_device;
+// #960 extends the per-kind title/body builders below for access_request.
 //
-// This is the in-tab layer — fires `new Notification(...)` when a freshly-raised
-// alert shows up in a polling response. It does NOT cover the "tab closed" case
-// (#884 will, via Web Push + a service worker). For the in-tab case it works
-// regardless of which page is mounted, because the hook is wired in once at the
-// Layout level.
+// Tab-closed delivery is still Web Push (#884) — out of scope here.
 
-type NotificationPermissionState = 'default' | 'granted' | 'denied' | 'unsupported'
+export { useNotificationPermission }
 
-function detectPermission(): NotificationPermissionState {
-  if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
-    return 'unsupported'
+const idOf = (a: Alert) => a.id
+
+function titleOf(a: Alert): string {
+  switch (a.kind) {
+    case 'new_device':     return 'New device on the network'
+    case 'access_request': return 'Access request from a household member'
   }
-  return window.Notification.permission as NotificationPermissionState
 }
 
-/**
- * Imperative permission-state hook. Returns the current state plus a `request`
- * function that prompts the browser. Updates when the user grants/denies so
- * callers can re-render their CTA.
- */
-export function useNotificationPermission() {
-  const [state, setState] = useState<NotificationPermissionState>(() => detectPermission())
-
-  const request = useCallback(async () => {
-    if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
-      setState('unsupported')
-      return 'unsupported' as const
-    }
-    const result = await window.Notification.requestPermission()
-    setState(result as NotificationPermissionState)
-    return result
-  }, [])
-
-  return { state, request }
+function bodyOf(a: Alert): string {
+  const who = a.deviceName ?? a.profileName ?? a.mac
+  // access_request shape (host/requestKind) is non-null only when #960's
+  // POST /api/access-requests is wired; before that this branch is unreached.
+  if (a.kind === 'access_request') {
+    return `${who} sent a request`
+  }
+  return `${who} (${a.mac})`
 }
 
-/**
- * Side-effect hook: when `useDeviceAlerts` returns an ID the user hasn't been
- * notified about yet, fire a browser Notification. The first batch after mount
- * is treated as "already seen" — we do not want a notification flood when the
- * page first loads. Suppresses notifications when the tab has focus (the SPA
- * banner is already visible — a system toast on top would be redundant).
- */
+function tagOf(a: Alert): string {
+  return a.kind === 'new_device'
+    ? `wifihaven-new-device-${a.mac}`
+    : `wifihaven-access-request-${a.id}`
+}
+
 export function useNotifyOnNewAlerts() {
-  const { data } = useDeviceAlerts()
-  const seen = useRef<Set<number> | null>(null)
-
-  useEffect(() => {
-    if (!data) return
-    if (typeof window === 'undefined' || typeof window.Notification === 'undefined') return
-
-    const currentIds = new Set(data.map(a => a.id))
-
-    if (seen.current === null) {
-      // First successful fetch — seed the seen set and skip notifications,
-      // otherwise every page load would re-announce every pending alert.
-      seen.current = currentIds
-      return
-    }
-
-    if (window.Notification.permission !== 'granted') {
-      seen.current = currentIds
-      return
-    }
-
-    // Skip when the tab has focus — the banner is already onscreen.
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible' && document.hasFocus()) {
-      seen.current = currentIds
-      return
-    }
-
-    const fresh = data.filter(a => !seen.current!.has(a.id))
-    for (const a of fresh) {
-      try {
-        new window.Notification('New device on the network', {
-          body: `${a.deviceName} (${a.mac})`,
-          // `tag` collapses repeated notifications for the same MAC if the user
-          // hasn't dismissed the prior one.
-          tag: `wifihaven-new-device-${a.mac}`,
-        })
-      } catch {
-        // Some browsers throw when called from a non-secure context or when the
-        // permission state races with a revoke. Swallow — the in-app banner is
-        // still authoritative.
-      }
-    }
-    seen.current = currentIds
-  }, [data])
+  const { data } = useAlerts()
+  useNotifyOnNewItems<Alert>({ data, idOf, titleOf, bodyOf, tagOf })
 }
 
-/**
- * Mountable component for `App.tsx` — wires the side-effect hook and renders
- * nothing. Kept as a component (not just a hook call in Layout) so existing
- * Layout tests don't need to mock the alerts query.
- */
-export function DeviceAlertNotifier() {
+/** Mountable component for `App.tsx` — wires the hook and renders nothing. */
+export function AlertsNotifier() {
   useNotifyOnNewAlerts()
   return null
 }

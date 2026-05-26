@@ -315,20 +315,101 @@ case class Device(
     lastSeenAt: Option[String],
 ) derives JsonCodec
 
+// Generic admin-action feed, formerly DeviceAlert (#711, V29). The schema
+// (V33) supports a second `access_request` kind, but #960 is the writer for
+// that path; this PR only exercises new_device.
+enum AlertKind   {
+  case NewDevice, AccessRequest
+}
+object AlertKind {
+  def asString(k: AlertKind): String      = k match {
+    case NewDevice     => "new_device"
+    case AccessRequest => "access_request"
+  }
+  def parse(s: String): Option[AlertKind] = s match {
+    case "new_device"     => Some(NewDevice)
+    case "access_request" => Some(AccessRequest)
+    case _                => None
+  }
+  given JsonCodec[AlertKind]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown alert kind: $s"),
+    asString,
+  )
+}
+
+enum AlertStatus   {
+  case Pending, Approved, Denied
+}
+object AlertStatus {
+  def asString(s: AlertStatus): String      = s match {
+    case Pending  => "pending"
+    case Approved => "approved"
+    case Denied   => "denied"
+  }
+  def parse(s: String): Option[AlertStatus] = s match {
+    case "pending"  => Some(Pending)
+    case "approved" => Some(Approved)
+    case "denied"   => Some(Denied)
+    case _          => None
+  }
+  given JsonCodec[AlertStatus]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown alert status: $s"),
+    asString,
+  )
+}
+
+// The three kinds of access-request alerts the schema supports. Lives here
+// (rather than in #960's code) because the `request_kind` column is in V33
+// — the type just doesn't have any writer until #960 lands.
+enum AccessRequestKind   {
+  case Extension, Exemption, Unpause
+}
+object AccessRequestKind {
+  def asString(k: AccessRequestKind): String      = k match {
+    case Extension => "extension"
+    case Exemption => "exemption"
+    case Unpause   => "unpause"
+  }
+  def parse(s: String): Option[AccessRequestKind] = s match {
+    case "extension" => Some(Extension)
+    case "exemption" => Some(Exemption)
+    case "unpause"   => Some(Unpause)
+    case _           => None
+  }
+  given JsonCodec[AccessRequestKind]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown access-request kind: $s"),
+    asString,
+  )
+}
+
 /**
- * #711: a notification raised when the agent ingest path auto-creates a row for a previously-unseen
- * MAC. The admin reviews pending alerts in the SPA and dismisses each one once they have named the
- * device / assigned a profile / decided it isn't worth a name. `dismissedAt` is `None` while
- * pending, `Some(ts)` once cleared.
+ * Admin read shape — JOINed with device + profile so the banner / review UI doesn't have to chase
+ * names per row. `host` / `requestKind` / `note` / `grantedMinutes` are populated only for
+ * `kind=AccessRequest` rows (none of which exist until #960 ships).
  */
-case class DeviceAlert(
-    id: DeviceAlertId,
+case class Alert(
+    id: AlertId,
+    kind: AlertKind,
+    status: AlertStatus,
     mac: MacAddress,
-    deviceName: String,
+    deviceName: Option[String],
     profileId: Option[ProfileId],
     profileName: Option[String],
-    firstSeenAt: String,
-    dismissedAt: Option[String],
+    host: Option[Hostname],
+    requestKind: Option[AccessRequestKind],
+    note: Option[String],
+    grantedMinutes: Option[Int],
+    createdAt: String,
+    decidedAt: Option[String],
+    decidedBy: Option[String],
+) derives JsonCodec
+
+/**
+ * Admin POST body for /api/alerts/{id}/approve. Empty today — new_device approval is just a status
+ * transition. The shape is defined here (rather than inline in the route) so #960 can extend it
+ * with grant-specific fields without changing the endpoint contract.
+ */
+case class ApproveAlertRequest(
 ) derives JsonCodec
 
 case class QueryLog(

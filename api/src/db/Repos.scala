@@ -172,16 +172,38 @@ trait DeviceRepo {
   def delete(mac: MacAddress): Task[Unit]
 }
 
-trait DeviceAlertRepo {
+/**
+ * Generic admin-action feed (formerly device_alerts, #711). Every row is something the admin needs
+ * to decide about; lifecycle is `pending → approved | denied`. The schema (see V33) supports a
+ * second `access_request` kind alongside `new_device`; that kind's writers and side-effects land in
+ * #960 — this trait only exposes the new_device path for now.
+ */
+trait AlertRepo {
 
   /**
-   * #711: raise an alert for a freshly auto-created device. Idempotent on `mac` — if a row already
-   * exists for the MAC the existing one wins (including its `dismissed_at` state), so re-ingesting
-   * the same first-seen event doesn't resurrect a dismissed alert or duplicate a pending one.
+   * #711: raise a new-device alert. Idempotent on `mac` — if a row already exists for this MAC and
+   * kind, the existing one wins regardless of its status, so re-ingesting the same first-seen event
+   * doesn't resurrect a decided alert or duplicate a pending one.
    */
-  def raise(mac: MacAddress, firstSeenAt: Instant): Task[Unit]
-  def listAll(includeDismissed: Boolean): Task[List[DeviceAlert]]
-  def dismiss(id: DeviceAlertId, at: Instant): Task[Int]
+  def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant): Task[Unit]
+
+  def findById(id: AlertId): Task[Option[Alert]]
+
+  /** Pending-only when `includeAll=false`. Ordered newest first. */
+  def list(includeAll: Boolean): Task[List[Alert]]
+
+  /**
+   * Returns the number of rows that transitioned; 0 means the row was already decided.
+   * `grantedMinutes` is recorded by extension approvals when #960 lands; for new_device rows it is
+   * always None.
+   */
+  def decide(
+      id: AlertId,
+      newStatus: AlertStatus,
+      decidedAt: Instant,
+      decidedBy: String,
+      grantedMinutes: Option[Int],
+  ): Task[Int]
 }
 
 trait BlocklistRepo {
@@ -765,41 +787,107 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   def delete(mac: MacAddress) = sql"DELETE FROM devices WHERE mac=$mac".update.run.transact(xa).unit
 }
 
-class DeviceAlertRepoLive(xa: Transactor[Task]) extends DeviceAlertRepo {
-  def raise(mac: MacAddress, firstSeenAt: Instant): Task[Unit] =
-    // #711: ON CONFLICT DO NOTHING — a dismissed alert stays dismissed; a
-    // pending one isn't bumped to a newer first_seen_at on a duplicate event.
-    sql"""INSERT INTO device_alerts(mac, first_seen_at)
-          VALUES($mac, $firstSeenAt)
-          ON CONFLICT(mac) DO NOTHING""".update.run.transact(xa).unit
+class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
+  // Row tuple for the joined SELECT used by every read path. Order MUST
+  // match `baseSelect` below — the Doobie codec is positional.
+  private type R = (
+      AlertId,
+      String,         // kind
+      String,         // status
+      MacAddress,
+      Option[String], // device name
+      Option[ProfileId],
+      Option[String], // profile name
+      Option[Hostname],
+      Option[String], // request_kind
+      Option[String], // note
+      Option[Int],    // granted_minutes
+      String,         // created_at
+      Option[String], // decided_at
+      Option[String], // decided_by
+  )
 
-  def listAll(includeDismissed: Boolean): Task[List[DeviceAlert]] = {
-    val filter = if includeDismissed then fr"" else fr"WHERE a.dismissed_at IS NULL"
-    (fr"""SELECT a.id, a.mac, d.name, d.profile_id, p.name,
-                 a.first_seen_at::TEXT, a.dismissed_at::TEXT
-          FROM device_alerts a
-          JOIN devices d ON d.mac = a.mac
-          LEFT JOIN profiles p ON p.id = d.profile_id
-       """ ++ filter ++ fr"ORDER BY a.first_seen_at DESC")
-      .query[
-        (
-            DeviceAlertId,
-            MacAddress,
-            String,
-            Option[ProfileId],
-            Option[String],
-            String,
-            Option[String],
-        ),
-      ]
-      .map(r => DeviceAlert(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+  // Reads parse the kind/status strings; values are presumed canonical
+  // because the DB CHECK constraints enforce the enum. A parse failure
+  // means a schema drift and should crash loudly, not silently degrade.
+  private def toAlert(r: R): Alert = Alert(
+    id = r._1,
+    kind = AlertKind
+      .parse(r._2)
+      .getOrElse(throw new IllegalStateException(s"DB has unknown alert kind: ${r._2}")),
+    status = AlertStatus
+      .parse(r._3)
+      .getOrElse(throw new IllegalStateException(s"DB has unknown alert status: ${r._3}")),
+    mac = r._4,
+    deviceName = r._5,
+    profileId = r._6,
+    profileName = r._7,
+    host = r._8,
+    requestKind = r._9.map(s =>
+      AccessRequestKind
+        .parse(s)
+        .getOrElse(throw new IllegalStateException(s"DB has unknown request_kind: $s")),
+    ),
+    note = r._10,
+    grantedMinutes = r._11,
+    createdAt = r._12,
+    decidedAt = r._13,
+    decidedBy = r._14,
+  )
+
+  private val baseSelect = fr"""
+    SELECT a.id, a.kind, a.status, a.mac, d.name, a.profile_id, p.name,
+           a.host, a.request_kind, a.note, a.granted_minutes,
+           a.created_at::TEXT, a.decided_at::TEXT, a.decided_by
+      FROM alerts a
+      LEFT JOIN devices  d ON d.mac = a.mac
+      LEFT JOIN profiles p ON p.id = a.profile_id
+  """
+
+  def raiseNewDevice(mac: MacAddress, firstSeenAt: Instant): Task[Unit] =
+    // ON CONFLICT-style idempotency: insert only if no row with this mac
+    // already exists for kind='new_device'. We can't use a UNIQUE index
+    // because the same mac may legitimately have multiple access_request
+    // rows over time. WHERE NOT EXISTS keeps this race-free under the
+    // SERIALIZABLE-equivalent semantics of a single statement insert.
+    sql"""INSERT INTO alerts (kind, status, mac, created_at)
+          SELECT 'new_device', 'pending', $mac, $firstSeenAt
+          WHERE NOT EXISTS (
+            SELECT 1 FROM alerts WHERE mac = $mac AND kind = 'new_device'
+          )""".update.run.transact(xa).unit
+
+  def findById(id: AlertId): Task[Option[Alert]] =
+    (baseSelect ++ fr"WHERE a.id = ${id.value}")
+      .query[R]
+      .map(toAlert)
+      .option
+      .transact(xa)
+
+  def list(includeAll: Boolean): Task[List[Alert]] = {
+    val filter = if includeAll then fr"" else fr"WHERE a.status = 'pending'"
+    (baseSelect ++ filter ++ fr"ORDER BY a.created_at DESC")
+      .query[R]
+      .map(toAlert)
       .to[List]
       .transact(xa)
   }
 
-  def dismiss(id: DeviceAlertId, at: Instant): Task[Int] =
-    sql"UPDATE device_alerts SET dismissed_at=$at WHERE id=${id.value} AND dismissed_at IS NULL".update.run
+  def decide(
+      id: AlertId,
+      newStatus: AlertStatus,
+      decidedAt: Instant,
+      decidedBy: String,
+      grantedMinutes: Option[Int],
+  ): Task[Int] = {
+    val statusStr = AlertStatus.asString(newStatus)
+    sql"""UPDATE alerts
+             SET status = $statusStr,
+                 decided_at = $decidedAt,
+                 decided_by = $decidedBy,
+                 granted_minutes = $grantedMinutes
+           WHERE id = ${id.value} AND status = 'pending'""".update.run
       .transact(xa)
+  }
 }
 
 class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
@@ -2136,8 +2224,8 @@ object Repos {
   val trafficReportRepo     = ZLayer.fromFunction(TrafficReportRepoLive(_))
   val blockEventRepo        = ZLayer.fromFunction(BlockEventRepoLive(_))
   val connEventRepo         = ZLayer.fromFunction(ConnectionEventRepoLive(_))
-  val deviceAlertRepo       = ZLayer.fromFunction(DeviceAlertRepoLive(_))
+  val alertRepo             = ZLayer.fromFunction(AlertRepoLive(_))
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ deviceAlertRepo ++ appRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo
 }

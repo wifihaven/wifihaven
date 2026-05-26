@@ -123,7 +123,7 @@ object Main extends ZIOAppDefault {
       trafficRepo <- ZIO.service[TrafficReportRepo]
       connRepo    <- ZIO.service[ConnectionEventRepo]
       blockEvRepo <- ZIO.service[BlockEventRepo]
-      alertRepo   <- ZIO.service[DeviceAlertRepo]
+      alertRepo   <- ZIO.service[AlertRepo]
       appRepo     <- ZIO.service[AppRepo]
       policy      <- ZIO.service[PolicyService]
       cfg         <- ZIO.service[AppConfig]
@@ -163,7 +163,6 @@ object Main extends ZIOAppDefault {
       ) ++
       BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
       RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-      BlockedRoutes.routes(policy, deviceRepo, profileRepo, blRepo) ++
       AdminRouterRoutes.routes(auth, routerRepo) ++
       RouterIngestRoutes.routes(
         routerAuth,
@@ -175,7 +174,7 @@ object Main extends ZIOAppDefault {
         alertRepo,
         hsRepo,
       ) ++
-      DeviceAlertRoutes.routes(auth, alertRepo, clock) ++
+      AlertRoutes.routes(auth, alertRepo, clock) ++
       AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
       DebugRoutes.routes(
         cfg.debugEnabled,
