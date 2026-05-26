@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useProfiles, useDevices, useInvalidators, useTimeStatusSummary } from '@/api/queries'
+import { useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
@@ -14,6 +14,7 @@ import type {
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
+import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from './TimePage'
 
@@ -671,6 +672,12 @@ function ProfileShellRow({
 
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-800 pt-4 space-y-4">
+          {/* #1036 — always-visible per-profile timeline chart at the top of
+              the expanded view. Restores the /time chart (Today/Week toggle +
+              host/device group-by + Other drill-in) before #978 drops that
+              route. Read-only; lives above the edit subsections. */}
+          <ProfileTimelineChart profileId={pd.profile.id} />
+
           {/* #973: inline devices subsection. Name is edited inline in the
               card header above (no redundant collapsible). Devices autosave
               per-row via PATCH /devices. The Edit-modal escape hatch is gone
@@ -1482,6 +1489,22 @@ function AppsRulesSubsection({
     ? `${assignedAppCount} assigned`
     : 'None assigned'
 
+  // #1061 — today's per-app proportional minutes, so each AppRow with a
+  // time-limit can render a usage bar matching the profile-wide one. Only
+  // fires once the Apps subsection is opened.
+  const today = useMemo(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }, [])
+  const usageQ = useProfileUsageByApp(pd.profile.id, today, today, { enabled: open })
+  const usedMinsByAppId = useMemo(() => {
+    const m = new Map<number, number>()
+    for (const a of usageQ.data?.apps ?? []) {
+      if (a.appId != null) m.set(a.appId, Math.round(a.proportionalSeconds / 60))
+    }
+    return m
+  }, [usageQ.data])
+
   return (
     <div
       data-testid={`profile-apps-subsection-${pd.profile.id}`}
@@ -1509,6 +1532,7 @@ function AppsRulesSubsection({
             apps={apps}
             onChanged={onAppsChanged}
             testIdPrefix={`profile-${pd.profile.id}-apps-section`}
+            usedMinsByAppId={usedMinsByAppId}
           />
         </div>
       )}
@@ -1521,12 +1545,15 @@ function findAssignment(app: AppDetail, profileId: number | null): AppPolicyAssi
   return app.assignments.find(a => a.profileId === profileId) ?? null
 }
 
-function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section' }: {
+function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-section', usedMinsByAppId }: {
   profileId: number | null
   isNew: boolean
   apps: AppDetail[]
   onChanged: () => void | Promise<void>
   testIdPrefix?: string
+  // #1061 — per-app today usage, threaded down to AppRow so time-limited rows
+  // can render a usage bar. Empty/undefined → bar simply doesn't render.
+  usedMinsByAppId?: Map<number, number>
 }) {
   // #1007: only show apps that already have an assignment for this profile.
   // Unassigned apps stay manageable via the "+ Add app" picker below.
@@ -1623,6 +1650,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
               app={a}
               profileId={profileId}
               onChanged={onChanged}
+              usedMins={usedMinsByAppId?.get(a.app.id)}
             />
           ))}
           {pickerOpen && (
@@ -1670,10 +1698,14 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
   )
 }
 
-function AppRow({ app, profileId, onChanged }: {
+function AppRow({ app, profileId, onChanged, usedMins }: {
   app: AppDetail
   profileId: number
   onChanged: () => void | Promise<void>
+  // #1061 — today's proportional minutes attributed to this app for this
+  // profile. Undefined → not loaded yet (e.g. subsection just opened); the
+  // bar simply doesn't render until the value arrives.
+  usedMins?: number
 }) {
   const current = findAssignment(app, profileId)
   const [minutesDraft, setMinutesDraft] = useState<string>(() =>
@@ -1744,7 +1776,7 @@ function AppRow({ app, profileId, onChanged }: {
       setLocalError(null)
       // Clearing the input on a time-limited app removes the limit by
       // switching the app to plain Allow (keeps it assigned to the
-      // profile so the row stays visible — use the Clear button to drop
+      // profile so the row stays visible — use the Remove button to drop
       // the assignment entirely). For apps that weren't time-limited in
       // the first place this is a no-op.
       if (isTimeLimited) {
@@ -1791,7 +1823,7 @@ function AppRow({ app, profileId, onChanged }: {
             disabled={busy}
             onClick={clear}
             className={`${baseBtn} ${off}`}
-          >Clear</button>
+          >Remove</button>
         )}
       </div>
       <div className="flex flex-wrap gap-2 items-center">
@@ -1835,6 +1867,30 @@ function AppRow({ app, profileId, onChanged }: {
           <span className="text-xs text-gray-500">min/day</span>
         </div>
       </div>
+      {/* #1061 — inline usage bar for time-limited apps. Mirrors the
+          profile-wide bar (w-full h-1, emerald on track, red over limit).
+          Hidden until today's usage is loaded; hidden entirely for apps
+          without a daily limit. */}
+      {isTimeLimited && currentMinutes != null && usedMins != null && (
+        <div
+          data-testid={`app-row-${app.app.id}-usage`}
+          className="flex items-center gap-2"
+        >
+          <div className="flex-1 h-1 bg-gray-800 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full ${
+                usedMins >= currentMinutes ? 'bg-red-500' : 'bg-emerald-500'
+              }`}
+              style={{
+                width: `${Math.min(100, Math.round((usedMins / currentMinutes) * 100))}%`,
+              }}
+            />
+          </div>
+          <span className="text-xs font-mono text-gray-400 shrink-0">
+            {formatMins(usedMins)} / {formatMins(currentMinutes)}
+          </span>
+        </div>
+      )}
       {mode === 'time_limited' && (
         <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
           <input
@@ -1913,6 +1969,7 @@ function SaveStatusBadge({
   }
   return <span data-testid={testId} data-status="idle" className="text-xs text-transparent select-none">·</span>
 }
+
 
 // #973 — inline devices editor. Each row toggle issues PATCH /devices/:mac
 // with {profileId} (assign) or {profileId: null} (detach). The status badge
