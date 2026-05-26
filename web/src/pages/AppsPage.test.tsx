@@ -31,15 +31,15 @@ function makeProfile(id: number, name: string): ProfileDetail {
     profile: {
       id, name,
       blockedCategories: [],
-      extraBlocked: [],
-      extraAllowed: [],
+      
+      
       paused: false,
       failureMode: 'last-known-good',
       crossDeviceOverlapMode: 'sum',
     },
     schedules: [],
     timeLimit: null,
-    siteTimeLimits: [],
+    
   }
 }
 
