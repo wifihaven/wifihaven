@@ -1255,5 +1255,191 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(windows == windows.sortBy(s => -java.time.Instant.parse(s).toEpochMilli))
       },
     ) @@ TestAspect.sequential,
+    // #1061 — per-app time-used breakdown for one profile.
+    suite("GET /api/profiles/:id/usage-by-app")(
+      test("two apps with 5 minutes each → 2 rows, hosts not in any app → Other") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          muId        <- appRepo.create("Music", "music", None, Some("🎵"))
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          _           <- appRepo.setHosts(muId, List(Hostname.unsafe("spotify.com")))
+          // 1 bucket on youtube.com (5m), 1 bucket on spotify.com (5m),
+          // 1 bucket on google.com (not in any app — falls into Other).
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                1000L,
+                1000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("spotify.com")),
+                today,
+                start.plusSeconds(300),
+                start.plusSeconds(600),
+                300,
+                200L,
+                200L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("google.com")),
+                today,
+                start.plusSeconds(600),
+                start.plusSeconds(900),
+                300,
+                100L,
+                100L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+          yt = out.apps.find(_.appName == "YouTube").get
+          mu = out.apps.find(_.appName == "Music").get
+          ot = out.apps.find(_.appId.isEmpty).get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.apps.length == 3) &&
+          // Each app saw one 5-min bucket → 300 presence seconds, ~300 proportional seconds.
+          assertTrue(yt.presenceSeconds == 300L) &&
+          assertTrue(mu.presenceSeconds == 300L) &&
+          assertTrue(ot.presenceSeconds == 300L) &&
+          assertTrue(yt.proportionalSeconds == 300L) &&
+          assertTrue(mu.proportionalSeconds == 300L) &&
+          assertTrue(ot.proportionalSeconds == 300L) &&
+          assertTrue(yt.appIcon.contains("📺")) &&
+          assertTrue(ot.appName == "Other") &&
+          assertTrue(ot.hosts.map(_.host.value).contains("google.com"))
+      },
+      test("sorted by proportionalSeconds desc") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, None)
+          muId        <- appRepo.create("Music", "music", None, None)
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          _           <- appRepo.setHosts(muId, List(Hostname.unsafe("spotify.com")))
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          // YouTube: 2 buckets (10m). Music: 1 bucket (5m).
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                1L,
+                1L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start.plusSeconds(300),
+                start.plusSeconds(600),
+                300,
+                1L,
+                1L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("spotify.com")),
+                today,
+                start.plusSeconds(600),
+                start.plusSeconds(900),
+                300,
+                1L,
+                1L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL.decode(s"/api/profiles/${kidsId.value}/usage-by-app").toOption.get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.apps.map(_.appName) == List("YouTube", "Music")) &&
+          assertTrue(out.apps.head.proportionalSeconds == 600L) &&
+          assertTrue(out.apps(1).proportionalSeconds == 300L)
+      },
+      test("404 on unknown profile id") {
+        for {
+          _  <- cleanDb
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode("/api/profiles/9999/usage-by-app").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.NotFound)
+      },
+      test("401 without token") {
+        for {
+          rb <- buildRoutes
+          (routes, _) = rb
+          req         = Request.get(URL.decode("/api/profiles/1/usage-by-app").toOption.get)
+          resp <- routes.runZIO(req)
+        } yield assertTrue(resp.status == Status.Unauthorized)
+      },
+    ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential
 }

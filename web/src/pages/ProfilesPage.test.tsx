@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       setUsers: vi.fn(),
+      usageByApp: vi.fn(),
     },
     blocklists: {
       list: vi.fn(),
@@ -129,6 +130,9 @@ beforeEach(() => {
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26', apps: [],
+  })
   ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsSummary, adultsSummary])
   ;(api.time.grantExtension as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, grantedMinutes: 30 })
 })
@@ -1078,5 +1082,79 @@ describe('ProfilesPage — #973 inline devices subsection', () => {
     expect(within(kidsCard).queryByTestId('profile-devices-subsection-1')).not.toBeInTheDocument()
     // The pre-#973 read-only listing is the fallback for non-admins.
     expect(within(kidsCard).getByTestId('profile-devices-1')).toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — per-app time-used subsection (#1061)', () => {
+  it('renders apps and drill-in hosts after expanding the subsection', async () => {
+    (api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1,
+      profileName: 'Kids',
+      from: '2026-05-26',
+      to: '2026-05-26',
+      apps: [
+        {
+          appId: 11,
+          appName: 'YouTube',
+          appIcon: '📺',
+          appIconType: 'emoji',
+          proportionalSeconds: 600,
+          presenceSeconds: 600,
+          hosts: [
+            { host: { type: 'fqdn', value: 'youtube.com' }, usedMins: 10, proportionalMins: 10 },
+          ],
+        },
+        {
+          appId: null,
+          appName: 'Other',
+          appIcon: null,
+          proportionalSeconds: 120,
+          presenceSeconds: 300,
+          hosts: [
+            { host: { type: 'fqdn', value: 'random.example' }, usedMins: 5, proportionalMins: 2 },
+          ],
+        },
+      ],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    // Subsection is in the expanded card body; collapsed-by-default until clicked.
+    const sub = within(kidsCard).getByTestId('profile-usage-by-app-1')
+    await user.click(within(sub).getByTestId('profile-usage-by-app-toggle-1'))
+    // Both app rows render once the query resolves.
+    const yt = await within(sub).findByTestId('profile-usage-by-app-row-1-11')
+    expect(yt).toHaveTextContent('YouTube')
+    expect(yt).toHaveTextContent('10m')
+    const other = within(sub).getByTestId('profile-usage-by-app-row-1-other')
+    expect(other).toHaveTextContent('Other')
+    // Drill-in: clicking the YouTube row reveals its host breakdown.
+    await user.click(yt)
+    const hosts = within(sub).getByTestId('profile-usage-by-app-hosts-1-11')
+    expect(within(hosts).getByText('youtube.com')).toBeInTheDocument()
+  })
+
+  it('Today and Week toggle hit the API with different from/to dates', async () => {
+    const usageMock = api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>
+    usageMock.mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '', to: '', apps: [],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-usage-by-app-1')
+    await user.click(within(sub).getByTestId('profile-usage-by-app-toggle-1'))
+    await waitFor(() => expect(usageMock).toHaveBeenCalled())
+    const todayCall = usageMock.mock.calls[usageMock.mock.calls.length - 1]
+    // Today: from === to.
+    expect(todayCall[1]).toBe(todayCall[2])
+    await user.click(within(sub).getByTestId('profile-usage-by-app-window-1-week'))
+    await waitFor(() => {
+      const lastCall = usageMock.mock.calls[usageMock.mock.calls.length - 1]
+      // Week: from is 6 days before to.
+      expect(lastCall[1]).not.toBe(lastCall[2])
+    })
   })
 })

@@ -1,7 +1,7 @@
 import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
-  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek,
+  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
@@ -108,6 +108,19 @@ export const api = {
     getUsers: (id: number) => req<User[]>('GET', `/profiles/${id}/users`),
     setUsers: (id: number, userIds: number[]) =>
       req<void>('PUT', `/profiles/${id}/users`, { userIds }),
+    // #1061 — per-app time-used breakdown over [from,to]. Defaults to today
+    // when both query params are omitted; the SPA passes explicit dates so
+    // Today and Week tabs hit distinct cache keys.
+    usageByApp: (id: number, from?: string, to?: string) => {
+      const qs = new URLSearchParams()
+      if (from) qs.set('from', from)
+      if (to)   qs.set('to', to)
+      const tail = qs.toString()
+      return req<ProfileUsageByApp>(
+        'GET',
+        `/profiles/${id}/usage-by-app${tail ? `?${tail}` : ''}`,
+      )
+    },
   },
 
   // ── Household settings (#334) ──────────────────────────────────────────

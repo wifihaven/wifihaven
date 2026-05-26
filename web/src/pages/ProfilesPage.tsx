@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useProfiles, useDevices, useInvalidators, useTimeStatusSummary } from '@/api/queries'
+import { useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
@@ -725,6 +725,11 @@ function ProfileShellRow({
               Replaces the modal's daily-cap + schedules + overlap blocks for
               this profile. */}
           <TimeSubsection pd={pd} isAdmin={isAdmin} defaultTz={defaultTz} />
+
+          {/* #1061 — per-app time-used breakdown (read-only) for this profile.
+              Today/Week toggle aligned with the chart from #1036; click a row
+              to expand the per-host drill-in. */}
+          <UsageByAppSubsection pd={pd} />
 
           {/* #973: read-only Devices listing for non-admins. Admins get the
               editable DevicesSubsection above; keeping a second copy here for
@@ -1912,6 +1917,180 @@ function SaveStatusBadge({
     )
   }
   return <span data-testid={testId} data-status="idle" className="text-xs text-transparent select-none">·</span>
+}
+
+// #1061 — read-only per-app time-used breakdown for this profile. Today/Week
+// toggle matches #1036 chart semantics. Each row is click-to-expand for the
+// host-level drill-in (reuses the Attention/Seen formatting from #957).
+function UsageByAppSubsection({ pd }: { pd: ProfileDetail }) {
+  const [window, setWindow] = useState<'today' | 'week'>('today')
+  const [expanded, setExpanded] = useState(false)
+  const [openApp, setOpenApp] = useState<string | null>(null)
+  // Date math: local-day "today" derived from the browser; week = trailing 7 days.
+  // Server treats from/to as plain ISO dates (UTC-day boundaries), which matches
+  // how the rest of the per-profile time endpoints scope their windows.
+  const { from, to } = useMemo(() => {
+    const now = new Date()
+    const ymd = (d: Date) => {
+      const y = d.getFullYear()
+      const m = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      return `${y}-${m}-${dd}`
+    }
+    const todayStr = ymd(now)
+    if (window === 'today') return { from: todayStr, to: todayStr }
+    const back = new Date(now)
+    back.setDate(now.getDate() - 6)
+    return { from: ymd(back), to: todayStr }
+  }, [window])
+  const q = useProfileUsageByApp(pd.profile.id, from, to, { enabled: expanded })
+  const data = q.data
+
+  const totalProportional = data?.apps.reduce((s, a) => s + a.proportionalSeconds, 0) ?? 0
+  const summary = data
+    ? `${data.apps.length} app${data.apps.length === 1 ? '' : 's'} · ${formatMins(totalProportional / 60)}`
+    : ''
+
+  return (
+    <div
+      data-testid={`profile-usage-by-app-${pd.profile.id}`}
+      className="bg-gray-950/40 border border-gray-800 rounded-xl"
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        data-testid={`profile-usage-by-app-toggle-${pd.profile.id}`}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+      >
+        <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+          Time used by app
+        </span>
+        <span className="flex-1" />
+        {expanded && summary && (
+          <span className="text-xs text-gray-500 font-mono">{summary}</span>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-gray-800 pt-3">
+          <div className="flex gap-1" role="tablist">
+            {(['today', 'week'] as const).map(w => (
+              <button
+                key={w}
+                type="button"
+                role="tab"
+                aria-selected={window === w}
+                data-testid={`profile-usage-by-app-window-${pd.profile.id}-${w}`}
+                onClick={() => setWindow(w)}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                  window === w
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                }`}
+              >
+                {w === 'today' ? 'Today' : 'Week'}
+              </button>
+            ))}
+          </div>
+
+          {q.isPending && (
+            <p className="text-xs text-gray-500" data-testid={`profile-usage-by-app-loading-${pd.profile.id}`}>
+              Loading…
+            </p>
+          )}
+          {q.isError && (
+            <p className="text-xs text-red-400">Failed to load: {(q.error as Error).message}</p>
+          )}
+          {data && data.apps.length === 0 && (
+            <p
+              className="text-xs text-gray-600"
+              data-testid={`profile-usage-by-app-empty-${pd.profile.id}`}
+            >
+              No app activity in this window.
+            </p>
+          )}
+          {data && data.apps.length > 0 && (
+            <div className="flex items-center text-[10px] font-semibold text-gray-500 uppercase tracking-wider gap-3 px-3">
+              <span className="flex-1">App</span>
+              <span className="w-14 text-right" title="Byte-share-weighted minutes — wall-clock attention (#715).">
+                Attention
+              </span>
+              <span
+                className="w-14 text-right"
+                title="App-level presence: each 5-min bucket touching this app counts once."
+              >
+                Seen
+              </span>
+            </div>
+          )}
+          <div className="space-y-1">
+            {data?.apps.map(app => {
+              const key = app.appId == null ? 'other' : String(app.appId)
+              const isOpen = openApp === key
+              const attention = formatMins(app.proportionalSeconds / 60)
+              const seen = formatMins(app.presenceSeconds / 60)
+              const same = attention === seen
+              const isOther = app.appId == null
+              return (
+                <div key={key}>
+                  <button
+                    type="button"
+                    data-testid={`profile-usage-by-app-row-${pd.profile.id}-${key}`}
+                    aria-expanded={isOpen}
+                    onClick={() => setOpenApp(o => (o === key ? null : key))}
+                    className="w-full flex items-center text-xs bg-gray-800/50 hover:bg-gray-800/70 rounded-lg px-3 py-2 gap-3 text-left"
+                  >
+                    <span className={`text-gray-500 transition-transform ${isOpen ? 'rotate-90' : ''}`}>▸</span>
+                    {isOther ? (
+                      <span className="inline-block w-5 text-center text-gray-500">∙</span>
+                    ) : (
+                      <AppIcon icon={app.appIcon} iconType={app.appIconType ?? 'emoji'} size="sm" />
+                    )}
+                    <span className={`flex-1 truncate ${isOther ? 'text-gray-400 italic' : 'text-gray-200'}`}>
+                      {app.appName}
+                    </span>
+                    <span className="text-gray-300 font-mono shrink-0 w-14 text-right">{attention}</span>
+                    <span className="text-gray-500 font-mono shrink-0 w-14 text-right">{same ? '' : seen}</span>
+                  </button>
+                  {isOpen && (
+                    <div
+                      className="ml-7 mt-1 mb-2 space-y-1"
+                      data-testid={`profile-usage-by-app-hosts-${pd.profile.id}-${key}`}
+                    >
+                      {app.hosts.length === 0 ? (
+                        <p className="text-xs text-gray-600 px-3 py-1">No host activity.</p>
+                      ) : (
+                        app.hosts.map(hu => {
+                          const a = formatMins(hu.proportionalMins)
+                          const s = formatMins(hu.usedMins)
+                          const eq = a === s
+                          return (
+                            <div
+                              key={hu.host.value}
+                              data-testid={`profile-usage-by-app-host-${pd.profile.id}-${key}-${hu.host.value}`}
+                              className="flex items-center text-xs bg-gray-900/60 rounded-lg px-3 py-1.5 gap-3"
+                            >
+                              <span className="text-gray-400 font-mono truncate flex-1" title={hu.host.value}>
+                                {hu.host.value}
+                              </span>
+                              <span className="text-gray-500 font-mono shrink-0 w-14 text-right">{a}</span>
+                              <span className="text-gray-600 font-mono shrink-0 w-14 text-right">{eq ? '' : s}</span>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // #973 — inline devices editor. Each row toggle issues PATCH /devices/:mac
