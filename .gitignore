@@ -54,7 +54,8 @@ mill.??????
 .e2e-vm-artifacts/
 scripts/e2e/**/__pycache__/
 
-# OpenWRT package build artifact (produced by openwrt/build-ipk.sh and
-# scripts/vm/build-router-image.sh). Repackaged from openwrt/files/ on
-# every build; not source.
+# OpenWRT package build artifacts (produced by openwrt/build-ipk.sh,
+# openwrt/build-apk.sh, and scripts/vm/build-router-image.sh). Repackaged
+# from openwrt/files/ on every build; not source.
 openwrt/wifihaven_*.ipk
+openwrt/wifihaven_*.apk
