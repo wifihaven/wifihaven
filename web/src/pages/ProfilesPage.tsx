@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
@@ -426,6 +426,7 @@ export function ProfilesPage() {
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
+            defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
             onEdit={() => startEdit(pd)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
@@ -524,7 +525,7 @@ export function ProfilesPage() {
 // the existing card content + escape-hatch buttons (Edit, Edit users, Pause,
 // Delete) that subsections #973-#977 will replace with inline editors.
 function ProfileShellRow({
-  pd, summary, devices, users, allUsers, isAdmin, expanded, highlight,
+  pd, summary, devices, users, allUsers, isAdmin, expanded, highlight, defaultTz,
   onToggle, onEdit, onDelete, onTogglePause, onGrantTime,
   onToggleUserLink, pendingUserLinks, userLinkError,
 }: {
@@ -536,6 +537,7 @@ function ProfileShellRow({
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
+  defaultTz: string
   onToggle: () => void
   onEdit: () => void
   onDelete: () => void
@@ -669,25 +671,13 @@ function ProfileShellRow({
             </div>
           )}
 
-          {pd.timeLimit && (
-            <p className="text-sm text-gray-400">
-              Daily limit: <span className="text-white font-medium">{pd.timeLimit.dailyMinutes} min</span>
-            </p>
-          )}
-
-          {pd.schedules.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Schedules</p>
-              {pd.schedules.map(s => (
-                <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2 mb-1">
-                  <span className="text-gray-300">{s.name}</span>
-                  <span className="text-yellow-400 font-mono text-xs">
-                    {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* #975 — inline time-limit + cross-device overlap subsection.
+              Replaces the modal's daily-cap + schedules + overlap blocks for
+              this profile. Autosave-default; the subsection itself is
+              collapsed-by-default and its header carries the at-a-glance
+              summary (limit + schedule list) so the collapsed view still
+              reads "Daily limit: 120 min", "Bedtime · 21:00 → 07:00". */}
+          <TimeSubsection pd={pd} isAdmin={isAdmin} defaultTz={defaultTz} />
 
           <div data-testid={`profile-devices-${pd.profile.id}`}>
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Devices</p>
@@ -776,6 +766,353 @@ function ProfileShellRow({
               ))}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// #975 — inline time-limit + cross-device overlap subsection on the expanded
+// profile card. Autosave via debounced full-profile PUT (PATCH lands with
+// #423; this component swaps to it without UI changes when it ships).
+//
+// Subsection is collapsed-by-default. Collapsed header carries the at-a-
+// glance summary: "Daily limit: X min" + one row per schedule. Expanded body
+// holds the editable inputs (daily cap, schedules editor, overlap radios).
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+interface TimeFormState {
+  timeLimit: string
+  schedules: ScheduleRequest[]
+  crossDeviceOverlapMode: CrossDeviceOverlapMode
+}
+
+function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
+  return {
+    timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
+    schedules: pd.schedules.map(s => ({
+      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
+    })),
+    crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+  }
+}
+
+function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
+  if (a.timeLimit !== b.timeLimit) return false
+  if (a.crossDeviceOverlapMode !== b.crossDeviceOverlapMode) return false
+  if (a.schedules.length !== b.schedules.length) return false
+  for (let i = 0; i < a.schedules.length; i++) {
+    const x = a.schedules[i]
+    const y = b.schedules[i]
+    if (x.name !== y.name || x.startLocal !== y.startLocal ||
+        x.endLocal !== y.endLocal || x.tz !== y.tz) return false
+    if (x.days.length !== y.days.length) return false
+    for (let j = 0; j < x.days.length; j++) if (x.days[j] !== y.days[j]) return false
+  }
+  return true
+}
+
+function TimeSubsection({
+  pd, isAdmin, defaultTz,
+}: {
+  pd: ProfileDetail
+  isAdmin: boolean
+  defaultTz: string
+}) {
+  const invalidators = useInvalidators()
+  const [expanded, setExpanded] = useState(false)
+  const [form, setForm] = useState<TimeFormState>(() => timeFormFromDetail(pd))
+  const [status, setStatus] = useState<SaveStatus>('idle')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // Sync local state when the upstream pd changes AND the local form isn't
+  // mid-edit. Compare against the last-saved baseline; if the local form
+  // matches that baseline (no pending edits), adopt the new pd. Otherwise
+  // leave the user's in-flight edits alone — the next save will overwrite
+  // the server. The structural-equality short-circuit on setForm prevents an
+  // infinite effect loop when react-query refetches return an identical
+  // ProfileDetail with a fresh object identity.
+  const baselineRef = useRef<TimeFormState>(form)
+  const formRef = useRef<TimeFormState>(form)
+  formRef.current = form
+  useEffect(() => {
+    const incoming = timeFormFromDetail(pd)
+    const local = formRef.current
+    if (timeFormsEqual(local, baselineRef.current)) {
+      if (!timeFormsEqual(local, incoming)) {
+        setForm(incoming)
+      }
+    }
+    baselineRef.current = incoming
+  }, [pd])
+
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+  }, [])
+
+  const scheduleSave = (next: TimeFormState) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => { void doSave(next) }, 600)
+  }
+
+  async function doSave(next: TimeFormState) {
+    setStatus('saving')
+    setErrorMsg(null)
+    try {
+      const body = formToRequest(detailToForm(pd))
+      const tl = next.timeLimit.trim() === '' ? null : Number(next.timeLimit)
+      body.timeLimit = tl !== null && Number.isFinite(tl) && tl > 0 ? tl : null
+      body.schedules = next.schedules
+      body.crossDeviceOverlapMode = next.crossDeviceOverlapMode
+      await api.profiles.update(pd.profile.id, body)
+      baselineRef.current = next
+      setStatus('saved')
+      void invalidators.profileMutated()
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => {
+        setStatus(s => (s === 'saved' ? 'idle' : s))
+      }, 2000)
+    } catch (e) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to save')
+    }
+  }
+
+  const update = (patch: Partial<TimeFormState>) => {
+    setForm(prev => {
+      const next = { ...prev, ...patch }
+      scheduleSave(next)
+      return next
+    })
+  }
+
+  const updateSchedules = (mut: (s: ScheduleRequest[]) => ScheduleRequest[]) => {
+    setForm(prev => {
+      const next = { ...prev, schedules: mut(prev.schedules) }
+      scheduleSave(next)
+      return next
+    })
+  }
+
+  function addSchedule() {
+    updateSchedules(s => [
+      ...s,
+      { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz },
+    ])
+  }
+  function patchSchedule(i: number, p: Partial<ScheduleRequest>) {
+    updateSchedules(s => s.map((x, idx) => idx === i ? { ...x, ...p } : x))
+  }
+  function removeSchedule(i: number) {
+    updateSchedules(s => s.filter((_, idx) => idx !== i))
+  }
+  function toggleDay(i: number, d: string) {
+    updateSchedules(s => s.map((x, idx) => idx !== i ? x : {
+      ...x, days: x.days.includes(d) ? x.days.filter(y => y !== d) : [...x.days, d],
+    }))
+  }
+
+  const statusLabel =
+    status === 'saving' ? 'Saving…'
+    : status === 'saved' ? 'Saved'
+    : status === 'error' ? 'Save failed'
+    : ''
+
+  return (
+    <div data-testid={`profile-time-subsection-${pd.profile.id}`}
+      className="bg-gray-950/40 border border-gray-800 rounded-xl">
+      <button type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        data-testid={`profile-time-toggle-${pd.profile.id}`}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left">
+        <span className={`text-gray-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Time limits</span>
+        <span className="flex-1" />
+        {statusLabel && (
+          <span
+            data-testid={`profile-time-status-${pd.profile.id}`}
+            data-status={status}
+            className={`text-xs font-mono ${
+              status === 'error' ? 'text-red-400'
+              : status === 'saving' ? 'text-gray-500'
+              : 'text-emerald-400'
+            }`}>
+            {statusLabel}
+          </span>
+        )}
+      </button>
+
+      {!expanded && (
+        <div className="px-4 pb-3 space-y-1">
+          {pd.timeLimit
+            ? (
+              <p className="text-sm text-gray-400">
+                Daily limit: <span className="text-white font-medium">{pd.timeLimit.dailyMinutes} min</span>
+              </p>
+            )
+            : <p className="text-xs text-gray-600">No daily limit.</p>
+          }
+          {pd.schedules.length > 0 && pd.schedules.map(s => (
+            <div key={s.id} className="flex justify-between text-sm bg-gray-800/50 rounded-lg px-3 py-2">
+              <span className="text-gray-300">{s.name}</span>
+              <span className="text-yellow-400 font-mono text-xs">
+                {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
+              </span>
+            </div>
+          ))}
+          <p className="text-xs text-gray-600">
+            Cross-device overlap: <span className="text-gray-400">
+              {pd.profile.crossDeviceOverlapMode === 'sum' ? 'count each device' : 'combine overlap'}
+            </span>
+          </p>
+        </div>
+      )}
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 border-t border-gray-800 pt-3">
+          {errorMsg && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs rounded-lg px-3 py-2">
+              {errorMsg}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              Daily time limit (minutes)
+            </label>
+            <input type="number" min={0}
+              value={form.timeLimit}
+              disabled={!isAdmin}
+              data-testid={`profile-time-limit-${pd.profile.id}`}
+              onChange={e => update({ timeLimit: e.target.value })}
+              placeholder="Leave blank for unlimited"
+              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 disabled:opacity-60" />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Schedules
+              </label>
+              {isAdmin && (
+                <button type="button"
+                  data-testid={`profile-time-add-schedule-${pd.profile.id}`}
+                  onClick={addSchedule}
+                  className="text-xs text-emerald-400 hover:text-emerald-300">
+                  + Add schedule
+                </button>
+              )}
+            </div>
+            {form.schedules.length === 0 && (
+              <p className="text-xs text-gray-500">No schedules.</p>
+            )}
+            <div className="space-y-3">
+              {form.schedules.map((s, i) => (
+                <div key={i} className="bg-gray-950 border border-gray-700 rounded-xl p-3 space-y-2"
+                  data-testid={`profile-time-schedule-${pd.profile.id}-${i}`}>
+                  <div className="flex gap-2">
+                    <input type="text"
+                      value={s.name}
+                      disabled={!isAdmin}
+                      onChange={e => patchSchedule(i, { name: e.target.value })}
+                      placeholder="Bedtime"
+                      className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm disabled:opacity-60" />
+                    {isAdmin && (
+                      <button type="button"
+                        onClick={() => removeSchedule(i)}
+                        className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 rounded-lg">
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-2 items-center text-sm">
+                    <input type="time" value={s.startLocal}
+                      disabled={!isAdmin}
+                      onChange={e => patchSchedule(i, { startLocal: e.target.value })}
+                      data-testid={`profile-time-schedule-start-${pd.profile.id}-${i}`}
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white disabled:opacity-60" />
+                    <span className="text-gray-500">→</span>
+                    <input type="time" value={s.endLocal}
+                      disabled={!isAdmin}
+                      onChange={e => patchSchedule(i, { endLocal: e.target.value })}
+                      data-testid={`profile-time-schedule-end-${pd.profile.id}-${i}`}
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white disabled:opacity-60" />
+                  </div>
+                  <TimezonePicker
+                    value={s.tz}
+                    onChange={tz => patchSchedule(i, { tz })}
+                    testId={`profile-time-schedule-tz-${pd.profile.id}-${i}`}
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    {DAYS.map(d => {
+                      const on = s.days.includes(d)
+                      return (
+                        <button key={d} type="button"
+                          disabled={!isAdmin}
+                          onClick={() => toggleDay(i, d)}
+                          className={`text-xs px-2.5 py-1 rounded-lg border ${
+                            on
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : 'bg-gray-800 text-gray-500 border-gray-700'
+                          } disabled:opacity-60`}>
+                          {d}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* #751 cross-device overlap radios, lifted from the modal. */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              Cross-device overlap
+            </label>
+            <div className="space-y-2">
+              <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`overlap-${pd.profile.id}`}
+                  data-testid={`profile-time-overlap-sum-${pd.profile.id}`}
+                  disabled={!isAdmin}
+                  checked={form.crossDeviceOverlapMode === 'sum'}
+                  onChange={() => update({ crossDeviceOverlapMode: 'sum' })}
+                  className="mt-1 w-4 h-4 accent-emerald-500"
+                />
+                <span>
+                  <span className="font-medium text-white">Count each device separately</span>
+                  <span className="text-gray-500"> (default)</span>
+                  <span className="block text-xs text-gray-400 mt-0.5">
+                    add per-device totals. Two devices on this profile both active in the same 5-minute window count as 10 minutes against the daily cap.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm text-gray-300 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`overlap-${pd.profile.id}`}
+                  data-testid={`profile-time-overlap-dedup-${pd.profile.id}`}
+                  disabled={!isAdmin}
+                  checked={form.crossDeviceOverlapMode === 'dedup'}
+                  onChange={() => update({ crossDeviceOverlapMode: 'dedup' })}
+                  className="mt-1 w-4 h-4 accent-emerald-500"
+                />
+                <span>
+                  <span className="font-medium text-white">Combine overlapping device usage</span>
+                  <span className="text-gray-500"> (one profile = one human)</span>
+                  <span className="block text-xs text-gray-400 mt-0.5">
+                    union the per-device active windows. Two devices both active in the same 5-minute window count as 5 minutes against the daily cap. Right when one person carries an iPad and a phone for the same profile.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
         </div>
       )}
     </div>
