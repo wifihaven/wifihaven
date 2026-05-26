@@ -2,6 +2,35 @@ import mill._
 import mill.scalalib._
 import mill.javalib.Assembly
 
+// Auto-install git hooks (#1050). Idempotent: only writes `core.hooksPath`
+// when it isn't already pointing at `.githooks`. Silent in the steady state
+// — one "Hooks installed" line the first time per worktree. Skipped when
+// not in a git checkout (e.g. tarball build). Wired into every module's
+// `compile` task below so a fresh `mill <mod>.compile` (or any task that
+// transitively compiles) re-installs hooks if they were dropped.
+def ensureHooksInstalled(root: os.Path): Unit =
+  try {
+    if (os.exists(root / ".git") && os.exists(root / "scripts" / "install-hooks.sh")) {
+      val current = os
+        .proc("git", "config", "--get", "core.hooksPath")
+        .call(cwd = root, check = false, stderr = os.Pipe)
+        .out
+        .text()
+        .trim
+      if (current != ".githooks") {
+        os.proc("bash", (root / "scripts" / "install-hooks.sh").toString).call(cwd = root)
+      }
+    }
+  } catch {
+    case _: Throwable => () // never block the build on hook install
+  }
+
+// Externally invokable: `mill installHooks`. Useful in scripts and CI for
+// an explicit, no-side-effects-on-compile-cache install.
+def installHooks() = Task.Command {
+  ensureHooksInstalled(mill.api.BuildCtx.workspaceRoot)
+}
+
 val scala3Version = "3.3.3"
 
 val zioVersion         = "2.1.9"
@@ -33,6 +62,14 @@ trait CommonModule extends ScalaModule {
     "-source:future",
     "-no-indent",
   )
+
+  // #1050: auto-install git hooks when compile runs. Plain side-effecting
+  // call (not a Task dependency) so it doesn't perturb mill's cache key —
+  // it just runs whenever compile's body is evaluated.
+  override def compile = Task {
+    ensureHooksInstalled(mill.api.BuildCtx.workspaceRoot)
+    super.compile()
+  }
 }
 
 trait WifiHavenTestModule extends TestModule.ZioTest {
