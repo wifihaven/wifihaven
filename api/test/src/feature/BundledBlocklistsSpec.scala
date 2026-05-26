@@ -248,12 +248,12 @@ object BundledBlocklistsSpec
       // and verify it canonicalizes (and a second run is a no-op).
       import doobie.implicits.*
       for {
-        _      <- cleanDb
-        pr     <- ZIO.service[ProfileRepo]
-        xa     <- ZIO.service[doobie.Transactor[Task]]
-        pid    <- pr.create("Legacy", List(BlocklistId.unsafe("adult")))
-        pidVal  = pid.value
-        _      <- sql"""UPDATE profiles
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        xa  <- ZIO.service[doobie.Transactor[Task]]
+        pid <- pr.create("Legacy", List(BlocklistId.unsafe("adult")))
+        pidVal = pid.value
+        _ <- sql"""UPDATE profiles
                         SET blocked_categories = ARRAY['adult','social_media','proxy']::TEXT[]
                         WHERE id = $pidVal""".update.run.transact(xa)
         runReplace = sql"""UPDATE profiles
@@ -275,17 +275,17 @@ object BundledBlocklistsSpec
     test("V33 canonicalization: leaves canonical slugs untouched") {
       import doobie.implicits.*
       for {
-        _   <- cleanDb
-        pr  <- ZIO.service[ProfileRepo]
-        xa  <- ZIO.service[doobie.Transactor[Task]]
-        pid <- pr.create(
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        xa    <- ZIO.service[doobie.Transactor[Task]]
+        pid   <- pr.create(
           "Canonical",
           List(BlocklistId.unsafe("social-media"), BlocklistId.unsafe("adult")),
         )
-        _   <- sql"""UPDATE profiles
+        _     <- sql"""UPDATE profiles
                      SET blocked_categories = array_replace(blocked_categories, 'social_media', 'social-media')
                      WHERE 'social_media' = ANY(blocked_categories)""".update.run.transact(xa)
-        _   <- sql"""UPDATE profiles
+        _     <- sql"""UPDATE profiles
                      SET blocked_categories = array_remove(blocked_categories, 'proxy')
                      WHERE 'proxy' = ANY(blocked_categories)""".update.run.transact(xa)
         after <- pr.findById(pid).someOrFailException
