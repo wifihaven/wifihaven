@@ -15,9 +15,9 @@ vi.mock('@/api/client', () => ({
       setUsers: vi.fn(),
       usageByApp: vi.fn(),
     },
-    blocklists: {
-      list: vi.fn(),
-    },
+    // #978 — the old ProfileEditor modal listed blocklist categories from
+    // /blocklists; the inline app-policy subsection owns that surface now,
+    // so ProfilesPage no longer calls api.blocklists.list.
     devices: {
       list: vi.fn(),
       patch: vi.fn(),
@@ -131,11 +131,6 @@ beforeEach(() => {
   vi.resetAllMocks()
   mockAuth = { isAdmin: true }
   ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([kidsProfile, adultsProfile])
-  ;(api.blocklists.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
-    { id: 'adult', name: 'Adult', bundled: true, hostCount: 1000 },
-    { id: 'gambling', name: 'Gambling', bundled: true, hostCount: 500 },
-    { id: 'social', name: 'Social', bundled: true, hostCount: 200 },
-  ])
   ;(api.profiles.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 99 })
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -344,62 +339,73 @@ describe('ProfilesPage — pause / delete', () => {
   })
 })
 
-describe('ProfilesPage — create', () => {
+// #978 — the old ProfileEditor modal is gone; "+ New Profile" now opens a
+// tiny inline name-only form at the top of the page. Everything else (time
+// limit, schedules, blocked categories, app policies, users, devices) is
+// filled in via the inline subsections on the new card's expanded body.
+describe('ProfilesPage — create (inline name-only, #978)', () => {
   it('shows validation error when name is empty', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-    expect(await screen.findByText(/Name is required/i)).toBeInTheDocument()
+    await user.click(screen.getByTestId('profile-create-save'))
+    expect(await screen.findByTestId('profile-create-error')).toHaveTextContent(/Name is required/i)
     expect(api.profiles.create).not.toHaveBeenCalled()
   })
 
-  it('fills the editor and calls api.profiles.create with the expected body', async () => {
+  it('calls api.profiles.create with the typed name + safe-by-default body', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Kids')
     await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
 
-    await user.type(screen.getByPlaceholderText('Kids'), 'Teens')
-
-    // toggle category "social" (label uses display name)
-    await user.click(screen.getByRole('button', { name: 'Social' }))
-
-    // daily limit
-    await user.type(screen.getByPlaceholderText('Leave blank for unlimited'), '90')
-
-    // add schedule (default Bedtime, all 7 days, 21:00 → 07:00); toggle "sun" off
-    await user.click(screen.getByRole('button', { name: /\+ Add schedule/ }))
-    await user.click(screen.getByRole('button', { name: 'sun' }))
-
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await user.type(screen.getByTestId('profile-create-name'), 'Teens')
+    await user.click(screen.getByTestId('profile-create-save'))
 
     await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
     expect(api.profiles.create).toHaveBeenCalledWith({
       name: 'Teens',
-      blockedCategories: ['social'],
+      blockedCategories: [],
       paused: false,
-      timeLimit: 90,
-      schedules: [
-        { name: 'Bedtime', days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'], startLocal: '21:00', endLocal: '07:00', tz: 'America/Los_Angeles' },
-      ],
-      // #385: form default for a brand-new profile is LastKnownGood
-      // (matches DB column default; UI copy steers admins towards BlockAll
-      // for child profiles).
+      timeLimit: null,
+      schedules: [],
+      // #385: column-default for a brand-new profile is LastKnownGood.
       failureMode: 'last-known-good',
-      // #751: form default for a brand-new profile is Sum (matches DB
-      // column default; admins opt in to Dedup explicitly when one
-      // profile represents one human with multiple devices).
+      // #751: column-default for a brand-new profile is Sum.
       crossDeviceOverlapMode: 'sum',
     })
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
   })
+
+  it('Cancel closes the form without calling create', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Kids')
+    await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
+    await user.type(screen.getByTestId('profile-create-name'), 'Teens')
+    await user.click(screen.getByTestId('profile-create-cancel'))
+    expect(screen.queryByTestId('profile-create-form')).not.toBeInTheDocument()
+    expect(api.profiles.create).not.toHaveBeenCalled()
+  })
+
+  it('Enter submits, Escape cancels', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Kids')
+    await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
+    const input = screen.getByTestId('profile-create-name')
+    await user.type(input, 'Teens{Enter}')
+    await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
+    // Form re-closed after success.
+    await waitFor(() =>
+      expect(screen.queryByTestId('profile-create-form')).not.toBeInTheDocument(),
+    )
+  })
 })
 
-// #973: the "Edit existing profile via modal" path was removed when the
-// inline subsections covered every editable field. Coverage of the
-// per-field write paths now lives in the per-subsection describes:
+// #973/#978: the modal-based edit + create paths are both gone. Coverage of
+// the per-field write paths now lives in the per-subsection describes:
 //   - name           → "ProfilesPage — #973 inline name subsection"
 //   - timeLimit /
 //     schedules /
@@ -408,8 +414,10 @@ describe('ProfilesPage — create', () => {
 //   - paused          → "ProfilesPage — pause / delete" + inline subsection sync
 //   - app policies   → "ProfilesPage — apps section (#767)" exercises the
 //                      inline subsection's AppsSection (post-#976).
-//   - failureMode    → only reachable from "+ New Profile" until the inline
-//                      subsection follow-up lands; see the #385 describe below.
+//   - failureMode    → tracked as an orphan until the inline failureMode
+//                      subsection lands; the column default
+//                      (`last-known-good`) is pinned by the create body
+//                      assertion above.
 // Post-#764 the legacy extraBlocked/extraAllowed/siteTimeLimits fields are
 // gone — per-host policy lives in apps, exercised by the apps subsection.
 
@@ -620,60 +628,12 @@ describe('ProfilesPage — linked users section', () => {
   })
 })
 
-describe('ProfilesPage — #385 failureMode (three modes)', () => {
-  // #973: with the "Edit" escape-hatch button removed from the expanded
-  // card, the failureMode radios are only reachable via the "+ New Profile"
-  // modal until the inline failureMode subsection follow-up lands. These
-  // tests exercise that path; the existing-profile edit path is tracked in
-  // a separate issue.
-
-  async function openNewProfileModal() {
-    const user = userEvent.setup()
-    renderPage()
-    await screen.findByText('Kids')
-    await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
-    return user
-  }
-
-  it('new profile form defaults to LastKnownGood (column default)', async () => {
-    await openNewProfileModal()
-    const lastKnownGood = screen.getByTestId('profile-failure-mode-last-known-good') as HTMLInputElement
-    expect(lastKnownGood.checked).toBe(true)
-  })
-
-  it('renders explanatory copy for each of the three modes', async () => {
-    await openNewProfileModal()
-    expect(
-      screen.getByText(/drop all forwarded traffic for this profile's devices/i),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/keep enforcing the cached snapshot exactly/i),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/clear every block for this profile's devices/i),
-    ).toBeInTheDocument()
-  })
-
-  it('selecting AllowAll on a new profile and saving sends the new value', async () => {
-    const user = await openNewProfileModal()
-    await user.type(screen.getByPlaceholderText('Kids'), 'Adults2')
-    await user.click(screen.getByTestId('profile-failure-mode-allow-all'))
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-    await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
-    const call = (api.profiles.create as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[0].failureMode).toBe('allow-all')
-  })
-
-  it('selecting BlockAll on a new profile and saving sends the new value', async () => {
-    const user = await openNewProfileModal()
-    await user.type(screen.getByPlaceholderText('Kids'), 'Kids2')
-    await user.click(screen.getByTestId('profile-failure-mode-block-all'))
-    await user.click(screen.getByRole('button', { name: /^Save$/ }))
-    await waitFor(() => expect(api.profiles.create).toHaveBeenCalledTimes(1))
-    const call = (api.profiles.create as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[0].failureMode).toBe('block-all')
-  })
-})
+// #978 — the failureMode (#385) radios used to be exposed via the
+// "+ New Profile" modal; after the modal was deleted there is no UI surface
+// for choosing failureMode at create time. The column default
+// (`last-known-good`) is pinned by the create-body assertion in
+// "ProfilesPage — create (inline name-only, #978)" above. A dedicated inline
+// failureMode subsection is tracked as the orphan follow-up.
 
 describe('ProfilesPage — highlight from ?id= (#298)', () => {
   it('rings the matching profile card when ?id=... is set', async () => {
@@ -947,16 +907,10 @@ describe('ProfilesPage — apps section (#767)', () => {
     )
   })
 
-  it('for a brand-new profile, shows save-first hint instead of rows', async () => {
-    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])
-    const user = userEvent.setup()
-    renderPage()
-    await screen.findByText('Kids')
-    await user.click(screen.getByRole('button', { name: /\+ New Profile/ }))
-    const section = await screen.findByTestId('apps-section')
-    expect(within(section).getByText(/Save this profile first to assign apps/i)).toBeInTheDocument()
-    expect(screen.queryByTestId('app-row-50')).not.toBeInTheDocument()
-  })
+  // #978 — the "save this profile first" hint used to surface inside the
+  // ProfileEditor modal's AppsSection when isNew=true. Post-cleanup the
+  // create flow is a name-only inline form; AppsSection is no longer
+  // mounted in the create surface, so the hint is unreachable from the UI.
 
   it('Manage apps link points at /apps', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtube])

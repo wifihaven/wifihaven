@@ -12,7 +12,7 @@ import { useEscapeClose } from '@/hooks/useEscapeClose'
 import {
   HOST_COLORS, OTHER_KEY, UsageHourlyBarChart, type ChartSeries,
 } from '@/components/usage/UsageHourlyBarChart'
-import { groupBucketsByLocalDay, formatMins, localBucketOffsetMin } from './TimePage'
+import { groupBucketsByLocalDay, formatMins, localBucketOffsetMin } from '@/lib/timeFormat'
 
 // #721 — per-device daily (hourly) timeline.
 // #723 — Today/Week toggle: Week renders the trailing-7-day per-device
