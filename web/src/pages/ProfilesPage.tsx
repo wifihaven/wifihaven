@@ -671,12 +671,13 @@ function ProfileShellRow({
             </div>
           )}
 
-          {/* #976: rules subsection — inline app-policy editor + legacy
-              extraAllowed/extraBlocked textareas. Replaces the read-only
-              summary that used to live here; the modal Edit still works
-              while #978 cleans it up. */}
+          {/* #976: apps subsection — inline app-policy editor (with the
+              transitional extraAllowed/extraBlocked textareas tucked
+              underneath until #764 migrates them off the schema).
+              Replaces the read-only summary that used to live here; the
+              modal Edit still works while #978 cleans it up. */}
           {isAdmin && (
-            <RulesSubsection
+            <AppsRulesSubsection
               pd={pd}
               apps={apps}
               onAppsChanged={onAppsChanged}
@@ -1526,14 +1527,16 @@ function ProfileEditor({
   )
 }
 
-// #976 — rules subsection of the merged /profiles expanded card.
+// #976 — apps subsection of the merged /profiles expanded card.
 // Default collapsed; opening reveals the same `<AppsSection>` the modal
-// shows, followed by legacy extraBlocked/extraAllowed textareas with
-// debounced autosave (1s after last keystroke). The legacy textareas
-// disappear once #764 migrates those fields onto apps; PATCH support
-// (#423) would let us send only the changed fields instead of a full
-// PUT body, but the textareas are short-lived enough that PUT is fine.
-function RulesSubsection({
+// shows, plus the transitional extraBlocked/extraAllowed textareas with
+// debounced autosave. The textareas disappear once #764 migrates those
+// fields onto apps; PATCH support (#423) would let us send only the
+// changed fields instead of a full PUT body, but the textareas are
+// short-lived enough that PUT is fine. Subsection is labelled "Apps"
+// (not "Rules") because time limits are their own subsection (#975)
+// and domain blocklists are on their way out.
+function AppsRulesSubsection({
   pd, apps, onAppsChanged, onProfileChanged, updateProfile,
 }: {
   pd: ProfileDetail
@@ -1547,29 +1550,25 @@ function RulesSubsection({
     () => apps.filter(a => a.assignments.some(x => x.profileId === pd.profile.id)).length,
     [apps, pd.profile.id],
   )
-  const blockedCount = pd.profile.extraBlocked.length
-  const allowedCount = pd.profile.extraAllowed.length
-  const summaryParts: string[] = []
-  if (assignedAppCount > 0) summaryParts.push(`${assignedAppCount} app${assignedAppCount === 1 ? '' : 's'}`)
-  if (blockedCount > 0) summaryParts.push(`${blockedCount} blocked`)
-  if (allowedCount > 0) summaryParts.push(`${allowedCount} allowed`)
-  const summary = summaryParts.length > 0 ? summaryParts.join(' · ') : 'No rules'
+  const summary = assignedAppCount > 0
+    ? `${assignedAppCount} assigned`
+    : 'None assigned'
 
   return (
     <div
-      data-testid={`profile-rules-subsection-${pd.profile.id}`}
+      data-testid={`profile-apps-subsection-${pd.profile.id}`}
       className="bg-gray-950/40 border border-gray-800 rounded-xl"
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(v => !v)}
-        data-testid={`profile-rules-toggle-${pd.profile.id}`}
+        data-testid={`profile-apps-toggle-${pd.profile.id}`}
         className="w-full flex items-center justify-between px-4 py-3 text-left"
       >
         <span className="flex items-center gap-2">
           <span className={`text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
-          <span className="text-sm font-semibold text-white">Rules</span>
+          <span className="text-sm font-semibold text-white">Apps</span>
         </span>
         <span className="text-xs text-gray-400">{summary}</span>
       </button>
