@@ -228,9 +228,9 @@ object BundledBlocklistsSpec
         assertTrue(!cats.contains(BlocklistId.unsafe("test_social"))) &&
         assertTrue(profile.blockedCategories.isEmpty)
     },
-    test("V33 canonicalization: V1's Kids seed has canonical slugs after fresh migrate") {
+    test("V35 canonicalization: V1's Kids seed has canonical slugs after fresh migrate") {
       // V1__init.sql seeds Kids with ['adult','gambling','social_media','proxy'];
-      // V33 rewrites 'social_media' -> 'social-media' and strips 'proxy'.
+      // V35 rewrites 'social_media' -> 'social-media' and strips 'proxy'.
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -241,8 +241,8 @@ object BundledBlocklistsSpec
         assertTrue(kids.blockedCategories.contains(BlocklistId.unsafe("adult"))) &&
         assertTrue(kids.blockedCategories.contains(BlocklistId.unsafe("gambling")))
     },
-    test("V33 canonicalization: idempotent — rewrites 'social_media' and strips 'proxy'") {
-      // Inject a profile carrying the legacy slugs after migrate, then re-run the V33 SQL
+    test("V35 canonicalization: idempotent — rewrites 'social_media' and strips 'proxy'") {
+      // Inject a profile carrying the legacy slugs after migrate, then re-run the V35 SQL
       // and verify it canonicalizes (and a second run is a no-op).
       import doobie.implicits.*
       for {
@@ -270,7 +270,7 @@ object BundledBlocklistsSpec
         assertTrue(!after1.blockedCategories.contains(BlocklistId.unsafe("proxy"))) &&
         assertTrue(after1.blockedCategories.contains(BlocklistId.unsafe("adult")))
     },
-    test("V33 canonicalization: leaves canonical slugs untouched") {
+    test("V35 canonicalization: leaves canonical slugs untouched") {
       import doobie.implicits.*
       for {
         _     <- cleanDb
