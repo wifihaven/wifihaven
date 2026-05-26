@@ -582,9 +582,17 @@ function ProfileShellRow({
             data-testid={`profile-summary-time-${pd.profile.id}`}
             className="hidden sm:flex flex-col items-end min-w-[7rem]"
           >
+            {/* #975: surface granted +Time extensions in the cap text so a
+                fresh grant is visible in the summary row. The denominator is
+                base + extension (matches the bar denominator below); a
+                "(+Xm)" suffix calls out how much of that is a grant so the
+                operator can tell at a glance how much extra is in play. */}
             <span className="text-xs font-mono text-gray-300">
               {formatMins(usedMins)}
-              {hasLimit ? ` / ${formatMins(summary!.dailyLimitMins ?? 0)}` : ''}
+              {hasLimit ? ` / ${formatMins(limitBase)}` : ''}
+              {hasLimit && (summary!.extensionMins ?? 0) > 0 && (
+                <span className="text-emerald-400"> (+{formatMins(summary!.extensionMins ?? 0)})</span>
+              )}
             </span>
             {hasLimit && (
               <div className="w-24 h-1 bg-gray-800 rounded-full overflow-hidden mt-1">

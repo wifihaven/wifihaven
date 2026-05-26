@@ -183,6 +183,24 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     expect(chip).toHaveTextContent(/Paused/)
   })
 
+  it('summary row reflects granted +Time extension in the cap text', async () => {
+    // #975 follow-up: pre-fix the row read "45m / 2:00" even after a +30m
+    // grant — the bar denominator grew but the text ignored extensionMins,
+    // making fresh grants look like no-ops. Post-fix the denominator is
+    // base+extension and an "(+Xm)" suffix calls the grant out explicitly.
+    (api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...kidsSummary, extensionMins: 30, remainingMins: 105 },
+      adultsSummary,
+    ])
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    const time = within(kidsCard).getByTestId('profile-summary-time-1')
+    expect(time).toHaveTextContent('45m')
+    // 120 base + 30 extension = 150 = "2:30"
+    expect(time).toHaveTextContent('2:30')
+    expect(time).toHaveTextContent('(+30m)')
+  })
+
   it('time-exceeded summary flips the chip and hides the bar fill at 100%', async () => {
     (api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       { ...kidsSummary, usedMins: 130, remainingMins: 0 },
