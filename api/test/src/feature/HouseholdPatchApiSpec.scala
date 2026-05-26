@@ -40,6 +40,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       bytesThreshold = 1024,
       heartbeatHostPatterns = List("foo.com"),
     ),
+    unmanagedMacPolicy = UnmanagedMacPolicy.Default,
   )
 
   private def setupHousehold =
@@ -125,6 +126,52 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         _            <- setupHousehold
         (routes, tk) <- routesAndToken
         resp         <- patch(routes, tk, """{"heartbeatFilter":null}""")
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("#961 default unmanagedMacPolicy is allow/blockPage=true") {
+      for {
+        _     <- cleanDb
+        repo  <- ZIO.service[HouseholdSettingsRepo]
+        _     <- repo.ensureDefault(ZoneId.of("UTC"))
+        after <- repo.get
+      } yield assertTrue(after.unmanagedMacPolicy == UnmanagedMacPolicy.Default) &&
+        assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
+        assertTrue(after.unmanagedMacPolicy.blockPage)
+    },
+    test("#961 unmanagedMacPolicy deep-merges (toggle blockPage preserves policy)") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"blockPage":false}}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.unmanagedMacPolicy.policy == "allow") &&
+        assertTrue(!after.unmanagedMacPolicy.blockPage)
+    },
+    test("#961 unmanagedMacPolicy.policy=block round-trips") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"policy":"block"}}""")
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.unmanagedMacPolicy.policy == "block") &&
+        assertTrue(after.unmanagedMacPolicy.blockPage)
+    },
+    test("#961 unknown policy value returns 400") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"unmanagedMacPolicy":{"policy":"quarantine"}}""")
+      } yield assertTrue(resp.status == Status.BadRequest)
+    },
+    test("#961 null on unmanagedMacPolicy object returns 400") {
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(routes, tk, """{"unmanagedMacPolicy":null}""")
       } yield assertTrue(resp.status == Status.BadRequest)
     },
     test("403 when non-admin (adult) tries to PATCH") {

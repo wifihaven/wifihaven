@@ -40,16 +40,27 @@ export interface HeartbeatFilter {
   heartbeatHostPatterns: string[] // #788 FQDN allowlist; *.foo.com / foo.com semantics
 }
 
+// #961 — how the household treats MACs that have appeared on the network
+// but are not yet enrolled into any profile. Router-side enforcement of
+// `block` is deferred behind Gate 2 (#654); for v1 the field is persisted
+// + surfaced in the SPA only.
+export interface UnmanagedMacPolicy {
+  policy: 'block' | 'allow'
+  blockPage: boolean
+}
+
 export interface HouseholdSettings {
   dailyResetTime: string  // "HH:mm" wall-clock time in `dailyResetTz`
   dailyResetTz: string    // IANA timezone
   heartbeatFilter: HeartbeatFilter
+  unmanagedMacPolicy: UnmanagedMacPolicy
 }
 
 export interface UpdateHouseholdSettingsRequest {
   dailyResetTime: string
   dailyResetTz: string
   heartbeatFilter: HeartbeatFilter
+  unmanagedMacPolicy: UnmanagedMacPolicy
 }
 
 export interface TimeLimit {

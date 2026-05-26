@@ -611,27 +611,35 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
 }
 
 class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsRepo {
+  import zio.json.*
+  import wifihaven.shared.UnmanagedMacPolicy
+
   def get: Task[HouseholdSettings] =
     sql"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
-                 heartbeat_host_patterns
+                 heartbeat_host_patterns,
+                 unmanaged_mac_policy::text
             FROM household_settings WHERE id=1"""
-      .query[(LocalTime, ZoneId, Boolean, Int, List[String])]
+      .query[(LocalTime, ZoneId, Boolean, Int, List[String], String)]
       .unique
-      .map { case (t, z, hbEnabled, hbBytes, hbHosts) =>
-        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts))
+      .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson) =>
+        val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
+        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm)
       }
       .transact(xa)
 
-  def update(s: HouseholdSettings): Task[Unit] =
+  def update(s: HouseholdSettings): Task[Unit] = {
+    val ummJson = s.unmanagedMacPolicy.toJson
     sql"""UPDATE household_settings
             SET daily_reset_time=${s.dailyResetTime},
                 daily_reset_tz=${s.dailyResetTz},
                 heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
                 heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
                 heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
+                unmanaged_mac_policy=${ummJson}::jsonb,
                 updated_at=NOW()
           WHERE id=1""".update.run.transact(xa).unit
+  }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
     sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz)

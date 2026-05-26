@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDevices, useDeviceAlerts, useProfiles, useInvalidators } from '@/api/queries'
+import { useDevices, useDeviceAlerts, useHouseholdSettings, useProfiles, useInvalidators } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
@@ -35,9 +35,11 @@ export function DevicesPage() {
   const { isAdmin } = useAuth()
   const devicesQuery  = useDevices()
   const profilesQuery = useProfiles()
+  const householdQuery = useHouseholdSettings()
   const invalidators  = useInvalidators()
   const devices  = devicesQuery.data  ?? []
   const profiles = profilesQuery.data ?? []
+  const unmanagedPolicy = householdQuery.data?.unmanagedMacPolicy
   const loading  = devicesQuery.isPending || profilesQuery.isPending
   const [editing,  setEditing]  = useState<Device | null>(null)
   useEscapeClose(() => setEditing(null), editing !== null)
@@ -125,10 +127,17 @@ export function DevicesPage() {
       </div>
 
       {unknownDevices.length > 0 && (
-        <div>
+        <div data-testid="unmanaged-devices-section">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
-            Unknown Devices
-            <span className="ml-2 text-xs text-gray-600 normal-case font-normal">seen on the network, no profile assigned — traffic is allowed</span>
+            Unmanaged Devices
+            <span
+              className="ml-2 text-xs text-gray-600 normal-case font-normal"
+              data-testid="unmanaged-devices-policy-hint"
+            >
+              {unmanagedPolicy?.policy === 'allow'
+                ? 'seen on the network, no profile assigned — household policy allows them.'
+                : 'seen on the network, no profile assigned — blocked by household policy.'}
+            </span>
           </h2>
           <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
             {unknownDevices.map(d => (
@@ -139,17 +148,30 @@ export function DevicesPage() {
                   {d.lastSeenIp && (
                     <p className="text-xs text-gray-600 font-mono">{d.lastSeenIp}</p>
                   )}
+                  {d.lastSeenAt && (
+                    <p
+                      className="text-xs text-gray-600"
+                      data-testid={`device-last-seen-${d.mac}`}
+                    >
+                      last seen {new Date(d.lastSeenAt).toLocaleString()}
+                    </p>
+                  )}
                 </div>
                 <div className="hidden sm:block text-sm">
-                  <span className="bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 px-2 py-1 rounded-lg text-xs">
-                    No profile
+                  <span className={`px-2 py-1 rounded-lg text-xs border ${
+                    unmanagedPolicy?.policy === 'allow'
+                      ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                      : 'bg-red-500/10 text-red-300 border-red-500/20'
+                  }`}>
+                    {unmanagedPolicy?.policy === 'allow' ? 'No profile' : 'Unmanaged'}
                   </span>
                 </div>
                 {isAdmin && (
                   <button
                     onClick={() => addUnknown(d.mac)}
+                    data-testid={`unmanaged-enroll-${d.mac}`}
                     className="text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors shrink-0"
-                  >Add as device</button>
+                  >Enroll</button>
                 )}
               </div>
             ))}

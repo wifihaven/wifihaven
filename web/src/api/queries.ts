@@ -8,8 +8,8 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  DashboardNow, Device, DeviceAlert, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek,
-  ProfileTimeSummary, ProfileTimeSummaryWeek, UsageSeriesResponse,
+  DashboardNow, Device, DeviceAlert, HouseholdSettings, ProfileDetail, ProfileTimeStatus,
+  ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, UsageSeriesResponse,
 } from '@/types/api'
 
 const MIN = 60_000
@@ -53,6 +53,15 @@ export function useProfiles(opts?: QueryOpts<ProfileDetail[]>) {
     queryKey: qk.profiles(),
     queryFn: () => api.profiles.list(),
     staleTime: STALE.profiles,
+    ...opts,
+  })
+}
+
+export function useHouseholdSettings(opts?: QueryOpts<HouseholdSettings>) {
+  return useQuery({
+    queryKey: ['household', 'settings'] as const,
+    queryFn: () => api.household.get(),
+    staleTime: 5 * MIN,
     ...opts,
   })
 }

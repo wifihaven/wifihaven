@@ -115,6 +115,8 @@ export const api = {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
     update: (data: UpdateHouseholdSettingsRequest) =>
       req<void>('PUT', '/household/settings', data),
+    patch: (data: Record<string, unknown>) =>
+      req<void>('PATCH', '/household/settings', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────
