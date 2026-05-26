@@ -223,9 +223,10 @@ case "$PKG_FORMAT" in
         # not found (try 'apk update')". Read the version straight from
         # the .apk's ADB metadata so this stays consistent if PKG_RELEASE
         # ever bumps.
-        apk_name="$(/home/sameer/.cache/wifihaven-apk-tools/build/src/apk \
+        : "${APK_TOOLS_PREFIX:=$HOME/.cache/wifihaven-apk-tools}"
+        apk_name="$("$APK_TOOLS_PREFIX/build/src/apk" \
             adbdump "$PKG_FILE" 2>/dev/null \
-            | awk '/^  name:/ {n=$2} /^  version:/ {print n"-"$2; exit}')"
+            | awk '/^  name:/ {n=$2} /^  version:/ {print n"-"$2; exit}')" || apk_name=""
         if [ -z "$apk_name" ]; then
             # Fallback: parse from filename (wifihaven_0.1.0-1_all.apk ->
             # wifihaven-0.1.0-r1). Triggers if adbdump fails for any reason.
