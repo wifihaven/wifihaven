@@ -288,6 +288,9 @@ but you lose the auto-update property.
 
 ## Testing
 
+Where does a new test belong? See [`docs/testing.md`](docs/testing.md) for the
+suite map (unit / Gate 1 / Gate 2 / Gate 3a+3b).
+
 Tests use [zonky/embedded-postgres](https://github.com/zonkyio/embedded-postgres),
 so no external DB is required.
 

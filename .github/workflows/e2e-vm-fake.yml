@@ -1,5 +1,7 @@
 name: VM e2e (fake API — Gate 2)
 
+# Where do new tests go? See docs/testing.md.
+
 # Gate 2 of the three-gate plan (#652/#654/#686). Boots qemu OpenWRT +
 # Alpine client on the self-hosted KVM runner against the in-process fake
 # API (scripts/e2e/fake-api/), runs scripts/e2e/scenarios_fake/.

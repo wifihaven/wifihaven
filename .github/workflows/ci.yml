@@ -1,5 +1,7 @@
 name: CI
 
+# Where do new tests go? See docs/testing.md.
+
 on:
   pull_request:
     # Run on PRs targeting any branch

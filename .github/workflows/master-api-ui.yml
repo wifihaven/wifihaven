@@ -1,5 +1,7 @@
 name: Master API/UI CD
 
+# Where do new tests go? See docs/testing.md (Gate 1 lives in this workflow).
+
 # API + SPA deployment pipeline. Split off from the unified Master CD in
 # #871 — see master-router.yml for the router half and the split rationale.
 #

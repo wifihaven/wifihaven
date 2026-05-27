@@ -1,5 +1,7 @@
 name: Master Router CD
 
+# Where do new tests go? See docs/testing.md (Gate 2 gates publish here).
+
 # Router deployment pipeline — produces the openwrt-latest rolling release.
 #
 # Split off from the unified Master CD in #871: a single workflow handling
