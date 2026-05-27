@@ -157,6 +157,51 @@ class AdminAPI:
     def delete_device(self, mac: str) -> None:
         self._request("DELETE", f"/api/devices/{mac}")
 
+    # ── apps (#761/#764) ──────────────────────────────────────────────────
+    # Post-#764, extraAllowed/extraBlocked are sourced exclusively from
+    # app_policy_assignments — the legacy `extraBlocked`/`extraAllowed`
+    # fields on profile POST/PUT are silently dropped. To exercise the
+    # block/allow planes against a real API, callers must use the Apps
+    # surface: create an app with hosts, then assign it to a profile with
+    # a mode.
+
+    def create_app(self, *, name: str, slug: str | None = None,
+                   hosts: list[str] | None = None,
+                   template_id: str | None = None,
+                   icon: str | None = None,
+                   icon_type: str | None = None) -> dict[str, Any]:
+        """POST /api/apps. Returns the app-detail body
+        ({app: {id, name, ...}, hosts: [...], assignments: [...]})."""
+        body: dict[str, Any] = {"name": name}
+        if slug is not None:
+            body["slug"] = slug
+        if hosts is not None:
+            body["hosts"] = hosts
+        if template_id is not None:
+            body["templateId"] = template_id
+        if icon is not None:
+            body["icon"] = icon
+        if icon_type is not None:
+            body["iconType"] = icon_type
+        return self._request("POST", "/api/apps", body=body)
+
+    def assign_app_policy(self, *, app_id: int, profile_id: int, mode: str,
+                          daily_minutes: int | None = None,
+                          exempt_from_daily: bool | None = None) -> None:
+        """PUT /api/apps/{app_id}/policy/{profile_id}. mode is one of
+        'blocked' | 'allowed' | 'time_limited' (per shared/Models.scala
+        AppMode.asString)."""
+        body: dict[str, Any] = {"mode": mode}
+        if daily_minutes is not None:
+            body["dailyMinutes"] = daily_minutes
+        if exempt_from_daily is not None:
+            body["exemptFromDaily"] = exempt_from_daily
+        self._request("PUT", f"/api/apps/{app_id}/policy/{profile_id}", body=body)
+
+    def delete_app(self, app_id: int) -> None:
+        """DELETE /api/apps/{id}. Cascades app_policy_assignments."""
+        self._request("DELETE", f"/api/apps/{app_id}")
+
     # ── logs / sessions / stats ───────────────────────────────────────────
 
     def logs(self, **params: Any) -> list[dict[str, Any]]:

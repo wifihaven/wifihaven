@@ -1,0 +1,167 @@
+name: VM e2e (Gate 3a — router-side staging smoke)
+
+# Gate 3a of the three-gate plan (#652/#655). Boots qemu OpenWRT + Alpine
+# client on the self-hosted KVM runner with the router image built *from
+# this PR's router code*, enrolls it against the current staging API
+# (`:staging` Render service, NOT freshly redeployed — Gate 3a runs in the
+# router pipeline, which doesn't touch the API), and runs the gate3 smoke
+# scenario.
+#
+# Answers: "does this router image still talk to the current prod API
+# contract?" Red here blocks publish-openwrt.
+#
+# Gate 3b's mirror lives in e2e-vm-gate3b.yml — same scenario, opposite
+# inputs (last-published router image + freshly-deployed staging API).
+#
+# Triggers:
+#   - workflow_call    — invoked from master-router.yml as a needs: of
+#                        approve-production (parallel to gate-2-router-fake-api)
+#   - workflow_dispatch — manual debugging from the Actions tab
+#
+# Concurrency: shares the e2e-vm group with Gate 2 and the live-mode VM
+# e2e workflow. Per the e2e-vm group convention, runs on this host
+# serialize. The capacity headroom this consumes is tracked in #657.
+
+on:
+  workflow_call:
+    inputs:
+      consume_vm_image_artifact:
+        description: "Download the VM image from a sibling build-vm-image job artifact instead of building locally. Master Router CD sets this true so the .img is built once per run."
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-vm
+  cancel-in-progress: false
+
+jobs:
+  e2e-gate3a:
+    name: Gate 3a (router-side staging) — ${{ matrix.pkg_format }}
+    # Block fork PRs on the self-hosted runner; same guard as e2e-vm.yml /
+    # e2e-vm-fake.yml. workflow_call + workflow_dispatch are always allowed.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, kvm]
+    # Local dry-run wall time per arm: ~72s end-to-end (#655 checkpoint 3).
+    # 20m budget covers cold-image build + image-extract + apk arm headroom.
+    timeout-minutes: 20
+    # Matrix over ipk-23.05 and apk-25.12 (#532). fail-fast=false so a
+    # regression in one flavor still reports the other arm's status.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg_format: ipk
+            port_base: 2422
+          - pkg_format: apk
+            port_base: 2522
+
+    env:
+      PKG_FORMAT: ${{ matrix.pkg_format }}
+      # Distinct host-port bases from Gate 2's 2222/2322 so a stale Gate 2
+      # state on the runner can't collide with Gate 3a's qemu hostfwds —
+      # even though the e2e-vm concurrency group serializes them, the
+      # safety margin is free.
+      WH_PORT_BASE: ${{ matrix.port_base }}
+      # Same WH_RUN_ID conventions as Gate 2 — short enough to keep
+      # .run/<id>/router/monitor.sock under the 108-byte Unix-socket path
+      # limit. Sequential matrix arms (today's reality on a single
+      # runner) safely reuse the same id because teardown completes
+      # between arms.
+      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      WH_API_URL: https://api-staging.wifihaven.net
+      WH_GATE3_SIDE: 3a
+
+    steps:
+      # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
+      # can leave root-owned files under scripts/vm/.cache/imagebuilder/.
+      # Same pattern as e2e-vm-fake.yml.
+      - name: Reclaim root-owned cache files (pre-checkout)
+        run: |
+          docker rm -f wh-imagebuilder 2>/dev/null || true
+          CACHE="${{ github.workspace }}/scripts/vm/.cache"
+          if [ -d "$CACHE" ]; then
+            docker run --rm -v "$CACHE":/c alpine sh -c '
+              chmod -R u+rwX,a+rX /c 2>/dev/null
+              chown -R '"$(id -u):$(id -g)"' /c 2>/dev/null
+            ' || true
+          fi
+
+      - uses: actions/checkout@v6
+
+      - name: Preflight (kvm/qemu)
+        run: |
+          test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm \
+            || { echo "/dev/kvm missing or not r/w"; ls -l /dev/kvm || true; exit 1; }
+          qemu-system-x86_64 --version | head -n1
+
+      - name: Resolve router image path
+        id: image
+        run: |
+          # Match the path build-router-image.sh writes to and that
+          # e2e-vm-fake.yml resolves; PKG_FORMAT scopes OPENWRT_VERSION_SHORT.
+          . scripts/vm/versions.sh
+          IMG="$GITHUB_WORKSPACE/scripts/vm/.cache/openwrt-wifihaven-${PKG_FORMAT}-${OPENWRT_VERSION_SHORT}.img"
+          echo "path=$IMG" >> "$GITHUB_OUTPUT"
+          echo "Resolved image: $IMG"
+
+      # Reuse the sibling build-vm-image artifact when invoked from
+      # master-router.yml (consume_vm_image_artifact=true). Today
+      # build-vm-image only matrix-builds .ipk; the .apk arm's download is
+      # a no-op and the next step falls through to a local build.
+      - name: Download VM image artifact (from build-vm-image)
+        if: inputs.consume_vm_image_artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v6
+        with:
+          pattern: openwrt-wifihaven-${{ matrix.pkg_format }}-*-${{ github.sha }}
+          path: scripts/vm/.cache
+          merge-multiple: true
+
+      - name: Build router image (if not cached / not downloaded)
+        run: |
+          if [[ -f "${{ steps.image.outputs.path }}" ]]; then
+            echo "router image present, skipping build"
+          else
+            scripts/vm/build-router-image.sh
+          fi
+
+      - name: Build client base (if not cached)
+        run: scripts/vm/build-client-base.sh
+
+      - name: Pre-flight kill of stale wh VMs (this WH_RUN_ID only)
+        run: |
+          scripts/vm/router-down.sh || true
+          scripts/vm/client-down.sh || true
+
+      - name: Run Gate 3a smoke against staging
+        env:
+          WH_ADMIN_PASS: ${{ secrets.STAGING_ADMIN_PASS }}
+          WH_ROUTER_IMAGE_PATH: ${{ steps.image.outputs.path }}
+        run: scripts/e2e-vm.sh --mode=gate3
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-vm-gate3a-failure-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            scripts/vm/.run/**
+            !scripts/vm/.run/**/*.qcow2
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Tear down VMs
+        if: always()
+        run: |
+          scripts/vm/router-down.sh || true
+          scripts/vm/client-down.sh || true
+          # Backstop: kill anything tagged with *this* run's id that the
+          # pidfile-driven down scripts missed. Scoped via WH_RUN_ID so a
+          # sibling concurrent run is never touched.
+          pkill -f "qemu-system-x86_64.*-name wh-.*-${WH_RUN_ID}" || true

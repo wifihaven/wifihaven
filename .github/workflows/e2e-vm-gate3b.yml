@@ -1,0 +1,156 @@
+name: VM e2e (Gate 3b — API/UI-side staging smoke)
+
+# Gate 3b of the three-gate plan (#652/#655). Mirror of Gate 3a, opposite
+# inputs: boots the *last published* qemu OpenWRT router image (downloaded
+# from the rolling openwrt-latest GitHub Release per #893) against the
+# *freshly-deployed* staging API.
+#
+# Answers: "does this API/UI build still work for routers that are
+# actually deployed in the field?" The router under test is the
+# known-good last-published image — what customers are running. Red here
+# blocks API/UI prod publish (retag-latest / deploy-prod-render /
+# deploy-spa-prod), even when Gate 1's contract goldens are green —
+# that's the whole point of running against the last-published router.
+#
+# Bootstrapping: first time #893 lands, there's no "last published" qemu
+# image yet. Caller (master-api-ui.yml) currently invokes this job with
+# `continue-on-error: true` until a seed asset exists; see #655 PR body
+# for the flip plan.
+#
+# Triggers:
+#   - workflow_call    — invoked from master-api-ui.yml as a needs: of
+#                        approve-production (alongside smoke-staging +
+#                        api-smoke-staging)
+#   - workflow_dispatch — manual debugging from the Actions tab
+#
+# Concurrency: shares the e2e-vm group with Gates 2 + 3a + live-mode e2e.
+# Capacity tracked in #657.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-vm
+  cancel-in-progress: false
+
+jobs:
+  e2e-gate3b:
+    name: Gate 3b (API/UI-side staging) — ${{ matrix.pkg_format }}
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, kvm]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg_format: ipk
+            port_base: 2622
+          - pkg_format: apk
+            port_base: 2722
+
+    env:
+      PKG_FORMAT: ${{ matrix.pkg_format }}
+      WH_PORT_BASE: ${{ matrix.port_base }}
+      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      WH_API_URL: https://api-staging.wifihaven.net
+      WH_GATE3_SIDE: 3b
+
+    steps:
+      # Self-hosted runner: a prior run of scripts/vm/build-router-image.sh
+      # can leave root-owned files under scripts/vm/.cache/. Same pattern
+      # as e2e-vm-fake.yml / e2e-vm-gate3a.yml.
+      - name: Reclaim root-owned cache files (pre-checkout)
+        run: |
+          docker rm -f wh-imagebuilder 2>/dev/null || true
+          CACHE="${{ github.workspace }}/scripts/vm/.cache"
+          if [ -d "$CACHE" ]; then
+            docker run --rm -v "$CACHE":/c alpine sh -c '
+              chmod -R u+rwX,a+rX /c 2>/dev/null
+              chown -R '"$(id -u):$(id -g)"' /c 2>/dev/null
+            ' || true
+          fi
+
+      - uses: actions/checkout@v6
+
+      - name: Preflight (kvm/qemu/gh)
+        run: |
+          test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm \
+            || { echo "/dev/kvm missing or not r/w"; ls -l /dev/kvm || true; exit 1; }
+          qemu-system-x86_64 --version | head -n1
+          gh --version
+
+      # Download the last-published router image asset from
+      # openwrt-latest. Asset filenames follow the #893 pattern:
+      #   wifihaven-router-openwrt-<VERSION_SHORT>-<flavor>.tar.gz
+      #   wifihaven-router-images.sha256
+      # `gh release download -p '...'` resolves the asset by glob, so a
+      # future OPENWRT_VERSION_SHORT bump in the published asset doesn't
+      # need a workflow edit here.
+      - name: Download last-published router image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cd release
+          # Single-arm download — only fetch the tarball this matrix arm
+          # needs, plus the shared checksum manifest.
+          gh release download openwrt-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            -p "wifihaven-router-openwrt-*-${PKG_FORMAT}.tar.gz" \
+            -p "wifihaven-router-images.sha256"
+          # Verify the tarball checksum. sha256sum -c short-circuits on
+          # missing files; restrict the manifest to lines we have.
+          tarball=$(ls wifihaven-router-openwrt-*-${PKG_FORMAT}.tar.gz)
+          grep -F "${tarball}" wifihaven-router-images.sha256 > expected.sha256
+          sha256sum -c expected.sha256
+
+      - name: Extract router .img
+        id: image
+        run: |
+          set -euo pipefail
+          cd release
+          tarball=$(ls wifihaven-router-openwrt-*-${PKG_FORMAT}.tar.gz)
+          tar -xzf "$tarball"
+          img=$(ls openwrt-wifihaven-${PKG_FORMAT}-*.img | head -n1)
+          path="$GITHUB_WORKSPACE/release/$img"
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          ls -lh "$path"
+
+      - name: Build client base (if not cached)
+        run: scripts/vm/build-client-base.sh
+
+      - name: Pre-flight kill of stale wh VMs (this WH_RUN_ID only)
+        run: |
+          scripts/vm/router-down.sh || true
+          scripts/vm/client-down.sh || true
+
+      - name: Run Gate 3b smoke against freshly-deployed staging
+        env:
+          WH_ADMIN_PASS: ${{ secrets.STAGING_ADMIN_PASS }}
+          WH_ROUTER_IMAGE_PATH: ${{ steps.image.outputs.path }}
+        run: scripts/e2e-vm.sh --mode=gate3
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-vm-gate3b-failure-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            scripts/vm/.run/**
+            !scripts/vm/.run/**/*.qcow2
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Tear down VMs
+        if: always()
+        run: |
+          scripts/vm/router-down.sh || true
+          scripts/vm/client-down.sh || true
+          pkill -f "qemu-system-x86_64.*-name wh-.*-${WH_RUN_ID}" || true

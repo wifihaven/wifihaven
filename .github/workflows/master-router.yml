@@ -11,8 +11,13 @@ name: Master Router CD
 # Flow:
 #   ci-tests                    (full matrix; ci.yml self-filters by path)
 #     → gate-2-router-fake-api  (qemu OpenWRT + Alpine + fake API on KVM)
+#     ‖ gate-3a-router-staging  (qemu OpenWRT + Alpine + real staging API)
 #       → approve-production    (manual gate, `production` environment)
 #         → publish-openwrt     (rolling openwrt-latest GitHub Release)
+#
+# Gates 2 and 3a both share the e2e-vm self-hosted-runner concurrency
+# group (#657 capacity follow-up), so in practice they serialize on the
+# host even though the workflow graph runs them in parallel.
 #
 # Path scope: see `on.push.paths` below. shared/contract/** (wire-format
 # goldens) triggers BOTH pipelines for tandem releases until #597 lands.
@@ -33,6 +38,7 @@ on:
       - '.github/workflows/master-router.yml'
       - '.github/workflows/openwrt-build.yml'
       - '.github/workflows/e2e-vm-fake.yml'
+      - '.github/workflows/e2e-vm-gate3a.yml'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
 
@@ -86,6 +92,23 @@ jobs:
       consume_vm_image_artifact: true
     secrets: inherit
 
+  # Gate 3a (#655): the same router image, but enrolled against the real
+  # staging API. Confirms the freshly-built router agent talks to the
+  # current production API contract — catching the class of regression
+  # that's invisible against the fake-API snapshot fixtures (i.e. the
+  # snapshot golden has drifted from what the API actually emits).
+  # Shares the e2e-vm concurrency group with Gate 2 and the live-mode VM
+  # e2e workflow.
+  gate-3a-router-staging:
+    name: Gate 3a — router staging smoke
+    needs: [ci-tests, build-vm-image]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/e2e-vm-gate3a.yml
+    with:
+      consume_vm_image_artifact: true
+    secrets: inherit
+
   # Manual-approval gate. Carries `environment: production` so GitHub pauses
   # the run for an approval click before the rolling release is touched.
   # API/UI prod approval lives on its own gate in master-api-ui.yml; both
@@ -93,7 +116,7 @@ jobs:
   # approval prompts across the two pipelines.
   approve-production:
     name: Manual approval (router production gate)
-    needs: [gate-2-router-fake-api]
+    needs: [gate-2-router-fake-api, gate-3a-router-staging]
     runs-on: ubuntu-latest
     permissions: {}
     environment:
