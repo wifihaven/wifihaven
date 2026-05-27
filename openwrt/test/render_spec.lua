@@ -400,7 +400,7 @@ describe("render.nft extraBlocked enforcement", function()
   it("emits a drop rule `ether saddr <mac> ip daddr @eb_<host> drop` for each (mac, host) pair", function()
     local nft = render.nft(snap_one())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
   end)
 
   -- #392: v6 drop rule mirrors the v4 one. Without it a dual-stack host
@@ -408,7 +408,7 @@ describe("render.nft extraBlocked enforcement", function()
   it("emits a v6 drop rule `ether saddr <mac> ip6 daddr @eb6_<host> drop` (#392)", function()
     local nft = render.nft(snap_one())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
   end)
 
   it("does NOT drop traffic from MACs in OTHER profiles (no global leakage — the bug #351 fixes)", function()
@@ -426,10 +426,10 @@ describe("render.nft extraBlocked enforcement", function()
     local nft = render.nft(s)
     -- Kids MAC still has the drop.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
     -- Adults MAC must NOT appear paired with eb_tiktok_com.
     assert.is_nil(nft:find(
-      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:de:ad:be:ef:00:01:host"", 1, true))
+      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:de:ad:be:ef:00:01:host\"", 1, true))
   end)
 
   it("two MACs sharing the same extraBlocked host produce ONE ipset and TWO MAC-scoped drops", function()
@@ -448,9 +448,9 @@ describe("render.nft extraBlocked enforcement", function()
     local _, set_count = nft:gsub("set eb_tiktok_com {", "")
     assert.equal(1, set_count)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
     assert.truthy(nft:find(
-      "ether saddr 11:22:33:44:55:66 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:11:22:33:44:55:66:host"", 1, true))
+      "ether saddr 11:22:33:44:55:66 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:11:22:33:44:55:66:host\"", 1, true))
   end)
 
   it("emits no extraBlocked sets or drop rules when no device has extraBlocked", function()
@@ -487,10 +487,10 @@ describe("render.nft extraBlocked enforcement", function()
     }
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_override_example log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_override_example log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
     -- Sibling under the same profile must NOT inherit the override.
     assert.is_nil(nft:find(
-      "ether saddr 11:22:33:44:55:66 ip daddr @eb_override_example log group 1 counter drop comment "wh_drop:11:22:33:44:55:66:host"", 1, true))
+      "ether saddr 11:22:33:44:55:66 ip daddr @eb_override_example log group 1 counter drop comment \"wh_drop:11:22:33:44:55:66:host\"", 1, true))
   end)
 
 end)
@@ -1085,14 +1085,14 @@ describe("render blocklist enforcement (#352)", function()
     local nft = render.nft(snap_bl())
     -- Only kid mac references test_ads; parent does not.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:category:test_ads"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"", 1, true))
   end)
 
   -- #392: v6 drop rule mirrors the v4 one for blocklists.
   it("emits v6 drop 'ether saddr <mac> ip6 daddr @bl6_<id> drop' (#392)", function()
     local nft = render.nft(snap_bl())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:category:test_ads"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"", 1, true))
   end)
 
   it("does NOT emit v6 drop for MACs whose profile has no blocklistIds (#392)", function()
@@ -1104,7 +1104,7 @@ describe("render blocklist enforcement (#352)", function()
   it("does NOT emit drop for MACs whose profile has blocklistIds = {}", function()
     local nft = render.nft(snap_bl())
     assert.is_nil(nft:find(
-      "ether saddr de:ad:be:ef:00:01 ip daddr @bl_test_ads log group 1 counter drop comment "wh_drop:de:ad:be:ef:00:01:category:test_ads"", 1, true),
+      "ether saddr de:ad:be:ef:00:01 ip daddr @bl_test_ads log group 1 counter drop comment \"wh_drop:de:ad:be:ef:00:01:category:test_ads\"", 1, true),
       "adults MAC must not get a bl_test_ads drop rule")
   end)
 
@@ -1115,9 +1115,9 @@ describe("render blocklist enforcement (#352)", function()
     local _, set_count = nft:gsub("set bl_test_ads {", "")
     assert.equal(1, set_count, "exactly one set declaration")
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:category:test_ads"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"", 1, true))
     assert.truthy(nft:find(
-      "ether saddr 11:22:33:44:55:66 ip daddr @bl_test_ads log group 1 counter drop comment "wh_drop:11:22:33:44:55:66:category:test_ads"", 1, true))
+      "ether saddr 11:22:33:44:55:66 ip daddr @bl_test_ads log group 1 counter drop comment \"wh_drop:11:22:33:44:55:66:category:test_ads\"", 1, true))
   end)
 
   it("blocklistId referenced by profile but absent from snapshot.blocklists → silently skipped", function()
@@ -1302,14 +1302,14 @@ describe("render blockIpOnly enforcement (#353)", function()
   it("emits `ether saddr <mac> ip daddr != @resolved_<mac> drop` in wifihaven_block", function()
     local nft = render.nft(snap_bio())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
   end)
 
   it("emits the v6 sibling drop `ip6 daddr != @resolved6_<mac> drop`", function()
     local nft = render.nft(snap_bio())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
   end)
 
@@ -1355,11 +1355,11 @@ describe("render blockIpOnly enforcement (#353)", function()
     local nft = render.nft(s)
     -- Override MAC has the rule.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
     -- Sibling under same profile must NOT inherit.
     assert.is_nil(nft:find(
-      "ether saddr 11:22:33:44:55:66 ip daddr != @resolved_11_22_33_44_55_66 log group 1 counter drop comment "wh_drop:11:22:33:44:55:66:ip_only"",
+      "ether saddr 11:22:33:44:55:66 ip daddr != @resolved_11_22_33_44_55_66 log group 1 counter drop comment \"wh_drop:11:22:33:44:55:66:ip_only\"",
       1, true))
     assert.is_nil(nft:find("set resolved_11_22_33_44_55_66", 1, true))
   end)
@@ -1371,9 +1371,9 @@ describe("render blockIpOnly enforcement (#353)", function()
     assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33",  1, true))
     assert.truthy(nft:find("set resolved_11_22_33_44_55_66",  1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"", 1, true))
     assert.truthy(nft:find(
-      "ether saddr 11:22:33:44:55:66 ip daddr != @resolved_11_22_33_44_55_66 log group 1 counter drop comment "wh_drop:11:22:33:44:55:66:ip_only"", 1, true))
+      "ether saddr 11:22:33:44:55:66 ip daddr != @resolved_11_22_33_44_55_66 log group 1 counter drop comment \"wh_drop:11:22:33:44:55:66:ip_only\"", 1, true))
   end)
 
   -- ── failover allow-all suppression (mirrors eb_/bl_ pattern) ────────────
@@ -1386,10 +1386,10 @@ describe("render blockIpOnly enforcement (#353)", function()
     -- the dnsmasq tag is still wired). But forward-chain drops and DNAT for
     -- these MACs must be gone.
     assert.is_nil(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
     assert.is_nil(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @resolved6_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
     assert.is_nil(nft:find(
       "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 tcp dport 80",
@@ -1406,9 +1406,9 @@ describe("render blockIpOnly enforcement (#353)", function()
     -- rules, so a packet matching the eb_ rule is dropped regardless of the
     -- blockIpOnly rule's predicate.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
   end)
 
@@ -1569,28 +1569,28 @@ describe("render extraAllowed enforcement (#421)", function()
   it("appends `ip daddr != @ea_<m>_<a>` to the eb_<host> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"",
       1, true))
   end)
 
   it("appends `ip6 daddr != @ea6_<m>_<a>` to the eb6_<host> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"",
       1, true))
   end)
 
   it("appends `ip daddr != @ea_<m>_<a>` to the bl_<id> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @bl_test_ads ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
       1, true))
   end)
 
   it("appends `ip6 daddr != @ea6_<m>_<a>` to the bl6_<id> drop for MAC m", function()
     local nft = render.nft(snap_ea())
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @bl6_test_ads ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:category:test_ads\"",
       1, true))
   end)
 
@@ -1600,7 +1600,7 @@ describe("render extraAllowed enforcement (#421)", function()
     local nft = render.nft(s)
     -- Both clauses present in the same eb_ drop rule, in sorted order.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"",
       1, true))
   end)
 
@@ -1610,7 +1610,7 @@ describe("render extraAllowed enforcement (#421)", function()
     -- Adult MAC has the same eb_tiktok_com drop but extraAllowed={}, so no
     -- ea_ suffix on its rule.
     assert.truthy(nft:find(
-      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:de:ad:be:ef:00:01:host"", 1, true))
+      "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:de:ad:be:ef:00:01:host\"", 1, true))
     -- And specifically not carrying the kid's ea set.
     assert.is_nil(nft:find(
       "ether saddr de:ad:be:ef:00:01 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com",
@@ -1622,7 +1622,7 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.extraAllowed = {}
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:host"", 1, true))
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"", 1, true))
   end)
 
   -- ── DNAT chain: same suffix applied ─────────────────────────────────────
@@ -1661,7 +1661,7 @@ describe("render extraAllowed enforcement (#421)", function()
     local nft = render.nft(s)
     -- The bio drop is unchanged — no `!= @ea_...` clause appended.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
     -- And no spurious mixed rule like
     -- "ip daddr != @resolved_... ip daddr != @ea_..." either.
@@ -1675,11 +1675,11 @@ describe("render extraAllowed enforcement (#421)", function()
     local nft = render.nft(s)
     -- eb drop has ea suffix:
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"",
       1, true))
     -- bio drop has no ea suffix:
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment "wh_drop:aa:bb:cc:11:22:33:ip_only"",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
       1, true))
   end)
 
@@ -1730,10 +1730,10 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
   end)
 
@@ -1750,19 +1750,25 @@ describe("render extraAllowed enforcement (#421)", function()
       1, true))
   end)
 
-  it("leaves blocked MACs *without* extraAllowed in @blocked_macs (unconditional drop)", function()
+  it("leaves blocked MACs *without* extraAllowed in @blocked_macs (per-MAC drop)", function()
+    -- #1122: the family-agnostic `ether saddr @blocked_macs drop` is replaced
+    -- by a per-MAC drop carrying `log group 1` + comment. The @blocked_macs
+    -- set still exists (the DNAT chain reads from it), but there's no longer
+    -- a single set-driven drop rule.
     local s = snap_ea()
     -- Make adult both blocked AND keep extraAllowed={} → still in @blocked_macs.
     s.profiles["1"].rules.blocked = true
     s.profiles["1"].rules.blockReason = "Paused"
     local nft = render.nft(s)
-    -- Adult MAC must appear in @blocked_macs elements.
+    -- Adult MAC must appear in @blocked_macs elements (set drives DNAT).
     local pos = nft:find("set blocked_macs", 1, true)
     local blk_end = nft:find("\n  }", pos, true)
     local blk = nft:sub(pos, blk_end)
     assert.truthy(blk:find("de:ad:be:ef:00:01", 1, true))
-    -- And the family-agnostic @blocked_macs drop fires for adult.
-    assert.truthy(nft:find("ether saddr @blocked_macs drop", 1, true))
+    -- And the per-MAC drop with logging fires for adult.
+    assert.truthy(nft:find(
+      "ether saddr de:ad:be:ef:00:01 log group 1 counter drop comment \"wh_drop:de:ad:be:ef:00:01:Paused\"",
+      1, true))
   end)
 
   it("emits the @blocked_macs DNAT only when the set is non-empty", function()
@@ -1800,7 +1806,7 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
       1, true))
   end)
 

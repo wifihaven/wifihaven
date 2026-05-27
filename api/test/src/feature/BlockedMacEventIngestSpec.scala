@@ -100,7 +100,7 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       // for the dropped packet (the common case — nflog gives us the IP, not
       // a hostname). The API's #720 backfill closes the attribution loop
       // when a paired fqdn event lands in the same window.
-      host = Some(HostId.Ipv4(IpAddress.unsafe(dstIp))),
+      host = Some(HostId.IPv4(IpAddress.unsafe(dstIp))),
       destIp = Some(IpAddress.unsafe(dstIp)),
       allowed = Some(false),
       reason = Some(reason),
@@ -108,11 +108,15 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       eventId = Some(UUID.randomUUID()),
     )
 
+  // Anchor event timestamps to "just now" so the default /api/logs?hours=24
+  // window includes them regardless of the test Clock injected via bootstrap.
+  private def recentTs: Instant = Instant.now().minusSeconds(60)
+
   def spec = suite("BlockedMacEventIngest (#1122)")(
     test(
       "each MacBlockReason synthesized by the agent round-trips through /api/logs?blocked=true",
     ) {
-      val ts0 = Instant.parse("2026-01-06T14:00:00Z")
+      val ts0 = recentTs
       for {
         _         <- cleanDb
         (id, tk)  <- seedRouter
@@ -139,7 +143,7 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         assertTrue(reasons == Set("Paused", "Schedule", "TimeLimit", "Manual", "Unmanaged"))
     },
     test("synthesized blocked-MAC events appear in /api/connection-events/series with bucket=1h") {
-      val ts0 = Instant.parse("2026-01-06T14:00:00Z")
+      val ts0 = recentTs
       for {
         _         <- cleanDb
         (id, tk)  <- seedRouter
@@ -169,7 +173,7 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       // Pre-#1122 agents emit `Manual` for the default-block path; #1122 agents
       // emit `Unmanaged`. The API stores the reason as a free-form string, so
       // both must be acceptable without ingest rejection.
-      val ts = Instant.parse("2026-01-06T14:00:00Z")
+      val ts = recentTs
       for {
         _         <- cleanDb
         (id, tk)  <- seedRouter
@@ -186,5 +190,5 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         assertTrue(page.rows.size == 1) &&
         assertTrue(page.rows.head.reason == "Unmanaged")
     },
-  )
+  ) @@ TestAspect.sequential
 }
