@@ -92,9 +92,19 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       trafficRepo <- ZIO.service[TrafficReportRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       profileRepo <- ZIO.service[ProfileRepo]
+      schedRepo   <- ZIO.service[ScheduleRepo]
       upRepo      <- ZIO.service[UserProfileRepo]
       hsRepo      <- ZIO.service[HouseholdSettingsRepo]
       clock       <- ZIO.service[Clock]
+      tss = new wifihaven.api.policy.TimeStatusServiceLive(
+        profileRepo,
+        schedRepo,
+        tlRepo,
+        stlRepo,
+        deviceRepo,
+        trafficRepo,
+        extRepo,
+      )
     } yield TimeRoutes.routes(
       auth,
       deviceRepo,
@@ -105,6 +115,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       profileRepo,
       upRepo,
       hsRepo,
+      tss,
       clock,
       cache,
     )

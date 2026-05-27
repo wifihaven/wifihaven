@@ -116,6 +116,7 @@ object Main extends ZIOAppDefault {
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
       Clock.live >+>
       AuthService.layer >+>
+      TimeStatusService.layer >+>
       PolicyService.layer >+>
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
@@ -150,6 +151,7 @@ object Main extends ZIOAppDefault {
       appRepo     <- ZIO.service[AppRepo]
       notifier    <- ZIO.service[Notifier]
       policy      <- ZIO.service[PolicyService]
+      timeStatus  <- ZIO.service[wifihaven.api.policy.TimeStatusService]
       cfg         <- ZIO.service[AppConfig]
       clock       <- ZIO.service[Clock]
       timeCache   <- ZIO.service[TimeStatusCache]
@@ -171,6 +173,7 @@ object Main extends ZIOAppDefault {
         profileRepo,
         upRepo,
         hsRepo,
+        timeStatus,
         clock,
         timeCache,
       ) ++

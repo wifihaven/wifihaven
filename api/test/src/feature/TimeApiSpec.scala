@@ -108,6 +108,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -118,6 +127,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -154,6 +164,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -164,6 +183,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -207,6 +227,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -217,6 +246,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -264,6 +294,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -274,6 +313,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -313,6 +353,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss     = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes  = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -323,6 +372,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           extBody = GrantExtensionRequest(kidsId, 30, Some("Homework finished early")).toJson
@@ -359,6 +409,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -369,6 +428,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           body   = GrantExtensionRequest(kidsId, 15, Some("Good behavior")).toJson
@@ -403,6 +463,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -413,6 +482,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           body   = GrantExtensionRequest(kidsId, 30, None).toJson
@@ -440,6 +510,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -450,6 +529,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           grant  = (mins: Int) =>
@@ -494,6 +574,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -504,6 +593,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -556,6 +646,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -566,6 +665,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -612,6 +712,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -622,6 +731,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -668,6 +778,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -678,6 +797,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -722,6 +842,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -732,6 +861,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -775,6 +905,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -785,6 +924,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -832,6 +972,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -842,6 +991,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -919,6 +1069,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -929,6 +1088,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -980,6 +1140,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -990,6 +1159,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -1036,6 +1206,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1046,6 +1225,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -1173,6 +1353,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1183,6 +1372,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -1251,6 +1441,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1261,6 +1460,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -1308,6 +1508,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1318,6 +1527,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -1363,6 +1573,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1373,6 +1592,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -1436,6 +1656,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1446,6 +1675,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -1492,6 +1722,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1502,6 +1741,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -1542,6 +1782,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1552,6 +1801,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           // Default window (anchor=today): outside-range traffic must NOT appear.
@@ -1607,6 +1857,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _ <- seedTraffic(routerId, testMac, "late.example", today, 5, bucketOffset = 66)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
+          tss        = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes     = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1617,6 +1876,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           expected0  = today.atStartOfDay(java.time.ZoneOffset.UTC).toInstant.plusSeconds(5 * 3600)
@@ -1653,6 +1913,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
+          schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
@@ -1663,6 +1924,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           token           <- auth.login("admin", "changeme").map(_.token.value)
           userProfileRepo <- ZIO.service[UserProfileRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1673,6 +1943,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           resp <- routes.runZIO(
@@ -1714,6 +1985,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1724,6 +2004,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request
@@ -1753,6 +2034,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         for {
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
+          schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
           stlRepo         <- ZIO.service[SiteTimeLimitRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
@@ -1763,6 +2045,15 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           userProfileRepo <- ZIO.service[UserProfileRepo]
           hsRepo          <- ZIO.service[HouseholdSettingsRepo]
           clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
           routes = TimeRoutes.routes(
             auth,
             deviceRepo,
@@ -1773,6 +2064,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             userProfileRepo,
             hsRepo,
+            tss,
             clock,
           )
           req    = Request

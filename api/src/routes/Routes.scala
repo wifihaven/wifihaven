@@ -477,6 +477,7 @@ object TimeRoutes {
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
       hsRepo: HouseholdSettingsRepo,
+      timeStatusService: wifihaven.api.policy.TimeStatusService,
       clock: Clock,
       cache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
   ): Routes[Any, Response] =
@@ -487,62 +488,31 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / "summary"                ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: default to household-local "today", not UTC `clock.today`.
+            today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            allProfiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allDevices    <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allLimits     <- timeLimitRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            allSiteLimits <- siteTimeLimitRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            extsByPid     <- extRepo
-              .snapshotAllByProfile(date)
+            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
+            states      <- timeStatusService
+              .dayStateAll(now, date, settings)
               .mapError(ErrorMapper.dbErrorToResponse)
-            settings      <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            visible       <- visibleProfiles(claims, allProfiles, userProfileRepo)
-            devicesByPid = allDevices.groupBy(_.profileId)
-            allMacs      = visible.iterator
-              .flatMap(p => devicesByPid.getOrElse(Some(p.id), Nil))
-              .map(_.mac)
-              .toList
-              .distinct
-            presence <- (if allMacs.isEmpty then ZIO.succeed(Nil)
-                         else trafficRepo.listPresenceRows(allMacs, date))
-              .mapError(ErrorMapper.dbErrorToResponse)
-            limitByPid  = allLimits.iterator.map(l => l.profileId -> l.dailyMinutes).toMap
-            exemptByPid = allSiteLimits.iterator
-              .filter(_.exemptFromDaily)
-              .toList
-              .groupBy(_.profileId)
-              .view
-              .mapValues(_.map(_.domainPattern))
-              .toMap
-            summaries   = visible.map { p =>
-              val devices   = devicesByPid.getOrElse(Some(p.id), Nil)
-              val macSet    = devices.map(_.mac).toSet
-              val pRows     = presence.filter(r => macSet.contains(r.mac))
-              val exempts   = exemptByPid.getOrElse(p.id, Nil)
-              val perMac    = wifihaven.api.presence.Presence
-                .totalMinutesByMac(pRows, exempts, settings.heartbeatFilter)
-              // #751: honor the profile's overlap mode.
-              val used      = p.crossDeviceOverlapMode match {
-                case CrossDeviceOverlapMode.Sum   =>
-                  devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
-                case CrossDeviceOverlapMode.Dedup =>
-                  wifihaven.api.presence.Presence
-                    .dedupedTotalMinutes(pRows, exempts, settings.heartbeatFilter)
-              }
-              val limit     = limitByPid.get(p.id)
-              val extMins   = extsByPid.getOrElse(p.id, 0)
-              val remaining = limit.map(l => (l + extMins - used).max(0))
+            summaries = visible.map { p =>
+              val st = states.getOrElse(
+                p.id,
+                wifihaven.api.policy.ProfileDayState(p.id, date, None, 0, 0, None, false, None, Nil),
+              )
               ProfileTimeSummary(
                 p.id,
                 p.name,
-                date.toString,
-                limit,
-                used,
-                extMins,
-                remaining,
+                st.date.toString,
+                st.dailyLimitMinutes,
+                st.usedMinutes,
+                st.extensionMinutes,
+                st.remainingMinutes,
               )
             }
           } yield Response
@@ -554,15 +524,17 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / "summary" / "week"       ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: anchor on household-local today, not UTC today.
+            today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
             allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             allLimits   <- timeLimitRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings    <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             visible     <- visibleProfiles(claims, allProfiles, userProfileRepo)
             devicesByPid = allDevices.groupBy(_.profileId)
             allMacs      = visible.iterator
@@ -604,8 +576,11 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status"                            ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: household-local today, not UTC.
+            today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
             // #795: ?profileId=N narrows the rollup to a single profile so the
@@ -615,7 +590,6 @@ object TimeRoutes {
             profileIdOpt <- parseProfileIdParam(req)
             allProfiles  <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             allDevices   <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings     <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             visible      <- visibleProfiles(claims, allProfiles, userProfileRepo)
             scoped       = profileIdOpt match {
               case Some(pid) => visible.filter(_.id == pid)
@@ -633,11 +607,10 @@ object TimeRoutes {
                       p,
                       devicesByPid.getOrElse(Some(p.id), Nil),
                       date,
-                      timeLimitRepo,
-                      siteTimeLimitRepo,
+                      now,
+                      settings,
+                      timeStatusService,
                       trafficRepo,
-                      extRepo,
-                      settings.heartbeatFilter,
                     )
                   }
               }
@@ -650,9 +623,12 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / "week"                   ->
         handler { (req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
-            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today (UTC).
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: household-local today (was UTC).
+            today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            // ?to=YYYY-MM-DD anchors the trailing 7-day window; defaults to today (household-local).
             // ?bucketOffsetMin=N sets the minute-past-the-hour where the hourly grid starts,
             // so each bucket falls fully within one local day on the caller's side (#794).
             // Accepts 0/15/30/45; defaults to 0 (whole-hour grid, fine for UTC-aligned zones).
@@ -664,7 +640,6 @@ object TimeRoutes {
             profileIdOpt    <- parseProfileIdParam(req)
             allProfiles     <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             allDevices      <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-            settings        <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             visible         <- visibleProfiles(claims, allProfiles, userProfileRepo)
             scoped       = profileIdOpt match {
               case Some(pid) => visible.filter(_.id == pid)
@@ -700,8 +675,11 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / string("mac") / "week"   ->
         handler { (mac: String, req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: household-local today.
+            today = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             toStr = req.url.queryParam("to").getOrElse(today.toString)
             to    = LocalDate.parse(toStr)
             from  = to.minusDays(6)
@@ -711,7 +689,6 @@ object TimeRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
             _               <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            settings        <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             status          <- buildDeviceTimeStatusWeek(
               device,
               from,
@@ -728,25 +705,26 @@ object TimeRoutes {
       Method.GET / "api" / "time" / "status" / string("mac")            ->
         handler { (mac: String, req: Request) =>
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: household-local today.
+            today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            device   <- deviceRepo
+            device <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            status   <- buildDeviceTimeStatus(
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            status <- buildDeviceTimeStatus(
               device,
               date,
+              now,
+              settings,
               profileRepo,
-              timeLimitRepo,
-              siteTimeLimitRepo,
+              timeStatusService,
               trafficRepo,
-              extRepo,
-              settings.heartbeatFilter,
             )
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(status.toJson)
@@ -760,17 +738,19 @@ object TimeRoutes {
           // tune `heartbeat_bytes_threshold` against this surface before flipping
           // `heartbeat_filter_enabled` on.
           for {
-            claims <- requireAuth(req, auth)
-            today  <- clock.today
+            claims   <- requireAuth(req, auth)
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            now      <- clock.instant
+            // #1104: household-local today.
+            today   = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date    = LocalDate.parse(dateStr)
-            device   <- deviceRepo
+            device <- deviceRepo
               .findByMac(MacAddress.unsafe(normalizeMac(mac)))
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
-            _        <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
-            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
-            rows     <- trafficRepo
+            _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+            rows   <- trafficRepo
               .listPresenceRows(List(device.mac), date)
               .mapError(ErrorMapper.dbErrorToResponse)
             classified = wifihaven.api.presence.Presence
@@ -857,49 +837,40 @@ object TimeRoutes {
         .unit
     }
 
+  /**
+   * #1104: builds the daily per-profile wire shape. Cap/extension/remaining/per-site numbers come
+   * from the canonical `TimeStatusService.dayState` so they cannot drift from the policy snapshot's
+   * `blocked`/`blockReason`. Per-device summaries and the top-10 host attribution are still
+   * computed from the day's presence rows here (snapshot doesn't need them).
+   */
   private def buildProfileTimeStatus(
       profile: Profile,
       devices: List[Device],
       date: LocalDate,
-      tlRepo: TimeLimitRepo,
-      stlRepo: SiteTimeLimitRepo,
+      now: java.time.Instant,
+      settings: HouseholdSettings,
+      timeStatusService: wifihaven.api.policy.TimeStatusService,
       trafficRepo: TrafficReportRepo,
-      extRepo: TimeExtensionRepo,
-      heartbeatFilter: HeartbeatFilter,
   ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
     for {
-      tl       <- tlRepo.findForProfile(profile.id)
-      stls     <- stlRepo.listForProfile(profile.id)
+      stateOpt <- timeStatusService.dayState(now, date, settings, profile.id)
+      state = stateOpt.getOrElse(
+        wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
+      )
       presence <- trafficRepo.listPresenceRows(macs, date)
-      extMins  <- extRepo.getProfileTotalExtension(profile.id, date)
-      // Only exempt site domains are excluded from the daily total.
-      // Included sites (exemptFromDaily=false) count against the daily cap.
-      exemptPats      = stls.filter(_.exemptFromDaily).map(_.domainPattern)
-      perMacTotal     = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, exemptPats, heartbeatFilter)
-      perMacPat       = wifihaven.api.presence.Presence
-        .patternMinutesByMac(presence, stls.map(_.domainPattern))
-      // #751: in Dedup mode the profile total unions per-device active buckets
-      // (one bucket → one minute, regardless of how many of this profile's
-      // devices were active in it). In Sum mode we keep the historical
-      // behaviour: per-device totals added.
-      totalUsed       = profile.crossDeviceOverlapMode match {
-        case CrossDeviceOverlapMode.Sum   =>
-          devices.iterator.map(d => perMacTotal.getOrElse(d.mac, 0)).sum
-        case CrossDeviceOverlapMode.Dedup =>
-          wifihaven.api.presence.Presence
-            .dedupedTotalMinutes(presence, exemptPats, heartbeatFilter)
+      perMacTotal     = {
+        val exemptPats = state.perSite.filter(_.exemptFromDaily).map(_.domainPattern)
+        wifihaven.api.presence.Presence
+          .totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
       }
-      remaining       = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
-      siteUsage       = stls.map { stl =>
-        val used = devices.iterator.map(d => perMacPat.getOrElse((d.mac, stl.domainPattern), 0)).sum
+      siteUsage       = state.perSite.map { s =>
         SiteUsage(
-          stl.label,
-          stl.domainPattern,
-          stl.dailyMinutes,
-          used,
-          (stl.dailyMinutes - used).max(0),
+          s.label,
+          s.domainPattern,
+          s.dailyLimitMinutes,
+          s.usedMinutes,
+          (s.dailyLimitMinutes - s.usedMinutes).max(0),
         )
       }
       deviceSummaries = devices.map { d =>
@@ -923,11 +894,11 @@ object TimeRoutes {
     } yield ProfileTimeStatus(
       profile.id,
       profile.name,
-      date.toString,
-      tl.map(_.dailyMinutes),
-      totalUsed,
-      extMins,
-      remaining,
+      state.date.toString,
+      state.dailyLimitMinutes,
+      state.usedMinutes,
+      state.extensionMinutes,
+      state.remainingMinutes,
       siteUsage,
       deviceSummaries,
       hostUsage,
@@ -1114,42 +1085,47 @@ object TimeRoutes {
       .sortBy(_.bucketStart)
   }
 
+  /**
+   * #1104: per-device daily wire shape. Cap (`dailyLimitMins`/`extensionMins`/`remainingMins`)
+   * comes from the profile-level `ProfileDayState` so the per-device view matches the per-profile
+   * view and the snapshot. Per-device active minutes and per-site bars still need this device's
+   * presence rows, but the daily cap fields read from `state`.
+   */
   private def buildDeviceTimeStatus(
       device: Device,
       date: LocalDate,
+      now: java.time.Instant,
+      settings: HouseholdSettings,
       profileRepo: ProfileRepo,
-      tlRepo: TimeLimitRepo,
-      stlRepo: SiteTimeLimitRepo,
+      timeStatusService: wifihaven.api.policy.TimeStatusService,
       trafficRepo: TrafficReportRepo,
-      extRepo: TimeExtensionRepo,
-      heartbeatFilter: HeartbeatFilter,
   ): Task[DeviceTimeStatus] = {
     val pid = device.profileId
     for {
-      tl       <- pid.fold(ZIO.succeed(Option.empty[TimeLimit]))(tlRepo.findForProfile)
-      stls     <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(stlRepo.listForProfile)
+      stateOpt <- pid.fold(ZIO.succeed(Option.empty[wifihaven.api.policy.ProfileDayState]))(p =>
+        timeStatusService.dayState(now, date, settings, p),
+      )
       presence <- trafficRepo.listPresenceRows(List(device.mac), date)
-      extMins  <- pid.fold(ZIO.succeed(0))(extRepo.getProfileTotalExtension(_, date))
       profile  <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      // Only exempt site domains are excluded from the daily total.
-      // Included sites (exemptFromDaily=false) count against the daily cap.
-      exemptPats = stls.filter(_.exemptFromDaily).map(_.domainPattern)
+      exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).map(_.domainPattern))
       totalUsed  = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, exemptPats, heartbeatFilter)
+        .totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
         .getOrElse(device.mac, 0)
       perPat     = wifihaven.api.presence.Presence
-        .patternMinutesByMac(presence, stls.map(_.domainPattern))
-      remaining  = tl.map(l => (l.dailyMinutes + extMins - totalUsed).max(0))
-      siteUsage  = stls.map { stl =>
-        val used = perPat.getOrElse((device.mac, stl.domainPattern), 0)
+        .patternMinutesByMac(
+          presence,
+          stateOpt.toList.flatMap(_.perSite.map(_.domainPattern)),
+        )
+      siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
+        val used = perPat.getOrElse((device.mac, s.domainPattern), 0)
         SiteUsage(
-          stl.label,
-          stl.domainPattern,
-          stl.dailyMinutes,
+          s.label,
+          s.domainPattern,
+          s.dailyLimitMinutes,
           used,
-          (stl.dailyMinutes - used).max(0),
+          (s.dailyLimitMinutes - used).max(0),
         )
       }
     } yield DeviceTimeStatus(
@@ -1158,10 +1134,10 @@ object TimeRoutes {
       date.toString,
       profile,
       pid,
-      tl.map(_.dailyMinutes),
+      stateOpt.flatMap(_.dailyLimitMinutes),
       totalUsed,
-      extMins,
-      remaining,
+      stateOpt.map(_.extensionMinutes).getOrElse(0),
+      stateOpt.flatMap(_.remainingMinutes),
       siteUsage,
     )
   }
