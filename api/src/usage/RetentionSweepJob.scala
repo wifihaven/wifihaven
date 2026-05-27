@@ -33,10 +33,13 @@ object RetentionSweepJob {
 
   // Retention horizons (days). Hardcoded for v1; operator-tunable config
   // (`usage.rawRetentionDays` etc.) is a follow-up.
-  val RawRetentionDays: Int    = 30
-  val EventsRetentionDays: Int = 30
-  val HourlyRetentionDays: Int = 90
-  val DailyRetentionDays: Int  = 180
+  val RawRetentionDays: Int      = 30
+  val EventsRetentionDays: Int   = 30
+  // TODO(#1114): once mac_drops_hourly / mac_drops_daily land, mirror the
+  // traffic_hourly/daily horizons (90 / 180 days) here.
+  val MacDropsRetentionDays: Int = 30
+  val HourlyRetentionDays: Int   = 90
+  val DailyRetentionDays: Int    = 180
 
   // Daily run hour (UTC). Design doc prefers router-local, but the API is
   // multi-household so picking *a* local zone is ill-defined. v1 = UTC; revisit
@@ -77,6 +80,11 @@ object RetentionSweepJob {
     for {
       raw    <- deleteOlderThan("traffic_reports", "period_start", RawRetentionDays)
       events <- deleteOlderThan("connection_events", "ts", EventsRetentionDays)
+      // #1103: gated on to_regclass so a deployment that has not yet run V39
+      // (e.g. older test fixtures) silently skips the sweep instead of failing.
+      drops  <- ifTableExists("mac_drops") {
+        deleteOlderThan("mac_drops", "period_end", MacDropsRetentionDays)
+      }
       hourly <- ifTableExists("traffic_hourly") {
         deleteOlderThan("traffic_hourly", "bucket_start", HourlyRetentionDays)
       }
@@ -90,9 +98,10 @@ object RetentionSweepJob {
         SweepResult("traffic_reports", raw),
         SweepResult("connection_events", events),
       )
+      val md   = drops.map(SweepResult("mac_drops", _)).toList
       val h    = hourly.map(SweepResult("traffic_hourly", _)).toList
       val d    = daily.map(SweepResult("traffic_daily", _)).toList
-      base ++ h ++ d
+      base ++ md ++ h ++ d
     }
 
   private def ifTableExists[A](table: String)(body: => ConnectionIO[A]): ConnectionIO[Option[A]] =

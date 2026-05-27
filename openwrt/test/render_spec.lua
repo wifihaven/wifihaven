@@ -552,7 +552,20 @@ describe("render.nft nat chain", function()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
-    assert.truthy(nft:find("ether saddr @blocked_macs drop", 1, true))
+    -- #1103: per-MAC counter+drop rule, replacing the single set-based drop.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 counter drop", 1, true))
+  end)
+
+  -- #1103: per-MAC drop rules carry a comment "wh_drop:<mac>:<reason>" so the
+  -- agent can attribute drops by reason. If this assertion fails, the
+  -- mac_drops series will lose per-reason attribution.
+  it("tags per-MAC drop rules with wh_drop:<mac>:<reason> comments (#1103)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    assert.truthy(nft:find('comment "wh_drop:aa:bb:cc:11:22:33:Paused"', 1, true))
   end)
 
   -- #351: a connection-layer block to an extraBlocked host on HTTP/80 should
@@ -1612,11 +1625,13 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
+    -- #1103: per-MAC EA-gated drops now carry a counter + comment for the
+    -- mac_drops attribution path.
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop",
       1, true))
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_music_tiktok_com counter drop",
       1, true))
   end)
 
@@ -1644,8 +1659,11 @@ describe("render extraAllowed enforcement (#421)", function()
     local blk_end = nft:find("\n  }", pos, true)
     local blk = nft:sub(pos, blk_end)
     assert.truthy(blk:find("de:ad:be:ef:00:01", 1, true))
-    -- And the family-agnostic @blocked_macs drop fires for adult.
-    assert.truthy(nft:find("ether saddr @blocked_macs drop", 1, true))
+    -- #1103: per-MAC counter+drop replaces the set-based drop. Adult's MAC
+    -- gets its own rule with reason=Paused attribution.
+    assert.truthy(nft:find(
+      "ether saddr de:ad:be:ef:00:01 counter drop comment \"wh_drop:de:ad:be:ef:00:01:Paused\"",
+      1, true))
   end)
 
   it("emits the @blocked_macs DNAT only when the set is non-empty", function()
@@ -1683,7 +1701,7 @@ describe("render extraAllowed enforcement (#421)", function()
     s.profiles["3"].rules.extraAllowed = { "music.tiktok.com", "khanacademy.org" }
     local nft = render.nft(s)
     assert.truthy(nft:find(
-      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com drop",
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_khanacademy_org ip daddr != @ea_aa_bb_cc_11_22_33_music_tiktok_com counter drop",
       1, true))
   end)
 

@@ -6,7 +6,7 @@ import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog } from '@/t
 
 vi.mock('@/api/client', () => ({
   api: {
-    logs:     { query: vi.fn(), series: vi.fn() },
+    logs:     { query: vi.fn(), series: vi.fn(), macDrops: vi.fn() },
     devices:  { list:  vi.fn() },
     profiles: { list:  vi.fn() },
     apps:     { list:  vi.fn() },
@@ -77,6 +77,43 @@ beforeEach(() => {
   ;(api.apps.list     as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
     { app: { id: 1, name: 'YouTube', slug: 'youtube' } },
   ])
+  // #1103: default to "no drops" so the panel stays hidden in unrelated tests.
+  ;(api.logs.macDrops as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] })
+})
+
+describe('LogsPage — MAC drops panel (#1103)', () => {
+  it('renders a visible signal when /api/mac-drops/series returns drops while connection_events is empty', async () => {
+    // The bug we're guarding: kid-iPad is firewall-blocked, so dnsmasq
+    // never sees its traffic. `/api/connection-events/series` (and /api/logs)
+    // return nothing for that MAC, but `/api/mac-drops/series` reports the
+    // drops. The SPA must still surface a "blocked: paused" signal.
+    (api.logs.query    as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], nextCursor: null })
+    ;(api.logs.series   as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], nextCursor: null })
+    ;(api.logs.macDrops as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rows: [
+        {
+          windowStart: '2026-05-22T14:00:00Z',
+          mac: 'aa:bb:cc:dd:ee:01',
+          reason: 'Paused',
+          packets: 42,
+          bytes: 9001,
+        },
+      ],
+    })
+    renderAt()
+    expect(await screen.findByTestId('mac-drops-panel')).toBeInTheDocument()
+    expect(api.logs.macDrops).toHaveBeenCalled()
+    const reasonChip = await screen.findByTestId('mac-drops-reason-aa:bb:cc:dd:ee:01')
+    expect(reasonChip.textContent).toMatch(/blocked:\s*paused/)
+  })
+
+  it('stays hidden when there are no MAC drops', async () => {
+    (api.logs.macDrops as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] })
+    renderAt()
+    // Wait for the page to settle, then assert the panel isn't rendered.
+    await screen.findByText('example.com')
+    expect(screen.queryByTestId('mac-drops-panel')).not.toBeInTheDocument()
+  })
 })
 
 describe('LogsPage (Connection Events) — raw view', () => {

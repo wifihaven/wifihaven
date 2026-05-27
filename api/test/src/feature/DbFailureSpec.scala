@@ -151,6 +151,11 @@ object DbFailureSpec extends ZIOSpecDefault {
     def ensureDefault(z: java.time.ZoneId) = throwing
   }
 
+  private def brokenMacDropsRepo: MacDropsRepo = new MacDropsRepo {
+    def insertBatch(rows: List[MacDropInsert])                   = throwing
+    def querySeries(f: MacDropsSeriesFilter, bucketSeconds: Int) = throwing
+  }
+
   private def brokenConnectionEventRepo: ConnectionEventRepo = new ConnectionEventRepo {
     def insertBatch(es: List[ConnectionEventInsert])                                    = throwing
     def recent(l: Int)                                                                  = throwing
@@ -202,6 +207,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenConnectionEventRepo,
         brokenAlertRepo,
         brokenHouseholdSettingsRepo,
+        brokenMacDropsRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
@@ -227,6 +233,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenConnectionEventRepo,
         brokenAlertRepo,
         brokenHouseholdSettingsRepo,
+        brokenMacDropsRepo,
       )
       val req    = Request
         .post(URL.decode("/api/router/usage").toOption.get, Body.fromString("not json"))
@@ -248,6 +255,7 @@ object DbFailureSpec extends ZIOSpecDefault {
         brokenConnectionEventRepo,
         brokenAlertRepo,
         brokenHouseholdSettingsRepo,
+        brokenMacDropsRepo,
       )
       val req    = Request.post(URL.decode("/api/router/usage").toOption.get, Body.fromString("{}"))
       for {

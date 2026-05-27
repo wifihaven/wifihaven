@@ -128,34 +128,35 @@ object Main extends ZIOAppDefault {
       bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
   ) =
     for {
-      auth        <- ZIO.service[AuthService]
-      userRepo    <- ZIO.service[UserRepo]
-      upRepo      <- ZIO.service[UserProfileRepo]
-      profileRepo <- ZIO.service[ProfileRepo]
-      schedRepo   <- ZIO.service[ScheduleRepo]
-      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
-      tlRepo      <- ZIO.service[TimeLimitRepo]
-      stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-      deviceRepo  <- ZIO.service[DeviceRepo]
-      blRepo      <- ZIO.service[BlocklistRepo]
-      blCache     <- ZIO.service[BlocklistCache]
-      blFetcher2  <- ZIO.service[BlocklistFetcher]
-      usageRepo   <- ZIO.service[TimeUsageRepo]
-      extRepo     <- ZIO.service[TimeExtensionRepo]
-      routerRepo  <- ZIO.service[RouterRepo]
-      trafficRepo <- ZIO.service[TrafficReportRepo]
-      rollupRepo2 <- ZIO.service[RollupRepo]
-      connRepo    <- ZIO.service[ConnectionEventRepo]
-      blockEvRepo <- ZIO.service[BlockEventRepo]
-      alertRepo   <- ZIO.service[AlertRepo]
-      appRepo     <- ZIO.service[AppRepo]
-      notifier    <- ZIO.service[Notifier]
-      policy      <- ZIO.service[PolicyService]
-      timeStatus  <- ZIO.service[wifihaven.api.policy.TimeStatusService]
-      cfg         <- ZIO.service[AppConfig]
-      clock       <- ZIO.service[Clock]
-      timeCache   <- ZIO.service[TimeStatusCache]
-      xa          <- ZIO.service[Transactor[Task]]
+      auth         <- ZIO.service[AuthService]
+      userRepo     <- ZIO.service[UserRepo]
+      upRepo       <- ZIO.service[UserProfileRepo]
+      profileRepo  <- ZIO.service[ProfileRepo]
+      schedRepo    <- ZIO.service[ScheduleRepo]
+      hsRepo       <- ZIO.service[HouseholdSettingsRepo]
+      tlRepo       <- ZIO.service[TimeLimitRepo]
+      stlRepo      <- ZIO.service[SiteTimeLimitRepo]
+      deviceRepo   <- ZIO.service[DeviceRepo]
+      blRepo       <- ZIO.service[BlocklistRepo]
+      blCache      <- ZIO.service[BlocklistCache]
+      blFetcher2   <- ZIO.service[BlocklistFetcher]
+      usageRepo    <- ZIO.service[TimeUsageRepo]
+      extRepo      <- ZIO.service[TimeExtensionRepo]
+      routerRepo   <- ZIO.service[RouterRepo]
+      trafficRepo  <- ZIO.service[TrafficReportRepo]
+      rollupRepo2  <- ZIO.service[RollupRepo]
+      connRepo     <- ZIO.service[ConnectionEventRepo]
+      macDropsRepo <- ZIO.service[MacDropsRepo]
+      blockEvRepo  <- ZIO.service[BlockEventRepo]
+      alertRepo    <- ZIO.service[AlertRepo]
+      appRepo      <- ZIO.service[AppRepo]
+      notifier     <- ZIO.service[Notifier]
+      policy       <- ZIO.service[PolicyService]
+      timeStatus   <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+      cfg          <- ZIO.service[AppConfig]
+      clock        <- ZIO.service[Clock]
+      timeCache    <- ZIO.service[TimeStatusCache]
+      xa           <- ZIO.service[Transactor[Task]]
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield HealthRoutes.routes(dbHealthCheck) ++
@@ -178,6 +179,7 @@ object Main extends ZIOAppDefault {
         timeCache,
       ) ++
       LogRoutes.routes(auth, connRepo, upRepo) ++
+      MacDropsRoutes.routes(auth, macDropsRepo) ++
       UsageRoutes.routes(
         auth,
         deviceRepo,
@@ -210,6 +212,7 @@ object Main extends ZIOAppDefault {
         connRepo,
         alertRepo,
         hsRepo,
+        macDropsRepo,
       ) ++
       AlertRoutes.routes(
         auth,

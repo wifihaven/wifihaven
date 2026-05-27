@@ -946,6 +946,37 @@ case class ConnectionEventSeriesPage(
     nextCursor: Option[String] = None,
 ) derives JsonCodec
 
+// ── MAC-level packet drops (#1103) ─────────────────────────────────────────
+// nftables counter-rule drops from `@blocked_macs` (paused / schedule /
+// time_limit / manual / unmanaged). The router agent polls per-(mac, reason)
+// counters and posts deltas; dedup is on (router_id, mac, reason, period_end).
+
+case class MacDropRecord(
+    mac: MacAddress,
+    reason: MacBlockReason,
+    packets: Long,
+    bytes: Long,
+    periodStart: String,
+    periodEnd: String,
+) derives JsonCodec
+
+case class MacDropsReport(
+    routerId: RouterId,
+    drops: List[MacDropRecord],
+) derives JsonCodec
+
+case class MacDropsAggRow(
+    windowStart: String,
+    mac: MacAddress,
+    reason: MacBlockReason,
+    packets: Long,
+    bytes: Long,
+) derives JsonCodec
+
+case class MacDropsSeriesPage(
+    rows: List[MacDropsAggRow],
+) derives JsonCodec
+
 // ── Dashboard "Now" ────────────────────────────────────────────────────────
 
 case class DashboardNowHost(host: HostId, activeSeconds: Long) derives JsonCodec
@@ -1227,18 +1258,24 @@ object MacBlockReason {
   case object Schedule  extends MacBlockReason
   case object TimeLimit extends MacBlockReason
   case object Manual    extends MacBlockReason
+  // #1103: unprofiled device blocked by `unmanagedMacPolicy.policy=block` (#374).
+  // Distinct from Manual so the mac_drops chart can attribute drops to the
+  // household-policy default block vs. an admin's explicit per-device block.
+  case object Unmanaged extends MacBlockReason
 
   def asString(r: MacBlockReason): String      = r match {
     case Paused    => "Paused"
     case Schedule  => "Schedule"
     case TimeLimit => "TimeLimit"
     case Manual    => "Manual"
+    case Unmanaged => "Unmanaged"
   }
   def parse(s: String): Option[MacBlockReason] = s match {
     case "Paused"    => Some(Paused)
     case "Schedule"  => Some(Schedule)
     case "TimeLimit" => Some(TimeLimit)
     case "Manual"    => Some(Manual)
+    case "Unmanaged" => Some(Unmanaged)
     case _           => None
   }
 

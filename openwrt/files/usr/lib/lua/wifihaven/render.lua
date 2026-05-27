@@ -523,9 +523,15 @@ function M.nft(snapshot, opts)
   local ea_by_mac_early = effective_extra_allowed_by_mac(snapshot)
   local blocked_macs_list   = {}   -- in @blocked_macs set (drop unconditionally)
   local blocked_ea_macs     = {}   -- blocked AND has extraAllowed → per-MAC rules
+  -- #1103: per-mac reason captured at render time so the wifihaven_block
+  -- counter rules can tag drops by reason (Paused/Schedule/TimeLimit/
+  -- Manual/Unmanaged) for the mac_drops series. Falls back to "blocked"
+  -- if the snapshot doesn't carry a typed reason.
+  local blocked_reason_map  = {}
   for mac, dev in sorted_devices(snapshot.devices) do
     local r = effective_rules(dev, snapshot.profiles)
     if r and r.blocked and not allowall_macs[mac] then
+      blocked_reason_map[mac] = r.blockReason or "blocked"
       if ea_by_mac_early[mac] then
         blocked_ea_macs[#blocked_ea_macs + 1] = mac
       else
@@ -689,8 +695,17 @@ function M.nft(snapshot, opts)
 
   ind("chain wifihaven_block {")
   ind2("type filter hook forward priority 0; policy accept;")
-  if #blocked_macs_list > 0 then
-    ind2("ether saddr @blocked_macs drop")
+  -- #1103: per-MAC counter+drop rules so the agent can attribute drops
+  -- back to (mac, reason) for the mac_drops series. The `comment` carries
+  -- "wh_drop:<mac>:<reason>" — parsed by usage.read_mac_drop_counters().
+  -- We emit one rule per MAC (replacing the single set-based
+  -- `ether saddr @blocked_macs drop`) so each rule's anonymous counter
+  -- holds packets/bytes for that MAC only.
+  for _, mac in ipairs(blocked_macs_list) do
+    local reason = blocked_reason_map[mac] or "blocked"
+    ind2(string.format(
+      "ether saddr %s counter drop comment %q",
+      mac, "wh_drop:" .. mac .. ":" .. reason))
   end
   -- #421: blocked MAC + non-empty extraAllowed → per-MAC drop carrying the
   -- ea exception, one rule per family. (The @blocked_macs set rule above
@@ -703,9 +718,14 @@ function M.nft(snapshot, opts)
     -- The leading `ip daddr != @ea_...` / `ip6 daddr != @ea6_...` clause
     -- in ea_suffix itself scopes the rule to v4 / v6 packets, so we don't
     -- need an extra family keyword. ea_suffix returns " ip daddr ..." with
-    -- a leading space, so the rule reads cleanly.
-    ind2(string.format("ether saddr %s%s drop", mac, ea_suffix(mac, "ip")))
-    ind2(string.format("ether saddr %s%s drop", mac, ea_suffix(mac, "ip6")))
+    -- a leading space, so the rule reads cleanly. #1103: counter+comment
+    -- attribute drops on these rules the same way as the set-based path.
+    local reason = blocked_reason_map[mac] or "blocked"
+    local cmt    = "wh_drop:" .. mac .. ":" .. reason
+    ind2(string.format("ether saddr %s%s counter drop comment %q",
+                       mac, ea_suffix(mac, "ip"), cmt))
+    ind2(string.format("ether saddr %s%s counter drop comment %q",
+                       mac, ea_suffix(mac, "ip6"), cmt))
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.

@@ -28,9 +28,10 @@ object RouterIngestRoutes {
       connEventRepo: ConnectionEventRepo,
       alertRepo: AlertRepo,
       householdSettingsRepo: HouseholdSettingsRepo,
+      macDropsRepo: MacDropsRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.POST / "api" / "router" / "usage"  ->
+      Method.POST / "api" / "router" / "usage"     ->
         handler { (req: Request) =>
           for {
             router   <- auth.authenticate(req)
@@ -66,7 +67,7 @@ object RouterIngestRoutes {
             _        <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
-      Method.POST / "api" / "router" / "events" ->
+      Method.POST / "api" / "router" / "events"    ->
         handler { (req: Request) =>
           val handle = for {
             router <- auth.authenticate(req)
@@ -100,6 +101,44 @@ object RouterIngestRoutes {
             _      <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
           handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
+        },
+      // #1103: router-posted nftables drop counters from `@blocked_macs`
+      // (paused / schedule / time_limit / manual / unmanaged). Idempotent on
+      // (router_id, mac, reason, period_end); replays from the agent's retry
+      // queue collapse on ON CONFLICT DO NOTHING. Negative deltas are rejected
+      // at the wire (router agent must clamp to >= 0 even across counter
+      // resets).
+      Method.POST / "api" / "router" / "mac-drops" ->
+        handler { (req: Request) =>
+          for {
+            router  <- auth.authenticate(req)
+            body    <- req.body.asString.orElseFail(Response.badRequest(""))
+            rep     <- ZIO
+              .fromEither(body.fromJson[MacDropsReport])
+              .mapError(e => Response.badRequest(e))
+            _       <- ZIO
+              .fail(Response.badRequest("router_id mismatch"))
+              .when(rep.routerId != router.id)
+            _       <- ZIO
+              .fail(Response.badRequest("negative packets/bytes not allowed"))
+              .when(rep.drops.exists(d => d.packets < 0 || d.bytes < 0))
+            inserts <- ZIO.foreach(rep.drops)(d =>
+              for {
+                ps <- parseInstant(d.periodStart)
+                pe <- parseInstant(d.periodEnd)
+              } yield MacDropInsert(router.id, d.mac, d.reason, d.packets, d.bytes, ps, pe),
+            )
+            _       <- ZIO.logInfo(
+              s"router mac-drops: router=${router.id} batchSize=${rep.drops.size}",
+            )
+            n       <- macDropsRepo.insertBatch(inserts).mapError(ErrorMapper.dbErrorToResponse)
+            _       <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _       <- ZIO
+              .logInfo(
+                s"router mac-drops: dedup'd ${inserts.size - n} of ${inserts.size} (replay)",
+              )
+              .when(n < inserts.size)
+          } yield Response.ok
         },
     )
 

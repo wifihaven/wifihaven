@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
+import type { ConnectionEventAggRow, Device, MacDropsAggRow, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
@@ -117,6 +117,8 @@ export function LogsPage() {
         onBucketChange={setBucket}
         onUntilChange={setUntil}
       />
+
+      <MacDropsPanel macs={macs} devices={devices} until={until} />
 
       {bucket === 'raw'
         ? <RawEventsView
@@ -581,5 +583,116 @@ function AggregatedEventsView({
       </div>
     )}
     </>
+  )
+}
+
+
+// #1103: MAC-level packet drops panel. Surfaces drops from `@blocked_macs`
+// (paused / schedule / time_limit / manual / unmanaged) that connection_events
+// can't see because the firewall drops the packets before dnsmasq sees them.
+// Sums packets/bytes per (mac, reason) over the visible window — the same
+// 24h band the Connection Events table uses. Hidden when there are no drops,
+// so the panel never crowds the page in the steady state.
+function MacDropsPanel({
+  macs, devices, until,
+}: {
+  macs: string[]
+  devices: Device[]
+  until: string | null
+}) {
+  const [rows, setRows] = useState<MacDropsAggRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const filterKey = `${macs.join(',')}|${until ?? ''}`
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    api.logs.macDrops({
+      bucket: '1h',
+      hours: 24,
+      macs: macs.length ? macs : undefined,
+      until: until ?? undefined,
+    })
+      .then(p => setRows(p.rows))
+      .catch(e => {
+        setError(String((e as Error).message ?? e))
+        setRows([])
+      })
+      .finally(() => setLoading(false))
+  }, [filterKey])
+
+  if (loading && rows.length === 0) return null
+  if (error) {
+    return (
+      <div data-testid="mac-drops-error" className="text-xs text-red-300">
+        mac-drops: {error}
+      </div>
+    )
+  }
+  if (rows.length === 0) return null
+
+  // Roll up per (mac, reason) across the visible buckets so the panel shows
+  // a compact summary, not one row per hour. Sorted by packets descending so
+  // the worst offender lands at the top.
+  type Agg = { mac: string; reason: string; packets: number; bytes: number }
+  const byKey = new Map<string, Agg>()
+  for (const r of rows) {
+    const key = `${r.mac}|${r.reason}`
+    const cur = byKey.get(key)
+    if (cur) {
+      cur.packets += r.packets
+      cur.bytes   += r.bytes
+    } else {
+      byKey.set(key, { mac: r.mac, reason: r.reason, packets: r.packets, bytes: r.bytes })
+    }
+  }
+  const summary = Array.from(byKey.values()).sort((a, b) => b.packets - a.packets)
+
+  const nameByMac = new Map(devices.map(d => [d.mac, d.name]))
+
+  return (
+    <div
+      data-testid="mac-drops-panel"
+      className="rounded border border-yellow-900 bg-yellow-950/20 p-3 text-sm"
+    >
+      <div className="text-xs uppercase text-yellow-400 mb-1">
+        MAC-level firewall drops (last 24h)
+      </div>
+      <p className="text-xs text-gray-500 mb-2">
+        Packets dropped at the firewall before reaching DNS — not visible in
+        Connection Events. Sourced from nftables drop counters (#1103).
+      </p>
+      <table className="min-w-full text-xs">
+        <thead className="text-gray-500">
+          <tr>
+            <th className="text-left px-2 py-1">Device</th>
+            <th className="text-left px-2 py-1">Reason</th>
+            <th className="text-right px-2 py-1">Packets</th>
+            <th className="text-right px-2 py-1">Bytes</th>
+          </tr>
+        </thead>
+        <tbody className="text-gray-300">
+          {summary.map(s => (
+            <tr key={`${s.mac}|${s.reason}`} data-testid={`mac-drops-row-${s.mac}-${s.reason}`}>
+              <td className="px-2 py-1">
+                <DeviceLink mac={s.mac} deviceName={nameByMac.get(s.mac) ?? null} />
+              </td>
+              <td className="px-2 py-1">
+                <span
+                  data-testid={`mac-drops-reason-${s.mac}`}
+                  className="inline-block px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-200"
+                >
+                  blocked: {s.reason.toLowerCase()}
+                </span>
+              </td>
+              <td className="px-2 py-1 text-right tabular-nums">{s.packets}</td>
+              <td className="px-2 py-1 text-right tabular-nums">{s.bytes}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

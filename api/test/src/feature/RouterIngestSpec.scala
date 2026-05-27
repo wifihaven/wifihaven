@@ -52,15 +52,16 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
 
   private def buildRoutes =
     for {
-      rRepo <- ZIO.service[RouterRepo]
-      tRepo <- ZIO.service[TrafficReportRepo]
-      tu    <- ZIO.service[TimeUsageRepo]
-      dRepo <- ZIO.service[DeviceRepo]
-      cRepo <- ZIO.service[ConnectionEventRepo]
-      aRepo <- ZIO.service[AlertRepo]
-      hsr   <- ZIO.service[HouseholdSettingsRepo]
+      rRepo  <- ZIO.service[RouterRepo]
+      tRepo  <- ZIO.service[TrafficReportRepo]
+      tu     <- ZIO.service[TimeUsageRepo]
+      dRepo  <- ZIO.service[DeviceRepo]
+      cRepo  <- ZIO.service[ConnectionEventRepo]
+      aRepo  <- ZIO.service[AlertRepo]
+      hsr    <- ZIO.service[HouseholdSettingsRepo]
+      mdRepo <- ZIO.service[MacDropsRepo]
       auth = new RouterAuthLive(rRepo)
-    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
+    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr, mdRepo)
 
   private def makePolicyService =
     for {

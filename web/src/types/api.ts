@@ -478,6 +478,23 @@ export interface ConnectionEventSeriesPage {
   nextCursor?: string | null
 }
 
+// #1103: MAC-level packet drops series — drops from `@blocked_macs` that
+// connection_events can't see because the packets never reach dnsmasq.
+export type MacBlockReason =
+  | 'Paused' | 'Schedule' | 'TimeLimit' | 'Manual' | 'Unmanaged'
+
+export interface MacDropsAggRow {
+  windowStart: string
+  mac: string
+  reason: MacBlockReason
+  packets: number
+  bytes: number
+}
+
+export interface MacDropsSeriesPage {
+  rows: MacDropsAggRow[]
+}
+
 // #794: server returns hourly UTC buckets aligned to a caller-specified `bucketOffsetMin`
 // (one of 0/15/30/45 — minute past the UTC hour where the grid starts). The SPA picks the
 // offset so each bucket falls fully within one local-tz day, then groups by local day for the

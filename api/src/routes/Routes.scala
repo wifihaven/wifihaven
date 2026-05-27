@@ -1331,6 +1331,66 @@ object LogRoutes {
     )
 }
 
+// ── MAC-level packet drops (#1103) ─────────────────────────────────────────
+
+object MacDropsRoutes {
+  def routes(
+      auth: AuthService,
+      macDropsRepo: MacDropsRepo,
+  ): Routes[Any, Response] =
+    Routes(
+      // Mirrors the param shape of /api/connection-events/series (hours, bucket,
+      // mac repeats) but returns one row per (window, mac, reason). Admin/adult
+      // only — aggregated rows carry no per-row profile_id so we can't safely
+      // post-filter for child viewers.
+      Method.GET / "api" / "mac-drops" / "series" ->
+        handler { (req: Request) =>
+          for {
+            claims   <- requireAuth(req, auth)
+            _        <- ZIO
+              .fail(Response.forbidden("aggregated view requires admin or adult role"))
+              .when(claims.role != "admin" && claims.role != "adult")
+            bktStr   <- ZIO
+              .fromOption(req.url.queryParam("bucket"))
+              .orElseFail(Response.badRequest("bucket query parameter required"))
+            bucket   <- ZIO
+              .fromOption(ConnectionEventBucket.fromWire(bktStr))
+              .orElseFail(Response.badRequest(s"unknown bucket: $bktStr"))
+            _        <- ZIO
+              .fail(Response.badRequest("bucket=off not supported on /series"))
+              .when(bucket == ConnectionEventBucket.Off)
+            untilOpt <- req.url.queryParam("until") match {
+              case None    => ZIO.succeed(Option.empty[java.time.Instant])
+              case Some(s) =>
+                ZIO
+                  .attempt(Some(java.time.Instant.parse(s)))
+                  .orElseFail(Response.badRequest(s"invalid until: $s"))
+            }
+            macsRaw = parseMultiValueParam(req, "mac")
+            macs       = macsRaw.map(MacAddress.unsafe)
+            reasonsRaw = parseMultiValueParam(req, "reason")
+            reasons <- ZIO.foreach(reasonsRaw) { s =>
+              ZIO
+                .fromOption(MacBlockReason.parse(s))
+                .orElseFail(Response.badRequest(s"unknown reason: $s"))
+            }
+            hours = req.url.queryParam("hours").flatMap(_.toIntOption).getOrElse(24)
+            rows <- macDropsRepo
+              .querySeries(
+                MacDropsSeriesFilter(
+                  hours = hours,
+                  macs = macs,
+                  reasons = reasons,
+                  until = untilOpt,
+                ),
+                bucket.seconds,
+              )
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.json(MacDropsSeriesPage(rows).toJson)
+        },
+    )
+}
+
 // ── Blocklist routes ───────────────────────────────────────────────────────
 
 object BlocklistRoutes {

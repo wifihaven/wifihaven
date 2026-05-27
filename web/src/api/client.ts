@@ -2,7 +2,7 @@ import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
-  ConnectionEventSeriesPage, QueryLogPage,
+  ConnectionEventSeriesPage, MacBlockReason, MacDropsSeriesPage, QueryLogPage,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
@@ -302,6 +302,24 @@ export const api = {
       return req<ConnectionEventSeriesPage>('GET', `/connection-events/series?${qs}`)
     },
     stats: () => req<DashboardStats>('GET', '/stats'),
+    // #1103: MAC-level packet drops series. Mirrors `series:` above but
+    // reads from /api/mac-drops/series — these are firewall drops that
+    // connection_events doesn't see (packets never reach dnsmasq).
+    macDrops: (params: {
+      bucket: '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
+      macs?: string[]
+      reasons?: MacBlockReason[]
+      hours?: number
+      until?: string
+    }) => {
+      const qs = new URLSearchParams()
+      qs.set('bucket', params.bucket)
+      if (params.macs?.length)    qs.set('mac', params.macs.join(','))
+      if (params.reasons?.length) qs.set('reason', params.reasons.join(','))
+      if (params.hours)           qs.set('hours', String(params.hours))
+      if (params.until)           qs.set('until', params.until)
+      return req<MacDropsSeriesPage>('GET', `/mac-drops/series?${qs}`)
+    },
   },
 
   // ── Dashboard "now" ────────────────────────────────────────────────────

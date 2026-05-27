@@ -2264,6 +2264,82 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .transact(xa)
 }
 
+// ── MAC-level packet drops (#1103) ────────────────────────────────────────
+
+case class MacDropInsert(
+    routerId: RouterId,
+    mac: MacAddress,
+    reason: MacBlockReason,
+    packets: Long,
+    bytes: Long,
+    periodStart: Instant,
+    periodEnd: Instant,
+)
+
+case class MacDropsSeriesFilter(
+    hours: Int = 24,
+    macs: List[MacAddress] = Nil,
+    reasons: List[MacBlockReason] = Nil,
+    until: Option[Instant] = None,
+)
+
+trait MacDropsRepo {
+  def insertBatch(rows: List[MacDropInsert]): Task[Int]
+  def querySeries(f: MacDropsSeriesFilter, bucketSeconds: Int): Task[List[MacDropsAggRow]]
+}
+
+// TODO(#1114): roll mac_drops up into mac_drops_hourly / mac_drops_daily so
+// /series picks the narrowest table by bucket size; today every read scans
+// the raw table with date_bin.
+// TODO(#1115): expose connection-events-style groupBy / cursor / HeaderFilter
+// in the UI panel; today the LogsPage panel just sums per (mac, reason).
+class MacDropsRepoLive(xa: Transactor[Task]) extends MacDropsRepo {
+  def insertBatch(rows: List[MacDropInsert]) =
+    if (rows.isEmpty) ZIO.succeed(0)
+    else
+      Update[MacDropInsert](
+        "INSERT INTO mac_drops(router_id, mac, reason, packets, bytes, period_start, period_end) " +
+          "VALUES(?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT (router_id, mac, reason, period_end) DO NOTHING",
+      ).updateMany(rows).transact(xa)
+
+  def querySeries(f: MacDropsSeriesFilter, bucketSeconds: Int) = {
+    val bucketIv = Fragment.const(s"make_interval(secs => $bucketSeconds)")
+    val anchor   = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val winExpr  = fr"""to_char(date_bin($bucketIv, period_end, TIMESTAMP '2000-01-01 00:00:00')
+                       AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
+    val window   =
+      fr"AND period_end > " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND period_end <= " ++ anchor
+    val byMac    = cats.data.NonEmptyList
+      .fromList(f.macs)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"mac", nel))
+    val byReason = cats.data.NonEmptyList
+      .fromList(f.reasons.map(MacBlockReason.asString))
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"reason", nel))
+    (fr"""SELECT """ ++ winExpr ++ fr""" AS window_start,
+                  mac,
+                  reason,
+                  SUM(packets)::BIGINT,
+                  SUM(bytes)::BIGINT
+           FROM mac_drops
+           WHERE 1=1""" ++ window ++ byMac ++ byReason ++
+      fr" GROUP BY window_start, mac, reason ORDER BY window_start DESC, mac, reason")
+      .query[(String, MacAddress, String, Long, Long)]
+      .map { case (ws, mac, reason, p, b) =>
+        MacDropsAggRow(
+          windowStart = ws,
+          mac = mac,
+          reason = MacBlockReason.parse(reason).getOrElse(MacBlockReason.Manual),
+          packets = p,
+          bytes = b,
+        )
+      }
+      .to[List]
+      .transact(xa)
+  }
+}
+
 object Repos {
   val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
   val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
@@ -2283,6 +2359,7 @@ object Repos {
   val alertRepo             = ZLayer.fromFunction(AlertRepoLive(_))
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
+  val macDropsRepo          = ZLayer.fromFunction(MacDropsRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ macDropsRepo
 }

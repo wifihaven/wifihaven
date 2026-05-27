@@ -488,4 +488,175 @@ function M.drain(api_url, token, queue, post_fn, now, rng_fn, log)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- MAC-level packet drops (#1103)
+--
+-- render.lua emits one `ether saddr <mac> counter drop comment
+-- "wh_drop:<mac>:<reason>"` rule per blocked MAC. We periodically run
+-- `nft -j list chain inet wifihaven wifihaven_block`, find each rule whose
+-- comment starts with `wh_drop:`, and diff its packets/bytes against the
+-- previous snapshot. The delta is posted to /api/router/mac-drops.
+--
+-- Counter reset detection: when a policy apply reloads the ruleset,
+-- counters reset to 0. If current < previous we treat the current value as
+-- the delta (the rule is a fresh one). New rules (not in the previous
+-- snapshot) also contribute their full current value.
+-- ---------------------------------------------------------------------------
+
+function M.parse_nft_drop_counters(json_str)
+  local jsonc = require("luci.jsonc")
+  local ok, parsed = pcall(jsonc.parse, json_str)
+  if not ok or not parsed or type(parsed.nftables) ~= "table" then
+    return {}
+  end
+  local out = {}
+  for _, item in ipairs(parsed.nftables) do
+    local rule = item.rule
+    if rule and type(rule.comment) == "string" then
+      local mac, reason = rule.comment:match("^wh_drop:([^:]+):(.+)$")
+      if mac and reason then
+        -- The anonymous counter on a rule shows up as one of the rule.expr
+        -- entries with a `counter` table carrying packets + bytes.
+        local pkts, bytes = 0, 0
+        if type(rule.expr) == "table" then
+          for _, e in ipairs(rule.expr) do
+            if type(e) == "table" and type(e.counter) == "table" then
+              pkts  = tonumber(e.counter.packets) or 0
+              bytes = tonumber(e.counter.bytes)   or 0
+              break
+            end
+          end
+        end
+        out[#out + 1] = {
+          mac     = mac,
+          reason  = reason,
+          packets = pkts,
+          bytes   = bytes,
+        }
+      end
+    end
+  end
+  return out
+end
+
+function M.diff_drop_counters(prev, cur)
+  -- prev / cur are { (mac..":"..reason) → { packets, bytes } }. Returns a
+  -- list of { mac, reason, packets_delta, bytes_delta }. Counter resets
+  -- (cur < prev) attribute the full cur value (fresh rule). Missing keys in
+  -- cur are dropped (the rule no longer exists — policy changed and the
+  -- MAC is no longer blocked under that reason).
+  local out = {}
+  for key, c in pairs(cur) do
+    local p = prev[key] or { packets = 0, bytes = 0 }
+    local dpk, dby
+    if c.packets >= p.packets and c.bytes >= p.bytes then
+      dpk = c.packets - p.packets
+      dby = c.bytes   - p.bytes
+    else
+      -- counter reset
+      dpk = c.packets
+      dby = c.bytes
+    end
+    if dpk > 0 or dby > 0 then
+      local mac, reason = key:match("^([^|]+)|(.+)$")
+      out[#out + 1] = {
+        mac     = mac,
+        reason  = reason,
+        packets = dpk,
+        bytes   = dby,
+      }
+    end
+  end
+  return out
+end
+
+function M.snapshot_drop_counters(counters)
+  -- Convert the list returned by parse_nft_drop_counters into the
+  -- (mac..":"..reason) → { packets, bytes } map shape used for diffing.
+  -- Uses '|' as separator to avoid colliding with MAC's own colons.
+  local m = {}
+  for _, c in ipairs(counters or {}) do
+    m[c.mac .. "|" .. c.reason] = { packets = c.packets, bytes = c.bytes }
+  end
+  return m
+end
+
+function M.build_drop_report(deltas, period_start, period_end, router_id)
+  local drops = {}
+  for _, d in ipairs(deltas) do
+    drops[#drops + 1] = {
+      mac         = d.mac,
+      reason      = d.reason,
+      packets     = d.packets,
+      bytes       = d.bytes,
+      periodStart = period_start,
+      periodEnd   = period_end,
+    }
+  end
+  return { routerId = router_id, drops = drops }
+end
+
+function M.post_drops(api_url, router_token, report, post_fn, log)
+  log = log or default_log()
+  if not report.drops or next(report.drops) == nil then
+    log.debug("usage.post_drops: skipping (no drops)")
+    return true
+  end
+  local jsonc = require("luci.jsonc")
+  local body  = jsonc.stringify(report)
+  local url   = api_url .. "/api/router/mac-drops"
+  local hdrs  = {
+    ["Authorization"] = "Bearer " .. router_token,
+    ["Content-Type"]  = "application/json",
+  }
+  log.debug("usage.post_drops: POST url=%s drops=%d periodEnd=%s",
+            url, #report.drops, tostring(report.periodEnd))
+  local status, resp_body, err = post_fn(url, body, hdrs)
+  if status and status >= 200 and status < 300 then
+    return true
+  end
+  local body_str = resp_body and tostring(resp_body) or ""
+  if #body_str > 200 then body_str = body_str:sub(1, 200) .. "...(truncated)" end
+  log.err("usage.post_drops: POST failed (status=%s body=%q) err=%s",
+          tostring(status), body_str, tostring(err))
+  return false
+end
+
+function M.post_drops_with_retry(api_url, token, report, post_fn, queue, now, rng_fn, log)
+  log = log or default_log()
+  if not report.drops or next(report.drops) == nil then
+    return true
+  end
+  if M.post_drops(api_url, token, report, post_fn, log) then
+    return true
+  end
+  enqueue_failure(queue, report, now, rng_fn, 1)
+  log.warn("usage.post_drops_with_retry: enqueued drops periodEnd=%s for retry",
+           tostring(report.periodEnd))
+  return false
+end
+
+-- Walks the drops queue identically to drain() but POSTs to /api/router/mac-drops.
+function M.drain_drops(api_url, token, queue, post_fn, now, rng_fn, log)
+  log = log or default_log()
+  table.sort(queue.buckets, periodEnd_lt)
+  local i = 1
+  while i <= #queue.buckets do
+    local b = queue.buckets[i]
+    if b.next_attempt_at > now then
+      i = i + 1
+    else
+      if M.post_drops(api_url, token, b.report, post_fn, log) then
+        table.remove(queue.buckets, i)
+      else
+        b.attempts        = b.attempts + 1
+        b.next_attempt_at = now + next_backoff(b.attempts, rng_fn)
+        log.warn("usage.drain_drops: bucket periodEnd=%s failed attempt=%d; next in %ds",
+                 tostring(b.report.periodEnd), b.attempts, b.next_attempt_at - now)
+        return
+      end
+    end
+  end
+end
+
 return M

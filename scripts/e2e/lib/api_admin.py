@@ -170,6 +170,23 @@ class AdminAPI:
     def time_status(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/time/status")
 
+    # #1103: MAC-level packet drops series. Mirrors the param shape of the
+    # connection-events series. `macs` and `reasons` accept lists.
+    def mac_drops_series(self, **params: Any) -> dict[str, Any]:
+        from urllib.parse import urlencode
+        macs    = params.pop("macs", None)
+        reasons = params.pop("reasons", None)
+        items: list[tuple[str, str]] = []
+        for k, v in params.items():
+            if v is not None:
+                items.append((k, str(v)))
+        if macs:
+            items.append(("mac", ",".join(macs)))
+        if reasons:
+            items.append(("reason", ",".join(reasons)))
+        qs = "?" + urlencode(items) if items else ""
+        return self._request("GET", f"/api/mac-drops/series{qs}")
+
     # ── HTTP plumbing ─────────────────────────────────────────────────────
 
     @staticmethod

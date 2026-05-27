@@ -248,6 +248,13 @@ local last_usage_run      = 0
 local last_activity_sample = 0
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
+-- #1103: previous-tick snapshot of nftables drop counters from
+-- wifihaven_block, keyed "<mac>|<reason>" → { packets, bytes }. Drops
+-- reported each usage tick are the delta against this map.
+local last_drop_counters   = {}
+local drops_queue          = usage.new_queue()  -- retry queue for failed mac-drops POSTs
+local last_drop_run        = 0
+local last_drop_wall_ts    = os.time()
 
 -- ── Initial policy fetch at startup ──────────────────────────────────────────
 
@@ -553,6 +560,43 @@ conntrack.watch({
     -- Drain any retry-queued buckets whose backoff has elapsed (monotonic now).
     if #usage_queue.buckets > 0 then
       usage.drain(api_url, router_token, usage_queue, http_post, mono, nil, log)
+    end
+
+    -- #1103: MAC-level drop counter poll. Runs on the same cadence as the
+    -- usage timer (driven by the same `last_usage_run` check above — by the
+    -- time we get here it's been freshly updated). Read the wifihaven_block
+    -- chain's per-mac drop rules, diff against the previous snapshot, and
+    -- post deltas. Counter reset detection lives in usage.diff_drop_counters.
+    if (mono - (last_drop_run or 0)) >= usage_int then
+      last_drop_run = mono
+      local period_end   = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
+      local period_start = os.date("!%Y-%m-%dT%H:%M:%SZ", last_drop_wall_ts or wall)
+      last_drop_wall_ts  = wall
+      local pipe = io.popen(
+        "nft -j list chain inet wifihaven wifihaven_block 2>/dev/null", "r")
+      if pipe then
+        local json_str = pipe:read("*a") or ""
+        pipe:close()
+        if json_str ~= "" then
+          local counters = usage.parse_nft_drop_counters(json_str)
+          local cur_snap = usage.snapshot_drop_counters(counters)
+          local deltas   = usage.diff_drop_counters(last_drop_counters, cur_snap)
+          last_drop_counters = cur_snap
+          if #deltas > 0 then
+            local report = usage.build_drop_report(deltas, period_start,
+                                                   period_end, router_id)
+            local posted = usage.post_drops_with_retry(api_url, router_token,
+              report, http_post, drops_queue, mono, nil, log)
+            if not posted then
+              log.warn("mac-drops: queued for retry (queue depth=%d)",
+                       #drops_queue.buckets)
+            end
+          end
+        end
+      end
+    end
+    if #drops_queue.buckets > 0 then
+      usage.drain_drops(api_url, router_token, drops_queue, http_post, mono, nil, log)
     end
   end,
 })
