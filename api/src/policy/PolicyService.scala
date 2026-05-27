@@ -161,7 +161,7 @@ class PolicyServiceLive(
           Some(
             BlockRules(
               blocked = true,
-              blockReason = Some(MacBlockReason.Manual),
+              blockReason = Some(MacBlockReason.Unmanaged),
               extraBlocked = Nil,
               extraAllowed = uiAllowedHosts,
               blocklistIds = Nil,
