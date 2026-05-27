@@ -510,6 +510,21 @@ object PolicyService {
         Hostname.unsafe(sl.domainPattern)
     }
 
+    // #1105: time_limited app hosts with exemptFromDaily=true carve around the
+    // MAC-level @blocked_macs drop while they still have per-host budget. The
+    // exempt flag's original role was just to exclude the host from the daily
+    // tally; without this carve-out, hitting the profile cap silently dropped
+    // the exempt app too, violating the "Khan doesn't count" contract.
+    // Naturally transitions allow → block as the per-host budget exhausts
+    // (siteLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
+    // at the router; see feedback_extraallowed_beats_blocked).
+    val appExemptAllowedHosts: List[Hostname] = in.siteLimits.collect {
+      case sl
+          if sl.exemptFromDaily &&
+            in.minutesByDomain.getOrElse(sl.domainPattern, 0) < sl.dailyMinutes =>
+        Hostname.unsafe(sl.domainPattern)
+    }
+
     val (blocked, reason) =
       if p.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
       else if in.schedules.exists(s => scheduleActiveAt(s, now)) then
@@ -537,7 +552,7 @@ object PolicyService {
       // (allow beats block at the router). Configured via wifihaven.policy
       // .uiAllowedHosts per-deployment so prod doesn't allow staging through
       // and vice versa. Will become DB-backed per #937.
-      extraAllowed = (in.appExtraAllowed ++ uiAllowedHosts).distinct,
+      extraAllowed = (in.appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts).distinct,
       blocklistIds = p.blockedCategories,
       blockIpOnly = p.blockIpOnly,
     )
