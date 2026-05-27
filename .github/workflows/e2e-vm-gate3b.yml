@@ -40,6 +40,13 @@ concurrency:
 jobs:
   e2e-gate3b:
     name: Gate 3b (API/UI-side staging) — ${{ matrix.pkg_format }}
+    # Soft-fail until #893's seed asset exists. The `gh release download`
+    # step will fail the first run; flip to hard gate after the first
+    # publish-openwrt fires. See #655 PR body for the flip plan.
+    # (Lives here rather than on the caller in master-api-ui.yml because
+    # `continue-on-error` is not a supported key on a job that invokes a
+    # reusable workflow via `uses:` — see #1124.)
+    continue-on-error: true
     if: >-
       github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository
