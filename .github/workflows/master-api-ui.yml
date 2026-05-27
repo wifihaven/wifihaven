@@ -259,7 +259,7 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: '4'
           workingDirectory: web
-          command: pages deploy --branch=main
+          command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"
 
   # ── 5. Smoke-test staging ─────────────────────────────────────────────────
   # Fast (<2 min) end-user-facing checks against the deployed staging URL.
@@ -487,4 +487,4 @@ jobs:
           # default `wrangler.toml` in web/ already targets the prod project.
           wranglerVersion: '4'
           workingDirectory: web
-          command: pages deploy --branch=main
+          command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"
