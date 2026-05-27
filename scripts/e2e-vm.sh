@@ -10,6 +10,7 @@
 # Usage:
 #   scripts/e2e-vm.sh                            # run live-mode scenarios (default)
 #   scripts/e2e-vm.sh --mode=fake                # run fake-API mode scenarios (#683)
+#   scripts/e2e-vm.sh --mode=gate3               # run gate3 smoke against real staging (#655)
 #   scripts/e2e-vm.sh --only blocked-domain      # run a single scenario
 #   scripts/e2e-vm.sh --keep                     # leave VMs + stack up after run
 #   scripts/e2e-vm.sh -- -k allowed              # passthrough to pytest
@@ -18,6 +19,9 @@
 #   live  (default) — boot docker-compose API stack, exercise live scenarios.
 #   fake            — boot in-process fake API shim, exercise fake-mode
 #                     scenarios under scripts/e2e/scenarios_fake/ (Gate 2).
+#   gate3           — boot router VM against a remote staging API (no local
+#                     stack, no fake), exercise scripts/e2e/gate3/. Requires
+#                     WH_API_URL + WH_ADMIN_PASS + WH_ROUTER_IMAGE_PATH.
 #
 # Environment overrides (read by conftest.py / conftest_fake.py):
 #   E2E_VM_API_PORT         API stack host port (default 18080; live mode)
@@ -78,8 +82,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${MODE}" in
-  live|fake) ;;
-  *) echo "unknown --mode: ${MODE} (valid: live, fake)" >&2; exit 2 ;;
+  live|fake|gate3) ;;
+  *) echo "unknown --mode: ${MODE} (valid: live, fake, gate3)" >&2; exit 2 ;;
 esac
 
 # --only <name> maps to pytest's marker selection. Supported names match the
@@ -196,8 +200,9 @@ cd "${E2E_DIR}"
 
 CMD=( "${VENV_DIR}/bin/pytest" )
 case "${MODE}" in
-  live) CMD+=( "scenarios" ) ;;
-  fake) CMD+=( "scenarios_fake" ) ;;
+  live)  CMD+=( "scenarios" ) ;;
+  fake)  CMD+=( "scenarios_fake" ) ;;
+  gate3) CMD+=( "gate3" ) ;;
 esac
 if [[ -n "${MARK}" ]]; then
   CMD+=( -m "${MARK}" )
