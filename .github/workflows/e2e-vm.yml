@@ -1,5 +1,7 @@
 name: VM e2e
 
+# Where do new tests go? See docs/testing.md — legacy track, retiring in #656.
+
 # Full VM-based e2e: boots the OpenWRT router VM + Alpine client VM and runs
 # the scenarios under scripts/e2e/scenarios/ against a disposable docker
 # compose API stack. Runs on the self-hosted KVM runner (#149).
