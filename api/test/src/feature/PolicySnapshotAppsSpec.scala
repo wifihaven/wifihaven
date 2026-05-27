@@ -10,6 +10,8 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.test.*
 
+import java.time.{LocalDate, LocalDateTime, ZoneOffset}
+
 /**
  * #763: PolicyService expands per-profile app assignments into the existing per-profile
  * extraAllowed / extraBlocked / site_time_limit buckets on the wire. Router stays oblivious.
@@ -49,6 +51,66 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       ar,
       clock,
     )): PolicyService
+
+  private def makePsAt(dt: LocalDateTime) =
+    for {
+      pr     <- ZIO.service[ProfileRepo]
+      sr     <- ZIO.service[ScheduleRepo]
+      hsr    <- ZIO.service[HouseholdSettingsRepo]
+      tlr    <- ZIO.service[TimeLimitRepo]
+      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      dr     <- ZIO.service[DeviceRepo]
+      blr    <- ZIO.service[BlocklistRepo]
+      trRepo <- ZIO.service[TrafficReportRepo]
+      er     <- ZIO.service[TimeExtensionRepo]
+      ar     <- ZIO.service[AppRepo]
+      ref    <- Ref.make(dt)
+      clk = new Clock.TestClock(ref)
+    } yield (new PolicyServiceLive(
+      pr,
+      sr,
+      hsr,
+      tlr,
+      stlr,
+      dr,
+      blr,
+      trRepo,
+      er,
+      ar,
+      clk,
+    )): PolicyService
+
+  private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
+    ZIO.serviceWithZIO[RouterRepo](_.create("gw-seed", Sha256Hex.unsafe("o" * 64)))
+
+  private def seedTraffic(
+      routerId: RouterId,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      minutes: Int,
+  ): ZIO[TrafficReportRepo, Throwable, Unit] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val buckets = minutes / 5
+      val today0  = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until buckets).map { i =>
+        val start = today0.plusSeconds(i * 300L)
+        val end   = start.plusSeconds(300)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          HostId.Fqdn(Hostname.unsafe(hostname)),
+          date,
+          start,
+          end,
+          300,
+          500_000L,
+          500_000L,
+        )
+      }.toList
+      tr.insertBatch(inserts).unit
+    }
 
   private def kidsId: ZIO[ProfileRepo, Throwable, ProfileId] =
     ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))
@@ -154,6 +216,144 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(!rules.extraBlocked.map(_.value).contains("noone.example.com")) &&
         // Kids profile defaults preserved (categories from seedKidsProfile not touched here).
         assertTrue(rules.extraAllowed.isEmpty)
+    },
+    // ── #1105: time_limited app with exemptFromDaily carves around @blocked_macs ──
+    test(
+      "#1105: exempt+budget remaining + cap exhausted → app host in extraAllowed, blocked=TimeLimit",
+    ) {
+      val mac = "aa:bb:cc:dd:ee:01"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
+        rid   <- seedRouterRow
+        // Burn 35 min on a non-exempt host → exhausts the 30-min profile cap.
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+        eb    = rules.extraBlocked.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(ea.contains("khanacademy.org")) &&
+        assertTrue(!eb.contains("khanacademy.org"))
+    },
+    test("#1105: exempt + per-host budget exhausted → app host in extraBlocked, NOT extraAllowed") {
+      val mac = "aa:bb:cc:dd:ee:02"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(30), true)
+        rid   <- seedRouterRow
+        _     <- seedTraffic(rid, mac, "khanacademy.org", LocalDate.of(2025, 1, 6), 35)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+        eb    = rules.extraBlocked.map(_.value).toSet
+      } yield assertTrue(eb.contains("khanacademy.org")) &&
+        assertTrue(!ea.contains("khanacademy.org"))
+    },
+    test("#1105: exempt + budget remaining + profile paused → still in extraAllowed") {
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- pr.setPaused(kid, true)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        assertTrue(ea.contains("khanacademy.org"))
+    },
+    test("#1105: exempt + budget remaining + schedule active → still in extraAllowed") {
+      // Kids profile already has a bedtime 21:00–07:00 window; evaluate at bedtime.
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
+        svc   <- makePsAt(TestClock.bedtime)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Schedule)) &&
+        assertTrue(ea.contains("khanacademy.org"))
+    },
+    test(
+      "#1105: NON-exempt + budget remaining + cap exhausted → NOT in extraAllowed (regression guard)",
+    ) {
+      val mac = "aa:bb:cc:dd:ee:03"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("YouTube", "youtube", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("youtube.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), false)
+        rid   <- seedRouterRow
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(!ea.contains("youtube.com"))
+    },
+    test("#1105: same app assigned to two profiles with different exempt flags → independent") {
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        adult <- TestLayers.seedAdultsProfile(pr)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(60), true)
+        _     <- ar.upsertAssignment(appId, adult, AppMode.TimeLimited, Some(60), false)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        kidEa   = snap.profiles(kid).rules.extraAllowed.map(_.value).toSet
+        adultEa = snap.profiles(adult).rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(kidEa.contains("khanacademy.org")) &&
+        assertTrue(!adultEa.contains("khanacademy.org"))
     },
   ) @@ TestAspect.sequential
 }
