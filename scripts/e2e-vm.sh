@@ -106,6 +106,8 @@ case "${ONLY}" in
   schedule)     MARK="schedule" ;;
   time-limit|time_limit)
                 MARK="time_limit" ;;
+  tz-rollover|tz_rollover)
+                MARK="tz_rollover" ;;
   reassignment) MARK="reassignment" ;;
   unknown-device|unknown_device)
                 MARK="unknown_device" ;;
@@ -113,8 +115,8 @@ case "${ONLY}" in
                 MARK="install_health" ;;
   *) echo "unknown --only: ${ONLY}" >&2
      echo "valid: enrollment, allowed-browsing, blocked-domain, daily-limit, usage, blocked-page," >&2
-     echo "       pause, extra-blocked, schedule, time-limit, reassignment, unknown-device," >&2
-     echo "       install-health" >&2
+     echo "       pause, extra-blocked, schedule, time-limit, tz-rollover, reassignment," >&2
+     echo "       unknown-device, install-health" >&2
      exit 2 ;;
 esac
 
