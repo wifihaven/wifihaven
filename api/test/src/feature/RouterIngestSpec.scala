@@ -75,7 +75,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
       clock  <- ZIO.service[Clock]
-    } yield (new PolicyServiceLive(
+    } yield PolicyServiceLive(
       pr,
       sr,
       hsr,
@@ -87,7 +87,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       er,
       ar,
       clock,
-    )): PolicyService
+    ): PolicyService
 
   private def post(
       routes: Routes[Any, Response],

@@ -16,28 +16,54 @@ trait PolicyService {
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse]
 }
 
-/**
- * Inputs needed to evaluate a single profile's effective BlockRules. Pulled from the per-profile
- * repos by `snapshot` and fed into the pure `computeBlockRules` function below.
- */
-private[policy] case class ProfileInputs(
-    profile: Profile,
-    schedules: List[DbSchedule],
-    dailyMinutes: Option[Int],
-    siteLimits: List[SiteTimeLimit],
-    /**
-     * total active minutes today summed across all devices in the profile, excluding minutes spent
-     * on exempt site-limited domains.
-     */
-    totalMinutesUsed: Int,
-    /** active minutes per site-limit domain, summed across all devices in the profile. */
-    minutesByDomain: Map[String, Int],
-    extensionsMinutes: Int,
-    // #763: hosts contributed by apps assigned to this profile (allowed / blocked modes).
-    // time_limited apps are folded into `siteLimits` above as one synthesized row per host.
-    appExtraAllowed: List[Hostname] = Nil,
-    appExtraBlocked: List[Hostname] = Nil,
-)
+object PolicyServiceLive {
+
+  /**
+   * #1104: test-friendly factory that wires a default `TimeStatusServiceLive` over the same repos.
+   * Lets the existing PolicySnapshot* specs and Router* specs continue passing the old positional
+   * args; production wiring still goes through `PolicyService.layer`, which injects an explicit
+   * `TimeStatusService` (so a per-deployment instance can be swapped in).
+   */
+  def apply(
+      profileRepo: ProfileRepo,
+      scheduleRepo: ScheduleRepo,
+      householdSettingsRepo: HouseholdSettingsRepo,
+      timeLimitRepo: TimeLimitRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
+      deviceRepo: DeviceRepo,
+      blocklistRepo: BlocklistRepo,
+      trafficRepo: TrafficReportRepo,
+      extRepo: TimeExtensionRepo,
+      appRepo: AppRepo,
+      clock: Clock,
+      uiAllowedHosts: List[Hostname] = Nil,
+  ): PolicyServiceLive = {
+    val tss = new TimeStatusServiceLive(
+      profileRepo,
+      scheduleRepo,
+      timeLimitRepo,
+      siteTimeLimitRepo,
+      deviceRepo,
+      trafficRepo,
+      extRepo,
+    )
+    new PolicyServiceLive(
+      profileRepo,
+      scheduleRepo,
+      householdSettingsRepo,
+      timeLimitRepo,
+      siteTimeLimitRepo,
+      deviceRepo,
+      blocklistRepo,
+      trafficRepo,
+      extRepo,
+      appRepo,
+      tss,
+      clock,
+      uiAllowedHosts,
+    )
+  }
+}
 
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
@@ -50,6 +76,7 @@ class PolicyServiceLive(
     trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
     appRepo: AppRepo,
+    timeStatusService: TimeStatusService,
     clock: Clock,
     uiAllowedHosts: List[Hostname] = Nil,
 ) extends PolicyService {
@@ -59,14 +86,13 @@ class PolicyServiceLive(
       settings <- householdSettingsRepo.get
       now      <- clock.instant
       today = PolicyService.householdLocalDate(now, settings)
-      profiles <- profileRepo.listAll
-      devices  <- deviceRepo.listAll
-      scheds   <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
-      tlims    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
-      stlims   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-      exts     <- extRepo.snapshotAllByProfile(today)
-      cats     <- blocklistRepo.listCategories
+      // #1104: today's cap/block state for every profile in one batched read. Same call the
+      // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
+      dayStates <- timeStatusService.dayStateAll(now, today, settings)
+      profiles  <- profileRepo.listAll
+      devices   <- deviceRepo.listAll
+      stlims    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      cats      <- blocklistRepo.listCategories
       catDomains  <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
       // #763: load apps + per-app hosts + per-profile assignments so we can
       // expand app modes into the per-profile BlockRules buckets below.
@@ -77,15 +103,9 @@ class PolicyServiceLive(
       )
       appHostsMap = appHostsRaw.toMap
       appAssignsMap = appAssigns.toMap
-      schedMap      = scheds.toMap
-      tlMap         = tlims.toMap
       stlMap        = stlims.toMap
     } yield {
-      val devsByProfile =
-        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-
       val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
-        val pSched    = schedMap.getOrElse(p.id, Nil)
         val pSiteLims = stlMap.getOrElse(p.id, Nil)
 
         // #763/#764: expand this profile's app assignments into wire-shape
@@ -108,40 +128,19 @@ class PolicyServiceLive(
           .flatten
           .distinct
 
-        val devicesIn  = devsByProfile.getOrElse(p.id, Nil)
-        val deviceMacs = devicesIn.map(_.mac).toSet
-        val pPresence  = presence.filter(r => deviceMacs.contains(r.mac))
-        val patterns   = pSiteLims.map(_.domainPattern)
-        val perPat     = Presence.patternMinutesByMac(pPresence, patterns)
-        val byDomain   = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
-          val mins = devicesIn.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
-          if mins == 0 then acc else acc.updated(pat, mins)
-        }
-        val exemptPats = pSiteLims.filter(_.exemptFromDaily).map(_.domainPattern)
-        val perMacTot  = Presence.totalMinutesByMac(pPresence, exemptPats, settings.heartbeatFilter)
-        // #751: cap-enforcement reads the same Sum/Dedup branch as the
-        // /api/time/status surface so the policy snapshot agrees with what
-        // the screen-time UI shows.
-        val totalMins  = p.crossDeviceOverlapMode match {
-          case CrossDeviceOverlapMode.Sum   =>
-            devicesIn.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
-          case CrossDeviceOverlapMode.Dedup =>
-            Presence.dedupedTotalMinutes(pPresence, exemptPats, settings.heartbeatFilter)
-        }
-        val extMins    = exts.getOrElse(p.id, 0)
-
-        val inputs = ProfileInputs(
+        // #1104: cap/block state comes from TimeStatusService — the same value the UI reads.
+        val state = dayStates.getOrElse(
+          p.id,
+          ProfileDayState(p.id, today, None, 0, 0, None, blocked = false, None, Nil),
+        )
+        val rules = PolicyService.computeBlockRules(
           profile = p,
-          schedules = pSched,
-          dailyMinutes = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
+          state = state,
           siteLimits = pSiteLims,
-          totalMinutesUsed = totalMins,
-          minutesByDomain = byDomain,
-          extensionsMinutes = extMins,
           appExtraAllowed = appAllowedHosts,
           appExtraBlocked = appBlockedHosts,
+          uiAllowedHosts = uiAllowedHosts,
         )
-        val rules  = PolicyService.computeBlockRules(inputs, now, uiAllowedHosts)
 
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
       }.toMap
@@ -415,7 +414,7 @@ object PolicyService {
   val layer: ZLayer[
     AppConfig & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
-      AppRepo & Clock,
+      AppRepo & TimeStatusService & Clock,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -431,9 +430,10 @@ object PolicyService {
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
         ar: AppRepo,
+        tss: TimeStatusService,
         clk: Clock,
     ) =>
-      PolicyServiceLive(
+      new PolicyServiceLive(
         pr,
         sr,
         hsr,
@@ -444,6 +444,7 @@ object PolicyService {
         trr,
         er,
         ar,
+        tss,
         clk,
         cfg.policy.uiAllowedHostsParsed,
       )
@@ -488,39 +489,31 @@ object PolicyService {
   }
 
   /**
-   * #354: pure function that collapses a profile's raw inputs into the effective BlockRules served
-   * in the snapshot. Precedence for `blockReason` when multiple block conditions hold: Paused >
-   * Schedule > TimeLimit.
+   * #354 / #1104: collapse a profile's `ProfileDayState` plus its app & site-limit context into the
+   * effective `BlockRules` served in the snapshot. `state` carries the canonical `blocked` and
+   * `blockReason` already evaluated by `TimeStatusService.fold` (same precedence Paused > Schedule
+   * > TimeLimit). This function only adds the app/site-limit/UI-host wiring around it.
    */
   private[policy] def computeBlockRules(
-      in: ProfileInputs,
-      now: Instant,
+      profile: Profile,
+      state: ProfileDayState,
+      siteLimits: List[SiteTimeLimit],
+      appExtraAllowed: List[Hostname] = Nil,
+      appExtraBlocked: List[Hostname] = Nil,
       uiAllowedHosts: List[Hostname] = Nil,
   ): BlockRules = {
-    val p = in.profile
-
     // Per-site limits exhausted today → host appears in extraBlocked too.
     // domainPattern is a glob string, not a Hostname — we keep it as-is in the
     // extraBlocked list so the router agent can match it. We do NOT wrap with
     // Hostname here because glob patterns like *.youtube.com are not hostnames.
     // Instead, we pass them as raw strings and convert via Hostname.unsafe for
     // the typed list (the router treats these as patterns, so validation is relaxed).
-    val siteLimitExtraBlocked: List[Hostname] = in.siteLimits.collect {
-      case sl if in.minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes =>
+    val siteUsedByPattern: Map[String, Int]   =
+      state.perSite.iterator.map(s => s.domainPattern -> s.usedMinutes).toMap
+    val siteLimitExtraBlocked: List[Hostname] = siteLimits.collect {
+      case sl if siteUsedByPattern.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes =>
         Hostname.unsafe(sl.domainPattern)
     }
-
-    val (blocked, reason) =
-      if p.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
-      else if in.schedules.exists(s => scheduleActiveAt(s, now)) then
-        (true, Some(MacBlockReason.Schedule: MacBlockReason))
-      else
-        in.dailyMinutes match {
-          case Some(limit) if in.totalMinutesUsed >= limit + in.extensionsMinutes =>
-            (true, Some(MacBlockReason.TimeLimit: MacBlockReason))
-          case _                                                                  =>
-            (false, None)
-        }
 
     // #763: app expansion is additive. A host in both an allowed-mode app and
     // a blocked-mode app will appear in both lists; the router's
@@ -528,18 +521,18 @@ object PolicyService {
     // semantics it already applies to the per-profile own lists (see
     // feedback_extraallowed_beats_blocked).
     BlockRules(
-      blocked = blocked,
-      blockReason = reason,
-      extraBlocked = (in.appExtraBlocked ++ siteLimitExtraBlocked).distinct,
+      blocked = state.blocked,
+      blockReason = state.blockReason,
+      extraBlocked = (appExtraBlocked ++ siteLimitExtraBlocked).distinct,
       // #944: union the deployment's UI hosts into per-profile extraAllowed so
       // a household device can always reach the admin UI even when this
       // profile is paused or lists one of these hosts in a blocked-mode app
       // (allow beats block at the router). Configured via wifihaven.policy
       // .uiAllowedHosts per-deployment so prod doesn't allow staging through
       // and vice versa. Will become DB-backed per #937.
-      extraAllowed = (in.appExtraAllowed ++ uiAllowedHosts).distinct,
-      blocklistIds = p.blockedCategories,
-      blockIpOnly = p.blockIpOnly,
+      extraAllowed = (appExtraAllowed ++ uiAllowedHosts).distinct,
+      blocklistIds = profile.blockedCategories,
+      blockIpOnly = profile.blockIpOnly,
     )
   }
 

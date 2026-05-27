@@ -36,7 +36,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
       clock  <- ZIO.service[Clock]
-    } yield (new PolicyServiceLive(
+    } yield PolicyServiceLive(
       pr,
       sr,
       hsr,
@@ -48,7 +48,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       er,
       ar,
       clock,
-    )): PolicyService
+    ): PolicyService
 
   private def kidsId: ZIO[ProfileRepo, Throwable, ProfileId] =
     ZIO.serviceWithZIO[ProfileRepo](_.listAll.map(_.find(_.name == "Kids").get.id))

@@ -48,7 +48,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
       clock  <- ZIO.service[Clock]
-    } yield (new PolicyServiceLive(
+    } yield PolicyServiceLive(
       pr,
       sr,
       hsr,
@@ -60,7 +60,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       er,
       ar,
       clock,
-    )): PolicyService
+    ): PolicyService
 
   /**
    * Seed `minutes/5` non-overlapping 5-min traffic_reports buckets, starting `bucketOffset` past

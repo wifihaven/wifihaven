@@ -55,7 +55,7 @@ object PolicySnapshotBlockedMacsSpec
       ar     <- ZIO.service[AppRepo]
       ref    <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
-    } yield (new PolicyServiceLive(
+    } yield PolicyServiceLive(
       pr,
       sr,
       hsr,
@@ -67,7 +67,7 @@ object PolicySnapshotBlockedMacsSpec
       er,
       ar,
       clk,
-    )): PolicyService
+    ): PolicyService
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-seed", Sha256Hex.unsafe("o" * 64)))
