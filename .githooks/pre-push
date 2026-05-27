@@ -11,11 +11,20 @@ cd "$ROOT"
 fail=0
 
 # ── Scala: scalafmt check across the whole repo ───────────────────────────
+# Pass explicit source roots so the recursive walk doesn't descend into
+# sibling git worktrees under .claude/worktrees/ — an unformatted file
+# in another branch's worktree must not block this push.
 if command -v scalafmt >/dev/null 2>&1; then
-  echo "pre-push: scalafmt --check (all .scala)"
-  if ! scalafmt --check --non-interactive; then
-    echo "pre-push: scalafmt failed. Run: scalafmt" >&2
-    fail=1
+  scala_roots=()
+  for d in api shared mill-build .mill-build; do
+    [[ -d "$d" ]] && scala_roots+=("$d")
+  done
+  if (( ${#scala_roots[@]} > 0 )); then
+    echo "pre-push: scalafmt --check (${scala_roots[*]})"
+    if ! scalafmt --check --non-interactive "${scala_roots[@]}"; then
+      echo "pre-push: scalafmt failed. Run: scalafmt ${scala_roots[*]}" >&2
+      fail=1
+    fi
   fi
 else
   echo "pre-push: scalafmt not on PATH — skipping" >&2
