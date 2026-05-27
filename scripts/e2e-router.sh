@@ -292,7 +292,7 @@ step "#1105: exempt time_limited app folds host into extraAllowed under MAC bloc
 APP_BODY='{"name":"e2e-khan-'"$RUN_ID"'","hosts":["khan.example.com"]}'
 APP_JSON=$(curl -fsS -X POST "$BASE/api/apps" "${AUTH[@]}" \
   -H 'content-type: application/json' -d "$APP_BODY")
-APP_ID=$(_py "import json; print(json.loads('''$APP_JSON''')['id'])")
+APP_ID=$(_py "import json; print(json.loads('''$APP_JSON''')['app']['id'])")
 curl -fsS -X PUT "$BASE/api/apps/$APP_ID/policy/$PID" "${AUTH[@]}" \
   -H 'content-type: application/json' \
   -d '{"mode":"time_limited","dailyMinutes":60,"exemptFromDaily":true}' >/dev/null
