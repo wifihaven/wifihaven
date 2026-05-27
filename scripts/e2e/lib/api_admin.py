@@ -143,36 +143,6 @@ class AdminAPI:
         kept = [s for s in existing if s.get("id") != schedule_id]
         return self.apply_profile_update(profile_id, schedules=kept)
 
-    # ── apps (#763) ───────────────────────────────────────────────────────
-
-    def create_app(
-        self,
-        *,
-        name: str,
-        hosts: list[str],
-        slug: str | None = None,
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {"name": name, "hosts": hosts}
-        if slug is not None:
-            body["slug"] = slug
-        return self._request("POST", "/api/apps", body=body)
-
-    def upsert_app_assignment(
-        self,
-        *,
-        app_id: int,
-        profile_id: int,
-        mode: str,
-        daily_minutes: int | None = None,
-        exempt_from_daily: bool = True,
-    ) -> Any:
-        body: dict[str, Any] = {"mode": mode, "exemptFromDaily": exempt_from_daily}
-        if daily_minutes is not None:
-            body["dailyMinutes"] = daily_minutes
-        return self._request(
-            "PUT", f"/api/apps/{app_id}/policy/{profile_id}", body=body,
-        )
-
     # ── devices ───────────────────────────────────────────────────────────
 
     def upsert_device(self, *, mac: str, name: str, profile_id: int) -> dict[str, Any]:
