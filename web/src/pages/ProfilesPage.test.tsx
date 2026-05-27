@@ -246,6 +246,36 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     expect(chip).toHaveAttribute('data-chip', 'time-exceeded')
   })
 
+  // #1109 — follow-up to #1104. Locks in that a blocked-today time-status
+  // payload (usedMins == dailyLimitMins, remainingMins == 0) reaches the
+  // operator-visible summary row: chip copy reads "Time exceeded", the
+  // burn renders as "30m / 30m", and the date comes from the mock — no
+  // hard-coded UTC date that would silently rot when run in non-UTC tz.
+  //
+  // Scope note: the issue mentions /api/time/status/{mac} (DeviceTimeStatus),
+  // but no SPA surface consumes statusDevice today. The blocked-today UI
+  // lives on the profile summary chip, fed by /api/time/status/summary
+  // (ProfileTimeSummary). Same set of burn fields, same #1104 fix path.
+  it('blocked-today profile surfaces "Time exceeded" copy with used/limit burn (#1109)', async () => {
+    const blockedDate = '2026-05-26'
+    const blockedSummary: ProfileTimeSummary = {
+      profileId: 1, profileName: 'Kids', date: blockedDate,
+      dailyLimitMins: 30, usedMins: 30, extensionMins: 0, remainingMins: 0,
+    }
+    ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      blockedSummary, adultsSummary,
+    ])
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    const chip = within(kidsCard).getByTestId('profile-pause-chip-1')
+    expect(chip).toHaveAttribute('data-chip', 'time-exceeded')
+    expect(chip).toHaveTextContent(/Time exceeded/i)
+    const time = within(kidsCard).getByTestId('profile-summary-time-1')
+    expect(time).toHaveTextContent('30m')
+    expect(time).toHaveTextContent(/30m\s*\/\s*30m/)
+    expect(time).not.toHaveTextContent('(+')
+  })
+
   it('no +Time button for profiles without a daily limit', async () => {
     renderPage()
     const adultsCard = await screen.findByTestId('profile-card-2')
