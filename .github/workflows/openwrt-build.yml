@@ -73,6 +73,35 @@ jobs:
           echo "--- data ---"
           ar p "$ipk" data.tar.gz | tar tz
 
+      # #499: coordinated-version assertion. The version baked into the .ipk's
+      # control file must match the version derived from the repo-root VERSION
+      # file. Fails when:
+      #   - VERSION file is missing (legacy hardcoded-Makefile path)
+      #   - the .ipk Version line doesn't start with $(cat VERSION).
+      # On main this enforces that every published .ipk carries a real semver
+      # derived from the repo, not the static Makefile floor.
+      - name: Assert .ipk version matches VERSION file (#499)
+        run: |
+          set -eu
+          if [ ! -f VERSION ]; then
+            echo "ERROR: repo-root VERSION file is missing (#499)" >&2
+            exit 1
+          fi
+          base=$(tr -d ' \n' < VERSION)
+          ipk=$(ls openwrt/wifihaven_*.ipk)
+          baked=$(ar p "$ipk" control.tar.gz | tar xzO ./control | awk '/^Version:/{print $2}')
+          echo "VERSION base: $base"
+          echo "ipk Version:  $baked"
+          # baked is "<X.Y.Z>-<release>" or "<X.Y.Z>-dev.<sha>-<release>"
+          case "$baked" in
+            "$base".*) : ;;
+            *) echo "ERROR: ipk Version '$baked' does not start with VERSION base '$base.'" >&2; exit 1 ;;
+          esac
+          # Sentinel guard: reject the historical static Makefile floor.
+          case "$baked" in
+            0.1.0-*) echo "ERROR: ipk Version is the static Makefile sentinel 0.1.0 (#499)" >&2; exit 1 ;;
+          esac
+
       - name: Build luci-app-wifihaven .ipk
         env:
           PKG_VERSION: ${{ steps.ver.outputs.version }}
