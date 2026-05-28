@@ -17,6 +17,7 @@ on:
 
 env:
   MILL_VERSION: "1.1.5"
+  ACTIONLINT_VERSION: "1.7.12"
   # Opt into Node.js 24 now (forced default June 2026 anyway). Silences the
   # Node 20 deprecation warnings emitted by actions/checkout@v6, setup-java@v4,
   # setup-node@v4, cache@v4, codeql-action@v4 etc.
@@ -41,6 +42,7 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations || steps.force.outputs.all }}
       contract: ${{ steps.filter.outputs.contract || steps.force.outputs.all }}
       fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
+      workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for non-PR triggers
         id: force
@@ -128,6 +130,9 @@ jobs:
             migrations:
               - '.github/workflows/ci.yml'
               - 'api/migrations/**'
+            workflows:
+              - '.github/workflows/**'
+              - '.github/actionlint.yaml'
 
   # ── Scala: format, compile, test ─────────────────────────────────────────
   scala:
@@ -411,6 +416,33 @@ jobs:
         # before they reach Render's blueprint importer.
         run: ruby -ryaml -e "YAML.load_file('render.yaml')"
 
+  # ── GitHub Actions workflow lint ─────────────────────────────────────────
+  # actionlint statically checks every workflow under .github/workflows/ for
+  # syntax errors, bad expressions, unknown runner labels, and (via the
+  # shellcheck preinstalled on ubuntu-latest) issues in inline `run:` scripts.
+  # The custom self-hosted `kvm` label is declared in .github/actionlint.yaml
+  # so the VM e2e workflows don't trip the unknown-runner-label check.
+  actionlint:
+    name: Actionlint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash") "$ACTIONLINT_VERSION"
+
+      - name: Run actionlint
+        env:
+          # actionlint runs shellcheck on inline `run:` scripts. Gate on
+          # correctness (warning+), not style nits — existing release scripts
+          # carry info-level SC2086/SC2012 findings (unquoted vars inside
+          # globs, `ls` vs `find`) that aren't worth failing CI over.
+          SHELLCHECK_OPTS: --severity=warning
+        run: ./actionlint -color
+
   # ── Frontend: type-check, lint, build ────────────────────────────────────
   frontend:
     name: Frontend Build & Lint
@@ -464,6 +496,7 @@ jobs:
       - python-tests
       - fake-api-tests
       - render-blueprint
+      - actionlint
       - frontend
     runs-on: ubuntu-latest
     steps:
