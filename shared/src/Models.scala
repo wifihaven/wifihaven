@@ -1007,6 +1007,10 @@ case class Router(
     lastSeenAt: Option[String],
     lastEtag: Option[ETag],
     createdAt: String,
+    // #771: agent package version posted on each policy fetch via the
+    // `X-WifiHaven-Agent-Version` header. NULL until the router upgrades to
+    // an agent that reports it.
+    agentVersion: Option[String] = None,
 ) derives JsonCodec
 
 case class TrafficReport(
@@ -1108,6 +1112,9 @@ case class RouterSummary(
     lastSeenAt: Option[String],
     lastEtag: Option[ETag],
     createdAt: String,
+    // #771: agent package version reported on the most recent policy fetch
+    // (or NULL for routers that haven't polled with a version-aware agent).
+    agentVersion: Option[String] = None,
 ) derives JsonCodec
 
 case class RegisterRouterRequest(

@@ -57,14 +57,14 @@ object DbFailureSpec extends ZIOSpecDefault {
   private def throwing[A]: Task[A] = ZIO.fail(new SQLException(secretMsg))
 
   private def brokenRouterRepo: RouterRepo = new RouterRepo {
-    def listAll                                        = throwing
-    def findById(id: RouterId)                         = throwing
-    def findByEnrollmentTokenHash(h: Sha256Hex)        = throwing
-    def findByTokenHash(h: Sha256Hex)                  = throwing
-    def create(n: String, h: Sha256Hex)                = throwing
-    def completeEnrollment(id: RouterId, h: Sha256Hex) = throwing
-    def touch(id: RouterId, etag: Option[ETag])        = throwing
-    def delete(id: RouterId)                           = throwing
+    def listAll                                                               = throwing
+    def findById(id: RouterId)                                                = throwing
+    def findByEnrollmentTokenHash(h: Sha256Hex)                               = throwing
+    def findByTokenHash(h: Sha256Hex)                                         = throwing
+    def create(n: String, h: Sha256Hex)                                       = throwing
+    def completeEnrollment(id: RouterId, h: Sha256Hex)                        = throwing
+    def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]) = throwing
+    def delete(id: RouterId)                                                  = throwing
   }
 
   private def brokenTrafficRepo: TrafficReportRepo = new TrafficReportRepo {

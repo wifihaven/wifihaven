@@ -105,6 +105,14 @@ export function RoutersPage() {
                         ? <span>last seen {new Date(r.lastSeenAt).toLocaleString()}</span>
                         : <span>never seen</span>
                       }
+                      {r.agentVersion && (
+                        <span
+                          data-testid="router-agent-version"
+                          className="inline-block px-2 py-0.5 rounded font-mono bg-gray-800 text-gray-300"
+                        >
+                          v{r.agentVersion}
+                        </span>
+                      )}
                     </p>
                   </div>
                   <button

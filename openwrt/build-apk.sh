@@ -73,6 +73,11 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/data"
 cp -r "$SCRIPT_DIR/files/." "$WORK/data/"
 
+# #771: bake PKG_VERSION into a file the lua agent reads at startup so it can
+# report itself on every API checkin (X-WifiHaven-Agent-Version header).
+mkdir -p "$WORK/data/usr/lib/wifihaven"
+echo "$PKG_VERSION" > "$WORK/data/usr/lib/wifihaven/VERSION"
+
 find "$WORK/data/usr/sbin"            -type f -exec chmod 0755 {} \;
 find "$WORK/data/etc/init.d"          -type f -exec chmod 0755 {} \;
 find "$WORK/data/usr/lib/lua/wifihaven" -type f -exec chmod 0644 {} \; 2>/dev/null || true

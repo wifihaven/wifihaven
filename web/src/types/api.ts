@@ -607,6 +607,10 @@ export interface RouterSummary {
   lastSeenAt: string | null
   lastEtag: string | null
   createdAt: string
+  // #771: package version reported by the agent on its most recent
+  // policy fetch. NULL for pre-#771 routers and routers that have not
+  // polled yet.
+  agentVersion: string | null
 }
 
 export interface CreateRouterRequest {

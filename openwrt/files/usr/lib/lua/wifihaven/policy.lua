@@ -1,10 +1,15 @@
 -- policy.lua — policy snapshot fetcher and atomic config applier
 --
 -- Public API:
---   policy.fetch(api_url, router_token, etag, http_get_fn)
+--   policy.fetch(api_url, router_token, etag, http_get_fn, log, opts)
 --     → snapshot_table|nil, etag|nil
 --     http_get_fn(url, headers) → status_code, body, response_headers
 --     Returns (nil, etag) on 304, (nil, nil) on error, (snapshot, etag) on 200.
+--     opts (optional table):
+--       opts.agent_version → string sent as `X-WifiHaven-Agent-Version`
+--                            header so the API can record which package
+--                            version this router is running (#771). Absent
+--                            on legacy callers — the header is just omitted.
 --
 --   policy.apply(snapshot, write_fn, reload_fn, log, opts)
 --     → bool (true on success)
@@ -68,8 +73,9 @@ end
 -- ---------------------------------------------------------------------------
 -- policy.fetch
 -- ---------------------------------------------------------------------------
-function M.fetch(api_url, router_token, etag, http_get_fn, log)
+function M.fetch(api_url, router_token, etag, http_get_fn, log, opts)
   log = log or default_log()
+  opts = opts or {}
   local url = api_url .. "/api/router/policy"
   if etag then
     url = url .. "?since=" .. urlencode(etag)
@@ -78,6 +84,11 @@ function M.fetch(api_url, router_token, etag, http_get_fn, log)
   local hdrs = { ["Authorization"] = "Bearer " .. router_token }
   if etag then
     hdrs["If-None-Match"] = etag
+  end
+  -- #771: report the agent's baked PKG_VERSION on every checkin so the
+  -- API can slice telemetry by version. Optional — older callers omit it.
+  if opts.agent_version and opts.agent_version ~= "" then
+    hdrs["X-WifiHaven-Agent-Version"] = opts.agent_version
   end
 
   log.debug("policy.fetch: GET url=%s etag=%s", url, tostring(etag))

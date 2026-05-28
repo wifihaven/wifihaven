@@ -328,6 +328,78 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         assertTrue(r3.status == Status.Ok) &&
         assertTrue(s1.etag != s3.etag)
     },
+    test(
+      "#771: policy fetch with X-WifiHaven-Agent-Version header stores agentVersion on row",
+    ) {
+      for {
+        _       <- cleanDb
+        rr      <- ZIO.service[RouterRepo]
+        ber     <- ZIO.service[BlockEventRepo]
+        ps      <- makePolicyService
+        (_, et) <- seedRouter("gw-agentver")
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        regResp <- doRegister(routes, et)
+        regBody <- regResp.body.asString
+        reg     <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        // First poll with version header — populates agent_version.
+        _       <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
+            .addHeader("X-WifiHaven-Agent-Version", "0.1.0"),
+        )
+        row1    <- rr.findById(reg.routerId).map(_.get)
+        // Subsequent poll with a newer version updates the column.
+        _       <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
+            .addHeader("X-WifiHaven-Agent-Version", "0.2.0"),
+        )
+        row2    <- rr.findById(reg.routerId).map(_.get)
+        // Poll without the header (legacy agent) preserves the last known
+        // version — additive field, no clobber.
+        _       <- routes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value)),
+        )
+        row3    <- rr.findById(reg.routerId).map(_.get)
+      } yield assertTrue(row1.agentVersion.contains("0.1.0")) &&
+        assertTrue(row2.agentVersion.contains("0.2.0")) &&
+        assertTrue(row3.agentVersion.contains("0.2.0"))
+    },
+    test("#771: GET /api/admin/routers includes agentVersion in RouterSummary") {
+      for {
+        _          <- cleanDb
+        auth       <- makeAuth
+        rr         <- ZIO.service[RouterRepo]
+        ber        <- ZIO.service[BlockEventRepo]
+        ps         <- makePolicyService
+        (_, et)    <- seedRouter("gw-summary")
+        adminLogin <- auth.login("admin", "changeme")
+        agentRoutes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        adminRoutes = AdminRouterRoutes.routes(auth, rr)
+        regResp   <- doRegister(agentRoutes, et)
+        regBody   <- regResp.body.asString
+        reg       <- ZIO.fromEither(regBody.fromJson[RegisterRouterResponse])
+        _         <- agentRoutes.runZIO(
+          Request
+            .get(URL.decode("/api/router/policy").toOption.get)
+            .addHeader(Header.Authorization.Bearer(reg.routerToken.value))
+            .addHeader("X-WifiHaven-Agent-Version", "0.3.1"),
+        )
+        listResp  <- adminRoutes.runZIO(
+          Request
+            .get(URL.decode("/api/admin/routers").toOption.get)
+            .addHeader(Header.Authorization.Bearer(adminLogin.token.value)),
+        )
+        listBody  <- listResp.body.asString
+        summaries <- ZIO.fromEither(listBody.fromJson[List[RouterSummary]])
+      } yield assertTrue(listResp.status == Status.Ok) &&
+        assertTrue(summaries.size == 1) &&
+        assertTrue(summaries.head.agentVersion.contains("0.3.1"))
+    },
     test("blocklist (plain-text): 200 with version comment + hosts, 401 unauth, 404 unknown") {
       for {
         _       <- cleanDb

@@ -114,6 +114,28 @@ describe("policy.fetch", function()
     assert.is_nil(etag)
   end)
 
+  it("sends X-WifiHaven-Agent-Version header when opts.agent_version is set (#771)", function()
+    local sent_hdrs
+    local function get_fn(_url, hdrs)
+      sent_hdrs = hdrs
+      return 200, SNAPSHOT_JSON, {}
+    end
+    policy.fetch("http://api:8080", "rt_tok", nil, get_fn, nil, { agent_version = "0.1.0" })
+    assert.equal("0.1.0", sent_hdrs["X-WifiHaven-Agent-Version"])
+  end)
+
+  it("omits the version header when opts.agent_version is nil/empty (#771)", function()
+    local sent_hdrs
+    local function get_fn(_url, hdrs)
+      sent_hdrs = hdrs
+      return 200, SNAPSHOT_JSON, {}
+    end
+    policy.fetch("http://api:8080", "rt_tok", nil, get_fn, nil, { agent_version = "" })
+    assert.is_nil(sent_hdrs["X-WifiHaven-Agent-Version"])
+    policy.fetch("http://api:8080", "rt_tok", nil, get_fn)
+    assert.is_nil(sent_hdrs["X-WifiHaven-Agent-Version"])
+  end)
+
   it("requests /api/router/policy endpoint", function()
     local called_url
     local function get_fn(url, _hdrs)

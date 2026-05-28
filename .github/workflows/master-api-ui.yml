@@ -17,8 +17,7 @@ name: Master API/UI CD
 #                                     AND staging.wifihaven.net SPA)
 #     → api-smoke-staging            (Gate 1 — admin + router API contract smoke against staging)
 #     → gate-3b-api-staging          (Gate 3b — last-published qemu router + freshly-deployed
-#                                     staging API; #655. continue-on-error until #893's seed
-#                                     image is published — see the job's comment.)
+#                                     staging API; #655)
 #     → approve-production           (manual-approval gate — GitHub `production`
 #                                     environment; required reviewer must click
 #                                     "Approve and deploy" before the deploy-production
@@ -394,17 +393,9 @@ jobs:
   # PR just deployed. Catches API/UI changes that break forward
   # compatibility with routers customers are actually running — a class
   # of regression Gate 1's current-contract goldens cannot see.
-  #
-  # Bootstrap caveat: #893 lands the publish path but doesn't pre-seed
-  # the release. Until the first post-#893 publish-openwrt fires, the
-  # `gh release download` step in this caller will fail. We wire the job
-  # in with `continue-on-error: true` so the gate is observable in the UI
-  # but cannot block prod. Flip to a hard gate in a follow-up PR after
-  # the seed asset exists; tracked in the #655 PR body.
   gate-3b-api-staging:
     name: Gate 3b — last-published router + staging API
     needs: [deploy-staging]
-    continue-on-error: true
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-vm-gate3b.yml
@@ -412,12 +403,7 @@ jobs:
 
   approve-production:
     name: Manual approval (production gate)
-    # Gate 3b is *not* in `needs:` while continue-on-error is true — a
-    # bootstrap-skipped run shouldn't pause approve-production waiting on
-    # a job that's reporting "skipped" rather than "success". Once
-    # #655's bootstrap follow-up flips continue-on-error off, add
-    # `gate-3b-api-staging` to this `needs:` list.
-    needs: [smoke-staging, api-smoke-staging]
+    needs: [smoke-staging, api-smoke-staging, gate-3b-api-staging]
     runs-on: ubuntu-latest
     environment:
       name: production
