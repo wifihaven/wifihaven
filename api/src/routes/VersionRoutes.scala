@@ -13,8 +13,6 @@ object VersionRoutes {
   def routes(info: BuildInfo): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "version" ->
-        handler { (_: Request) =>
-          Response.json(s"""{"version":"${info.version}","sha":"${info.sha}"}""")
-        },
+        handler { (_: Request) => Response.json(s"""{"sha":"${info.sha}"}""") },
     )
 }

@@ -5,22 +5,18 @@ package wifihaven.api
  * actually serving — a green `/api/health` alone can't, since the old container keeps answering 200
  * during a Render rollover.
  *
- * `version` is the derived semver (see scripts/ci/derive-version.sh); `sha` is the git short SHA of
- * the commit the image was built from. Both are baked into the image at build time via Docker ENV
- * (see docker/Dockerfile + .github/workflows/master-api-ui.yml) and read here from the environment.
- * Local/dev runs where nothing is injected fall back to `dev` / `unknown`.
+ * `sha` is the git short SHA of the commit the image was built from. It's the only stable build
+ * identifier for the API/UI (there is no independent semver for this surface). Baked into the image
+ * at build time via Docker ENV (see docker/Dockerfile + .github/workflows/master-api-ui.yml) and
+ * read here from the environment. Local/dev runs where nothing is injected fall back to `unknown`.
  */
-final case class BuildInfo(version: String, sha: String)
+final case class BuildInfo(sha: String)
 
 object BuildInfo {
-  val DevVersion = "dev"
   val UnknownSha = "unknown"
 
   def fromEnv: BuildInfo =
-    BuildInfo(
-      version = resolve(sys.env.get("WIFIHAVEN_VERSION"), DevVersion),
-      sha = resolve(sys.env.get("WIFIHAVEN_GIT_SHA"), UnknownSha),
-    )
+    BuildInfo(resolve(sys.env.get("WIFIHAVEN_GIT_SHA"), UnknownSha))
 
   private[api] def resolve(raw: Option[String], fallback: String): String =
     raw.map(_.trim).filter(_.nonEmpty).getOrElse(fallback)

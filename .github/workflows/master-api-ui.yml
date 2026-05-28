@@ -216,9 +216,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # #1140: bake build identity so /api/version reports this build.
+          # #1140: bake the short SHA so /api/version reports this build.
           build-args: |
-            WIFIHAVEN_VERSION=${{ steps.ver.outputs.version }}
             WIFIHAVEN_GIT_SHA=${{ steps.ver.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
