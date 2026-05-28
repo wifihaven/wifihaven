@@ -57,7 +57,7 @@ object ContractFixtures {
           rules = Some(
             BlockRules(
               blocked = true,
-              blockReason = Some(MacBlockReason.Manual),
+              blockReason = Some(MacBlockReason.Unmanaged),
               extraBlocked = Nil,
               extraAllowed = List(Hostname.parse("school.example.org").toOption.get),
               blocklistIds = Nil,

@@ -1234,18 +1234,25 @@ object MacBlockReason {
   case object Schedule  extends MacBlockReason
   case object TimeLimit extends MacBlockReason
   case object Manual    extends MacBlockReason
+  // #1122: default-block path for devices with no profile assignment when
+  // settings.unmanagedMacPolicy.policy=="block". Distinct from Manual (which
+  // is an admin block on a known device) so the Logs page and block-page can
+  // surface a more specific reason.
+  case object Unmanaged extends MacBlockReason
 
   def asString(r: MacBlockReason): String      = r match {
     case Paused    => "Paused"
     case Schedule  => "Schedule"
     case TimeLimit => "TimeLimit"
     case Manual    => "Manual"
+    case Unmanaged => "Unmanaged"
   }
   def parse(s: String): Option[MacBlockReason] = s match {
     case "Paused"    => Some(Paused)
     case "Schedule"  => Some(Schedule)
     case "TimeLimit" => Some(TimeLimit)
     case "Manual"    => Some(Manual)
+    case "Unmanaged" => Some(Unmanaged)
     case _           => None
   }
 

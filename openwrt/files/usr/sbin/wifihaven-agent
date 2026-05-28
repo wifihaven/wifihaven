@@ -17,6 +17,7 @@ local policy     = require("wifihaven.policy")
 local blocklists = require("wifihaven.blocklists")
 local usage      = require("wifihaven.usage")
 local conntrack  = require("wifihaven.conntrack")
+local nflog      = require("wifihaven.nflog")
 local render     = require("wifihaven.render")
 local dns_log    = require("wifihaven.dns_log")
 local log        = require("wifihaven.log")
@@ -390,6 +391,22 @@ local function lookup_hostname(dst_ip)
   local tbl = dns_log.load_table(text, dns_cache_ttl, os.time())
   return tbl[dst_ip]
 end
+
+-- #1122: nflog tail. render.lua now emits
+--   `log group 1 counter drop comment "wh_drop:<mac>:<reason>"`
+-- on every per-MAC drop rule so forward-chain drops (which never reach the
+-- postrouting confirm hook and so never emit IPCT_NEW) become visible to
+-- the agent. The reader feeds parsed events into the same conntrack batcher
+-- so the existing /api/router/events retry queue + event_id dedup applies.
+--
+-- The conntrack watch loop below is blocking; the production reader and
+-- non-blocking glue that drives nflog.run() alongside it lands in
+-- TODO(#1126): wire nflog production reader in wifihaven-agent. Until that
+-- ships, this is wired only via the test-friendly entrypoint nflog.run, so
+-- nothing happens at runtime — but the module is imported above so a build
+-- regression (missing nflog.lua in the package) trips at agent startup
+-- rather than mid-flight.
+local _ = nflog  -- keep linter happy; live wiring in #1126
 
 conntrack.watch({
   router_id       = router_id,

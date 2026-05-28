@@ -479,7 +479,9 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
         // resolution happens via the profile policy.
         assertTrue(known.exists(_.rules.isEmpty))
     },
-    test("#961 snapshot: unmanagedMacPolicy=block emits Manual-blocked rules for unenrolled MAC") {
+    test(
+      "#961/#1122 snapshot: unmanagedMacPolicy=block emits Unmanaged-blocked rules for unenrolled MAC",
+    ) {
       for {
         _        <- cleanDb
         pr       <- ZIO.service[ProfileRepo]
@@ -517,7 +519,7 @@ object RouterApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
       } yield assertTrue(unknown.exists(_.profileId.isEmpty)) &&
         assertTrue(unknown.flatMap(_.rules).exists(_.blocked)) &&
         assertTrue(
-          unknown.flatMap(_.rules).flatMap(_.blockReason).contains(MacBlockReason.Manual),
+          unknown.flatMap(_.rules).flatMap(_.blockReason).contains(MacBlockReason.Unmanaged),
         )
     },
     test("admin can create router; non-admin gets 403; row stores enrollment hash, no token yet") {

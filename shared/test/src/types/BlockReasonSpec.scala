@@ -25,6 +25,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
           MacBlockReason.Schedule,
           MacBlockReason.TimeLimit,
           MacBlockReason.Manual,
+          MacBlockReason.Unmanaged,
         ).foldLeft(assertTrue(true)) { (acc, r) =>
           acc && assertTrue(r.toJson.fromJson[MacBlockReason].contains(r))
         }

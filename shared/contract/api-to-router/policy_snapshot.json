@@ -14,7 +14,7 @@
       "name" : "unknown-device",
       "rules" : {
         "blocked" : true,
-        "blockReason" : "Manual",
+        "blockReason" : "Unmanaged",
         "extraBlocked" : [],
         "extraAllowed" : [
           "school.example.org"

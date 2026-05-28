@@ -687,25 +687,51 @@ function M.nft(snapshot, opts)
     end
   end
 
+  -- #1122: each drop rule carries `log group NFLOG_GROUP counter drop
+  -- comment "wh_drop:<mac>:<reason>"`. The agent's nflog tail (see
+  -- wifihaven.nflog) consumes the log-group stream and synthesizes
+  -- connection_attempt events with allowed=false + reason from the comment,
+  -- closing the visibility gap for forward-chain drops (which never get
+  -- conntrack-confirmed and therefore never reach the conntrack -E NEW
+  -- watcher). The `counter` keyword stays for ops debugging via
+  -- `nft list ruleset`; the `comment` is the agent's attribution channel.
+  --
+  -- We also build a per-MAC blockReason lookup so the comment on each
+  -- whole-MAC drop carries the MacBlockReason that the API server resolved
+  -- (Paused / Schedule / TimeLimit / Manual / Unmanaged). See
+  -- PolicySnapshotMacDropAttributionSpec for the wire-string contract.
+  local NFLOG_GROUP = 1
+  local function drop_suffix(mac, reason)
+    return string.format(
+      " log group %d counter drop comment \"wh_drop:%s:%s\"",
+      NFLOG_GROUP, mac, reason)
+  end
+  local blocked_reason_by_mac = {}
+  for mac, dev in pairs(snapshot.devices or {}) do
+    local r = effective_rules(dev, snapshot.profiles)
+    if r and r.blocked and not allowall_macs[mac] then
+      blocked_reason_by_mac[mac] = r.blockReason or "blocked"
+    end
+  end
+
   ind("chain wifihaven_block {")
   ind2("type filter hook forward priority 0; policy accept;")
-  if #blocked_macs_list > 0 then
-    ind2("ether saddr @blocked_macs drop")
+  -- #1122: the family-agnostic @blocked_macs drop is replaced by per-MAC
+  -- rules so each can carry its own `wh_drop:<mac>:<reason>` comment. The
+  -- set is still declared (used by the DNAT chain below) but no longer
+  -- driven by a single drop rule. MACs without extraAllowed get one
+  -- family-agnostic per-MAC drop; MACs with extraAllowed get per-family
+  -- rules carrying the ea exception (same shape as pre-#1122).
+  for _, mac in ipairs(blocked_macs_list) do
+    ind2(string.format("ether saddr %s%s", mac,
+                       drop_suffix(mac, blocked_reason_by_mac[mac] or "blocked")))
   end
-  -- #421: blocked MAC + non-empty extraAllowed → per-MAC drop carrying the
-  -- ea exception, one rule per family. (The @blocked_macs set rule above
-  -- is family-agnostic, but the ea suffix is `ip daddr` / `ip6 daddr`, so
-  -- the rules below must be family-scoped.) The eb_/bl_ drops further
-  -- down also fire for these MACs, but the ea suffix on those rules
-  -- already keeps them inert when daddr is in an ea set, so the net
-  -- behaviour is "drop iff blocked and not in any ea set."
   for _, mac in ipairs(blocked_ea_macs) do
-    -- The leading `ip daddr != @ea_...` / `ip6 daddr != @ea6_...` clause
-    -- in ea_suffix itself scopes the rule to v4 / v6 packets, so we don't
-    -- need an extra family keyword. ea_suffix returns " ip daddr ..." with
-    -- a leading space, so the rule reads cleanly.
-    ind2(string.format("ether saddr %s%s drop", mac, ea_suffix(mac, "ip")))
-    ind2(string.format("ether saddr %s%s drop", mac, ea_suffix(mac, "ip6")))
+    local reason = blocked_reason_by_mac[mac] or "blocked"
+    ind2(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
+                       drop_suffix(mac, reason)))
+    ind2(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
+                       drop_suffix(mac, reason)))
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
@@ -714,32 +740,36 @@ function M.nft(snapshot, opts)
   -- IPs suppress the drop. ea_suffix("") for MACs with no extraAllowed,
   -- so behaviour for those is unchanged.
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s%s drop",
-                       p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip")))
+    ind2(string.format("ether saddr %s ip daddr @%s%s%s",
+                       p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
+                       drop_suffix(p.mac, "host")))
   end
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s%s drop",
-                       p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6")))
+    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s",
+                       p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
+                       drop_suffix(p.mac, "host")))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s%s drop",
-                       p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip")))
+    ind2(string.format("ether saddr %s ip daddr @%s%s%s",
+                       p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
+                       drop_suffix(p.mac, "category:" .. tostring(p.id))))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s%s drop",
-                       p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6")))
+    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s",
+                       p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
+                       drop_suffix(p.mac, "category:" .. tostring(p.id))))
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
   -- the last 5 minutes — i.e. DoH / DoT / hard-coded IPs / stale cache
   -- entries past the set timeout.
   for _, mac in ipairs(bio_macs) do
-    ind2(string.format("ether saddr %s ip daddr != @%s drop",
-                       mac, resolved_set_name(mac)))
+    ind2(string.format("ether saddr %s ip daddr != @%s%s",
+                       mac, resolved_set_name(mac), drop_suffix(mac, "ip_only")))
   end
   for _, mac in ipairs(bio_macs) do
-    ind2(string.format("ether saddr %s ip6 daddr != @%s drop",
-                       mac, resolved6_set_name(mac)))
+    ind2(string.format("ether saddr %s ip6 daddr != @%s%s",
+                       mac, resolved6_set_name(mac), drop_suffix(mac, "ip_only")))
   end
   ind("}")
   emit("")
