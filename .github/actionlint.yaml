@@ -1,0 +1,8 @@
+# actionlint configuration. See https://github.com/rhysd/actionlint.
+#
+# Declare custom labels for our self-hosted KVM runner so actionlint doesn't
+# flag `runs-on: [self-hosted, linux, kvm]` (used by the VM e2e workflows) as
+# an unknown-runner-label error.
+self-hosted-runner:
+  labels:
+    - kvm
