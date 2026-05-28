@@ -93,8 +93,11 @@ jobs:
 
       - name: Preflight (kvm/qemu/gh)
         run: |
-          test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm \
-            || { echo "/dev/kvm missing or not r/w"; ls -l /dev/kvm || true; exit 1; }
+          if ! { test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; }; then
+            echo "/dev/kvm missing or not r/w"
+            ls -l /dev/kvm || true
+            exit 1
+          fi
           qemu-system-x86_64 --version | head -n1
           gh --version
 
@@ -120,7 +123,9 @@ jobs:
             -p "wifihaven-router-images.sha256"
           # Verify the tarball checksum. sha256sum -c short-circuits on
           # missing files; restrict the manifest to lines we have.
-          tarball=$(ls wifihaven-router-openwrt-*-${PKG_FORMAT}.tar.gz)
+          shopt -s nullglob
+          tarballs=(wifihaven-router-openwrt-*-"${PKG_FORMAT}".tar.gz)
+          tarball="${tarballs[0]}"
           grep -F "${tarball}" wifihaven-router-images.sha256 > expected.sha256
           sha256sum -c expected.sha256
 
@@ -129,9 +134,12 @@ jobs:
         run: |
           set -euo pipefail
           cd release
-          tarball=$(ls wifihaven-router-openwrt-*-${PKG_FORMAT}.tar.gz)
+          shopt -s nullglob
+          tarballs=(wifihaven-router-openwrt-*-"${PKG_FORMAT}".tar.gz)
+          tarball="${tarballs[0]}"
           tar -xzf "$tarball"
-          img=$(ls openwrt-wifihaven-${PKG_FORMAT}-*.img | head -n1)
+          imgs=(openwrt-wifihaven-"${PKG_FORMAT}"-*.img)
+          img="${imgs[0]}"
           path="$GITHUB_WORKSPACE/release/$img"
           echo "path=$path" >> "$GITHUB_OUTPUT"
           ls -lh "$path"

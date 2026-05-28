@@ -211,7 +211,9 @@ jobs:
           IPK_SOURCE: path
         run: |
           set -euo pipefail
-          IPK_PATH="$(ls "$PWD"/openwrt/wifihaven_*.ipk | head -n1)"
+          shopt -s nullglob
+          ipks=("$PWD"/openwrt/wifihaven_*.ipk)
+          IPK_PATH="${ipks[0]}"
           export IPK_PATH
           chmod +x scripts/vm/build-router-image.sh
           scripts/vm/build-router-image.sh
@@ -223,7 +225,9 @@ jobs:
           APK_SOURCE: path
         run: |
           set -euo pipefail
-          APK_PATH="$(ls "$PWD"/openwrt/wifihaven_*.apk | head -n1)"
+          shopt -s nullglob
+          apks=("$PWD"/openwrt/wifihaven_*.apk)
+          APK_PATH="${apks[0]}"
           export APK_PATH
           scripts/vm/build-router-image.sh
 
