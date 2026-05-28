@@ -23,6 +23,7 @@ local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
 local paths      = require("wifihaven.paths")
 local selfheal   = require("wifihaven.selfheal")
+local version    = require("wifihaven.version")
 
 -- ── UCI config ───────────────────────────────────────────────────────────────
 
@@ -43,8 +44,12 @@ local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local debug_opt     = uci_get("debug",                            "0")
 
 log.init({ debug = debug_opt })
-log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds activity_sample_int=%ds",
-         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, activity_sample_int)
+-- #771: PKG_VERSION baked at install time into /usr/lib/wifihaven/VERSION.
+-- nil on a checkout / older install — header is then simply omitted.
+local agent_version = version.read()
+local policy_opts   = { agent_version = agent_version }
+log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds activity_sample_int=%ds agent_version=%s",
+         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, activity_sample_int, tostring(agent_version))
 
 -- activity_sample_int should evenly divide usage_report_interval, or the last
 -- partial bucket at report flush time is shorter than the others. Warn and
@@ -281,7 +286,7 @@ local last_usage_wall_ts = os.time()
 
 do
   log.debug("startup: initial policy fetch")
-  local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log)
+  local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log, policy_opts)
   if snap then
     if policy.apply(snap, write_file, run_cmd, log) then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
@@ -415,7 +420,7 @@ conntrack.watch({
     -- Policy timer
     if (mono - last_policy_run) >= policy_int then
       last_policy_run = mono
-      local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log)
+      local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log, policy_opts)
       local fetch_ok
       if snap then
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
