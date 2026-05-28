@@ -107,8 +107,7 @@ jobs:
   # current production API contract — catching the class of regression
   # that's invisible against the fake-API snapshot fixtures (i.e. the
   # snapshot golden has drifted from what the API actually emits).
-  # Shares the e2e-vm concurrency group with Gate 2 and the live-mode VM
-  # e2e workflow.
+  # Shares the e2e-vm concurrency group with Gate 2.
   gate-3a-router-staging:
     name: Gate 3a — router staging smoke
     if: github.ref == 'refs/heads/main'

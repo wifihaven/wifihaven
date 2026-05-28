@@ -1,9 +1,9 @@
 name: VM e2e KVM sanity
 
 # Smoke-tests the self-hosted KVM runner registered for #149. Runs the
-# orchestrator in skip-VMs mode (E2E_VM_SKIP_VMS=1) so it exercises the
-# docker compose + pytest wiring without booting the router/client VMs.
-# The full enforcement-suite workflow is #433's deliverable, not this one.
+# orchestrator in fake mode + skip-VMs (E2E_VM_SKIP_VMS=1) so it exercises
+# the venv + pytest wiring without booting the router/client VMs.
+# Gate 2 (e2e-vm-fake.yml) is the real enforcement suite.
 #
 # Manual-only: trigger from Actions → "VM e2e KVM sanity" → Run workflow.
 
@@ -35,4 +35,4 @@ jobs:
       - name: Orchestrator wiring (skip VMs)
         env:
           E2E_VM_SKIP_VMS: "1"
-        run: scripts/e2e-vm.sh
+        run: scripts/e2e-vm.sh --mode=fake

@@ -65,12 +65,14 @@ Gates `publish-openwrt` in `master-router.yml`. Runs the suite under
 
 ### Gate 3 — thin qemu integration vs real staging (#655)
 
-**Not wired yet.** [#655](https://github.com/wifihaven/wifihaven/issues/655) is
-still OPEN; the legacy [scripts/e2e/scenarios/](../../scripts/e2e/scenarios/)
-suite under [.github/workflows/e2e-vm.yml](../../.github/workflows/e2e-vm.yml)
-is the closest cousin (full docker-compose API + qemu router + Alpine client),
-but it gates nothing — see [#882](https://github.com/wifihaven/wifihaven/issues/882)
-for the retirement plan, and per #655 a fresh narrower Gate 3a/3b will replace it.
+**As audited (2026-05), not wired yet** ([#655](https://github.com/wifihaven/wifihaven/issues/655)).
+The legacy monolithic live-mode suite (`scripts/e2e/scenarios/` under
+`.github/workflows/e2e-vm.yml`) was the closest cousin (full docker-compose
+API + qemu router + Alpine client) but gated nothing; it was retired in
+[#656](https://github.com/wifihaven/wifihaven/issues/656) (folding in
+[#882](https://github.com/wifihaven/wifihaven/issues/882)). The narrower
+Gate 3a/3b smoke (`scripts/e2e/gate3/`, run by `e2e-vm-gate3a.yml` /
+`e2e-vm-gate3b.yml`) replaced it per #655.
 
 For audit purposes, Gate 3's "covered scenarios" column is empty everywhere;
 flagging that here once instead of repeating it per row below.

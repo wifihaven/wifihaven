@@ -154,27 +154,27 @@ the VM e2e harness on this host as a regular user, you're done.
 
 ## Trust model
 
-The repo is public. The VM e2e workflow (`.github/workflows/e2e-vm.yml`) is
-triggered by:
+The repo is public. The self-hosted KVM runner is used by the surviving VM
+e2e workflows — Gate 2 (`.github/workflows/e2e-vm-fake.yml`) and Gate 3
+(`e2e-vm-gate3a.yml` / `e2e-vm-gate3b.yml`). (The legacy monolithic
+`e2e-vm.yml` live-mode suite was retired in #656.) These are triggered by:
 
-1. `pull_request` whose **base branch is `ci/vm-e2e`** — the dedicated
-   stabilization branch. The workflow job is gated by
-   `if: github.event.pull_request.head.repo.full_name == github.repository`
-   so PRs from forks are refused execution on the self-hosted runner; only
-   branches pushed into this repo can target `ci/vm-e2e` and run the suite.
+1. `workflow_call` — invoked from the Master CD pipelines
+   (`master-router.yml` gates `publish-openwrt` on Gate 2 + Gate 3a;
+   `master-api-ui.yml` gates `publish-api` on Gate 3b). These run only off
+   `push: main` via the Master CD workflows, never off fork PRs.
 2. `workflow_dispatch` — manual runs from the Actions tab against any ref,
    requires maintainer-equivalent permissions.
-3. `workflow_call` — reserved for future use; not currently invoked from
-   any other workflow.
 
-Notably **not** triggered on `push: main`, and **not** a `needs:` of Master
-CD's `publish-api` job — image publish is ungated from the VM e2e while the
-suite is being stabilized. Reintroduce as a `needs:` once the suite is
-reliably green on `ci/vm-e2e`.
+Each job additionally carries the
+`if: github.event.pull_request.head.repo.full_name == github.repository`
+guard, so even if a workflow grew a `pull_request` trigger, fork PRs would
+be refused execution on the self-hosted runner.
 
-Trust gate for the runner = (a) restriction to `ci/vm-e2e` as the PR base,
-(b) same-repo head-branch requirement on `pull_request`, (c) code review
-before any branch is pushed to this repo.
+Trust gate for the runner = (a) jobs run only from Master CD off `main` or
+maintainer-triggered `workflow_dispatch`, (b) the same-repo head-branch
+guard on any `pull_request`, (c) code review before any branch is pushed to
+this repo.
 
 ## Maintenance
 

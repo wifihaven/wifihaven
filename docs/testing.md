@@ -2,8 +2,9 @@
 
 A one-page map of the test suites in this repo and which one a given
 behavior belongs in. Background: three-gate plan (#652), Gate 1 (#653),
-Gate 2 (#654 / #686), Gate 3a + 3b (#655). The live `e2e-vm.yml` track
-is being decommissioned (#656) — **don't add new tests there**.
+Gate 2 (#654 / #686), Gate 3a + 3b (#655). The old monolithic live-mode
+`e2e-vm.yml` track was retired in #656 — VM e2e is now Gate 2 (fake API)
+plus the two Gate 3 halves.
 
 ## 30-second decision tree
 
@@ -97,12 +98,6 @@ behaviors either side already covers.
   fields (Gate 1). UI behavior (web unit tests + Gate 1). Anything that
   could be expressed without two real artifacts.
 
-### Live VM e2e (`e2e-vm.yml`) — legacy
-
-Full docker-compose API + qemu router. Not a gate. **Being retired
-(#656).** Don't add new tests under `scripts/e2e/scenarios/`; if you'd
-have put one here, it belongs in Gate 2.
-
 ## Cheat sheet
 
 | If the failure is… | Add to |
@@ -115,6 +110,5 @@ have put one here, it belongs in Gate 2.
 
 ## Out of scope here
 
-- Decommissioning `e2e-vm.yml` — tracked in #656.
 - Runner capacity — tracked in #657.
 - Wire-schema versioning framework — tracked in #376 / #597.

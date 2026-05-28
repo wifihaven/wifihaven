@@ -152,9 +152,9 @@ pass "usage posted (90 active seconds)"
 # Poll with a short timeout (#780): against the in-compose stack the snapshot
 # reflects the write on the very next request, but against deployed staging the
 # Render rollover window can briefly serve a stale instance between the POST
-# and the read. Match the wait-with-timeout pattern from
-# scripts/e2e/scenarios/test_time_limit.py rather than asserting on a single
+# and the read. Use a wait-with-timeout rather than asserting on a single
 # read — the read path itself is unchanged, we just give it a few tries.
+# (Same pattern as scripts/e2e/scenarios_fake/test_time_limit.py.)
 REASON=""
 deadline=$(( $(date +%s) + 15 ))
 while (( $(date +%s) < deadline )); do

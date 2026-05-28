@@ -73,7 +73,7 @@ def test_gate3_smoke(admin, enrolled_router, client_vm, scratch_profile_and_devi
         time.sleep(1)
 
     # ── usage cross-check: /api/logs sees rows attributed to our MAC ────
-    # Per scenarios/test_05_usage_in_api.py the canonical assertion is
+    # Per scenarios_fake/test_05_usage_in_api.py the canonical assertion is
     # "MAC attribution lands" — host-string matching is brittle because
     # what the agent emits depends on dnsmasq log timing and packet
     # batching. The wire-end-to-wire-end signal we care about is
