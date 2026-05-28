@@ -13,7 +13,11 @@ define Package/wifihaven
   SECTION:=net
   CATEGORY:=Network
   TITLE:=WifiHaven router agent
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua
+  # kmod-nft-log: the forward-chain drop rules carry an NFLOG `log group`
+  # statement (#1122). It is not in the default image, and the agent's atomic
+  # `nft -f` rejects the whole table without it — silently dropping all
+  # enforcement, including the block-page DNAT (#1144).
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nft-log
   PKGARCH:=all
 endef
 
