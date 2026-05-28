@@ -64,6 +64,12 @@ env:
 jobs:
   ci-tests:
     name: CI
+    # Gate every job to main: the broad `paths:` filter above lets feature-
+    # branch pushes create a run, but on a non-main ref no job is eligible
+    # and GitHub records a 0-job `failure`. Skipping (not failing) the jobs
+    # turns that spurious red run neutral. `workflow_dispatch` on main still
+    # satisfies this; dispatch on a non-main ref is intentionally skipped. (#1136)
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
@@ -75,6 +81,7 @@ jobs:
   # .ipk/.apk packages from publish-openwrt are).
   build-vm-image:
     name: Build OpenWRT VM image
+    if: github.ref == 'refs/heads/main'
     needs: [ci-tests]
     permissions:
       contents: read
@@ -86,6 +93,7 @@ jobs:
   # serializes against the live-mode VM e2e workflow on the same host.
   gate-2-router-fake-api:
     name: Gate 2 — router fake-API e2e
+    if: github.ref == 'refs/heads/main'
     needs: [ci-tests, build-vm-image]
     permissions:
       contents: read
@@ -103,6 +111,7 @@ jobs:
   # e2e workflow.
   gate-3a-router-staging:
     name: Gate 3a — router staging smoke
+    if: github.ref == 'refs/heads/main'
     needs: [ci-tests, build-vm-image]
     permissions:
       contents: read
@@ -118,6 +127,7 @@ jobs:
   # approval prompts across the two pipelines.
   approve-production:
     name: Manual approval (router production gate)
+    if: github.ref == 'refs/heads/main'
     needs: [gate-2-router-fake-api, gate-3a-router-staging]
     runs-on: ubuntu-latest
     permissions: {}
@@ -134,6 +144,7 @@ jobs:
   # completion regardless of any later main push.
   publish-openwrt:
     name: Publish OpenWRT release
+    if: github.ref == 'refs/heads/main'
     needs: [approve-production]
     permissions:
       contents: write
