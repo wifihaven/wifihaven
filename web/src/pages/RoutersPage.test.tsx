@@ -19,6 +19,7 @@ import { RoutersPage } from './RoutersPage'
 const existing: RouterSummary = {
   id: 'r1', name: 'home-gw', enrolled: false,
   lastSeenAt: null, lastEtag: null, createdAt: '2026-05-11T00:00:00Z',
+  agentVersion: null,
 }
 
 const createResp: CreateRouterResponse = {
@@ -93,6 +94,24 @@ describe('RoutersPage — copy to clipboard', () => {
     const input = screen.getByDisplayValue(createResp.enrollmentToken) as HTMLInputElement
     expect(input.tagName).toBe('INPUT')
     expect(input.readOnly).toBe(true)
+  })
+})
+
+describe('RoutersPage — #771 agent version', () => {
+  it('renders the reported agent version as a v-prefixed chip when present', async () => {
+    const withVersion: RouterSummary = {
+      ...existing, id: 'r3', name: 'gw-with-ver', agentVersion: '0.2.1',
+    }
+    ;(api.routers.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([withVersion])
+    render(<RoutersPage />)
+    const chip = await screen.findByTestId('router-agent-version')
+    expect(chip).toHaveTextContent('v0.2.1')
+  })
+
+  it('omits the version chip when agentVersion is null (legacy router)', async () => {
+    render(<RoutersPage />)
+    await screen.findByText('home-gw')
+    expect(screen.queryByTestId('router-agent-version')).toBeNull()
   })
 })
 
