@@ -3,9 +3,9 @@
 #
 # render.lua emits forward-chain drop rules carrying `log group <N> counter
 # drop` (#1122, for the nflog → connection_attempt visibility path). The
-# nftables `log ... group` expression is NFLOG and needs the nf_log /
-# nfnetlink_log kernel support — OpenWRT package `kmod-nft-log`. It is NOT in
-# the default x86 image profile (only kmod-nft-{core,fib,nat,offload} ship via
+# nftables `log ... group` expression is NFLOG and needs the nfnetlink_log
+# kernel backend — OpenWRT package `kmod-nfnetlink-log`. It is NOT in the
+# default x86 image profile (only kmod-nft-{core,fib,nat,offload} ship via
 # firewall4), so wifihaven must pull it in itself.
 #
 # The agent applies the rendered ruleset with a single atomic `nft -f`
@@ -15,7 +15,7 @@
 # upstream, no block page). That is the Gate 3a regression in #1144.
 #
 # This guard ties the two facts together: as long as render emits `log group`,
-# every package-dependency declaration must list kmod-nft-log. Pure text
+# every package-dependency declaration must list kmod-nfnetlink-log. Pure text
 # checks — runs in the standard Lua/shell test CI with no kernel needed, which
 # is exactly the gap that let #1122 through (render unit tests only string-
 # compare output; Gate 2 actually loads nft but was starved by concurrency).
@@ -55,19 +55,19 @@ fi
 
 if [ "$EMITS_LOG_GROUP" = "1" ]; then
   # Makefile DEPENDS uses the `+pkg` form.
-  grep -Eq "DEPENDS:=.*\+kmod-nft-log" "$MAKEFILE" \
-    && check "Makefile DEPENDS includes +kmod-nft-log" ok \
-    || check "Makefile DEPENDS includes +kmod-nft-log" "missing — atomic nft -f will reject the whole table"
+  grep -Eq "DEPENDS:=.*\+kmod-nfnetlink-log" "$MAKEFILE" \
+    && check "Makefile DEPENDS includes +kmod-nfnetlink-log" ok \
+    || check "Makefile DEPENDS includes +kmod-nfnetlink-log" "missing — atomic nft -f will reject the whole table"
 
   # build-ipk.sh control field uses comma-separated names.
-  grep -Eq "^Depends:.*kmod-nft-log" "$BUILD_IPK" \
-    && check "build-ipk.sh Depends includes kmod-nft-log" ok \
-    || check "build-ipk.sh Depends includes kmod-nft-log" "missing — ipk image lacks NFLOG support"
+  grep -Eq "^Depends:.*kmod-nfnetlink-log" "$BUILD_IPK" \
+    && check "build-ipk.sh Depends includes kmod-nfnetlink-log" ok \
+    || check "build-ipk.sh Depends includes kmod-nfnetlink-log" "missing — ipk image lacks NFLOG support"
 
   # build-apk.sh passes a space-separated --info depends:... string.
-  grep -Eq "depends:[^\"]*kmod-nft-log" "$BUILD_APK" \
-    && check "build-apk.sh depends includes kmod-nft-log" ok \
-    || check "build-apk.sh depends includes kmod-nft-log" "missing — apk image lacks NFLOG support"
+  grep -Eq "depends:[^\"]*kmod-nfnetlink-log" "$BUILD_APK" \
+    && check "build-apk.sh depends includes kmod-nfnetlink-log" ok \
+    || check "build-apk.sh depends includes kmod-nfnetlink-log" "missing — apk image lacks NFLOG support"
 fi
 
 printf "  ── %d passed, %d failed\n" "$PASS" "$FAIL"
