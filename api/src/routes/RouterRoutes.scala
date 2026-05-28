@@ -54,12 +54,19 @@ object RouterRoutes {
           for {
             router <- routerAuth.authenticate(req)
             snap   <- policy.snapshot.mapError(ErrorMapper.dbErrorToResponse)
-            ifNoneMatch = req
+            ifNoneMatch  = req
               .header(Header.IfNoneMatch)
               .map(_.renderedValue)
               .orElse(req.url.queryParam("since"))
+            // #771: agents post their baked PKG_VERSION on every policy
+            // fetch. Optional — legacy agents omit the header and the
+            // stored value is preserved via COALESCE.
+            agentVersion = req.headers
+              .get("X-WifiHaven-Agent-Version")
+              .map(_.trim)
+              .filter(_.nonEmpty)
             _ <- routerRepo
-              .touch(router.id, Some(snap.etag))
+              .touch(router.id, Some(snap.etag), agentVersion)
               .mapError(ErrorMapper.dbErrorToResponse)
             notMod = ifNoneMatch.exists(etagWeakEquals(_, snap.etag.value))
             // #481: 200s (etag changed) are diagnostic gold for snapshot-propagation
@@ -212,6 +219,7 @@ object AdminRouterRoutes {
       lastSeenAt = r.lastSeenAt,
       lastEtag = r.lastEtag,
       createdAt = r.createdAt,
+      agentVersion = r.agentVersion,
     )
 
   private def newEnrollmentToken(): String = {

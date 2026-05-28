@@ -63,7 +63,7 @@ object RouterIngestRoutes {
               timeUsageRepo,
               deviceRepo,
             )
-            _        <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _ <- routerRepo.touch(router.id, None, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
       Method.POST / "api" / "router" / "events" ->
@@ -97,7 +97,7 @@ object RouterIngestRoutes {
               ),
             )
             _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
-            _      <- routerRepo.touch(router.id, None).mapError(ErrorMapper.dbErrorToResponse)
+            _ <- routerRepo.touch(router.id, None, None).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
           handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
         },

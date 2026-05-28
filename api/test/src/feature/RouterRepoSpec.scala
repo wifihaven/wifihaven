@@ -57,9 +57,9 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           repo <- ZIO.service[RouterRepo]
           id   <- repo.create("r1", Sha256Hex.unsafe("e" * 64))
           _    <- repo.completeEnrollment(id, Sha256Hex.unsafe("f" * 64))
-          _    <- repo.touch(id, Some(ETag.unsafe("\"etag-A\"")))
+          _    <- repo.touch(id, Some(ETag.unsafe("\"etag-A\"")), None)
           a    <- repo.findById(id)
-          _    <- repo.touch(id, None) // last_etag must remain "etag-A"
+          _    <- repo.touch(id, None, None) // last_etag must remain "etag-A"
           b    <- repo.findById(id)
         } yield assertTrue(a.flatMap(_.lastEtag).contains(ETag.unsafe("\"etag-A\""))) &&
           assertTrue(b.flatMap(_.lastEtag).contains(ETag.unsafe("\"etag-A\""))) &&

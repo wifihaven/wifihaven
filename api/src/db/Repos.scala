@@ -364,7 +364,7 @@ trait RouterRepo {
   def findByTokenHash(h: Sha256Hex): Task[Option[Router]]
   def create(name: String, enrollmentTokenHash: Sha256Hex): Task[RouterId]
   def completeEnrollment(id: RouterId, tokenHash: Sha256Hex): Task[Unit]
-  def touch(id: RouterId, etag: Option[ETag]): Task[Unit]
+  def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]): Task[Unit]
 
   def delete(id: RouterId): Task[Unit]
 }
@@ -1229,8 +1229,9 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
         Option[Instant],
         Option[ETag],
         Instant,
+        Option[String],
     )
-  private def toR(r: R)                                      =
+  private def toR(r: R)                                                     =
     Router(
       r._1,
       r._2,
@@ -1239,47 +1240,52 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       r._5.map(_.toString),
       r._6,
       r._7.toString,
+      r._8,
     )
-  private val cols                                           =
-    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at"
-  def listAll                                                =
+  private val cols                                                          =
+    fr"id,name,enrollment_token_hash,token_hash,last_seen_at,last_etag,created_at,agent_version"
+  def listAll                                                               =
     (fr"SELECT " ++ cols ++ fr" FROM routers ORDER BY created_at")
       .query[R]
       .map(toR)
       .to[List]
       .transact(xa)
-  def findById(id: RouterId)                                 =
+  def findById(id: RouterId)                                                =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE id=$id")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def findByEnrollmentTokenHash(h: Sha256Hex)                =
+  def findByEnrollmentTokenHash(h: Sha256Hex)                               =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE enrollment_token_hash=$h")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def findByTokenHash(h: Sha256Hex)                          =
+  def findByTokenHash(h: Sha256Hex)                                         =
     (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
       .query[R]
       .map(toR)
       .option
       .transact(xa)
-  def create(name: String, enrollmentTokenHash: Sha256Hex)   =
+  def create(name: String, enrollmentTokenHash: Sha256Hex)                  =
     sql"INSERT INTO routers(name,enrollment_token_hash) VALUES($name,$enrollmentTokenHash) RETURNING id"
       .query[RouterId]
       .unique
       .transact(xa)
-  def completeEnrollment(id: RouterId, tokenHash: Sha256Hex) =
+  def completeEnrollment(id: RouterId, tokenHash: Sha256Hex)                =
     sql"UPDATE routers SET token_hash=$tokenHash, enrollment_token_hash=NULL, last_seen_at=NOW() WHERE id=$id".update.run
       .transact(xa)
       .unit
-  def touch(id: RouterId, etag: Option[ETag])                =
-    sql"UPDATE routers SET last_seen_at=NOW(), last_etag=COALESCE($etag,last_etag) WHERE id=$id".update.run
+  def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]) =
+    sql"""UPDATE routers
+          SET last_seen_at=NOW(),
+              last_etag=COALESCE($etag,last_etag),
+              agent_version=COALESCE($agentVersion,agent_version)
+          WHERE id=$id""".update.run
       .transact(xa)
       .unit
-  def delete(id: RouterId)                                   =
+  def delete(id: RouterId)                                                  =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
 }
 
