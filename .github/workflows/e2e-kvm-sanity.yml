@@ -22,8 +22,11 @@ jobs:
       - name: Verify /dev/kvm
         run: |
           test -e /dev/kvm || { echo "/dev/kvm missing"; exit 1; }
-          test -r /dev/kvm && test -w /dev/kvm \
-            || { echo "/dev/kvm not r/w for runner user"; ls -l /dev/kvm; exit 1; }
+          if ! { test -r /dev/kvm && test -w /dev/kvm; }; then
+            echo "/dev/kvm not r/w for runner user"
+            ls -l /dev/kvm
+            exit 1
+          fi
           echo "ok /dev/kvm"
 
       - name: Verify qemu

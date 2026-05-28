@@ -93,8 +93,11 @@ jobs:
 
       - name: Preflight (kvm/qemu/gh)
         run: |
-          test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm \
-            || { echo "/dev/kvm missing or not r/w"; ls -l /dev/kvm || true; exit 1; }
+          if ! { test -e /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; }; then
+            echo "/dev/kvm missing or not r/w"
+            ls -l /dev/kvm || true
+            exit 1
+          fi
           qemu-system-x86_64 --version | head -n1
           gh --version
 
