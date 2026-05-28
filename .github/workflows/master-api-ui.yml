@@ -79,11 +79,18 @@ jobs:
   # ── 1. Full CI test matrix (unit, lint, lua, python, shell, frontend) ─────
   ci-tests:
     name: CI
+    # Gate every job to main: the broad `paths:` filter above lets feature-
+    # branch pushes create a run, but on a non-main ref no job is eligible
+    # and GitHub records a 0-job `failure`. Skipping (not failing) the jobs
+    # turns that spurious red run neutral. `workflow_dispatch` on main still
+    # satisfies this; dispatch on a non-main ref is intentionally skipped. (#1136)
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ci.yml
 
   # ── 2. E2E + smoke tests (unconditional) ──────────────────────────────────
   bootstrap-smoke:
     name: bootstrap-host.sh smoke (Ubuntu container)
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -94,6 +101,7 @@ jobs:
 
   e2e:
     name: Live e2e against staging stack
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -121,6 +129,7 @@ jobs:
 
   prod-stack-smoke:
     name: deploy/docker-compose.prod.yml smoke
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -137,6 +146,7 @@ jobs:
   # simpler option; we did).
   build-image:
     name: Build Docker image to ghcr.io (sha + staging tags)
+    if: github.ref == 'refs/heads/main'
     needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
     runs-on: ubuntu-latest
     permissions:
@@ -209,6 +219,7 @@ jobs:
   # (which the build-image job just pushed) and roll the service.
   deploy-staging:
     name: Deploy staging (Render)
+    if: github.ref == 'refs/heads/main'
     needs: [build-image]
     runs-on: ubuntu-latest
     steps:
@@ -250,6 +261,7 @@ jobs:
   # live at staging.wifihaven.net before the cross-origin CORS checks run.
   deploy-spa-staging:
     name: Deploy SPA to Cloudflare Pages (staging)
+    if: github.ref == 'refs/heads/main'
     needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
     runs-on: ubuntu-latest
     steps:
@@ -298,6 +310,7 @@ jobs:
   # SPA cross-origin contract.
   smoke-staging:
     name: Smoke-test staging
+    if: github.ref == 'refs/heads/main'
     needs: [deploy-staging, deploy-spa-staging]
     runs-on: ubuntu-latest
     steps:
@@ -368,6 +381,7 @@ jobs:
   # deploy by sitting on `approve-production`'s `needs:`.
   api-smoke-staging:
     name: Gate 1 — API contract smoke (staging)
+    if: github.ref == 'refs/heads/main'
     # Runs in parallel with smoke-staging — both `needs: [deploy-staging]`,
     # both feed approve-production. smoke-staging covers the SPA bundle +
     # CORS plane; this job covers the admin + router API plane. Either
@@ -415,6 +429,7 @@ jobs:
   # of regression Gate 1's current-contract goldens cannot see.
   gate-3b-api-staging:
     name: Gate 3b — last-published router + staging API
+    if: github.ref == 'refs/heads/main'
     needs: [deploy-staging]
     permissions:
       contents: read
@@ -423,6 +438,7 @@ jobs:
 
   approve-production:
     name: Manual approval (production gate)
+    if: github.ref == 'refs/heads/main'
     needs: [smoke-staging, api-smoke-staging, gate-3b-api-staging]
     runs-on: ubuntu-latest
     environment:
@@ -439,6 +455,7 @@ jobs:
   # in another tool; buildx is already set up on github-hosted runners.
   retag-latest:
     name: Promote sha → :latest (deploy-production)
+    if: github.ref == 'refs/heads/main'
     needs: [approve-production]
     runs-on: ubuntu-latest
     permissions:
@@ -470,6 +487,7 @@ jobs:
   # whichever pipeline finishes first wins, the other no-ops.
   cut-release-tag:
     name: Cut v<X.Y.Z> release tag (#499)
+    if: github.ref == 'refs/heads/main'
     needs: [approve-production, retag-latest]
     runs-on: ubuntu-latest
     permissions:
@@ -510,6 +528,7 @@ jobs:
   # depend on retag-latest to enforce ordering.
   deploy-prod-render:
     name: Deploy production (Render)
+    if: github.ref == 'refs/heads/main'
     needs: [approve-production, retag-latest]
     runs-on: ubuntu-latest
     steps:
@@ -541,6 +560,7 @@ jobs:
   # deploy-prod-render is bounded to the duration of either job.
   deploy-spa-prod:
     name: Deploy SPA to Cloudflare Pages (prod) (deploy-production)
+    if: github.ref == 'refs/heads/main'
     needs: [approve-production]
     runs-on: ubuntu-latest
     steps:
