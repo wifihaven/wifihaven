@@ -28,8 +28,19 @@ on:
   workflow_call:
   workflow_dispatch:
 
+# Concurrency / host capacity (#895): scope the group per workflow-run so
+# distinct runs of this (legacy, single-job) workflow no longer serialize at
+# the GitHub queue level. Host isolation comes from WH_RUN_ID (below, unique
+# per run) + the wh-lan* bridge pool pick (#891). The hard ceiling on
+# concurrent VM pairs is the bridge pool, not this group: api.lan's
+# /etc/qemu/bridge.conf has 4 bridges (wh-lan0..wh-lan3), each pair consumes
+# one. This workflow has no matrix fan-out (single job), so it has no
+# max-parallel cap; the sibling fan-out workflows (e2e-vm-fake / gate3a /
+# gate3b) cap at 3 to leave one bridge of headroom. When the pool is
+# exhausted, wh_pick_lan_bridge fails loud ("LAN bridge pool exhausted").
+# Broader capacity plan: #657.
 concurrency:
-  group: e2e-vm
+  group: e2e-vm-${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -45,8 +56,8 @@ jobs:
     # test_pause but was killed mid-test_time_limit, which sleeps 330s
     # waiting for the agent's usage-report flush. The full suite needs
     # ~80–100m wall clock. 120m gives one slow scenario's worth of slack
-    # without masking real regressions; concurrency=e2e-vm keeps the
-    # queue serialized so a slow run doesn't pile up.
+    # without masking real regressions. Per-run concurrency (#895) no longer
+    # serializes the queue; the bridge pool bounds host contention instead.
     timeout-minutes: 120
 
     env:

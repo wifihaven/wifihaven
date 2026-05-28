@@ -112,6 +112,11 @@ router_is_running() {
 # lan-bridge-pool-bootstrap.sh so non-root pickers can write reservations.
 WH_BRIDGE_RESERVATION_DIR="${WH_BRIDGE_RESERVATION_DIR:-/run/wh-lan-bridge}"
 
+# Host paths the bridge picker reads. Overridable so tests can simulate a
+# bridge pool without root / dummy netdevs.
+WH_QEMU_BRIDGE_CONF="${WH_QEMU_BRIDGE_CONF:-/etc/qemu/bridge.conf}"
+WH_SYS_CLASS_NET="${WH_SYS_CLASS_NET:-/sys/class/net}"
+
 # Atomically (re)write the reservation marker for ${1}=bridge to ${2}=pid,
 # tagging it with WH_RUN_ID for human debugging. Silently no-ops if the
 # reservation dir does not exist (un-bootstrapped host).
@@ -183,14 +188,14 @@ wh_pick_lan_bridge() {
   # experiment forgot to clean up — qemu-bridge-helper would refuse to attach
   # to such a leftover anyway.
   local pool=()
-  if [[ -f /etc/qemu/bridge.conf ]]; then
+  if [[ -f "${WH_QEMU_BRIDGE_CONF}" ]]; then
     local br
     while IFS= read -r br; do
       [[ -n "${br}" ]] || continue
       [[ "${br}" =~ ^wh-lan[0-9]+$ ]] || continue
-      [[ -d "/sys/class/net/${br}" ]] || continue
+      [[ -d "${WH_SYS_CLASS_NET}/${br}" ]] || continue
       pool+=("${br}")
-    done < <(awk '/^[[:space:]]*allow[[:space:]]+/ {print $2}' /etc/qemu/bridge.conf)
+    done < <(awk '/^[[:space:]]*allow[[:space:]]+/ {print $2}' "${WH_QEMU_BRIDGE_CONF}")
   fi
   # No pool bridges exist → fall back to today's behavior (config.sh default).
   if (( ${#pool[@]} == 0 )); then
@@ -212,7 +217,7 @@ wh_pick_lan_bridge() {
   local br
   while IFS= read -r br; do
     local attached
-    attached=$(ls "/sys/class/net/${br}/brif" 2>/dev/null | wc -l)
+    attached=$(ls "${WH_SYS_CLASS_NET}/${br}/brif" 2>/dev/null | wc -l)
     local res="none"
     if [[ -f "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" ]]; then
       res="$(awk -F= '$1=="pid"{print $2; exit}' "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" 2>/dev/null)"

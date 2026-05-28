@@ -18,9 +18,20 @@ name: VM e2e (Gate 3a — router-side staging smoke)
 #                        approve-production (parallel to gate-2-router-fake-api)
 #   - workflow_dispatch — manual debugging from the Actions tab
 #
-# Concurrency: shares the e2e-vm group with Gate 2 and the live-mode VM
-# e2e workflow. Per the e2e-vm group convention, runs on this host
-# serialize. The capacity headroom this consumes is tracked in #657.
+# Concurrency / host capacity (#895):
+#   The old `group: e2e-vm` serialized every VM e2e workflow run on the host.
+#   #891 parameterized bridge/ports/MACs so multiple qemu pairs can share the
+#   host, so we now scope the group per workflow-run — distinct runs no longer
+#   serialize at the GitHub queue level. Per-run host isolation comes from
+#   WH_RUN_ID / WH_PORT_BASE (below) + the wh-lan* bridge pool pick (#891).
+#
+#   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
+#   group: api.lan's /etc/qemu/bridge.conf has 4 bridges (wh-lan0..wh-lan3),
+#   each VM pair consumes one → 4 concurrent pairs max. CI matrix fan-out is
+#   capped at `max-parallel: 3` (below), leaving one bridge for ad-hoc runs,
+#   scripts/e2e-kvm-sanity, and keep-staging-warm. When all 4 are taken,
+#   wh_pick_lan_bridge fails loud ("LAN bridge pool exhausted", exit 1)
+#   instead of queueing forever. Broader capacity plan: #657.
 
 on:
   workflow_call:
@@ -35,7 +46,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-vm
+  group: e2e-vm-${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -52,8 +63,11 @@ jobs:
     timeout-minutes: 20
     # Matrix over ipk-23.05 and apk-25.12 (#532). fail-fast=false so a
     # regression in one flavor still reports the other arm's status.
+    # max-parallel: 3 (#895) — bounded by the 4-bridge pool minus one
+    # headroom slot (see the concurrency note at the top of this file).
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - pkg_format: ipk
@@ -68,12 +82,13 @@ jobs:
       # even though the e2e-vm concurrency group serializes them, the
       # safety margin is free.
       WH_PORT_BASE: ${{ matrix.port_base }}
-      # Same WH_RUN_ID conventions as Gate 2 — short enough to keep
-      # .run/<id>/router/monitor.sock under the 108-byte Unix-socket path
-      # limit. Sequential matrix arms (today's reality on a single
-      # runner) safely reuse the same id because teardown completes
-      # between arms.
-      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      # Same WH_RUN_ID convention as Gate 2 (#895): per-arm pkg_format suffix
+      # so concurrently-booting matrix arms (max-parallel: 3) don't share a
+      # .run/<id>/ state dir; github.run_id keeps it unique across concurrent
+      # workflow runs (gate3a / gate3b / fake each get a distinct run_id, and
+      # the per-workflow WH_PORT_BASE ranges below never overlap either).
+      # 17-char budget: see the WH_RUN_ID note in e2e-vm-fake.yml.
+      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.pkg_format }}
       WH_API_URL: https://api-staging.wifihaven.net
       WH_GATE3_SIDE: 3a
 

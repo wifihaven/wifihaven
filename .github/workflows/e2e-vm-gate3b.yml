@@ -18,8 +18,20 @@ name: VM e2e (Gate 3b — API/UI-side staging smoke)
 #                        api-smoke-staging)
 #   - workflow_dispatch — manual debugging from the Actions tab
 #
-# Concurrency: shares the e2e-vm group with Gates 2 + 3a + live-mode e2e.
-# Capacity tracked in #657.
+# Concurrency / host capacity (#895):
+#   The old `group: e2e-vm` serialized every VM e2e workflow run on the host.
+#   #891 parameterized bridge/ports/MACs so multiple qemu pairs can share the
+#   host, so we now scope the group per workflow-run — distinct runs no longer
+#   serialize at the GitHub queue level. Per-run host isolation comes from
+#   WH_RUN_ID / WH_PORT_BASE (below) + the wh-lan* bridge pool pick (#891).
+#
+#   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
+#   group: api.lan's /etc/qemu/bridge.conf has 4 bridges (wh-lan0..wh-lan3),
+#   each VM pair consumes one → 4 concurrent pairs max. CI matrix fan-out is
+#   capped at `max-parallel: 3` (below), leaving one bridge for ad-hoc runs,
+#   scripts/e2e-kvm-sanity, and keep-staging-warm. When all 4 are taken,
+#   wh_pick_lan_bridge fails loud ("LAN bridge pool exhausted", exit 1)
+#   instead of queueing forever. Broader capacity plan: #657.
 
 on:
   workflow_call:
@@ -29,7 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-vm
+  group: e2e-vm-${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -40,8 +52,11 @@ jobs:
       || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
     timeout-minutes: 20
+    # max-parallel: 3 (#895) — bounded by the 4-bridge pool minus one headroom
+    # slot (see the concurrency note at the top of this file).
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - pkg_format: ipk
@@ -52,7 +67,10 @@ jobs:
     env:
       PKG_FORMAT: ${{ matrix.pkg_format }}
       WH_PORT_BASE: ${{ matrix.port_base }}
-      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      # Per-arm pkg_format suffix (#895) so concurrent matrix arms don't share
+      # a .run/<id>/ state dir; github.run_id keeps it unique across concurrent
+      # workflow runs. 17-char budget: see e2e-vm-fake.yml's WH_RUN_ID note.
+      WH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.pkg_format }}
       WH_API_URL: https://api-staging.wifihaven.net
       WH_GATE3_SIDE: 3b
 
