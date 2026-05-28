@@ -52,7 +52,7 @@ concurrency:
 jobs:
   e2e-gate3a:
     name: Gate 3a (router-side staging) — ${{ matrix.pkg_format }}
-    # Block fork PRs on the self-hosted runner; same guard as e2e-vm.yml /
+    # Block fork PRs on the self-hosted runner; same guard as
     # e2e-vm-fake.yml. workflow_call + workflow_dispatch are always allowed.
     if: >-
       github.event_name != 'pull_request'

@@ -1,10 +1,12 @@
 # Manual QA — single-device walkthrough
 
 Validates a fresh install end-to-end with one real device. Mirrors the
-VM e2e suite under [`scripts/e2e/scenarios/`](../scripts/e2e/scenarios/) so the same
-behavioral contracts get exercised when the VM harness isn't available —
-bringup, post-rename smoke, hardware shakeouts, or anything the VMs can't
-reproduce.
+Gate 2 VM e2e suite under [`scripts/e2e/scenarios_fake/`](../scripts/e2e/scenarios_fake/)
+so the same behavioral contracts get exercised when the VM harness isn't
+available — bringup, post-rename smoke, hardware shakeouts, or anything the
+VMs can't reproduce. A few sections mirror tiers outside Gate 2 (enrollment
+→ Gate 3 smoke; unknown-device autocreation → the API unit spec); each
+header links its source.
 
 ## Keep in sync with the e2e suite
 
@@ -13,13 +15,13 @@ brackets in every section header so drift can be `grep`-ed.
 
 When you:
 
-- **Add** a scenario to [`scripts/e2e/scenarios/`](../scripts/e2e/scenarios/), add a matching
-  section here. Mirror the docstring's "Verifies" line verbatim.
+- **Add** a scenario to [`scripts/e2e/scenarios_fake/`](../scripts/e2e/scenarios_fake/),
+  add a matching section here. Mirror the docstring's "Verifies" line verbatim.
 - **Change** a scenario's contract, update both.
 - **Spot drift**, treat it as a bug — either delete the manual section
   (the scenario was removed) or update both (the contract changed).
 
-Reviewer rule of thumb: any PR that touches `scripts/e2e/scenarios/*.py`
+Reviewer rule of thumb: any PR that touches `scripts/e2e/scenarios_fake/*.py`
 should touch this file too, or explain why not.
 
 ## Prereqs
@@ -53,7 +55,7 @@ Each section assumes the previous one was undone.
 
 ---
 
-## QA-1: Enrollment [`test_01_enrollment.py`](../scripts/e2e/scenarios/test_01_enrollment.py)
+## QA-1: Enrollment [`gate3/test_smoke.py`](../scripts/e2e/gate3/test_smoke.py)
 
 **Verifies:** the router appears in the admin API after install and its
 `last_seen_at` advances on every poll.
@@ -78,7 +80,7 @@ strictly increases between samples.
 
 ---
 
-## QA-2: Allowed browsing [`test_02_allowed_browsing.py`](../scripts/e2e/scenarios/test_02_allowed_browsing.py)
+## QA-2: Allowed browsing [`test_02_allowed_browsing.py`](../scripts/e2e/scenarios_fake/test_02_allowed_browsing.py)
 
 **Verifies:** with a default (no-block) profile, HTTP succeeds end-to-end
 and a `connection_event` lands with the correct MAC.
@@ -100,7 +102,7 @@ curl -fsS "${AUTH[@]}" "$API/api/logs?limit=20" \
 
 ---
 
-## QA-3: Blocked domain [`test_03_blocked_domain.py`](../scripts/e2e/scenarios/test_03_blocked_domain.py)
+## QA-3: Blocked domain [`test_03_blocked_domain.py`](../scripts/e2e/scenarios_fake/test_03_blocked_domain.py)
 
 **Verifies:** an `extraBlocked` domain has its HTTP/80 traffic DNAT'd to
 the local block page (Truth 1 — no DNS interception, no TLS interception).
@@ -120,7 +122,7 @@ block page), **not** the real example.org content.
 
 ---
 
-## QA-4: Daily time-limit [`test_04_daily_limit.py`](../scripts/e2e/scenarios/test_04_daily_limit.py)
+## QA-4: Daily time-limit [`test_time_limit.py`](../scripts/e2e/scenarios_fake/test_time_limit.py)
 
 **Verifies:** once `timeLimit.dailyMinutes` is exhausted, further traffic
 from the device is blocked and a `reason=timeLimit` event is recorded.
@@ -147,7 +149,7 @@ curl -fsS "${AUTH[@]}" "$API/api/logs?limit=20" \
 
 ---
 
-## QA-5: Usage in API [`test_05_usage_in_api.py`](../scripts/e2e/scenarios/test_05_usage_in_api.py)
+## QA-5: Usage in API [`test_05_usage_in_api.py`](../scripts/e2e/scenarios_fake/test_05_usage_in_api.py)
 
 **Verifies:** `/api/logs` shows the device's events and `/api/time/status`
 attributes used minutes to the device.
@@ -166,7 +168,7 @@ field is `deviceMac`, not `mac` (see `shared/Models.scala`).
 
 ---
 
-## QA-6: Block page rendering [`test_06_blocked_page.py`](../scripts/e2e/scenarios/test_06_blocked_page.py)
+## QA-6: Block page rendering [`test_06_blocked_page.py`](../scripts/e2e/scenarios_fake/test_06_blocked_page.py)
 
 **Verifies:** the block page is rendered by `uhttpd-mod-lua` →
 `handler.lua` and reflects the actually-requested host.
@@ -182,7 +184,7 @@ see a raw 200 with empty body, `uhttpd` or the lua handler is wrong — check
 
 ---
 
-## QA-A: Pause [`test_pause.py`](../scripts/e2e/scenarios/test_pause.py)
+## QA-A: Pause [`test_pause.py`](../scripts/e2e/scenarios_fake/test_pause.py)
 
 **Verifies:** pausing a profile adds every assigned MAC to the router's
 `blocked_macs` nft set within one poll; unpausing removes them; events
@@ -210,7 +212,7 @@ curl -v http://example.com/   # → real example.com
 
 ---
 
-## QA-B: extraBlocked scoping [`test_extra_blocked.py`](../scripts/e2e/scenarios/test_extra_blocked.py)
+## QA-B: extraBlocked scoping [`test_extra_blocked.py`](../scripts/e2e/scenarios_fake/test_extra_blocked.py)
 
 **Verifies:** Truth 1 — DNS still returns the real public IP (no DNS
 interception); HTTP/80 still DNATs to the block page; and `extraBlocked`
@@ -232,7 +234,7 @@ curl -v http://example.org/         # → succeeds
 
 ---
 
-## QA-C: Schedule [`test_schedule.py`](../scripts/e2e/scenarios/test_schedule.py)
+## QA-C: Schedule [`test_schedule.py`](../scripts/e2e/scenarios_fake/test_schedule.py)
 
 **Verifies:** schedule windows block in-window, allow out-of-window; pause
 overrides schedule; windows respect the configured TZ across midnight.
@@ -254,7 +256,7 @@ schedule evaluator changes.
 
 ---
 
-## QA-D: Time-limit edge cases [`test_time_limit.py`](../scripts/e2e/scenarios/test_time_limit.py)
+## QA-D: Time-limit edge cases [`test_time_limit.py`](../scripts/e2e/scenarios_fake/test_time_limit.py)
 
 **Verifies:** minute-granularity (49 s ≠ 1 min) and cross-day rollover.
 
@@ -274,7 +276,7 @@ curl -v http://example.com/   # → block page
 
 ---
 
-## QA-E: Reassignment [`test_reassignment.py`](../scripts/e2e/scenarios/test_reassignment.py)
+## QA-E: Reassignment [`test_reassignment.py`](../scripts/e2e/scenarios_fake/test_reassignment.py)
 
 **Verifies:** reassigning a device to a paused profile blocks it within
 one poll; deleting a device row clears its rules.
@@ -292,7 +294,7 @@ curl -v http://example.com/   # → block page
 
 ---
 
-## QA-F: Unknown-device autocreation [`test_unknown_device.py`](../scripts/e2e/scenarios/test_unknown_device.py)
+## QA-F: Unknown-device autocreation [`RouterIngestSpec.scala`](../api/test/src/feature/RouterIngestSpec.scala)
 
 **Verifies:** traffic from a never-registered MAC auto-creates a device
 row with `profile_id=NULL` and a DHCP hostname (when one is supplied).
@@ -325,7 +327,7 @@ the DHCP hostname (or empty if the device didn't supply one).
 
 ## Reference
 
-- [`scripts/e2e/scenarios/`](../scripts/e2e/scenarios/) — the e2e files this
+- [`scripts/e2e/scenarios_fake/`](../scripts/e2e/scenarios_fake/) — the e2e files this
   document mirrors.
 - [`scripts/e2e/README.md`](../scripts/e2e/README.md) — VM harness details.
 - [`docs/architecture.md`](architecture.md) — Truths 1–N referenced above.

@@ -1,42 +1,38 @@
 #!/usr/bin/env bash
 # scripts/e2e-vm.sh — VM e2e orchestrator entrypoint.
 #
-# Boots a disposable docker compose API stack (with debug endpoints enabled),
-# brings up the router VM, enrolls it, takes a base snapshot, then runs the
-# six v1 scenarios as pytest tests. The VM lifecycle and snapshot reuse are
-# owned by the pytest fixtures in scripts/e2e/conftest.py — this script is a
-# thin wrapper that sets up the venv and shells out to pytest.
+# Thin wrapper that sets up the venv and shells out to pytest for the VM e2e
+# tiers. The VM lifecycle and snapshot reuse are owned by the per-mode pytest
+# fixtures (scripts/e2e/scenarios_fake/conftest.py for Gate 2,
+# scripts/e2e/gate3/conftest.py for Gate 3).
 #
 # Usage:
-#   scripts/e2e-vm.sh                            # run live-mode scenarios (default)
 #   scripts/e2e-vm.sh --mode=fake                # run fake-API mode scenarios (#683)
 #   scripts/e2e-vm.sh --mode=gate3               # run gate3 smoke against real staging (#655)
 #   scripts/e2e-vm.sh --only blocked-domain      # run a single scenario
-#   scripts/e2e-vm.sh --keep                     # leave VMs + stack up after run
+#   scripts/e2e-vm.sh --keep                     # leave VMs up after run
 #   scripts/e2e-vm.sh -- -k allowed              # passthrough to pytest
 #
-# Modes:
-#   live  (default) — boot docker-compose API stack, exercise live scenarios.
-#   fake            — boot in-process fake API shim, exercise fake-mode
-#                     scenarios under scripts/e2e/scenarios_fake/ (Gate 2).
-#   gate3           — boot router VM against a remote staging API (no local
-#                     stack, no fake), exercise scripts/e2e/gate3/. Requires
+# Modes (the legacy `live` mode + scripts/e2e/scenarios/ were retired in #656):
+#   fake  (default) — boot qemu router VM + in-process fake API shim, exercise
+#                     fake-mode scenarios under scripts/e2e/scenarios_fake/
+#                     (Gate 2). Gates publish-openwrt.
+#   gate3           — boot router VM against a remote staging API (no fake),
+#                     exercise scripts/e2e/gate3/. Requires
 #                     WH_API_URL + WH_ADMIN_PASS + WH_ROUTER_IMAGE_PATH.
 #
-# Environment overrides (read by conftest.py / conftest_fake.py):
-#   E2E_VM_API_PORT         API stack host port (default 18080; live mode)
+# Environment overrides (read by the per-mode conftest):
 #   WH_FAKE_API_PORT        fake API host port (fake mode). If unset, defaults
 #                           to WH_PORT_BASE+1000 when WH_PORT_BASE is set (#907),
 #                           else a randomly-allocated free port (#902).
 #   WH_ROUTER_SSH_PORT      router VM WAN-side SSH hostfwd (auto-allocated if unset)
 #   WH_ROUTER_HTTP_PORT     router VM WAN-side HTTP hostfwd (auto-allocated if unset)
 #   WH_CLIENT_SSH_PORT_BASE client VM SSH hostfwd (auto-allocated if unset)
-#   E2E_VM_KEEP_STACK=1     don't tear down docker compose (live mode)
 #   E2E_VM_KEEP=1           don't tear down VMs (router + clients)
-#   E2E_VM_SKIP_STACK=1     assume stack already up at $E2E_VM_API_PORT
 #   E2E_VM_SKIP_VMS=1       skip VM-dependent tests (CI sanity mode)
-#   WH_ROUTER_IMAGE_PATH  use a custom-built router image instead of stock
-#                           (required for v1; see scripts/vm/build-router-image.sh)
+#   WH_ROUTER_IMAGE_PATH    use a custom-built router image instead of stock
+#                           (required; see scripts/vm/build-router-image.sh)
+#   WH_API_URL / WH_ADMIN_PASS   remote staging target (gate3 mode only)
 #
 # Host port allocation (#902): all host-side ports (fake-api bind, qemu
 # hostfwd) default to free ports allocated at session start, NOT fixed
@@ -52,7 +48,7 @@ VENV_DIR="${REPO_ROOT}/.e2e-vm-venv"
 
 ONLY=""
 SMOKE=0
-MODE="live"
+MODE="fake"
 PYTEST_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -82,8 +78,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${MODE}" in
-  live|fake|gate3) ;;
-  *) echo "unknown --mode: ${MODE} (valid: live, fake, gate3)" >&2; exit 2 ;;
+  fake|gate3) ;;
+  *) echo "unknown --mode: ${MODE} (valid: fake, gate3)" >&2; exit 2 ;;
 esac
 
 # --only <name> maps to pytest's marker selection. Supported names match the
@@ -137,9 +133,6 @@ fi
 
 # ── prerequisite checks ──────────────────────────────────────────────────────
 
-if [[ "${MODE}" == "live" && "${E2E_VM_SKIP_STACK:-0}" != "1" ]]; then
-  command -v docker >/dev/null || { echo "docker not found" >&2; exit 1; }
-fi
 if [[ "${E2E_VM_SKIP_VMS:-0}" != "1" ]]; then
   command -v qemu-system-x86_64 >/dev/null || {
     echo "qemu-system-x86_64 not found — VM tests will fail." >&2
@@ -200,7 +193,6 @@ cd "${E2E_DIR}"
 
 CMD=( "${VENV_DIR}/bin/pytest" )
 case "${MODE}" in
-  live)  CMD+=( "scenarios" ) ;;
   fake)  CMD+=( "scenarios_fake" ) ;;
   gate3) CMD+=( "gate3" ) ;;
 esac

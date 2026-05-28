@@ -136,7 +136,9 @@ jobs:
       - name: Run prod-stack smoke
         run: scripts/smoke-prod.sh
 
-  # vm-e2e is intentionally NOT a gate — see e2e-vm.yml (its own track).
+  # VM e2e on the API/UI side is Gate 3b (gate-3b-api-staging, below),
+  # which gates approve-production. The old monolithic e2e-vm.yml that
+  # gated nothing was retired in #656.
 
   # ── 3. Build the API image (sha-<commit> + `staging` tags only) ──────────
   # `:latest` is NOT pushed here. Promotion to `:latest` happens in the

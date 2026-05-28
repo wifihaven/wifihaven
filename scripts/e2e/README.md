@@ -1,36 +1,48 @@
 # VM e2e orchestrator
 
-End-to-end tests that drive a real OpenWRT router VM + Alpine client VM
-against a real API stack (docker compose). Implements #148.
+End-to-end tests that drive a real OpenWRT router VM + Alpine client VM.
+Two surviving tiers (the legacy monolithic live-mode suite was retired in
+#656):
+
+- **Gate 2** (`--mode=fake`) — router + client against an in-process **fake
+  API** (`scripts/e2e/fake-api/`) serving snapshot goldens; scenarios in
+  `scenarios_fake/`. Gates `publish-openwrt` via `e2e-vm-fake.yml`.
+- **Gate 3** (`--mode=gate3`) — router against a **real staging API** (no
+  fake, no local stack); one thin smoke in `gate3/`. Run by
+  `e2e-vm-gate3a.yml` / `e2e-vm-gate3b.yml`.
+
+See [`docs/testing.md`](../../docs/testing.md) for which gate a new test
+belongs in.
 
 ## TL;DR
 
 ```bash
-# Linux host with /dev/kvm and qemu, docker, ~6 GB RAM free
-scripts/vm/build-client-base.sh           # one-time, ~2 min
-scripts/vm/build-router-image.sh          # one-time, ~5–10 min
-scripts/e2e-vm.sh                         # full suite
-scripts/e2e-vm.sh --only blocked-domain   # one scenario
-scripts/e2e-vm.sh --keep -- -k usage      # leave VMs/stack up; pytest -k passthrough
+# Linux host with /dev/kvm and qemu, ~6 GB RAM free
+scripts/vm/build-client-base.sh            # one-time, ~2 min
+scripts/vm/build-router-image.sh           # one-time, ~5–10 min
+scripts/e2e-vm.sh --mode=fake              # Gate 2 (fake API) — default mode
+scripts/e2e-vm.sh --mode=fake --only blocked-domain   # one scenario
+scripts/e2e-vm.sh --mode=fake --keep -- -k usage      # leave VMs up; pytest -k passthrough
 ```
 
-## Architecture
+## Architecture (Gate 2 / fake mode)
 
 ```
 ┌─────────── host ────────────┐
-│  docker compose             │      ┌── router VM ──┐    ┌── client VM ──┐
-│   ├ postgres                │      │ OpenWRT 23.05 │    │ Alpine 3.22   │
-│   └ api  (WIFIHAVEN_DEBUG=1)│◀─────┤ wifihaven-    │    │               │
-│       :18080 (host port)    │ HTTP │ agent baked in│◀──▶│   eth0 (LAN)  │
-│                             │      │               │ DHCP│   curl/dig   │
-│  pytest orchestrator        │      │ eth1 = SLIRP  │ DNS │               │
-│   ├ admin API client        │      │   (10.0.2.2 → │    │   eth1 = mgmt │
-│   ├ debug API client        │      │    host:18080)│    │   (host SSH)  │
-│   ├ vm.py (router/client    │      └───────────────┘    └───────────────┘
-│   │   ssh + snapshots)      │           ▲                       ▲
-│   └ enrollment.py           │           └── ssh hostfwd          └── ssh hostfwd
-└─────────────────────────────┘               127.0.0.1:2222          127.0.0.1:2223
+│  pytest orchestrator        │      ┌── router VM ──┐    ┌── client VM ──┐
+│   ├ in-process fake API     │      │ OpenWRT 23.05 │    │ Alpine 3.22   │
+│   │   (scripts/e2e/fake-api)│◀─────┤ wifihaven-    │    │               │
+│   │   serves snapshot       │ HTTP │ agent baked in│◀──▶│   eth0 (LAN)  │
+│   │   goldens               │      │               │ DHCP│   curl/dig   │
+│   ├ vm.py (router/client    │      │ eth1 = SLIRP  │ DNS │               │
+│   │   ssh + snapshots)      │      │   (10.0.2.2 → │    │   eth1 = mgmt │
+│   └ fake_api fixture        │      │    host:fake) │    │   (host SSH)  │
+└─────────────────────────────┘      └───────────────┘    └───────────────┘
 ```
+
+Gate 3 swaps the in-process fake for a remote staging API and exercises
+only the contract surface (`gate3/test_smoke.py`); it has no snapshot
+goldens.
 
 ## Layout
 
@@ -39,11 +51,10 @@ scripts/e2e-vm.sh                     bash entrypoint (venv + pytest)
 scripts/e2e/
   pytest.ini                          marker registry, log config
   requirements.txt                    pytest only (uses stdlib for HTTP)
-  conftest.py                         session/function fixtures, failure hooks
-  lib/                                primitive layer — public API for #346/#345
+  lib/                                primitive layer — shared across tiers
     paths.py                          repo-relative paths
     sh.py                             subprocess wrapper
-    stack.py                          docker compose lifecycle
+    stack.py                          docker compose lifecycle (gate3 helpers)
     vm.py                             router + client VM ops, SSH, snapshots
     api_admin.py                      admin API client (login, profiles, devices, ...)
     api_debug.py                      /api/debug/* client (loopback only)
@@ -51,19 +62,26 @@ scripts/e2e/
     wait.py                           race-free wait helpers (poll cycle, etag)
     clock.py                          set/get router VM wall clock
     traffic.py                        client-side curl/dig probes
-  scenarios/
-    test_01_enrollment.py
+  fake-api/                           in-process fake API (Gate 2)
+  scenarios_fake/                     Gate 2 scenarios + conftest + snapshot builder
+    conftest.py                       session/function fixtures, failure hooks
+    snapshot_builder.py               golden snapshot construction
     test_02_allowed_browsing.py
     test_03_blocked_domain.py
-    test_04_daily_limit.py
     test_05_usage_in_api.py
     test_06_blocked_page.py
+    test_pause.py · test_schedule.py · test_extra_blocked.py
+    test_time_limit.py · test_reassignment.py
+    test_blocked_mac_events.py · test_install_health.py
+    test_port_alloc.py · test_snapshot_builder.py
+  gate3/                              Gate 3 smoke + conftest
+    test_smoke.py
 ```
 
-## Primitive surface (for #346 / #345)
+## Primitive surface (lib/)
 
-The downstream enforcement and resilience suites build on these primitives.
-Anything that's stable enough for them to depend on lives in `lib/`.
+Both tiers build on these primitives. Anything stable enough to depend on
+lives in `lib/`.
 
 ```python
 from lib.api_admin import AdminAPI            # login(), create_profile(...), upsert_device(...), set_profile_paused(id, True)
@@ -90,7 +108,7 @@ Add a marker to `pytest.ini` and decorate the test:
 
 ```python
 import pytest
-pytestmark = pytest.mark.pause     # then: scripts/e2e-vm.sh --only pause (after wiring)
+pytestmark = pytest.mark.pause     # then: scripts/e2e-vm.sh --mode=fake --only pause
 ```
 
 Update `--only` parsing in `scripts/e2e-vm.sh` to accept the new name.
@@ -98,26 +116,21 @@ Update `--only` parsing in `scripts/e2e-vm.sh` to accept the new name.
 ### Race-free synchronization
 
 The agent polls policy on `CLOCK_MONOTONIC` every 60 s (#336 — wall-clock
-jumps from `set_router_clock()` do **not** advance the timer). After
-mutating policy:
+jumps from `set_router_clock()` do **not** advance the timer). In fake mode,
+gate on the snapshot the fake actually served:
 
 ```python
-wait_for_etag_change(admin, router.router_id, timeout_s=120)   # agent fetched new policy
-```
-
-After mutating clock or wanting a generic next-cycle gate (e.g. confirm a
-404 → 304 round-trip):
-
-```python
-wait_for_next_poll(admin, router.router_id, timeout_s=90)
+etag = fake_api.serve_snapshot(snap)
+fake_api.wait_for_etag_served(etag=etag, timeout_s=240)   # agent fetched new policy
 ```
 
 ## Snapshot reuse
 
-`router_session` (session-scoped fixture) does the slow path once:
-**boot → enroll → first-poll-success → `savevm e2e-base`**. The function-scoped
-`router` fixture restores from `e2e-base` before each test. On dev hardware
-this typically gives <10 s reset between scenarios.
+`router_session` (session-scoped fixture in `scenarios_fake/conftest.py`)
+does the slow path once: **boot → enroll → first-poll-success → base
+snapshot**. The function-scoped `router` fixture restores from the base
+before each test. On dev hardware this typically gives <10 s reset between
+scenarios.
 
 ## Running in CI
 
@@ -134,36 +147,22 @@ The harness requires `/dev/kvm` (no macOS support — see `scripts/vm/README.md`
 For sanity-checking the orchestrator wiring without VMs:
 
 ```bash
-E2E_VM_SKIP_VMS=1 scripts/e2e-vm.sh
+E2E_VM_SKIP_VMS=1 scripts/e2e-vm.sh --mode=fake
 ```
 
-VM-dependent tests `pytest.skip` themselves. Stack-only paths still run.
+VM-dependent tests `pytest.skip` themselves.
 
 ## Diagnostics on failure
 
-`pytest_runtest_makereport` attaches three sections to every failed test:
-
-1. Router VM serial console tail (`scripts/vm/.run/router/console.log`)
-2. `logread -e wifihaven | tail -n 80` from the router (agent log)
-3. `docker compose logs api --tail 120`
-
-These appear in the standard pytest captured-output footer.
+`pytest_runtest_makereport` (defined per tier in the relevant conftest)
+attaches the router VM serial console tail and the agent's
+`logread -e wifihaven` to every failed test; these appear in the standard
+pytest captured-output footer.
 
 ## Known limitations / non-goals
 
 - **OpnSense scenarios**: deferred (router-side primitives are OpenWRT-only).
-- **Multi-client scenarios**: the v1 fixtures use a single `client1` slot.
+- **Multi-client scenarios**: the fixtures use a single `client1` slot.
   `client_factory` accepts `name=` and `ssh_port=` so multi-client work can
-  layer on without touching the existing scenarios; `client-up.sh` does
-  *not* yet auto-allocate non-overlapping SSH ports.
-- **Faster polls**: tests assume the default 60 s policy poll and 300 s
-  usage-report intervals. Scenarios that need faster cadence (esp. #346's
-  daily-limit suite) should override `policy_poll_interval` /
-  `usage_report_interval` via UCI in their setup. We don't do that globally
-  here so the orchestrator exercises the production cadence.
-- **`/api/debug/router_status` not present**: we use `lastSeenAt` from
-  `GET /api/admin/routers` as the agent-poll signal instead. If a richer
-  debug surface lands later, prefer it for finer-grained sync.
-- **Time-limit (scenario 4) is slow**: ~5–6 minutes because we wait for the
-  agent's natural usage-report cycle. The other five scenarios complete in
-  well under a minute each after enrollment.
+  layer on without touching the existing scenarios.
+- **Cross-day rollover** (time-limit D3): pending #334.

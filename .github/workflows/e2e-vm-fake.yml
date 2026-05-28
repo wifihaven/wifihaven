@@ -54,8 +54,8 @@ concurrency:
 jobs:
   e2e-fake:
     name: VM e2e (fake API) — ${{ matrix.pkg_format }}
-    # Block fork PRs on the self-hosted runner; same guard as e2e-vm.yml.
-    # (workflow_call and workflow_dispatch are always allowed.)
+    # Block fork PRs on the self-hosted runner; same guard as the gate3
+    # workflows. (workflow_call and workflow_dispatch are always allowed.)
     if: >-
       github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository
@@ -114,7 +114,7 @@ jobs:
       # those files; the runner has no NOPASSWD sudo (only /usr/sbin/ip
       # per docs/ops/kvm-runner.md), so we use docker — which runs as root
       # — to chown the cache back. No-op on clean runners. Same pattern
-      # as e2e-vm.yml.
+      # as the gate3 workflows.
       - name: Reclaim root-owned cache files (pre-checkout)
         run: |
           docker rm -f wh-imagebuilder 2>/dev/null || true
