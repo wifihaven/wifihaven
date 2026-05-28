@@ -19,6 +19,7 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/s
          test/block_page_spec.lua \
          test/contract_spec.lua \
          test/selfheal_spec.lua \
+         test/version_spec.lua \
          "$@"
 
 echo ""

@@ -57,6 +57,9 @@ define Package/wifihaven/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/wifihaven
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh $(1)/usr/lib/wifihaven/
+	# #771: bake PKG_VERSION into a file the lua agent reads at startup so it
+	# can report itself to the API on every checkin (X-WifiHaven-Agent-Version).
+	echo $(PKG_VERSION) > $(1)/usr/lib/wifihaven/VERSION
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/etc/uci-defaults/95-wifihaven-uhttpd $(1)/etc/uci-defaults/
