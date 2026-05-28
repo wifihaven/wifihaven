@@ -152,6 +152,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      # #1140: surfaced so deploy-staging can assert /api/version == this SHA.
+      short_sha: ${{ steps.ver.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -163,14 +166,17 @@ jobs:
         id: ver
         run: |
           set -eu
+          short=$(echo "${GITHUB_SHA}" | cut -c1-7)
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            short=$(echo "${GITHUB_SHA}" | cut -c1-7)
             version=$(./scripts/ci/derive-version.sh --dev "$short")
           else
             version=$(./scripts/ci/derive-version.sh)
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Derived version: $version"
+          # #1140: short SHA is baked into the image and asserted by the
+          # deploy-staging health-poll to prove THIS build is serving.
+          echo "short_sha=$short" >> "$GITHUB_OUTPUT"
+          echo "Derived version: $version (sha-$short)"
 
       - name: Set up QEMU (for linux/arm64 emulation)
         uses: docker/setup-qemu-action@v3
@@ -210,6 +216,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # #1140: bake build identity so /api/version reports this build.
+          build-args: |
+            WIFIHAVEN_VERSION=${{ steps.ver.outputs.version }}
+            WIFIHAVEN_GIT_SHA=${{ steps.ver.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -233,25 +243,31 @@ jobs:
             -X POST "$RENDER_DEPLOY_HOOK_STAGING" >/dev/null
           echo "Staging deploy hook accepted."
 
-      - name: Wait for staging to be healthy
+      - name: Wait for staging to serve THIS build (#1140)
+        env:
+          EXPECTED_SHA: ${{ needs.build-image.outputs.short_sha }}
         run: |
-          # Poll /api/health until it returns 200 with db ok. Render's image
-          # rollout typically takes 30-90s; allow up to 15 minutes.
-          # We check both the HTTP status AND the body to confirm THIS run's
-          # deploy is live (not the previous image still serving while the
-          # new one is starting). The `version` field (if exposed) would be
-          # more authoritative; for now /api/health 200 + db ok is enough —
-          # the smoke-staging job that follows will catch any real breakage.
+          # Poll /api/version until the served `sha` equals the SHA we just
+          # built and pushed. This is the load-bearing check: during a Render
+          # rollover the OLD container keeps answering 200 on /api/health, so
+          # a green health-poll does NOT prove the new image is live (the
+          # #1138 false positive). Asserting the served SHA closes that blind
+          # spot. Render's rollout typically takes 30-90s; allow 15 minutes.
+          set -u
+          echo "Expecting served sha=${EXPECTED_SHA}"
           deadline=$(( $(date +%s) + 900 ))
           while (( $(date +%s) < deadline )); do
-            if curl --fail --silent --max-time 15 \
-                 "${STAGING_API_URL}/api/health" | grep -q '"db":\s*"ok"'; then
-              echo "Staging is healthy."
+            served=$(curl --fail --silent --max-time 15 \
+                       "${STAGING_API_URL}/api/version" \
+                     | grep -oE '"sha":"[^"]*"' | cut -d'"' -f4 || true)
+            if [ "$served" = "$EXPECTED_SHA" ]; then
+              echo "Staging is serving the just-deployed build (sha=${served})."
               exit 0
             fi
+            echo "Still waiting — served sha=${served:-<none>}, want ${EXPECTED_SHA}"
             sleep 10
           done
-          echo "Timed out waiting for staging /api/health." >&2
+          echo "Timed out waiting for staging to serve sha=${EXPECTED_SHA}." >&2
           exit 1
 
   # ── 4b. Deploy SPA to Cloudflare Pages (staging) ──────────────────────────

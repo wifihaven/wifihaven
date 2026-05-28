@@ -54,7 +54,16 @@ RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
 
+# #1140: bake the build identity into the image so /api/version can report
+# which build is serving. Defaults keep local `docker build` honest (dev/
+# unknown) without requiring the args; CI passes the derived semver + short
+# SHA (see .github/workflows/master-api-ui.yml).
+ARG WIFIHAVEN_VERSION=dev
+ARG WIFIHAVEN_GIT_SHA=unknown
+
 ENV WIFIHAVEN_HTTP_PORT=8080 \
-    WIFIHAVEN_STATIC_DIR=/app/web
+    WIFIHAVEN_STATIC_DIR=/app/web \
+    WIFIHAVEN_VERSION=$WIFIHAVEN_VERSION \
+    WIFIHAVEN_GIT_SHA=$WIFIHAVEN_GIT_SHA
 
 ENTRYPOINT ["/app/entrypoint.sh"]
