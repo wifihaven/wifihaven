@@ -437,12 +437,6 @@ jobs:
           bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash") "$ACTIONLINT_VERSION"
 
       - name: Run actionlint
-        env:
-          # actionlint runs shellcheck on inline `run:` scripts. Gate on
-          # correctness (warning+), not style nits — existing release scripts
-          # carry info-level SC2086/SC2012 findings (unquoted vars inside
-          # globs, `ls` vs `find`) that aren't worth failing CI over.
-          SHELLCHECK_OPTS: --severity=warning
         run: ./actionlint -color
 
   # ── Frontend: type-check, lint, build ────────────────────────────────────
