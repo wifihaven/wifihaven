@@ -159,6 +159,7 @@ object Main extends ZIOAppDefault {
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield HealthRoutes.routes(dbHealthCheck) ++
+      VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
       AuthRoutes.routes(auth, userRepo, upRepo) ++
       ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
       HouseholdSettingsRoutes.routes(auth, hsRepo) ++
