@@ -251,6 +251,90 @@ curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
   -d "$EVTS" >/dev/null
 pass "dhcp_lease + 3 connection_attempt shapes posted"
 
+# ── 5a. #1122: nflog-synthesized blocked-MAC events end-to-end ────────────
+#
+# Server-side half of #1122 (router-side half lives in
+# scripts/e2e/scenarios_fake/test_blocked_mac_events.py, Gate 2). Simulates
+# the OpenWRT agent's nflog tail by POSTing a `connection_attempt` for each
+# MacBlockReason wire string with `allowed=false`, then reads them back via
+# `/api/logs?blocked=true` and `/api/connection-events/series`. If the API
+# ever stops accepting these reason strings — or stops surfacing them on
+# the Logs page — this step fails before the deploy promotes to prod.
+#
+# Wire strings are pinned to MacBlockReason.asString in shared/Models.scala
+# and to render.lua's `comment "wh_drop:<mac>:<reason>"` emission. The Scala
+# side has PolicySnapshotMacDropAttributionSpec; the Lua side has
+# render_spec.lua's `drop rules carry log group + counter + comment` block.
+# This step is the third leg — proving the API actually round-trips them.
+step "#1122: nflog-synthesized blocked-MAC events round-trip /api/logs?blocked=true"
+
+# Anchor event timestamps to "just now" so the default `hours=1` window
+# includes them on the staging API (which uses real wall-clock).
+NFLOG_NOW="$(_py 'import datetime; print(datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+NFLOG_EVTS=$(_py "
+import json, uuid
+mac, ts = '$MAC', '$NFLOG_NOW'
+reasons = ['Paused', 'Schedule', 'TimeLimit', 'Manual', 'Unmanaged']
+evs = []
+for i, r in enumerate(reasons):
+    evs.append({
+        'type': 'connection_attempt',
+        'mac':  mac,
+        # nflog gives us the destination IP, not a hostname — match the
+        # router agent's emission shape when DNS attribution is unavailable.
+        'host':    {'type': 'ipv4', 'value': f'198.51.100.{10+i}'},
+        'destIp':  f'198.51.100.{10+i}',
+        'allowed': False,
+        'reason':  r,
+        'ts':      ts,
+        'eventId': str(uuid.uuid4()),
+    })
+print(json.dumps({'routerId': '$RID', 'events': evs}))
+")
+curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "$NFLOG_EVTS" >/dev/null
+pass "5 blocked-MAC connection_attempt events posted (one per MacBlockReason)"
+
+# Read back via /api/logs?mac=...&blocked=true. The async insert path
+# (#720 backfill + ON CONFLICT DO NOTHING) lands within ~1s on the in-
+# compose stack and within a few seconds against staging — poll briefly.
+LOGS_OK=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" \
+    "$BASE/api/logs?mac=$MAC&blocked=true&hours=1" >"$TMP/nflog_logs.json"
+  LOGS_OK=$(_py "
+import json
+page = json.load(open('$TMP/nflog_logs.json'))
+rows = page.get('rows', [])
+# Only consider the rows we just posted (filter to the dst-IP prefix used
+# above so prior runs against staging don't contaminate the check).
+ours = [r for r in rows if (r.get('host') or {}).get('value', '').startswith('198.51.100.1')]
+reasons = sorted({r.get('reason') for r in ours if r.get('blocked')})
+want = ['Manual', 'Paused', 'Schedule', 'TimeLimit', 'Unmanaged']
+print('ok' if reasons == want else f'have={reasons}')
+")
+  [ "$LOGS_OK" = "ok" ] && break
+  sleep 1
+done
+[ "$LOGS_OK" = "ok" ] || fail "/api/logs?blocked=true missing one or more reasons: $LOGS_OK"
+pass "/api/logs returned all 5 MacBlockReason rows with blocked=true"
+
+# /api/connection-events/series with bucket=1h must also see them as blocked.
+curl -fsS "${AUTH[@]}" \
+  "$BASE/api/connection-events/series?bucket=1h&blocked=true&hours=1" \
+  >"$TMP/nflog_series.json"
+SERIES_OK=$(_py "
+import json
+page = json.load(open('$TMP/nflog_series.json'))
+rows = page.get('rows', [])
+total_blocked = sum(r.get('countBlocked', 0) for r in rows)
+print('ok' if total_blocked >= 5 else f'countBlocked={total_blocked}')
+")
+[ "$SERIES_OK" = "ok" ] || fail "/api/connection-events/series did not see 5+ blocked: $SERIES_OK"
+pass "/api/connection-events/series rolled up the 5 blocked-MAC events"
+
 # Reject the legacy bare-string `hostname` form so this regression cannot
 # silently come back — old agents writing `hostname` instead of `host` will
 # 400 now, not be silently dropped.
