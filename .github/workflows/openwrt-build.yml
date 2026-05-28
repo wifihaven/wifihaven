@@ -41,17 +41,29 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # #499: scripts/ci/derive-version.sh counts commits since the
+          # VERSION file last changed — shallow clones return 0 and produce
+          # bogus patch numbers. Always fetch full history here.
+          fetch-depth: 0
 
       - name: Derive version
         id: ver
+        # #499: single source of truth is the repo-root VERSION file
+        # (MAJOR.MINOR) plus the commit count since that file last changed
+        # (PATCH). workflow_dispatch runs append -dev.<sha> so ad-hoc builds
+        # can't collide with a real tagged release.
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-            echo "release=1"                          >> "$GITHUB_OUTPUT"
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            short=$(echo "${GITHUB_SHA}" | cut -c1-7)
+            version=$(./scripts/ci/derive-version.sh --dev "$short")
           else
-            echo "version=$(grep '^PKG_VERSION:=' openwrt/Makefile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
-            echo "release=$(grep '^PKG_RELEASE:=' openwrt/Makefile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+            version=$(./scripts/ci/derive-version.sh)
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=1"        >> "$GITHUB_OUTPUT"
+          echo "Derived version: $version"
 
       - name: Build .ipk
         env:
@@ -245,11 +257,34 @@ jobs:
           echo "--- release assets ---"
           ls -lh release/
 
-      # Rolling pre-release. Post-#498 this is the ONLY release path — fires
-      # only when the caller passes publish_release=true (Master Router
-      # CD's publish-openwrt job, after the manual-approval gate). Direct
-      # main pushes and PR validation runs build for confidence without
-      # publishing.
+      # #499: stage versioned copies of the VM-image tarballs alongside the
+      # stable-name originals. The openwrt-latest rolling release keeps the
+      # stable filenames so Gate 3b's glob (`wifihaven-router-openwrt-*-
+      # <fmt>.tar.gz`) and any agent auto-update path continue to resolve.
+      # The new v<X.Y.Z> release receives the wifihaven-version-stamped
+      # copies so a specific past release is reachable by URL.
+      - name: Stage versioned VM-image tarball copies (#499)
+        if: inputs.publish_release == true
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.version }}"
+          mkdir -p release/versioned
+          for src in release/wifihaven-router-openwrt-*-ipk.tar.gz release/wifihaven-router-openwrt-*-apk.tar.gz; do
+            [ -f "$src" ] || continue
+            # original: wifihaven-router-openwrt-<short>-<fmt>.tar.gz
+            # stamped:  wifihaven-router-openwrt-<ver>-<short>-<fmt>.tar.gz
+            base=$(basename "$src")
+            stamped="release/versioned/${base/wifihaven-router-openwrt-/wifihaven-router-openwrt-${ver}-}"
+            cp "$src" "$stamped"
+          done
+          ( cd release/versioned && sha256sum wifihaven-router-openwrt-*-ipk.tar.gz wifihaven-router-openwrt-*-apk.tar.gz \
+              > wifihaven-router-images.sha256 )
+          ls -lh release/versioned/
+
+      # Rolling pre-release. Pointer that consumers (Gate 3b, agent auto-
+      # update) keep targeting by stable URL. The versioned release below
+      # is the new canonical artifact; openwrt-latest is intentionally kept
+      # in lockstep so the migration is non-breaking — see #499 PR body.
       - name: Publish rolling openwrt-latest release (gated by caller)
         if: inputs.publish_release == true
         uses: softprops/action-gh-release@v2
@@ -257,8 +292,10 @@ jobs:
           tag_name: openwrt-latest
           name: "openwrt-latest (rolling)"
           body: |
-            Rolling build of the OpenWRT agent from the latest `main`.
-            Replaced on every push to `main` touching `openwrt/**`.
+            Rolling build of the OpenWRT agent from the latest `main`
+            (currently v${{ steps.ver.outputs.version }}).
+            Replaced on every publish from `main` touching `openwrt/**`.
+            For pinned consumers, prefer the v<X.Y.Z> release tag (#499).
             For #228 live debugging — see #243 / #244.
           prerelease: true
           files: |
@@ -269,3 +306,50 @@ jobs:
             release/wifihaven-router-openwrt-*-ipk.tar.gz
             release/wifihaven-router-openwrt-*-apk.tar.gz
             release/wifihaven-router-images.sha256
+
+      # #499: cut the annotated git tag before the release upload so the
+      # tag carries a real tagger + message. softprops/action-gh-release
+      # would otherwise create a lightweight tag. Idempotent: the API/UI
+      # pipeline's cut-release-tag job may have already pushed it; skip
+      # cleanly in that case.
+      - name: Cut annotated v<X.Y.Z> tag (#499)
+        if: inputs.publish_release == true
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eu
+          tag="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+            echo "Tag ${tag} already exists on origin — skipping."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "WifiHaven ${tag}"
+          git push origin "${tag}"
+
+      # #499: versioned canonical release. The annotated tag was pushed
+      # in the previous step; this just attaches release assets to it.
+      - name: Publish versioned v<X.Y.Z> release (#499)
+        if: inputs.publish_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: "v${{ steps.ver.outputs.version }}"
+          body: |
+            WifiHaven v${{ steps.ver.outputs.version }}.
+
+            OpenWRT packages and bootable VM images for this release.
+            The API image of the same version is published to
+            ghcr.io/wifihaven/wifihaven-api:v${{ steps.ver.outputs.version }}.
+
+            See `openwrt-latest` for the rolling pointer kept in lockstep.
+          prerelease: false
+          files: |
+            openwrt/wifihaven_*.ipk
+            openwrt/wifihaven_*.apk
+            openwrt/luci/luci-app-wifihaven_*.ipk
+            openwrt/luci/luci-app-wifihaven_*.apk
+            release/versioned/wifihaven-router-openwrt-*-ipk.tar.gz
+            release/versioned/wifihaven-router-openwrt-*-apk.tar.gz
+            release/versioned/wifihaven-router-images.sha256

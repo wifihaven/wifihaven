@@ -144,6 +144,23 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          # #499: derive-version.sh counts commits since VERSION last
+          # changed; shallow clones break that count.
+          fetch-depth: 0
+
+      - name: Derive WifiHaven version (#499)
+        id: ver
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            short=$(echo "${GITHUB_SHA}" | cut -c1-7)
+            version=$(./scripts/ci/derive-version.sh --dev "$short")
+          else
+            version=$(./scripts/ci/derive-version.sh)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Derived version: $version"
 
       - name: Set up QEMU (for linux/arm64 emulation)
         uses: docker/setup-qemu-action@v3
@@ -167,9 +184,12 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # NOTE: `latest` is deliberately omitted — it's published by the
           # deploy-production retag job after staging smoke.
+          # #499: v<X.Y.Z> is added so the API image is reachable at the
+          # same semver tag as the OpenWRT release.
           tags: |
             type=raw,value=staging
             type=sha,prefix=sha-,format=short
+            type=raw,value=v${{ steps.ver.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -442,6 +462,47 @@ jobs:
           dst="${REGISTRY}/${IMAGE_NAME}:latest"
           echo "Promoting $src → $dst"
           docker buildx imagetools create -t "$dst" "$src"
+
+  # 6b. Cut the v<X.Y.Z> annotated git tag (#499). Idempotent: skipped if
+  # the tag already exists (e.g. an earlier OpenWRT-only release on the same
+  # SHA already cut it). The OpenWRT publish path in openwrt-build.yml also
+  # creates this tag via softprops/action-gh-release on the v<X.Y.Z> release;
+  # whichever pipeline finishes first wins, the other no-ops.
+  cut-release-tag:
+    name: Cut v<X.Y.Z> release tag (#499)
+    needs: [approve-production, retag-latest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # Need a token with push perms; GITHUB_TOKEN at `contents: write`
+          # is enough for ref creation.
+          persist-credentials: true
+
+      - name: Derive version
+        id: ver
+        run: |
+          set -eu
+          version=$(./scripts/ci/derive-version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Push annotated tag (idempotent)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eu
+          tag="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+            echo "Tag ${tag} already exists on origin — skipping."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "WifiHaven ${tag}"
+          git push origin "${tag}"
 
   # 6c. Trigger the Render prod deploy hook + wait for healthy. Prod tracks
   # the `:latest` tag, so this must run after retag-latest has moved the
