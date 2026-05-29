@@ -8,6 +8,7 @@ import type {
   QueryLog,
 } from '@/types/api'
 import { HostCell } from '@/components/HostCell'
+import { EmptyState } from '@/components/EmptyState'
 import { AccessRequestsBanner, NewDevicesHint } from '@/components/AlertsPanel'
 import { blockReasonText } from '@/types/blockReason'
 
@@ -49,7 +50,7 @@ export function DashboardPage() {
                 Top Blocked (24h)
               </h2>
               {stats.topBlocked.length === 0
-                ? <p className="text-gray-600 text-sm">No blocked queries yet</p>
+                ? <EmptyState variant="inline" title="No blocked queries yet" />
                 : stats.topBlocked.map(d => (
                     <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-gray-800 last:border-0">
                       <span className="font-mono text-sm text-gray-300 truncate"><HostCell host={d.host} /></span>
@@ -107,7 +108,7 @@ export function NowSection() {
       {data === null
         ? <p className="text-gray-600 text-sm">Loading live activity…</p>
         : data.profiles.length === 0
-          ? <p className="text-gray-600 text-sm">No profiles configured yet.</p>
+          ? <EmptyState variant="inline" title="No profiles configured yet." />
           : (
             <div className="grid md:grid-cols-2 gap-4">
               {data.profiles.map(p => <NowProfileCard key={p.id} profile={p} />)}
@@ -134,7 +135,7 @@ function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
         )}
       </div>
       {idle
-        ? <p className="text-gray-600 text-xs">No activity in the last 5 minutes</p>
+        ? <EmptyState variant="inline" title="No activity in the last 5 minutes" />
         : (
           <div className="space-y-3">
             {profile.activeDevices.map(d => <NowDeviceRow key={d.mac} device={d} />)}

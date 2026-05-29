@@ -6,6 +6,7 @@ import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidato
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
+import { EmptyState } from '@/components/EmptyState'
 import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
@@ -97,7 +98,7 @@ export function DevicesPage() {
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
         {knownDevices.length === 0
-          ? <p className="p-6 text-gray-500 text-sm">No devices yet.</p>
+          ? <EmptyState title="No devices yet." />
           : knownDevices.map(d => (
               <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-emerald-500/60 ring-inset' : ''}`}>
                 <Link to={`/devices/${encodeURIComponent(d.mac)}/timeline`} className="flex-1 min-w-0 hover:text-emerald-400 transition-colors" data-testid={`device-timeline-link-${d.mac}`}>

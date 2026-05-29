@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 import type { CreateRouterResponse, RouterSummary } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
+import { EmptyState } from '@/components/EmptyState'
 
 export function RoutersPage() {
   const [routers, setRouters] = useState<RouterSummary[]>([])
@@ -89,7 +90,7 @@ export function RoutersPage() {
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
         {routers.length === 0
-          ? <p className="p-6 text-gray-500 text-sm">No routers enrolled yet.</p>
+          ? <EmptyState title="No routers enrolled yet." />
           : routers.map(r => (
               <div key={r.id} className="border-b border-gray-800 last:border-0">
                 <div className="flex items-center gap-4 px-5 py-4">

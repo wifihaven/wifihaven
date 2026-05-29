@@ -6,6 +6,7 @@ import { PageLoader } from './DashboardPage'
 import { RecentApexPicker } from '@/components/RecentApexPicker'
 import { IconPicker, type IconValue } from '@/components/IconPicker'
 import { AppIcon } from '@/components/AppIcon'
+import { EmptyState } from '@/components/EmptyState'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 
 interface EditFormState {
@@ -87,7 +88,7 @@ export function AppsPage() {
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
         {apps.length === 0
-          ? <p className="p-6 text-gray-500 text-sm">No apps yet. Create one to start grouping hosts.</p>
+          ? <EmptyState title="No apps yet." hint="Create one to start grouping hosts." />
           : apps.map(a => {
               const assignProfiles = new Set(a.assignments.map(x => x.profileId))
               return (

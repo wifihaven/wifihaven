@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 import type { CreateUserRequest, ProfileDetail, User, UserRole } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
+import { EmptyState } from '@/components/EmptyState'
 
 const ROLES: UserRole[] = ['admin', 'adult', 'child']
 
@@ -119,7 +120,7 @@ export function UsersPage() {
 
       <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
         {users.length === 0
-          ? <p className="p-6 text-gray-500 text-sm">No users yet.</p>
+          ? <EmptyState title="No users yet." />
           : users.map(u => (
               <div key={u.id} data-testid={`user-row-${u.id}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
                 <div className="flex-1 min-w-0">
@@ -252,7 +253,7 @@ function ProfilePicker({
     <div>
       <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Linked profiles</label>
       {profiles.length === 0
-        ? <p className="text-sm text-gray-500">No profiles available.</p>
+        ? <EmptyState variant="inline" title="No profiles available." />
         : (
           <div className="flex flex-wrap gap-2">
             {profiles.map(p => {
