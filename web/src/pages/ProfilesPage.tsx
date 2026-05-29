@@ -14,6 +14,7 @@ import type {
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
+import { EmptyState } from '@/components/EmptyState'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
 
@@ -809,7 +810,7 @@ function ProfileShellRow({
                 </p>
               )}
               {allUsers.length === 0
-                ? <p className="text-xs text-gray-600">No users in this household yet.</p>
+                ? <EmptyState variant="inline" title="No users in this household yet." />
                 : (
                   <div className="flex flex-wrap gap-2">
                     {allUsers.map(u => {
@@ -1353,17 +1354,22 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
           Save this profile first to assign apps.
         </p>
       ) : apps.length === 0 ? (
-        <p className="text-xs text-gray-500">
-          No apps yet.{' '}
-          <Link
-            to="/apps"
-            data-testid={`${testIdPrefix}-empty-link`}
-            className="text-emerald-400 hover:text-emerald-300 underline"
-          >
-            Create one
-          </Link>
-          {' '}to block, allow, or time-limit a group of hosts.
-        </p>
+        <EmptyState
+          variant="inline"
+          title="No apps yet."
+          hint={
+            <>
+              <Link
+                to="/apps"
+                data-testid={`${testIdPrefix}-empty-link`}
+                className="text-emerald-400 hover:text-emerald-300 underline"
+              >
+                Create one
+              </Link>
+              {' '}to block, allow, or time-limit a group of hosts.
+            </>
+          }
+        />
       ) : (
         <div className="space-y-2">
           {assigned.length === 0 && !pickerOpen && (
