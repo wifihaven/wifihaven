@@ -43,6 +43,10 @@ step() { echo; echo "▶ $*"; }
 # legitimate zero/empty value.
 _py() { python3 -c "$1"; }
 
+# Importable e2e helpers (shared with the unit tests). Used by the #1122
+# read-back so the typed-BlockReason wire contract has one source of truth.
+E2E_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/e2e/lib" && pwd)"
+
 # ── Admin login ────────────────────────────────────────────────────────────
 step "Admin login"
 LOGIN=$(curl -fsS -X POST "$BASE/api/auth/login" \
@@ -305,14 +309,17 @@ while (( $(date +%s) < deadline )); do
   curl -fsS "${AUTH[@]}" \
     "$BASE/api/logs?mac=$MAC&blocked=true&hours=1" >"$TMP/nflog_logs.json"
   LOGS_OK=$(_py "
-import json
+import json, sys
+sys.path.insert(0, '$E2E_LIB')
+from log_reason import blocked_reason_kinds
 page = json.load(open('$TMP/nflog_logs.json'))
 rows = page.get('rows', [])
 # Only consider the rows we just posted (filter to the dst-IP prefix used
 # above so prior runs against staging don't contaminate the check).
 ours = [r for r in rows if (r.get('host') or {}).get('value', '').startswith('198.51.100.1')]
-reasons = sorted({r.get('reason') for r in ours if r.get('blocked')})
-want = ['Manual', 'Paused', 'Schedule', 'TimeLimit', 'Unmanaged']
+# /api/logs reason is a kind-tagged object since #1147 (#962) — key on .kind.
+reasons = blocked_reason_kinds(ours)
+want = ['manual', 'paused', 'schedule', 'timeLimit', 'unmanaged']
 print('ok' if reasons == want else f'have={reasons}')
 ")
   [ "$LOGS_OK" = "ok" ] && break
