@@ -1443,6 +1443,64 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(ot.appName == "Other") &&
           assertTrue(ot.hosts.map(_.host.value).contains("google.com"))
       },
+      test("#1161: traffic on FQDN subdomain attributes to apex-form app_hosts entry") {
+        // App is registered with apex `khanacademy.org`, but the device actually
+        // contacts `m.khanacademy.org`. Pre-fix the row falls into the synthetic
+        // "Other" bucket because the lookup is strict equality; post-fix it
+        // attributes to the Khan Academy app (same suffix rule as #1085 on the
+        // groupBy=app path).
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          kaId        <- appRepo.create("KhanAcademy", "khan", None, Some("🎓"))
+          _           <- appRepo.setHosts(kaId, List(Hostname.unsafe("khanacademy.org")))
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("m.khanacademy.org")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                1000L,
+                1000L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+          ka = out.apps.find(_.appName == "KhanAcademy")
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(ka.isDefined) &&
+          assertTrue(ka.get.proportionalSeconds == 300L) &&
+          assertTrue(ka.get.presenceSeconds == 300L) &&
+          assertTrue(ka.get.hosts.map(_.host.value).contains("m.khanacademy.org")) &&
+          assertTrue(!out.apps.exists(_.appId.isEmpty))
+      },
       test("sorted by proportionalSeconds desc") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
