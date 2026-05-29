@@ -17,4 +17,4 @@ def blocked_reason_kinds(rows: list[dict[str, Any]]) -> list[str]:
     low-cardinality `kind` is the discriminator (mirror of the SPA's
     `web/src/types/blockReason.ts`).
     """
-    return sorted({r.get("reason") for r in rows if r.get("blocked")})
+    return sorted({r["reason"]["kind"] for r in rows if r.get("blocked")})
