@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
+import { HostCell } from '@/components/HostCell'
 import type {
   UsageBucket, UsageDeviceBucket, UsageSeriesResponse,
 } from '@/types/api'
@@ -284,29 +285,18 @@ export function ProfileTimelinePage() {
           </h2>
           <ul className="space-y-1.5">
             {data.topHosts.filter(h => h.dayMins > 0).map((h, i) => {
-              const isIp = h.host.type !== 'fqdn'
               return (
                 <li
                   key={`${h.host.type}:${h.host.value}`}
                   data-testid={`profile-timeline-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
+                  className="flex items-center justify-between text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-2"
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <span
                       className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
                       style={{ background: HOST_COLORS[i % HOST_COLORS.length] }}
                     />
-                    <span
-                      className={`font-mono truncate ${isIp ? 'italic text-gray-500' : 'text-gray-300'}`}
-                      title={h.host.value}
-                    >
-                      {h.host.value}
-                      {isIp && (
-                        <span className="ml-1 text-[10px] uppercase tracking-wide text-gray-600">
-                          {h.host.type}
-                        </span>
-                      )}
-                    </span>
+                    <HostCell host={h.host} className="truncate" />
                   </span>
                   <span className="text-gray-500 font-mono shrink-0 ml-2">{h.dayMins}m</span>
                 </li>

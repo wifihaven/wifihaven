@@ -6,6 +6,7 @@ import { api } from '@/api/client'
 import {
   useTimeStatusProfileWeek, useUsageSeriesProfileToday,
 } from '@/api/queries'
+import { HostCell } from '@/components/HostCell'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import type {
   UsageBucket, UsageDeviceBucket, UsageSeriesResponse,
@@ -370,22 +371,13 @@ function OtherDrillInModal({
         {!loading && !error && tail.length > 0 && (
           <ul className="space-y-1 overflow-y-auto pr-1 -mr-1">
             {tail.map(h => {
-              const isIp = h.host.type !== 'fqdn'
               const shareOther = otherTotal > 0 ? (h.dayMins / otherTotal) * 100 : 0
               const shareTotal = grandTotal > 0 ? (h.dayMins / grandTotal) * 100 : 0
               return (
                 <li key={`${h.host.type}:${h.host.value}`}
                   data-testid={`${testIdPrefix}-other-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2 gap-2">
-                  <span className={`font-mono truncate min-w-0 ${isIp ? 'italic text-gray-500' : 'text-gray-300'}`}
-                    title={h.host.value}>
-                    {h.host.value}
-                    {isIp && (
-                      <span className="ml-1 text-[10px] uppercase tracking-wide text-gray-600">
-                        {h.host.type}
-                      </span>
-                    )}
-                  </span>
+                  className="flex items-center justify-between text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-2 gap-2">
+                  <HostCell host={h.host} className="truncate min-w-0" />
                   <span className="text-gray-500 font-mono shrink-0 tabular-nums">
                     {formatMins(h.dayMins)}
                     <span className="text-gray-600 ml-2">
