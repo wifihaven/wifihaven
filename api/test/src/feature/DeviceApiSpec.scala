@@ -15,6 +15,8 @@ import zio.json.*
 import zio.test.*
 import zio.test.Assertion.*
 
+import java.time.{Instant, LocalDate}
+
 object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
   override val bootstrap =
@@ -110,6 +112,61 @@ object DeviceApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & 
           .addHeader(Header.Authorization.Bearer(token.value))
         delResp <- routes.runZIO(delReq)
         after   <- deviceRepo.findByMac(MacAddress.unsafe(mac))
+      } yield assertTrue(delResp.status == Status.Ok) &&
+        assertTrue(after.isEmpty)
+    },
+    test("#1154 delete device with dependent alert / usage / connection-event rows") {
+      // Operator-reported: 'Remove device' failed for real devices. Real
+      // devices accumulate dependent rows (a new-device alert, per-host usage,
+      // connection events). Deleting one must succeed and remove the row.
+      for {
+        _           <- cleanDb
+        profileRepo <- ZIO.service[ProfileRepo]
+        deviceRepo  <- ZIO.service[DeviceRepo]
+        alertRepo   <- ZIO.service[AlertRepo]
+        usageRepo   <- ZIO.service[TimeUsageRepo]
+        connRepo    <- ZIO.service[ConnectionEventRepo]
+        routerRepo  <- ZIO.service[RouterRepo]
+        auth        <- makeAuth
+        token       <- auth.login("admin", "changeme").map(_.token)
+        profiles    <- profileRepo.listAll
+        kidsId = profiles.find(_.name == "Kids").get.id
+        mac    = MacAddress.unsafe("aa:bb:cc:11:22:33")
+        host   = HostId.Fqdn(Hostname.unsafe("youtube.com"))
+        _               <- deviceRepo.upsert(mac, "Kid iPad", Some(kidsId), "192.168.1.77")
+        _               <- alertRepo.raiseNewDevice(mac, Instant.parse("2026-01-01T00:00:00Z"))
+        _               <- usageRepo.incrementSecondsAndBytes(
+          mac,
+          host,
+          LocalDate.of(2026, 1, 1),
+          60L,
+          100L,
+          200L,
+        )
+        routerId        <- routerRepo.create("r1", Sha256Hex.unsafe("m" * 64))
+        _               <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(mac),
+              host,
+              Some(IpAddress.unsafe("1.2.3.4")),
+              allowed = true,
+              BlockReason.Allow,
+              Instant.parse("2026-01-01T00:00:00Z"),
+            ),
+          ),
+        )
+        userProfileRepo <- ZIO.service[UserProfileRepo]
+        routes  = DeviceRoutes.routes(auth, deviceRepo, userProfileRepo)
+        // The SPA builds the path with encodeURIComponent(mac), so the colons
+        // arrive percent-encoded (de%3Aad%3A…). The route must decode them.
+        encPath = s"/api/devices/${java.net.URLEncoder.encode(mac.value, "UTF-8")}"
+        delReq  = Request
+          .delete(URL.decode(encPath).toOption.get)
+          .addHeader(Header.Authorization.Bearer(token.value))
+        delResp <- routes.runZIO(delReq)
+        after   <- deviceRepo.findByMac(mac)
       } yield assertTrue(delResp.status == Status.Ok) &&
         assertTrue(after.isEmpty)
     },

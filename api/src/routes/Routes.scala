@@ -1725,8 +1725,17 @@ def requireProfileAccess(
     case Some(pid) => requireProfileAccess(claims, pid, upRepo)
   }
 
-def normalizeMac(mac: String): String =
-  mac.toLowerCase.replace("-", ":").trim
+def normalizeMac(mac: String): String = {
+  // Path-captured MACs arrive percent-encoded — the SPA builds the URL with
+  // encodeURIComponent, which turns ':' into '%3A', and zio-http's string(_)
+  // path codec does not decode it. Decode first so the colon form matches the
+  // stored MAC; decoding a clean MAC (query- or body-sourced) is a no-op.
+  val decoded =
+    scala.util
+      .Try(java.net.URLDecoder.decode(mac, java.nio.charset.StandardCharsets.UTF_8))
+      .getOrElse(mac)
+  decoded.toLowerCase.replace("-", ":").trim
+}
 
 // #795: parse a ?profileId=N query parameter, used by the per-profile-scoped
 // hot read endpoints. Returns None when the param is absent (callers fall back
