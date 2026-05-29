@@ -16,6 +16,10 @@ import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
 import { JumpToDate } from '@/components/usage/JumpToDate'
 import {
+  bucketAvailability,
+  type BucketGate,
+} from '@/components/usage/retentionGating'
+import {
   fmtBytes,
   fmtDuration,
   localTime,
@@ -92,6 +96,25 @@ export function TrafficUsagePage() {
     else sp.delete('until')
     setSearchParams(sp, { replace: true })
   }
+
+  // #814: which granularity buckets still have retained data for the chosen
+  // anchor. When the user jumps to a date older than the raw/hourly horizon,
+  // those buckets grey out (BucketSelector) and we auto-promote the current
+  // selection to the finest still-available bucket so we never request a
+  // swept tier.
+  const bucketGates = useMemo<Record<TrafficUsageBucket, BucketGate>>(
+    () => bucketAvailability(until ? new Date(until) : null, new Date()),
+    [until],
+  )
+
+  useEffect(() => {
+    if (bucketGates[bucket]?.enabled === false) {
+      const finest = (Object.keys(bucketGates) as TrafficUsageBucket[]).find(
+        b => bucketGates[b].enabled,
+      )
+      if (finest) setBucket(finest)
+    }
+  }, [bucketGates, bucket])
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -175,6 +198,7 @@ export function TrafficUsagePage() {
         profileIds={profileIds}
         bucket={bucket}
         until={until}
+        bucketGates={bucketGates}
         onMacsChange={setMacs}
         onProfileIdsChange={setProfileIds}
         onBucketChange={setBucket}
@@ -249,6 +273,9 @@ interface ShelfProps {
   profileIds: number[]
   bucket: TrafficUsageBucket
   until: string | null
+  // #814: per-bucket retention gating. Omitted by consumers (e.g. the
+  // connection-events log) whose source has a single flat retention horizon.
+  bucketGates?: Record<TrafficUsageBucket, BucketGate>
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
   onBucketChange: (b: TrafficUsageBucket) => void
@@ -261,7 +288,7 @@ interface ShelfProps {
 // #951: Jump-to-Date sits next to the bucket selector — re-anchors the
 // infinite-scroll cursor at the chosen instant (cleared = "now").
 export function FilterShelf({
-  devices, profiles, macs, profileIds, bucket, until,
+  devices, profiles, macs, profileIds, bucket, until, bucketGates,
   onMacsChange, onProfileIdsChange, onBucketChange, onUntilChange,
 }: ShelfProps) {
   const deviceLabel = (m: string) => devices.find(d => d.mac === m)?.name ?? m
@@ -271,7 +298,7 @@ export function FilterShelf({
   return (
     <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
       <div className="flex flex-wrap items-end gap-4">
-        <BucketSelector value={bucket} onChange={onBucketChange} />
+        <BucketSelector value={bucket} onChange={onBucketChange} gates={bucketGates} />
         <JumpToDate value={until} onChange={onUntilChange} />
       </div>
       {hasChips && (

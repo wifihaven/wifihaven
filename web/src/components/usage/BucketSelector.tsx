@@ -1,10 +1,9 @@
 import type { TrafficUsageBucket } from '@/types/api'
+import type { BucketGate } from './retentionGating'
 
 interface BucketOption {
   value: TrafficUsageBucket
   label: string
-  disabled?: boolean
-  disabledReason?: string
 }
 
 // Raw period is whatever the router agent emits — typically 1m in prod,
@@ -26,33 +25,41 @@ interface Props {
   // Hide "Raw" when the consumer endpoint doesn't support it (events agg
   // requires a bucket — there's a separate raw view at /api/logs).
   hideRaw?: boolean
+  // #814: per-bucket enable/disable derived from the retention horizon for
+  // the chosen date range. A disabled bucket is greyed (not hidden) and its
+  // `reason` is surfaced as the tooltip.
+  gates?: Partial<Record<TrafficUsageBucket, BucketGate>>
 }
 
-export function BucketSelector({ value, onChange, hideRaw }: Props) {
+export function BucketSelector({ value, onChange, hideRaw, gates }: Props) {
   const buckets = hideRaw ? BUCKETS.filter(b => b.value !== 'raw') : BUCKETS
   return (
     <div className="flex flex-wrap gap-2" role="group" aria-label="bucket-selector">
-      {buckets.map(b => (
-        <button
-          key={b.value}
-          type="button"
-          disabled={b.disabled}
-          data-testid={`bucket-${b.value}`}
-          onClick={() => {
-            if (!b.disabled) onChange(b.value)
-          }}
-          title={b.disabledReason ?? ''}
-          className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-            b.disabled
-              ? 'bg-gray-900 text-gray-600 cursor-not-allowed'
-              : value === b.value
-              ? 'bg-emerald-600 text-white'
-              : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-          }`}
-        >
-          {b.label}
-        </button>
-      ))}
+      {buckets.map(b => {
+        const gate = gates?.[b.value]
+        const disabled = gate ? !gate.enabled : false
+        return (
+          <button
+            key={b.value}
+            type="button"
+            disabled={disabled}
+            data-testid={`bucket-${b.value}`}
+            onClick={() => {
+              if (!disabled) onChange(b.value)
+            }}
+            title={disabled ? gate?.reason ?? '' : ''}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              disabled
+                ? 'bg-gray-900 text-gray-600 cursor-not-allowed'
+                : value === b.value
+                ? 'bg-emerald-600 text-white'
+                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            {b.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
