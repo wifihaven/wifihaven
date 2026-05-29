@@ -61,6 +61,11 @@ trait TimeStatusService {
    * date is treated as the canonical bucket date (no tz reprojection — `time_usage` /
    * `traffic_reports` are already bucketed under household-local dates).
    *
+   * For past dates this reads `usedMinutes` from the `time_used_daily` rollup (#1160) when
+   * available, falling back to a live aggregation on miss. Today is always live so enforcement
+   * (which threads through [[dayStateAllLive]] on the snapshot path) and the UI never disagree on
+   * the current cap.
+   *
    * `now` is still needed so the schedule/paused arm of the block evaluation has a wall-clock
    * instant to test windows against. For historical dates the schedule arm will generally not be
    * active (today's wall clock is not in yesterday's schedule window), but pinning `now` here keeps
@@ -75,11 +80,29 @@ trait TimeStatusService {
 
   /**
    * Batched form for [[PolicyService.snapshot]] and the `/api/time/status/summary` route. Emits one
-   * `ProfileDayState` per profile for `date`, in a single batched presence + extensions read across
-   * all profiles' devices. `now` is still threaded through so the schedule-active evaluation has a
-   * wall-clock instant; when `date` is in the past, the schedule arm naturally won't match.
+   * `ProfileDayState` per profile for `date`. For past dates this is served from the
+   * `time_used_daily` rollup; today is computed live.
    */
   def dayStateAll(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, ProfileDayState]]
+
+  /**
+   * Always-live variant of [[dayState]] — recomputes from raw `traffic_reports` regardless of cache
+   * state. The rollup fiber writes through this so the cache cannot drift from the live computation
+   * (#1160's source-of-truth invariant).
+   */
+  def dayStateLive(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Option[ProfileDayState]]
+
+  /** Always-live batched variant of [[dayStateAll]] — see [[dayStateLive]]. */
+  def dayStateAllLive(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -94,6 +117,9 @@ class TimeStatusServiceLive(
     deviceRepo: DeviceRepo,
     trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
+    // Defaulting to the noop lets the many call sites in TimeApiSpec / snapshot specs keep their
+    // 7-arg constructions — they exercise today, which always takes the live path anyway.
+    rollupRepo: TimeUsedRollupRepo = NoopTimeUsedRollupRepo,
 ) extends TimeStatusService {
 
   def todaysState(
@@ -104,6 +130,21 @@ class TimeStatusServiceLive(
     dayState(now, PolicyService.householdLocalDate(now, settings), settings, profileId)
 
   def dayState(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profileId: ProfileId,
+  ): Task[Option[ProfileDayState]] = {
+    val today = PolicyService.householdLocalDate(now, settings)
+    if (date.isBefore(today))
+      rollupRepo.getDayForProfile(profileId, date).flatMap {
+        case Some(used) => dayStateFromRolled(now, date, profileId, used)
+        case None       => dayStateLive(now, date, settings, profileId)
+      }
+    else dayStateLive(now, date, settings, profileId)
+  }
+
+  def dayStateLive(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -136,6 +177,16 @@ class TimeStatusServiceLive(
     }
 
   def dayStateAll(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, ProfileDayState]] = {
+    val today = PolicyService.householdLocalDate(now, settings)
+    if (date.isBefore(today)) dayStateAllFromRollup(now, date, settings)
+    else dayStateAllLive(now, date, settings)
+  }
+
+  def dayStateAllLive(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
@@ -173,13 +224,87 @@ class TimeStatusServiceLive(
         )
       }.toMap
     }
+
+  // Build a ProfileDayState for a past date from a precomputed `usedMinutes`,
+  // skipping the heavy presence load. Schedules / paused / extensions / daily
+  // limit / site limits are still loaded live so the block-precedence math
+  // matches the live folder. Per-site `usedMinutes` is reported as zero — the
+  // v1 rollup is profile-total only; per-site is a tracked follow-up.
+  private def dayStateFromRolled(
+      now: Instant,
+      date: LocalDate,
+      profileId: ProfileId,
+      usedMinutes: Int,
+  ): Task[Option[ProfileDayState]] =
+    profileRepo.findById(profileId).flatMap {
+      case None    => ZIO.succeed(None)
+      case Some(p) =>
+        for {
+          schedules <- scheduleRepo.listForProfile(profileId)
+          tl        <- timeLimitRepo.findForProfile(profileId)
+          stls      <- siteTimeLimitRepo.listForProfile(profileId)
+          extMins   <- extRepo.getProfileTotalExtension(profileId, date)
+        } yield Some(
+          TimeStatusService.assemble(
+            profile = p,
+            schedules = schedules,
+            dailyLimit = tl.map(_.dailyMinutes),
+            siteLimits = stls,
+            usedMinutes = usedMinutes,
+            extensionMinutes = extMins,
+            date = date,
+            now = now,
+          ),
+        )
+    }
+
+  // Batched variant. On a partial cache miss the missing profiles fall back
+  // to the live aggregation in one go — cheaper than recursing per-profile.
+  private def dayStateAllFromRollup(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, ProfileDayState]] =
+    for {
+      profiles <- profileRepo.listAll
+      rolled   <- rollupRepo.getDayMap(date)
+      hit  = profiles.filter(p => rolled.contains(p.id))
+      miss = profiles.filterNot(p => rolled.contains(p.id))
+      schedsP <- ZIO.foreach(hit)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
+      tlsP    <- ZIO.foreach(hit)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
+      stlsP   <- ZIO.foreach(hit)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      exts    <- extRepo.snapshotAllByProfile(date)
+      live    <-
+        if miss.isEmpty then ZIO.succeed(Map.empty[ProfileId, ProfileDayState])
+        else
+          dayStateAllLive(now, date, settings).map(_.filter { case (pid, _) =>
+            miss.exists(_.id == pid)
+          })
+    } yield {
+      val schedMap = schedsP.toMap
+      val tlMap    = tlsP.toMap
+      val stlMap   = stlsP.toMap
+      val cached   = hit.iterator.map { p =>
+        p.id -> TimeStatusService.assemble(
+          profile = p,
+          schedules = schedMap.getOrElse(p.id, Nil),
+          dailyLimit = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
+          siteLimits = stlMap.getOrElse(p.id, Nil),
+          usedMinutes = rolled(p.id),
+          extensionMinutes = exts.getOrElse(p.id, 0),
+          date = date,
+          now = now,
+        )
+      }.toMap
+      cached ++ live
+    }
 }
 
 object TimeStatusService {
 
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo,
+      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -191,7 +316,8 @@ object TimeStatusService {
         dr: DeviceRepo,
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er)
+        ru: TimeUsedRollupRepo,
+    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru)
   }
 
   /**
@@ -233,20 +359,6 @@ object TimeStatusService {
       if mins == 0 then acc else acc.updated(pat, mins)
     }
 
-    val (blocked, reason) =
-      if profile.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
-      else if schedules.exists(s => PolicyService.scheduleActiveAt(s, now)) then
-        (true, Some(MacBlockReason.Schedule: MacBlockReason))
-      else
-        dailyLimit match {
-          case Some(limit) if totalMinutesUsed >= limit + extensionMinutes =>
-            (true, Some(MacBlockReason.TimeLimit: MacBlockReason))
-          case _                                                           =>
-            (false, None)
-        }
-
-    val remaining = dailyLimit.map(l => (l + extensionMinutes - totalMinutesUsed).max(0))
-
     val perSite = siteLimits.map { sl =>
       SiteDayState(
         label = sl.label,
@@ -257,11 +369,70 @@ object TimeStatusService {
       )
     }
 
+    assemble(
+      profile = profile,
+      schedules = schedules,
+      dailyLimit = dailyLimit,
+      siteLimits = siteLimits,
+      usedMinutes = totalMinutesUsed,
+      extensionMinutes = extensionMinutes,
+      date = date,
+      now = now,
+      perSiteOverride = Some(perSite),
+    )
+  }
+
+  /**
+   * Shared assembly used by both [[fold]] (live presence aggregation) and the rollup read path
+   * (#1160), once `usedMinutes` is known. Computes `blocked` / `blockReason` / `remaining` so the
+   * cached-read path produces the same precedence Paused > Schedule > TimeLimit as the live path —
+   * the source-of-truth invariant is enforced here by construction.
+   *
+   * `perSiteOverride = None` means the caller did not load per-site presence; per-site usage is
+   * emitted as zero against the configured site limits (the v1 rollup is profile-total only).
+   */
+  def assemble(
+      profile: Profile,
+      schedules: List[DbSchedule],
+      dailyLimit: Option[Int],
+      siteLimits: List[SiteTimeLimit],
+      usedMinutes: Int,
+      extensionMinutes: Int,
+      date: LocalDate,
+      now: Instant,
+      perSiteOverride: Option[List[SiteDayState]] = None,
+  ): ProfileDayState = {
+    val (blocked, reason) =
+      if profile.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
+      else if schedules.exists(s => PolicyService.scheduleActiveAt(s, now)) then
+        (true, Some(MacBlockReason.Schedule: MacBlockReason))
+      else
+        dailyLimit match {
+          case Some(limit) if usedMinutes >= limit + extensionMinutes =>
+            (true, Some(MacBlockReason.TimeLimit: MacBlockReason))
+          case _                                                      =>
+            (false, None)
+        }
+
+    val remaining = dailyLimit.map(l => (l + extensionMinutes - usedMinutes).max(0))
+
+    val perSite = perSiteOverride.getOrElse(
+      siteLimits.map { sl =>
+        SiteDayState(
+          label = sl.label,
+          domainPattern = sl.domainPattern,
+          dailyLimitMinutes = sl.dailyMinutes,
+          usedMinutes = 0,
+          exemptFromDaily = sl.exemptFromDaily,
+        )
+      },
+    )
+
     ProfileDayState(
       profileId = profile.id,
       date = date,
       dailyLimitMinutes = dailyLimit,
-      usedMinutes = totalMinutesUsed,
+      usedMinutes = usedMinutes,
       extensionMinutes = extensionMinutes,
       remainingMinutes = remaining,
       blocked = blocked,

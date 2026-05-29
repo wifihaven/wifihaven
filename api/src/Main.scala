@@ -10,6 +10,7 @@ import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.api.usage.RollupJobs
+import wifihaven.api.usage.TimeUsedRollupJob
 import wifihaven.shared.Clock
 import zio.*
 import zio.http.*
@@ -74,7 +75,14 @@ object Main extends ZIOAppDefault {
       clockForJobs   <- ZIO.service[Clock]
       _              <- RollupJobs.hourlyLoop(rollupRepo, clockForJobs).forkDaemon
       _              <- RollupJobs.dailyLoop(rollupRepo, clockForJobs, tz).forkDaemon
-      _              <- ZIO.logInfo("rollup fibers forked (hourly + daily)")
+      // #1160: per-(profile, date) `usedMinutes` rollup. Refreshes the trailing
+      // window so /api/time/status/summary serves out of cache for past dates.
+      tssForJobs     <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+      timeRollupRepo <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
+      _              <- TimeUsedRollupJob
+        .loop(timeRollupRepo, rollupRepo, tssForJobs, hsRepo, clockForJobs)
+        .forkDaemon
+      _              <- ZIO.logInfo("rollup fibers forked (hourly + daily + time_used_daily)")
       _              <- ZIO
         .logWarning(
           "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +

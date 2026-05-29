@@ -673,16 +673,26 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       .transact(xa)
 
   def update(s: HouseholdSettings): Task[Unit] = {
-    val ummJson = s.unmanagedMacPolicy.toJson
-    sql"""UPDATE household_settings
-            SET daily_reset_time=${s.dailyResetTime},
-                daily_reset_tz=${s.dailyResetTz},
-                heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
-                heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
-                heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
-                unmanaged_mac_policy=${ummJson}::jsonb,
-                updated_at=NOW()
-          WHERE id=1""".update.run.transact(xa).unit
+    val ummJson    = s.unmanagedMacPolicy.toJson
+    // #1160: invalidate the time-used rollup atomically with the settings
+    // update. Any change to the daily-reset boundary (tz / reset hour) or the
+    // heartbeat filter changes the active-minute definition for every cached
+    // day; deleting the cache forces the next rollup tick to refill from
+    // first principles. The DELETE is wholesale because all three fields gate
+    // the same aggregation — fine-grained invalidation would only add risk of
+    // missing a code path that mutates the filter.
+    val upd        =
+      sql"""UPDATE household_settings
+              SET daily_reset_time=${s.dailyResetTime},
+                  daily_reset_tz=${s.dailyResetTz},
+                  heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
+                  heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
+                  heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
+                  unmanaged_mac_policy=${ummJson}::jsonb,
+                  updated_at=NOW()
+            WHERE id=1""".update.run
+    val invalidate = sql"DELETE FROM time_used_daily".update.run
+    (upd *> invalidate).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
@@ -2291,6 +2301,7 @@ object Repos {
   val alertRepo             = ZLayer.fromFunction(AlertRepoLive(_))
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
+  val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
 }

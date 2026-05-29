@@ -167,5 +167,5 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         post <- ru.getDayMap(date)
       } yield assertTrue(pre.contains(kid)) && assertTrue(!post.contains(kid))
     },
-  )
+  ) @@ TestAspect.sequential
 }
