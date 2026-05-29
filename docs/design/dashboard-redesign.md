@@ -9,21 +9,23 @@ issue, and breaks the work into PR-sized chunks for follow-up.
 
 ## Method / live inspection
 
-Inspected the rendered SPA on **staging.wifihaven.net** (`/dashboard`, `/usage/events`,
-`/profiles`) via the browser extension on 2026-05-29, logged in as admin. Full-page text
-and screenshots were captured at 1080p.
+Inspected the rendered SPA on **wifihaven.net (production)** (`/dashboard`,
+`/usage/events`, `/profiles`) via the browser extension on 2026-05-29, logged in as admin.
+Full-page text and screenshots were captured at 1080p. (An earlier pass against
+`staging.wifihaven.net` showed the same structural problems but on thin synthetic e2e data
+— one active device, all bare-IP events, zero blocks — so this note is grounded in the
+realistic prod household instead.)
 
-Caveat on data density: staging carries thin synthetic e2e data — 4 profiles (`Kids`,
-`Adults`, plus two router/gate-named profiles), exactly **one** active device
-(`gate3-dev-stab-…`), and connection events that are **all bare IPv4 with no resolved
-hostname** and **all `ok`/`allow`** (zero blocks). This is lighter than the prod household
-the input issues describe (≈7 profiles, ≈9 active devices on the Family card). Where a
-claim depends on prod density (e.g. "Family card runs 9 rows tall") it is taken from the
-issue text and flagged as such. The mobile reflow could not be captured reliably — the
-extension's screenshot viewport stayed at desktop width regardless of window resize — so
-reflow behaviour below is read from the responsive Tailwind classes in
-`web/src/pages/DashboardPage.tsx`, not from a live narrow render. **The operator may want
-to re-check mobile on a real device.**
+Prod data density (the realistic case the input issues describe):
+
+- **7 profiles**: 4 active (`Kids`, `Sameer`, `Family`, `Rachel`) + 3 idle (`Quintus`, `Prima`, `Octavius`).
+- **18 devices** across the household, from MacBooks and phones to a wall of IoT (Plex Server, 2× Sonos, Lutron Bridge, Lennox Thermostat, Garage Door Opener, B-Hyve Controller, NAS, printers).
+- **16,755 connection events today, 3 blocked**; 62 events in the last hour, 0 blocked.
+
+The mobile reflow could not be captured reliably — the extension's screenshot viewport
+stayed at desktop width regardless of window resize — so reflow behaviour below is read
+from the responsive Tailwind classes in `web/src/pages/DashboardPage.tsx`, not from a live
+narrow render. **The operator may want to re-check mobile on a real device.**
 
 ## 1. Current state
 
@@ -37,21 +39,25 @@ to re-check mobile on a real device.**
 6. **Top Blocked (24h)** + **Per Device (24h)** — side-by-side panels.
 7. **Recent Queries** — full `LogTable` (30 rows) fetched via `api.logs.query({ limit: 30 })`.
 
-### What live inspection showed (and what's wrong with it)
+### What live inspection (prod) showed — and what's wrong with it
 
-- **Idle profiles dominate.** On staging, `Kids`, `Adults`, and a router profile each render a full empty card saying "No activity in the last 5 minutes" — three near-identical empty boxes. The single active card sits among them. On a real household this is worse: most profiles are idle most of the time, so the highest-value element (who's actually online) is diluted by empty cards. → #820.
-- **KPI strip is below the fold.** The 4 headline numbers render only after the entire NOW grid; on a 1080p load they require a scroll. → #821.
-- **"Per Device (24h)" is a list of zeros.** Staging shows one row: `gate3-dev-stab-… · 365 queries · 0 blocked`. Every device's "blocked" count is 0, so the panel is a per-device traffic-volume readout wearing a security-panel hat. Volume belongs on /devices and /profiles, not here. → #822.
-- **"Recent Queries" is a log firehose, not a dashboard widget.** Staging's table is 200+ identical rows of one device hitting bare IPs (`72.30.35.88`, `35.208.123.65`, `69.10.208.170`, `5.161.94.12`), all `ok`. It duplicates `/usage/events` exactly and adds a second network call on load. → #823.
-- **Terminology is stale and inconsistent across surfaces.** The dashboard says "Queries today", "Recent Queries", "N queries". The richer surface at `/usage/events` is **already titled "Connection Events"**. So the project has already adopted the correct term elsewhere — only the dashboard lags. → #299.
-- **Per-row "Xs ago" labels carry no signal.** Every NOW device row shows the same snapshot age modulo drift, because they share one poll. → #825.
-- **No throughput anywhere.** There is no live bytes-in/out indication on the dashboard today. → #747.
-- **Perceived latency.** The page gates the whole render on `Promise.all([logs.stats(), logs.query()])` behind a single `PageLoader` spinner, and the companion /profiles surface paints placeholder `0m` before usage resolves. The 24h panels scan raw `connection_events` rather than the rollup tables. → #1098 / #1099 / #809.
+- **One profile card dominates the entire page.** The `Family` card lists **~11 active devices** — Plex Server, both Sonos units, Lutron Bridge, Lennox Thermostat, Garage Door Opener, B-Hyve Controller, NAS, MacBook, `device-45219d`, `tb8786p1-…` — each with a 3-host sublist. It is taller than the rest of NOW combined, and almost all of it is IoT chatter no human is "using". The high-value cards (`Kids` watching Khan Academy, `Sameer`, `Rachel`) are buried below it. This is exactly #819, at worse-than-described scale (11 rows, not 9).
+- **Idle profiles render as full empty cards.** `Quintus`, `Prima`, `Octavius` each render a full-size "No activity in the last 5 minutes" box at the bottom of NOW — three dead cards taking three card-heights. → #820.
+- **KPI strip is below the fold.** The 4 headline numbers render only after the entire (very tall) NOW grid; on prod they're several screens down. → #821.
+- **"Per Device (24h)" is a wall of zeros.** Prod shows **18 device rows, 17 of which read "0 blocked"** (only `Kid Mac` shows 3). It's a per-device *traffic-volume* leaderboard — `Plex Server · 8115 queries`, `Sameer Mac · 2472` — wearing a security-panel hat. Volume belongs on /devices and /profiles. → #822.
+- **"Top Blocked (24h)" is a single noise row.** The whole panel is one line: `captive.apple.com · 3` — an Apple captive-portal connectivity probe, i.e. effectively noise, not a meaningful parental block. So on a healthy household the two blocking panels are *one real row between them*, yet they occupy a full two-column section: Top-Blocked (1 row) next to Per-Device (18 rows) is a wildly asymmetric, mostly-empty band. → #822 (merge + honest empty state).
+- **"Blocked today: 3" is the only KPI that matters, and it's a captive probe.** "Queries today: 16,755" is a big number that answers nothing for the glance question. The signal is in *blocked*, not *volume*. → motivates the KPI restate.
+- **"Recent Queries" is a log firehose, not a dashboard widget.** Prod's table opens with **8 consecutive `Plex Server` bare-IP rows** (peer/streaming traffic), then `Sameer Mac → api.github.com` **four times in a row** (a polling loop — precisely the case #823 calls out), all `ok`/`allow`. Real browser hostnames do resolve (`assets-proxy.anthropic.com`, `graph.instagram.com`, `inquisition.goguardian.com`), but the table still duplicates `/usage/events` and adds a second network call on load. → #823.
+- **Terminology is stale and inconsistent across surfaces.** The dashboard says "Queries today", "Recent Queries", "N queries". The richer surface at `/usage/events` is **already titled "Connection Events"**. The project has already adopted the correct term — only the dashboard lags. → #299.
+- **Per-row "Xs ago" labels carry no signal.** Every NOW device row shows "1m ago" off the same snapshot. → #825.
+- **The "watching <host>" line is often a bare IP.** `Sameer Mac · watching 104.16.185.241`, `Plex Server · watching 185.238.231.174`, `Sameer Desk · watching 162.159.197.2 · 29m` — the headline activity line frequently shows an unresolved IP, which is meaningless to a parent. Relevant to whatever ranking/labeling the redesigned NOW card uses (and to #747/#783).
+- **No throughput anywhere.** No live bytes-in/out on the dashboard today. → #747.
+- **Perceived latency, confirmed on prod.** NOW stayed "Loading live activity…" for ~7–8s before painting (near-instant on staging's thin data). The page also gates the whole render on `Promise.all([logs.stats(), logs.query()])` behind one `PageLoader`, and the 24h panels scan raw `connection_events` rather than the rollup tables. → #1098 / #1099 / #809.
 
 ### What's genuinely useful today
 
-- The **NOW** active cards — "who is online and what are they watching right now" — are the single most valuable thing on the page. The "watching <host> · Nm" line (`NowActivityLine`) is the human-readable heartbeat.
-- The **KPI numbers** answer "is anything being blocked / is the network busy" at a glance — once they're above the fold.
+- The **NOW** active cards — "who is online and what are they watching right now" — are the single most valuable thing on the page, when not buried under the Family/IoT card. The `Kids · watching www.khanacademy.org · 2m` line is exactly the glanceable signal a parent wants.
+- The **"Blocked today / Blocked (1h)"** numbers answer "is anything being blocked" at a glance — once they're above the fold and not drowned by the volume tiles.
 - The **banners** (new device, access requests) are correctly placed action prompts.
 
 ## 2. Goal / non-goals
@@ -91,23 +97,28 @@ Section order, top to bottom:
 │                                                               │
 │ NOW                              updated 12s ago · ↻ in 8s    │  ← one freshness pill
 │ ┌─────────────────────────┐ ┌─────────────────────────┐      │
-│ │ Adults          ▲ 2.4↓   │ │ Kids        ⏸ Paused     │      │  ← active profile cards
-│ │ Prima  · watching        │ │ Octavius · watching      │      │     (throughput on card
-│ │   youtube.com · 22m      │ │   roblox.com · 8m        │      │      header, top-N devices)
-│ │ Sameer Mac · (active)    │ │ ─ show 4 more ─          │      │
-│ │ ─ show 6 more ─          │ │                          │      │
+│ │ Sameer          ▲2.4 ▼18 │ │ Kids                     │      │  ← active profile cards
+│ │ Sameer Mac · app.warp.dev│ │ Kid Mac · watching       │      │     (throughput on card
+│ │ Sameer iPhone· plex.tv   │ │   khanacademy.org · 2m   │      │      header, top-N devices)
+│ │ Sameer Desk · (active)   │ │                          │      │
+│ │ ─ show 1 more ─          │ │                          │      │
+│ └─────────────────────────┘ └─────────────────────────┘      │
+│ ┌─────────────────────────┐ ┌─────────────────────────┐      │
+│ │ Family          ▲0.3 ▼1  │ │ Rachel                   │      │
+│ │ MacBook · 108.32.93.57   │ │ Rachel Mac · grok.x.com  │      │
+│ │ Plex Server · (active)   │ │ Rachel iPhone· (active)  │      │
+│ │ NAS · (active)           │ │                          │      │
+│ │ ─ show 8 more ─          │ │                          │      │  ← #819: 11-device card capped
 │ └─────────────────────────┘ └─────────────────────────┘      │
 │                                                               │
-│ Idle (3): Quintus · Prima · Guest ▸                           │  ← collapsed idle row (1 line)
+│ Idle (3): Quintus · Prima · Octavius ▸                        │  ← collapsed idle row (1 line)
 │                                                               │
 │ ── below the fold ──                                          │
 │                                                               │
-│ Blocking activity (24h)        4 hosts · 37 blocked events    │  ← merged panel
+│ Blocking activity (24h)               1 host · 3 blocked      │  ← merged panel
 │ ┌─────────────────────────────────────────────────────┐     │
-│ │ ads.example.com                              22  ▸    │     │     (or one-line empty state)
-│ │ tracker.bad.tv                               11  ▸    │     │
-│ │ doubleclick.net                               4       │     │
-│ └─────────────────────────────────────────────────────┘     │
+│ │ captive.apple.com                             3  ▸    │     │     (or one-line empty state
+│ └─────────────────────────────────────────────────────┘     │      when 24h had zero blocks)
 │                                                               │
 │ Recent connection events                    View all → /…     │  ← link card, NO table
 └─────────────────────────────────────────────────────────────┘
@@ -158,7 +169,7 @@ the full surface is one click away and already superior.
 
 | Issue | Disposition | Where / rationale |
 |-------|-------------|-------------------|
-| **#819** NOW: cap card height, top-N + expander | **Fold in** | NOW section; top-3 devices/card + per-session expander. Core to keeping NOW glanceable. |
+| **#819** NOW: cap card height, top-N + expander | **Fold in** | NOW section; top-3 devices/card + per-session expander. Critical: prod's `Family` card is 11 devices of mostly-IoT chatter — ranking must surface human-relevant devices, not Sonos/Lutron noise (see §6 Q6). |
 | **#820** NOW: collapse idle profiles | **Fold in** | NOW section; single "Idle (N): …" row below active grid, expandable. |
 | **#821** Move KPI strip above NOW | **Fold in (modified)** | KPI moves above NOW, *and* tile contents change from cumulative "queries" to status-first ("Online now / Blocked now") — supersedes the pure-reorder scope of #821. |
 | **#822** Merge Top Blocked + Per Device | **Fold in** | New "Blocking activity (24h)" panel; Per-Device volume dropped (belongs on /devices). |
@@ -196,4 +207,6 @@ raw `connection_events` scan — this is the #1099 win. The live NOW snapshot st
 3. **Blocking-host → devices expansion.** Worth a backend contract addition to show "which devices hit this blocked host", or is the ranked host list enough for v1?
 4. **Idle-collapse threshold.** Idle = "no activity in last 5 min" (current NOW definition). Keep 5 min, or a different window for what counts as "online now" in the KPI tile?
 5. **Mobile.** Live narrow render couldn't be captured via the extension — please sanity-check the reflow on a real phone before the iOS IA is locked.
-6. **Aside (not in scope here):** the `/usage/events` subtitle reads "Per-query DNS / blocking decisions", which is slightly off the architecture model (DNS is never the enforcement plane). Worth a tiny copy fix on that surface in a separate issue.
+6. **Device ranking inside a card (#819).** Prod's `Family` profile has ~11 devices, almost all IoT (Plex, Sonos, Lutron, Lennox, garage door, thermostat, NAS) generating constant bare-IP chatter. "Top-3 by most-recent activity" would surface a Sonos before a MacBook. Options: (a) rank by active-seconds/session length rather than recency; (b) de-prioritise devices whose only activity is heartbeat/bare-IP; (c) let IoT-heavy "infrastructure" profiles collapse more aggressively than human profiles. Which ranking do you want?
+7. **IoT noise generally.** Should infra/IoT devices (Sonos, thermostat, printers) be visually de-emphasised or grouped on the dashboard, or treated like any other device? This also affects the "Online now" KPI count — 18 devices are "online" but most are appliances.
+8. **Aside (not in scope here):** the `/usage/events` subtitle reads "Per-query DNS / blocking decisions", which is slightly off the architecture model (DNS is never the enforcement plane). Worth a tiny copy fix on that surface in a separate issue.
