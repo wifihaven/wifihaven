@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 140" role="img" aria-label="wifihaven header mark">
+  <title>wifihaven header mark</title>
+  <desc>Simplified horizontal lockup tuned for 32 pixel admin-UI header. Decorative details (belly highlight, eye highlight, acorn cap stripe, stem) dropped so the silhouette survives.</desc>
+  <g id="mascot-simplified" transform="translate(0, -40) scale(0.6)">
+    <path d="M 100 215 C 60 215, 25 185, 20 130 C 15 70, 65 25, 130 30 C 175 33, 200 70, 195 115 C 192 145, 175 165, 158 165 C 148 165, 142 155, 138 142 C 134 130, 132 122, 132 122 L 100 215 Z" fill="#A8582E"/>
+    <ellipse cx="125" cy="200" rx="48" ry="52" fill="#C2693A"/>
+    <circle cx="148" cy="135" r="32" fill="#C2693A"/>
+    <ellipse cx="130" cy="108" rx="8" ry="13" fill="#C2693A" transform="rotate(-25 130 108)"/>
+    <circle cx="161" cy="132" r="4" fill="#1F1B16"/>
+    <ellipse cx="160" cy="200" rx="15" ry="17" fill="#F2E8D5" stroke="#1F1B16" stroke-width="3"/>
+    <path d="M 145 188 Q 160 178, 175 188 L 172 196 L 148 196 Z" fill="#3A5A6C"/>
+  </g>
+  <text x="170" y="105" font-family="Inter, Nunito, Poppins, 'SF Pro Rounded', ui-rounded, system-ui, -apple-system, sans-serif" font-size="88" font-weight="500" fill="#3A5A6C" letter-spacing="-2">wifihaven</text>
+</svg>

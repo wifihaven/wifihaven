@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 400" role="img" aria-label="wifihaven empty-state illustration">
+  <title>wifihaven empty-state illustration</title>
+  <desc>Relaxed wifihaven mascot — squirrel curled up with its tail wrapped around its body, eyes closed, nestling an acorn. For dashboard empty states (no devices yet, no events recorded).</desc>
+  <g id="empty-state">
+    <path d="M 350 130 C 410 150, 440 220, 410 295 C 380 365, 290 390, 215 370 C 135 350, 90 280, 105 200 C 120 125, 185 85, 255 100 C 290 107, 325 117, 350 130 Z" fill="#A8582E"/>
+    <ellipse cx="270" cy="245" rx="115" ry="80" fill="#C2693A"/>
+    <ellipse cx="295" cy="275" rx="80" ry="48" fill="#E89A6A"/>
+    <circle cx="362" cy="200" r="46" fill="#C2693A"/>
+    <ellipse cx="340" cy="165" rx="9" ry="16" fill="#C2693A" transform="rotate(-30 340 165)"/>
+    <ellipse cx="340" cy="165" rx="4" ry="9" fill="#7A3F1F" transform="rotate(-30 340 165)"/>
+    <path d="M 365 200 Q 378 196, 388 202" fill="none" stroke="#1F1B16" stroke-width="3" stroke-linecap="round"/>
+    <ellipse cx="398" cy="215" rx="5" ry="3.5" fill="#1F1B16"/>
+    <ellipse cx="320" cy="300" rx="22" ry="26" fill="#F2E8D5" stroke="#1F1B16" stroke-width="2.5"/>
+    <path d="M 298 285 Q 320 270, 342 285 L 338 297 L 302 297 Z" fill="#3A5A6C"/>
+    <line x1="320" y1="270" x2="320" y2="258" stroke="#1F1B16" stroke-width="2.5" stroke-linecap="round"/>
+    <g opacity="0.6" font-family="Inter, Nunito, Poppins, system-ui, sans-serif" font-size="22" font-weight="500" fill="#3A5A6C">
+      <text x="150" y="80" transform="rotate(-15 150 80)">z</text>
+      <text x="180" y="55" font-size="18" transform="rotate(-15 180 55)">z</text>
+      <text x="205" y="38" font-size="14" transform="rotate(-15 205 38)">z</text>
+    </g>
+  </g>
+</svg>

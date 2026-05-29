@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="wifihaven sidebar mark">
+  <title>wifihaven sidebar mark</title>
+  <desc>Roof-only mark for collapsed sidebar. The squirrel silhouette would lose its read at 24 pixels — the roof scales cleaner. See docs/brand.md for the rationale.</desc>
+  <path d="M 12 3 L 21 14 L 3 14 Z" fill="#3A5A6C"/>
+  <rect x="3" y="13.5" width="18" height="1.5" rx="0.5" fill="#3A5A6C"/>
+  <circle cx="12" cy="19" r="2.2" fill="#C2693A"/>
+</svg>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="wifihaven mark">
+  <title>wifihaven mark</title>
+  <desc>The haven: a gabled-roof silhouette with a single device dot sheltered beneath it.</desc>
+  <g id="mark">
+    <path d="M 60 18 L 104 70 L 16 70 Z" fill="#3A5A6C"/>
+    <rect x="14" y="68" width="92" height="5" rx="1" fill="#3A5A6C"/>
+    <circle cx="60" cy="92" r="9" fill="#C2693A"/>
+  </g>
+</svg>

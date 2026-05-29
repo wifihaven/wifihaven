@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="wifihaven favicon">
+  <title>wifihaven favicon</title>
+  <desc>Two-color acorn — slate cap, terracotta nut. The acorn doubles as the wifi-node dot in the brand language. Optimized for 16 pixel legibility.</desc>
+  <rect width="32" height="32" rx="6" fill="#F2E8D5"/>
+  <path d="M 7 17 L 7 22 Q 7 28, 16 28 Q 25 28, 25 22 L 25 17 Z" fill="#C2693A"/>
+  <path d="M 6 17 Q 6 10, 16 8 Q 26 10, 26 17 Z" fill="#3A5A6C"/>
+  <line x1="16" y1="7" x2="16" y2="4" stroke="#3A5A6C" stroke-width="2" stroke-linecap="round"/>
+</svg>

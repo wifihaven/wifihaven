@@ -36,7 +36,7 @@ export function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 mb-4">
-            <span className="text-3xl">🛡</span>
+            <img src="/brand/favicon.svg" alt="" className="w-9 h-9" />
           </div>
           <h1 className="text-2xl font-bold text-white">
             Wifi<span className="text-emerald-400">Haven</span>

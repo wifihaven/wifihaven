@@ -85,9 +85,16 @@ export function Layout() {
                   d={menuOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
               </svg>
             </button>
-            <span className="font-bold text-emerald-400 text-lg tracking-tight">
-              Wifi<span className="text-white">Haven</span>
-            </span>
+            {/* TODO(#1159): dark-mode variant of header-mark — the slate
+                #3A5A6C wordmark in header-mark.svg is low-contrast on the
+                dark admin header; swap to an inverted/light variant. */}
+            <img
+              src="/brand/header-mark.svg"
+              alt="wifihaven"
+              height={32}
+              className="h-8 w-auto"
+              srcSet="/brand/header-mark-64.png 2x, /brand/header-mark-96.png 3x"
+            />
           </div>
 
           {/* Desktop nav */}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 260" role="img" aria-label="wifihaven mascot, single ink">
+  <title>wifihaven mascot, single ink</title>
+  <desc>Single-color rendering of the mascot for monochrome contexts (print install instructions, terminal output captured as image, low-color displays).</desc>
+  <g id="mascot-mono" fill="#1F1B16">
+    <path d="M 100 215 C 60 215, 25 185, 20 130 C 15 70, 65 25, 130 30 C 175 33, 200 70, 195 115 C 192 145, 175 165, 158 165 C 148 165, 142 155, 138 142 C 134 130, 132 122, 132 122 L 100 215 Z"/>
+    <ellipse cx="125" cy="200" rx="48" ry="52"/>
+    <circle cx="148" cy="135" r="32"/>
+    <ellipse cx="130" cy="108" rx="8" ry="13" transform="rotate(-25 130 108)"/>
+    <ellipse cx="160" cy="200" rx="15" ry="17" fill="none" stroke="#1F1B16" stroke-width="3"/>
+    <path d="M 145 188 Q 160 178, 175 188 L 172 196 L 148 196 Z"/>
+  </g>
+  <circle cx="161" cy="132" r="4" fill="#FAFAF7"/>
+</svg>
