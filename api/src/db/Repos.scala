@@ -1623,7 +1623,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     Update[ConnectionEventInsert](
       "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id,resolved_host_value) " +
         "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid()),?) " +
-        "ON CONFLICT (event_id) DO NOTHING",
+        // #806: unique key widened to (event_id, ts) for ts-range partitioning;
+        // a replay carries the same router-supplied ts so dedup is unchanged.
+        "ON CONFLICT (event_id, ts) DO NOTHING",
     ).updateMany(events).transact(xa)
 
   // #720: read paths coalesce a populated resolved_host_value into the host
