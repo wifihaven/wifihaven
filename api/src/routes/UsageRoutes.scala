@@ -229,13 +229,19 @@ object UsageRoutes {
       // Deterministic host → owning-app: lowest appId wins when a host is in
       // multiple apps. Avoids double-counting one bucket of activity into two
       // apps for the per-profile screen-time view (matches #1061 acceptance).
+      //
+      // #1161: app_hosts rows are stored apex-form (`youtube.com`) but traffic
+      // rows carry FQDNs (`m.youtube.com`). Use suffix-aware lookup — same
+      // matcher as #1085's groupBy=app fix and PolicyService — so subdomain
+      // traffic attributes to the apex-form app entry instead of falling into
+      // the synthetic "Other" bucket.
       val appOfHost: HostId => Option[AppId] = {
-        val byHost = mappings
-          .groupBy(_.host)
+        val byApex = mappings
+          .groupBy(_.host.value)
           .view
-          .mapValues(ms => ms.iterator.map(_.appId).minByOption(_.value))
+          .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
           .toMap
-        h => h.asFqdn.flatMap(fqdn => byHost.getOrElse(fqdn, None))
+        h => h.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))
       }
 
       val propByHost    = wifihaven.api.presence.Presence.proportionalHostSeconds(presence)
