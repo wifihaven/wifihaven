@@ -61,7 +61,8 @@ class DebugAPI:
                     continue
             if allowed is not None and e.get("allowed") is not allowed:
                 continue
-            if reason is not None and e.get("reason") != reason:
+            r = e.get("reason")
+            if reason is not None and (not isinstance(r, dict) or r.get("kind") != reason):
                 continue
             out.append(e)
         return out
