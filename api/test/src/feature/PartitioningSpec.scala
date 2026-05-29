@@ -173,5 +173,5 @@ object PartitioningSpec
         total  <- sql"SELECT count(*)::int FROM connection_events".query[Int].unique.transact(xa)
       } yield assertTrue(first == 1) && assertTrue(second == 0) && assertTrue(total == 1)
     },
-  )
+  ) @@ TestAspect.sequential
 }
