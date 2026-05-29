@@ -59,7 +59,7 @@ object RetentionSweepJobSpec
     sql"""INSERT INTO connection_events
             (router_id, mac, host_type, host_value, dest_ip, allowed, reason, ts)
           VALUES
-            ($routerId, $mac, 'fqdn', 'example.com', NULL, true, 'allow',
+            ($routerId, $mac, 'fqdn', 'example.com', NULL, true, '{"kind":"allow"}'::jsonb,
              NOW() - make_interval(days => $days))""".update.run.transact(xa).unit
   }
 

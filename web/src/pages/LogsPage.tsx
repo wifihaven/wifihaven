@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
+import { blockReasonText } from '@/types/blockReason'
 import { HostCell } from '@/components/HostCell'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
@@ -299,7 +300,7 @@ function RawEventsView({
               <td className={`px-2 py-1 whitespace-nowrap ${l.blocked ? 'text-red-400' : 'text-emerald-500'}`}>
                 {l.blocked ? '✗ blocked' : '✓ ok'}
               </td>
-              <td className="px-2 py-1 text-gray-500 hidden sm:table-cell">{l.reason}</td>
+              <td className="px-2 py-1 text-gray-500 hidden sm:table-cell">{blockReasonText(l.reason)}</td>
               <td className="px-2 py-1 text-gray-500 hidden lg:table-cell">{l.location ?? ''}</td>
             </tr>
           ))}

@@ -221,17 +221,17 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               BlockEventInsert(
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
                 HostId.Fqdn(Hostname.unsafe("ads.example.com")),
-                "category:ads",
+                BlockReason.fromWire("category:ads"),
               ),
               BlockEventInsert(
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
                 HostId.Fqdn(Hostname.unsafe("casino.example.com")),
-                "category:gambling",
+                BlockReason.fromWire("category:gambling"),
               ),
               BlockEventInsert(
                 None,
                 HostId.Fqdn(Hostname.unsafe("unknown.example.com")),
-                "category:adult",
+                BlockReason.fromWire("category:adult"),
               ),
             ),
           )
@@ -246,13 +246,21 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           mac = MacAddress.unsafe("aa:bb:cc:00:00:01")
           _    <- repo.insertBatch(
             List(
-              BlockEventInsert(Some(mac), HostId.Fqdn(Hostname.unsafe("a.com")), "r1"),
+              BlockEventInsert(
+                Some(mac),
+                HostId.Fqdn(Hostname.unsafe("a.com")),
+                BlockReason.Unknown("r1"),
+              ),
               BlockEventInsert(
                 Some(MacAddress.unsafe("aa:bb:cc:00:00:99")),
                 HostId.Fqdn(Hostname.unsafe("b.com")),
-                "r1",
+                BlockReason.Unknown("r1"),
               ),
-              BlockEventInsert(Some(mac), HostId.Fqdn(Hostname.unsafe("c.com")), "r2"),
+              BlockEventInsert(
+                Some(mac),
+                HostId.Fqdn(Hostname.unsafe("c.com")),
+                BlockReason.Unknown("r2"),
+              ),
             ),
           )
           rows <- repo.listForMac(mac, 10)

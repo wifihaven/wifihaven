@@ -2,8 +2,10 @@ package wifihaven.api.db
 
 import doobie.*
 import doobie.postgres.implicits.*
-import wifihaven.shared.{AppMode, FailureMode, IconType, MacBlockReason, UserRole}
+import wifihaven.shared.{AppMode, BlockReason, FailureMode, IconType, MacBlockReason, UserRole}
 import wifihaven.shared.types.*
+import org.postgresql.util.PGobject
+import zio.json.*
 
 import java.time.ZoneId
 
@@ -92,6 +94,27 @@ object TypeMeta {
         throw new IllegalStateException(s"DB has unknown blockReason: $s"),
       ),
   )(MacBlockReason.asString)
+
+  // #962: BlockReason persisted as JSONB on block_events / connection_events.
+  // The codec on disk is the kind-tagged form from shared.BlockReason; we go
+  // through a PGobject so Postgres sees the column as jsonb (not text). Bad
+  // JSON in the DB is a programming bug (only the API writes here), so we
+  // throw rather than try to recover — surfaces as a 500 on the read path.
+  given Meta[BlockReason] =
+    Meta.Advanced
+      .other[PGobject]("jsonb")
+      .timap[BlockReason] { pgo =>
+        pgo.getValue.fromJson[BlockReason] match {
+          case Right(br) => br
+          case Left(err) =>
+            throw new IllegalStateException(s"DB has invalid BlockReason: $err / ${pgo.getValue}")
+        }
+      } { br =>
+        val pgo = new PGobject()
+        pgo.setType("jsonb")
+        pgo.setValue(br.toJson)
+        pgo
+      }
 
   // ── text[] columns where the element is a typed wrapper ────────────────
   given blocklistIdListMeta: Meta[List[BlocklistId]] = Meta[Array[String]]

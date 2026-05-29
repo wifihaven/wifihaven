@@ -19,7 +19,7 @@ import { LogsPage } from './LogsPage'
 const log1: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
-  host: { type: 'fqdn', value: 'example.com' }, qtype: 1, blocked: false, reason: '',
+  host: { type: 'fqdn', value: 'example.com' }, qtype: 1, blocked: false, reason: { kind: 'allow' },
   location: 'home', ts: '2026-05-12T10:15:30Z',
 }
 

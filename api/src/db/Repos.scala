@@ -336,7 +336,7 @@ case class TrafficReportInsert(
 case class BlockEventInsert(
     mac: Option[MacAddress],
     host: HostId,
-    reason: String,
+    reason: BlockReason,
 )
 
 case class ConnectionEventInsert(
@@ -345,7 +345,7 @@ case class ConnectionEventInsert(
     host: HostId,
     destIp: Option[IpAddress],
     allowed: Boolean,
-    reason: String,
+    reason: BlockReason,
     ts: Instant,
     // #338: client-supplied idempotency key. None → SQL COALESCEs to
     // gen_random_uuid() so older agents that don't ship an eventId keep
@@ -1578,7 +1578,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 }
 
 class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
-  private type R = (BlockEventId, Option[MacAddress], HostId, String, String)
+  private type R = (BlockEventId, Option[MacAddress], HostId, BlockReason, String)
   private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
   def insertBatch(events: List[BlockEventInsert]) =
     Update[BlockEventInsert](
@@ -1607,7 +1607,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         HostId,
         Option[IpAddress],
         Boolean,
-        String,
+        BlockReason,
         String,
     )
   private def toC(r: R) =
@@ -1767,7 +1767,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             HostId,
             Int,
             Boolean,
-            String,
+            BlockReason,
             Option[String],
             String,
         ),

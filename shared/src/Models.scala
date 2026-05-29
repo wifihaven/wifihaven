@@ -2,6 +2,7 @@ package wifihaven.shared
 
 import wifihaven.shared.types.*
 import zio.json.*
+import zio.json.ast.Json
 
 import java.time.{LocalTime, ZoneId}
 import java.util.UUID
@@ -433,7 +434,7 @@ case class QueryLog(
     host: HostId,
     qtype: Int,
     blocked: Boolean,
-    reason: String,
+    reason: BlockReason,
     location: Option[String],
     ts: String,
 ) derives JsonCodec
@@ -1031,7 +1032,7 @@ case class BlockEvent(
     id: BlockEventId,
     mac: Option[MacAddress],
     host: HostId,
-    reason: String,
+    reason: BlockReason,
     ts: String,
 ) derives JsonCodec
 
@@ -1042,7 +1043,7 @@ case class ConnectionEvent(
     host: HostId,
     destIp: Option[IpAddress],
     allowed: Boolean,
-    reason: String,
+    reason: BlockReason,
     ts: String,
 ) derives JsonCodec
 
@@ -1262,8 +1263,106 @@ object MacBlockReason {
   )
 }
 
+// #962: typed reason for block_events / connection_events. Stored as JSONB
+// in Postgres tagged on `kind`. The router/PolicyService emit a free-form
+// wire string today; the API converts on ingest via `BlockReason.fromWire`.
+// MacBlockReason cases are subtypes so a snapshot reason can be lifted into
+// the event-table form without re-encoding (their wire form is unchanged in
+// the snapshot JSON — only the event-DB encoding becomes kind-tagged).
 object BlockReason {
-  case class Host(host: Hostname)                        extends BlockReason
-  case class Category(host: Hostname, list: BlocklistId) extends BlockReason
-  case class IpOnly(dstIp: IpAddress)                    extends BlockReason
+  case object Allow                       extends BlockReason
+  case object Blocked                     extends BlockReason
+  case object ExtraAllowed                extends BlockReason
+  case object ExtraBlocked                extends BlockReason
+  case object NoProfile                   extends BlockReason
+  case class Category(slug: BlocklistId)  extends BlockReason
+  case class SiteTimeLimit(label: String) extends BlockReason
+  case class AppBlocked(appId: String)    extends BlockReason
+  case class Unknown(raw: String)         extends BlockReason
+
+  /**
+   * Parse a router / PolicyService wire-format reason string. Unknown values fall through to
+   * `Unknown(raw)` so we don't drop event rows on a wire-shape mismatch between API and router
+   * versions.
+   */
+  def fromWire(s: String): BlockReason = s match {
+    case "allow" | "allowed"                                   => Allow
+    case "blocked"                                             => Blocked
+    case "extra_allowed"                                       => ExtraAllowed
+    case "host" | "extra_blocked" | "ExtraBlocked"             => ExtraBlocked
+    case "no_profile"                                          => NoProfile
+    case "paused" | "Paused"                                   => MacBlockReason.Paused
+    case "schedule" | "Schedule"                               => MacBlockReason.Schedule
+    case "time_limit" | "TimeLimit"                            => MacBlockReason.TimeLimit
+    case "manual" | "Manual"                                   => MacBlockReason.Manual
+    case "unmanaged_mac" | "Unmanaged" | "device_not_enrolled" => MacBlockReason.Unmanaged
+    case s if s.startsWith("category:")                        =>
+      BlocklistId
+        .parse(s.stripPrefix("category:"))
+        .map(Category(_))
+        .getOrElse(Unknown(s))
+    case s if s.startsWith("site_time_limit:")                 =>
+      SiteTimeLimit(s.stripPrefix("site_time_limit:"))
+    case s if s.startsWith("app:")                             =>
+      AppBlocked(s.stripPrefix("app:"))
+    case other                                                 => Unknown(other)
+  }
+
+  // Kind-tagged JSON. Encoder/Decoder are written by hand to keep the wire
+  // format stable independent of source-order rearrangement, and to give a
+  // single source of truth for the strings the SPA pattern-matches on.
+  given JsonEncoder[BlockReason] = JsonEncoder[Json].contramap {
+    case Allow                    => Json.Obj("kind" -> Json.Str("allow"))
+    case Blocked                  => Json.Obj("kind" -> Json.Str("blocked"))
+    case ExtraAllowed             => Json.Obj("kind" -> Json.Str("extraAllowed"))
+    case ExtraBlocked             => Json.Obj("kind" -> Json.Str("extraBlocked"))
+    case NoProfile                => Json.Obj("kind" -> Json.Str("noProfile"))
+    case MacBlockReason.Paused    => Json.Obj("kind" -> Json.Str("paused"))
+    case MacBlockReason.Schedule  => Json.Obj("kind" -> Json.Str("schedule"))
+    case MacBlockReason.TimeLimit => Json.Obj("kind" -> Json.Str("timeLimit"))
+    case MacBlockReason.Manual    => Json.Obj("kind" -> Json.Str("manual"))
+    case MacBlockReason.Unmanaged => Json.Obj("kind" -> Json.Str("unmanaged"))
+    case Category(slug)           =>
+      Json.Obj("kind" -> Json.Str("category"), "slug" -> Json.Str(slug.value))
+    case SiteTimeLimit(label)     =>
+      Json.Obj("kind" -> Json.Str("siteTimeLimit"), "label" -> Json.Str(label))
+    case AppBlocked(appId)        =>
+      Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
+    case Unknown(raw)             =>
+      Json.Obj("kind" -> Json.Str("unknown"), "raw" -> Json.Str(raw))
+  }
+
+  given JsonDecoder[BlockReason] = JsonDecoder[Json].mapOrFail {
+    case obj: Json.Obj =>
+      def field(k: String): Either[String, String] =
+        obj.fields.find(_._1 == k).map(_._2) match {
+          case Some(Json.Str(s)) => Right(s)
+          case Some(_)           => Left(s"BlockReason field '$k' is not a string")
+          case None              => Left(s"BlockReason missing field '$k'")
+        }
+      field("kind").flatMap {
+        case "allow"         => Right(Allow)
+        case "blocked"       => Right(Blocked)
+        case "extraAllowed"  => Right(ExtraAllowed)
+        case "extraBlocked"  => Right(ExtraBlocked)
+        case "noProfile"     => Right(NoProfile)
+        case "paused"        => Right(MacBlockReason.Paused)
+        case "schedule"      => Right(MacBlockReason.Schedule)
+        case "timeLimit"     => Right(MacBlockReason.TimeLimit)
+        case "manual"        => Right(MacBlockReason.Manual)
+        case "unmanaged"     => Right(MacBlockReason.Unmanaged)
+        case "category"      =>
+          field("slug").flatMap(s =>
+            BlocklistId.parse(s).map(Category(_)).left.map(_ => s"invalid category slug: $s"),
+          )
+        case "siteTimeLimit" => field("label").map(SiteTimeLimit(_))
+        case "appBlocked"    => field("appId").map(AppBlocked(_))
+        case "unknown"       => field("raw").map(Unknown(_))
+        case other           => Left(s"BlockReason: unknown kind '$other'")
+      }
+    case _             => Left("BlockReason: expected JSON object")
+  }
+
+  given JsonCodec[BlockReason] =
+    JsonCodec(summon[JsonEncoder[BlockReason]], summon[JsonDecoder[BlockReason]])
 }

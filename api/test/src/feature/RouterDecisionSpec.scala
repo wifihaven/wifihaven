@@ -232,7 +232,9 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
           events.exists(e =>
             e.mac.contains(
               MacAddress.unsafe("aa:bb:cc:11:22:33"),
-            ) && e.host == HostId.Fqdn(Hostname.unsafe("example.com")) && e.reason == "paused",
+            ) && e.host == HostId.Fqdn(
+              Hostname.unsafe("example.com"),
+            ) && e.reason == MacBlockReason.Paused,
           ),
         )
     },
@@ -261,7 +263,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         assertTrue(dr.decision == ConnectionDecision.Block) &&
         assertTrue(dr.reason == "schedule") &&
         assertTrue(dr.expiresAt.exists(s => s.startsWith("2025-01-07T07:00") && s.endsWith("Z"))) &&
-        assertTrue(events.exists(e => e.reason == "schedule"))
+        assertTrue(events.exists(e => e.reason == MacBlockReason.Schedule))
     },
     test("early morning during overnight schedule → block:schedule, expires_at = today 07:00") {
       // earlyMorning = Monday 2025-01-06 06:00. Overnight schedule started Sunday 21:00 →
@@ -311,7 +313,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         assertTrue(dr.decision == ConnectionDecision.Block) &&
         assertTrue(dr.reason == "time_limit") &&
         assertTrue(dr.expiresAt.exists(s => s.startsWith("2025-01-07T00:00") && s.endsWith("Z"))) &&
-        assertTrue(events.exists(_.reason == "time_limit"))
+        assertTrue(events.exists(_.reason == MacBlockReason.TimeLimit))
     },
     test("extension grants extra minutes: usage at limit + extension → allow") {
       for {
@@ -359,7 +361,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       } yield assertTrue(dr.decision == ConnectionDecision.Block) &&
         assertTrue(dr.reason == "category:ads") &&
         assertTrue(dr.expiresAt.isEmpty) &&
-        assertTrue(events.exists(_.reason == "category:ads"))
+        assertTrue(events.exists(_.reason == BlockReason.Category(BlocklistId.unsafe("ads"))))
     },
     test("subdomain matched by blocklist parent → block:category") {
       for {
