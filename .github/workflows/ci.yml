@@ -129,7 +129,9 @@ jobs:
               - 'render.yaml'
             migrations:
               - '.github/workflows/ci.yml'
-              - 'api/migrations/**'
+              - '.github/scripts/check-migrations.sh'
+              - '.github/scripts/check-migration-isolation.sh'
+              - 'api/resources/db/migration/**'
             workflows:
               - '.github/workflows/**'
               - '.github/actionlint.yaml'
@@ -245,6 +247,33 @@ jobs:
           # TODO(#885): remove this env block after the #883 PR has merged.
           ALLOW_MIGRATION_MUTATIONS: ${{ github.event.pull_request.head.ref == 'fix-883-dup-v27' && '1' || '0' }}
         run: bash .github/scripts/check-migrations.sh "$BASE_SHA"
+
+  # ── Migrations: enforce migration-only PRs ──────────────────────────────
+  # The existing api.test feature suite is the real back-compat gate — it
+  # runs the existing production code against embedded Postgres loaded with
+  # every migration (including the new one in this PR). That only works
+  # when the migration ships alone; co-shipping schema + code bypasses the
+  # gate and reintroduces the #1176-class of bug. See
+  # AGENTS.md §migrations-back-compat. Skip with the
+  # `migration-coupled-justified` label on the PR.
+  migration-isolation:
+    name: Migration Isolation Check
+    needs: changes
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.base.ref == 'main'
+      && needs.changes.outputs.migrations == 'true'
+      && !contains(github.event.pull_request.labels.*.name, 'migration-coupled-justified')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Reject migration PRs that also change production source
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/scripts/check-migration-isolation.sh "$BASE_SHA"
 
   # ── Shell test discovery ─────────────────────────────────────────────────
   # Auto-discovers and runs every *.test.sh in the repo. Add a new test by
@@ -501,6 +530,7 @@ jobs:
       - changes
       - scala
       - migrations-immutable
+      - migration-isolation
       - shell-tests
       - lua-tests
       - contract-tests

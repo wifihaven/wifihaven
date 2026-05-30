@@ -294,6 +294,52 @@ Migrations live in `api/resources/db/migration/` as `V{n}__{description}.sql`. T
 
 Tests run the same Flyway migrations from `classpath:db/migration` against the embedded Postgres in `TestDatabase`, so there is one source of truth — never maintain a parallel test schema. To change the schema, add a new `V{n}__...sql` migration; do not edit `V1__init.sql` (or any other already-applied migration).
 
+### Schema changes land in their own PR {#migrations-back-compat}
+
+**A PR that adds a Flyway migration must not also change production
+source code.** Migration-only PRs are how we prove a schema change is
+backward-compatible with the previously deployed image — the durable
+defense against the [#1176](https://github.com/wifihaven/wifihaven/issues/1176)
+class of bug (rollback blocked because applied schema is incompatible
+with the older image).
+
+The mechanism is the existing feature-test suite:
+
+- `api/test/**` runs the embedded Postgres via `TestDatabase`, which
+  applies **every** Flyway migration on the classpath, **including the
+  new one in this PR**, before any test runs.
+- The test fixtures exercise the **existing** production code paths in
+  `api/src/**` — i.e. image-(N-1)'s code.
+- If image-(N-1)'s queries, inserts, or wire shapes can't survive
+  DB-at-V<N>, those existing tests fail. That is the gate.
+
+When the migration and the code that adopts it ship in the same PR,
+the gate is silently bypassed: the code is updated in lock-step with
+the schema, so the tests pass, and the back-compat regression goes
+undetected until prod tries to roll back. CI enforces the split via
+`.github/scripts/check-migration-isolation.sh`.
+
+Allowed alongside a new migration: additional migration files; tests
+(`*/test/**`); docs (`**/*.md`); CI config (`.github/**`).
+
+Disallowed: `api/src/**`, `shared/src/**`, `openwrt/files/**`,
+`openwrt/*.lua` (non-test), `opnsense/agent.py` and other non-test
+python, `web/src/**`, `docker/fake-router.py`, `shared/contract/**`.
+
+The workflow is two PRs:
+
+1. **PR 1 — schema only.** Adds `V<N>__….sql` plus any tests probing
+   the new shape. Existing feature tests gate it. If they pass, the
+   migration is backward-compatible with image-(N-1) modulo any
+   coverage gap — so close coverage gaps when adding migrations.
+2. **PR 2 — code adopts the new schema.** Lands after PR 1 is merged
+   and deployed. This is where new repo methods, route handlers, and
+   wire shapes go.
+
+**Escape hatch:** for genuinely atomic changes (rare), apply the
+`migration-coupled-justified` label on the PR and explain in the body
+why splitting isn't possible. The check skips when the label is set.
+
 ## Branch-diff checks (CI + pre-push)
 
 CI checks and pre-push checks that compare a branch against `main` MUST diff against the **merge base** with `origin/main`, not `origin/main` directly. Use three-dot syntax (`origin/main...HEAD`) or an explicit `git merge-base origin/main HEAD`. Two-dot (`origin/main..HEAD`) over-reports when `main` has advanced since the branch diverged, producing spurious failures and noise.
