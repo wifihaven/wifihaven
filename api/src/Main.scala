@@ -10,6 +10,7 @@ import wifihaven.api.policy.*
 import wifihaven.api.routes.*
 import wifihaven.api.usage.RetentionSweepJob
 import wifihaven.api.usage.RollupJobs
+import wifihaven.api.usage.TimeUsedRollupJob
 import wifihaven.shared.Clock
 import zio.*
 import zio.http.*
@@ -39,14 +40,14 @@ object Main extends ZIOAppDefault {
       // on subsequent boots because of ON CONFLICT DO NOTHING.
       hsRepo <- ZIO.service[HouseholdSettingsRepo]
       tz = java.time.ZoneId.systemDefault()
-      _              <- hsRepo.ensureDefault(tz)
-      _              <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+      _               <- hsRepo.ensureDefault(tz)
+      _               <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
       // #768: seed the starter library of app templates. Idempotent — operator
       // host edits on previously-seeded apps are preserved.
-      appRepoForSeed <- ZIO.service[AppRepo]
-      templates      <- AppTemplates.loadAll()
-      seedSummary    <- AppTemplates.seed(appRepoForSeed, templates)
-      _              <- ZIO.logInfo(
+      appRepoForSeed  <- ZIO.service[AppRepo]
+      templates       <- AppTemplates.loadAll()
+      seedSummary     <- AppTemplates.seed(appRepoForSeed, templates)
+      _               <- ZIO.logInfo(
         s"app_templates seeded (${templates.size} templates): " +
           s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
           s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated.mkString("[", ",", "]")}, " +
@@ -60,35 +61,56 @@ object Main extends ZIOAppDefault {
       // straight from YAML; remote lists fetch from the declared upstream URL
       // (cached in-memory after first success — see BlocklistCache). REPLACE
       // semantics; remote-fetch failures leave existing DB rows untouched.
-      blRepoForSeed  <- ZIO.service[BlocklistRepo]
-      blCacheForSeed <- ZIO.service[BlocklistCache]
-      blFetcher      <- ZIO.service[BlocklistFetcher]
-      bundled        <- BundledBlocklists.loadAll()
-      _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
-      _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      blRepoForSeed   <- ZIO.service[BlocklistRepo]
+      blCacheForSeed  <- ZIO.service[BlocklistCache]
+      blFetcher       <- ZIO.service[BlocklistFetcher]
+      bundled         <- BundledBlocklists.loadAll()
+      _               <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
+      _               <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
       // #809: scheduled re-aggregation of traffic_reports into the rollup
       // tables. Hourly tick re-rolls the trailing 2h every 5 min; daily tick
       // re-rolls yesterday + today every hour. Both are forkDaemon so they
       // run for the lifetime of the process and never block startup.
-      rollupRepo     <- ZIO.service[wifihaven.api.db.RollupRepo]
-      clockForJobs   <- ZIO.service[Clock]
-      _              <- RollupJobs.hourlyLoop(rollupRepo, clockForJobs).forkDaemon
-      _              <- RollupJobs.dailyLoop(rollupRepo, clockForJobs, tz).forkDaemon
-      _              <- ZIO.logInfo("rollup fibers forked (hourly + daily)")
-      _              <- ZIO
+      rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
+      clockForJobs    <- ZIO.service[Clock]
+      _               <- RollupJobs.hourlyLoop(rollupRepo, clockForJobs).forkDaemon
+      _               <- RollupJobs.dailyLoop(rollupRepo, clockForJobs, tz).forkDaemon
+      // #1160: per-(profile, today) `used_seconds` cache. Tick aggregates today's presence into
+      // a watermarked row; the read path adds a live tail of buckets after the watermark, so
+      // /api/time/status/summary serves a rollup + small live aggregation instead of a full
+      // per-request day scan.
+      timeRollupRepo  <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
+      profileRepoForJ <- ZIO.service[wifihaven.api.db.ProfileRepo]
+      deviceRepoForJ  <- ZIO.service[wifihaven.api.db.DeviceRepo]
+      stlRepoForJ     <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+      trafficRepoForJ <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
+      _               <- TimeUsedRollupJob
+        .loop(
+          timeRollupRepo,
+          rollupRepo,
+          profileRepoForJ,
+          deviceRepoForJ,
+          stlRepoForJ,
+          trafficRepoForJ,
+          hsRepo,
+          clockForJobs,
+        )
+        .forkDaemon
+      _               <- ZIO.logInfo("rollup fibers forked (hourly + daily + time_used_daily)")
+      _               <- ZIO
         .logWarning(
           "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
             "Disable in production.",
         )
         .when(cfg.seedTestBlocklists)
-      _              <- BundledBlocklists
+      _               <- BundledBlocklists
         .seed(blRepoForSeed, blCacheForSeed, blFetcher, BundledBlocklists.devTestBlocklists)
         .when(cfg.seedTestBlocklists)
       // #811: daily retention sweep. Forks a daemon fiber that runs at 03:00 UTC.
       // Multi-instance-safe via Postgres advisory lock — losing instances skip
       // the tick rather than racing on the same DELETE.
-      xaForJobs      <- ZIO.service[Transactor[Task]]
-      _              <- RetentionSweepJob.start(xaForJobs)
+      xaForJobs       <- ZIO.service[Transactor[Task]]
+      _               <- RetentionSweepJob.start(xaForJobs)
       templatesById = templates.map(t => t.slug -> t).toMap
       bundledById   = bundled.map(b => b.id -> b).toMap
       routes <- allRoutes(templatesById, bundledById)

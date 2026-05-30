@@ -405,6 +405,17 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
+   * #1160: tail-load for the rollup read path. Same row shape as [[listPresenceRows]] but with an
+   * additional `period_start >= since` filter, so the caller only pays for the slice of buckets the
+   * rollup hasn't yet absorbed.
+   */
+  def listPresenceRowsSince(
+      macs: List[MacAddress],
+      date: LocalDate,
+      since: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
    * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs"
    * (used by the Traffic Usage page in unfiltered mode). Returns Instants (not String date columns)
    * so callers can bucket without re-parsing.
@@ -673,16 +684,26 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       .transact(xa)
 
   def update(s: HouseholdSettings): Task[Unit] = {
-    val ummJson = s.unmanagedMacPolicy.toJson
-    sql"""UPDATE household_settings
-            SET daily_reset_time=${s.dailyResetTime},
-                daily_reset_tz=${s.dailyResetTz},
-                heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
-                heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
-                heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
-                unmanaged_mac_policy=${ummJson}::jsonb,
-                updated_at=NOW()
-          WHERE id=1""".update.run.transact(xa).unit
+    val ummJson    = s.unmanagedMacPolicy.toJson
+    // #1160: invalidate the time-used rollup atomically with the settings
+    // update. Any change to the daily-reset boundary (tz / reset hour) or the
+    // heartbeat filter changes the active-minute definition for every cached
+    // day; deleting the cache forces the next rollup tick to refill from
+    // first principles. The DELETE is wholesale because all three fields gate
+    // the same aggregation — fine-grained invalidation would only add risk of
+    // missing a code path that mutates the filter.
+    val upd        =
+      sql"""UPDATE household_settings
+              SET daily_reset_time=${s.dailyResetTime},
+                  daily_reset_tz=${s.dailyResetTz},
+                  heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
+                  heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
+                  heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
+                  unmanaged_mac_policy=${ummJson}::jsonb,
+                  updated_at=NOW()
+            WHERE id=1""".update.run
+    val invalidate = sql"DELETE FROM time_used_daily".update.run
+    (upd *> invalidate).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
@@ -1366,16 +1387,20 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .transact(xa)
 
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) =
-    listPresenceRowsBetween(macs, date, date)
+    listPresenceRowsBetween(macs, date, date, None)
 
   def listPresenceRows(macs: List[MacAddress], from: LocalDate, to: LocalDate) =
-    listPresenceRowsBetween(macs, from, to)
+    listPresenceRowsBetween(macs, from, to, None)
+
+  def listPresenceRowsSince(macs: List[MacAddress], date: LocalDate, since: Instant) =
+    listPresenceRowsBetween(macs, date, date, Some(since))
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   private def listPresenceRowsBetween(
       macs: List[MacAddress],
       from: LocalDate,
       to: LocalDate,
+      since: Option[Instant] = None,
   ) = {
     type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
@@ -1402,7 +1427,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                ) ce ON tr.host_type IN ('ipv4','ipv6')
                WHERE tr.date BETWEEN $from AND $to
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
-                 AND """ ++ Fragments.in(fr"tr.mac", nel)
+                 AND """ ++ Fragments.in(fr"tr.mac", nel) ++
+            since.fold(fr"")(s => fr"AND tr.period_start >= $s")
         q.query[Row]
           .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
             val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
@@ -2291,6 +2317,7 @@ object Repos {
   val alertRepo             = ZLayer.fromFunction(AlertRepoLive(_))
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
+  val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
 }

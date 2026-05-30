@@ -46,6 +46,9 @@ object PolicyServiceLive {
       deviceRepo,
       trafficRepo,
       extRepo,
+      // Snapshot specs only exercise today; today is always live. A real rollup repo would be
+      // ignored on this path, so wire a noop and avoid threading the repo through every test.
+      NoopTimeUsedRollupRepo,
     )
     new PolicyServiceLive(
       profileRepo,
