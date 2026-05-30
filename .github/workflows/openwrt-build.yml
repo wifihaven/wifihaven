@@ -285,6 +285,31 @@ jobs:
               > wifihaven-router-images.sha256 )
           ls -lh release/versioned/
 
+      # Wipe any assets currently attached to openwrt-latest before the
+      # publish step re-uploads the fresh build. softprops/action-gh-release
+      # overwrites assets with the same name but never DELETES unrelated
+      # ones, so older PKG_VERSION artifacts (e.g. wifihaven_0.1.0-1_*)
+      # pile up on the rolling release forever and confuse the auto-
+      # updater's fallback path (#244).
+      - name: Clear stale openwrt-latest assets
+        if: inputs.publish_release == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if gh release view openwrt-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release view openwrt-latest --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' \
+            | while IFS= read -r name; do
+                [ -z "$name" ] && continue
+                echo "deleting stale asset: $name"
+                gh release delete-asset openwrt-latest "$name" \
+                  --repo "$GITHUB_REPOSITORY" --yes
+              done
+          else
+            echo "openwrt-latest release does not exist yet; nothing to clean"
+          fi
+
       # Rolling pre-release. Pointer that consumers (Gate 3b, agent auto-
       # update) keep targeting by stable URL. The versioned release below
       # is the new canonical artifact; openwrt-latest is intentionally kept
