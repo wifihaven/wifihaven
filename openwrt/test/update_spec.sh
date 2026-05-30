@@ -168,7 +168,7 @@ if [ -n "$out" ]; then
   if [ "${CURL_DOWNLOAD_FAIL:-0}" = "1" ]; then exit 22; fi
   printf 'fakepkg' > "$out"
 else
-  printf '%s\n' '{"assets":[{"browser_download_url":"https://example.com/wifihaven.apk","digest":"sha256:NEW"},{"browser_download_url":"https://example.com/wifihaven.ipk","digest":"sha256:NEW"}]}'
+  printf '%s\n' '{"assets":[{"browser_download_url":"https://example.com/wifihaven_0.2.8-1_all.apk","digest":"sha256:NEW"},{"browser_download_url":"https://example.com/wifihaven_0.2.8-1_all.ipk","digest":"sha256:NEW"}]}'
 fi
 CURL_EOF
 
@@ -186,9 +186,9 @@ while [ $# -gt 0 ]; do
 done
 cat >/dev/null
 case "$expr" in
-  '@.assets[0].browser_download_url') echo "https://example.com/wifihaven.apk";;
+  '@.assets[0].browser_download_url') echo "https://example.com/wifihaven_0.2.8-1_all.apk";;
   '@.assets[0].digest') echo "sha256:NEW";;
-  '@.assets[1].browser_download_url') echo "https://example.com/wifihaven.ipk";;
+  '@.assets[1].browser_download_url') echo "https://example.com/wifihaven_0.2.8-1_all.ipk";;
   '@.assets[1].digest') echo "sha256:NEW";;
   *) ;;  # empty → caller treats as end-of-array
 esac
@@ -456,15 +456,15 @@ rm -rf "$TESTDIR"
 unset MOCK_ASSETS
 
 # Case I (#1178): opkg path gets the same tightening. .ipk asset names carry
-# an architecture suffix (e.g. _aarch64_generic.ipk), so the ipk regex shape
+# an architecture suffix (e.g. _all.ipk), so the ipk regex shape
 # differs from apk's.
 setup_multi_mocks
 rm -f "$BINDIR/apk"
 mock_opkg
-export MOCK_ASSETS="https://example.com/luci-app-wifihaven_0.1.0-1_aarch64_generic.ipk|sha256:LUCI_OLD_IPK
-https://example.com/luci-app-wifihaven_0.2.8-1_aarch64_generic.ipk|sha256:LUCI_NEW_IPK
-https://example.com/wifihaven_0.1.0-1_aarch64_generic.ipk|sha256:WH_OLD_IPK
-https://example.com/wifihaven_0.2.8-1_aarch64_generic.ipk|sha256:WH_NEW_IPK"
+export MOCK_ASSETS="https://example.com/luci-app-wifihaven_0.1.0-1_all.ipk|sha256:LUCI_OLD_IPK
+https://example.com/luci-app-wifihaven_0.2.8-1_all.ipk|sha256:LUCI_NEW_IPK
+https://example.com/wifihaven_0.1.0-1_all.ipk|sha256:WH_OLD_IPK
+https://example.com/wifihaven_0.2.8-1_all.ipk|sha256:WH_NEW_IPK"
 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 URL=$(picked_url)
 case "$URL" in
@@ -472,7 +472,7 @@ case "$URL" in
   *) check "[#1178 multi ipk] does not pick luci-app .ipk" ok ;;
 esac
 case "$URL" in
-  *wifihaven_0.2.8-1_aarch64_generic.ipk) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" ok ;;
+  *wifihaven_0.2.8-1_all.ipk) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" ok ;;
   *) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" "picked '$URL'" ;;
 esac
 rm -rf "$TESTDIR"
