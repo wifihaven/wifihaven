@@ -855,6 +855,27 @@ case class UsageDeviceBucket(
     otherMins: Int,
 ) derives JsonCodec
 
+// #1079 — unified by-app axis. Each entry is either an app (apps roll up
+// their member hosts) or a single non-app host. `Other` is the long tail
+// past `topN`, NOT a catch-all for unmapped hosts. Populated only when the
+// request asks `?groupBy=app`; otherwise both fields stay empty.
+case class UsageEntityRef(
+    kind: String, // "app" | "host"
+    id: String,   // app slug or hostname
+    name: String,
+    appId: Option[AppId] = None,
+    appIcon: Option[String] = None,
+    host: Option[HostId] = None,
+) derives JsonCodec
+case class UsageEntityTotal(entity: UsageEntityRef, dayMins: Int) derives JsonCodec
+case class UsageBucketEntity(entity: UsageEntityRef, mins: Int) derives JsonCodec
+case class UsageEntityBucket(
+    hour: Int,
+    totalMins: Int,
+    perEntity: List[UsageBucketEntity],
+    otherMins: Int,
+) derives JsonCodec
+
 case class UsageSeriesResponse(
     deviceMac: Option[MacAddress] = None,
     deviceName: Option[String] = None,
@@ -866,6 +887,8 @@ case class UsageSeriesResponse(
     buckets: List[UsageBucket],
     topDevices: List[UsageDeviceTotal] = Nil,
     bucketsByDevice: List[UsageDeviceBucket] = Nil,
+    topEntries: List[UsageEntityTotal] = Nil,
+    bucketsByEntry: List[UsageEntityBucket] = Nil,
 ) derives JsonCodec
 
 // ── Traffic Usage page (#846) ─────────────────────────────────────────────
