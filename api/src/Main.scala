@@ -180,80 +180,97 @@ object Main extends ZIOAppDefault {
       xa          <- ZIO.service[Transactor[Task]]
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
-    } yield HealthRoutes.routes(dbHealthCheck) ++
-      VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
-      AuthRoutes.routes(auth, userRepo, upRepo) ++
-      ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
-      HouseholdSettingsRoutes.routes(auth, hsRepo) ++
-      DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
-      TimeRoutes.routes(
-        auth,
-        deviceRepo,
-        tlRepo,
-        stlRepo,
-        trafficRepo,
-        extRepo,
-        profileRepo,
-        upRepo,
-        hsRepo,
-        timeStatus,
-        clock,
-        timeCache,
-      ) ++
-      LogRoutes.routes(auth, connRepo, upRepo) ++
-      UsageRoutes.routes(
-        auth,
-        deviceRepo,
-        trafficRepo,
-        upRepo,
-        profileRepo,
-        appRepo,
-        rollupRepo2,
-        clock,
-      ) ++
-      DashboardNowRoutes.routes(
-        auth,
-        trafficRepo,
-        connRepo,
-        deviceRepo,
-        profileRepo,
-        upRepo,
-        clock,
-      ) ++
-      BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
-      RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-      AdminRouterRoutes.routes(auth, routerRepo) ++
-      RollupAdminRoutes.routes(auth, rollupRepo2) ++
-      RouterIngestRoutes.routes(
-        routerAuth,
-        routerRepo,
-        trafficRepo,
-        usageRepo,
-        deviceRepo,
-        connRepo,
-        alertRepo,
-        hsRepo,
-      ) ++
-      AlertRoutes.routes(
-        auth,
-        alertRepo,
-        deviceRepo,
-        profileRepo,
-        extRepo,
-        appRepo,
-        hsRepo,
-        notifier,
-        clock,
-      ) ++
-      AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
-      DebugRoutes.routes(
-        cfg.debugEnabled,
-        deviceRepo,
-        connRepo,
-        usageRepo,
-        trafficRepo,
-        clock,
-        timeCache,
-      ) ++
-      (if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty)
+    } yield {
+      // #1177: split the route composition into typed chunks. A flat `++` chain across
+      // 18+ Routes was hitting Scala 3's type-inference recursion limit on CI (Linux
+      // JDK 21 default stack), failing with "Recursion limit exceeded" at the first
+      // `++` even though local macOS builds happened to fit. Explicit `Routes[Any, Response]`
+      // ascriptions on the chunks ground the inference per chunk so the final fold is
+      // a short, well-typed concatenation.
+      val systemRoutes: Routes[Any, Response] =
+        HealthRoutes.routes(dbHealthCheck) ++
+          VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
+          AuthRoutes.routes(auth, userRepo, upRepo) ++
+          ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
+          HouseholdSettingsRoutes.routes(auth, hsRepo) ++
+          DeviceRoutes.routes(auth, deviceRepo, upRepo)
+
+      val statsRoutes: Routes[Any, Response] =
+        TimeRoutes.routes(
+          auth,
+          deviceRepo,
+          tlRepo,
+          stlRepo,
+          trafficRepo,
+          extRepo,
+          profileRepo,
+          upRepo,
+          hsRepo,
+          timeStatus,
+          clock,
+          timeCache,
+        ) ++
+          LogRoutes.routes(auth, connRepo, upRepo) ++
+          UsageRoutes.routes(
+            auth,
+            deviceRepo,
+            trafficRepo,
+            upRepo,
+            profileRepo,
+            appRepo,
+            rollupRepo2,
+            clock,
+          ) ++
+          DashboardNowRoutes.routes(
+            auth,
+            trafficRepo,
+            connRepo,
+            deviceRepo,
+            profileRepo,
+            upRepo,
+            clock,
+          ) ++
+          BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists)
+
+      val routerAndAdminRoutes: Routes[Any, Response] =
+        RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
+          AdminRouterRoutes.routes(auth, routerRepo) ++
+          RollupAdminRoutes.routes(auth, rollupRepo2) ++
+          RouterIngestRoutes.routes(
+            routerAuth,
+            routerRepo,
+            trafficRepo,
+            usageRepo,
+            deviceRepo,
+            connRepo,
+            alertRepo,
+            hsRepo,
+          ) ++
+          AlertRoutes.routes(
+            auth,
+            alertRepo,
+            deviceRepo,
+            profileRepo,
+            extRepo,
+            appRepo,
+            hsRepo,
+            notifier,
+            clock,
+          ) ++
+          AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
+          DebugRoutes.routes(
+            cfg.debugEnabled,
+            deviceRepo,
+            connRepo,
+            usageRepo,
+            trafficRepo,
+            clock,
+            timeCache,
+          )
+
+      val spaRoutes: Routes[Any, Response] =
+        if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty
+
+      systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes
+    }
 }
