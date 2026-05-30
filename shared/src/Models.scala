@@ -1216,6 +1216,12 @@ case class PolicySnapshot(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
+    // #1174: public SPA base URL (e.g. https://wifihaven.net). The router
+    // agent's block-page handler prefers this over its enrolled api_url when
+    // building the kid's redirect, because in cloud deployments the SPA host
+    // and the API host are different (the API origin 404s non-/api paths).
+    // None for self-hosted single-origin installs where api_url == SPA host.
+    spaBaseUrl: Option[String] = None,
 ) derives JsonCodec
 
 // ── Block reasons (snapshot + router-emitted) ─────────────────────────────

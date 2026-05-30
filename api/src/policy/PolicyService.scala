@@ -37,6 +37,7 @@ object PolicyServiceLive {
       appRepo: AppRepo,
       clock: Clock,
       uiAllowedHosts: List[Hostname] = Nil,
+      spaBaseUrl: Option[String] = None,
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -64,6 +65,7 @@ object PolicyServiceLive {
       tss,
       clock,
       uiAllowedHosts,
+      spaBaseUrl,
     )
   }
 }
@@ -82,6 +84,7 @@ class PolicyServiceLive(
     timeStatusService: TimeStatusService,
     clock: Clock,
     uiAllowedHosts: List[Hostname] = Nil,
+    spaBaseUrl: Option[String] = None,
 ) extends PolicyService {
 
   def snapshot: Task[PolicySnapshot] =
@@ -193,6 +196,7 @@ class PolicyServiceLive(
         devices = devicePolicies,
         profiles = profilePolicies,
         blocklists = pBlocklists,
+        spaBaseUrl = spaBaseUrl,
       )
     }
 
@@ -450,6 +454,7 @@ object PolicyService {
         tss,
         clk,
         cfg.policy.uiAllowedHostsParsed,
+        cfg.policy.spaBaseUrlOpt,
       )
   }
 

@@ -81,12 +81,20 @@ end
 M.html_escape = html_escape
 M.url_encode  = url_encode
 
--- Build the destination URL on the API server. Reason and mac are passed
--- through as-is; the API's React BlockedPage matches against the wire-format
--- MacBlockReason strings ("Paused", "Schedule", "TimeLimit", "Manual").
-function M.build_dest_url(api_url, host, mac, reason)
-  if not api_url or api_url == "" then return nil end
-  return api_url .. "/blocked"
+-- Build the destination URL for the kid's browser redirect.
+-- Prefers spa_url (the deployment's public SPA host, e.g. https://wifihaven.net)
+-- over api_url (the API the router polls, e.g. https://api.wifihaven.net). The
+-- API origin has WIFIHAVEN_SERVE_SPA=false in cloud deployments and 404s
+-- non-/api paths, so the redirect must target the SPA host (#1174). api_url
+-- stays as the fallback so an older agent that hasn't been re-rendered after
+-- the snapshot started carrying spaBaseUrl keeps the pre-#1174 behavior.
+-- Reason and mac are passed through as-is; the SPA's BlockedPage matches
+-- against the wire-format MacBlockReason strings ("Paused", "Schedule",
+-- "TimeLimit", "Manual", "Unmanaged").
+function M.build_dest_url(api_url, spa_url, host, mac, reason)
+  local base = (spa_url and spa_url ~= "") and spa_url or api_url
+  if not base or base == "" then return nil end
+  return base .. "/blocked"
       .. "?host="   .. url_encode(host)
       .. "&reason=" .. url_encode(reason or "")
       .. "&mac="    .. url_encode(mac or "")
@@ -114,11 +122,12 @@ function M.inline_copy_for(reason)
   return INLINE_COPY[reason] or "This site is blocked."
 end
 
--- Render the HTML body for the block page. If api_url is set, returns a tiny
--- redirect document (meta refresh + JS for compatibility). Otherwise returns a
--- self-contained page with inline copy keyed on `reason`.
-function M.render_html(api_url, host, mac, reason)
-  local dest = M.build_dest_url(api_url, host, mac, reason)
+-- Render the HTML body for the block page. If a destination URL can be built
+-- (from spa_url or api_url), returns a tiny redirect document (meta refresh +
+-- JS for compatibility). Otherwise returns a self-contained page with inline
+-- copy keyed on `reason`.
+function M.render_html(api_url, spa_url, host, mac, reason)
+  local dest = M.build_dest_url(api_url, spa_url, host, mac, reason)
   local copy = M.inline_copy_for(reason)
   local site_line = (host and host ~= "")
     and ("Site: " .. html_escape(host)) or ""

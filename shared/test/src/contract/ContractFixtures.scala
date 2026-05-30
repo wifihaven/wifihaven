@@ -102,6 +102,8 @@ object ContractFixtures {
           url = BlocklistUrl.unsafe("https://example.org/lists/adult.txt"),
         ),
       ),
+      // #1174: public SPA base URL for the router's block-page redirect.
+      spaBaseUrl = Some("https://wifihaven.net"),
     )
   }
 

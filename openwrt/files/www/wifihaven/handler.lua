@@ -48,8 +48,12 @@ function handle_request(env)
 
   local api_url = read_file(paths.block_page_api_url)
   if api_url then api_url = api_url:gsub("%s+$", "") end
+  -- #1174: SPA base URL is preferred over api_url for the redirect dest.
+  -- Absent file or empty content → block_page falls back to api_url.
+  local spa_url = read_file(paths.block_page_spa_url)
+  if spa_url then spa_url = spa_url:gsub("%s+$", "") end
 
-  local body = block_page.render_html(api_url, host, mac, reason)
+  local body = block_page.render_html(api_url, spa_url, host, mac, reason)
 
   uhttpd.send("Status: 200 OK\r\n")
   uhttpd.send("Content-Type: text/html; charset=utf-8\r\n")

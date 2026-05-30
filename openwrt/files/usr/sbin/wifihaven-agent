@@ -214,12 +214,29 @@ os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifi
 -- per-MAC reason for the current device.
 
 local BLOCK_PAGE_API_URL_PATH  = paths.block_page_api_url
+local BLOCK_PAGE_SPA_URL_PATH  = paths.block_page_spa_url  -- #1174
 local BLOCK_PAGE_REASONS_PATH  = paths.block_page_reasons
 local BLOCK_PAGE_HOSTS_PATH    = paths.block_page_hosts  -- #594
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
   if f then f:write(api_url); f:close() end
+end
+
+-- #1174: write /var/run/wifihaven/spa_url from snapshot.spaBaseUrl so the
+-- uhttpd block-page handler can redirect kids to the public SPA host instead
+-- of the API host (the API origin 404s non-/api paths in cloud deployments).
+-- Empty/missing snapshot field → empty file → block_page falls back to api_url.
+local function persist_spa_base_url(snapshot)
+  local spa = nil
+  if type(snapshot) == "table" and type(snapshot.spaBaseUrl) == "string" then
+    spa = snapshot.spaBaseUrl
+  end
+  local f = io.open(BLOCK_PAGE_SPA_URL_PATH, "w")
+  if f then
+    f:write(spa or "")
+    f:close()
+  end
 end
 
 -- Persist the per-MAC block reasons for the block-page handler. Called after
@@ -268,6 +285,7 @@ do
     if policy.apply(cached, write_file, run_cmd, log) then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
+      persist_spa_base_url(cached)
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
@@ -292,6 +310,7 @@ do
     if policy.apply(snap, write_file, run_cmd, log) then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
+      persist_spa_base_url(snap)
       current_etag = etag
       last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -457,6 +476,7 @@ conntrack.watch({
         if policy.apply(snap, write_file, run_cmd, log) then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
           persist_blocked_reasons()
+          persist_spa_base_url(snap)
           current_etag = etag
           last_snapshot = snap
           policy.mark_poll_success(wall)

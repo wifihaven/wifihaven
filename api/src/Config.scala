@@ -69,6 +69,14 @@ case class CorsConfig(
 // Precursor to the DB-backed global profile in #937.
 case class PolicyConfig(
     uiAllowedHosts: String = "",
+    // #1174: public SPA base URL (scheme+host, e.g. https://wifihaven.net).
+    // Included in every PolicySnapshot so the router agent's block-page
+    // handler can redirect blocked kids to the SPA host instead of the API
+    // host (the API origin 404s non-/api paths in cloud deployments). Empty
+    // → snapshot.spaBaseUrl is None and the agent falls back to its enrolled
+    // api_url, preserving pre-#1174 behaviour for single-origin self-hosted
+    // installs that don't split SPA and API.
+    spaBaseUrl: String = "",
 ) {
   val uiAllowedHostsParsed: List[Hostname] =
     uiAllowedHosts
@@ -88,6 +96,8 @@ case class PolicyConfig(
           )
       }
       .toList
+
+  val spaBaseUrlOpt: Option[String] = Option(spaBaseUrl).map(_.trim).filter(_.nonEmpty)
 }
 
 object AppConfig {
