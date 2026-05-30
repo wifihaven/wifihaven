@@ -380,6 +380,119 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.buckets.forall(_.totalMins == 0)) &&
           assertTrue(out.topHosts.isEmpty && out.topDevices.isEmpty)
       },
+      // #1079 — unified app + non-app-host axis. Apps roll up; non-app hosts
+      // surface individually; 'Other' is strictly the long tail past topN.
+      test("#1079: groupBy=app emits per-app + per-non-app-host rows; Other = long tail only") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          // Two apps each owning one host.
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          ggId        <- appRepo.create("Google", "google", None, None)
+          _           <- appRepo.setHosts(ggId, List(Hostname.unsafe("google.com")))
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Distinct minute counts so top-N ranking is deterministic.
+          // YouTube: 5 buckets = 25min. Hour 10.
+          _  <- ZIO.foreachDiscard(0 until 5)(i =>
+            insertRow(routerId, testMac, "youtube.com", today, 10, i * 5),
+          )
+          // Google: 4 buckets = 20min. Hour 11.
+          _  <- ZIO.foreachDiscard(0 until 4)(i =>
+            insertRow(routerId, testMac, "google.com", today, 11, i * 5),
+          )
+          // drop.com (non-app): 3 buckets = 15min. Hour 12.
+          _  <- ZIO.foreachDiscard(0 until 3)(i =>
+            insertRow(routerId, testMac, "drop.com", today, 12, i * 5),
+          )
+          // extra.com (non-app): 2 buckets = 10min. Hour 13.
+          _  <- ZIO.foreachDiscard(0 until 2)(i =>
+            insertRow(routerId, testMac, "extra.com", today, 13, i * 5),
+          )
+          // Long tail of 6 single-bucket non-app hosts at hour 14.
+          _  <- ZIO.foreachDiscard(0 until 6)(i =>
+            insertRow(routerId, testMac, s"tail$i.com", today, 14, i * 5),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/usage/series?mac=$testMac&date=$today&topN=4&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+          tops = out.topEntries
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // 4 top entries: two apps + two non-app hosts (NOT 2 apps + 1 "Other").
+          assertTrue(tops.length == 4) &&
+          assertTrue(
+            tops(0).entity.kind == "app" && tops(0).entity.name == "YouTube" && tops(
+              0,
+            ).dayMins == 25,
+          ) &&
+          assertTrue(
+            tops(1).entity.kind == "app" && tops(1).entity.name == "Google" && tops(1).dayMins == 20,
+          ) &&
+          assertTrue(
+            tops(2).entity.kind == "host" && tops(2).entity.id == "drop.com" && tops(
+              2,
+            ).dayMins == 15,
+          ) &&
+          assertTrue(
+            tops(3).entity.kind == "host" && tops(3).entity.id == "extra.com" && tops(
+              3,
+            ).dayMins == 10,
+          ) &&
+          // 'Other' = long tail = 6 × 5min, present only in buckets where the tail lives.
+          assertTrue(out.bucketsByEntry.length == 24) &&
+          assertTrue(out.bucketsByEntry(14).otherMins == 30) &&
+          // Hours without tail traffic shouldn't have an Other bar.
+          assertTrue(out.bucketsByEntry(10).otherMins == 0) &&
+          assertTrue(out.bucketsByEntry(11).otherMins == 0) &&
+          // Day total sums.
+          assertTrue(out.bucketsByEntry.iterator.map(_.totalMins).sum == 100)
+      },
+      // #1079 — when no host or app exceeds topN, there's no Other bucket.
+      test("#1079: groupBy=app with everything inside topN → no Other row") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Two unmapped hosts only, topN=5 (default).
+          _  <- insertRow(routerId, testMac, "drop.com", today, 10, 0)
+          _  <- insertRow(routerId, testMac, "extra.com", today, 10, 5)
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode(s"/api/usage/series?mac=$testMac&date=$today&groupBy=app").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Both unmapped hosts are individual entries — NOT lumped into Other.
+          assertTrue(out.topEntries.length == 2) &&
+          assertTrue(out.topEntries.forall(_.entity.kind == "host")) &&
+          assertTrue(out.bucketsByEntry.iterator.map(_.otherMins).sum == 0)
+      },
     ) @@ TestAspect.sequential,
     // ── #846 Traffic Usage page ───────────────────────────────────────────
     suite("GET /api/usage/traffic")(

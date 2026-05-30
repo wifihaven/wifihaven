@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { HostCell } from '@/components/HostCell'
 import type {
-  UsageBucket, UsageDeviceBucket, UsageSeriesResponse,
+  UsageDeviceBucket, UsageEntityBucket, UsageSeriesResponse,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import {
@@ -13,43 +12,38 @@ import {
 // #722 — per-profile daily timeline. Hourly stacked-bar chart of minutes-of-use
 // across all of a profile's devices, with a stack-by toggle that switches which
 // dimension drives the stacks. Colors are derived from a stable index of the
-// top-N entries so the same host (or device) keeps its color across re-renders.
+// top-N entries so the same entity keeps its color across re-renders.
 //
-// #964 — group-by options expanded to {total, host, device, app}. Default is
-// `total` (no drill-down, single bar per hour = profile total) to match the
-// strictly-additive aggregation model from #917. `app` is gated until the apps
-// chain (#769) extends /api/usage/series; rendered as disabled with a tooltip.
+// #1079 — group-by options collapsed to {total, device, app}. The standalone
+// 'host' axis was retired in favor of a unified by-app axis: apps roll up
+// their member hosts, non-app hosts surface individually, and 'Other' is
+// strictly the long tail past top-N (not a catch-all for unmapped hosts).
 
 const TOP_N = 5
 const DEFAULT_TZ =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
-type StackBy = 'total' | 'host' | 'device' | 'app'
+type StackBy = 'total' | 'device' | 'app'
 
 const STACK_BY_OPTIONS: ReadonlyArray<{
   key: StackBy
   label: string
-  disabled?: boolean
-  title?: string
 }> = [
   { key: 'total',  label: 'Total' },
-  { key: 'host',   label: 'Host' },
   { key: 'device', label: 'Device' },
-  {
-    key: 'app',
-    label: 'App',
-    disabled: true,
-    title: 'Grouping by app requires the apps chain (#769) — coming soon.',
-  },
+  { key: 'app',    label: 'App' },
 ]
 
 function parseStackBy(s: string | null): StackBy {
   switch (s) {
-    case 'host':   return 'host'
     case 'device': return 'device'
-    // 'app' isn't selectable yet — fall through to total.
+    case 'app':    return 'app'
     default:       return 'total'
   }
+}
+
+function entityKey(e: { kind: string; id: string }): string {
+  return `${e.kind}:${e.id}`
 }
 
 function todayISO(): string {
@@ -70,14 +64,14 @@ function addDays(iso: string, n: number): string {
   return `${yy}-${mm}-${dd}`
 }
 
-function buildHostRows(buckets: UsageBucket[], keys: string[]) {
+function buildEntityRows(buckets: UsageEntityBucket[], keys: string[]) {
   return buckets.map(b => {
     const row: Record<string, number | string> = {
       hour: String(b.hour).padStart(2, '0'),
       total: b.totalMins,
     }
     for (const k of keys) row[k] = 0
-    for (const ph of b.perHost) row[ph.host.value] = ph.mins
+    for (const pe of b.perEntity) row[entityKey(pe.entity)] = pe.mins
     row[OTHER_KEY] = b.otherMins
     return row as { hour: string; total: number; [k: string]: number | string }
   })
@@ -117,11 +111,14 @@ export function ProfileTimelinePage() {
     }
     setLoading(true)
     setError(null)
-    api.usage.series({ profileId: pid, date, tz: DEFAULT_TZ, topN: TOP_N })
+    api.usage.series({
+      profileId: pid, date, tz: DEFAULT_TZ, topN: TOP_N,
+      groupBy: stackBy === 'app' ? 'app' : undefined,
+    })
       .then(setData)
       .catch(e => setError(e.message ?? 'Failed to load'))
       .finally(() => setLoading(false))
-  }, [profileId, date])
+  }, [profileId, date, stackBy])
 
   function pushParam(key: string, val: string) {
     const sp = new URLSearchParams(params)
@@ -133,14 +130,16 @@ export function ProfileTimelinePage() {
 
   const chart = useMemo(() => {
     if (!data) return { rows: [], series: [] as ChartSeries[] }
-    if (stackBy === 'host') {
-      // Top-host indices drive colors; same host across renders keeps the
-      // same slot because the server returns topHosts sorted deterministically.
-      const keys = (data.topHosts ?? []).filter(h => h.dayMins > 0).map(h => h.host.value)
-      const series: ChartSeries[] = keys.map((k, i) => ({
-        key: k, name: k, color: HOST_COLORS[i % HOST_COLORS.length],
+    if (stackBy === 'app') {
+      // #1079 unified axis: apps + non-app hosts are first-class siblings.
+      const top  = (data.topEntries ?? []).filter(e => e.dayMins > 0)
+      const keys = top.map(e => entityKey(e.entity))
+      const series: ChartSeries[] = top.map((e, i) => ({
+        key: entityKey(e.entity),
+        name: e.entity.name,
+        color: HOST_COLORS[i % HOST_COLORS.length],
       }))
-      return { rows: buildHostRows(data.buckets, keys), series }
+      return { rows: buildEntityRows(data.bucketsByEntry ?? [], keys), series }
     } else if (stackBy === 'device') {
       const top = (data.topDevices ?? []).filter(d => d.dayMins > 0)
       const keys = top.map(d => d.deviceMac)
@@ -168,7 +167,10 @@ export function ProfileTimelinePage() {
 
   if (loading && !data) return <PageLoader />
 
-  const buckets = stackBy === 'device' ? data?.bucketsByDevice : data?.buckets
+  const buckets =
+    stackBy === 'device' ? data?.bucketsByDevice
+    : stackBy === 'app'    ? data?.bucketsByEntry
+    : data?.buckets
   const dayTotal = buckets?.reduce((a, b) => a + b.totalMins, 0) ?? 0
   const isEmpty  = dayTotal === 0
 
@@ -222,17 +224,12 @@ export function ProfileTimelinePage() {
                   key={opt.key}
                   role="tab"
                   aria-selected={stackBy === opt.key}
-                  aria-disabled={opt.disabled || undefined}
-                  disabled={opt.disabled}
-                  title={opt.title}
                   data-testid={`profile-timeline-stack-${opt.key}`}
-                  onClick={() => { if (!opt.disabled) setStackAndPush(opt.key) }}
+                  onClick={() => setStackAndPush(opt.key)}
                   className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
                     stackBy === opt.key
                       ? 'bg-brand-accent text-white'
-                      : opt.disabled
-                        ? 'text-brand-text-muted cursor-not-allowed'
-                        : 'text-brand-text hover:text-brand-ink'
+                      : 'text-brand-text hover:text-brand-ink'
                   }`}
                 >
                   {opt.label}
@@ -278,31 +275,42 @@ export function ProfileTimelinePage() {
         </p>
       </div>
 
-      {data && stackBy === 'host' && (data.topHosts ?? []).length > 0 && (
+      {data && stackBy === 'app' && (data.topEntries ?? []).length > 0 && (
         <div className="bg-white rounded-2xl border border-brand-border p-5">
           <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
-            Top hosts
+            Top apps &amp; hosts
           </h2>
           <ul className="space-y-1.5">
-            {data.topHosts.filter(h => h.dayMins > 0).map((h, i) => {
+            {data.topEntries!.filter(e => e.dayMins > 0).map((e, i) => {
+              const id = `${e.entity.kind}-${e.entity.id}`
               return (
                 <li
-                  key={`${h.host.type}:${h.host.value}`}
-                  data-testid={`profile-timeline-host-${h.host.value}`}
+                  key={entityKey(e.entity)}
+                  data-testid={`profile-timeline-entry-${id}`}
                   className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
+                  title={e.entity.kind === 'app'
+                    ? `App: rolls up its member hosts`
+                    : `Host: not attached to any app`}
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <span
                       className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
                       style={{ background: HOST_COLORS[i % HOST_COLORS.length] }}
                     />
-                    <HostCell host={h.host} className="truncate" />
+                    <span className="truncate">{e.entity.name}</span>
+                    <span className="text-[10px] text-brand-text-muted uppercase shrink-0">
+                      {e.entity.kind}
+                    </span>
                   </span>
-                  <span className="text-brand-text-muted font-mono shrink-0 ml-2">{h.dayMins}m</span>
+                  <span className="text-brand-text-muted font-mono shrink-0 ml-2">{e.dayMins}m</span>
                 </li>
               )
             })}
           </ul>
+          <p className="text-[10px] text-brand-text-muted mt-2">
+            'Other' covers hosts past the top {TOP_N}, not unmapped hosts —
+            those still appear individually above.
+          </p>
         </div>
       )}
 

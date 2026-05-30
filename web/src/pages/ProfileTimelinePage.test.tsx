@@ -132,7 +132,7 @@ describe('ProfileTimelinePage', () => {
     expect(screen.queryByTestId('profile-timeline-host-youtube.com')).toBeNull()
   })
 
-  it('toggles between Total, Host, and Device; updates the visible breakdown', async () => {
+  it('toggles between Total and Device; updates the visible breakdown', async () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
@@ -140,31 +140,80 @@ describe('ProfileTimelinePage', () => {
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
     )
-
-    fireEvent.click(screen.getByTestId('profile-timeline-stack-host'))
-    await waitFor(() =>
-      expect(screen.getByTestId('profile-timeline-host-youtube.com')).toBeInTheDocument(),
-    )
-    expect(screen.queryByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeNull()
+    expect(screen.getByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('profile-timeline-stack-device'))
     await waitFor(() =>
       expect(screen.getByTestId('profile-timeline-device-aa:bb:cc:dd:ee:01')).toBeInTheDocument(),
     )
-    expect(screen.queryByTestId('profile-timeline-host-youtube.com')).toBeNull()
   })
 
-  it('disables the App toggle with a tooltip until #769 lands', async () => {
+  // #1079 — unified by-app axis. Host toggle gone; App renders the mixed
+  // app + non-app-host series; 'Other' only when long tail exceeds top-N.
+  it('#1079: stack-by toggle is Total/Device/App; Host is removed', async () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
     renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
     await waitFor(() =>
-      expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
+      expect(screen.getByTestId('profile-timeline-stack-total')).toBeInTheDocument(),
     )
-    const appBtn = screen.getByTestId('profile-timeline-stack-app')
-    expect(appBtn).toBeDisabled()
-    expect(appBtn).toHaveAttribute('title')
+    expect(screen.queryByTestId('profile-timeline-stack-host')).toBeNull()
+    expect(screen.getByTestId('profile-timeline-stack-device')).toBeInTheDocument()
+    expect(screen.getByTestId('profile-timeline-stack-app')).toBeInTheDocument()
+  })
+
+  it('#1079: App view renders app + non-app-host entries from topEntries', async () => {
+    const resp: UsageSeriesResponse = {
+      ...richResponse('2026-05-20'),
+      topEntries: [
+        { entity: { kind: 'app',  id: 'youtube',  name: 'YouTube', appId: 1 }, dayMins: 25 },
+        { entity: { kind: 'host', id: 'drop.com', name: 'drop.com', host: { type: 'fqdn', value: 'drop.com' } }, dayMins: 10 },
+      ],
+      bucketsByEntry: Array.from({ length: 24 }, (_, h) => ({
+        hour: h,
+        totalMins: h === 14 ? 35 : 0,
+        perEntity: h === 14 ? [
+          { entity: { kind: 'app',  id: 'youtube',  name: 'YouTube', appId: 1 }, mins: 25 },
+          { entity: { kind: 'host', id: 'drop.com', name: 'drop.com', host: { type: 'fqdn', value: 'drop.com' } }, mins: 10 },
+        ] : [],
+        otherMins: 0,
+      })),
+    }
+    ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(resp)
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-stack-app')).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId('profile-timeline-stack-app'))
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-entry-app-youtube')).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId('profile-timeline-entry-host-drop.com')).toBeInTheDocument()
+  })
+
+  it('#1079: App view shows Other only when long tail exceeds top-N', async () => {
+    const resp: UsageSeriesResponse = {
+      ...richResponse('2026-05-20'),
+      topEntries: [
+        { entity: { kind: 'host', id: 'drop.com', name: 'drop.com', host: { type: 'fqdn', value: 'drop.com' } }, dayMins: 5 },
+      ],
+      bucketsByEntry: Array.from({ length: 24 }, (_, h) => ({
+        hour: h,
+        totalMins: h === 14 ? 5 : 0,
+        perEntity: h === 14
+          ? [{ entity: { kind: 'host', id: 'drop.com', name: 'drop.com', host: { type: 'fqdn', value: 'drop.com' } }, mins: 5 }]
+          : [],
+        otherMins: 0,
+      })),
+    }
+    ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(resp)
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20&stackBy=app`])
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-entry-host-drop.com')).toBeInTheDocument(),
+    )
+    // No long tail in this fixture → no Other entry in the legend.
+    expect(screen.queryByTestId('profile-timeline-entry-other')).toBeNull()
   })
 
   it('reads stackBy=device from URL', async () => {

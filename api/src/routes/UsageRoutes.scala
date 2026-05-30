@@ -157,7 +157,7 @@ object UsageRoutes {
             zone <- ZIO
               .attempt(ZoneId.of(tzStr))
               .orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
-            topN = req.url
+            topN       = req.url
               .queryParam("topN")
               .flatMap(_.toIntOption)
               .getOrElse(5)
@@ -165,7 +165,15 @@ object UsageRoutes {
               // #964: cap bumped from 20 → 500 so the per-device 'other'
               // drill-in can request the full long-tail of hosts in one shot.
               .min(500)
-            resp <- (macOpt, profileIdOpt) match {
+            // #1079: groupBy=app surfaces the unified per-app + per-non-app-host
+            // axis on the response (`topEntries` / `bucketsByEntry`). Optional;
+            // older Host/Device-only callers leave it off and the new fields
+            // stay empty.
+            groupByApp = req.url.queryParam("groupBy").exists(_.split(',').contains("app"))
+            appLookup <-
+              if (groupByApp) loadAppLookup(appRepo)
+              else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+            resp      <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
                 buildForDevice(
                   mac,
@@ -176,6 +184,8 @@ object UsageRoutes {
                   deviceRepo,
                   trafficRepo,
                   userProfileRepo,
+                  groupByApp,
+                  appLookup,
                 )
               case (_, Some(pid)) =>
                 buildForProfile(
@@ -188,6 +198,8 @@ object UsageRoutes {
                   deviceRepo,
                   trafficRepo,
                   userProfileRepo,
+                  groupByApp,
+                  appLookup,
                 )
               case _              => ZIO.fail(Response.badRequest("unreachable"))
             }
@@ -294,6 +306,30 @@ object UsageRoutes {
       )
     }
 
+  // #1079 — build the host → owning-app lookup used by the unified-axis
+  // builder. Mirrors the deterministic "lowest appId wins" tiebreak from
+  // #1061 and the apex-aware match from #1085 so subdomain traffic attributes
+  // to the apex-form app entry.
+  private def loadAppLookup(
+      appRepo: AppRepo,
+  ): IO[Response, HostId => Option[UsageSeries.AppInfo]] =
+    for {
+      apps     <- appRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      mappings <- appRepo.listAllHostMappings.mapError(ErrorMapper.dbErrorToResponse)
+    } yield {
+      val appById = apps.iterator.map(a => a.id -> a).toMap
+      val byApex  = mappings
+        .groupBy(_.host.value)
+        .view
+        .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
+        .toMap
+      (h: HostId) =>
+        h.asFqdn
+          .flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))
+          .flatMap(appById.get)
+          .map(a => UsageSeries.AppInfo(a.id, a.slug, a.name, a.icon))
+    }
+
   private def buildForDevice(
       mac: MacAddress,
       date: LocalDate,
@@ -303,6 +339,8 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
+      groupByApp: Boolean,
+      appLookup: HostId => Option[UsageSeries.AppInfo],
   ): IO[Response, UsageSeriesResponse] =
     for {
       device <- deviceRepo
@@ -311,7 +349,10 @@ object UsageRoutes {
         .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
       _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
       rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
-      (topHosts, buckets) = UsageSeries.build(rows, zone, topN)
+      (topHosts, buckets)          = UsageSeries.build(rows, zone, topN)
+      (topEntries, bucketsByEntry) =
+        if (groupByApp) UsageSeries.buildEntries(rows, zone, topN, appLookup)
+        else (List.empty[UsageEntityTotal], List.empty[UsageEntityBucket])
     } yield UsageSeriesResponse(
       deviceMac = Some(mac),
       deviceName = Some(device.name),
@@ -319,6 +360,8 @@ object UsageRoutes {
       tz = zone.getId,
       topHosts = topHosts,
       buckets = buckets,
+      topEntries = topEntries,
+      bucketsByEntry = bucketsByEntry,
     )
 
   private def buildForProfile(
@@ -331,6 +374,8 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
+      groupByApp: Boolean,
+      appLookup: HostId => Option[UsageSeries.AppInfo],
   ): IO[Response, UsageSeriesResponse] =
     for {
       _       <- requireProfileReadAccess(claims, pid, userProfileRepo)
@@ -345,6 +390,9 @@ object UsageRoutes {
       rows <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
       (topHosts, bucketsByHost, topDevices, bucketsByDevice) =
         UsageSeries.buildProfile(rows, nameByMac, zone, topN, profile.crossDeviceOverlapMode)
+      (topEntries, bucketsByEntry)                           =
+        if (groupByApp) UsageSeries.buildEntries(rows, zone, topN, appLookup)
+        else (List.empty[UsageEntityTotal], List.empty[UsageEntityBucket])
     } yield UsageSeriesResponse(
       profileId = Some(pid),
       profileName = Some(profile.name),
@@ -354,6 +402,8 @@ object UsageRoutes {
       buckets = bucketsByHost,
       topDevices = topDevices,
       bucketsByDevice = bucketsByDevice,
+      topEntries = topEntries,
+      bucketsByEntry = bucketsByEntry,
     )
 
   // Pull the requested local-day window. Two adjacent UTC days bracket every

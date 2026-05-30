@@ -6,10 +6,9 @@ import { api } from '@/api/client'
 import {
   useTimeStatusProfileWeek, useUsageSeriesProfileToday,
 } from '@/api/queries'
-import { HostCell } from '@/components/HostCell'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import type {
-  UsageBucket, UsageDeviceBucket, UsageSeriesResponse,
+  UsageDeviceBucket, UsageEntityBucket, UsageSeriesResponse,
 } from '@/types/api'
 import {
   formatMins, groupBucketsByLocalDay, localBucketOffsetMin,
@@ -29,7 +28,7 @@ const DRILL_IN_TOP_N = 500
 const DEFAULT_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
 type Win = 'today' | 'week'
-type StackBy = 'total' | 'host' | 'device' | 'app'
+type StackBy = 'total' | 'device' | 'app'
 
 interface StackByOption {
   key: StackBy
@@ -38,17 +37,16 @@ interface StackByOption {
   title?: string
 }
 
+// #1079 — Host axis retired; the by-app axis is the new combined surface.
 const STACK_BY_OPTIONS: ReadonlyArray<StackByOption> = [
   { key: 'total',  label: 'Total' },
-  { key: 'host',   label: 'Host' },
   { key: 'device', label: 'Device' },
-  {
-    key: 'app',
-    label: 'App',
-    disabled: true,
-    title: 'Grouping by app requires /api/usage/series app support — coming soon.',
-  },
+  { key: 'app',    label: 'App' },
 ]
+
+function entityKey(e: { kind: string; id: string }): string {
+  return `${e.kind}:${e.id}`
+}
 
 function todayISO(): string {
   const d = new Date()
@@ -58,14 +56,14 @@ function todayISO(): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
-function buildHostRows(buckets: UsageBucket[], keys: string[]) {
+function buildEntityRows(buckets: UsageEntityBucket[], keys: string[]) {
   return buckets.map(b => {
     const row: Record<string, number | string> = {
       hour: String(b.hour).padStart(2, '0'),
       total: b.totalMins,
     }
     for (const k of keys) row[k] = 0
-    for (const ph of b.perHost) row[ph.host.value] = ph.mins
+    for (const pe of b.perEntity) row[entityKey(pe.entity)] = pe.mins
     row[OTHER_KEY] = b.otherMins
     return row as { hour: string; total: number; [k: string]: number | string }
   })
@@ -91,6 +89,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
 
   const todayQuery = useUsageSeriesProfileToday(profileId, date, DEFAULT_TZ, {
     enabled: win === 'today',
+    groupBy: stackBy === 'app' ? 'app' : undefined,
   })
   const weekQuery = useTimeStatusProfileWeek(profileId, undefined, localBucketOffsetMin(), {
     enabled: win === 'week',
@@ -109,7 +108,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
     setOtherError(null)
     setOtherLoading(true)
     api.usage
-      .series({ profileId, date, tz: DEFAULT_TZ, topN: DRILL_IN_TOP_N })
+      .series({ profileId, date, tz: DEFAULT_TZ, topN: DRILL_IN_TOP_N, groupBy: 'app' })
       .then(setOtherData)
       .catch(e => setOtherError(e.message ?? 'Failed to load'))
       .finally(() => setOtherLoading(false))
@@ -117,12 +116,13 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
 
   const dayChart = useMemo(() => {
     if (!dayData) return { rows: [], series: [] as ChartSeries[] }
-    if (stackBy === 'host') {
-      const keys = (dayData.topHosts ?? []).filter(h => h.dayMins > 0).map(h => h.host.value)
-      const series: ChartSeries[] = keys.map((k, i) => ({
-        key: k, name: k, color: HOST_COLORS[i % HOST_COLORS.length],
+    if (stackBy === 'app') {
+      const top  = (dayData.topEntries ?? []).filter(e => e.dayMins > 0)
+      const keys = top.map(e => entityKey(e.entity))
+      const series: ChartSeries[] = top.map((e, i) => ({
+        key: entityKey(e.entity), name: e.entity.name, color: HOST_COLORS[i % HOST_COLORS.length],
       }))
-      return { rows: buildHostRows(dayData.buckets, keys), series }
+      return { rows: buildEntityRows(dayData.bucketsByEntry ?? [], keys), series }
     }
     if (stackBy === 'device') {
       const top = (dayData.topDevices ?? []).filter(d => d.dayMins > 0)
@@ -149,7 +149,10 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
     [weekData],
   )
 
-  const dayBuckets = stackBy === 'device' ? dayData?.bucketsByDevice : dayData?.buckets
+  const dayBuckets =
+    stackBy === 'device' ? dayData?.bucketsByDevice
+    : stackBy === 'app'    ? dayData?.bucketsByEntry
+    : dayData?.buckets
   const dayTotal   = dayBuckets?.reduce((a, b) => a + b.totalMins, 0) ?? 0
   const dayEmpty   = win === 'today' && !todayQuery.isPending && dayTotal === 0
   const weekTotal  = weekData?.totalMins ?? 0
@@ -235,16 +238,14 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
             <UsageHourlyBarChart
               rows={dayChart.rows}
               series={dayChart.series}
-              showLegend={stackBy === 'host' || stackBy === 'device'}
-              legendFormatter={stackBy === 'device'
-                ? (k) => dayChart.series.find(s => s.key === k)?.name ?? k
-                : undefined}
-              onOtherClick={stackBy === 'host' ? openOtherDrillIn : undefined}
+              showLegend={stackBy === 'app' || stackBy === 'device'}
+              legendFormatter={(k) => dayChart.series.find(s => s.key === k)?.name ?? k}
+              onOtherClick={stackBy === 'app' ? openOtherDrillIn : undefined}
               testId={`profile-timeline-${profileId}-chart`}
             />
             <div className="flex items-center justify-between text-[11px] text-brand-text-muted font-mono gap-2">
               <span>{formatMins(dayTotal)} total · {dayData?.tz ?? DEFAULT_TZ}</span>
-              {stackBy === 'host' && hasOther && (
+              {stackBy === 'app' && hasOther && (
                 <button type="button"
                   onClick={openOtherDrillIn}
                   data-testid={`profile-timeline-${profileId}-other-button`}
@@ -301,7 +302,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
 
       {/* #715/#957 — proportional attention is the wall-clock-share number; the
           Other long-tail drill-in surfaces host-presence for the leftover bucket. */}
-      {win === 'today' && (stackBy === 'host' || stackBy === 'device') && (
+      {win === 'today' && (stackBy === 'app' || stackBy === 'device') && (
         <p className="text-[10px] text-brand-text-muted">
           Stacks total to wall-clock minutes per hour. Per-host minutes are byte-share-weighted
           (proportional) within each 5-min window (#715).
@@ -337,9 +338,9 @@ function OtherDrillInModal({
   date, loading, error, data, topN, onClose, testIdPrefix,
 }: OtherDrillInModalProps) {
   useEscapeClose(onClose)
-  const tail = (data?.topHosts ?? []).filter(h => h.dayMins > 0).slice(topN)
-  const otherTotal = tail.reduce((a, h) => a + h.dayMins, 0)
-  const grandTotal = (data?.topHosts ?? []).reduce((a, h) => a + h.dayMins, 0)
+  const tail = (data?.topEntries ?? []).filter(e => e.dayMins > 0).slice(topN)
+  const otherTotal = tail.reduce((a, e) => a + e.dayMins, 0)
+  const grandTotal = (data?.topEntries ?? []).reduce((a, e) => a + e.dayMins, 0)
   return (
     <div role="dialog" aria-modal="true"
       data-testid={`${testIdPrefix}-other-modal`}
@@ -350,7 +351,7 @@ function OtherDrillInModal({
         <div className="flex items-start justify-between">
           <div>
             <h3 className="text-lg font-bold text-brand-ink">Inside the “Other” bucket</h3>
-            <p className="text-xs text-brand-text-muted mt-0.5">Hosts below the top {topN} on {date}.</p>
+            <p className="text-xs text-brand-text-muted mt-0.5">Apps &amp; hosts past the top {topN} on {date}.</p>
           </div>
           <button onClick={onClose}
             className="text-brand-text-muted hover:text-brand-text text-xl leading-none"
@@ -370,16 +371,19 @@ function OtherDrillInModal({
         )}
         {!loading && !error && tail.length > 0 && (
           <ul className="space-y-1 overflow-y-auto pr-1 -mr-1">
-            {tail.map(h => {
-              const shareOther = otherTotal > 0 ? (h.dayMins / otherTotal) * 100 : 0
-              const shareTotal = grandTotal > 0 ? (h.dayMins / grandTotal) * 100 : 0
+            {tail.map(e => {
+              const shareOther = otherTotal > 0 ? (e.dayMins / otherTotal) * 100 : 0
+              const shareTotal = grandTotal > 0 ? (e.dayMins / grandTotal) * 100 : 0
               return (
-                <li key={`${h.host.type}:${h.host.value}`}
-                  data-testid={`${testIdPrefix}-other-host-${h.host.value}`}
+                <li key={`${e.entity.kind}:${e.entity.id}`}
+                  data-testid={`${testIdPrefix}-other-entry-${e.entity.kind}-${e.entity.id}`}
                   className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2 gap-2">
-                  <HostCell host={h.host} className="truncate min-w-0" />
+                  <span className="truncate min-w-0 flex items-center gap-2">
+                    <span className="truncate">{e.entity.name}</span>
+                    <span className="text-[10px] text-brand-text-muted uppercase shrink-0">{e.entity.kind}</span>
+                  </span>
                   <span className="text-brand-text-muted font-mono shrink-0 tabular-nums">
-                    {formatMins(h.dayMins)}
+                    {formatMins(e.dayMins)}
                     <span className="text-brand-text-muted ml-2">
                       {shareOther.toFixed(0)}% of Other · {shareTotal.toFixed(0)}% of day
                     </span>

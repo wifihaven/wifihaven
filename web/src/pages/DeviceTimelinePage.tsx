@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { api } from '@/api/client'
 import type {
-  DeviceTimeStatusWeek, UsageBucket, UsageSeriesResponse,
+  DeviceTimeStatusWeek, UsageEntityBucket, UsageSeriesResponse,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { HostCell } from '@/components/HostCell'
@@ -47,17 +47,21 @@ function addDays(iso: string, n: number): string {
   return `${yy}-${mm}-${dd}`
 }
 
+function entityKey(e: { kind: string; id: string }): string {
+  return `${e.kind}:${e.id}`
+}
+
 function buildChartData(
-  buckets: UsageBucket[],
-  hostKeys: string[],
+  buckets: UsageEntityBucket[],
+  entityKeys: string[],
 ) {
   return buckets.map(b => {
     const row: Record<string, number | string> = {
       hour: String(b.hour).padStart(2, '0'),
       total: b.totalMins,
     }
-    for (const k of hostKeys) row[k] = 0
-    for (const ph of b.perHost) row[ph.host.value] = ph.mins
+    for (const k of entityKeys) row[k] = 0
+    for (const pe of b.perEntity) row[entityKey(pe.entity)] = pe.mins
     row[OTHER_KEY] = b.otherMins
     return row as { hour: string; total: number; [k: string]: number | string }
   })
@@ -84,7 +88,7 @@ export function DeviceTimelinePage() {
     setLoading(true)
     setError(null)
     const p = window === 'today'
-      ? api.usage.series({ mac, date, tz: DEFAULT_TZ, topN: TOP_N }).then(d => { setDayData(d); setWeekData(null) })
+      ? api.usage.series({ mac, date, tz: DEFAULT_TZ, topN: TOP_N, groupBy: 'app' }).then(d => { setDayData(d); setWeekData(null) })
       : api.time.statusDeviceWeek(mac, date, localBucketOffsetMin()).then(d => { setWeekData(d); setDayData(null) })
     p.catch(e => setError(e.message ?? 'Failed to load')).finally(() => setLoading(false))
   }, [mac, date, window])
@@ -107,7 +111,7 @@ export function DeviceTimelinePage() {
     // not to swap the chart underneath the operator.
     setOtherLoading(true)
     api.usage
-      .series({ mac, date, tz: DEFAULT_TZ, topN: DRILL_IN_TOP_N })
+      .series({ mac, date, tz: DEFAULT_TZ, topN: DRILL_IN_TOP_N, groupBy: 'app' })
       .then(setOtherData)
       .catch(e => setOtherError(e.message ?? 'Failed to load'))
       .finally(() => setOtherLoading(false))
@@ -115,13 +119,14 @@ export function DeviceTimelinePage() {
 
   const dayChart = useMemo(() => {
     if (!dayData) return { rows: [], series: [] as ChartSeries[] }
-    const hostKeys = dayData.topHosts.filter(h => h.dayMins > 0).map(h => h.host.value)
-    const series: ChartSeries[] = hostKeys.map((k, i) => ({
-      key: k,
-      name: k,
+    const top  = (dayData.topEntries ?? []).filter(e => e.dayMins > 0)
+    const keys = top.map(e => entityKey(e.entity))
+    const series: ChartSeries[] = top.map((e, i) => ({
+      key: entityKey(e.entity),
+      name: e.entity.name,
       color: HOST_COLORS[i % HOST_COLORS.length],
     }))
-    return { rows: buildChartData(dayData.buckets, hostKeys), series }
+    return { rows: buildChartData(dayData.bucketsByEntry ?? [], keys), series }
   }, [dayData])
 
   const weekChart = useMemo(() => {
@@ -131,16 +136,20 @@ export function DeviceTimelinePage() {
 
   if (loading && !dayData && !weekData) return <PageLoader />
 
-  const dayTotal = dayData?.buckets.reduce((a, b) => a + b.totalMins, 0) ?? 0
+  const dayTotal = (dayData?.bucketsByEntry ?? dayData?.buckets ?? []).reduce((a, b) => a + b.totalMins, 0)
   const dayEmpty = window === 'today' && dayTotal === 0
   const weekEmpty = window === 'week' && (weekData?.totalMins ?? 0) === 0
   const titleName = dayData?.deviceName ?? weekData?.deviceName ?? mac
-  // `mins` is the wall-clock-share number (#715 proportional). For the weekly
-  // breakdown we additionally surface bucket-presence in parens so the operator
-  // can spot heartbeat-style hosts that show up everywhere but with tiny bytes.
-  const hosts = window === 'today'
-    ? (dayData?.topHosts.filter(h => h.dayMins > 0) ?? []).map(h => ({ host: h.host, mins: h.dayMins, presenceMins: null as number | null }))
-    : (weekData?.hostUsage ?? []).map(h => ({ host: h.host, mins: h.proportionalMins, presenceMins: h.usedMins }))
+  // Today: unified by-app axis entries (#1079) — mixed apps + non-app hosts.
+  // Week: per-host list from the trailing-7d status endpoint, surfaced with
+  // bucket-presence in parens so heartbeat-style hosts are visible.
+  type TodayEntry = { id: string; kind: 'app' | 'host'; name: string; mins: number }
+  const todayEntries: TodayEntry[] = (dayData?.topEntries ?? [])
+    .filter(e => e.dayMins > 0)
+    .map(e => ({ id: e.entity.id, kind: e.entity.kind, name: e.entity.name, mins: e.dayMins }))
+  const weekHosts = (weekData?.hostUsage ?? []).map(h => ({
+    host: h.host, mins: h.proportionalMins, presenceMins: h.usedMins,
+  }))
 
   return (
     <div className="space-y-6">
@@ -288,46 +297,69 @@ export function DeviceTimelinePage() {
         )}
       </div>
 
-      {hosts.length > 0 && (
+      {window === 'today' && todayEntries.length > 0 && (
+        <div className="bg-white rounded-2xl border border-brand-border p-5">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
+            Top apps &amp; hosts
+          </h2>
+          <ul className="space-y-1.5">
+            {todayEntries.map((e, i) => (
+              <li
+                key={`${e.kind}:${e.id}`}
+                data-testid={`device-timeline-entry-${e.kind}-${e.id}`}
+                className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <span
+                    className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                    style={{ background: HOST_COLORS[i % HOST_COLORS.length] }}
+                  />
+                  <span className="truncate">{e.name}</span>
+                  <span className="text-[10px] text-brand-text-muted uppercase shrink-0">{e.kind}</span>
+                </span>
+                <span className="text-brand-text-muted font-mono shrink-0 ml-2">{formatMins(e.mins)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-brand-text-muted mt-3">
+            Apps roll up their member hosts. Non-app hosts surface individually.
+            'Other' covers the long tail past the top {TOP_N} — not unmapped hosts.
+          </p>
+        </div>
+      )}
+
+      {window === 'week' && weekHosts.length > 0 && (
         <div className="bg-white rounded-2xl border border-brand-border p-5">
           <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
             Top hosts
           </h2>
           <ul className="space-y-1.5">
-            {hosts.map((h, i) => {
-              return (
-                <li
-                  key={`${h.host.type}:${h.host.value}`}
-                  data-testid={`device-timeline-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
-                >
-                  <span className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
-                      style={{ background: HOST_COLORS[i % HOST_COLORS.length] }}
-                    />
-                    {/* Per #718: bare-IP rows render but de-emphasized (HostCell)
-                        so the FQDN attribution gap is visible at a glance. */}
-                    <HostCell host={h.host} className="truncate" />
-                  </span>
+            {weekHosts.map((h, i) => (
+              <li
+                key={`${h.host.type}:${h.host.value}`}
+                data-testid={`device-timeline-host-${h.host.value}`}
+                className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
+              >
+                <span className="flex items-center gap-2 min-w-0">
                   <span
-                    className="text-brand-text-muted font-mono shrink-0 ml-2"
-                    title={h.presenceMins !== null
-                      ? `presence ${formatMins(h.presenceMins)} (every bucket this host appeared in)`
-                      : undefined}
-                  >
-                    {formatMins(h.mins)}
-                    {h.presenceMins !== null && (
-                      <span className="text-brand-text-muted"> ({formatMins(h.presenceMins)})</span>
-                    )}
-                  </span>
-                </li>
-              )
-            })}
+                    className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                    style={{ background: HOST_COLORS[i % HOST_COLORS.length] }}
+                  />
+                  <HostCell host={h.host} className="truncate" />
+                </span>
+                <span
+                  className="text-brand-text-muted font-mono shrink-0 ml-2"
+                  title={`presence ${formatMins(h.presenceMins)} (every bucket this host appeared in)`}
+                >
+                  {formatMins(h.mins)}
+                  <span className="text-brand-text-muted"> ({formatMins(h.presenceMins)})</span>
+                </span>
+              </li>
+            ))}
           </ul>
           <p className="text-[11px] text-brand-text-muted mt-3">
             Per-host minutes are byte-share-weighted wall-clock attention within each 5-minute
-            window (#715){window === 'week' ? '; presence in parens is how many buckets the host appeared in at all' : ', so the stack sums to the device\'s wall-clock minutes for that hour'}.
+            window (#715); presence in parens is how many buckets the host appeared in at all.
           </p>
         </div>
       )}
@@ -361,9 +393,9 @@ interface OtherDrillInModalProps {
 
 function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherDrillInModalProps) {
   useEscapeClose(onClose)
-  const tail = (data?.topHosts ?? []).filter(h => h.dayMins > 0).slice(topN)
-  const otherTotal = tail.reduce((a, h) => a + h.dayMins, 0)
-  const grandTotal = (data?.topHosts ?? []).reduce((a, h) => a + h.dayMins, 0)
+  const tail = (data?.topEntries ?? []).filter(e => e.dayMins > 0).slice(topN)
+  const otherTotal = tail.reduce((a, e) => a + e.dayMins, 0)
+  const grandTotal = (data?.topEntries ?? []).reduce((a, e) => a + e.dayMins, 0)
   return (
     <div
       role="dialog"
@@ -383,7 +415,7 @@ function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherD
               Inside the “Other” bucket
             </h3>
             <p className="text-xs text-brand-text-muted mt-0.5">
-              Hosts below the top {topN} on {date}.
+              Apps &amp; hosts past the top {topN} on {date}.
             </p>
           </div>
           <button
@@ -413,18 +445,21 @@ function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherD
         )}
         {!loading && !error && tail.length > 0 && (
           <ul className="space-y-1 overflow-y-auto pr-1 -mr-1">
-            {tail.map(h => {
-              const shareOther = otherTotal > 0 ? (h.dayMins / otherTotal) * 100 : 0
-              const shareTotal = grandTotal > 0 ? (h.dayMins / grandTotal) * 100 : 0
+            {tail.map(e => {
+              const shareOther = otherTotal > 0 ? (e.dayMins / otherTotal) * 100 : 0
+              const shareTotal = grandTotal > 0 ? (e.dayMins / grandTotal) * 100 : 0
               return (
                 <li
-                  key={`${h.host.type}:${h.host.value}`}
-                  data-testid={`device-timeline-other-host-${h.host.value}`}
+                  key={`${e.entity.kind}:${e.entity.id}`}
+                  data-testid={`device-timeline-other-entry-${e.entity.kind}-${e.entity.id}`}
                   className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2 gap-2"
                 >
-                  <HostCell host={h.host} className="truncate min-w-0" />
+                  <span className="truncate min-w-0 flex items-center gap-2">
+                    <span className="truncate">{e.entity.name}</span>
+                    <span className="text-[10px] text-brand-text-muted uppercase shrink-0">{e.entity.kind}</span>
+                  </span>
                   <span className="text-brand-text-muted font-mono shrink-0 tabular-nums">
-                    {formatMins(h.dayMins)}
+                    {formatMins(e.dayMins)}
                     <span className="text-brand-text-muted ml-2">
                       {shareOther.toFixed(0)}% of Other · {shareTotal.toFixed(0)}% of day
                     </span>

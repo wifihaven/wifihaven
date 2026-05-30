@@ -43,8 +43,10 @@ export const qk = {
   timeStatusSummaryToday: () => ['time', 'status', 'summary', 'today'] as const,
   timeStatusSummaryWeek: (to?: string) => ['time', 'status', 'summary', 'week', to ?? 'current'] as const,
   // #776 — hourly chart on the Today card.
-  usageSeriesProfile: (profileId: number, date: string, tz: string) =>
-    ['usage', 'series', 'profile', profileId, date, tz] as const,
+  // #1079 — groupBy is part of the cache key so the by-app axis doesn't
+  // share a cache slot with the legacy host axis.
+  usageSeriesProfile: (profileId: number, date: string, tz: string, groupBy?: string) =>
+    ['usage', 'series', 'profile', profileId, date, tz, groupBy ?? 'host'] as const,
   // #1061 — per-app time-used breakdown for one profile over [from,to].
   profileUsageByApp: (profileId: number, from: string, to: string) =>
     ['profiles', profileId, 'usage-by-app', from, to] as const,
@@ -191,13 +193,14 @@ export function useUsageSeriesProfileToday(
   profileId: number,
   date: string,
   tz: string,
-  opts?: QueryOpts<UsageSeriesResponse>,
+  opts?: QueryOpts<UsageSeriesResponse> & { groupBy?: 'app' },
 ) {
+  const { groupBy, ...rest } = opts ?? {}
   return useQuery({
-    queryKey: qk.usageSeriesProfile(profileId, date, tz),
-    queryFn: () => api.usage.series({ profileId, date, tz }),
+    queryKey: qk.usageSeriesProfile(profileId, date, tz, groupBy),
+    queryFn: () => api.usage.series({ profileId, date, tz, groupBy }),
     staleTime: STALE.timeStatusToday,
-    ...opts,
+    ...rest,
   })
 }
 
