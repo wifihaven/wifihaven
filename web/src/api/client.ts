@@ -198,6 +198,7 @@ export const api = {
       date?: string
       tz?: string
       topN?: number
+      groupBy?: 'app'
     }) => {
       const qs = new URLSearchParams()
       if (params.mac)       qs.set('mac', params.mac)
@@ -205,6 +206,7 @@ export const api = {
       if (params.date)      qs.set('date', params.date)
       if (params.tz)        qs.set('tz', params.tz)
       if (params.topN)      qs.set('topN', String(params.topN))
+      if (params.groupBy)   qs.set('groupBy', params.groupBy)
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
     },
     // #846 Traffic Usage page — multi-column groupBy.
