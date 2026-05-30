@@ -57,32 +57,43 @@ function emptyDayResponse(date: string): UsageSeriesResponse {
     buckets: Array.from({ length: 24 }, (_, hour) => ({
       hour, totalMins: 0, perHost: [], otherMins: 0,
     })),
+    topEntries: [],
+    bucketsByEntry: Array.from({ length: 24 }, (_, hour) => ({
+      hour, totalMins: 0, perEntity: [], otherMins: 0,
+    })),
   }
 }
 
 function richResponse(date: string): UsageSeriesResponse {
+  const ytEntity = { kind: 'app' as const, id: 'youtube', name: 'YouTube', appId: 1 }
+  const ipEntity = {
+    kind: 'host' as const, id: '170.114.4.226', name: '170.114.4.226',
+    host: { type: 'ipv4' as const, value: '170.114.4.226' },
+  }
   return {
     deviceMac: MAC,
     deviceName: "Kid's iPad",
     date,
     tz: 'America/Los_Angeles',
-    topHosts: [
-      { host: { type: 'fqdn', value: 'youtube.com' },  dayMins: 30 },
-      { host: { type: 'ipv4', value: '170.114.4.226' }, dayMins: 4 },
+    topHosts: [],
+    buckets: Array.from({ length: 24 }, (_, hour) => ({ hour, totalMins: 0, perHost: [], otherMins: 0 })),
+    topEntries: [
+      { entity: ytEntity, dayMins: 30 },
+      { entity: ipEntity, dayMins: 4 },
     ],
-    buckets: Array.from({ length: 24 }, (_, hour) => {
+    bucketsByEntry: Array.from({ length: 24 }, (_, hour) => {
       if (hour === 14) {
         return {
           hour,
           totalMins: 10,
-          perHost: [
-            { host: { type: 'fqdn', value: 'youtube.com' }, mins: 7 },
-            { host: { type: 'ipv4', value: '170.114.4.226' }, mins: 2 },
+          perEntity: [
+            { entity: ytEntity, mins: 7 },
+            { entity: ipEntity, mins: 2 },
           ],
           otherMins: 1,
         }
       }
-      return { hour, totalMins: 0, perHost: [], otherMins: 0 }
+      return { hour, totalMins: 0, perEntity: [], otherMins: 0 }
     }),
   }
 }
@@ -103,7 +114,7 @@ describe('DeviceTimelinePage', () => {
     expect(screen.getByTestId('device-timeline-name')).toHaveTextContent("Kid's iPad")
   })
 
-  it('renders chart and top-host list with FQDN + bare-IP rows', async () => {
+  it('#1079: renders chart and unified by-app entry list (app + non-app host)', async () => {
     (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
       richResponse('2026-05-20'),
     )
@@ -111,12 +122,9 @@ describe('DeviceTimelinePage', () => {
     await waitFor(() =>
       expect(screen.getByTestId('device-timeline-chart')).toBeInTheDocument(),
     )
-    // Per-host legend rows render for both FQDN and IP.
-    expect(screen.getByTestId('device-timeline-host-youtube.com')).toBeInTheDocument()
-    const ipRow = screen.getByTestId('device-timeline-host-170.114.4.226')
-    expect(ipRow).toBeInTheDocument()
-    // #718: IP rows are de-emphasized via italic styling so the FQDN gap shows.
-    expect(ipRow.querySelector('.italic')).not.toBeNull()
+    // App rolls up its hosts; non-app host shows individually.
+    expect(screen.getByTestId('device-timeline-entry-app-youtube')).toBeInTheDocument()
+    expect(screen.getByTestId('device-timeline-entry-host-170.114.4.226')).toBeInTheDocument()
   })
 
   it('uses ?date= from URL when present', async () => {
@@ -128,56 +136,54 @@ describe('DeviceTimelinePage', () => {
   })
 
   describe('"Other" drill-in (#964)', () => {
+    function mkEntry(id: string, dayMins: number) {
+      return {
+        entity: {
+          kind: 'host' as const, id, name: id,
+          host: { type: 'fqdn' as const, value: id },
+        },
+        dayMins,
+      }
+    }
     function withOtherResponse(date: string): UsageSeriesResponse {
-      // Top-5 covers the first 5 hosts; the long-tail (hosts 6-9) gets
-      // folded into otherMins on the chart. A drill-in fetch with topN=500
-      // should return all 9 hosts.
-      const top5 = Array.from({ length: 5 }, (_, i) => ({
-        host: { type: 'fqdn' as const, value: `top${i}.com` },
-        dayMins: 50 - i,
-      }))
+      const top5 = Array.from({ length: 5 }, (_, i) => mkEntry(`top${i}.com`, 50 - i))
       return {
         deviceMac: MAC,
         deviceName: "Kid's iPad",
         date,
         tz: 'UTC',
-        topHosts: top5,
-        buckets: Array.from({ length: 24 }, (_, hour) => ({
+        topHosts: [],
+        buckets: Array.from({ length: 24 }, (_, hour) => ({ hour, totalMins: 0, perHost: [], otherMins: 0 })),
+        topEntries: top5,
+        bucketsByEntry: Array.from({ length: 24 }, (_, hour) => ({
           hour,
           totalMins: hour === 14 ? 50 : 0,
-          perHost: hour === 14 ? top5.map(h => ({ host: h.host, mins: 8 })) : [],
-          // Force a non-zero Other bucket so the drill-in affordance renders.
+          perEntity: hour === 14 ? top5.map(e => ({ entity: e.entity, mins: 8 })) : [],
           otherMins: hour === 14 ? 10 : 0,
         })),
       }
     }
     function withAllHostsResponse(date: string): UsageSeriesResponse {
       const all = [
-        ...Array.from({ length: 5 }, (_, i) => ({
-          host: { type: 'fqdn' as const, value: `top${i}.com` },
-          dayMins: 50 - i,
-        })),
-        ...Array.from({ length: 4 }, (_, i) => ({
-          host: { type: 'fqdn' as const, value: `tail${i}.com` },
-          dayMins: 6 - i, // 6, 5, 4, 3 — sorted desc
-        })),
+        ...Array.from({ length: 5 }, (_, i) => mkEntry(`top${i}.com`, 50 - i)),
+        ...Array.from({ length: 4 }, (_, i) => mkEntry(`tail${i}.com`, 6 - i)),
       ]
       return {
         deviceMac: MAC,
         deviceName: "Kid's iPad",
         date,
         tz: 'UTC',
-        topHosts: all,
-        buckets: Array.from({ length: 24 }, (_, hour) => ({
-          hour, totalMins: 0, perHost: [], otherMins: 0,
+        topHosts: [],
+        buckets: Array.from({ length: 24 }, (_, hour) => ({ hour, totalMins: 0, perHost: [], otherMins: 0 })),
+        topEntries: all,
+        bucketsByEntry: Array.from({ length: 24 }, (_, hour) => ({
+          hour, totalMins: 0, perEntity: [], otherMins: 0,
         })),
       }
     }
 
     it('shows the affordance only when Other > 0 and opens a modal with the long-tail', async () => {
       const mock = api.usage.series as unknown as ReturnType<typeof vi.fn>
-      // First call (initial render): top-5 + otherMins. Second call (drill-in
-      // fetch with topN=500): the full unaggregated list.
       mock
         .mockResolvedValueOnce(withOtherResponse('2026-05-20'))
         .mockResolvedValueOnce(withAllHostsResponse('2026-05-20'))
@@ -189,16 +195,14 @@ describe('DeviceTimelinePage', () => {
       await user.click(button)
 
       expect(screen.getByTestId('device-timeline-other-modal')).toBeInTheDocument()
-      // Second fetch goes out with the higher topN.
       await waitFor(() => expect(mock).toHaveBeenCalledTimes(2))
       expect(mock.mock.calls[1][0]).toMatchObject({ mac: MAC, date: '2026-05-20', topN: 500 })
 
-      // Long-tail rows render, top-5 do not.
       await waitFor(() =>
-        expect(screen.getByTestId('device-timeline-other-host-tail0.com')).toBeInTheDocument(),
+        expect(screen.getByTestId('device-timeline-other-entry-host-tail0.com')).toBeInTheDocument(),
       )
-      expect(screen.getByTestId('device-timeline-other-host-tail3.com')).toBeInTheDocument()
-      expect(screen.queryByTestId('device-timeline-other-host-top0.com')).toBeNull()
+      expect(screen.getByTestId('device-timeline-other-entry-host-tail3.com')).toBeInTheDocument()
+      expect(screen.queryByTestId('device-timeline-other-entry-host-top0.com')).toBeNull()
     })
 
     it('hides the affordance when there is no Other bucket on any hour', async () => {
