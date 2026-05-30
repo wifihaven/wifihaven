@@ -57,7 +57,7 @@ export function TimezonePicker({ value, onChange, testId }: Props) {
             else onChange(e.target.value)
           }}
           data-testid={testId ? `${testId}-select` : undefined}
-          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-full"
+          className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm w-full"
         >
           {COMMON_ZONES.map(z => (
             <option key={z} value={z}>{z}</option>
@@ -72,14 +72,14 @@ export function TimezonePicker({ value, onChange, testId }: Props) {
             onChange={e => setFilter(e.target.value)}
             placeholder="Filter (e.g. London, Tokyo)"
             data-testid={testId ? `${testId}-filter` : undefined}
-            className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-full"
+            className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm w-full"
           />
           <select
             value={value}
             onChange={e => onChange(e.target.value)}
             size={6}
             data-testid={testId ? `${testId}-select` : undefined}
-            className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-full"
+            className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm w-full"
           >
             {/* (#571) When the filter narrows to one option and that option
                 != value, the browser pre-highlights the lone <option> as the

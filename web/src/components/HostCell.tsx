@@ -8,7 +8,7 @@ import type { HostId } from '@/types/api'
 // #826: single source of truth for destination presentation across every
 // ranked/log surface. The value is always monospace and carries a full-value
 // title so truncated cells stay inspectable; bare-IP rows get the one
-// canonical unresolved treatment (italic + text-gray-400 + type tag) instead
+// canonical unresolved treatment (italic + text-brand-text + type tag) instead
 // of each surface hand-rolling its own muted color. Callers pass only
 // structural classes (truncate, min-w-0, sizing) via `className`; they must
 // NOT pass a text color for IP rows, since the unresolved color is owned here.
@@ -22,10 +22,10 @@ export function HostCell({ host, className = '' }: { host: HostId; className?: s
     )
   }
   return (
-    <span className={`font-mono italic text-gray-400 ${className}`.trim()} title={host.value}>
+    <span className={`font-mono italic text-brand-text ${className}`.trim()} title={host.value}>
       {host.value}
       {' '}
-      <span className="text-[10px] uppercase tracking-wide text-gray-600">
+      <span className="text-[10px] uppercase tracking-wide text-brand-text-muted">
         {host.type}
       </span>
     </span>

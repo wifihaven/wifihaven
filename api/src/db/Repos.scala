@@ -1606,10 +1606,15 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 class BlockEventRepoLive(xa: Transactor[Task]) extends BlockEventRepo {
   private type R = (BlockEventId, Option[MacAddress], HostId, BlockReason, String)
   private def toB(r: R)                           = BlockEvent(r._1, r._2, r._3, r._4, r._5)
+  // #1176/#1179: dual-write `reason_text` (pre-V40 TEXT wire format) alongside
+  // `reason` (post-V40 JSONB). Reads still come from `reason`; the parallel
+  // column exists so a Render auto-rollback that lands on a post-V44 image
+  // binding the column as TEXT can still serve.
   def insertBatch(events: List[BlockEventInsert]) =
-    Update[BlockEventInsert](
-      "INSERT INTO block_events(mac,host_type,host_value,reason) VALUES(?,?,?,?)",
-    ).updateMany(events).transact(xa)
+    Update[(BlockEventInsert, String)](
+      "INSERT INTO block_events(mac,host_type,host_value,reason,reason_text) " +
+        "VALUES(?,?,?,?,?)",
+    ).updateMany(events.map(e => (e, BlockReason.asWire(e.reason)))).transact(xa)
   def recent(limit: Int)                          =
     sql"SELECT id,mac,host_type,host_value,reason,ts::TEXT FROM block_events ORDER BY ts DESC LIMIT $limit"
       .query[R]
@@ -1645,14 +1650,16 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // replays; updateMany returns count of rows actually inserted.
   // #720: resolved_host_value carries an API-side FQDN attribution for
   // ipv4/ipv6-typed events; ingest sets it from sibling fqdn events.
+  // #1176/#1179: dual-write `reason_text` (pre-V40 TEXT wire format) alongside
+  // `reason` (post-V40 JSONB). See BlockEventRepoLive for the why.
   def insertBatch(events: List[ConnectionEventInsert]) =
-    Update[ConnectionEventInsert](
-      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id,resolved_host_value) " +
-        "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid()),?) " +
+    Update[(ConnectionEventInsert, String)](
+      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id,resolved_host_value,reason_text) " +
+        "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid()),?,?) " +
         // #806: unique key widened to (event_id, ts) for ts-range partitioning;
         // a replay carries the same router-supplied ts so dedup is unchanged.
         "ON CONFLICT (event_id, ts) DO NOTHING",
-    ).updateMany(events).transact(xa)
+    ).updateMany(events.map(e => (e, BlockReason.asWire(e.reason)))).transact(xa)
 
   // #720: read paths coalesce a populated resolved_host_value into the host
   // tuple so callers see ('fqdn', resolved) instead of ('ipv4', literal-ip).

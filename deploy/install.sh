@@ -109,6 +109,19 @@ prompt_secret() {
 genpw()    { openssl rand -base64 24 | tr -d '\n=/+' | cut -c1-24; }
 gensecret(){ openssl rand -base64 48 | tr -d '\n'; }
 
+cat <<'BANNER'
+
+          _  __ _ _
+ _      _(_)/ _(_) |__   __ ___   _____ _ __
+| | /| / / | |_| | '_ \ / _` \ \ / / _ \ '_ \
+| |/ |/ /| |  _| | | | | (_| |\ V /  __/ | | |
+|__/|__/ |_|_| |_|_| |_|\__,_| \_/ \___|_| |_|
+
+  a haven for the household network
+
+API installer
+BANNER
+
 # ── 1. Sanity checks ──────────────────────────────────────────────────────
 
 step "Checking prerequisites"

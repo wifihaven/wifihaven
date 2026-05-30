@@ -96,17 +96,17 @@ export function BlockedPage() {
     : null
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-brand-surface flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6 text-center">
         <div className="space-y-2">
-          <div className="text-4xl font-bold text-red-500">Blocked</div>
-          {host && <div className="text-lg font-mono text-white">{host}</div>}
-          <p className="text-gray-400 text-sm">{body}</p>
-          {profileLine && <p className="text-gray-500 text-xs">{profileLine}</p>}
+          <div className="text-4xl font-bold text-red-700">Blocked</div>
+          {host && <div className="text-lg font-mono text-brand-ink">{host}</div>}
+          <p className="text-brand-text text-sm">{body}</p>
+          {profileLine && <p className="text-brand-text-muted text-xs">{profileLine}</p>}
         </div>
         {mac && host
           ? <AskParent mac={mac} host={host} info={info} legacyReason={legacyReason} />
-          : <p className="text-gray-500 text-sm">Ask a parent to adjust your settings.</p>
+          : <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
         }
       </div>
     </div>
@@ -170,7 +170,7 @@ function AskParent({
     return (
       <div
         data-testid="ask-parent-sent"
-        className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl px-4 py-3 text-sm text-emerald-200"
+        className="bg-brand-accent/10 border border-brand-accent/30 rounded-2xl px-4 py-3 text-sm text-brand-accent"
       >
         Sent. A parent will review and decide.
       </div>
@@ -201,7 +201,7 @@ function AskParent({
         onChange={(e) => setNote(e.target.value.slice(0, 280))}
         placeholder="Optional: tell them why (280 chars max)"
         rows={2}
-        className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 resize-none"
+        className="w-full bg-white border border-brand-border rounded-lg px-3 py-2 text-sm text-brand-ink placeholder-brand-text-muted resize-none"
       />
       <div className="space-y-2">
         {kinds.map(k => (
@@ -211,14 +211,14 @@ function AskParent({
             onClick={() => ask(k)}
             disabled={sending !== null}
             data-testid={`ask-parent-${k}`}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+            className="w-full bg-brand-accent-dark hover:bg-brand-accent-dark disabled:opacity-50 text-brand-ink text-sm font-medium px-4 py-2 rounded-lg transition-colors"
           >
             {sending === k ? 'Asking…' : kindLabel(k)}
           </button>
         ))}
       </div>
       {error && (
-        <p className="text-xs text-red-400" data-testid="ask-parent-error">
+        <p className="text-xs text-red-700" data-testid="ask-parent-error">
           {error}
         </p>
       )}

@@ -30,7 +30,7 @@ export function NewDevicesHint() {
     <Link
       data-testid="dashboard-new-devices-hint"
       to="/devices"
-      className="block bg-yellow-500/5 border border-yellow-500/30 rounded-2xl px-5 py-3 text-sm text-yellow-200 hover:bg-yellow-500/10 transition-colors"
+      className="block bg-amber-500/5 border border-amber-500/30 rounded-2xl px-5 py-3 text-sm text-amber-800 hover:bg-amber-500/10 transition-colors"
     >
       {newDevices.length === 1
         ? '1 new device on the network — review on the Devices page →'
@@ -52,7 +52,7 @@ export function AccessRequestsBanner() {
         type="button"
         data-testid="access-requests-banner"
         onClick={() => setOpen(true)}
-        className="block w-full text-left bg-emerald-500/5 border border-emerald-500/30 rounded-2xl px-5 py-3 text-sm text-emerald-200 hover:bg-emerald-500/10 transition-colors"
+        className="block w-full text-left bg-brand-accent/5 border border-brand-accent/30 rounded-2xl px-5 py-3 text-sm text-brand-accent hover:bg-brand-accent-dark/10 transition-colors"
       >
         {requests.length === 1
           ? '1 request from a household member — review →'
@@ -102,13 +102,13 @@ function AccessRequestsModal({
       className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="w-full max-w-xl bg-gray-900 border border-gray-800 rounded-2xl p-5 mt-12 space-y-4">
+      <div className="w-full max-w-xl bg-white border border-brand-border rounded-2xl p-5 mt-12 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-white">Pending requests</h2>
+          <h2 className="text-base font-semibold text-brand-ink">Pending requests</h2>
           <button
             type="button"
             onClick={onClose}
-            className="text-gray-500 hover:text-white text-sm"
+            className="text-brand-text-muted hover:text-brand-ink text-sm"
           >
             Close
           </button>
@@ -160,26 +160,26 @@ function AccessRequestRow({ request }: { request: Alert }) {
   return (
     <li
       data-testid={`access-request-${request.id}`}
-      className="bg-gray-950/50 border border-gray-800 rounded-xl p-4 space-y-3"
+      className="bg-brand-surface/50 border border-brand-border rounded-xl p-4 space-y-3"
     >
       <div className="flex items-baseline justify-between gap-2">
         <div>
-          <p className="text-sm font-semibold text-white">{kindLabel(request.requestKind)}</p>
-          <p className="text-xs text-gray-400">{kindDescription(request)}</p>
+          <p className="text-sm font-semibold text-brand-ink">{kindLabel(request.requestKind)}</p>
+          <p className="text-xs text-brand-text">{kindDescription(request)}</p>
         </div>
-        <p className="text-xs text-gray-500 shrink-0">{relativeTime(request.createdAt)}</p>
+        <p className="text-xs text-brand-text-muted shrink-0">{relativeTime(request.createdAt)}</p>
       </div>
-      <p className="text-xs text-gray-500 font-mono">
+      <p className="text-xs text-brand-text-muted font-mono">
         {request.deviceName ?? request.mac}
         {request.profileName && ` · ${request.profileName}`}
       </p>
       {request.note && (
-        <p className="text-xs text-gray-400 italic border-l-2 border-gray-700 pl-2">
+        <p className="text-xs text-brand-text italic border-l-2 border-brand-border-strong pl-2">
           "{request.note}"
         </p>
       )}
       {request.requestKind === 'extension' && (
-        <label className="block text-xs text-gray-400">
+        <label className="block text-xs text-brand-text">
           Minutes:
           <input
             type="number"
@@ -187,18 +187,18 @@ function AccessRequestRow({ request }: { request: Alert }) {
             max={480}
             value={minutes}
             onChange={(e) => setMinutes(Math.max(1, Number(e.target.value) || 0))}
-            className="ml-2 w-20 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-white"
+            className="ml-2 w-20 bg-white border border-brand-border-strong rounded px-2 py-1 text-sm text-brand-ink"
           />
         </label>
       )}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-red-700">{error}</p>}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={approve}
           disabled={busy !== null}
           data-testid={`access-request-approve-${request.id}`}
-          className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+          className="flex-1 bg-brand-accent-dark hover:bg-brand-accent-dark disabled:opacity-50 text-brand-ink text-sm font-medium px-3 py-2 rounded-lg transition-colors"
         >
           {busy === 'approve' ? 'Approving…' : 'Approve'}
         </button>
@@ -207,7 +207,7 @@ function AccessRequestRow({ request }: { request: Alert }) {
           onClick={deny}
           disabled={busy !== null}
           data-testid={`access-request-deny-${request.id}`}
-          className="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+          className="flex-1 bg-brand-alt hover:bg-brand-alt disabled:opacity-50 text-brand-ink text-sm font-medium px-3 py-2 rounded-lg transition-colors"
         >
           {busy === 'deny' ? 'Denying…' : 'Deny'}
         </button>

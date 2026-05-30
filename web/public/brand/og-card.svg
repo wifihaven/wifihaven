@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="wifihaven social card">
+  <title>wifihaven social card</title>
+  <desc>1200 by 630 social/Open-Graph card. Off-white canvas with the horizontal lockup centered. Used for GitHub social preview and future docs share cards.</desc>
+  <rect width="1200" height="630" fill="#FAFAF7"/>
+  <g id="mascot" transform="translate(140, 185)">
+    <path d="M 100 215 C 60 215, 25 185, 20 130 C 15 70, 65 25, 130 30 C 175 33, 200 70, 195 115 C 192 145, 175 165, 158 165 C 148 165, 142 155, 138 142 C 134 130, 132 122, 132 122 L 100 215 Z" fill="#A8582E"/>
+    <ellipse cx="125" cy="200" rx="48" ry="52" fill="#C2693A"/>
+    <ellipse cx="138" cy="220" rx="22" ry="28" fill="#E89A6A"/>
+    <circle cx="148" cy="135" r="32" fill="#C2693A"/>
+    <ellipse cx="130" cy="108" rx="8" ry="13" fill="#C2693A" transform="rotate(-25 130 108)"/>
+    <ellipse cx="130" cy="108" rx="3.5" ry="7" fill="#7A3F1F" transform="rotate(-25 130 108)"/>
+    <circle cx="161" cy="132" r="3.2" fill="#1F1B16"/>
+    <circle cx="162" cy="131" r="1" fill="#FAFAF7"/>
+    <ellipse cx="175" cy="142" rx="3.5" ry="2.5" fill="#1F1B16"/>
+    <ellipse cx="160" cy="200" rx="15" ry="17" fill="#F2E8D5" stroke="#1F1B16" stroke-width="2"/>
+    <path d="M 145 188 Q 160 178, 175 188 L 172 196 L 148 196 Z" fill="#3A5A6C"/>
+    <line x1="160" y1="178" x2="160" y2="170" stroke="#1F1B16" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <text x="420" y="370" font-family="Inter, Nunito, Poppins, 'SF Pro Rounded', ui-rounded, system-ui, -apple-system, sans-serif" font-size="120" font-weight="500" fill="#3A5A6C" letter-spacing="-2.5">wifihaven</text>
+  <text x="423" y="420" font-family="Inter, Nunito, Poppins, system-ui, sans-serif" font-size="26" font-weight="400" fill="#3A5A6C" opacity="0.65">a haven for the household network</text>
+</svg>

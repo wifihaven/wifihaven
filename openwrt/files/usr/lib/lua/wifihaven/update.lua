@@ -24,12 +24,13 @@ end
 
 -- Find the main `wifihaven_<X.Y.Z>-<rel>_all.<ext>` asset in a release
 -- metadata table (as produced by GitHub's REST API). Skips the
--- luci-app-wifihaven_* siblings, which share the extension and a
--- substring of the package name. Returns { url, version } or nil.
+-- luci-app-wifihaven_* siblings (#1178), which share the extension and a
+-- substring of the package name; the leading `^wifihaven_` anchor is the
+-- key part of the regex. Returns { url, version } or nil.
 function M.pick_asset(meta, ext)
   if meta == nil or meta.assets == nil then return nil end
   local version = M.tag_to_version(meta.tag_name)
-  local pattern = "^wifihaven_.+%." .. ext .. "$"
+  local pattern = "^wifihaven_[^_]+_[^_]+%." .. ext .. "$"
   for _, a in ipairs(meta.assets) do
     if a.name and a.name:match(pattern) then
       return { url = a.browser_download_url, version = version }

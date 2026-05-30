@@ -113,10 +113,17 @@ else
 fi
 platform_ver=$(awk -F"'" '/DISTRIB_RELEASE/{print $2}' /etc/openwrt_release 2>/dev/null || echo unknown)
 
-cat >"$TTY" <<EOF
+cat >"$TTY" <<'EOF'
 
-WifiHaven OpenWRT agent — interactive install
-=============================================
+          _  __ _ _
+ _      _(_)/ _(_) |__   __ ___   _____ _ __
+| | /| / / | |_| | '_ \ / _` \ \ / / _ \ '_ \
+| |/ |/ /| |  _| | | | | (_| |\ V /  __/ | | |
+|__/|__/ |_|_| |_|_| |_|\__,_| \_/ \___|_| |_|
+
+  a haven for the household network
+
+OpenWRT agent — interactive install
 This will install the agent, enroll this router against your API server,
 and start the agent. Press Ctrl-C at any prompt to abort.
 

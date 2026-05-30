@@ -33,13 +33,21 @@ log() { logger -t wifihaven "update: $*"; }
 
 # Detect package manager. Prefer apk (24.10+) when both are present, since
 # routers mid-migration may still ship a vestigial opkg binary.
+#
+# PKG_NAME_RE is matched against the asset *basename* (#1178) and is tight
+# enough to reject luci-app-wifihaven and any future named variants attached
+# to the same release. A bare extension match was too loose: GitHub releases
+# carry both the luci-app and the agent assets, and "first match wins"
+# silently picked the wrong one.
 if command -v apk >/dev/null 2>&1; then
   PM=apk
   PKG_EXT=apk
+  PKG_NAME_RE='^wifihaven_[^_]+_all\.apk$'
   TMP=/tmp/wifihaven-update.apk
 elif command -v opkg >/dev/null 2>&1; then
   PM=opkg
   PKG_EXT=ipk
+  PKG_NAME_RE='^wifihaven_[^_]+_[^_]+\.ipk$'
   TMP=/tmp/wifihaven-update.ipk
 else
   log "no package manager found (neither apk nor opkg); skipping"
@@ -69,26 +77,37 @@ if [ -z "$META" ]; then
   exit 0
 fi
 
-# Extract tag_name and matching asset URL. The fallback openwrt-latest
-# release also carries a `tag_name` ("openwrt-latest") and the same asset
-# layout, so this works for both paths — the openwrt-latest case will
-# always look like a version mismatch and trigger a reinstall, which is
-# acceptable for the rare bootstrap fallback.
+# Extract tag_name and the highest-version matching asset URL. A versioned
+# release normally carries a single wifihaven_<X.Y.Z>-<rel>_all.<ext> asset,
+# but we still walk the full list, reject luci-app (#1178), and `sort -V`
+# in case multiple revisions are ever attached. The fallback openwrt-latest
+# release uses the same asset layout, so this works for both paths.
 TAG=$(printf '%s' "$META" | jsonfilter -e '@.tag_name')
 LATEST_VERSION=$(printf '%s' "$TAG" | sed 's/^v//')
-LATEST_URL=
+MATCHES=
 i=0
 while :; do
-  NAME=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].name" 2>/dev/null)
-  [ -z "$NAME" ] && break
-  case "$NAME" in
-    wifihaven_*."$PKG_EXT")
-      LATEST_URL=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].browser_download_url")
-      break
-      ;;
-  esac
+  URL=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].browser_download_url" 2>/dev/null)
+  [ -z "$URL" ] && break
+  BASENAME=${URL##*/}
+  if printf '%s' "$BASENAME" | grep -qE "$PKG_NAME_RE"; then
+    # Version is the segment between 'wifihaven_' and the next underscore
+    # (e.g. '0.2.8-1' from wifihaven_0.2.8-1_all.apk).
+    VER=${BASENAME#wifihaven_}
+    VER=${VER%%_*}
+    MATCHES="${MATCHES}${VER} ${URL}
+"
+  fi
   i=$((i + 1))
 done
+
+# sort -V (version sort) is supported by busybox sort on OpenWRT 23.05+ and
+# handles the rc-style suffixes our semver tags use (e.g. 0.2.8-1).
+LATEST_URL=
+BEST=$(printf '%s' "$MATCHES" | grep -v '^$' | sort -V -k1,1 | tail -n1)
+if [ -n "$BEST" ]; then
+  LATEST_URL=$(printf '%s\n' "$BEST" | awk '{print $2}')
+fi
 if [ -z "$LATEST_URL" ] || [ -z "$LATEST_VERSION" ]; then
   log "could not resolve asset url / version from release metadata; skipping"
   exit 0

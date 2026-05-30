@@ -59,7 +59,12 @@ grep -q '@.published_at\|@.assets\[.*\].digest' "$SCRIPT" \
   && check "no leftover digest/published_at decision logic" "still references digest/published_at" \
   || check "no leftover digest/published_at decision logic" ok
 
-# 4d. Installs via apk add --allow-untrusted on apk path.
+# 4d. #1178: rejects luci-app via a tightened regex (not bare extension).
+grep -q "PKG_NAME_RE='\^wifihaven_" "$SCRIPT" \
+  && check "[#1178] uses tightened PKG_NAME_RE to reject luci-app" ok \
+  || check "[#1178] uses tightened PKG_NAME_RE to reject luci-app" "missing PKG_NAME_RE"
+
+# 4e. Installs via apk add --allow-untrusted on apk path.
 grep -q 'apk add --allow-untrusted' "$SCRIPT" \
   && check "uses apk add --allow-untrusted on apk path" ok \
   || check "uses apk add --allow-untrusted on apk path" "missing apk install command"
@@ -114,12 +119,24 @@ grep -q '0 4 \* \* \* /usr/sbin/wifihaven-update' "$BUILDER" \
 # redirect STATE_DIR, the init.d path, and the VERSION file, then runs it
 # under a PATH containing only the mocks. Inspects resulting call logs.
 
+# MOCK_TAG     — tag_name returned by the META JSON (default "v0.2.8").
+# MOCK_ASSETS  — newline-separated list of asset URLs (no digest needed).
+#                Default lists luci-app + agent (apk + ipk) for v0.2.8.
+# MOCK_HTTP_CODE — http_code returned for the /releases/latest fetch.
+
+export DEFAULT_TAG="v0.2.8"
+export DEFAULT_ASSETS='https://example.com/luci-app-wifihaven_0.2.8-1_all.apk
+https://example.com/luci-app-wifihaven_0.2.8-1_all.ipk
+https://example.com/wifihaven_0.2.8-1_all.apk
+https://example.com/wifihaven_0.2.8-1_all.ipk'
+
 setup_mocks() {
   TESTDIR=$(mktemp -d -t wifihaven-update-spec.XXXXXX)
   BINDIR="$TESTDIR/bin"
   STATE="$TESTDIR/state"
   VERS_DIR="$TESTDIR/version"
   mkdir -p "$BINDIR" "$STATE" "$VERS_DIR"
+  : > "$TESTDIR/downloads.log"
 
   cat > "$BINDIR/logger" <<EOF
 #!/bin/sh
@@ -127,46 +144,57 @@ shift 2
 printf '%s\n' "\$*" >> "$TESTDIR/logger.out"
 EOF
 
-  # Mock curl: META fetch (no -o, or -o /tmp/wifihaven-update.meta with -w
-  # for HTTP code capture) vs asset download (-o TMP).
-  # $MOCK_HTTP_CODE controls the simulated HTTP status (default 200).
-  # $CURL_DOWNLOAD_FAIL=1 makes asset download fail.
+  # Mock curl. Three call shapes:
+  #   1) Meta fetch with -o + -w (HTTP code capture): /releases/latest path.
+  #   2) Asset download with -o (no -w): record URL into downloads.log.
+  #   3) Bare GET (no -o, no -w): fallback openwrt-latest fetch.
   cat > "$BINDIR/curl" <<'CURL_EOF'
 #!/bin/sh
 out=""
 write_code=""
+url=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2;;
     -w) write_code="$2"; shift 2;;
     -*) shift;;
-    *) url="$1"; shift;;
+    *)  url="$1"; shift;;
   esac
 done
+emit_meta() {
+  tag="${MOCK_TAG:-$DEFAULT_TAG}"
+  printf '{"tag_name":"%s","assets":[' "$tag"
+  first=1
+  printf '%s\n' "${MOCK_ASSETS:-$DEFAULT_ASSETS}" | while IFS= read -r u; do
+    [ -z "$u" ] && continue
+    [ $first -eq 0 ] && printf ','
+    printf '{"browser_download_url":"%s"}' "$u"
+    first=0
+  done
+  printf ']}'
+}
 if [ -n "$write_code" ]; then
-  # Meta fetch with HTTP code capture. Without -f, real curl exits 0 even
-  # on 4xx and just emits the body + write_out code; mirror that here.
   code="${MOCK_HTTP_CODE:-200}"
   case "$code" in
-    200) printf '%s' "${MOCK_META_200:-$DEFAULT_META}" > "$out";;
+    200) emit_meta > "$out";;
     *)   : > "$out";;
   esac
   printf '%s' "$code"
   exit 0
 fi
 if [ -n "$out" ]; then
-  # Asset download.
   if [ "${CURL_DOWNLOAD_FAIL:-0}" = "1" ]; then exit 22; fi
+  printf '%s\n' "$url" >> "$ASSET_LOG"
   printf 'fakepkg' > "$out"
   exit 0
 fi
-# Bare GET (used for the fallback openwrt-latest fetch).
-printf '%s\n' "${MOCK_META_FALLBACK:-$DEFAULT_FALLBACK_META}"
+# Bare GET — fallback openwrt-latest fetch.
+emit_meta
 CURL_EOF
 
-  # Pin-mock jsonfilter: only the expressions wifihaven-update queries.
-  # META lists luci-app first to verify pick logic skips it, then the
-  # apk + ipk siblings.
+  # Real-ish jsonfilter mock: reads stdin and extracts tag_name or
+  # @.assets[N].browser_download_url. Supports only the queries used by
+  # wifihaven-update.
   cat > "$BINDIR/jsonfilter" <<'EOF'
 #!/bin/sh
 expr=""
@@ -177,16 +205,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 input=$(cat)
-tag=$(printf '%s' "$input" | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p')
 case "$expr" in
-  '@.tag_name') echo "$tag";;
-  '@.assets[0].name') echo "luci-app-wifihaven_0.2.8-1_all.ipk";;
-  '@.assets[0].browser_download_url') echo "https://example.com/luci.ipk";;
-  '@.assets[1].name') echo "wifihaven_0.2.8-1_all.apk";;
-  '@.assets[1].browser_download_url') echo "https://example.com/wifihaven.apk";;
-  '@.assets[2].name') echo "wifihaven_0.2.8-1_all.ipk";;
-  '@.assets[2].browser_download_url') echo "https://example.com/wifihaven.ipk";;
-  *) ;;
+  '@.tag_name')
+    printf '%s' "$input" | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p'
+    ;;
+  '@.assets['*'].browser_download_url')
+    idx=$(printf '%s' "$expr" | sed -n 's/@.assets\[\([0-9]*\)\].browser_download_url/\1/p')
+    # Extract the Nth browser_download_url (0-indexed) from the JSON.
+    printf '%s' "$input" \
+      | tr ',' '\n' \
+      | sed -n 's/.*"browser_download_url":"\([^"]*\)".*/\1/p' \
+      | awk -v n="$idx" 'NR==n+1 {print}'
+    ;;
 esac
 EOF
 
@@ -204,9 +234,7 @@ EOF
       "$SCRIPT" > "$PATCHED"
   chmod +x "$PATCHED" "$BINDIR"/*
 
-  DEFAULT_META='{"tag_name":"v0.2.8","assets":[{},{},{}]}'
-  DEFAULT_FALLBACK_META='{"tag_name":"openwrt-latest","assets":[{},{},{}]}'
-  export DEFAULT_META DEFAULT_FALLBACK_META
+  export ASSET_LOG="$TESTDIR/downloads.log"
 }
 
 mock_apk() {
@@ -235,9 +263,8 @@ count_restart_calls() {
   fi
 }
 
-stamp_value() {
-  cat "$STATE/last_update_version" 2>/dev/null || echo ""
-}
+stamp_value() { cat "$STATE/last_update_version" 2>/dev/null || echo ""; }
+picked_url() { tail -n1 "$TESTDIR/downloads.log" 2>/dev/null; }
 
 # Case A: installed != latest on apk → restart called once, stamp = 0.2.8.
 setup_mocks
@@ -339,6 +366,52 @@ N=$(count_restart_calls)
   && check "[404 fallback] still installs via fallback tag" ok \
   || check "[404 fallback] still installs via fallback tag" "expected 1, got $N"
 rm -rf "$TESTDIR"
+unset MOCK_HTTP_CODE
+
+# Case H (#1178): multi-asset manifest with luci-app listed FIRST and an
+# older wifihaven listed BEFORE the new one. Script must (a) reject luci-app
+# and (b) pick the highest-version wifihaven .apk, not the first match.
+setup_mocks
+mock_apk
+printf '0.1.0-1\n' > "$VERS_DIR/VERSION"
+export MOCK_ASSETS='https://example.com/luci-app-wifihaven_0.1.0-1_all.apk
+https://example.com/luci-app-wifihaven_0.2.8-1_all.apk
+https://example.com/wifihaven_0.1.0-1_all.apk
+https://example.com/wifihaven_0.2.8-1_all.apk'
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+URL=$(picked_url)
+case "$URL" in
+  *luci-app*) check "[#1178 multi apk] does not pick luci-app asset" "picked $URL" ;;
+  *) check "[#1178 multi apk] does not pick luci-app asset" ok ;;
+esac
+case "$URL" in
+  *wifihaven_0.2.8-1_all.apk) check "[#1178 multi apk] picks highest-version wifihaven asset" ok ;;
+  *) check "[#1178 multi apk] picks highest-version wifihaven asset" "picked '$URL'" ;;
+esac
+rm -rf "$TESTDIR"
+unset MOCK_ASSETS
+
+# Case I (#1178): same tightening on the opkg/.ipk path.
+setup_mocks
+rm -f "$BINDIR/apk"
+mock_opkg
+printf '0.1.0-1\n' > "$VERS_DIR/VERSION"
+export MOCK_ASSETS='https://example.com/luci-app-wifihaven_0.1.0-1_all.ipk
+https://example.com/luci-app-wifihaven_0.2.8-1_all.ipk
+https://example.com/wifihaven_0.1.0-1_all.ipk
+https://example.com/wifihaven_0.2.8-1_all.ipk'
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+URL=$(picked_url)
+case "$URL" in
+  *luci-app*) check "[#1178 multi ipk] does not pick luci-app .ipk" "picked $URL" ;;
+  *) check "[#1178 multi ipk] does not pick luci-app .ipk" ok ;;
+esac
+case "$URL" in
+  *wifihaven_0.2.8-1_all.ipk) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" ok ;;
+  *) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" "picked '$URL'" ;;
+esac
+rm -rf "$TESTDIR"
+unset MOCK_ASSETS
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

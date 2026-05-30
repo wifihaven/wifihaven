@@ -313,15 +313,19 @@ describe('ProfilesPage — +Time mutation (#972 / #946)', () => {
   })
 })
 
-describe('ProfilesPage — pause / delete', () => {
-  // #406: pause is now an explicit PUT with the full profile + paused=!current.
-  // The previous POST /pause endpoint was a server-side toggle (race-prone).
-  it('clicking Pause calls api.profiles.update with paused=true and reloads', async () => {
+describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
+  // #1063 — Pause/Resume + Delete were moved from the expanded body into the
+  // collapsed summary row (alongside the +Time button). The card no longer
+  // needs to be expanded to reach either action.
+  // #406: pause is still an explicit PUT with the full profile + paused=!current.
+  it('Pause button is rendered in the collapsed row and fires update without expanding', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /Pause/ }))
+    // collapsed body is hidden — no schedule subsection visible
+    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    const pauseBtn = within(kidsCard).getByTestId('profile-row-pause-1')
+    await user.click(pauseBtn)
     await waitFor(() =>
       expect(api.profiles.update).toHaveBeenCalledWith(
         1,
@@ -331,12 +335,12 @@ describe('ProfilesPage — pause / delete', () => {
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
   })
 
-  it('clicking Resume calls api.profiles.update with paused=false', async () => {
+  it('Resume button is rendered in the collapsed row for a paused profile', async () => {
     const user = userEvent.setup()
     renderPage()
     const adultsCard = await screen.findByTestId('profile-card-2')
-    await expand(2, user)
-    await user.click(within(adultsCard).getByRole('button', { name: /Resume/ }))
+    expect(within(adultsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    await user.click(within(adultsCard).getByTestId('profile-row-pause-2'))
     await waitFor(() =>
       expect(api.profiles.update).toHaveBeenCalledWith(
         2,
@@ -345,13 +349,13 @@ describe('ProfilesPage — pause / delete', () => {
     )
   })
 
-  it('confirms then calls api.profiles.delete', async () => {
+  it('Delete button is rendered in the collapsed row and confirms before deleting', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
+    expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
+    await user.click(within(kidsCard).getByTestId('profile-row-delete-1'))
     expect(confirmSpy).toHaveBeenCalled()
     await waitFor(() => expect(api.profiles.delete).toHaveBeenCalledWith(1))
     confirmSpy.mockRestore()
@@ -362,10 +366,24 @@ describe('ProfilesPage — pause / delete', () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
-    await expand(1, user)
-    await user.click(within(kidsCard).getByRole('button', { name: /^Delete$/ }))
+    await user.click(within(kidsCard).getByTestId('profile-row-delete-1'))
     expect(api.profiles.delete).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
+  })
+
+  it('expanded body no longer renders the Pause/Delete affordances', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    // collapsed-row controls are the only Pause/Delete: exactly one of each,
+    // and both carry the row test ids.
+    const pauseButtons = within(kidsCard).getAllByRole('button', { name: /Pause|Resume/ })
+    expect(pauseButtons).toHaveLength(1)
+    expect(pauseButtons[0]).toBe(within(kidsCard).getByTestId('profile-row-pause-1'))
+    const deleteButtons = within(kidsCard).getAllByRole('button', { name: /^Delete$/ })
+    expect(deleteButtons).toHaveLength(1)
+    expect(deleteButtons[0]).toBe(within(kidsCard).getByTestId('profile-row-delete-1'))
   })
 })
 
@@ -670,13 +688,13 @@ describe('ProfilesPage — highlight from ?id= (#298)', () => {
     HTMLElement.prototype.scrollIntoView = vi.fn()
     renderPage(['/profiles?id=1'])
     const card = await screen.findByTestId('profile-card-1')
-    await waitFor(() => expect(card.className).toContain('ring-emerald-500'))
+    await waitFor(() => expect(card.className).toContain('ring-brand-accent'))
   })
 
   it('does not ring any card when ?id= is not set', async () => {
     renderPage()
     const card = await screen.findByTestId('profile-card-1')
-    expect(card.className).not.toContain('ring-emerald-500')
+    expect(card.className).not.toContain('ring-brand-accent')
   })
 })
 
@@ -1148,7 +1166,7 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
     expect(fill.style.width).toBe('50%')
     // Under cap → emerald, not red.
-    expect(fill.className).toContain('bg-emerald-500')
+    expect(fill.className).toContain('bg-brand-accent')
   })
 
   it('shows the bar in red once usage meets/exceeds the cap', async () => {
