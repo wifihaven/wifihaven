@@ -44,14 +44,5 @@ wifihaven {
     # Example (dev):     "api.lan"
     # Precursor to the DB-backed global profile in #937.
     uiAllowedHosts = ""
-
-    # #1174: public SPA base URL (scheme+host). Included in every snapshot so
-    # the router agent's block-page handler can redirect blocked kids to the
-    # SPA host instead of the API host. Required in deployments where the SPA
-    # and API live on different hostnames (cloud); leave empty for self-hosted
-    # single-origin installs where the API serves the SPA.
-    # Example (prod):    "https://wifihaven.net"
-    # Example (staging): "https://staging.wifihaven.net"
-    spaBaseUrl = ""
   }
 }

@@ -66,6 +66,5 @@
       "version" : "2026.05.01",
       "url" : "https://example.org/lists/adult.txt"
     }
-  },
-  "spaBaseUrl" : "https://wifihaven.net"
+  }
 }

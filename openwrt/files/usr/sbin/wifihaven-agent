@@ -36,6 +36,12 @@ end
 local api_url       = uci_get("api_url",              "http://192.168.1.1:8080")
 local router_token  = uci_get("router_token",         "")
 local router_id     = uci_get("router_id",            "")
+-- #1174: public SPA base URL the block-page handler redirects blocked kids to.
+-- Set at enrollment time (install.sh --spa-url) per-deployment so the redirect
+-- targets the SPA host (e.g. https://wifihaven.net) and not the API host
+-- (which 404s non-/api paths in cloud deployments). Empty → block_page falls
+-- back to api_url for self-hosted single-origin installs.
+local spa_url       = uci_get("spa_url",              "")
 local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
 local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
@@ -49,8 +55,8 @@ log.init({ debug = debug_opt })
 -- nil on a checkout / older install — header is then simply omitted.
 local agent_version = version.read()
 local policy_opts   = { agent_version = agent_version }
-log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds activity_sample_int=%ds agent_version=%s",
-         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, activity_sample_int, tostring(agent_version))
+log.info("wifihaven-agent: starting api_url=%s spa_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds activity_sample_int=%ds agent_version=%s",
+         api_url, spa_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, activity_sample_int, tostring(agent_version))
 
 -- activity_sample_int should evenly divide usage_report_interval, or the last
 -- partial bucket at report flush time is shorter than the others. Warn and
@@ -223,20 +229,15 @@ do
   if f then f:write(api_url); f:close() end
 end
 
--- #1174: write /var/run/wifihaven/spa_url from snapshot.spaBaseUrl so the
--- uhttpd block-page handler can redirect kids to the public SPA host instead
--- of the API host (the API origin 404s non-/api paths in cloud deployments).
--- Empty/missing snapshot field → empty file → block_page falls back to api_url.
-local function persist_spa_base_url(snapshot)
-  local spa = nil
-  if type(snapshot) == "table" and type(snapshot.spaBaseUrl) == "string" then
-    spa = snapshot.spaBaseUrl
-  end
+-- #1174: write the UCI-configured spa_url to the IPC path so the uhttpd
+-- block-page handler can redirect kids to the public SPA host instead of the
+-- API host (the API origin 404s non-/api paths in cloud deployments). Empty
+-- value writes an empty file → block_page.lua falls back to api_url, which
+-- is what self-hosted single-origin installs want. Per-deployment config,
+-- not per-snapshot — set once at enrollment via `install.sh --spa-url`.
+do
   local f = io.open(BLOCK_PAGE_SPA_URL_PATH, "w")
-  if f then
-    f:write(spa or "")
-    f:close()
-  end
+  if f then f:write(spa_url or ""); f:close() end
 end
 
 -- Persist the per-MAC block reasons for the block-page handler. Called after
@@ -285,7 +286,6 @@ do
     if policy.apply(cached, write_file, run_cmd, log) then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
-      persist_spa_base_url(cached)
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
@@ -310,7 +310,6 @@ do
     if policy.apply(snap, write_file, run_cmd, log) then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
-      persist_spa_base_url(snap)
       current_etag = etag
       last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -476,7 +475,6 @@ conntrack.watch({
         if policy.apply(snap, write_file, run_cmd, log) then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
           persist_blocked_reasons()
-          persist_spa_base_url(snap)
           current_etag = etag
           last_snapshot = snap
           policy.mark_poll_success(wall)

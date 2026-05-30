@@ -292,26 +292,39 @@ function M.dnsmasq(snapshot)
   -- runs `nft add element` for the right per-MAC set instead. See
   -- openwrt/files/usr/sbin/wifihaven-dns-tail.
 
-  -- #421: per-(MAC, host) extraAllowed nftset populators. One line per
-  -- (mac, host) pair; the set is named per-(mac, host) but populated by
-  -- any client's resolution of host. The MAC scoping happens in the nft
-  -- rule (`ether saddr <mac> ... != @ea_<mac>_<host>`), not at DNS time.
+  -- #421: per-(MAC, host) extraAllowed nftset populators. ONE line per host,
+  -- merging every (mac, host) pair into a comma-separated list of sets so a
+  -- single resolution populates every MAC's ea_/ea6_ set for that host.
   -- (#496: dnsmasq 2.91's `nftset=` does NOT parse a `tag:` prefix — the
-  -- earlier tag-scoped form was silently rejected, leaving every ea_ set
-  -- empty and turning the per-MAC drop rule into an unconditional drop.)
+  -- earlier tag-scoped form was silently rejected. #1174: emitting one
+  -- nftset= directive per (mac, host) is ALSO silently broken — dnsmasq
+  -- honors only the LAST matching directive for a given domain, so only
+  -- the last MAC's set ever gets populated and the carve fires for that
+  -- one MAC. Merging into a single per-host directive sidesteps both.)
+  -- The MAC scoping still happens in the nft rule
+  -- (`ether saddr <mac> ... != @ea_<mac>_<host>`), not at DNS time, so the
+  -- shared populator is safe — each MAC only consults its own set.
   do
-    local ea_macs = {}
-    for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
-    table.sort(ea_macs)
-    if #ea_macs > 0 then
-      emit("# extraAllowed → per-(MAC, host) ea_ nftsets (#421, #496)")
-      for _, mac in ipairs(ea_macs) do
-        for _, host in ipairs(ea_by_mac[mac]) do
-          emit(string.format(
-            "nftset=/%s/4#inet#wifihaven#%s,6#inet#wifihaven#%s",
-            host,
-            ea_set_name(mac, host), ea6_set_name(mac, host)))
+    -- Invert ea_by_mac into host -> sorted list of MACs that allow that host.
+    local macs_by_host = {}
+    for mac, hosts in pairs(ea_by_mac) do
+      for _, host in ipairs(hosts) do
+        macs_by_host[host] = macs_by_host[host] or {}
+        macs_by_host[host][#macs_by_host[host] + 1] = mac
+      end
+    end
+    local hosts = sorted_keys(macs_by_host)
+    if #hosts > 0 then
+      emit("# extraAllowed → per-host ea_ nftsets (one populator per host, "
+        .. "comma-merging every MAC's set; #421, #496, #1174)")
+      for _, host in ipairs(hosts) do
+        table.sort(macs_by_host[host])
+        local sets = {}
+        for _, mac in ipairs(macs_by_host[host]) do
+          sets[#sets + 1] = string.format("4#inet#wifihaven#%s", ea_set_name(mac, host))
+          sets[#sets + 1] = string.format("6#inet#wifihaven#%s", ea6_set_name(mac, host))
         end
+        emit(string.format("nftset=/%s/%s", host, table.concat(sets, ",")))
       end
       emit("")
     end

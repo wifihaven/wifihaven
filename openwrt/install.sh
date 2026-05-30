@@ -133,6 +133,17 @@ prompt API_URL          "API server URL" "https://api.wifihaven.net"
 [ -n "${API_URL:-}" ] || err "API URL is required"
 API_URL=${API_URL%/}
 
+# #1174: SPA URL is where blocked clients get redirected (the kid's browser
+# lands here). Distinct from API URL in cloud deployments (api.* vs apex);
+# same URL for self-hosted single-origin installs. Default derived by
+# stripping a leading `api.` segment from the API URL's host — correct for
+# the prod and staging deployments — but the operator can override or clear
+# it (empty → block_page falls back to api_url).
+spa_default=$(printf '%s' "$API_URL" | sed -E 's|^([a-z]+://)api\.|\1|')
+[ "$spa_default" = "$API_URL" ] && spa_default=""
+prompt SPA_URL          "Public SPA URL for the block-page redirect (empty = use API URL)" "$spa_default"
+SPA_URL=${SPA_URL%/}
+
 prompt ENROLLMENT_TOKEN "One-time enrollment token (admin UI -> Routers -> Add router)"
 [ -n "${ENROLLMENT_TOKEN:-}" ] || err "enrollment token is required"
 
@@ -225,6 +236,9 @@ fi
 # does not have to re-enter these.
 uci set wifihaven.@wifihaven[0].api_url="$API_URL"
 uci set wifihaven.@wifihaven[0].lan_prefix="$LAN_PREFIX"
+# #1174: empty spa_url is fine — agent writes "" to the IPC file and
+# block_page.lua falls back to api_url (self-hosted single-origin path).
+uci set wifihaven.@wifihaven[0].spa_url="$SPA_URL"
 uci commit wifihaven
 
 # Enroll.

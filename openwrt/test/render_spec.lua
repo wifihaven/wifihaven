@@ -79,6 +79,33 @@ describe("render.dnsmasq", function()
     assert.is_nil(conf:find("#wifihaven#ea_", 1, true))
   end)
 
+  -- #1174: dnsmasq honors only the LAST `nftset=/<domain>/...` directive per
+  -- domain, so emitting one line per (MAC, host) silently drops every MAC
+  -- except the last on that host — the carve fires for one MAC and not the
+  -- others. The fix is one merged line per host, with v4+v6 entries for every
+  -- MAC's set comma-joined. Pin both the merge and the single-line invariant.
+  it("merges every MAC's ea_/ea6_ set into one nftset= per host (#1174)", function()
+    local s = snap_one()
+    -- Two devices in the kids profile so both share wifihaven.net in extraAllowed.
+    s.devices["de:ad:be:ef:00:01"] = { profileId = 3, name = "kid2-ipad", rules = nil }
+    s.profiles["3"].rules.extraAllowed = { "wifihaven.net" }
+    local conf = render.dnsmasq(s)
+
+    -- Exactly one nftset= directive for wifihaven.net (not two — one per MAC).
+    local _, count = conf:gsub("nftset=/wifihaven%.net/", "")
+    assert.equals(1, count)
+
+    -- The single line includes BOTH MACs' v4 and v6 sets.
+    assert.truthy(conf:find(
+      "#wifihaven#ea_aa_bb_cc_11_22_33_wifihaven_net", 1, true))
+    assert.truthy(conf:find(
+      "#wifihaven#ea6_aa_bb_cc_11_22_33_wifihaven_net", 1, true))
+    assert.truthy(conf:find(
+      "#wifihaven#ea_de_ad_be_ef_00_01_wifihaven_net", 1, true))
+    assert.truthy(conf:find(
+      "#wifihaven#ea6_de_ad_be_ef_00_01_wifihaven_net", 1, true))
+  end)
+
   it("handles multiple devices in different profiles", function()
     local s = snap_one()
     s.devices["de:ad:be:ef:00:01"] = { profileId = 1, name = "parent-phone", rules = nil }

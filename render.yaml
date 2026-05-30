@@ -83,12 +83,6 @@ services:
       # MUST NOT include prod hosts (router would let them through too).
       - key: WIFIHAVEN_UI_ALLOWED_HOSTS
         value: "staging.wifihaven.net,api-staging.wifihaven.net"
-      # #1174: public SPA base URL. The router agent ships this to every
-      # gateway, and the block-page handler uses it as the redirect dest so
-      # blocked kids land on the SPA (which serves /blocked) instead of the
-      # API origin (which 404s non-/api paths). Staging-only.
-      - key: WIFIHAVEN_SPA_BASE_URL
-        value: "https://staging.wifihaven.net"
       # #614: SPA is served by the wifihaven-spa-staging Static Site (CDN).
       # The JVM still bundles a copy as a self-hosted fallback, but the API
       # origin must not serve it here — non-/api/* paths return 404.
@@ -159,13 +153,6 @@ services:
       # include staging hosts (router would let them through too).
       - key: WIFIHAVEN_UI_ALLOWED_HOSTS
         value: "wifihaven.net,www.wifihaven.net,api.wifihaven.net"
-      # #1174: public SPA base URL. The router agent ships this to every
-      # gateway, and the block-page handler uses it as the redirect dest so
-      # blocked kids land on the SPA (which serves /blocked) instead of the
-      # API origin (which 404s non-/api paths). Prod-only — when this gets
-      # cut to https://app.wifihaven.net per #1171, update here.
-      - key: WIFIHAVEN_SPA_BASE_URL
-        value: "https://wifihaven.net"
       # #614: SPA is served by the wifihaven-spa-prod Static Site (CDN).
       # The JVM still bundles a copy as a self-hosted fallback, but the API
       # origin must not serve it here — non-/api/* paths return 404.
