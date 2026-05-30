@@ -109,51 +109,86 @@ end)
 describe("block_page.build_dest_url", function()
   it("emits a fully-formed /blocked URL with host, reason, and mac", function()
     local u = bp.build_dest_url(
-      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+      "http://api.example.com", nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
     assert.truthy(u:find("http://api.example.com/blocked", 1, true))
     assert.truthy(u:find("host=youtube.com", 1, true))
     assert.truthy(u:find("reason=Paused", 1, true))
     assert.truthy(u:find("mac=aa%3Abb%3Acc%3A11%3A22%3A33", 1, true))
   end)
 
-  it("returns nil when api_url is not configured", function()
-    assert.is_nil(bp.build_dest_url(nil, "x.com", "aa:bb:cc:11:22:33", "Paused"))
-    assert.is_nil(bp.build_dest_url("", "x.com", "aa:bb:cc:11:22:33", "Paused"))
+  it("returns nil when neither api_url nor spa_url is configured", function()
+    assert.is_nil(bp.build_dest_url(nil, nil, "x.com", "aa:bb:cc:11:22:33", "Paused"))
+    assert.is_nil(bp.build_dest_url("", "",   "x.com", "aa:bb:cc:11:22:33", "Paused"))
   end)
 
   it("tolerates a missing mac/reason (still emits a valid URL for fallback display)", function()
-    local u = bp.build_dest_url("http://api.example.com", "x.com", nil, nil)
+    local u = bp.build_dest_url("http://api.example.com", nil, "x.com", nil, nil)
     assert.truthy(u:find("mac=", 1, true))
     assert.truthy(u:find("reason=", 1, true))
+  end)
+
+  -- #1174: the SPA lives on a different host from the API (wifihaven.net vs
+  -- api.wifihaven.net in prod). When spa_url is set, the block-page redirect
+  -- must target it instead of the API host — the API origin has
+  -- WIFIHAVEN_SERVE_SPA=false and 404s non-/api paths.
+  it("prefers spa_url over api_url when both are set (#1174)", function()
+    local u = bp.build_dest_url(
+      "https://api.wifihaven.net", "https://wifihaven.net",
+      "youtube.com", "aa:bb:cc:11:22:33", "Schedule")
+    assert.truthy(u:find("https://wifihaven.net/blocked", 1, true))
+    assert.is_nil(u:find("api.wifihaven.net", 1, true))
+  end)
+
+  -- Falls back to api_url so older agents (before the spa_url plumbing)
+  -- keep redirecting to whatever the operator enrolled with.
+  it("falls back to api_url when spa_url is empty or nil (#1174)", function()
+    local u1 = bp.build_dest_url(
+      "http://api.example.com", nil, "x.com", "aa:bb:cc:11:22:33", "Paused")
+    local u2 = bp.build_dest_url(
+      "http://api.example.com", "", "x.com", "aa:bb:cc:11:22:33", "Paused")
+    assert.truthy(u1:find("http://api.example.com/blocked", 1, true))
+    assert.truthy(u2:find("http://api.example.com/blocked", 1, true))
   end)
 end)
 
 describe("block_page.render_html", function()
   it("emits a redirect document containing the dest URL when api_url is set", function()
     local html = bp.render_html(
-      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+      "http://api.example.com", nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
     assert.truthy(html:find("window.location.replace", 1, true))
     assert.truthy(html:find("reason=Paused", 1, true))
     assert.truthy(html:find("http://api.example.com/blocked", 1, true))
+  end)
+
+  -- #1174: when spa_url is set, the redirect document points at the SPA host
+  -- rather than the API host. handler.lua passes spa_url through from
+  -- /var/run/wifihaven/spa_url which the agent populates from
+  -- snapshot.spaBaseUrl.
+  it("redirects to spa_url when set (#1174)", function()
+    local html = bp.render_html(
+      "https://api.wifihaven.net", "https://wifihaven.net",
+      "youtube.com", "aa:bb:cc:11:22:33", "Schedule")
+    assert.truthy(html:find("https://wifihaven.net/blocked", 1, true))
+    assert.is_nil(html:find("api.wifihaven.net/blocked", 1, true))
   end)
 
   -- #580: redirect page must carry a viewport meta and show inline copy so
   -- iOS Safari users see content even if the cross-origin redirect is blocked.
   it("redirect page includes viewport meta and visible block reason (#580)", function()
     local html = bp.render_html(
-      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "TimeLimit")
+      "http://api.example.com", nil, "youtube.com", "aa:bb:cc:11:22:33", "TimeLimit")
     assert.truthy(html:find('name="viewport"', 1, true))
     assert.truthy(html:find("Daily screen time limit reached.", 1, true))
   end)
 
   -- #580: inline fallback (no api_url) must also carry viewport meta.
   it("inline fallback includes viewport meta (#580)", function()
-    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+    local html = bp.render_html(nil, nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
     assert.truthy(html:find('name="viewport"', 1, true))
   end)
 
-  it("falls back to inline copy when api_url is missing", function()
-    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+  it("falls back to inline copy when neither api_url nor spa_url is set", function()
+    local html = bp.render_html(nil, nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
     assert.truthy(html:find("This profile is paused.", 1, true))
     assert.is_nil(html:find("window.location.replace", 1, true))
   end)
@@ -174,7 +209,7 @@ describe("block_page.render_html", function()
   end)
 
   it("escapes the host in the inline page so it can't break out of HTML", function()
-    local html = bp.render_html(nil, "<script>alert(1)</script>", nil, "Paused")
+    local html = bp.render_html(nil, nil, "<script>alert(1)</script>", nil, "Paused")
     assert.is_nil(html:find("<script>alert(1)</script>", 1, true))
     assert.truthy(html:find("&lt;script&gt;", 1, true))
   end)
