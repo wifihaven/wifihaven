@@ -50,10 +50,10 @@ export function BucketSelector({ value, onChange, hideRaw, gates }: Props) {
             title={disabled ? gate?.reason ?? '' : ''}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
               disabled
-                ? 'bg-gray-900 text-gray-600 cursor-not-allowed'
+                ? 'bg-white text-brand-text-muted cursor-not-allowed'
                 : value === b.value
-                ? 'bg-emerald-600 text-white'
-                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                ? 'bg-brand-accent-dark text-brand-ink'
+                : 'bg-brand-alt text-brand-text hover:bg-brand-alt'
             }`}
           >
             {b.label}

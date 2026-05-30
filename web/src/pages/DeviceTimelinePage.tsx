@@ -146,16 +146,16 @@ export function DeviceTimelinePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="min-w-0">
-          <Link to="/devices" className="text-xs text-gray-500 hover:text-emerald-400">
+          <Link to="/devices" className="text-xs text-brand-text-muted hover:text-brand-accent">
             ← Devices
           </Link>
-          <h1 className="text-xl font-bold text-white truncate" data-testid="device-timeline-name">
+          <h1 className="text-xl font-bold text-brand-ink truncate" data-testid="device-timeline-name">
             {titleName}
           </h1>
-          <p className="text-xs text-gray-500 font-mono">{mac}</p>
+          <p className="text-xs text-brand-text-muted font-mono">{mac}</p>
         </div>
         <div className="flex items-center gap-2">
-          <div role="tablist" className="inline-flex rounded-xl bg-gray-900 border border-gray-800 p-1">
+          <div role="tablist" className="inline-flex rounded-xl bg-white border border-brand-border p-1">
             {(['today', 'week'] as const).map(w => (
               <button
                 key={w}
@@ -165,8 +165,8 @@ export function DeviceTimelinePage() {
                 onClick={() => setWindowAndPush(w)}
                 className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
                   window === w
-                    ? 'bg-emerald-500 text-black'
-                    : 'text-gray-400 hover:text-gray-200'
+                    ? 'bg-brand-accent text-white'
+                    : 'text-brand-text hover:text-brand-ink'
                 }`}
               >
                 {w === 'today' ? 'Today' : 'Week'}
@@ -175,36 +175,36 @@ export function DeviceTimelinePage() {
           </div>
           <button
             onClick={() => setDateAndPush(addDays(date, -1))}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-3 py-2 rounded-lg"
+            className="bg-brand-alt hover:bg-brand-alt text-brand-text text-sm px-3 py-2 rounded-lg"
             aria-label="Previous day"
           >‹</button>
           <input
             type="date"
             value={date}
             onChange={e => setDateAndPush(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-emerald-500"
+            className="bg-white border border-brand-border-strong text-brand-ink text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-brand-accent"
             data-testid="device-timeline-date"
           />
           <button
             onClick={() => setDateAndPush(addDays(date, 1))}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-3 py-2 rounded-lg"
+            className="bg-brand-alt hover:bg-brand-alt text-brand-text text-sm px-3 py-2 rounded-lg"
             aria-label="Next day"
           >›</button>
         </div>
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-3">
           {error}
         </div>
       )}
 
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
+      <div className="bg-white rounded-2xl border border-brand-border p-5">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
             {window === 'today' ? 'Hourly minutes' : 'Daily minutes (trailing 7 days)'}
           </h2>
-          <span className="text-xs text-gray-500 font-mono">
+          <span className="text-xs text-brand-text-muted font-mono">
             {window === 'today'
               ? `${formatMins(dayTotal)} total · ${dayData?.tz ?? ''}`
               : `${formatMins(weekData?.totalMins ?? 0)} total · ${weekData?.from ?? ''} → ${weekData?.to ?? ''}`}
@@ -215,7 +215,7 @@ export function DeviceTimelinePage() {
           dayEmpty ? (
             <div
               data-testid="device-timeline-empty"
-              className="h-64 flex items-center justify-center text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl"
+              className="h-64 flex items-center justify-center text-brand-text-muted text-sm border border-dashed border-brand-border rounded-xl"
             >
               No usage recorded on {date}.
             </div>
@@ -234,7 +234,7 @@ export function DeviceTimelinePage() {
                     type="button"
                     onClick={openOtherDrillIn}
                     data-testid="device-timeline-other-button"
-                    className="text-[11px] text-gray-500 hover:text-emerald-400 underline decoration-dotted underline-offset-2"
+                    className="text-[11px] text-brand-text-muted hover:text-brand-accent underline decoration-dotted underline-offset-2"
                     title="See the hosts inside the Other bucket for this day"
                   >
                     Inside “Other” ↗
@@ -247,7 +247,7 @@ export function DeviceTimelinePage() {
           weekEmpty ? (
             <div
               data-testid="device-timeline-week-empty"
-              className="h-64 flex items-center justify-center text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl"
+              className="h-64 flex items-center justify-center text-brand-text-muted text-sm border border-dashed border-brand-border rounded-xl"
             >
               No usage recorded in this 7-day window.
             </div>
@@ -289,8 +289,8 @@ export function DeviceTimelinePage() {
       </div>
 
       {hosts.length > 0 && (
-        <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        <div className="bg-white rounded-2xl border border-brand-border p-5">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
             Top hosts
           </h2>
           <ul className="space-y-1.5">
@@ -299,7 +299,7 @@ export function DeviceTimelinePage() {
                 <li
                   key={`${h.host.type}:${h.host.value}`}
                   data-testid={`device-timeline-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-2"
+                  className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <span
@@ -311,21 +311,21 @@ export function DeviceTimelinePage() {
                     <HostCell host={h.host} className="truncate" />
                   </span>
                   <span
-                    className="text-gray-500 font-mono shrink-0 ml-2"
+                    className="text-brand-text-muted font-mono shrink-0 ml-2"
                     title={h.presenceMins !== null
                       ? `presence ${formatMins(h.presenceMins)} (every bucket this host appeared in)`
                       : undefined}
                   >
                     {formatMins(h.mins)}
                     {h.presenceMins !== null && (
-                      <span className="text-gray-600"> ({formatMins(h.presenceMins)})</span>
+                      <span className="text-brand-text-muted"> ({formatMins(h.presenceMins)})</span>
                     )}
                   </span>
                 </li>
               )
             })}
           </ul>
-          <p className="text-[11px] text-gray-600 mt-3">
+          <p className="text-[11px] text-brand-text-muted mt-3">
             Per-host minutes are byte-share-weighted wall-clock attention within each 5-minute
             window (#715){window === 'week' ? '; presence in parens is how many buckets the host appeared in at all' : ', so the stack sums to the device\'s wall-clock minutes for that hour'}.
           </p>
@@ -374,39 +374,39 @@ function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherD
       onClick={onClose}
     >
       <div
-        className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg p-6 space-y-4 max-h-[80vh] flex flex-col"
+        className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-lg p-6 space-y-4 max-h-[80vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start justify-between">
           <div>
-            <h3 id="other-drillin-title" className="text-lg font-bold text-white">
+            <h3 id="other-drillin-title" className="text-lg font-bold text-brand-ink">
               Inside the “Other” bucket
             </h3>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <p className="text-xs text-brand-text-muted mt-0.5">
               Hosts below the top {topN} on {date}.
             </p>
           </div>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 text-xl leading-none"
+            className="text-brand-text-muted hover:text-brand-text text-xl leading-none"
             aria-label="Close"
           >×</button>
         </div>
 
         {loading && (
-          <div className="text-sm text-gray-500" data-testid="device-timeline-other-loading">
+          <div className="text-sm text-brand-text-muted" data-testid="device-timeline-other-loading">
             Loading the long-tail…
           </div>
         )}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-3">
             {error}
           </div>
         )}
         {!loading && !error && tail.length === 0 && (
           <div
             data-testid="device-timeline-other-empty"
-            className="text-sm text-gray-500"
+            className="text-sm text-brand-text-muted"
           >
             Nothing else recorded for this day — the top {topN} already cover everything.
           </div>
@@ -420,12 +420,12 @@ function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherD
                 <li
                   key={`${h.host.type}:${h.host.value}`}
                   data-testid={`device-timeline-other-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-2 gap-2"
+                  className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2 gap-2"
                 >
                   <HostCell host={h.host} className="truncate min-w-0" />
-                  <span className="text-gray-500 font-mono shrink-0 tabular-nums">
+                  <span className="text-brand-text-muted font-mono shrink-0 tabular-nums">
                     {formatMins(h.dayMins)}
-                    <span className="text-gray-600 ml-2">
+                    <span className="text-brand-text-muted ml-2">
                       {shareOther.toFixed(0)}% of Other · {shareTotal.toFixed(0)}% of day
                     </span>
                   </span>
@@ -438,7 +438,7 @@ function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherD
         <div className="pt-2">
           <button
             onClick={onClose}
-            className="w-full py-2.5 rounded-xl bg-gray-800 text-gray-300 text-sm font-medium hover:bg-gray-700 transition-colors"
+            className="w-full py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium hover:bg-brand-alt transition-colors"
           >
             Close
           </button>

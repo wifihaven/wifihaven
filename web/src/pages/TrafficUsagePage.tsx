@@ -183,9 +183,9 @@ export function TrafficUsagePage() {
   return (
     <div className="space-y-4 min-w-0" data-testid="traffic-usage-page">
       <header>
-        <h1 className="text-xl sm:text-2xl font-bold text-gray-100">Traffic Usage</h1>
-        <p className="text-xs sm:text-sm text-gray-500">
-          Raw <code className="text-emerald-400">traffic_reports</code> rows plus on-the-fly
+        <h1 className="text-xl sm:text-2xl font-bold text-brand-ink">Traffic Usage</h1>
+        <p className="text-xs sm:text-sm text-brand-text-muted">
+          Raw <code className="text-brand-accent">traffic_reports</code> rows plus on-the-fly
           aggregation. Click a column header (Host / Device / Profile) to add it to the
           aggregation, or the funnel icon to filter that column.
         </p>
@@ -222,7 +222,7 @@ export function TrafficUsagePage() {
       {bucket !== 'raw' && groupBy.includes('app') && appCount === 0 && (
         <div
           data-testid="traffic-app-empty"
-          className="rounded border border-emerald-900 bg-emerald-950/30 p-4 text-sm text-emerald-200"
+          className="rounded border border-brand-accent-dark bg-brand-accent/30 p-4 text-sm text-brand-accent"
         >
           No apps defined yet. <Link to="/apps" className="underline">Create one</Link> to group
           traffic by app.
@@ -251,14 +251,14 @@ export function TrafficUsagePage() {
             type="button"
             data-testid="load-more"
             onClick={() => void load(cursor)}
-            className="text-xs text-gray-300 hover:text-emerald-300 px-3 py-1.5 border border-gray-700 hover:border-emerald-700 rounded"
+            className="text-xs text-brand-text hover:text-brand-accent px-3 py-1.5 border border-brand-border-strong hover:border-brand-accent-dark rounded"
           >
             Load more
           </button>
         </div>
       )}
       {!hasMore && !loading && (rawRows.length > 0 || aggRows.length > 0) && (
-        <div className="text-xs text-gray-500 text-center py-3" data-testid="end-of-stream">
+        <div className="text-xs text-brand-text-muted text-center py-3" data-testid="end-of-stream">
           — end of history —
         </div>
       )}
@@ -296,14 +296,14 @@ export function FilterShelf({
     profiles.find(p => p.profile.id === pid)?.profile.name ?? `#${pid}`
   const hasChips = macs.length > 0 || profileIds.length > 0
   return (
-    <div className="space-y-3 bg-gray-900/40 rounded p-3 border border-gray-800">
+    <div className="space-y-3 bg-white/40 rounded p-3 border border-brand-border">
       <div className="flex flex-wrap items-end gap-4">
         <BucketSelector value={bucket} onChange={onBucketChange} gates={bucketGates} />
         <JumpToDate value={until} onChange={onUntilChange} />
       </div>
       {hasChips && (
         <div className="flex flex-wrap items-center gap-2" data-testid="active-filters">
-          <span className="text-[11px] uppercase tracking-wide text-gray-500">Filters:</span>
+          <span className="text-[11px] uppercase tracking-wide text-brand-text-muted">Filters:</span>
           {macs.map(m => (
             <Chip
               key={`mac-${m}`}
@@ -324,7 +324,7 @@ export function FilterShelf({
             type="button"
             data-testid="clear-filters"
             onClick={() => { onMacsChange([]); onProfileIdsChange([]) }}
-            className="text-[11px] text-gray-500 hover:text-gray-300 underline"
+            className="text-[11px] text-brand-text-muted hover:text-brand-text underline"
           >
             clear all
           </button>
@@ -338,14 +338,14 @@ function Chip({ testId, label, onRemove }: { testId: string; label: string; onRe
   return (
     <span
       data-testid={testId}
-      className="inline-flex items-center gap-1 text-[11px] bg-emerald-950/50 border border-emerald-900 text-emerald-300 rounded px-2 py-0.5"
+      className="inline-flex items-center gap-1 text-[11px] bg-brand-accent/50 border border-brand-accent-dark text-brand-accent rounded px-2 py-0.5"
     >
       {label}
       <button
         type="button"
         onClick={onRemove}
         aria-label="remove"
-        className="text-emerald-400 hover:text-red-400"
+        className="text-brand-accent hover:text-red-700"
       >
         ×
       </button>
@@ -355,8 +355,8 @@ function Chip({ testId, label, onRemove }: { testId: string; label: string; onRe
 
 function Spinner() {
   return (
-    <div className="flex items-center gap-2 text-gray-500 text-sm py-6" data-testid="loading">
-      <span className="inline-block h-3 w-3 rounded-full border-2 border-gray-700 border-t-emerald-400 animate-spin" />
+    <div className="flex items-center gap-2 text-brand-text-muted text-sm py-6" data-testid="loading">
+      <span className="inline-block h-3 w-3 rounded-full border-2 border-brand-border-strong border-t-brand-accent animate-spin" />
       Loading…
     </div>
   )
@@ -366,7 +366,7 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <div
       data-testid="error"
-      className="px-3 py-2 rounded border border-red-800 bg-red-950/30 text-red-300 text-sm"
+      className="px-3 py-2 rounded border border-red-200 bg-red-100/30 text-red-700 text-sm"
     >
       {message}
     </div>
@@ -458,7 +458,7 @@ function RawTable({
     <div className="overflow-x-auto" data-testid="raw-table">
       <table className="min-w-full text-sm">
         <thead className="text-xs uppercase">
-          <tr className="text-gray-500">
+          <tr className="text-brand-text-muted">
             <th className="text-left px-2 py-1">Period start</th>
             <th className="text-left px-2 py-1">
               <DeviceHeaderCell
@@ -484,16 +484,16 @@ function RawTable({
             <th className="text-right px-2 py-1 hidden md:table-cell">Time</th>
           </tr>
         </thead>
-        <tbody className="text-gray-300">
+        <tbody className="text-brand-text">
           {rows.length === 0 && !loading && (
             <tr>
-              <td colSpan={7} className="text-center text-gray-500 py-4">
+              <td colSpan={7} className="text-center text-brand-text-muted py-4">
                 No rows in window.
               </td>
             </tr>
           )}
           {rows.map((r, i) => (
-            <tr key={i} className="border-t border-gray-800">
+            <tr key={i} className="border-t border-brand-border">
               <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">{localTime(r.periodStart)}</td>
               <td className="px-2 py-1">{r.deviceName ?? r.mac}</td>
               <td className="px-2 py-1 hidden md:table-cell">{r.profileName ?? '-'}</td>
@@ -543,8 +543,8 @@ function AppCell({
       </span>
     )
   }
-  if (sole) return <span className="text-gray-400">{sole}</span>
-  return <span className="text-gray-500">{count ?? 0}</span>
+  if (sole) return <span className="text-brand-text">{sole}</span>
+  return <span className="text-brand-text-muted">{count ?? 0}</span>
 }
 
 // #846 follow-up: render strategy for non-grouped aggregated columns.
@@ -561,8 +561,8 @@ function NonGroupedCell({
   count: number | undefined
 }) {
   if (groupedValue !== undefined) return <>{groupedValue}</>
-  if (sole)                       return <span className="text-gray-400">{sole}</span>
-  return <span className="text-gray-500">{count ?? 0}</span>
+  if (sole)                       return <span className="text-brand-text">{sole}</span>
+  return <span className="text-brand-text-muted">{count ?? 0}</span>
 }
 
 function AggregateTable({
@@ -573,7 +573,7 @@ function AggregateTable({
     <div className="overflow-x-auto" data-testid="aggregate-table">
       <table className="min-w-full text-sm">
         <thead className="text-xs uppercase">
-          <tr className="text-gray-500">
+          <tr className="text-brand-text-muted">
             <th className="text-left px-2 py-1">Window start</th>
             <th className="text-left px-2 py-1">
               <span className="inline-flex items-center gap-1">
@@ -635,10 +635,10 @@ function AggregateTable({
             <th className="text-right px-2 py-1 hidden md:table-cell">Time</th>
           </tr>
         </thead>
-        <tbody className="text-gray-300">
+        <tbody className="text-brand-text">
           {rows.length === 0 && !loading && (
             <tr>
-              <td colSpan={8} className="text-center text-gray-500 py-4">
+              <td colSpan={8} className="text-center text-brand-text-muted py-4">
                 No rows in window.
               </td>
             </tr>
@@ -649,7 +649,7 @@ function AggregateTable({
             const prevWindow = i > 0 ? rows[i - 1].windowStart : null
             const showWindow = r.windowStart !== prevWindow
             return (
-            <tr key={i} className={`${showWindow ? 'border-t-2 border-gray-700' : 'border-t border-gray-800/40'}`}>
+            <tr key={i} className={`${showWindow ? 'border-t-2 border-brand-border-strong' : 'border-t border-brand-border/40'}`}>
               <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">
                 {showWindow ? localTime(r.windowStart) : ''}
               </td>

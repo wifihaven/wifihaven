@@ -39,10 +39,10 @@ export function GroupableHeader({
       }}
       className={`inline-flex items-center gap-1 ${
         disabled
-          ? 'text-gray-700 cursor-not-allowed'
+          ? 'text-brand-text cursor-not-allowed'
           : active
-          ? 'text-emerald-400 hover:text-emerald-300'
-          : 'text-gray-500 hover:text-gray-300'
+          ? 'text-brand-accent hover:text-brand-accent'
+          : 'text-brand-text-muted hover:text-brand-text'
       }`}
     >
       <span>{label}</span>

@@ -105,8 +105,8 @@ export function BlocklistsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">Blocklists</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <h1 className="text-xl font-bold text-brand-ink">Blocklists</h1>
+        <p className="text-sm text-brand-text-muted mt-1">
           Curated host categories. Toggle per profile — devices in that profile will be blocked
           from every host in the list. Bundled lists ship with the API release; the host content
           is refreshed on every API restart.
@@ -114,13 +114,13 @@ export function BlocklistsPage() {
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/40 text-red-300 text-sm rounded-lg px-3 py-2">
+        <div className="bg-red-500/10 border border-red-500/40 text-red-700 text-sm rounded-lg px-3 py-2">
           {error}
         </div>
       )}
 
       {sortedLists.length === 0 && (
-        <p className="text-sm text-gray-500">No blocklists available.</p>
+        <p className="text-sm text-brand-text-muted">No blocklists available.</p>
       )}
 
       <div className="space-y-3">
@@ -130,20 +130,20 @@ export function BlocklistsPage() {
           const totalPages = hostsLoaded ? Math.max(1, Math.ceil(hostsLoaded.length / HOSTS_PER_PAGE)) : 1
           const pageHosts = hostsLoaded?.slice(page * HOSTS_PER_PAGE, (page + 1) * HOSTS_PER_PAGE) ?? []
           return (
-            <div key={b.id} data-testid={`blocklist-${b.id}`} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div key={b.id} data-testid={`blocklist-${b.id}`} className="bg-white border border-brand-border rounded-lg p-4">
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold text-white">{b.name}</h2>
-                    <span className="text-xs font-mono text-gray-500">{b.id}</span>
+                    <h2 className="text-base font-semibold text-brand-ink">{b.name}</h2>
+                    <span className="text-xs font-mono text-brand-text-muted">{b.id}</span>
                     {b.bundled && (
-                      <span className="text-[10px] uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                      <span className="text-[10px] uppercase tracking-wider bg-brand-accent/10 text-brand-accent border border-brand-accent/30 px-1.5 py-0.5 rounded">
                         bundled
                       </span>
                     )}
                   </div>
-                  {b.description && <p className="text-sm text-gray-400 mt-1">{b.description}</p>}
-                  <p className="text-xs text-gray-500 mt-1">
+                  {b.description && <p className="text-sm text-brand-text mt-1">{b.description}</p>}
+                  <p className="text-xs text-brand-text-muted mt-1">
                     {b.hostCount.toLocaleString()} hosts
                     {b.lastBuiltAt && ` · built ${new Date(b.lastBuiltAt).toLocaleString()}`}
                     {b.source && ` · ${b.source}`}
@@ -152,15 +152,15 @@ export function BlocklistsPage() {
                 <button
                   type="button"
                   onClick={() => toggleHosts(b.id)}
-                  className="text-xs text-gray-400 hover:text-white border border-gray-700 hover:border-gray-600 rounded-lg px-3 py-1.5"
+                  className="text-xs text-brand-text hover:text-brand-ink border border-brand-border-strong hover:border-brand-border-strong rounded-lg px-3 py-1.5"
                 >
                   {expanded === b.id ? 'Hide hosts' : 'View hosts'}
                 </button>
               </div>
 
               {profiles.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-gray-800">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                <div className="mt-3 pt-3 border-t border-brand-border">
+                  <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
                     Enabled for
                   </p>
                   <div className="flex flex-wrap gap-2">
@@ -177,8 +177,8 @@ export function BlocklistsPage() {
                           data-testid={`toggle-${b.id}-${p.profile.id}`}
                           className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                             on
-                              ? 'bg-red-500/20 text-red-300 border-red-500/40'
-                              : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                              ? 'bg-red-500/20 text-red-700 border-red-500/40'
+                              : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
                           } ${saving ? 'opacity-50 cursor-wait' : ''}`}
                         >
                           {on ? '✓ ' : ''}{p.profile.name}
@@ -190,18 +190,18 @@ export function BlocklistsPage() {
               )}
 
               {expanded === b.id && (
-                <div className="mt-3 pt-3 border-t border-gray-800">
+                <div className="mt-3 pt-3 border-t border-brand-border">
                   {!hostsLoaded ? (
-                    <p className="text-xs text-gray-500">Loading hosts…</p>
+                    <p className="text-xs text-brand-text-muted">Loading hosts…</p>
                   ) : hostsLoaded.length === 0 ? (
-                    <p className="text-xs text-gray-500">No hosts in this list.</p>
+                    <p className="text-xs text-brand-text-muted">No hosts in this list.</p>
                   ) : (
                     <>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 font-mono text-xs text-gray-400">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 font-mono text-xs text-brand-text">
                         {pageHosts.map(h => <div key={h}>{h}</div>)}
                       </div>
                       {totalPages > 1 && (
-                        <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
+                        <div className="flex items-center justify-between mt-3 text-xs text-brand-text-muted">
                           <span>
                             {page * HOSTS_PER_PAGE + 1}–{Math.min((page + 1) * HOSTS_PER_PAGE, hostsLoaded.length)}
                             {' '}of {hostsLoaded.length.toLocaleString()}
@@ -211,7 +211,7 @@ export function BlocklistsPage() {
                               type="button"
                               disabled={page === 0}
                               onClick={() => setHostsPage(prev => ({ ...prev, [b.id]: page - 1 }))}
-                              className="px-2 py-1 rounded border border-gray-700 disabled:opacity-30"
+                              className="px-2 py-1 rounded border border-brand-border-strong disabled:opacity-30"
                             >
                               Prev
                             </button>
@@ -219,7 +219,7 @@ export function BlocklistsPage() {
                               type="button"
                               disabled={page >= totalPages - 1}
                               onClick={() => setHostsPage(prev => ({ ...prev, [b.id]: page + 1 }))}
-                              className="px-2 py-1 rounded border border-gray-700 disabled:opacity-30"
+                              className="px-2 py-1 rounded border border-brand-border-strong disabled:opacity-30"
                             >
                               Next
                             </button>

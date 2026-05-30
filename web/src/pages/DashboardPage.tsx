@@ -27,7 +27,7 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-white">Dashboard</h1>
+      <h1 className="text-xl font-bold text-brand-ink">Dashboard</h1>
 
       <NewDevicesHint />
 
@@ -45,34 +45,34 @@ export function DashboardPage() {
           </div>
 
           <div className="grid md:grid-cols-2 gap-6">
-            <section className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+            <section className="bg-white rounded-2xl border border-brand-border p-5">
+              <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
                 Top Blocked (24h)
               </h2>
               {stats.topBlocked.length === 0
                 ? <EmptyState variant="inline" title="No blocked queries yet" />
                 : stats.topBlocked.map(d => (
-                    <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-gray-800 last:border-0">
-                      <span className="font-mono text-sm text-gray-300 truncate"><HostCell host={d.host} /></span>
-                      <span className="text-red-400 font-mono text-sm ml-4 shrink-0">{d.count}</span>
+                    <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-brand-border last:border-0">
+                      <span className="font-mono text-sm text-brand-text truncate"><HostCell host={d.host} /></span>
+                      <span className="text-red-700 font-mono text-sm ml-4 shrink-0">{d.count}</span>
                     </div>
                   ))
               }
             </section>
 
-            <section className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+            <section className="bg-white rounded-2xl border border-brand-border p-5">
+              <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
                 Per Device (24h)
               </h2>
               {stats.perDevice.map(d => (
-                <div key={d.mac} className="flex items-center gap-3 py-2 border-b border-gray-800 last:border-0">
+                <div key={d.mac} className="flex items-center gap-3 py-2 border-b border-brand-border last:border-0">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{d.deviceName}</p>
-                    <p className="text-xs text-gray-600 font-mono">{d.mac}</p>
+                    <p className="text-sm font-medium text-brand-ink truncate">{d.deviceName}</p>
+                    <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
                   </div>
                   <div className="text-right shrink-0">
-                    <p className="text-sm text-gray-300">{d.total} queries</p>
-                    <p className="text-xs text-red-400">{d.blocked} blocked</p>
+                    <p className="text-sm text-brand-text">{d.total} queries</p>
+                    <p className="text-xs text-red-700">{d.blocked} blocked</p>
                   </div>
                 </div>
               ))}
@@ -81,9 +81,9 @@ export function DashboardPage() {
         </>
       )}
 
-      <section className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-800">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Recent Queries</h2>
+      <section className="bg-white rounded-2xl border border-brand-border overflow-hidden">
+        <div className="px-5 py-4 border-b border-brand-border">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">Recent Queries</h2>
         </div>
         <div className="overflow-x-auto">
           <LogTable logs={logs} />
@@ -104,9 +104,9 @@ export function NowSection() {
 
   return (
     <section data-testid="now-section" className="space-y-3">
-      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Now</h2>
+      <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">Now</h2>
       {data === null
-        ? <p className="text-gray-600 text-sm">Loading live activity…</p>
+        ? <p className="text-brand-text-muted text-sm">Loading live activity…</p>
         : data.profiles.length === 0
           ? <EmptyState variant="inline" title="No profiles configured yet." />
           : (
@@ -124,12 +124,12 @@ function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
   return (
     <div
       data-testid={`now-profile-${profile.id}`}
-      className={`bg-gray-900 rounded-2xl border p-5 ${idle ? 'border-gray-800 opacity-60' : 'border-emerald-900/50'}`}
+      className={`bg-white rounded-2xl border p-5 ${idle ? 'border-brand-border opacity-60' : 'border-brand-accent-dark/50'}`}
     >
       <div className="flex items-center gap-2 mb-3">
-        <h3 className="text-base font-semibold text-white">{profile.name}</h3>
+        <h3 className="text-base font-semibold text-brand-ink">{profile.name}</h3>
         {profile.paused && (
-          <span className="text-[10px] font-bold uppercase tracking-wider bg-yellow-900/60 text-yellow-300 px-2 py-0.5 rounded">
+          <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100/60 text-amber-700 px-2 py-0.5 rounded">
             Paused
           </span>
         )}
@@ -148,18 +148,18 @@ function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
 
 function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
   return (
-    <div data-testid={`now-device-${device.mac}`} className="border-t border-gray-800 first:border-0 pt-3 first:pt-0">
+    <div data-testid={`now-device-${device.mac}`} className="border-t border-brand-border first:border-0 pt-3 first:pt-0">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-white truncate">{device.name}</p>
-        <p className="text-xs text-gray-500 shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
+        <p className="text-sm font-medium text-brand-ink truncate">{device.name}</p>
+        <p className="text-xs text-brand-text-muted shrink-0">{formatLastSeen(device.lastSeenSeconds)}</p>
       </div>
       <NowActivityLine device={device} />
       {device.topHosts.length > 0 && (
         <ul className="mt-2 space-y-0.5">
           {device.topHosts.map(h => (
-            <li key={`${h.host.type}:${h.host.value}`} className="flex justify-between text-xs text-gray-400">
+            <li key={`${h.host.type}:${h.host.value}`} className="flex justify-between text-xs text-brand-text">
               <span className="font-mono truncate"><HostCell host={h.host} /></span>
-              <span className="text-gray-600 ml-2 shrink-0">{formatDuration(h.activeSeconds)}</span>
+              <span className="text-brand-text-muted ml-2 shrink-0">{formatDuration(h.activeSeconds)}</span>
             </li>
           ))}
         </ul>
@@ -174,13 +174,13 @@ function NowDeviceRow({ device }: { device: DashboardNowDevice }) {
 function NowActivityLine({ device }: { device: DashboardNowDevice }) {
   const a = device.nowActivity
   if (a == null) {
-    return <p className="mt-1 text-xs text-gray-500 italic">(active)</p>
+    return <p className="mt-1 text-xs text-brand-text-muted italic">(active)</p>
   }
   return (
-    <p className="mt-1 text-xs text-gray-300">
-      <span className="text-gray-500">watching</span>{' '}
+    <p className="mt-1 text-xs text-brand-text">
+      <span className="text-brand-text-muted">watching</span>{' '}
       <span className="font-mono"><HostCell host={a.topHost} /></span>
-      {a.minutes != null && <span className="text-gray-500"> · {a.minutes}m</span>}
+      {a.minutes != null && <span className="text-brand-text-muted"> · {a.minutes}m</span>}
     </p>
   )
 }
@@ -202,14 +202,14 @@ function formatDuration(seconds: number): string {
 
 function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
   const colors: Record<string, string> = {
-    emerald: 'text-emerald-400',
-    red: 'text-red-400',
-    yellow: 'text-yellow-400',
+    emerald: 'text-brand-accent',
+    red: 'text-red-700',
+    yellow: 'text-amber-700',
   }
   return (
-    <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">{label}</p>
-      <p className={`text-3xl font-bold ${colors[accent] ?? 'text-white'}`}>{value}</p>
+    <div className="bg-white rounded-2xl border border-brand-border p-5">
+      <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">{label}</p>
+      <p className={`text-3xl font-bold ${colors[accent] ?? 'text-brand-ink'}`}>{value}</p>
     </div>
   )
 }
@@ -218,7 +218,7 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
   return (
     <table className="w-full text-xs font-mono">
       <thead>
-        <tr className="text-gray-600 border-b border-gray-800">
+        <tr className="text-brand-text-muted border-b border-brand-border">
           <th className="text-left px-4 py-2">Time</th>
           <th className="text-left px-4 py-2">Device</th>
           <th className="text-left px-4 py-2">Domain</th>
@@ -228,14 +228,14 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
       </thead>
       <tbody>
         {logs.map(l => (
-          <tr key={l.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-            <td className="px-4 py-2 text-gray-500">{new Date(l.ts).toLocaleTimeString()}</td>
-            <td className="px-4 py-2 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
-            <td className="px-4 py-2 text-gray-300 max-w-[200px] truncate"><HostCell host={l.host} /></td>
-            <td className={`px-4 py-2 ${l.blocked ? 'text-red-400' : 'text-emerald-600'}`}>
+          <tr key={l.id} className="border-b border-brand-border/50 hover:bg-brand-alt/30">
+            <td className="px-4 py-2 text-brand-text-muted">{new Date(l.ts).toLocaleTimeString()}</td>
+            <td className="px-4 py-2 text-amber-700">{l.deviceName ?? l.mac ?? '?'}</td>
+            <td className="px-4 py-2 text-brand-text max-w-[200px] truncate"><HostCell host={l.host} /></td>
+            <td className={`px-4 py-2 ${l.blocked ? 'text-red-700' : 'text-brand-accent-dark'}`}>
               {l.blocked ? '✗ blocked' : '✓ ok'}
             </td>
-            <td className="px-4 py-2 text-gray-600 hidden md:table-cell">{blockReasonText(l.reason)}</td>
+            <td className="px-4 py-2 text-brand-text-muted hidden md:table-cell">{blockReasonText(l.reason)}</td>
           </tr>
         ))}
       </tbody>
@@ -246,7 +246,7 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
 function PageLoader() {
   return (
     <div className="flex items-center justify-center h-64">
-      <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+      <div className="w-8 h-8 border-2 border-brand-accent border-t-transparent rounded-full animate-spin" />
     </div>
   )
 }

@@ -160,13 +160,13 @@ describe('DevicesPage — highlight from ?mac= (#298)', () => {
     HTMLElement.prototype.scrollIntoView = vi.fn()
     renderPage(['/devices?mac=aa:bb:cc:dd:ee:01'])
     const row = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
-    await waitFor(() => expect(row.className).toContain('ring-emerald-500'))
+    await waitFor(() => expect(row.className).toContain('ring-brand-accent'))
   })
 
   it('does not ring any row when ?mac= is not set', async () => {
     renderPage()
     const row = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
-    expect(row.className).not.toContain('ring-emerald-500')
+    expect(row.className).not.toContain('ring-brand-accent')
   })
 })
 

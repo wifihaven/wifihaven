@@ -67,26 +67,26 @@ export function AppsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-white">Apps</h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <h1 className="text-xl font-bold text-brand-ink">Apps</h1>
+          <p className="text-sm text-brand-text-muted mt-1">
             Bundles of hosts you can block, allow, or time-limit per profile.
           </p>
         </div>
         <button
           onClick={() => { setCreating(true); setError(null) }}
-          className="bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
         >
           + New App
         </button>
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
           {error}
         </div>
       )}
 
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
         {apps.length === 0
           ? <EmptyState title="No apps yet." hint="Create one to start grouping hosts." />
           : apps.map(a => {
@@ -95,19 +95,19 @@ export function AppsPage() {
                 <button
                   key={a.app.id}
                   onClick={() => { setEditing(a); setError(null) }}
-                  className="w-full text-left border-b border-gray-800 last:border-0 hover:bg-gray-800/40 transition-colors"
+                  className="w-full text-left border-b border-brand-border last:border-0 hover:bg-brand-alt/40 transition-colors"
                 >
                   <div className="flex items-center gap-4 px-5 py-4">
                     <span className="w-8 text-center inline-flex items-center justify-center">
                       <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="lg" />
                     </span>
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-white truncate">{a.app.name}</p>
-                      <p className="text-xs text-gray-500 mt-0.5 font-mono">{a.app.slug}</p>
+                      <p className="font-medium text-brand-ink truncate">{a.app.name}</p>
+                      <p className="text-xs text-brand-text-muted mt-0.5 font-mono">{a.app.slug}</p>
                     </div>
-                    <div className="text-right text-xs text-gray-400 shrink-0">
+                    <div className="text-right text-xs text-brand-text shrink-0">
                       <p>{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</p>
-                      <p className="text-gray-500 mt-0.5">
+                      <p className="text-brand-text-muted mt-0.5">
                         {assignProfiles.size === 0
                           ? 'no profiles'
                           : `${assignProfiles.size} profile${assignProfiles.size === 1 ? '' : 's'}`}
@@ -191,7 +191,7 @@ function CreateAppModal({ onClose, onSaved }: {
     <Modal title="New App" onClose={onClose}>
       <form onSubmit={submit} className="space-y-5">
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
             {error}
           </div>
         )}
@@ -200,7 +200,7 @@ function CreateAppModal({ onClose, onSaved }: {
             type="text" value={form.name} autoFocus required
             onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
             placeholder="YouTube"
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500"
+            className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink focus:outline-none focus:border-brand-accent"
           />
         </Field>
         <Field label="Icon (optional)">
@@ -216,30 +216,30 @@ function CreateAppModal({ onClose, onSaved }: {
             value={hostsInput}
             onChange={e => setHostsInput(e.target.value)}
             placeholder="youtube.com&#10;googlevideo.com"
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white font-mono text-sm focus:outline-none focus:border-emerald-500"
+            className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink font-mono text-sm focus:outline-none focus:border-brand-accent"
           />
           <div className="flex items-center justify-between mt-2 gap-3">
             <p
-              className="text-xs text-gray-500"
+              className="text-xs text-brand-text-muted"
               title="Wildcards are unnecessary — example.com automatically covers every subdomain."
             >
               One per line or comma-separated. Each host also covers its subdomains
-              <span className="ml-1 text-gray-600 cursor-help" aria-hidden="true">ⓘ</span>
+              <span className="ml-1 text-brand-text-muted cursor-help" aria-hidden="true">ⓘ</span>
             </p>
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
-              className="shrink-0 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg"
+              className="shrink-0 text-xs font-medium text-brand-accent hover:text-brand-accent bg-brand-accent/10 px-3 py-1.5 rounded-lg"
             >Pick from recent activity</button>
           </div>
         </Field>
         <div className="flex gap-3 pt-2">
           <button type="button" onClick={onClose} disabled={saving}
-            className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
+            className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-50">
             Cancel
           </button>
           <button type="submit" disabled={saving}
-            className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
+            className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : 'Create App'}
           </button>
         </div>
@@ -339,7 +339,7 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
     <Modal title={`Edit ${detail.app.name}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-5">
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
             {error}
           </div>
         )}
@@ -347,7 +347,7 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
           <input
             type="text" value={form.name} required
             onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500"
+            className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink focus:outline-none focus:border-brand-accent"
           />
         </Field>
         <Field label="Icon (optional)">
@@ -360,16 +360,16 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
         <Field label="Hosts">
           <div className="flex flex-wrap gap-2 mb-3 min-h-[2rem]" data-testid="hosts-chips">
             {form.hosts.length === 0 && (
-              <span className="text-xs text-gray-500 italic">No hosts yet.</span>
+              <span className="text-xs text-brand-text-muted italic">No hosts yet.</span>
             )}
             {form.hosts.map(h => (
-              <span key={h} className="inline-flex items-center gap-1 bg-gray-800 text-emerald-300 text-xs font-mono px-2.5 py-1 rounded-lg">
+              <span key={h} className="inline-flex items-center gap-1 bg-brand-alt text-brand-accent text-xs font-mono px-2.5 py-1 rounded-lg">
                 {h}
                 <button
                   type="button"
                   onClick={() => removeHost(h)}
                   aria-label={`Remove ${h}`}
-                  className="text-gray-500 hover:text-red-400 transition-colors leading-none"
+                  className="text-brand-text-muted hover:text-red-700 transition-colors leading-none"
                 >×</button>
               </span>
             ))}
@@ -387,18 +387,18 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
               }}
               placeholder="example.com"
               title="Wildcards are unnecessary — example.com automatically covers every subdomain."
-              className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 py-2 text-white font-mono text-sm focus:outline-none focus:border-emerald-500"
+              className="flex-1 bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2 text-brand-ink font-mono text-sm focus:outline-none focus:border-brand-accent"
             />
             <button
               type="button"
               onClick={addHosts}
-              className="px-4 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-sm font-medium"
+              className="px-4 py-2 rounded-xl bg-brand-alt text-brand-ink hover:bg-brand-alt text-sm font-medium"
             >Add</button>
           </div>
           <button
             type="button"
             onClick={() => setPickerOpen(true)}
-            className="mt-2 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg"
+            className="mt-2 text-xs font-medium text-brand-accent hover:text-brand-accent bg-brand-accent/10 px-3 py-1.5 rounded-lg"
           >Pick from recent activity</button>
         </Field>
 
@@ -407,31 +407,31 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
             type="button"
             disabled
             title="Reset to template will be enabled once the starter library (#768) ships."
-            className="w-full py-2 rounded-xl bg-gray-800/60 text-gray-500 text-sm font-medium cursor-not-allowed"
+            className="w-full py-2 rounded-xl bg-brand-alt/60 text-brand-text-muted text-sm font-medium cursor-not-allowed"
           >
             Reset to template (requires #768)
           </button>
         )}
 
-        <div className="border-t border-gray-800 pt-4 space-y-3">
-          <p className="text-xs text-gray-500">
+        <div className="border-t border-brand-border pt-4 space-y-3">
+          <p className="text-xs text-brand-text-muted">
             Used by {assignedProfiles.length === 0
-              ? <span className="text-gray-400">no profiles</span>
-              : <span className="text-gray-300">{assignedProfiles.join(', ')}</span>}.
+              ? <span className="text-brand-text">no profiles</span>
+              : <span className="text-brand-text">{assignedProfiles.join(', ')}</span>}.
           </p>
           {!confirmingDelete
             ? (
                 <button
                   type="button"
                   onClick={() => setConfirmingDelete(true)}
-                  className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                  className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
                 >Delete app…</button>
               )
             : (
                 <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 space-y-3">
                   {assignedProfiles.length > 0
                     ? (
-                        <p className="text-sm text-red-200">
+                        <p className="text-sm text-red-800">
                           This app is currently assigned to{' '}
                           <strong>{assignedProfiles.length} profile{assignedProfiles.length === 1 ? '' : 's'}</strong>
                           {' '}({assignedProfiles.join(', ')}).
@@ -439,7 +439,7 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
                         </p>
                       )
                     : (
-                        <p className="text-sm text-red-200">
+                        <p className="text-sm text-red-800">
                           Delete <strong>{detail.app.name}</strong>? This cannot be undone.
                         </p>
                       )}
@@ -448,13 +448,13 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
                       type="button"
                       onClick={() => setConfirmingDelete(false)}
                       disabled={saving}
-                      className="flex-1 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm font-medium disabled:opacity-50"
+                      className="flex-1 py-2 rounded-lg bg-brand-alt text-brand-text text-sm font-medium disabled:opacity-50"
                     >Cancel</button>
                     <button
                       type="button"
                       onClick={performDelete}
                       disabled={saving}
-                      className="flex-1 py-2 rounded-lg bg-red-500 text-white text-sm font-semibold disabled:opacity-50"
+                      className="flex-1 py-2 rounded-lg bg-red-500 text-brand-ink text-sm font-semibold disabled:opacity-50"
                     >{saving ? 'Deleting…' : 'Delete'}</button>
                   </div>
                 </div>
@@ -463,11 +463,11 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
 
         <div className="flex gap-3 pt-2">
           <button type="button" onClick={onClose} disabled={saving}
-            className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
+            className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-50">
             Close
           </button>
           <button type="submit" disabled={saving}
-            className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
+            className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -490,8 +490,8 @@ function Field({ label, required, children }: {
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-        {label} {required && <span className="text-red-400">*</span>}
+      <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
+        {label} {required && <span className="text-red-700">*</span>}
       </label>
       {children}
     </div>
@@ -503,10 +503,10 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
       <div
-        className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
+        className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
-        <h3 className="text-lg font-bold text-white">{title}</h3>
+        <h3 className="text-lg font-bold text-brand-ink">{title}</h3>
         {children}
       </div>
     </div>

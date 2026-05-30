@@ -43,10 +43,10 @@ describe('HostCell', () => {
 
   // #826: standardize bare-IP-row presentation across surfaces. Every surface
   // that renders a HostId in a ranked/log list previously hand-rolled its own
-  // italic/muted/tag markup, drifting on the muted color (text-gray-400 vs
-  // text-gray-500) and the title tooltip. HostCell is now the single source of
+  // italic/muted/tag markup, drifting on the muted color (text-brand-text vs
+  // text-brand-text-muted) and the title tooltip. HostCell is now the single source of
   // truth: monospace value, full-value title for truncated cells, and one
-  // canonical unresolved treatment (italic + text-gray-400 + type tag).
+  // canonical unresolved treatment (italic + text-brand-text + type tag).
   describe('#826: standardized presentation', () => {
     it('renders the value in monospace for both fqdn and IP rows', () => {
       const { container: fqdn } = render(<HostCell host={{ type: 'fqdn', value: 'youtube.com' }} />)
@@ -59,9 +59,9 @@ describe('HostCell', () => {
       const { container } = render(<HostCell host={{ type: 'ipv4', value: '10.0.0.5' }} />)
       const outer = container.firstChild as HTMLElement
       expect(outer.className).toContain('italic')
-      expect(outer.className).toContain('text-gray-400')
-      // The drifted surfaces used text-gray-500; the standardized treatment must not.
-      expect(outer.className).not.toContain('text-gray-500')
+      expect(outer.className).toContain('text-brand-text')
+      // The drifted surfaces used text-brand-text-muted; the standardized treatment must not.
+      expect(outer.className).not.toContain('text-brand-text-muted')
     })
 
     it('does not italicize resolved fqdn rows', () => {

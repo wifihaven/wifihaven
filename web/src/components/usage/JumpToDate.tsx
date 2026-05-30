@@ -33,14 +33,14 @@ export function JumpToDate({
 
   return (
     <div ref={ref} className="relative inline-block text-xs" data-testid="jump-to-date">
-      <span className="block text-gray-400">Jump to</span>
+      <span className="block text-brand-text">Jump to</span>
       <div className="flex items-center gap-1 mt-1">
         <button
           type="button"
           data-testid="jump-to-date-trigger"
           onClick={() => setOpen(o => !o)}
-          className={`inline-flex items-center gap-1.5 bg-gray-950 border rounded px-2 py-1 text-sm hover:border-emerald-700 ${
-            value ? 'border-emerald-800 text-emerald-200' : 'border-gray-800 text-gray-300'
+          className={`inline-flex items-center gap-1.5 bg-brand-surface border rounded px-2 py-1 text-sm hover:border-brand-accent-dark ${
+            value ? 'border-brand-accent-dark text-brand-accent' : 'border-brand-border text-brand-text'
           }`}
           title="Pick a date / time to anchor the window"
         >
@@ -52,7 +52,7 @@ export function JumpToDate({
             type="button"
             data-testid="jump-to-date-now"
             onClick={() => { setOpen(false); onChange(null) }}
-            className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1 border border-gray-800 rounded"
+            className="text-xs text-brand-text hover:text-brand-ink px-2 py-1 border border-brand-border rounded"
             title="Re-anchor to now"
           >
             now
@@ -114,26 +114,26 @@ function CalendarPopover({
   return (
     <div
       data-testid="jump-to-date-popover"
-      className="absolute left-0 z-20 mt-1 w-72 rounded border border-gray-800 bg-gray-950 p-2 shadow-lg"
+      className="absolute left-0 z-20 mt-1 w-72 rounded border border-brand-border bg-brand-surface p-2 shadow-lg"
     >
       <div className="flex items-center justify-between mb-2">
         <button
           type="button"
           data-testid="jump-to-date-prev-month"
           onClick={() => shiftMonth(-1)}
-          className="px-2 py-0.5 text-gray-400 hover:text-emerald-300"
+          className="px-2 py-0.5 text-brand-text hover:text-brand-accent"
           aria-label="Previous month"
         >‹</button>
-        <span className="text-xs uppercase tracking-wide text-gray-300">{monthLabel}</span>
+        <span className="text-xs uppercase tracking-wide text-brand-text">{monthLabel}</span>
         <button
           type="button"
           data-testid="jump-to-date-next-month"
           onClick={() => shiftMonth(1)}
-          className="px-2 py-0.5 text-gray-400 hover:text-emerald-300"
+          className="px-2 py-0.5 text-brand-text hover:text-brand-accent"
           aria-label="Next month"
         >›</button>
       </div>
-      <div className="grid grid-cols-7 gap-0.5 text-[10px] text-gray-500 mb-1">
+      <div className="grid grid-cols-7 gap-0.5 text-[10px] text-brand-text-muted mb-1">
         {['S','M','T','W','T','F','S'].map((d, i) => (
           <div key={i} className="text-center">{d}</div>
         ))}
@@ -151,8 +151,8 @@ function CalendarPopover({
               onClick={() => setDay(cell)}
               className={`text-xs rounded py-1 ${
                 selected
-                  ? 'bg-emerald-700 text-white'
-                  : 'text-gray-300 hover:bg-gray-800'
+                  ? 'bg-brand-accent-dark text-brand-ink'
+                  : 'text-brand-text hover:bg-brand-alt'
               }`}
             >
               {cell.d}
@@ -160,15 +160,15 @@ function CalendarPopover({
           )
         })}
       </div>
-      <div className="flex items-center gap-1 mb-2 text-xs text-gray-300">
-        <span className="text-gray-500">Time</span>
+      <div className="flex items-center gap-1 mb-2 text-xs text-brand-text">
+        <span className="text-brand-text-muted">Time</span>
         <input
           data-testid="jump-to-date-hh"
           type="text"
           inputMode="numeric"
           value={hh}
           onChange={e => setHH(e.target.value.replace(/\D/g, '').slice(0, 2))}
-          className="w-10 bg-gray-900 border border-gray-800 rounded px-1 py-0.5 text-center font-mono"
+          className="w-10 bg-white border border-brand-border rounded px-1 py-0.5 text-center font-mono"
           aria-label="Hour"
         />
         <span>:</span>
@@ -178,17 +178,17 @@ function CalendarPopover({
           inputMode="numeric"
           value={mm}
           onChange={e => setMM(e.target.value.replace(/\D/g, '').slice(0, 2))}
-          className="w-10 bg-gray-900 border border-gray-800 rounded px-1 py-0.5 text-center font-mono"
+          className="w-10 bg-white border border-brand-border rounded px-1 py-0.5 text-center font-mono"
           aria-label="Minute"
         />
-        <span className="text-[10px] text-gray-500 ml-1">24h, local</span>
+        <span className="text-[10px] text-brand-text-muted ml-1">24h, local</span>
       </div>
       <div className="flex items-center justify-end gap-2">
         <button
           type="button"
           data-testid="jump-to-date-cancel"
           onClick={onClose}
-          className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1"
+          className="text-xs text-brand-text hover:text-brand-ink px-2 py-1"
         >
           cancel
         </button>
@@ -196,7 +196,7 @@ function CalendarPopover({
           type="button"
           data-testid="jump-to-date-apply"
           onClick={apply}
-          className="text-xs bg-emerald-700 hover:bg-emerald-600 text-white rounded px-3 py-1"
+          className="text-xs bg-brand-accent-dark hover:bg-brand-accent-dark text-brand-ink rounded px-3 py-1"
         >
           jump
         </button>

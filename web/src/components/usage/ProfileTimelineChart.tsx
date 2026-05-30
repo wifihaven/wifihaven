@@ -160,15 +160,15 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
   return (
     <div
       data-testid={`profile-timeline-${profileId}`}
-      className="bg-gray-950/40 border border-gray-800 rounded-xl p-4 space-y-3"
+      className="bg-brand-surface/40 border border-brand-border rounded-xl p-4 space-y-3"
     >
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+        <h3 className="text-xs font-semibold text-brand-text uppercase tracking-wider">
           {win === 'today' ? 'Hourly minutes today' : 'Daily minutes (trailing 7 days)'}
         </h3>
         <div className="flex items-center gap-2 flex-wrap">
           <div role="tablist" aria-label="Window"
-            className="inline-flex rounded-lg bg-gray-800 p-0.5 text-xs">
+            className="inline-flex rounded-lg bg-brand-alt p-0.5 text-xs">
             {(['today', 'week'] as const).map(w => (
               <button key={w} type="button" role="tab"
                 aria-selected={win === w}
@@ -176,15 +176,15 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
                 onClick={() => setWin(w)}
                 className={`px-3 py-1 rounded-md font-medium transition-colors ${
                   win === w
-                    ? 'bg-emerald-500 text-black'
-                    : 'text-gray-400 hover:text-gray-200'
+                    ? 'bg-brand-accent text-white'
+                    : 'text-brand-text hover:text-brand-ink'
                 }`}>
                 {w === 'today' ? 'Today' : 'Week'}
               </button>
             ))}
           </div>
           <div role="tablist" aria-label="Stack by"
-            className="inline-flex rounded-lg bg-gray-800 p-0.5 text-xs">
+            className="inline-flex rounded-lg bg-brand-alt p-0.5 text-xs">
             {STACK_BY_OPTIONS.map(opt => {
               const inactive = opt.disabled || win === 'week'
               const selected = win === 'today' && stackBy === opt.key
@@ -200,10 +200,10 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
                   onClick={() => { if (!opt.disabled) setStackBy(opt.key) }}
                   className={`px-3 py-1 rounded-md font-medium transition-colors ${
                     selected
-                      ? 'bg-emerald-500 text-black'
+                      ? 'bg-brand-accent text-white'
                       : inactive
-                        ? 'text-gray-600 cursor-not-allowed'
-                        : 'text-gray-400 hover:text-gray-200'
+                        ? 'text-brand-text-muted cursor-not-allowed'
+                        : 'text-brand-text hover:text-brand-ink'
                   }`}>
                   {opt.label}
                 </button>
@@ -214,12 +214,12 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
       </div>
 
       {win === 'today' && todayQuery.error && (
-        <div className="text-xs text-red-400">
+        <div className="text-xs text-red-700">
           Failed to load: {(todayQuery.error as Error).message}
         </div>
       )}
       {win === 'week' && weekQuery.error && (
-        <div className="text-xs text-red-400">
+        <div className="text-xs text-red-700">
           Failed to load: {(weekQuery.error as Error).message}
         </div>
       )}
@@ -227,7 +227,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
       {win === 'today' ? (
         dayEmpty ? (
           <div data-testid={`profile-timeline-${profileId}-empty`}
-            className="h-48 flex items-center justify-center text-gray-600 text-xs border border-dashed border-gray-800 rounded-xl">
+            className="h-48 flex items-center justify-center text-brand-text-muted text-xs border border-dashed border-brand-border rounded-xl">
             {todayQuery.isPending ? 'Loading hourly usage…' : 'No usage recorded yet today.'}
           </div>
         ) : (
@@ -242,13 +242,13 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
               onOtherClick={stackBy === 'host' ? openOtherDrillIn : undefined}
               testId={`profile-timeline-${profileId}-chart`}
             />
-            <div className="flex items-center justify-between text-[11px] text-gray-500 font-mono gap-2">
+            <div className="flex items-center justify-between text-[11px] text-brand-text-muted font-mono gap-2">
               <span>{formatMins(dayTotal)} total · {dayData?.tz ?? DEFAULT_TZ}</span>
               {stackBy === 'host' && hasOther && (
                 <button type="button"
                   onClick={openOtherDrillIn}
                   data-testid={`profile-timeline-${profileId}-other-button`}
-                  className="text-[11px] text-gray-500 hover:text-emerald-400 underline decoration-dotted underline-offset-2"
+                  className="text-[11px] text-brand-text-muted hover:text-brand-accent underline decoration-dotted underline-offset-2"
                   title="See the hosts inside the Other bucket">
                   Inside “Other” ↗
                 </button>
@@ -259,7 +259,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
       ) : (
         weekEmpty ? (
           <div data-testid={`profile-timeline-${profileId}-week-empty`}
-            className="h-48 flex items-center justify-center text-gray-600 text-xs border border-dashed border-gray-800 rounded-xl">
+            className="h-48 flex items-center justify-center text-brand-text-muted text-xs border border-dashed border-brand-border rounded-xl">
             {weekQuery.isPending ? 'Loading weekly usage…' : 'No usage recorded this week.'}
           </div>
         ) : (
@@ -292,7 +292,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <p className="text-[11px] text-gray-500 font-mono">
+            <p className="text-[11px] text-brand-text-muted font-mono">
               {formatMins(weekTotal)} total · {weekData?.from} → {weekData?.to}
             </p>
           </>
@@ -302,7 +302,7 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
       {/* #715/#957 — proportional attention is the wall-clock-share number; the
           Other long-tail drill-in surfaces host-presence for the leftover bucket. */}
       {win === 'today' && (stackBy === 'host' || stackBy === 'device') && (
-        <p className="text-[10px] text-gray-600">
+        <p className="text-[10px] text-brand-text-muted">
           Stacks total to wall-clock minutes per hour. Per-host minutes are byte-share-weighted
           (proportional) within each 5-min window (#715).
         </p>
@@ -345,26 +345,26 @@ function OtherDrillInModal({
       data-testid={`${testIdPrefix}-other-modal`}
       className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4"
       onClick={onClose}>
-      <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg p-6 space-y-4 max-h-[80vh] flex flex-col"
+      <div className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-lg p-6 space-y-4 max-h-[80vh] flex flex-col"
         onClick={e => e.stopPropagation()}>
         <div className="flex items-start justify-between">
           <div>
-            <h3 className="text-lg font-bold text-white">Inside the “Other” bucket</h3>
-            <p className="text-xs text-gray-500 mt-0.5">Hosts below the top {topN} on {date}.</p>
+            <h3 className="text-lg font-bold text-brand-ink">Inside the “Other” bucket</h3>
+            <p className="text-xs text-brand-text-muted mt-0.5">Hosts below the top {topN} on {date}.</p>
           </div>
           <button onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 text-xl leading-none"
+            className="text-brand-text-muted hover:text-brand-text text-xl leading-none"
             aria-label="Close">×</button>
         </div>
 
-        {loading && <div className="text-sm text-gray-500">Loading the long-tail…</div>}
+        {loading && <div className="text-sm text-brand-text-muted">Loading the long-tail…</div>}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-3">
             {error}
           </div>
         )}
         {!loading && !error && tail.length === 0 && (
-          <div className="text-sm text-gray-500">
+          <div className="text-sm text-brand-text-muted">
             Nothing else recorded for this day — the top {topN} already cover everything.
           </div>
         )}
@@ -376,11 +376,11 @@ function OtherDrillInModal({
               return (
                 <li key={`${h.host.type}:${h.host.value}`}
                   data-testid={`${testIdPrefix}-other-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-2 gap-2">
+                  className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2 gap-2">
                   <HostCell host={h.host} className="truncate min-w-0" />
-                  <span className="text-gray-500 font-mono shrink-0 tabular-nums">
+                  <span className="text-brand-text-muted font-mono shrink-0 tabular-nums">
                     {formatMins(h.dayMins)}
-                    <span className="text-gray-600 ml-2">
+                    <span className="text-brand-text-muted ml-2">
                       {shareOther.toFixed(0)}% of Other · {shareTotal.toFixed(0)}% of day
                     </span>
                   </span>
@@ -392,7 +392,7 @@ function OtherDrillInModal({
 
         <div className="pt-2">
           <button onClick={onClose}
-            className="w-full py-2.5 rounded-xl bg-gray-800 text-gray-300 text-sm font-medium hover:bg-gray-700 transition-colors">
+            className="w-full py-2.5 rounded-xl bg-brand-alt text-brand-text text-sm font-medium hover:bg-brand-alt transition-colors">
             Close
           </button>
         </div>

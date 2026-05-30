@@ -670,13 +670,13 @@ describe('ProfilesPage — highlight from ?id= (#298)', () => {
     HTMLElement.prototype.scrollIntoView = vi.fn()
     renderPage(['/profiles?id=1'])
     const card = await screen.findByTestId('profile-card-1')
-    await waitFor(() => expect(card.className).toContain('ring-emerald-500'))
+    await waitFor(() => expect(card.className).toContain('ring-brand-accent'))
   })
 
   it('does not ring any card when ?id= is not set', async () => {
     renderPage()
     const card = await screen.findByTestId('profile-card-1')
-    expect(card.className).not.toContain('ring-emerald-500')
+    expect(card.className).not.toContain('ring-brand-accent')
   })
 })
 
@@ -1148,7 +1148,7 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     const fill = bar.querySelectorAll('div')[1] as HTMLDivElement
     expect(fill.style.width).toBe('50%')
     // Under cap → emerald, not red.
-    expect(fill.className).toContain('bg-emerald-500')
+    expect(fill.className).toContain('bg-brand-accent')
   })
 
   it('shows the bar in red once usage meets/exceeds the cap', async () => {
