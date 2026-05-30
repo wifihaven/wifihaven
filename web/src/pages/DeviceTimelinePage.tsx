@@ -194,7 +194,7 @@ export function DeviceTimelinePage() {
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-3">
           {error}
         </div>
       )}
@@ -399,7 +399,7 @@ function OtherDrillInModal({ date, loading, error, data, topN, onClose }: OtherD
           </div>
         )}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-3">
             {error}
           </div>
         )}

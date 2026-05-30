@@ -214,12 +214,12 @@ export function ProfileTimelineChart({ profileId }: { profileId: number }) {
       </div>
 
       {win === 'today' && todayQuery.error && (
-        <div className="text-xs text-red-400">
+        <div className="text-xs text-red-700">
           Failed to load: {(todayQuery.error as Error).message}
         </div>
       )}
       {win === 'week' && weekQuery.error && (
-        <div className="text-xs text-red-400">
+        <div className="text-xs text-red-700">
           Failed to load: {(weekQuery.error as Error).message}
         </div>
       )}
@@ -359,7 +359,7 @@ function OtherDrillInModal({
 
         {loading && <div className="text-sm text-brand-text-muted">Loading the long-tail…</div>}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-3">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-3">
             {error}
           </div>
         )}

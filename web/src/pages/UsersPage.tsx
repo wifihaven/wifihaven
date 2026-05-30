@@ -130,8 +130,8 @@ export function UsersPage() {
                       u.role === 'admin'
                         ? 'bg-brand-accent/10 text-brand-accent'
                         : u.role === 'adult'
-                          ? 'bg-blue-500/10 text-blue-400'
-                          : 'bg-yellow-500/10 text-yellow-400'
+                          ? 'bg-blue-500/10 text-blue-700'
+                          : 'bg-amber-500/10 text-amber-700'
                     }`}>{u.role}</span>
                   </p>
                 </div>
@@ -152,7 +152,7 @@ export function UsersPage() {
                   >Edit profiles</button>
                   <button
                     onClick={() => del(u)}
-                    className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                    className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
                   >Delete</button>
                 </div>
               </div>
@@ -163,7 +163,7 @@ export function UsersPage() {
       {creating && (
         <Modal title="New User" onClose={() => setCreating(false)}>
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
               {error}
             </div>
           )}
@@ -218,7 +218,7 @@ export function UsersPage() {
           onClose={() => setEditingId(null)}
         >
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
               {error}
             </div>
           )}

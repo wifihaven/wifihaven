@@ -100,7 +100,7 @@ export function RoutersPage() {
                       <span className={`inline-block px-2 py-0.5 rounded font-mono ${
                         r.enrolled
                           ? 'bg-brand-accent/10 text-brand-accent'
-                          : 'bg-yellow-500/10 text-yellow-400'
+                          : 'bg-amber-500/10 text-amber-700'
                       }`}>{r.enrolled ? 'enrolled' : 'pending'}</span>
                       {r.lastSeenAt
                         ? <span>last seen {new Date(r.lastSeenAt).toLocaleString()}</span>
@@ -118,7 +118,7 @@ export function RoutersPage() {
                   </div>
                   <button
                     onClick={() => del(r)}
-                    className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                    className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
                   >Delete</button>
                 </div>
               </div>
@@ -133,13 +133,13 @@ export function RoutersPage() {
             className="space-y-5"
           >
             {error && (
-              <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+              <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
                 {error}
               </div>
             )}
             <div>
               <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-                Name <span className="text-red-400">*</span>
+                Name <span className="text-red-700">*</span>
               </label>
               <input type="text" value={name} autoFocus required
                 onChange={e => setName(e.target.value)}
@@ -171,7 +171,7 @@ export function RoutersPage() {
 
       {showToken && (
         <Modal title="Save this token now" onClose={() => setShowToken(null)}>
-          <div className="bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-sm rounded-xl px-4 py-3">
+          <div className="bg-amber-500/10 border border-amber-500/30 text-amber-700 text-sm rounded-xl px-4 py-3">
             <strong>This token will not be shown again.</strong> Copy it
             into the router's UCI config before closing this dialog.
           </div>
@@ -194,7 +194,7 @@ export function RoutersPage() {
               copyState === 'copied'
                 ? 'bg-brand-accent/20 text-brand-accent'
                 : copyState === 'failed'
-                ? 'bg-red-500/20 text-red-300'
+                ? 'bg-red-500/20 text-red-700'
                 : 'bg-brand-alt text-brand-ink hover:bg-brand-alt'
             }`}
           >

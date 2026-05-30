@@ -127,7 +127,7 @@ function UnmanagedMacPolicyCard({
             needed.
           </p>
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
               {error}
             </div>
           )}
@@ -299,14 +299,14 @@ function HeartbeatFilterCard({
             configured floor.
           </p>
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
               {error}
             </div>
           )}
           {validationError && (
             <div
               data-testid="heartbeat-filter-validation"
-              className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm rounded-xl px-4 py-2"
+              className="bg-amber-500/10 border border-amber-500/30 text-amber-700 text-sm rounded-xl px-4 py-2"
             >
               {validationError}
             </div>
@@ -464,7 +464,7 @@ function DailyResetCard({
             time, even across DST.
           </p>
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
               {error}
             </div>
           )}

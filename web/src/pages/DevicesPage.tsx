@@ -118,7 +118,7 @@ export function DevicesPage() {
                     >Edit</button>
                     <button
                       onClick={() => del(d.mac)}
-                      className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                      className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
                     >Remove</button>
                   </div>
                 )}
@@ -161,8 +161,8 @@ export function DevicesPage() {
                 <div className="hidden sm:block text-sm">
                   <span className={`px-2 py-1 rounded-lg text-xs border ${
                     unmanagedPolicy?.policy === 'allow'
-                      ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
-                      : 'bg-red-500/10 text-red-300 border-red-500/20'
+                      ? 'bg-amber-500/10 text-amber-700 border-amber-500/20'
+                      : 'bg-red-500/10 text-red-700 border-red-500/20'
                   }`}>
                     {unmanagedPolicy?.policy === 'allow' ? 'No profile' : 'Unmanaged'}
                   </span>
@@ -234,10 +234,10 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
   if (alerts.length === 0) return null
 
   return (
-    <div data-testid="new-device-alerts-banner" className="bg-yellow-500/5 border border-yellow-500/30 rounded-2xl p-5 space-y-3">
+    <div data-testid="new-device-alerts-banner" className="bg-amber-500/5 border border-amber-500/30 rounded-2xl p-5 space-y-3">
       <div className="flex items-center gap-3">
-        <span className="text-yellow-400 text-lg">●</span>
-        <h2 className="text-yellow-200 font-semibold flex-1">
+        <span className="text-amber-700 text-lg">●</span>
+        <h2 className="text-amber-800 font-semibold flex-1">
           {alerts.length === 1
             ? '1 new device on the network'
             : `${alerts.length} new devices on the network`}
@@ -246,7 +246,7 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
           <button
             data-testid="enable-notifications-btn"
             onClick={() => notificationPermission.request()}
-            className="text-xs text-yellow-200 hover:text-brand-ink bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+            className="text-xs text-amber-800 hover:text-brand-ink bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1.5 rounded-lg transition-colors shrink-0"
           >
             Enable browser notifications
           </button>
@@ -375,7 +375,7 @@ function NewDeviceAlertEditor({
           </select>
         </div>
         {error && (
-          <p data-testid="new-device-alert-editor-error" className="text-sm text-red-400">{error}</p>
+          <p data-testid="new-device-alert-editor-error" className="text-sm text-red-700">{error}</p>
         )}
         <div className="flex gap-3 pt-2">
           <button

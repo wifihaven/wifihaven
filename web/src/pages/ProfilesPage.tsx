@@ -125,9 +125,9 @@ const CHIP_LABEL: Record<PauseChip, string> = {
 
 const CHIP_CLASS: Record<PauseChip, string> = {
   'active':          'bg-brand-accent/10 text-brand-accent border-brand-accent/20',
-  'paused-manual':   'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-  'paused-schedule': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  'time-exceeded':   'bg-red-500/10 text-red-400 border-red-500/20',
+  'paused-manual':   'bg-amber-500/10 text-amber-700 border-amber-500/20',
+  'paused-schedule': 'bg-blue-500/10 text-blue-700 border-blue-500/20',
+  'time-exceeded':   'bg-red-500/10 text-red-700 border-red-500/20',
 }
 
 export function ProfilesPage() {
@@ -413,7 +413,7 @@ export function ProfilesPage() {
           {creatingError && (
             <div
               data-testid="profile-create-error"
-              className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2"
+              className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2"
             >
               {creatingError}
             </div>
@@ -737,12 +737,12 @@ function ProfileShellRow({
                 className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                   pd.profile.paused
                     ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
-                    : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20 hover:bg-yellow-500/20'
+                    : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
                 }`}>
                 {pd.profile.paused ? '▶ Resume' : '⏸ Pause'}
               </button>
               <button onClick={onDelete}
-                className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
+                className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
                 Delete
               </button>
             </div>
@@ -753,7 +753,7 @@ function ProfileShellRow({
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
               <div className="flex flex-wrap gap-2">
                 {pd.profile.blockedCategories.map(c => (
-                  <span key={c} className="text-xs bg-red-500/10 text-red-400 px-2 py-1 rounded-lg font-mono">{c}</span>
+                  <span key={c} className="text-xs bg-red-500/10 text-red-700 px-2 py-1 rounded-lg font-mono">{c}</span>
                 ))}
               </div>
             </div>
@@ -804,7 +804,7 @@ function ProfileShellRow({
             <div data-testid={`profile-users-${pd.profile.id}`}>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Users</p>
               {userLinkError && (
-                <p className="text-xs text-red-400 mb-2"
+                <p className="text-xs text-red-700 mb-2"
                   data-testid={`profile-users-error-${pd.profile.id}`}>
                   {userLinkError}
                 </p>
@@ -819,8 +819,8 @@ function ProfileShellRow({
                       const roleClass = u.role === 'admin'
                         ? 'bg-brand-accent/10 text-brand-accent'
                         : u.role === 'adult'
-                          ? 'bg-blue-500/10 text-blue-400'
-                          : 'bg-yellow-500/10 text-yellow-400'
+                          ? 'bg-blue-500/10 text-blue-700'
+                          : 'bg-amber-500/10 text-amber-700'
                       return (
                         <button
                           key={u.id}
@@ -1021,7 +1021,7 @@ function TimeSubsection({
             data-testid={`profile-time-status-${pd.profile.id}`}
             data-status={status}
             className={`text-xs font-mono ${
-              status === 'error' ? 'text-red-400'
+              status === 'error' ? 'text-red-700'
               : status === 'saving' ? 'text-brand-text-muted'
               : 'text-brand-accent'
             }`}>
@@ -1043,8 +1043,8 @@ function TimeSubsection({
           {pd.schedules.length > 0 && pd.schedules.map(s => (
             <div key={s.id} className="flex justify-between text-sm bg-brand-alt/50 rounded-lg px-3 py-2">
               <span className="text-brand-text">{s.name}</span>
-              <span className="text-yellow-400 font-mono text-xs">
-                {s.startLocal} → {s.endLocal} <span className="text-yellow-300/60">({s.tz})</span>
+              <span className="text-amber-700 font-mono text-xs">
+                {s.startLocal} → {s.endLocal} <span className="text-amber-700/60">({s.tz})</span>
               </span>
             </div>
           ))}
@@ -1059,7 +1059,7 @@ function TimeSubsection({
       {expanded && (
         <div className="px-4 pb-4 space-y-4 border-t border-brand-border pt-3">
           {errorMsg && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs rounded-lg px-3 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-xs rounded-lg px-3 py-2">
               {errorMsg}
             </div>
           )}
@@ -1108,7 +1108,7 @@ function TimeSubsection({
                     {isAdmin && (
                       <button type="button"
                         onClick={() => removeSchedule(i)}
-                        className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 rounded-lg">
+                        className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 rounded-lg">
                         Remove
                       </button>
                     )}
@@ -1542,7 +1542,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
 
   const baseBtn = 'text-xs px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-50'
   const off = 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
-  const onBlocked = 'bg-red-500/20 text-red-300 border-red-500/40'
+  const onBlocked = 'bg-red-500/20 text-red-700 border-red-500/40'
   const onAllowed = 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
 
   return (
@@ -1602,7 +1602,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
             data-testid={`app-row-${app.app.id}-minutes`}
             className={`w-16 rounded-lg px-2 py-1 text-brand-ink text-xs border transition-colors disabled:opacity-50 ${
               isTimeLimited
-                ? 'bg-amber-500/10 border-amber-500/40 text-amber-200 placeholder-amber-200/40'
+                ? 'bg-amber-500/10 border-amber-500/40 text-amber-800 placeholder-amber-200/40'
                 : 'bg-white border-brand-border-strong'
             }`}
           />
@@ -1646,13 +1646,13 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
           <span>
             Counts toward daily limit
             {!(current?.exemptFromDaily ?? true) && (
-              <span className="ml-1 text-amber-400">(usage reduces overall remaining time)</span>
+              <span className="ml-1 text-amber-700">(usage reduces overall remaining time)</span>
             )}
           </span>
         </label>
       )}
       {localError && (
-        <p className="text-xs text-red-400" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
+        <p className="text-xs text-red-700" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
       )}
     </div>
   )
@@ -1704,7 +1704,7 @@ function SaveStatusBadge({
   }
   if (status === 'error') {
     return (
-      <span data-testid={testId} data-status="error" className="text-xs text-red-400" title={error ?? ''}>
+      <span data-testid={testId} data-status="error" className="text-xs text-red-700" title={error ?? ''}>
         Save failed
       </span>
     )
@@ -1772,7 +1772,7 @@ function DevicesSubsection({
                   data-testid={`profile-device-${d.id}-detach`}
                   disabled={busyMac === d.mac}
                   onClick={() => setProfile(d, null)}
-                  className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-2.5 py-1 rounded-lg disabled:opacity-50"
+                  className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-2.5 py-1 rounded-lg disabled:opacity-50"
                 >
                   Remove
                 </button>

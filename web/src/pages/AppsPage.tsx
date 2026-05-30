@@ -81,7 +81,7 @@ export function AppsPage() {
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
           {error}
         </div>
       )}
@@ -191,7 +191,7 @@ function CreateAppModal({ onClose, onSaved }: {
     <Modal title="New App" onClose={onClose}>
       <form onSubmit={submit} className="space-y-5">
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
             {error}
           </div>
         )}
@@ -339,7 +339,7 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
     <Modal title={`Edit ${detail.app.name}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-5">
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl px-4 py-2">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
             {error}
           </div>
         )}
@@ -369,7 +369,7 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
                   type="button"
                   onClick={() => removeHost(h)}
                   aria-label={`Remove ${h}`}
-                  className="text-brand-text-muted hover:text-red-400 transition-colors leading-none"
+                  className="text-brand-text-muted hover:text-red-700 transition-colors leading-none"
                 >×</button>
               </span>
             ))}
@@ -424,14 +424,14 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
                 <button
                   type="button"
                   onClick={() => setConfirmingDelete(true)}
-                  className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                  className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
                 >Delete app…</button>
               )
             : (
                 <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 space-y-3">
                   {assignedProfiles.length > 0
                     ? (
-                        <p className="text-sm text-red-200">
+                        <p className="text-sm text-red-800">
                           This app is currently assigned to{' '}
                           <strong>{assignedProfiles.length} profile{assignedProfiles.length === 1 ? '' : 's'}</strong>
                           {' '}({assignedProfiles.join(', ')}).
@@ -439,7 +439,7 @@ function EditAppModal({ detail, profileNameById, onClose, onSaved, onDeleted }: 
                         </p>
                       )
                     : (
-                        <p className="text-sm text-red-200">
+                        <p className="text-sm text-red-800">
                           Delete <strong>{detail.app.name}</strong>? This cannot be undone.
                         </p>
                       )}
@@ -491,7 +491,7 @@ function Field({ label, required, children }: {
   return (
     <div>
       <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-        {label} {required && <span className="text-red-400">*</span>}
+        {label} {required && <span className="text-red-700">*</span>}
       </label>
       {children}
     </div>

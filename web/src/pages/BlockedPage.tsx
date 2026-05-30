@@ -99,7 +99,7 @@ export function BlockedPage() {
     <div className="min-h-screen bg-brand-surface flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6 text-center">
         <div className="space-y-2">
-          <div className="text-4xl font-bold text-red-500">Blocked</div>
+          <div className="text-4xl font-bold text-red-700">Blocked</div>
           {host && <div className="text-lg font-mono text-brand-ink">{host}</div>}
           <p className="text-brand-text text-sm">{body}</p>
           {profileLine && <p className="text-brand-text-muted text-xs">{profileLine}</p>}
@@ -218,7 +218,7 @@ function AskParent({
         ))}
       </div>
       {error && (
-        <p className="text-xs text-red-400" data-testid="ask-parent-error">
+        <p className="text-xs text-red-700" data-testid="ask-parent-error">
           {error}
         </p>
       )}

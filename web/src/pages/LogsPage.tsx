@@ -43,13 +43,13 @@ function DeviceLink({ mac, deviceName }: { mac: string | null; deviceName: strin
       <Link
         to={`/devices?mac=${encodeURIComponent(mac)}`}
         data-testid={`logs-device-link-${mac}`}
-        className="text-yellow-400 hover:underline"
+        className="text-amber-700 hover:underline"
       >
         {deviceName}
       </Link>
     )
   }
-  return <span className="text-yellow-400">{mac ?? '?'}</span>
+  return <span className="text-amber-700">{mac ?? '?'}</span>
 }
 
 export function LogsPage() {
@@ -159,7 +159,7 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <div
       data-testid="error"
-      className="px-3 py-2 rounded border border-red-800 bg-red-950/30 text-red-300 text-sm"
+      className="px-3 py-2 rounded border border-red-200 bg-red-100/30 text-red-700 text-sm"
     >
       {message}
     </div>
@@ -297,7 +297,7 @@ function RawEventsView({
               <td className="px-2 py-1"><DeviceLink mac={l.mac} deviceName={l.deviceName} /></td>
               <td className="px-2 py-1 hidden md:table-cell">{l.profileName ?? '-'}</td>
               <td className="px-2 py-1 max-w-[160px] sm:max-w-[280px] truncate"><HostCell host={l.host} /></td>
-              <td className={`px-2 py-1 whitespace-nowrap ${l.blocked ? 'text-red-400' : 'text-brand-accent'}`}>
+              <td className={`px-2 py-1 whitespace-nowrap ${l.blocked ? 'text-red-700' : 'text-brand-accent'}`}>
                 {l.blocked ? '✗ blocked' : '✓ ok'}
               </td>
               <td className="px-2 py-1 text-brand-text-muted hidden sm:table-cell">{blockReasonText(l.reason)}</td>
@@ -554,7 +554,7 @@ function AggregatedEventsView({
                 />
               </td>
               <td className="px-2 py-1 text-brand-accent text-right">{r.countSucceeded}</td>
-              <td className="px-2 py-1 text-red-400 text-right">{r.countBlocked}</td>
+              <td className="px-2 py-1 text-red-700 text-right">{r.countBlocked}</td>
               <td className="px-2 py-1 font-mono text-xs whitespace-nowrap hidden sm:table-cell">{localTime(r.lastSeen)}</td>
             </tr>
             )

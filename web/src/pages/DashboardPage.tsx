@@ -54,7 +54,7 @@ export function DashboardPage() {
                 : stats.topBlocked.map(d => (
                     <div key={`${d.host.type}:${d.host.value}`} className="flex justify-between items-center py-2 border-b border-brand-border last:border-0">
                       <span className="font-mono text-sm text-brand-text truncate"><HostCell host={d.host} /></span>
-                      <span className="text-red-400 font-mono text-sm ml-4 shrink-0">{d.count}</span>
+                      <span className="text-red-700 font-mono text-sm ml-4 shrink-0">{d.count}</span>
                     </div>
                   ))
               }
@@ -72,7 +72,7 @@ export function DashboardPage() {
                   </div>
                   <div className="text-right shrink-0">
                     <p className="text-sm text-brand-text">{d.total} queries</p>
-                    <p className="text-xs text-red-400">{d.blocked} blocked</p>
+                    <p className="text-xs text-red-700">{d.blocked} blocked</p>
                   </div>
                 </div>
               ))}
@@ -129,7 +129,7 @@ function NowProfileCard({ profile }: { profile: DashboardNowProfile }) {
       <div className="flex items-center gap-2 mb-3">
         <h3 className="text-base font-semibold text-brand-ink">{profile.name}</h3>
         {profile.paused && (
-          <span className="text-[10px] font-bold uppercase tracking-wider bg-yellow-900/60 text-yellow-300 px-2 py-0.5 rounded">
+          <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100/60 text-amber-700 px-2 py-0.5 rounded">
             Paused
           </span>
         )}
@@ -203,8 +203,8 @@ function formatDuration(seconds: number): string {
 function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
   const colors: Record<string, string> = {
     emerald: 'text-brand-accent',
-    red: 'text-red-400',
-    yellow: 'text-yellow-400',
+    red: 'text-red-700',
+    yellow: 'text-amber-700',
   }
   return (
     <div className="bg-white rounded-2xl border border-brand-border p-5">
@@ -230,9 +230,9 @@ function LogTable({ logs }: { logs: QueryLog[] }) {
         {logs.map(l => (
           <tr key={l.id} className="border-b border-brand-border/50 hover:bg-brand-alt/30">
             <td className="px-4 py-2 text-brand-text-muted">{new Date(l.ts).toLocaleTimeString()}</td>
-            <td className="px-4 py-2 text-yellow-400">{l.deviceName ?? l.mac ?? '?'}</td>
+            <td className="px-4 py-2 text-amber-700">{l.deviceName ?? l.mac ?? '?'}</td>
             <td className="px-4 py-2 text-brand-text max-w-[200px] truncate"><HostCell host={l.host} /></td>
-            <td className={`px-4 py-2 ${l.blocked ? 'text-red-400' : 'text-brand-accent-dark'}`}>
+            <td className={`px-4 py-2 ${l.blocked ? 'text-red-700' : 'text-brand-accent-dark'}`}>
               {l.blocked ? '✗ blocked' : '✓ ok'}
             </td>
             <td className="px-4 py-2 text-brand-text-muted hidden md:table-cell">{blockReasonText(l.reason)}</td>

@@ -345,7 +345,7 @@ function Chip({ testId, label, onRemove }: { testId: string; label: string; onRe
         type="button"
         onClick={onRemove}
         aria-label="remove"
-        className="text-brand-accent hover:text-red-400"
+        className="text-brand-accent hover:text-red-700"
       >
         ×
       </button>
@@ -366,7 +366,7 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <div
       data-testid="error"
-      className="px-3 py-2 rounded border border-red-800 bg-red-950/30 text-red-300 text-sm"
+      className="px-3 py-2 rounded border border-red-200 bg-red-100/30 text-red-700 text-sm"
     >
       {message}
     </div>

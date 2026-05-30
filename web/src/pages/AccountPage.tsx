@@ -60,7 +60,7 @@ export function AccountPage() {
 
       {/* #586: banner shown when the server-enforced must_change_password flag is set */}
       {mustChangePassword && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-amber-300 text-sm">
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-amber-700 text-sm">
           <strong>Password change required.</strong> The default password must be changed before you can use the rest of the application.
         </div>
       )}
@@ -107,7 +107,7 @@ export function AccountPage() {
           />
 
           {error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-400 text-sm">
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-700 text-sm">
               {error}
             </div>
           )}

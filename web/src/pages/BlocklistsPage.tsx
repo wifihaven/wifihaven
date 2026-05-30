@@ -114,7 +114,7 @@ export function BlocklistsPage() {
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/40 text-red-300 text-sm rounded-lg px-3 py-2">
+        <div className="bg-red-500/10 border border-red-500/40 text-red-700 text-sm rounded-lg px-3 py-2">
           {error}
         </div>
       )}
@@ -177,7 +177,7 @@ export function BlocklistsPage() {
                           data-testid={`toggle-${b.id}-${p.profile.id}`}
                           className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                             on
-                              ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                              ? 'bg-red-500/20 text-red-700 border-red-500/40'
                               : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
                           } ${saving ? 'opacity-50 cursor-wait' : ''}`}
                         >

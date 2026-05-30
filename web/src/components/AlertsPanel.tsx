@@ -30,7 +30,7 @@ export function NewDevicesHint() {
     <Link
       data-testid="dashboard-new-devices-hint"
       to="/devices"
-      className="block bg-yellow-500/5 border border-yellow-500/30 rounded-2xl px-5 py-3 text-sm text-yellow-200 hover:bg-yellow-500/10 transition-colors"
+      className="block bg-amber-500/5 border border-amber-500/30 rounded-2xl px-5 py-3 text-sm text-amber-800 hover:bg-amber-500/10 transition-colors"
     >
       {newDevices.length === 1
         ? '1 new device on the network — review on the Devices page →'
@@ -191,7 +191,7 @@ function AccessRequestRow({ request }: { request: Alert }) {
           />
         </label>
       )}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-red-700">{error}</p>}
       <div className="flex gap-2">
         <button
           type="button"
