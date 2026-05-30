@@ -1,16 +1,18 @@
 #!/bin/sh
-# Auto-updater for the wifihaven package.
-# Pulls the rolling `openwrt-latest` GitHub pre-release and re-installs whenever
-# the matched asset's sha256 digest changes. This matches the rolling-build CD
-# set up by #245 (image-per-push to main, no per-release tag cut).
+# Auto-updater for the wifihaven package (#244).
 #
-# We key on the asset digest, not the release's published_at: GitHub does not
-# bump published_at when CI replaces the rolling asset in-place — only the
-# asset's own created_at/digest move. Using published_at meant routers never
-# auto-updated past the original release-tag publish (see #870).
+# Pulls the latest non-prerelease `v<X.Y.Z>` GitHub Release and re-installs
+# only when the released `tag_name` differs from the version baked into
+# /usr/lib/wifihaven/VERSION at build time (#771). The rolling
+# `openwrt-latest` pre-release is excluded from `/releases/latest` because
+# it's published with prerelease:true, so this endpoint always returns the
+# semver release published by .github/workflows/openwrt-build.yml (#499 /
+# #1134).
 #
-# Reverted alongside #244, once we're ready for semver-gated production updates
-# again — see TODO(#244) below.
+# Bootstrap fallback: if /releases/latest returns 404 (no versioned release
+# yet on a fresh repo) we fall back to the rolling openwrt-latest tag with
+# a WARNING log. Remove the fallback once the versioned path is universal —
+# tracked in TODO below.
 #
 # Supports both opkg (OpenWRT <= 23.05) and apk-tools (OpenWRT 24.10+).
 # /etc/config/wifihaven is declared as a conffile, so router_token survives
@@ -18,33 +20,33 @@
 # Safe to run from cron; logs to syslog under tag "wifihaven".
 set -u
 
-# TODO(#244): revert to /releases/latest + semver compare once the rolling
-# debug period for #228 is done and proper tags resume.
-API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/openwrt-latest"
+API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/latest"
+FALLBACK_API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/openwrt-latest"
+INSTALLED_VERSION_FILE=/usr/lib/wifihaven/VERSION
 STATE_DIR=/var/lib/wifihaven
-# Stores the sha256 digest of the asset last installed (e.g. "sha256:abc..."),
-# not a timestamp. Old routers carrying a published_at timestamp here will
-# simply mismatch on first run and reinstall once, then settle.
-STAMP_FILE="$STATE_DIR/last_update_digest"
+# Stores the version string of the package last installed (e.g. "0.2.8").
+# Old routers carrying a sha256 digest here from the rolling-release era
+# will simply mismatch on first run and reinstall once, then settle.
+STAMP_FILE="$STATE_DIR/last_update_version"
 
 log() { logger -t wifihaven "update: $*"; }
 
 # Detect package manager. Prefer apk (24.10+) when both are present, since
 # routers mid-migration may still ship a vestigial opkg binary.
 #
-# PKG_NAME_RE is matched against the asset *basename*, not the full URL, and
-# is tight enough to reject luci-app-wifihaven and any future named variants
-# attached to the same release (#1178). The bare extension regex
-# (PKG_EXT) was too loose: GitHub publishes both luci-app and agent assets
-# under openwrt-latest, and "first match wins" silently picked the wrong one.
+# PKG_NAME_RE is matched against the asset *basename* (#1178) and is tight
+# enough to reject luci-app-wifihaven and any future named variants attached
+# to the same release. A bare extension match was too loose: GitHub releases
+# carry both the luci-app and the agent assets, and "first match wins"
+# silently picked the wrong one.
 if command -v apk >/dev/null 2>&1; then
   PM=apk
-  PKG_EXT='\.apk$'
+  PKG_EXT=apk
   PKG_NAME_RE='^wifihaven_[^_]+_all\.apk$'
   TMP=/tmp/wifihaven-update.apk
 elif command -v opkg >/dev/null 2>&1; then
   PM=opkg
-  PKG_EXT='\.ipk$'
+  PKG_EXT=ipk
   PKG_NAME_RE='^wifihaven_[^_]+_[^_]+\.ipk$'
   TMP=/tmp/wifihaven-update.ipk
 else
@@ -52,18 +54,36 @@ else
   exit 0
 fi
 
-META=$(curl -sf "$API_URL") || META=
+# Fetch /releases/latest, falling back to the rolling openwrt-latest tag on
+# 404 to keep a fresh repo (no v<X.Y.Z> tag yet) self-healing.
+HTTP_CODE=$(curl -s -o /tmp/wifihaven-update.meta -w '%{http_code}' "$API_URL" 2>/dev/null || echo "000")
+case "$HTTP_CODE" in
+  200)
+    META=$(cat /tmp/wifihaven-update.meta)
+    ;;
+  404)
+    log "warn: $API_URL returned 404; falling back to openwrt-latest (TODO(#1170): remove once versioned path is universal)"
+    META=$(curl -sf "$FALLBACK_API_URL") || META=
+    ;;
+  *)
+    log "could not fetch $API_URL (http $HTTP_CODE); skipping"
+    rm -f /tmp/wifihaven-update.meta
+    exit 0
+    ;;
+esac
+rm -f /tmp/wifihaven-update.meta
 if [ -z "$META" ]; then
-  log "could not fetch $API_URL; skipping"
+  log "empty release metadata; skipping"
   exit 0
 fi
 
-# Rolling-release freshness signal: the matched asset's sha256 digest. We
-# walk assets[*] collecting every entry whose *basename* matches the
-# agent-package regex (PKG_NAME_RE — see comment near package-manager
-# detection), then pick the highest version. GitHub asset order is not
-# deterministic across re-uploads, so "first match wins" would flap when CI
-# re-attaches the rolling assets (#1178).
+# Extract tag_name and the highest-version matching asset URL. A versioned
+# release normally carries a single wifihaven_<X.Y.Z>-<rel>_all.<ext> asset,
+# but we still walk the full list, reject luci-app (#1178), and `sort -V`
+# in case multiple revisions are ever attached. The fallback openwrt-latest
+# release uses the same asset layout, so this works for both paths.
+TAG=$(printf '%s' "$META" | jsonfilter -e '@.tag_name')
+LATEST_VERSION=$(printf '%s' "$TAG" | sed 's/^v//')
 MATCHES=
 i=0
 while :; do
@@ -71,12 +91,11 @@ while :; do
   [ -z "$URL" ] && break
   BASENAME=${URL##*/}
   if printf '%s' "$BASENAME" | grep -qE "$PKG_NAME_RE"; then
-    DIGEST=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].digest")
     # Version is the segment between 'wifihaven_' and the next underscore
     # (e.g. '0.2.8-1' from wifihaven_0.2.8-1_all.apk).
     VER=${BASENAME#wifihaven_}
     VER=${VER%%_*}
-    MATCHES="${MATCHES}${VER} ${DIGEST} ${URL}
+    MATCHES="${MATCHES}${VER} ${URL}
 "
   fi
   i=$((i + 1))
@@ -85,23 +104,31 @@ done
 # sort -V (version sort) is supported by busybox sort on OpenWRT 23.05+ and
 # handles the rc-style suffixes our semver tags use (e.g. 0.2.8-1).
 LATEST_URL=
-LATEST_STAMP=
 BEST=$(printf '%s' "$MATCHES" | grep -v '^$' | sort -V -k1,1 | tail -n1)
 if [ -n "$BEST" ]; then
-  LATEST_STAMP=$(printf '%s\n' "$BEST" | awk '{print $2}')
-  LATEST_URL=$(printf '%s\n' "$BEST" | awk '{print $3}')
+  LATEST_URL=$(printf '%s\n' "$BEST" | awk '{print $2}')
 fi
-if [ -z "$LATEST_STAMP" ] || [ -z "$LATEST_URL" ]; then
-  log "could not resolve rolling release digest/asset; skipping"
+if [ -z "$LATEST_URL" ] || [ -z "$LATEST_VERSION" ]; then
+  log "could not resolve asset url / version from release metadata; skipping"
   exit 0
 fi
 
-LAST_STAMP=$(cat "$STAMP_FILE" 2>/dev/null || true)
-if [ "$LATEST_STAMP" = "$LAST_STAMP" ]; then
+# Installed version: prefer the baked-in VERSION file (#771); fall back to
+# the package manager's own metadata, which covers older agents that pre-
+# date the bake step.
+INSTALLED_VERSION=$(cat "$INSTALLED_VERSION_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+if [ -z "$INSTALLED_VERSION" ]; then
+  case "$PM" in
+    opkg) INSTALLED_VERSION=$(opkg info wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-.*//') ;;
+    apk)  INSTALLED_VERSION=$(apk info -v wifihaven 2>/dev/null | head -1 | sed 's/^wifihaven-//; s/-r.*//') ;;
+  esac
+fi
+
+if [ -n "$INSTALLED_VERSION" ] && [ "$INSTALLED_VERSION" = "$LATEST_VERSION" ]; then
   exit 0
 fi
 
-log "rolling asset digest changed ($LAST_STAMP -> $LATEST_STAMP); upgrading via $PM"
+log "agent version $INSTALLED_VERSION -> $LATEST_VERSION; upgrading via $PM"
 if ! curl -fsSL -o "$TMP" "$LATEST_URL"; then
   log "download failed: $LATEST_URL"
   rm -f "$TMP"
@@ -111,7 +138,7 @@ fi
 case "$PM" in
   apk)
     if apk add --allow-untrusted "$TMP" >/tmp/wifihaven-update.log 2>&1; then
-      log "installed rolling build $LATEST_STAMP"
+      log "installed version $LATEST_VERSION"
       rm -f "$TMP" /tmp/wifihaven-update.log
     else
       log "apk add failed; see /tmp/wifihaven-update.log"
@@ -121,7 +148,7 @@ case "$PM" in
     ;;
   opkg)
     if opkg install --force-reinstall "$TMP" >/tmp/wifihaven-update.log 2>&1; then
-      log "installed rolling build $LATEST_STAMP"
+      log "installed version $LATEST_VERSION"
       rm -f "$TMP" /tmp/wifihaven-update.log
     else
       log "opkg install failed; see /tmp/wifihaven-update.log"
@@ -132,10 +159,10 @@ case "$PM" in
 esac
 
 # Stamp BEFORE restart: a restart failure (procd hiccup, etc.) must not leave
-# the digest unrecorded — otherwise every cron tick would re-install but never
-# move the stamp forward. Next reboot recovers the agent code regardless.
+# the version unrecorded — otherwise every cron tick would re-install but
+# never move the stamp forward. Next reboot recovers the agent code regardless.
 mkdir -p "$STATE_DIR"
-printf '%s\n' "$LATEST_STAMP" > "$STAMP_FILE"
+printf '%s\n' "$LATEST_VERSION" > "$STAMP_FILE"
 
 # Lua loads modules once at process start, so freshly-installed files only take
 # effect after the agent restarts (#909). Best-effort: if procd is wedged, log
