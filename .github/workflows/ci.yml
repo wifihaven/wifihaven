@@ -204,10 +204,12 @@ jobs:
         # when the api module's ZLayer environment intersection grows past
         # ~10 deps. CI runners default to a small JVM stack (1 MiB) and
         # hit StackOverflowError before the compiler's recursion limit
-        # catches it. JAVA_TOOL_OPTIONS is honored by every JVM in the
-        # process tree (mill launcher + any forked scalac worker), so set
-        # the stack size there.
+        # catches it. Mill spawns scalac in an isolated worker JVM and
+        # forwards JAVA_OPTS (not JAVA_TOOL_OPTIONS) to it, so set both —
+        # JAVA_OPTS for the worker, JAVA_TOOL_OPTIONS as belt-and-braces
+        # for the mill launcher.
         env:
+          JAVA_OPTS: "-Xss8m"
           JAVA_TOOL_OPTIONS: "-Xss8m"
         run: |
           rm -rf out/*/test/compile.dest/classes 2>/dev/null || true
@@ -217,6 +219,7 @@ jobs:
         # api.test spins up EmbeddedPostgres; running sequentially avoids
         # JVM-wide file-lock contention if more DB-heavy tests are added later.
         env:
+          JAVA_OPTS: "-Xss8m"
           JAVA_TOOL_OPTIONS: "-Xss8m"
         run: |
           mill shared.test
