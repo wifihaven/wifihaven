@@ -154,12 +154,21 @@ jobs:
           distribution: "temurin"
 
       - name: Cache Mill / Coursier
+        # NB: we deliberately do NOT cache `out/`. It holds Zinc incremental-
+        # compile analysis pegged to the source tree it was built against;
+        # restoring it across SHAs (especially via restore-keys, which match
+        # any older cache) silently poisons the build whenever the source
+        # structure has moved on. #1189 hit exactly this: PR #1185 was
+        # branched off pre-#1184 main, its CI populated `out/` against the
+        # pre-#1184 Routes.scala, and after the merge the post-merge CI
+        # restored that stale state and failed compile with 281 cascading
+        # "Not found: type X" errors. Only cache the dep stores, which are
+        # immutable downloads and safe to share across SHAs.
         uses: actions/cache@v5
         with:
           path: |
             ~/.mill
             ~/.cache/coursier
-            out/
           key: mill-${{ env.MILL_VERSION }}-${{ hashFiles('build.mill') }}
           restore-keys: |
             mill-${{ env.MILL_VERSION }}-
@@ -189,20 +198,11 @@ jobs:
         run: scalafmt --check --non-interactive
 
       - name: Compile all modules
-        # Mill caches `out/` across runs but does NOT drop stale `.class` files when their `.scala`
-        # sources are deleted, so old test classes can still be discovered by the test framework
-        # (#845 hit this: SessionApiSpec was deleted but its cached class file persisted and
-        # failed with NoClassDefFoundError for the also-deleted SessionPage). Wipe just the *test*
-        # `classes` dirs so Zinc rebuilds tests against the current source set; everything else in
-        # `out/` (main module classes, Zinc analysis, downloaded deps) stays cached.
-        #
-        # NB: do NOT also `rm -rf out/*/compile.dest/classes`. That would wipe shared/api main
-        # classes while Mill's task-state still treats those compile tasks as up-to-date from the
-        # restored cache — so they get skipped, downstream modules can't resolve their symbols, and
-        # `api.compile` fails with "value shared is not a member of wifihaven" (#946).
-        run: |
-          rm -rf out/*/test/compile.dest/classes 2>/dev/null || true
-          mill __.compile
+        # `out/` is not cached (see Cache step), so this is a clean
+        # Zinc compile from scratch — the stale-class-file workaround
+        # from #845 and the cache-vs-task-state hazard from #946 don't
+        # apply here.
+        run: mill __.compile
 
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
         # api.test spins up EmbeddedPostgres; running sequentially avoids
@@ -313,12 +313,13 @@ jobs:
           distribution: "temurin"
 
       - name: Cache Mill / Coursier
+        # See note in scala-build job: `out/` is intentionally not cached
+        # because Zinc incremental state poisons builds across SHAs (#1189).
         uses: actions/cache@v5
         with:
           path: |
             ~/.mill
             ~/.cache/coursier
-            out/
           key: mill-${{ env.MILL_VERSION }}-${{ hashFiles('build.mill') }}
           restore-keys: |
             mill-${{ env.MILL_VERSION }}-
