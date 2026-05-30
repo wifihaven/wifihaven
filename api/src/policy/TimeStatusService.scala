@@ -467,19 +467,23 @@ object TimeStatusService {
       TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & AppRepo & TimeUsedAppRollupRepo,
     Nothing,
     TimeStatusService,
-  ] = ZLayer.fromFunction {
-    (
-        pr: ProfileRepo,
-        sr: ScheduleRepo,
-        tlr: TimeLimitRepo,
-        stlr: SiteTimeLimitRepo,
-        dr: DeviceRepo,
-        trr: TrafficReportRepo,
-        er: TimeExtensionRepo,
-        ru: TimeUsedRollupRepo,
-        ar: AppRepo,
-        aru: TimeUsedAppRollupRepo,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, Some(ar), aru)
+  ] = ZLayer {
+    // Avoid `ZLayer.fromFunction` here: at 10 dependencies the auto-derived
+    // product widening pushed scalac's structural-subtype check past the
+    // recursion limit on CI runners with smaller stacks (#1167). The explicit
+    // `ZIO.service` form keeps each lookup independent.
+    for {
+      pr   <- ZIO.service[ProfileRepo]
+      sr   <- ZIO.service[ScheduleRepo]
+      tlr  <- ZIO.service[TimeLimitRepo]
+      stlr <- ZIO.service[SiteTimeLimitRepo]
+      dr   <- ZIO.service[DeviceRepo]
+      trr  <- ZIO.service[TrafficReportRepo]
+      er   <- ZIO.service[TimeExtensionRepo]
+      ru   <- ZIO.service[TimeUsedRollupRepo]
+      ar   <- ZIO.service[AppRepo]
+      aru  <- ZIO.service[TimeUsedAppRollupRepo]
+    } yield new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, Some(ar), aru)
   }
 
   /**
