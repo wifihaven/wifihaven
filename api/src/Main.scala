@@ -178,15 +178,20 @@ object Main extends ZIOAppDefault {
       clock       <- ZIO.service[Clock]
       timeCache   <- ZIO.service[TimeStatusCache]
       xa          <- ZIO.service[Transactor[Task]]
-      routerAuth    = new RouterAuthLive(routerRepo)
-      dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
-    } yield HealthRoutes.routes(dbHealthCheck) ++
-      VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
-      AuthRoutes.routes(auth, userRepo, upRepo) ++
-      ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
-      HouseholdSettingsRoutes.routes(auth, hsRepo) ++
-      DeviceRoutes.routes(auth, deviceRepo, upRepo) ++
-      TimeRoutes.routes(
+      routerAuth          = new RouterAuthLive(routerRepo)
+      dbHealthCheck       = sql"SELECT 1".query[Int].unique.transact(xa).unit
+      // #1174: the route list is split into named intermediate vals so the
+      // Scala 3 typer doesn't have to type-check one giant `++` chain in a
+      // single recursive pass. After PolicySnapshot grew a field, the chain
+      // tipped over CI's default-stack JVM recursion limit; the split keeps
+      // each chunk small enough that the typer stays under budget.
+      coreRoutes          = HealthRoutes.routes(dbHealthCheck) ++
+        VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
+        AuthRoutes.routes(auth, userRepo, upRepo) ++
+        ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
+        HouseholdSettingsRoutes.routes(auth, hsRepo) ++
+        DeviceRoutes.routes(auth, deviceRepo, upRepo)
+      timeRoutes          = TimeRoutes.routes(
         auth,
         deviceRepo,
         tlRepo,
@@ -200,41 +205,47 @@ object Main extends ZIOAppDefault {
         clock,
         timeCache,
       ) ++
-      LogRoutes.routes(auth, connRepo, upRepo) ++
-      UsageRoutes.routes(
+        LogRoutes.routes(auth, connRepo, upRepo) ++
+        UsageRoutes.routes(
+          auth,
+          deviceRepo,
+          trafficRepo,
+          upRepo,
+          profileRepo,
+          appRepo,
+          rollupRepo2,
+          clock,
+        ) ++
+        DashboardNowRoutes.routes(
+          auth,
+          trafficRepo,
+          connRepo,
+          deviceRepo,
+          profileRepo,
+          upRepo,
+          clock,
+        )
+      routerRoutes        = BlocklistRoutes.routes(
         auth,
-        deviceRepo,
-        trafficRepo,
-        upRepo,
-        profileRepo,
-        appRepo,
-        rollupRepo2,
-        clock,
+        blRepo,
+        blCache,
+        blFetcher2,
+        bundledBlocklists,
       ) ++
-      DashboardNowRoutes.routes(
-        auth,
-        trafficRepo,
-        connRepo,
-        deviceRepo,
-        profileRepo,
-        upRepo,
-        clock,
-      ) ++
-      BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
-      RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
-      AdminRouterRoutes.routes(auth, routerRepo) ++
-      RollupAdminRoutes.routes(auth, rollupRepo2) ++
-      RouterIngestRoutes.routes(
-        routerAuth,
-        routerRepo,
-        trafficRepo,
-        usageRepo,
-        deviceRepo,
-        connRepo,
-        alertRepo,
-        hsRepo,
-      ) ++
-      AlertRoutes.routes(
+        RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++
+        AdminRouterRoutes.routes(auth, routerRepo) ++
+        RollupAdminRoutes.routes(auth, rollupRepo2) ++
+        RouterIngestRoutes.routes(
+          routerAuth,
+          routerRepo,
+          trafficRepo,
+          usageRepo,
+          deviceRepo,
+          connRepo,
+          alertRepo,
+          hsRepo,
+        )
+      alertAppDebugRoutes = AlertRoutes.routes(
         auth,
         alertRepo,
         deviceRepo,
@@ -245,15 +256,16 @@ object Main extends ZIOAppDefault {
         notifier,
         clock,
       ) ++
-      AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
-      DebugRoutes.routes(
-        cfg.debugEnabled,
-        deviceRepo,
-        connRepo,
-        usageRepo,
-        trafficRepo,
-        clock,
-        timeCache,
-      ) ++
-      (if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty)
+        AppRoutes.routes(auth, appRepo, profileRepo, upRepo, templates) ++
+        DebugRoutes.routes(
+          cfg.debugEnabled,
+          deviceRepo,
+          connRepo,
+          usageRepo,
+          trafficRepo,
+          clock,
+          timeCache,
+        ) ++
+        (if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty)
+    } yield coreRoutes ++ timeRoutes ++ routerRoutes ++ alertAppDebugRoutes
 }
