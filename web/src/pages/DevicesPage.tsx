@@ -85,28 +85,28 @@ export function DevicesPage() {
       <NewDeviceAlertsBanner isAdmin={isAdmin} />
 
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">Devices</h1>
+        <h1 className="text-xl font-bold text-brand-ink">Devices</h1>
         {isAdmin && (
           <button
             onClick={() => { setEditing({} as Device); setForm({ mac: '', name: '', profileId: profiles[0]?.profile.id ?? 0 }) }}
-            className="bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+            className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
           >
             + Add Device
           </button>
         )}
       </div>
 
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
         {knownDevices.length === 0
           ? <EmptyState title="No devices yet." />
           : knownDevices.map(d => (
-              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-emerald-500/60 ring-inset' : ''}`}>
-                <Link to={`/devices/${encodeURIComponent(d.mac)}/timeline`} className="flex-1 min-w-0 hover:text-emerald-400 transition-colors" data-testid={`device-timeline-link-${d.mac}`}>
-                  <p className="font-medium text-white truncate">{d.name}</p>
-                  <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-brand-accent/60 ring-inset' : ''}`}>
+                <Link to={`/devices/${encodeURIComponent(d.mac)}/timeline`} className="flex-1 min-w-0 hover:text-brand-accent transition-colors" data-testid={`device-timeline-link-${d.mac}`}>
+                  <p className="font-medium text-brand-ink truncate">{d.name}</p>
+                  <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
                 </Link>
                 <div className="hidden sm:block text-sm">
-                  <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded-lg text-xs">
+                  <span className="bg-brand-accent/10 text-brand-accent border border-brand-accent/20 px-2 py-1 rounded-lg text-xs">
                     {d.profileName ?? 'No profile'}
                   </span>
                 </div>
@@ -114,7 +114,7 @@ export function DevicesPage() {
                   <div className="flex gap-2 shrink-0">
                     <button
                       onClick={() => { setEditing(d); setForm({ mac: d.mac, name: d.name, profileId: d.profileId ?? profiles[0]?.profile.id ?? 0 }) }}
-                      className="text-xs text-gray-400 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
+                      className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
                     >Edit</button>
                     <button
                       onClick={() => del(d.mac)}
@@ -129,10 +129,10 @@ export function DevicesPage() {
 
       {unknownDevices.length > 0 && (
         <div data-testid="unmanaged-devices-section">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
             Unmanaged Devices
             <span
-              className="ml-2 text-xs text-gray-600 normal-case font-normal"
+              className="ml-2 text-xs text-brand-text-muted normal-case font-normal"
               data-testid="unmanaged-devices-policy-hint"
             >
               {unmanagedPolicy?.policy === 'allow'
@@ -140,18 +140,18 @@ export function DevicesPage() {
                 : 'seen on the network, no profile assigned — blocked by household policy.'}
             </span>
           </h2>
-          <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
+          <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
             {unknownDevices.map(d => (
-              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-emerald-500/60 ring-inset' : ''}`}>
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-brand-accent/60 ring-inset' : ''}`}>
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-gray-400 truncate">{d.name}</p>
-                  <p className="text-xs text-gray-500 font-mono">{d.mac}</p>
+                  <p className="font-medium text-brand-text truncate">{d.name}</p>
+                  <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
                   {d.lastSeenIp && (
-                    <p className="text-xs text-gray-600 font-mono">{d.lastSeenIp}</p>
+                    <p className="text-xs text-brand-text-muted font-mono">{d.lastSeenIp}</p>
                   )}
                   {d.lastSeenAt && (
                     <p
-                      className="text-xs text-gray-600"
+                      className="text-xs text-brand-text-muted"
                       data-testid={`device-last-seen-${d.mac}`}
                     >
                       last seen {new Date(d.lastSeenAt).toLocaleString()}
@@ -171,7 +171,7 @@ export function DevicesPage() {
                   <button
                     onClick={() => addUnknown(d.mac)}
                     data-testid={`unmanaged-enroll-${d.mac}`}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+                    className="text-xs text-brand-accent hover:text-brand-accent bg-brand-accent/10 px-3 py-1.5 rounded-lg transition-colors shrink-0"
                   >Enroll</button>
                 )}
               </div>
@@ -182,20 +182,20 @@ export function DevicesPage() {
 
       {editing && (
         <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-lg font-bold text-white">{form.mac ? 'Edit Device' : 'Add Device'}</h3>
+          <div className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-lg font-bold text-brand-ink">{form.mac ? 'Edit Device' : 'Add Device'}</h3>
             <Field label="MAC Address" value={form.mac} onChange={v => setForm(f => ({...f, mac: v}))} placeholder="aa:bb:cc:dd:ee:ff" mono />
             <Field label="Name" value={form.name} onChange={v => setForm(f => ({...f, name: v}))} placeholder="Kid's iPad" />
             <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Profile</label>
+              <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
               <select value={form.profileId} onChange={e => setForm(f => ({...f, profileId: Number(e.target.value)}))}
-                className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white">
+                className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink">
                 {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
               </select>
             </div>
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setEditing(null)} className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium">Cancel</button>
-              <button onClick={save} className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold">Save</button>
+              <button onClick={() => setEditing(null)} className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium">Cancel</button>
+              <button onClick={save} className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold">Save</button>
             </div>
           </div>
         </div>
@@ -246,7 +246,7 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
           <button
             data-testid="enable-notifications-btn"
             onClick={() => notificationPermission.request()}
-            className="text-xs text-yellow-200 hover:text-white bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+            className="text-xs text-yellow-200 hover:text-brand-ink bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 px-3 py-1.5 rounded-lg transition-colors shrink-0"
           >
             Enable browser notifications
           </button>
@@ -257,31 +257,31 @@ function NewDeviceAlertsBanner({ isAdmin }: { isAdmin: boolean }) {
           <li
             key={a.id}
             data-testid={`new-device-alert-${a.mac}`}
-            className="flex items-center gap-3 text-sm bg-gray-900/60 rounded-lg px-3 py-2"
+            className="flex items-center gap-3 text-sm bg-white/60 rounded-lg px-3 py-2"
           >
             {isAdmin ? (
               <button
                 type="button"
                 onClick={() => setEditing(a)}
                 data-testid={`new-device-alert-row-${a.mac}`}
-                className="flex-1 min-w-0 text-left hover:text-emerald-400 transition-colors"
+                className="flex-1 min-w-0 text-left hover:text-brand-accent transition-colors"
               >
-                <p className="text-white truncate">{a.deviceName ?? a.mac}</p>
-                <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
-                <p className="text-xs text-gray-600">first seen {new Date(a.createdAt).toLocaleString()}</p>
+                <p className="text-brand-ink truncate">{a.deviceName ?? a.mac}</p>
+                <p className="text-xs text-brand-text-muted font-mono">{a.mac}</p>
+                <p className="text-xs text-brand-text-muted">first seen {new Date(a.createdAt).toLocaleString()}</p>
               </button>
             ) : (
               <div className="flex-1 min-w-0">
-                <p className="text-white truncate">{a.deviceName ?? a.mac}</p>
-                <p className="text-xs text-gray-500 font-mono">{a.mac}</p>
-                <p className="text-xs text-gray-600">first seen {new Date(a.createdAt).toLocaleString()}</p>
+                <p className="text-brand-ink truncate">{a.deviceName ?? a.mac}</p>
+                <p className="text-xs text-brand-text-muted font-mono">{a.mac}</p>
+                <p className="text-xs text-brand-text-muted">first seen {new Date(a.createdAt).toLocaleString()}</p>
               </div>
             )}
             {isAdmin && (
               <button
                 onClick={() => approveMutation.mutate(a.id)}
                 disabled={approveMutation.isPending}
-                className="text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors shrink-0"
+                className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt hover:bg-brand-alt px-3 py-1.5 rounded-lg transition-colors shrink-0"
               >
                 Dismiss
               </button>
@@ -350,23 +350,23 @@ function NewDeviceAlertEditor({
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
       <div
         data-testid="new-device-alert-editor"
-        className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm p-6 space-y-4"
+        className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-sm p-6 space-y-4"
       >
-        <h3 className="text-lg font-bold text-white">New device</h3>
+        <h3 className="text-lg font-bold text-brand-ink">New device</h3>
         <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">MAC Address</label>
-          <p className="text-sm font-mono text-gray-300 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+          <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">MAC Address</label>
+          <p className="text-sm font-mono text-brand-text bg-brand-surface border border-brand-border rounded-xl px-4 py-3">
             {alert.mac}
           </p>
         </div>
         <Field label="Name" value={name} onChange={setName} placeholder="Kid's iPad" />
         <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Profile</label>
+          <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Profile</label>
           <select
             data-testid="new-device-alert-profile"
             value={profileId ?? ''}
             onChange={e => setProfileId(e.target.value === '' ? null : Number(e.target.value))}
-            className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white"
+            className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink"
           >
             <option value="">— No profile —</option>
             {profiles.map(p => (
@@ -380,12 +380,12 @@ function NewDeviceAlertEditor({
         <div className="flex gap-3 pt-2">
           <button
             onClick={onClose}
-            className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium"
+            className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium"
           >Cancel</button>
           <button
             onClick={save}
             disabled={patchMutation.isPending}
-            className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-60"
+            className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-60"
           >Save</button>
         </div>
       </div>
@@ -400,9 +400,9 @@ function Field({ label, value, onChange, placeholder, mono = false }: {
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">{label}</label>
+      <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">{label}</label>
       <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-        className={`w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 ${mono ? 'font-mono text-sm' : ''}`} />
+        className={`w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent ${mono ? 'font-mono text-sm' : ''}`} />
     </div>
   )
 }

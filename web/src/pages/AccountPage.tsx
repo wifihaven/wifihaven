@@ -56,7 +56,7 @@ export function AccountPage() {
 
   return (
     <div className="space-y-6 max-w-xl">
-      <h1 className="text-xl font-bold text-white">Account</h1>
+      <h1 className="text-xl font-bold text-brand-ink">Account</h1>
 
       {/* #586: banner shown when the server-enforced must_change_password flag is set */}
       {mustChangePassword && (
@@ -65,24 +65,24 @@ export function AccountPage() {
         </div>
       )}
 
-      <section className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+      <section className="bg-white rounded-2xl border border-brand-border p-5">
+        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
           Profile
         </h2>
         <dl className="text-sm space-y-2">
           <div className="flex justify-between">
-            <dt className="text-gray-500">Username</dt>
-            <dd className="text-white font-mono">{username}</dd>
+            <dt className="text-brand-text-muted">Username</dt>
+            <dd className="text-brand-ink font-mono">{username}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-gray-500">Role</dt>
-            <dd className="text-white font-mono">{isAdmin ? 'admin' : 'readonly'}</dd>
+            <dt className="text-brand-text-muted">Role</dt>
+            <dd className="text-brand-ink font-mono">{isAdmin ? 'admin' : 'readonly'}</dd>
           </div>
         </dl>
       </section>
 
-      <section className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+      <section className="bg-white rounded-2xl border border-brand-border p-5">
+        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-4">
           Change password
         </h2>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -112,7 +112,7 @@ export function AccountPage() {
             </div>
           )}
           {success && (
-            <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-4 py-3 text-emerald-400 text-sm">
+            <div className="bg-brand-accent/10 border border-brand-accent/20 rounded-lg px-4 py-3 text-brand-accent text-sm">
               Password updated.
             </div>
           )}
@@ -120,7 +120,7 @@ export function AccountPage() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-semibold px-4 py-2 rounded-xl transition-colors"
+            className="bg-brand-accent hover:bg-brand-accent-dark disabled:opacity-50 text-white font-semibold px-4 py-2 rounded-xl transition-colors"
           >
             {loading ? 'Updating…' : 'Update password'}
           </button>
@@ -141,7 +141,7 @@ function PasswordField({
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+      <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
         {label}
       </label>
       <input
@@ -151,7 +151,7 @@ function PasswordField({
         autoComplete={autoComplete}
         autoFocus={autoFocus}
         required
-        className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors"
+        className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent transition-colors"
       />
     </div>
   )

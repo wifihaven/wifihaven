@@ -176,29 +176,29 @@ export function ProfileTimelinePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="min-w-0">
-          <Link to="/profiles" className="text-xs text-gray-500 hover:text-emerald-400">
+          <Link to="/profiles" className="text-xs text-brand-text-muted hover:text-brand-accent">
             ← Profiles
           </Link>
-          <h1 className="text-xl font-bold text-white truncate" data-testid="profile-timeline-name">
+          <h1 className="text-xl font-bold text-brand-ink truncate" data-testid="profile-timeline-name">
             {data?.profileName ?? `Profile ${profileId}`}
           </h1>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setDateAndPush(addDays(date, -1))}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-3 py-2 rounded-lg"
+            className="bg-brand-alt hover:bg-brand-alt text-brand-text text-sm px-3 py-2 rounded-lg"
             aria-label="Previous day"
           >‹</button>
           <input
             type="date"
             value={date}
             onChange={e => setDateAndPush(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-emerald-500"
+            className="bg-white border border-brand-border-strong text-brand-ink text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-brand-accent"
             data-testid="profile-timeline-date"
           />
           <button
             onClick={() => setDateAndPush(addDays(date, 1))}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-3 py-2 rounded-lg"
+            className="bg-brand-alt hover:bg-brand-alt text-brand-text text-sm px-3 py-2 rounded-lg"
             aria-label="Next day"
           >›</button>
         </div>
@@ -210,13 +210,13 @@ export function ProfileTimelinePage() {
         </div>
       )}
 
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
+      <div className="bg-white rounded-2xl border border-brand-border p-5">
         <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
             Hourly minutes
           </h2>
           <div className="flex items-center gap-3">
-            <div className="inline-flex rounded-lg bg-gray-800 p-0.5 text-xs" role="tablist" aria-label="Stack by">
+            <div className="inline-flex rounded-lg bg-brand-alt p-0.5 text-xs" role="tablist" aria-label="Stack by">
               {STACK_BY_OPTIONS.map(opt => (
                 <button
                   key={opt.key}
@@ -229,17 +229,17 @@ export function ProfileTimelinePage() {
                   onClick={() => { if (!opt.disabled) setStackAndPush(opt.key) }}
                   className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
                     stackBy === opt.key
-                      ? 'bg-emerald-500 text-black'
+                      ? 'bg-brand-accent text-white'
                       : opt.disabled
-                        ? 'text-gray-600 cursor-not-allowed'
-                        : 'text-gray-400 hover:text-gray-200'
+                        ? 'text-brand-text-muted cursor-not-allowed'
+                        : 'text-brand-text hover:text-brand-ink'
                   }`}
                 >
                   {opt.label}
                 </button>
               ))}
             </div>
-            <span className="text-xs text-gray-500 font-mono">
+            <span className="text-xs text-brand-text-muted font-mono">
               {dayTotal}m total · {data?.tz}
             </span>
           </div>
@@ -248,7 +248,7 @@ export function ProfileTimelinePage() {
         {isEmpty ? (
           <div
             data-testid="profile-timeline-empty"
-            className="h-64 flex items-center justify-center text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl"
+            className="h-64 flex items-center justify-center text-brand-text-muted text-sm border border-dashed border-brand-border rounded-xl"
           >
             No usage recorded on {date}.
           </div>
@@ -271,7 +271,7 @@ export function ProfileTimelinePage() {
             the per-host stack still even-shares within each device's bucket
             (#715). The numbers reconcile with the daily totals shown on the
             /profiles card, within that overlap caveat. */}
-        <p className="text-[11px] text-gray-600 mt-3">
+        <p className="text-[11px] text-brand-text-muted mt-3">
           Stacks total to wall-clock minutes per hour. Per-host minutes are proportional
           within each 5-minute window; overlapping device activity counts once per device
           (matches the daily total shown on the profile card).
@@ -279,8 +279,8 @@ export function ProfileTimelinePage() {
       </div>
 
       {data && stackBy === 'host' && (data.topHosts ?? []).length > 0 && (
-        <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        <div className="bg-white rounded-2xl border border-brand-border p-5">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
             Top hosts
           </h2>
           <ul className="space-y-1.5">
@@ -289,7 +289,7 @@ export function ProfileTimelinePage() {
                 <li
                   key={`${h.host.type}:${h.host.value}`}
                   data-testid={`profile-timeline-host-${h.host.value}`}
-                  className="flex items-center justify-between text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-2"
+                  className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <span
@@ -298,7 +298,7 @@ export function ProfileTimelinePage() {
                     />
                     <HostCell host={h.host} className="truncate" />
                   </span>
-                  <span className="text-gray-500 font-mono shrink-0 ml-2">{h.dayMins}m</span>
+                  <span className="text-brand-text-muted font-mono shrink-0 ml-2">{h.dayMins}m</span>
                 </li>
               )
             })}
@@ -307,8 +307,8 @@ export function ProfileTimelinePage() {
       )}
 
       {data && (stackBy === 'device' || stackBy === 'total') && (data.topDevices ?? []).length > 0 && (
-        <div className="bg-gray-900 rounded-2xl border border-gray-800 p-5">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        <div className="bg-white rounded-2xl border border-brand-border p-5">
+          <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
             Devices
           </h2>
           <ul className="space-y-1.5">
@@ -316,7 +316,7 @@ export function ProfileTimelinePage() {
               <li
                 key={d.deviceMac}
                 data-testid={`profile-timeline-device-${d.deviceMac}`}
-                className="flex items-center justify-between text-xs bg-gray-800/50 rounded-lg px-3 py-2"
+                className="flex items-center justify-between text-xs bg-brand-alt/50 rounded-lg px-3 py-2"
               >
                 <span className="flex items-center gap-2 min-w-0">
                   <span
@@ -325,12 +325,12 @@ export function ProfileTimelinePage() {
                   />
                   <Link
                     to={`/devices/${encodeURIComponent(d.deviceMac)}/timeline?date=${date}`}
-                    className="text-gray-300 hover:text-emerald-400 truncate"
+                    className="text-brand-text hover:text-brand-accent truncate"
                   >
                     {d.deviceName}
                   </Link>
                 </span>
-                <span className="text-gray-500 font-mono shrink-0 ml-2">{d.dayMins}m</span>
+                <span className="text-brand-text-muted font-mono shrink-0 ml-2">{d.dayMins}m</span>
               </li>
             ))}
           </ul>

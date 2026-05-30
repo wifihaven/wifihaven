@@ -109,26 +109,26 @@ export function UsersPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">Users</h1>
+        <h1 className="text-xl font-bold text-brand-ink">Users</h1>
         <button
           onClick={startCreate}
-          className="bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          className="bg-brand-accent hover:bg-brand-accent-dark text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
         >
           + New User
         </button>
       </div>
 
-      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
         {users.length === 0
           ? <EmptyState title="No users yet." />
           : users.map(u => (
-              <div key={u.id} data-testid={`user-row-${u.id}`} className="flex items-center gap-4 px-5 py-4 border-b border-gray-800 last:border-0">
+              <div key={u.id} data-testid={`user-row-${u.id}`} className="flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0">
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-white truncate">{u.username}</p>
-                  <p className="text-xs text-gray-500">
+                  <p className="font-medium text-brand-ink truncate">{u.username}</p>
+                  <p className="text-xs text-brand-text-muted">
                     <span className={`inline-block px-2 py-0.5 rounded font-mono mr-2 ${
                       u.role === 'admin'
-                        ? 'bg-emerald-500/10 text-emerald-400'
+                        ? 'bg-brand-accent/10 text-brand-accent'
                         : u.role === 'adult'
                           ? 'bg-blue-500/10 text-blue-400'
                           : 'bg-yellow-500/10 text-yellow-400'
@@ -137,9 +137,9 @@ export function UsersPage() {
                 </div>
                 <div className="hidden sm:flex flex-wrap gap-1 max-w-md justify-end">
                   {u.profileIds.length === 0
-                    ? <span className="text-xs text-gray-600">No profiles</span>
+                    ? <span className="text-xs text-brand-text-muted">No profiles</span>
                     : u.profileIds.map(pid => (
-                        <span key={pid} className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-1 rounded-lg">
+                        <span key={pid} className="text-xs bg-brand-alt text-brand-text border border-brand-border-strong px-2 py-1 rounded-lg">
                           {profileNameById.get(pid) ?? `#${pid}`}
                         </span>
                       ))
@@ -148,7 +148,7 @@ export function UsersPage() {
                 <div className="flex gap-2 shrink-0">
                   <button
                     onClick={() => startEdit(u)}
-                    className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
+                    className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
                   >Edit profiles</button>
                   <button
                     onClick={() => del(u)}
@@ -168,19 +168,19 @@ export function UsersPage() {
             </div>
           )}
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Username</label>
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Username</label>
             <input type="text" value={createForm.username} autoFocus
               onChange={e => setCreateForm(f => ({ ...f, username: e.target.value }))}
-              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500" />
+              className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink focus:outline-none focus:border-brand-accent" />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Password</label>
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Password</label>
             <input type="password" value={createForm.password}
               onChange={e => setCreateForm(f => ({ ...f, password: e.target.value }))}
-              className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500" />
+              className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink focus:outline-none focus:border-brand-accent" />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Role</label>
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Role</label>
             <div className="flex gap-2">
               {ROLES.map(r => {
                 const on = createForm.role === r
@@ -189,8 +189,8 @@ export function UsersPage() {
                     onClick={() => setCreateForm(f => ({ ...f, role: r }))}
                     className={`text-sm px-4 py-2 rounded-lg border transition-colors ${
                       on
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                        : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                        ? 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
+                        : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
                     }`}>
                     {r}
                   </button>
@@ -251,7 +251,7 @@ function ProfilePicker({
   }
   return (
     <div>
-      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Linked profiles</label>
+      <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Linked profiles</label>
       {profiles.length === 0
         ? <EmptyState variant="inline" title="No profiles available." />
         : (
@@ -262,8 +262,8 @@ function ProfilePicker({
                 <button key={p.profile.id} type="button" onClick={() => toggle(p.profile.id)}
                   className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
                     on
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : 'bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600'
+                      ? 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
+                      : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
                   }`}>
                   {on ? '✓ ' : ''}{p.profile.name}
                 </button>
@@ -281,10 +281,10 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
       <div
-        className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
+        className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-lg my-8 p-6 space-y-5 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
-        <h3 className="text-lg font-bold text-white">{title}</h3>
+        <h3 className="text-lg font-bold text-brand-ink">{title}</h3>
         {children}
       </div>
     </div>
@@ -302,11 +302,11 @@ function ModalFooter({
   return (
     <div className="flex gap-3 pt-2">
       <button onClick={onCancel} disabled={saving}
-        className="flex-1 py-3 rounded-xl bg-gray-800 text-gray-300 font-medium disabled:opacity-50">
+        className="flex-1 py-3 rounded-xl bg-brand-alt text-brand-text font-medium disabled:opacity-50">
         Cancel
       </button>
       <button onClick={onSave} disabled={saving}
-        className="flex-1 py-3 rounded-xl bg-emerald-500 text-black font-semibold disabled:opacity-50">
+        className="flex-1 py-3 rounded-xl bg-brand-accent text-white font-semibold disabled:opacity-50">
         {saving ? 'Saving…' : saveLabel}
       </button>
     </div>

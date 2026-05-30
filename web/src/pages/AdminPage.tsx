@@ -29,8 +29,8 @@ export function AdminPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">Admin</h1>
-        <p className="text-sm text-gray-500 mt-1">Settings that apply to the whole household.</p>
+        <h1 className="text-xl font-bold text-brand-ink">Admin</h1>
+        <p className="text-sm text-brand-text-muted mt-1">Settings that apply to the whole household.</p>
       </div>
 
       {hs && <DailyResetCard value={hs} onSaved={setHs} />}
@@ -87,16 +87,16 @@ function UnmanagedMacPolicyCard({
   return (
     <div
       data-testid="unmanaged-mac-policy-card"
-      className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-3"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
     >
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-bold text-white">Unmanaged devices</h2>
+        <h2 className="font-bold text-brand-ink">Unmanaged devices</h2>
         {!editing && (
           <button
             type="button"
             onClick={startEdit}
             data-testid="unmanaged-mac-policy-edit"
-            className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
+            className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
           >
             Edit
           </button>
@@ -104,23 +104,23 @@ function UnmanagedMacPolicyCard({
       </div>
 
       {!editing ? (
-        <p data-testid="unmanaged-mac-policy-summary" className="text-sm text-gray-300">
+        <p data-testid="unmanaged-mac-policy-summary" className="text-sm text-brand-text">
           {ump.policy === 'block' ? (
             <>
-              <span className="font-medium text-white">Block by default</span>
+              <span className="font-medium text-brand-ink">Block by default</span>
               {' — unmanaged MACs are denied egress'}
               {ump.blockPage ? ' and land on the block page.' : '.'}
             </>
           ) : (
             <>
-              <span className="font-medium text-white">Allow by default</span>
+              <span className="font-medium text-brand-ink">Allow by default</span>
               {' — unmanaged MACs flow freely; you still get an alert.'}
             </>
           )}
         </p>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-brand-text">
             Applied to any MAC that connects to the network without being assigned to a profile.
             When set to "block" the API marks the device manual-blocked in the next router
             snapshot, so the existing per-MAC enforcement path applies — no router code change
@@ -132,7 +132,7 @@ function UnmanagedMacPolicyCard({
             </div>
           )}
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm text-gray-200">
+            <label className="flex items-center gap-2 text-sm text-brand-ink">
               <input
                 type="radio"
                 name="unmanaged-mac-policy"
@@ -143,7 +143,7 @@ function UnmanagedMacPolicyCard({
               />
               Allow unmanaged MACs (default; alert-only)
             </label>
-            <label className="flex items-center gap-2 text-sm text-gray-200">
+            <label className="flex items-center gap-2 text-sm text-brand-ink">
               <input
                 type="radio"
                 name="unmanaged-mac-policy"
@@ -155,7 +155,7 @@ function UnmanagedMacPolicyCard({
               Block unmanaged MACs
             </label>
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-200">
+          <label className="flex items-center gap-2 text-sm text-brand-ink">
             <input
               type="checkbox"
               checked={form.blockPage}
@@ -172,7 +172,7 @@ function UnmanagedMacPolicyCard({
               onClick={cancel}
               disabled={saving}
               data-testid="unmanaged-mac-policy-cancel"
-              className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm font-medium disabled:opacity-50"
+              className="px-4 py-2 rounded-lg bg-brand-alt text-brand-text text-sm font-medium disabled:opacity-50"
             >
               Cancel
             </button>
@@ -181,7 +181,7 @@ function UnmanagedMacPolicyCard({
               onClick={save}
               disabled={saving}
               data-testid="unmanaged-mac-policy-save"
-              className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-sm font-semibold disabled:opacity-50"
+              className="px-4 py-2 rounded-lg bg-brand-accent text-white text-sm font-semibold disabled:opacity-50"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
@@ -254,16 +254,16 @@ function HeartbeatFilterCard({
   return (
     <div
       data-testid="heartbeat-filter-card"
-      className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-3"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
     >
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-bold text-white">Heartbeat filter</h2>
+        <h2 className="font-bold text-brand-ink">Heartbeat filter</h2>
         {!editing && (
           <button
             type="button"
             onClick={startEdit}
             data-testid="heartbeat-filter-edit"
-            className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
+            className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
           >
             Edit
           </button>
@@ -272,20 +272,20 @@ function HeartbeatFilterCard({
 
       {!editing ? (
         <div className="space-y-1">
-          <p data-testid="heartbeat-filter-summary" className="text-sm text-gray-300">
+          <p data-testid="heartbeat-filter-summary" className="text-sm text-brand-text">
             {hf.enabled ? (
               <>
-                <span className="font-medium text-white">Enabled</span>
+                <span className="font-medium text-brand-ink">Enabled</span>
                 {' — bytes ≥ '}
-                <span className="font-mono text-gray-200">{hf.bytesThreshold}</span>
+                <span className="font-mono text-brand-ink">{hf.bytesThreshold}</span>
               </>
             ) : (
-              <span className="font-medium text-white">Disabled</span>
+              <span className="font-medium text-brand-ink">Disabled</span>
             )}
           </p>
           <p
             data-testid="heartbeat-filter-hosts-summary"
-            className="text-xs text-gray-500"
+            className="text-xs text-brand-text-muted"
           >
             {hf.heartbeatHostPatterns.length} host pattern
             {hf.heartbeatHostPatterns.length === 1 ? '' : 's'}
@@ -293,7 +293,7 @@ function HeartbeatFilterCard({
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-brand-text">
             Excludes low-traffic background "heartbeat" rows from device/profile screen-time
             totals. A row is classified as a heartbeat when its bytes/minute is below the
             configured floor.
@@ -311,7 +311,7 @@ function HeartbeatFilterCard({
               {validationError}
             </div>
           )}
-          <label className="flex items-center gap-2 text-sm text-gray-200">
+          <label className="flex items-center gap-2 text-sm text-brand-ink">
             <input
               type="checkbox"
               checked={form.enabled}
@@ -323,7 +323,7 @@ function HeartbeatFilterCard({
           </label>
           <div className="flex flex-wrap gap-3 items-end">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Bytes/min threshold</label>
+              <label className="block text-xs text-brand-text-muted mb-1">Bytes/min threshold</label>
               <input
                 type="number"
                 min={0}
@@ -331,12 +331,12 @@ function HeartbeatFilterCard({
                 value={form.bytesThreshold}
                 onChange={e => setForm({ ...form, bytesThreshold: Number(e.target.value) })}
                 data-testid="heartbeat-filter-bytes"
-                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm w-32"
+                className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm w-32"
               />
             </div>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">
+            <label className="block text-xs text-brand-text-muted mb-1">
               Host allowlist (one pattern per line — `*.foo.com` or `foo.com`)
             </label>
             <textarea
@@ -350,9 +350,9 @@ function HeartbeatFilterCard({
               data-testid="heartbeat-filter-hosts"
               rows={8}
               spellCheck={false}
-              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-xs font-mono w-full"
+              className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-xs font-mono w-full"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-brand-text-muted mt-1">
               Rows whose host matches any pattern are classified as heartbeats regardless of
               bytes / active fraction.
             </p>
@@ -363,7 +363,7 @@ function HeartbeatFilterCard({
               onClick={cancel}
               disabled={saving}
               data-testid="heartbeat-filter-cancel"
-              className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm font-medium disabled:opacity-50"
+              className="px-4 py-2 rounded-lg bg-brand-alt text-brand-text text-sm font-medium disabled:opacity-50"
             >
               Cancel
             </button>
@@ -372,7 +372,7 @@ function HeartbeatFilterCard({
               onClick={save}
               disabled={saving || validationError !== null}
               data-testid="heartbeat-filter-save"
-              className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-sm font-semibold disabled:opacity-50"
+              className="px-4 py-2 rounded-lg bg-brand-accent text-white text-sm font-semibold disabled:opacity-50"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
@@ -434,16 +434,16 @@ function DailyResetCard({
   return (
     <div
       data-testid="household-settings-card"
-      className="bg-gray-900 rounded-2xl border border-gray-800 p-5 space-y-3"
+      className="bg-white rounded-2xl border border-brand-border p-5 space-y-3"
     >
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-bold text-white">Daily reset</h2>
+        <h2 className="font-bold text-brand-ink">Daily reset</h2>
         {!editing && (
           <button
             type="button"
             onClick={startEdit}
             data-testid="household-edit"
-            className="text-xs text-gray-300 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
+            className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
           >
             Edit
           </button>
@@ -451,14 +451,14 @@ function DailyResetCard({
       </div>
 
       {!editing ? (
-        <p data-testid="household-summary" className="text-sm text-gray-300">
+        <p data-testid="household-summary" className="text-sm text-brand-text">
           Resets daily at{' '}
-          <span className="font-medium text-white">{formatResetTime(value.dailyResetTime)}</span>{' '}
-          (<span className="font-mono text-gray-400">{value.dailyResetTz}</span>)
+          <span className="font-medium text-brand-ink">{formatResetTime(value.dailyResetTime)}</span>{' '}
+          (<span className="font-mono text-brand-text">{value.dailyResetTz}</span>)
         </p>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-brand-text">
             The wall-clock time at which daily usage limits reset. Both the reset time and
             timezone are stored together — the reset always fires at the configured local clock
             time, even across DST.
@@ -470,17 +470,17 @@ function DailyResetCard({
           )}
           <div className="flex flex-wrap gap-3 items-end">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Reset time</label>
+              <label className="block text-xs text-brand-text-muted mb-1">Reset time</label>
               <input
                 type="time"
                 value={form.dailyResetTime}
                 onChange={e => setForm({ ...form, dailyResetTime: e.target.value })}
                 data-testid="household-reset-time"
-                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm"
+                className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm"
               />
             </div>
             <div className="flex-1 min-w-[14rem]">
-              <label className="block text-xs text-gray-500 mb-1">Timezone</label>
+              <label className="block text-xs text-brand-text-muted mb-1">Timezone</label>
               <TimezonePicker
                 value={form.dailyResetTz}
                 onChange={tz => setForm({ ...form, dailyResetTz: tz })}
@@ -494,7 +494,7 @@ function DailyResetCard({
               onClick={cancel}
               disabled={saving}
               data-testid="household-cancel"
-              className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm font-medium disabled:opacity-50"
+              className="px-4 py-2 rounded-lg bg-brand-alt text-brand-text text-sm font-medium disabled:opacity-50"
             >
               Cancel
             </button>
@@ -503,7 +503,7 @@ function DailyResetCard({
               onClick={save}
               disabled={saving}
               data-testid="household-save"
-              className="px-4 py-2 rounded-lg bg-emerald-500 text-black text-sm font-semibold disabled:opacity-50"
+              className="px-4 py-2 rounded-lg bg-brand-accent text-white text-sm font-semibold disabled:opacity-50"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>

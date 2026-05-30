@@ -39,12 +39,12 @@ export function EmptyState({
       }
     >
       {icon && (
-        <div className={isPage ? 'text-gray-600 text-2xl' : 'text-gray-600 text-base'} aria-hidden="true">
+        <div className={isPage ? 'text-brand-text-muted text-2xl' : 'text-brand-text-muted text-base'} aria-hidden="true">
           {icon}
         </div>
       )}
-      <p className="text-gray-500 text-sm">{title}</p>
-      {hint && <p className="text-gray-600 text-xs">{hint}</p>}
+      <p className="text-brand-text-muted text-sm">{title}</p>
+      {hint && <p className="text-brand-text-muted text-xs">{hint}</p>}
       {action && <div className="mt-3">{action}</div>}
     </div>
   )
