@@ -266,8 +266,13 @@ jobs:
       && !contains(github.event.pull_request.labels.*.name, 'migration-coupled-justified')
     runs-on: ubuntu-latest
     steps:
+      # Check out the PR branch tip, NOT the GitHub-generated merge commit.
+      # The merge commit includes any unrelated migrations that landed on
+      # main while this PR was open, which the diff against base.sha then
+      # reports as "added" in this PR — false positives.
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Reject migration PRs that also change production source
