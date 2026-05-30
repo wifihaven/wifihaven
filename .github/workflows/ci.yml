@@ -200,6 +200,17 @@ jobs:
         # classes while Mill's task-state still treats those compile tasks as up-to-date from the
         # restored cache — so they get skipped, downstream modules can't resolve their symbols, and
         # `api.compile` fails with "value shared is not a member of wifihaven" (#946).
+        # #1167: scalac's structural-subtype TypeComparer can recurse deeply
+        # when the api module's ZLayer environment intersection grows past
+        # ~10 deps. CI runners default to a small JVM stack (1 MiB) and
+        # hit StackOverflowError before the compiler's recursion limit
+        # catches it. Mill spawns scalac in an isolated worker JVM and
+        # forwards JAVA_OPTS (not JAVA_TOOL_OPTIONS) to it, so set both —
+        # JAVA_OPTS for the worker, JAVA_TOOL_OPTIONS as belt-and-braces
+        # for the mill launcher.
+        env:
+          JAVA_OPTS: "-Xss8m"
+          JAVA_TOOL_OPTIONS: "-Xss8m"
         run: |
           rm -rf out/*/test/compile.dest/classes 2>/dev/null || true
           mill __.compile
@@ -207,6 +218,9 @@ jobs:
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
         # api.test spins up EmbeddedPostgres; running sequentially avoids
         # JVM-wide file-lock contention if more DB-heavy tests are added later.
+        env:
+          JAVA_OPTS: "-Xss8m"
+          JAVA_TOOL_OPTIONS: "-Xss8m"
         run: |
           mill shared.test
           mill api.test

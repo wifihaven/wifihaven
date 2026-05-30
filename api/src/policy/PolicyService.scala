@@ -49,6 +49,11 @@ object PolicyServiceLive {
       // Snapshot specs only exercise today; today is always live. A real rollup repo would be
       // ignored on this path, so wire a noop and avoid threading the repo through every test.
       NoopTimeUsedRollupRepo,
+      // #1167: provide the AppRepo so `appUsageAll` can compute per-(profile, app)
+      // usage live for the snapshot's time_limited cap evaluation. The per-app
+      // rollup repo stays noop — today's snapshot path goes all-live in tests.
+      Some(appRepo),
+      NoopTimeUsedAppRollupRepo,
     )
     new PolicyServiceLive(
       profileRepo,
@@ -92,6 +97,12 @@ class PolicyServiceLive(
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
       dayStates <- timeStatusService.dayStateAll(now, today, settings)
+      // #1167: per-(profile, app) used-seconds for today, served from the
+      // `time_used_app_daily` rollup + a live tail (or all-live on cache miss).
+      // The display path (`/api/profiles/:id/usage-by-app`) and the snapshot's
+      // per-app cap evaluation both read through this map, so they cannot
+      // drift — same source-of-truth contract the profile total has (#1104).
+      appUsage  <- timeStatusService.appUsageAll(now, today, settings)
       profiles  <- profileRepo.listAll
       devices   <- deviceRepo.listAll
       stlims    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
@@ -131,6 +142,39 @@ class PolicyServiceLive(
           .flatten
           .distinct
 
+        // #1167: per-app time_limited cap evaluation reads through the cached
+        // `appUsage` map (rollup + tail when today; all-live for past dates).
+        // For each (profile, app) where used_minutes >= dailyMinutes, all of
+        // the app's hosts land in extraBlocked. Per-app aggregation (sum across
+        // the app's hosts in a bucket-deduplicated way — see
+        // `TimeStatusService.usedSecondsByApp`) is the correct semantic for an
+        // app cap, where the cap applies to the app as a whole.
+        val pAppUsage                                  = appUsage.getOrElse(p.id, Map.empty)
+        val appTimeLimitedExtraBlocked: List[Hostname] = pAssigns
+          .collect {
+            case a if a.mode == AppMode.TimeLimited =>
+              val cap  = a.dailyMinutes.getOrElse(Int.MaxValue)
+              val used = (pAppUsage.getOrElse(a.appId, 0L) / 60L).toInt
+              if used >= cap then appHostsMap.getOrElse(a.appId, Nil)
+              else Nil
+          }
+          .flatten
+          .distinct
+        // #1167: app hosts whose cap is still open — used to carve around the
+        // MAC-level @blocked_macs drop when the app is exemptFromDaily. The
+        // exempt flag's original role (excluding the host from the daily total)
+        // is unchanged; the carve-out kicks in only while per-app budget remains.
+        val appTimeLimitedExtraAllowed: List[Hostname] = pAssigns
+          .collect {
+            case a
+                if a.mode == AppMode.TimeLimited && a.exemptFromDaily &&
+                  (pAppUsage.getOrElse(a.appId, 0L) / 60L).toInt <
+                  a.dailyMinutes.getOrElse(Int.MaxValue) =>
+              appHostsMap.getOrElse(a.appId, Nil)
+          }
+          .flatten
+          .distinct
+
         // #1104: cap/block state comes from TimeStatusService — the same value the UI reads.
         val state = dayStates.getOrElse(
           p.id,
@@ -142,6 +186,8 @@ class PolicyServiceLive(
           siteLimits = pSiteLims,
           appExtraAllowed = appAllowedHosts,
           appExtraBlocked = appBlockedHosts,
+          appTimeLimitedExtraBlocked = appTimeLimitedExtraBlocked,
+          appTimeLimitedExtraAllowed = appTimeLimitedExtraAllowed,
           uiAllowedHosts = uiAllowedHosts,
         )
 
@@ -503,50 +549,33 @@ object PolicyService {
       siteLimits: List[SiteTimeLimit],
       appExtraAllowed: List[Hostname] = Nil,
       appExtraBlocked: List[Hostname] = Nil,
+      appTimeLimitedExtraBlocked: List[Hostname] = Nil,
+      appTimeLimitedExtraAllowed: List[Hostname] = Nil,
       uiAllowedHosts: List[Hostname] = Nil,
   ): BlockRules = {
-    // Per-site limits exhausted today → host appears in extraBlocked too.
-    // domainPattern is a glob string, not a Hostname — we keep it as-is in the
-    // extraBlocked list so the router agent can match it. We do NOT wrap with
-    // Hostname here because glob patterns like *.youtube.com are not hostnames.
-    // Instead, we pass them as raw strings and convert via Hostname.unsafe for
-    // the typed list (the router treats these as patterns, so validation is relaxed).
-    val siteUsedByPattern: Map[String, Int]   =
-      state.perSite.iterator.map(s => s.domainPattern -> s.usedMinutes).toMap
-    val siteLimitExtraBlocked: List[Hostname] = siteLimits.collect {
-      case sl if siteUsedByPattern.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes =>
-        Hostname.unsafe(sl.domainPattern)
-    }
-
-    // #1105: time_limited app hosts with exemptFromDaily=true carve around the
-    // MAC-level @blocked_macs drop while they still have per-host budget. The
-    // exempt flag's original role was just to exclude the host from the daily
-    // tally; without this carve-out, hitting the profile cap silently dropped
-    // the exempt app too, violating the "Khan doesn't count" contract.
-    // Naturally transitions allow → block as the per-host budget exhausts
-    // (siteLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
-    // at the router; see feedback_extraallowed_beats_blocked).
-    val appExemptAllowedHosts: List[Hostname] = state.perSite.collect {
-      case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
-        Hostname.unsafe(sd.domainPattern)
-    }
-
     // #763: app expansion is additive. A host in both an allowed-mode app and
     // a blocked-mode app will appear in both lists; the router's
     // extraAllowed-beats-extraBlocked precedence then makes "allow wins" — same
     // semantics it already applies to the per-profile own lists (see
     // feedback_extraallowed_beats_blocked).
+    //
+    // #1167: time_limited app hosts come pre-computed in
+    // `appTimeLimitedExtraBlocked` (apps whose cap is hit) and
+    // `appTimeLimitedExtraAllowed` (exempt apps with cap remaining — carve
+    // around the MAC-level drop). Both lists are sourced from
+    // `TimeStatusService.appUsageAll`, so display (#1061) and enforcement
+    // share one code path the same way the profile total does (#1104).
     BlockRules(
       blocked = state.blocked,
       blockReason = state.blockReason,
-      extraBlocked = (appExtraBlocked ++ siteLimitExtraBlocked).distinct,
+      extraBlocked = (appExtraBlocked ++ appTimeLimitedExtraBlocked).distinct,
       // #944: union the deployment's UI hosts into per-profile extraAllowed so
       // a household device can always reach the admin UI even when this
       // profile is paused or lists one of these hosts in a blocked-mode app
       // (allow beats block at the router). Configured via wifihaven.policy
       // .uiAllowedHosts per-deployment so prod doesn't allow staging through
       // and vice versa. Will become DB-backed per #937.
-      extraAllowed = (appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts).distinct,
+      extraAllowed = (appExtraAllowed ++ appTimeLimitedExtraAllowed ++ uiAllowedHosts).distinct,
       blocklistIds = profile.blockedCategories,
       blockIpOnly = profile.blockIpOnly,
     )

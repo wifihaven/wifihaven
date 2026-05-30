@@ -1,18 +1,22 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.{
+  AppRepo,
   DeviceRepo,
   HouseholdSettingsRepo,
   ProfileRepo,
+  RolledAppDay,
   RolledDay,
   RollupRepo,
   SiteTimeLimitRepo,
+  TimeUsedAppRollupRepo,
   TimeUsedRollupRepo,
   TrafficReportRepo,
 }
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
-import wifihaven.shared.types.ProfileId
+import wifihaven.shared.types.{AppId, ProfileId}
+import wifihaven.shared.types.Hostname
 import zio.*
 
 import java.time.{Duration, Instant}
@@ -51,17 +55,28 @@ object TimeUsedRollupJob {
    */
   def loop(
       rollup: TimeUsedRollupRepo,
+      appRollup: TimeUsedAppRollupRepo,
       runs: RollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
       trafficRepo: TrafficReportRepo,
+      appRepo: AppRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
   ): UIO[Unit] =
-    runOnce(rollup, runs, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, clock)
-      .repeat(Schedule.fixed(Interval))
-      .unit
+    runOnce(
+      rollup,
+      appRollup,
+      runs,
+      profileRepo,
+      deviceRepo,
+      siteTimeLimitRepo,
+      trafficRepo,
+      appRepo,
+      hs,
+      clock,
+    ).repeat(Schedule.fixed(Interval)).unit
 
   /**
    * Single tick body, exposed for the test that exercises the rollup end-to-end without going
@@ -76,17 +91,97 @@ object TimeUsedRollupJob {
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
-  ): Task[Int] = doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now)
+  ): Task[Int] = doTick(
+    rollup,
+    NoopAppRollup,
+    profileRepo,
+    deviceRepo,
+    siteTimeLimitRepo,
+    trafficRepo,
+    NoopAppRepo,
+    hs,
+    now,
+  )
+
+  /** #1167: end-to-end tick including the per-app sub-bucket write. */
+  def oneTickForTest(
+      rollup: TimeUsedRollupRepo,
+      appRollup: TimeUsedAppRollupRepo,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
+      appRepo: AppRepo,
+      hs: HouseholdSettingsRepo,
+      now: Instant,
+  ): Task[Int] = doTick(
+    rollup,
+    appRollup,
+    profileRepo,
+    deviceRepo,
+    siteTimeLimitRepo,
+    trafficRepo,
+    appRepo,
+    hs,
+    now,
+  )
+
+  private object NoopAppRollup extends TimeUsedAppRollupRepo {
+    def upsertDay(p: ProfileId, a: AppId, d: java.time.LocalDate, r: RolledAppDay): Task[Unit] =
+      ZIO.unit
+    def upsertBatch(
+        d: java.time.LocalDate,
+        rows: Map[(ProfileId, AppId), RolledAppDay],
+    ): Task[Int] = ZIO.succeed(0)
+    def getDayForProfile(
+        p: ProfileId,
+        d: java.time.LocalDate,
+    ): Task[Map[AppId, RolledAppDay]] = ZIO.succeed(Map.empty)
+    def getDayMap(d: java.time.LocalDate): Task[Map[(ProfileId, AppId), RolledAppDay]]         =
+      ZIO.succeed(Map.empty)
+    def deleteAll: Task[Unit] = ZIO.unit
+  }
+
+  // Test-only AppRepo that returns no apps — used by the legacy 7-arg
+  // `oneTickForTest` so the existing TimeUsedRollupSpec keeps compiling
+  // without needing an AppRepo fixture; the per-app branch becomes a no-op.
+  private object NoopAppRepo extends AppRepo {
+    import wifihaven.shared.*
+    import wifihaven.shared.types.*
+    def listAll                            = ZIO.succeed(Nil)
+    def findById(id: AppId)                = ZIO.succeed(None)
+    def findBySlug(slug: String)           = ZIO.succeed(None)
+    def findByTemplateId(t: AppTemplateId) = ZIO.succeed(None)
+    def create(n: String, s: String, t: Option[AppTemplateId], i: Option[String], it: IconType) =
+      ZIO.fail(new UnsupportedOperationException("NoopAppRepo"))
+    def update(a: App)                           = ZIO.unit
+    def delete(id: AppId)                        = ZIO.unit
+    def setHosts(id: AppId, h: List[Hostname])   = ZIO.unit
+    def getHosts(id: AppId)                      = ZIO.succeed(Nil)
+    def listAllHostMappings                      = ZIO.succeed(Nil)
+    def upsertAssignment(
+        a: AppId,
+        p: ProfileId,
+        m: AppMode,
+        d: Option[Int],
+        e: Boolean,
+    ) = ZIO.fail(new UnsupportedOperationException("NoopAppRepo"))
+    def deleteAssignment(a: AppId, p: ProfileId) = ZIO.unit
+    def listAssignmentsForApp(a: AppId)          = ZIO.succeed(Nil)
+    def listAssignmentsForProfile(p: ProfileId)  = ZIO.succeed(Nil)
+  }
 
   // ── internals ──────────────────────────────────────────────────────────────
 
   private def runOnce(
       rollup: TimeUsedRollupRepo,
+      appRollup: TimeUsedAppRollupRepo,
       runs: RollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
       trafficRepo: TrafficReportRepo,
+      appRepo: AppRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
   ): UIO[Unit] =
@@ -95,7 +190,17 @@ object TimeUsedRollupJob {
       result   <-
         clock.instant
           .flatMap(now =>
-            doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now),
+            doTick(
+              rollup,
+              appRollup,
+              profileRepo,
+              deviceRepo,
+              siteTimeLimitRepo,
+              trafficRepo,
+              appRepo,
+              hs,
+              now,
+            ),
           )
           .either
       finished <- clock.instant
@@ -125,10 +230,12 @@ object TimeUsedRollupJob {
   // bucket granularity (5 min); the next tick re-rolls with a fresh `now` and supersedes the row.
   private def doTick(
       rollup: TimeUsedRollupRepo,
+      appRollup: TimeUsedAppRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
       trafficRepo: TrafficReportRepo,
+      appRepo: AppRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
   ): Task[Int] = for {
@@ -138,7 +245,8 @@ object TimeUsedRollupJob {
     devices  <- deviceRepo.listAll
     stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    perProfile: Map[ProfileId, RolledDay] = {
+    mappings <- appRepo.listAllHostMappings
+    perProfile: Map[ProfileId, RolledDay]         = {
       val stlMap  = stlsP.toMap
       val devsByP =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
@@ -156,6 +264,27 @@ object TimeUsedRollupJob {
         p.id -> RolledDay(secs, now)
       }.toMap
     }
+    // #1167: same tick, same watermark — sub-bucket rows duplicate the parent
+    // profile's `rolled_through` so the read path can compose rolled+tail with
+    // a single-key lookup per (profile, app). Empty mappings (no apps configured)
+    // means the per-app upsert is a no-op.
+    perApp: Map[(ProfileId, AppId), RolledAppDay] = {
+      val appHosts: Map[AppId, List[Hostname]] =
+        mappings.groupBy(_.appId).view.mapValues(_.map(_.host)).toMap
+      val devsByP                              =
+        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+      profiles.iterator.flatMap { p =>
+        val devs       = devsByP.getOrElse(p.id, Nil)
+        val macSet     = devs.map(_.mac).toSet
+        val pres       = presence.filter(r => macSet.contains(r.mac))
+        val perAppSecs =
+          TimeStatusService.usedSecondsByApp(devs, appHosts, pres, settings)
+        appHosts.keys.iterator.map { aid =>
+          (p.id, aid) -> RolledAppDay(perAppSecs.getOrElse(aid, 0L), now)
+        }
+      }.toMap
+    }
     n <- rollup.upsertBatch(today, perProfile)
+    _ <- appRollup.upsertBatch(today, perApp)
   } yield n
 }
