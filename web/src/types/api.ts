@@ -407,6 +407,35 @@ export interface UsageDeviceBucket {
   otherMins: number
 }
 
+// #1079 — unified by-app axis. Apps roll up their member hosts; non-app hosts
+// surface individually as first-class entries; 'Other' is strictly the long
+// tail past top-N (never a catch-all for unmapped hosts).
+export interface UsageEntityRef {
+  kind: 'app' | 'host'
+  id: string
+  name: string
+  appId?: number
+  appIcon?: string
+  host?: HostId
+}
+
+export interface UsageEntityTotal {
+  entity: UsageEntityRef
+  dayMins: number
+}
+
+export interface UsageBucketEntity {
+  entity: UsageEntityRef
+  mins: number
+}
+
+export interface UsageEntityBucket {
+  hour: number
+  totalMins: number
+  perEntity: UsageBucketEntity[]
+  otherMins: number
+}
+
 export interface UsageSeriesResponse {
   // device-mode fields (mac=)
   deviceMac?: string
@@ -420,6 +449,9 @@ export interface UsageSeriesResponse {
   buckets: UsageBucket[]
   topDevices?: UsageDeviceTotal[]
   bucketsByDevice?: UsageDeviceBucket[]
+  // #1079 — populated when the request asked groupBy=app.
+  topEntries?: UsageEntityTotal[]
+  bucketsByEntry?: UsageEntityBucket[]
 }
 
 // #846 — Traffic Usage page. Wire-distinct from UsageSeriesResponse: that one

@@ -202,11 +202,25 @@ jobs:
         # Zinc compile from scratch — the stale-class-file workaround
         # from #845 and the cache-vs-task-state hazard from #946 don't
         # apply here.
+        #
+        # scalac TypeComparer recurses deeply on the long `++` chain of `Routes`
+        # values in api/src/Main.scala once the ZLayer environment intersection
+        # grows. GitHub runners default to a 1 MiB JVM stack and StackOverflow
+        # before scalac's recursion-limit guard catches it. Mill spawns scalac
+        # in an isolated worker JVM and forwards JAVA_OPTS (not JAVA_TOOL_OPTIONS)
+        # to it, so set both — JAVA_OPTS for the worker, JAVA_TOOL_OPTIONS as
+        # belt-and-braces for the mill launcher.
+        env:
+          JAVA_OPTS: "-Xss8m"
+          JAVA_TOOL_OPTIONS: "-Xss8m"
         run: mill __.compile
 
       - name: Run all tests (sequential to avoid embedded-pg lock contention)
         # api.test spins up EmbeddedPostgres; running sequentially avoids
         # JVM-wide file-lock contention if more DB-heavy tests are added later.
+        env:
+          JAVA_OPTS: "-Xss8m"
+          JAVA_TOOL_OPTIONS: "-Xss8m"
         run: |
           mill shared.test
           mill api.test
