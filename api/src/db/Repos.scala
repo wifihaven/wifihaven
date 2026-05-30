@@ -684,7 +684,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       .transact(xa)
 
   def update(s: HouseholdSettings): Task[Unit] = {
-    val ummJson    = s.unmanagedMacPolicy.toJson
+    val ummJson       = s.unmanagedMacPolicy.toJson
     // #1160: invalidate the time-used rollup atomically with the settings
     // update. Any change to the daily-reset boundary (tz / reset hour) or the
     // heartbeat filter changes the active-minute definition for every cached
@@ -692,7 +692,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // first principles. The DELETE is wholesale because all three fields gate
     // the same aggregation — fine-grained invalidation would only add risk of
     // missing a code path that mutates the filter.
-    val upd        =
+    val upd           =
       sql"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
                   daily_reset_tz=${s.dailyResetTz},
@@ -702,8 +702,9 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   unmanaged_mac_policy=${ummJson}::jsonb,
                   updated_at=NOW()
             WHERE id=1""".update.run
-    val invalidate = sql"DELETE FROM time_used_daily".update.run
-    (upd *> invalidate).transact(xa).unit
+    val invalidate    = sql"DELETE FROM time_used_daily".update.run
+    val invalidateApp = sql"DELETE FROM time_used_app_daily".update.run
+    (upd *> invalidate *> invalidateApp).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
@@ -2174,6 +2175,14 @@ trait AppRepo {
 }
 
 class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
+  // #1167: per-app rollup cache is keyed on (profile, date, app). Any change
+  // to the apps / app_hosts / app_policy_assignments inventory can shift those
+  // keys (different appId, different host membership, different per-profile
+  // assignment), so every mutating method clears the cache in the same tx.
+  // The table is bounded (today × profiles × apps) so the DELETE is cheap.
+  private val invalidateAppRollup: doobie.ConnectionIO[Int] =
+    sql"DELETE FROM time_used_app_daily".update.run
+
   private type R =
     (AppId, String, String, Option[AppTemplateId], Option[String], IconType, Instant)
   private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
@@ -2219,24 +2228,28 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .unique
       .transact(xa)
 
-  def update(a: App) =
-    sql"""UPDATE apps SET
+  def update(a: App) = {
+    val upd = sql"""UPDATE apps SET
             name=${a.name},
             slug=${a.slug},
             template_id=${a.templateId},
             icon=${a.icon},
             icon_type=${a.iconType}
-          WHERE id=${a.id}""".update.run.transact(xa).unit
+          WHERE id=${a.id}""".update.run
+    (upd *> invalidateAppRollup).transact(xa).unit
+  }
 
-  def delete(id: AppId) =
-    sql"DELETE FROM apps WHERE id=$id".update.run.transact(xa).unit
+  def delete(id: AppId) = {
+    val del = sql"DELETE FROM apps WHERE id=$id".update.run
+    (del *> invalidateAppRollup).transact(xa).unit
+  }
 
   def setHosts(appId: AppId, hosts: List[Hostname]) = {
     val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
     val ins = hosts.distinct.map(h =>
       sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h) ON CONFLICT DO NOTHING".update.run,
     )
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void) *> invalidateAppRollup.void).transact(xa)
   }
 
   def getHosts(appId: AppId) =
@@ -2258,23 +2271,26 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       mode: AppMode,
       dailyMinutes: Option[Int],
       exemptFromDaily: Boolean,
-  ) =
-    sql"""INSERT INTO app_policy_assignments
-            (app_id, profile_id, mode, daily_minutes, exempt_from_daily)
-          VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes, $exemptFromDaily)
-          ON CONFLICT (app_id, profile_id) DO UPDATE SET
-            mode = EXCLUDED.mode,
-            daily_minutes = EXCLUDED.daily_minutes,
-            exempt_from_daily = EXCLUDED.exempt_from_daily
-          RETURNING id"""
-      .query[AppPolicyAssignmentId]
-      .unique
-      .transact(xa)
+  ) = {
+    val ins =
+      sql"""INSERT INTO app_policy_assignments
+              (app_id, profile_id, mode, daily_minutes, exempt_from_daily)
+            VALUES ($appId, $profileId, ${AppMode.asString(mode)}, $dailyMinutes, $exemptFromDaily)
+            ON CONFLICT (app_id, profile_id) DO UPDATE SET
+              mode = EXCLUDED.mode,
+              daily_minutes = EXCLUDED.daily_minutes,
+              exempt_from_daily = EXCLUDED.exempt_from_daily
+            RETURNING id"""
+        .query[AppPolicyAssignmentId]
+        .unique
+    (ins <* invalidateAppRollup).transact(xa)
+  }
 
-  def deleteAssignment(appId: AppId, profileId: ProfileId) =
-    sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
-      .transact(xa)
-      .unit
+  def deleteAssignment(appId: AppId, profileId: ProfileId) = {
+    val del =
+      sql"DELETE FROM app_policy_assignments WHERE app_id=$appId AND profile_id=$profileId".update.run
+    (del *> invalidateAppRollup).transact(xa).unit
+  }
 
   private type AR =
     (AppPolicyAssignmentId, AppId, ProfileId, AppMode, Option[Int], Boolean)
@@ -2318,6 +2334,7 @@ object Repos {
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
+  val timeUsedAppRollupRepo = ZLayer.fromFunction(TimeUsedAppRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ timeUsedAppRollupRepo
 }

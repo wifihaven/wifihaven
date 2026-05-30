@@ -102,3 +102,105 @@ class TimeUsedRollupRepoLive(xa: Transactor[Task]) extends TimeUsedRollupRepo {
   def deleteAll: Task[Unit] =
     sql"DELETE FROM time_used_daily".update.run.transact(xa).unit
 }
+
+// #1167: per-(profile, today, app) sub-bucket cache. Sub-rows share the parent
+// profile's `rolled_through` watermark (set by the rollup writer on the same
+// tick), so the read path is a single-key lookup per (profile, app) plus the
+// same tail load already used for the profile total. See `TimeStatusServiceLive`
+// for the read path and the V44 migration header for invalidation semantics.
+
+/** Per-(profile, app) rolled row: aggregated seconds and the upper bound (exclusive) it covers. */
+final case class RolledAppDay(usedSeconds: Long, rolledThrough: Instant)
+
+trait TimeUsedAppRollupRepo {
+
+  /** Upsert one (profile, app) row for `date`. */
+  def upsertDay(
+      profileId: ProfileId,
+      appId: AppId,
+      date: LocalDate,
+      row: RolledAppDay,
+  ): Task[Unit]
+
+  /** Batched upsert keyed on (profileId, appId). Returns the count of rows touched. */
+  def upsertBatch(date: LocalDate, rows: Map[(ProfileId, AppId), RolledAppDay]): Task[Int]
+
+  /** Cached rows for a single profile/date keyed by appId. */
+  def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Map[AppId, RolledAppDay]]
+
+  /** Cached rows keyed by (profile, app) for `date`. */
+  def getDayMap(date: LocalDate): Task[Map[(ProfileId, AppId), RolledAppDay]]
+
+  /**
+   * Drop every cached row. Called from `HouseholdSettingsRepoLive.update` (same tx as the V43
+   * delete) and from every mutating method on `AppRepoLive` (host inventory + assignments).
+   */
+  def deleteAll: Task[Unit]
+}
+
+/** Noop variant for test wiring that doesn't exercise the per-app cache. */
+object NoopTimeUsedAppRollupRepo extends TimeUsedAppRollupRepo {
+  def upsertDay(p: ProfileId, a: AppId, d: LocalDate, r: RolledAppDay): Task[Unit]      = ZIO.unit
+  def upsertBatch(d: LocalDate, rows: Map[(ProfileId, AppId), RolledAppDay]): Task[Int] =
+    ZIO.succeed(0)
+  def getDayForProfile(p: ProfileId, d: LocalDate): Task[Map[AppId, RolledAppDay]]      =
+    ZIO.succeed(Map.empty)
+  def getDayMap(d: LocalDate): Task[Map[(ProfileId, AppId), RolledAppDay]]              =
+    ZIO.succeed(Map.empty)
+  def deleteAll: Task[Unit]                                                             = ZIO.unit
+}
+
+class TimeUsedAppRollupRepoLive(xa: Transactor[Task]) extends TimeUsedAppRollupRepo {
+
+  def upsertDay(
+      profileId: ProfileId,
+      appId: AppId,
+      date: LocalDate,
+      row: RolledAppDay,
+  ): Task[Unit] =
+    sql"""INSERT INTO time_used_app_daily
+            (profile_id, date, app_id, used_seconds, rolled_through, rolled_at)
+          VALUES ($profileId, $date, $appId, ${row.usedSeconds}, ${row.rolledThrough}, NOW())
+          ON CONFLICT (profile_id, date, app_id) DO UPDATE
+            SET used_seconds   = EXCLUDED.used_seconds,
+                rolled_through = EXCLUDED.rolled_through,
+                rolled_at      = EXCLUDED.rolled_at""".update.run.transact(xa).unit
+
+  def upsertBatch(date: LocalDate, rows: Map[(ProfileId, AppId), RolledAppDay]): Task[Int] =
+    if rows.isEmpty then ZIO.succeed(0)
+    else {
+      val sql =
+        "INSERT INTO time_used_app_daily " +
+          "(profile_id, date, app_id, used_seconds, rolled_through, rolled_at) " +
+          "VALUES (?, ?, ?, ?, ?, NOW()) " +
+          "ON CONFLICT (profile_id, date, app_id) DO UPDATE " +
+          "SET used_seconds = EXCLUDED.used_seconds, " +
+          "    rolled_through = EXCLUDED.rolled_through, " +
+          "    rolled_at = EXCLUDED.rolled_at"
+      val rs  = rows.toList.map { case ((pid, aid), r) =>
+        (pid, date, aid, r.usedSeconds, r.rolledThrough)
+      }
+      Update[(ProfileId, LocalDate, AppId, Long, Instant)](sql).updateMany(rs).transact(xa)
+    }
+
+  def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Map[AppId, RolledAppDay]] =
+    sql"""SELECT app_id, used_seconds, rolled_through
+          FROM time_used_app_daily WHERE profile_id=$profileId AND date=$date"""
+      .query[(AppId, Long, Instant)]
+      .map { case (a, s, t) => a -> RolledAppDay(s, t) }
+      .to[List]
+      .transact(xa)
+      .map(_.toMap)
+
+  def getDayMap(date: LocalDate): Task[Map[(ProfileId, AppId), RolledAppDay]] =
+    sql"""SELECT profile_id, app_id, used_seconds, rolled_through
+          FROM time_used_app_daily WHERE date=$date"""
+      .query[(ProfileId, AppId, Long, Instant)]
+      .map { case (p, a, s, t) => (p, a) -> RolledAppDay(s, t) }
+      .to[List]
+      .transact(xa)
+      .map(_.toMap)
+
+  def deleteAll: Task[Unit] =
+    sql"DELETE FROM time_used_app_daily".update.run.transact(xa).unit
+}

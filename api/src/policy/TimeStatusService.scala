@@ -102,6 +102,26 @@ trait TimeStatusService {
       date: LocalDate,
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]]
+
+  /**
+   * #1167: per-(profile, app) active-seconds for `date`, used by both the per-app cap evaluation in
+   * [[PolicyService.snapshot]] and the per-app read endpoint (#1061). For today, served from the
+   * `time_used_app_daily` rollup plus a live tail of buckets past the watermark (same dispatch as
+   * [[dayStateAll]]); for past dates and on any cache miss, falls through to all-live so the result
+   * is identical to what [[appUsageAllLive]] would have returned.
+   */
+  def appUsageAll(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, Map[AppId, Long]]]
+
+  /** Always-live batched variant of [[appUsageAll]] — see [[dayStateLive]]. */
+  def appUsageAllLive(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, Map[AppId, Long]]]
 }
 
 class TimeStatusServiceLive(
@@ -115,6 +135,8 @@ class TimeStatusServiceLive(
     // Defaulting to the noop lets the many call sites in TimeApiSpec / snapshot specs keep their
     // 7-arg constructions — they exercise the all-live path either way.
     rollupRepo: TimeUsedRollupRepo = NoopTimeUsedRollupRepo,
+    appRepoOpt: Option[AppRepo] = None,
+    appRollupRepo: TimeUsedAppRollupRepo = NoopTimeUsedAppRollupRepo,
 ) extends TimeStatusService {
 
   def todaysState(
@@ -275,6 +297,112 @@ class TimeStatusServiceLive(
         else dayStateAllFromRollupHits(now, date, settings, profiles, rolled)
     } yield result
 
+  def appUsageAll(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, Map[AppId, Long]]] = {
+    val today = PolicyService.householdLocalDate(now, settings)
+    if (date == today) appUsageAllFromRollup(now, date, settings)
+    else appUsageAllLive(now, date, settings)
+  }
+
+  def appUsageAllLive(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, Map[AppId, Long]]] =
+    appRepoOpt match {
+      case None          => ZIO.succeed(Map.empty)
+      case Some(appRepo) =>
+        for {
+          profiles <- profileRepo.listAll
+          devices  <- deviceRepo.listAll
+          mappings <- appRepo.listAllHostMappings
+          presence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
+        } yield {
+          val appHosts: Map[AppId, List[Hostname]] =
+            mappings.groupBy(_.appId).view.mapValues(_.map(_.host)).toMap
+          val devsByP                              =
+            devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+          profiles.iterator.map { p =>
+            val devs   = devsByP.getOrElse(p.id, Nil)
+            val macSet = devs.map(_.mac).toSet
+            val pPres  = presence.filter(r => macSet.contains(r.mac))
+            p.id -> TimeStatusService.usedSecondsByApp(devs, appHosts, pPres, settings)
+          }.toMap
+        }
+    }
+
+  // Today batched per-app read. Mirrors dayStateAllFromRollup: any cache miss
+  // (some (profile, app) the batch needs is absent) falls through to all-live
+  // for the entire batch.
+  private def appUsageAllFromRollup(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+  ): Task[Map[ProfileId, Map[AppId, Long]]] =
+    appRepoOpt match {
+      case None          => ZIO.succeed(Map.empty)
+      case Some(appRepo) =>
+        for {
+          profiles <- profileRepo.listAll
+          mappings <- appRepo.listAllHostMappings
+          rolled   <- appRollupRepo.getDayMap(date)
+          // The set of (profile, app) the batch needs is one per (profile, app
+          // that has any hosts). If any expected key is missing, fall through.
+          appIds = mappings.map(_.appId).toSet
+          result <-
+            // No apps configured ⇒ no per-app rollup work to do; the empty
+            // result is the "live" answer too.
+            if mappings.isEmpty then ZIO.succeed(Map.empty[ProfileId, Map[AppId, Long]])
+            else {
+              val expectedKeys = for {
+                p <- profiles
+                a <- appIds
+              } yield (p.id, a)
+              val allHit       = expectedKeys.forall(rolled.contains)
+              if !allHit then appUsageAllLive(now, date, settings)
+              else appUsageAllFromRollupHits(date, settings, profiles, mappings, rolled)
+            }
+        } yield result
+    }
+
+  private def appUsageAllFromRollupHits(
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profiles: List[Profile],
+      mappings: List[AppHost],
+      rolled: Map[(ProfileId, AppId), RolledAppDay],
+  ): Task[Map[ProfileId, Map[AppId, Long]]] = {
+    val watermark                            = rolled.values.iterator.map(_.rolledThrough).min
+    val appHosts: Map[AppId, List[Hostname]] =
+      mappings.groupBy(_.appId).view.mapValues(_.map(_.host)).toMap
+    for {
+      devices <- deviceRepo.listAll
+      tail    <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
+    } yield {
+      val devsByP =
+        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+      profiles.iterator.map { p =>
+        val devs   = devsByP.getOrElse(p.id, Nil)
+        val macSet = devs.map(_.mac).toSet
+        val perApp = appHosts.keys.iterator.map { aid =>
+          val pRolled    = rolled.get((p.id, aid))
+          val rolledSecs = pRolled.map(_.usedSeconds).getOrElse(0L)
+          val cutoff     = pRolled.map(_.rolledThrough).getOrElse(watermark)
+          val pTail      =
+            tail.filter(r => macSet.contains(r.mac) && !r.periodStart.isBefore(cutoff))
+          val tailSecs   = TimeStatusService
+            .usedSecondsByApp(devs, Map(aid -> appHosts(aid)), pTail, settings)
+            .getOrElse(aid, 0L)
+          aid -> (rolledSecs + tailSecs)
+        }.toMap
+        p.id -> perApp
+      }.toMap
+    }
+  }
+
   private def dayStateAllFromRollupHits(
       now: Instant,
       date: LocalDate,
@@ -336,7 +464,7 @@ object TimeStatusService {
 
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo,
+      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & AppRepo & TimeUsedAppRollupRepo,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -349,7 +477,9 @@ object TimeStatusService {
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
         ru: TimeUsedRollupRepo,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru)
+        ar: AppRepo,
+        aru: TimeUsedAppRollupRepo,
+    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, Some(ar), aru)
   }
 
   /**
@@ -412,6 +542,54 @@ object TimeStatusService {
    * source-of-truth invariant). Returning seconds — not minutes — lets the decomposition rolled +
    * tail stay exact across the watermark boundary.
    */
+  /**
+   * #1167: per-app active seconds for a presence batch. Each (mac, period_start) bucket contributes
+   * its bucket-seconds (max activeSeconds across rows in the bucket) once per distinct app touched
+   * in the bucket — same algorithm the snapshot's per-app cap eval and the
+   * `/api/profiles/:id/usage-by-app` endpoint use for `presenceSeconds`. Heartbeat-filtered rows
+   * are excluded (matching `usedSecondsForProfile`). Shared by the live read path and the rollup
+   * writer + tail so the cached and live results stay structurally identical.
+   *
+   * `appHosts` is the per-app FQDN inventory (an app with two hosts contributes both); a host that
+   * belongs to two apps contributes to both apps' counters. IP-literal hosts can't match an app
+   * (apps are FQDN-keyed).
+   */
+  def usedSecondsByApp(
+      devices: List[Device],
+      appHosts: Map[AppId, List[Hostname]],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): Map[AppId, Long] = {
+    val deviceMacs                          = devices.map(_.mac).toSet
+    // appId → set of FQDN strings; lookups happen many times per bucket.
+    val appHostSet: Map[AppId, Set[String]] =
+      appHosts.view.mapValues(_.iterator.map(_.value).toSet).toMap
+    val filter                              = settings.heartbeatFilter
+    val accum                               = scala.collection.mutable.Map.empty[AppId, Long]
+    val grouped                             = presence.iterator
+      .filter(r => deviceMacs.contains(r.mac))
+      .filterNot(r => Presence.isHeartbeat(r, filter))
+      .toList
+      .groupBy(r => (r.mac, r.periodStart))
+    for ((_, bucket) <- grouped) {
+      val bucketSecs =
+        bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
+      // Which apps did any row in this bucket touch?
+      val touched    = scala.collection.mutable.Set.empty[AppId]
+      for {
+        r      <- bucket
+        fqdn   <- r.host.asFqdn
+      } {
+        val s = fqdn.value
+        for ((aid, hostSet) <- appHostSet)
+          if hostSet.contains(s) then touched += aid
+      }
+      for (aid <- touched)
+        accum.updateWith(aid)(prev => Some(prev.getOrElse(0L) + bucketSecs))
+    }
+    accum.toMap
+  }
+
   def usedSecondsForProfile(
       profile: Profile,
       devices: List[Device],

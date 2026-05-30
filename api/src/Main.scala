@@ -80,18 +80,24 @@ object Main extends ZIOAppDefault {
       // /api/time/status/summary serves a rollup + small live aggregation instead of a full
       // per-request day scan.
       timeRollupRepo  <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
+      // #1167: per-(profile, app) sub-bucket cache, written by the same tick
+      // under the same watermark as the profile total.
+      appRollupRepo   <- ZIO.service[wifihaven.api.db.TimeUsedAppRollupRepo]
       profileRepoForJ <- ZIO.service[wifihaven.api.db.ProfileRepo]
       deviceRepoForJ  <- ZIO.service[wifihaven.api.db.DeviceRepo]
       stlRepoForJ     <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
       trafficRepoForJ <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
+      appRepoForJ     <- ZIO.service[wifihaven.api.db.AppRepo]
       _               <- TimeUsedRollupJob
         .loop(
           timeRollupRepo,
+          appRollupRepo,
           rollupRepo,
           profileRepoForJ,
           deviceRepoForJ,
           stlRepoForJ,
           trafficRepoForJ,
+          appRepoForJ,
           hsRepo,
           clockForJobs,
         )
