@@ -282,4 +282,145 @@ object UsageSeries {
 
     (topHosts, bucketsByHost.toList, topDevices, bucketsByDevice.toList)
   }
+
+  // ── #1079 unified by-app axis ──────────────────────────────────────────────
+  //
+  // For each (mac, period_start) bucket, attribute its byte-share-weighted
+  // seconds to either the host's owning app (if it has one — `appOfHost`) or
+  // to the host itself as a first-class entry. Day totals, top-N cap, and a
+  // single 'Other' long-tail bucket are computed over the resulting mixed
+  // entity list. 'Other' is strictly the long tail — non-app hosts that fit
+  // inside top-N surface individually, not lumped together.
+  case class AppInfo(id: AppId, slug: String, name: String, icon: Option[String])
+
+  private def entityRefOf(key: Either[AppInfo, HostId]): UsageEntityRef =
+    key match {
+      case Left(a)  =>
+        UsageEntityRef(
+          kind = "app",
+          id = a.slug,
+          name = a.name,
+          appId = Some(a.id),
+          appIcon = a.icon,
+          host = None,
+        )
+      case Right(h) =>
+        UsageEntityRef(
+          kind = "host",
+          id = h.value,
+          name = h.value,
+          appId = None,
+          appIcon = None,
+          host = Some(h),
+        )
+    }
+
+  private def sortKey(k: Either[AppInfo, HostId]): (Int, String) = k match {
+    case Left(a)  => (0, a.slug)
+    case Right(h) => (1, h.value)
+  }
+
+  def buildEntries(
+      rows: List[PresenceRow],
+      zone: ZoneId,
+      topN: Int,
+      appOfHost: HostId => Option[AppInfo],
+  ): (List[UsageEntityTotal], List[UsageEntityBucket]) = {
+    // (hour, bucketSeconds, byHostBytes) — group rows into 5-min buckets per
+    // (mac, period_start) so two devices in the same wall-clock window don't
+    // collapse onto each other.
+    type Key = Either[AppInfo, HostId]
+
+    val fiveMin = rows.groupBy(r => (r.mac, r.periodStart)).toList.map { case ((_, ps), bucket) =>
+      val hour   = ps.atZone(zone).getHour
+      val secs   = bucket.iterator.map(_.activeSeconds).maxOption.getOrElse(0)
+      val byHost = bucket.iterator
+        .map(r => r.host -> r.bytes)
+        .toList
+        .groupMapReduce(_._1)(_._2)(_ + _)
+      (hour, secs, byHost)
+    }
+
+    // Day totals per entity (byte-share-weighted; even-share if zero bytes).
+    val perEntityDaySecs = scala.collection.mutable.Map.empty[Key, Double]
+    for ((_, secs, byHost) <- fiveMin if byHost.nonEmpty) {
+      val totalBytes = byHost.valuesIterator.sum
+      if (totalBytes > 0L)
+        for ((h, b) <- byHost) {
+          val key   = appOfHost(h).map(Left(_)).getOrElse(Right(h))
+          val share = secs.toDouble * b.toDouble / totalBytes.toDouble
+          perEntityDaySecs.updateWith(key)(p => Some(p.getOrElse(0.0) + share))
+        }
+      else {
+        val share = secs.toDouble / byHost.size
+        for (h <- byHost.keys) {
+          val key = appOfHost(h).map(Left(_)).getOrElse(Right(h))
+          perEntityDaySecs.updateWith(key)(p => Some(p.getOrElse(0.0) + share))
+        }
+      }
+    }
+
+    val ordered = perEntityDaySecs.toList
+      .map { case (k, s) => (k, (s / 60).toInt) }
+      .filter { case (_, m) => m > 0 }
+      .sortBy { case (k, m) => (-m, sortKey(k)) }
+
+    val topKeys    = ordered.take(topN).map(_._1)
+    val topKeySet  = topKeys.toSet
+    val topEntries = ordered.take(topN).map { case (k, m) =>
+      UsageEntityTotal(entityRefOf(k), m)
+    }
+    val rank       = topKeys.iterator.zipWithIndex.toMap
+
+    val byHour  = fiveMin.groupBy(_._1)
+    val buckets = (0 until 24).map { hr =>
+      val hrBuckets = byHour.getOrElse(hr, Nil)
+      val total     = hrBuckets.iterator.map { case (_, s, _) => s.toLong }.sum
+      val perEntity = scala.collection.mutable.Map.empty[Key, Double]
+      var other     = 0.0
+      for ((_, secs, byHost) <- hrBuckets if byHost.nonEmpty) {
+        val totalBytes = byHost.valuesIterator.sum
+        if (totalBytes > 0L)
+          for ((h, b) <- byHost) {
+            val key   = appOfHost(h).map(Left(_)).getOrElse(Right(h))
+            val share = secs.toDouble * b.toDouble / totalBytes.toDouble
+            if (topKeySet.contains(key))
+              perEntity.updateWith(key)(p => Some(p.getOrElse(0.0) + share))
+            else other += share
+          }
+        else {
+          val share = secs.toDouble / byHost.size
+          for (h <- byHost.keys) {
+            val key = appOfHost(h).map(Left(_)).getOrElse(Right(h))
+            if (topKeySet.contains(key))
+              perEntity.updateWith(key)(p => Some(p.getOrElse(0.0) + share))
+            else other += share
+          }
+        }
+      }
+      val perEntityListSorted = perEntity.iterator
+        .map { case (k, s) => (k, (s / 60).toInt) }
+        .filter(_._2 > 0)
+        .toList
+        .sortBy { case (k, _) => rank.getOrElse(k, Int.MaxValue) }
+        .map { case (k, m) => UsageBucketEntity(entityRefOf(k), m) }
+      val totalMins = (total / 60).toInt
+      val perSum    = perEntityListSorted.iterator.map(_.mins).sum
+      // Residual minutes either come from the long tail OR from per-host
+      // flooring drift on the top entries. We attribute drift back to the
+      // top entry that lost the fractional second only when no actual tail
+      // contributed in this hour — otherwise drift collapses into the tail.
+      val otherMins =
+        if (other > 0.0) (totalMins - perSum).max(0)
+        else 0
+      UsageEntityBucket(
+        hour = hr,
+        totalMins = totalMins,
+        perEntity = perEntityListSorted,
+        otherMins = otherMins,
+      )
+    }.toList
+
+    (topEntries, buckets)
+  }
 }
