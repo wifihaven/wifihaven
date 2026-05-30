@@ -2,8 +2,10 @@ package wifihaven.api.feature
 
 import doobie.*
 import doobie.implicits.*
+import doobie.postgres.implicits.*
 import wifihaven.api.ReasonTextBackfill
 import wifihaven.api.db.*
+import wifihaven.api.db.TypeMeta.given
 import wifihaven.api.routes.RouterAuth
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -138,5 +140,5 @@ object ReasonTextBackfillSpec
           .transact(xa)
       } yield assert(nNull)(equalTo(0))
     },
-  ) @@ TestAspect.sequential
+  ) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 }

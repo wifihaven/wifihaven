@@ -67,6 +67,12 @@ object Main extends ZIOAppDefault {
       bundled         <- BundledBlocklists.loadAll()
       _               <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
       _               <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      // #1176/#1179: backfill reason_text on connection_events / block_events rows inserted
+      // between V40 and V44 (no reason_text column then). Fork-and-forget so a slow scan on a
+      // cold Render PG doesn't gate the healthcheck; subsequent restarts re-run safely until
+      // no NULLs remain.
+      xaForBackfill   <- ZIO.service[Transactor[Task]]
+      _               <- ReasonTextBackfill.run(xaForBackfill).forkDaemon
       // #809: scheduled re-aggregation of traffic_reports into the rollup
       // tables. Hourly tick re-rolls the trailing 2h every 5 min; daily tick
       // re-rolls yesterday + today every hour. Both are forkDaemon so they
