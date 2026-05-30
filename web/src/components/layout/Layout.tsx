@@ -85,9 +85,6 @@ export function Layout() {
                   d={menuOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
               </svg>
             </button>
-            {/* TODO(#1159): dark-mode variant of header-mark — the slate
-                #3A5A6C wordmark in header-mark.svg is low-contrast on the
-                dark admin header; swap to an inverted/light variant. */}
             <img
               src="/brand/header-mark.svg"
               alt="wifihaven"
