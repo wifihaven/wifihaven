@@ -551,9 +551,9 @@ export function ProfilesPage() {
 }
 
 // #972 — collapsed accordion row for the merged Profiles page. Header carries
-// the summary (name, used/cap + bar, pause chip, +Time). Expanded body holds
-// the inline subsections (#973-#977) that replaced the old per-profile modal,
-// plus the read-only devices listing and the Delete control.
+// the summary (name, used/cap + bar, pause chip, +Time, Pause/Delete — #1063).
+// Expanded body holds the inline subsections (#973-#977) that replaced the
+// old per-profile modal, plus the read-only devices listing.
 function ProfileShellRow({
   pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight, defaultTz,
   onToggle, onDelete, onTogglePause, onGrantTime,
@@ -710,6 +710,39 @@ function ProfileShellRow({
               + Time
             </button>
           )}
+
+          {/* #1063 — Pause/Resume + Delete were promoted from the expanded
+              card body into the collapsed summary row. Both are high-frequency
+              one-shot actions; making the operator expand the card first was
+              busywork. Icon-only Pause (chip already says Paused/Active);
+              Delete is muted + far right so it's hard to mis-click. */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={onTogglePause}
+              data-testid={`profile-row-pause-${pd.profile.id}`}
+              aria-label={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
+              title={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
+              className={`text-xs px-2 py-1.5 rounded-lg border transition-colors ${
+                pd.profile.paused
+                  ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
+                  : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
+              }`}
+            >
+              {pd.profile.paused ? '▶' : '⏸'}
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={onDelete}
+              data-testid={`profile-row-delete-${pd.profile.id}`}
+              title="Delete profile"
+              className="text-xs text-brand-text-muted hover:text-red-700 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 px-2 py-1.5 rounded-lg transition-colors"
+            >
+              Delete
+            </button>
+          )}
         </div>
       </div>
 
@@ -731,23 +764,6 @@ function ProfileShellRow({
           {isAdmin && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
-          {isAdmin && (
-            <div className="flex flex-wrap gap-2">
-              <button onClick={onTogglePause}
-                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                  pd.profile.paused
-                    ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
-                    : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
-                }`}>
-                {pd.profile.paused ? '▶ Resume' : '⏸ Pause'}
-              </button>
-              <button onClick={onDelete}
-                className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors">
-                Delete
-              </button>
-            </div>
-          )}
-
           {pd.profile.blockedCategories.length > 0 && (
             <div>
               <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
