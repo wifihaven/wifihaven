@@ -296,45 +296,56 @@ Tests run the same Flyway migrations from `classpath:db/migration` against the e
 
 ### Schema changes land in their own PR {#migrations-back-compat}
 
-**A PR that adds a Flyway migration must not also change production
-source code.** Migration-only PRs are how we prove a schema change is
-backward-compatible with the previously deployed image — the durable
-defense against the [#1176](https://github.com/wifihaven/wifihaven/issues/1176)
-class of bug (rollback blocked because applied schema is incompatible
-with the older image).
+**A PR that adds a Flyway migration may contain only the migration and
+documentation (`*.md`) updates.** No source code. **No test changes.**
+No CI tweaks. No fixtures, no scripts, no build files. The follow-up
+PR — the one that adopts the new schema — carries all of that.
 
-The mechanism is the existing feature-test suite:
+This is the durable defense against the
+[#1176](https://github.com/wifihaven/wifihaven/issues/1176) class of
+bug (rollback blocked because the applied schema is incompatible with
+the previously deployed image). The gate is the existing feature-test
+suite:
 
-- `api/test/**` runs the embedded Postgres via `TestDatabase`, which
+- `api/test/**` runs embedded Postgres via `TestDatabase`, which
   applies **every** Flyway migration on the classpath, **including the
   new one in this PR**, before any test runs.
 - The test fixtures exercise the **existing** production code paths in
-  `api/src/**` — i.e. image-(N-1)'s code.
+  `api/src/**` — image-(N-1)'s code.
 - If image-(N-1)'s queries, inserts, or wire shapes can't survive
   DB-at-V<N>, those existing tests fail. That is the gate.
 
-When the migration and the code that adopts it ship in the same PR,
-the gate is silently bypassed: the code is updated in lock-step with
-the schema, so the tests pass, and the back-compat regression goes
-undetected until prod tries to roll back. CI enforces the split via
-`.github/scripts/check-migration-isolation.sh`.
+**The gate only works when nothing else in the PR can move.** Test
+edits silently bypass it: a fixture author can update the assertions
+to the new shape, and the back-compat regression goes undetected. CI
+changes can disable the suite entirely. Source changes shift the test
+subject. So all of those are forbidden in a migration PR — not just
+production source.
 
-Allowed alongside a new migration: additional migration files; tests
-(`*/test/**`); docs (`**/*.md`); CI config (`.github/**`).
+Docs are the one exception because they cannot alter execution.
 
-Disallowed: `api/src/**`, `shared/src/**`, `openwrt/files/**`,
-`openwrt/*.lua` (non-test), `opnsense/agent.py` and other non-test
-python, `web/src/**`, `docker/fake-router.py`, `shared/contract/**`.
+Allowed alongside a new migration:
+
+- `api/resources/db/migration/**.sql` — additional migration files
+- `**/*.md` — documentation, including `AGENTS.md`, `CLAUDE.md`,
+  READMEs, and anything under `docs/`
+
+Anything else is rejected by
+[`check-migration-isolation.sh`](.github/scripts/check-migration-isolation.sh).
+That includes `api/test/**` and `shared/test/**` — new tests probing
+the new schema shape belong in the follow-up PR, not here.
 
 The workflow is two PRs:
 
-1. **PR 1 — schema only.** Adds `V<N>__….sql` plus any tests probing
-   the new shape. Existing feature tests gate it. If they pass, the
-   migration is backward-compatible with image-(N-1) modulo any
-   coverage gap — so close coverage gaps when adding migrations.
+1. **PR 1 — schema only.** Just `V<N>__….sql` (plus any doc updates
+   that describe the new shape). The existing `api.test` suite is the
+   gate: if it passes, the migration is backward-compatible with
+   image-(N-1) — modulo coverage gaps, so close those *before* you
+   open the migration PR by adding tests in a prior PR that exercises
+   the lines the migration will touch.
 2. **PR 2 — code adopts the new schema.** Lands after PR 1 is merged
-   and deployed. This is where new repo methods, route handlers, and
-   wire shapes go.
+   and deployed. This is where new repo methods, route handlers, wire
+   shapes, and the tests that cover them go.
 
 **Escape hatch:** for genuinely atomic changes (rare), apply the
 `migration-coupled-justified` label on the PR and explain in the body
