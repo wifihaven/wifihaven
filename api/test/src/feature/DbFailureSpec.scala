@@ -78,6 +78,12 @@ object DbFailureSpec extends ZIOSpecDefault {
         from: java.time.LocalDate,
         to: java.time.LocalDate,
     ) = throwing
+    def listPresenceRowsSince(
+        macs: List[MacAddress],
+        d: java.time.LocalDate,
+        s: java.time.Instant,
+    ) =
+      throwing
     def listRawInRange(
         macs: List[MacAddress],
         fromInstant: java.time.Instant,

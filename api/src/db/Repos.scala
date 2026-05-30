@@ -405,6 +405,17 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
+   * #1160: tail-load for the rollup read path. Same row shape as [[listPresenceRows]] but with an
+   * additional `period_start >= since` filter, so the caller only pays for the slice of buckets the
+   * rollup hasn't yet absorbed.
+   */
+  def listPresenceRowsSince(
+      macs: List[MacAddress],
+      date: LocalDate,
+      since: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
    * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs"
    * (used by the Traffic Usage page in unfiltered mode). Returns Instants (not String date columns)
    * so callers can bucket without re-parsing.
@@ -1376,16 +1387,20 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       .transact(xa)
 
   def listPresenceRows(macs: List[MacAddress], date: LocalDate) =
-    listPresenceRowsBetween(macs, date, date)
+    listPresenceRowsBetween(macs, date, date, None)
 
   def listPresenceRows(macs: List[MacAddress], from: LocalDate, to: LocalDate) =
-    listPresenceRowsBetween(macs, from, to)
+    listPresenceRowsBetween(macs, from, to, None)
+
+  def listPresenceRowsSince(macs: List[MacAddress], date: LocalDate, since: Instant) =
+    listPresenceRowsBetween(macs, date, date, Some(since))
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   private def listPresenceRowsBetween(
       macs: List[MacAddress],
       from: LocalDate,
       to: LocalDate,
+      since: Option[Instant] = None,
   ) = {
     type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
     macs match {
@@ -1412,7 +1427,8 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                ) ce ON tr.host_type IN ('ipv4','ipv6')
                WHERE tr.date BETWEEN $from AND $to
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
-                 AND """ ++ Fragments.in(fr"tr.mac", nel)
+                 AND """ ++ Fragments.in(fr"tr.mac", nel) ++
+            since.fold(fr"")(s => fr"AND tr.period_start >= $s")
         q.query[Row]
           .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
             val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt

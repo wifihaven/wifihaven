@@ -1,80 +1,103 @@
 package wifihaven.api.usage
 
-import wifihaven.api.db.{HouseholdSettingsRepo, RollupRepo, TimeUsedRollupRepo}
+import wifihaven.api.db.{
+  DeviceRepo,
+  HouseholdSettingsRepo,
+  ProfileRepo,
+  RolledDay,
+  RollupRepo,
+  SiteTimeLimitRepo,
+  TimeUsedRollupRepo,
+  TrafficReportRepo,
+}
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
+import wifihaven.shared.types.ProfileId
 import zio.*
 
-import java.time.{Duration, Instant, LocalDate}
+import java.time.{Duration, Instant}
 
 /**
- * #1160: scheduled re-aggregation of `TimeStatusService.dayStateAll(...).usedMinutes` into
- * `time_used_daily`. Mirrors the byte-rollup fiber pattern in [[RollupJobs]] — fiber loop, per-tick
- * advisory lock, runs recorded in `rollup_runs` so the existing /api/admin/rollup-status surface
- * picks the new job up by name.
+ * #1160: scheduled refresh of `time_used_daily` for **today**. Each tick aggregates today's
+ * presence rows (up to `now`) and upserts one row per profile carrying `(used_seconds,
+ * rolled_through = now)`. The read path in `TimeStatusServiceLive` adds a live tail of buckets past
+ * the watermark, so callers see real-time totals built mostly from the cached row plus a small live
+ * slice.
  *
- * Scope (v1): caches `usedMinutes` for past dates only — today stays live (and so does enforcement,
- * since `PolicyService.snapshot` always evaluates today). The fiber re-rolls a trailing window so
- * yesterday lands in the cache shortly after the midnight rollover. Per-site / per-app rollups and
- * a today-tier are tracked separately.
+ * Past dates are intentionally not cached here — the existing live path (and the byte-rollup tables
+ * from #809 for usage graphs) cover them. The hot path is `/api/time/status/summary` rendering the
+ * per-profile screen-time figures (#1099); past-day reads are cold.
  *
- * Invalidation is wholesale via [[TimeUsedRollupRepo.deleteAll]] (called from the
- * `household_settings` UPDATE — covers `daily_reset_tz`, `daily_reset_time`, and any heartbeat-
- * filter knob). After invalidation the fiber refills on its next tick.
+ * Invalidation is wholesale via `TimeUsedRollupRepo.deleteAll` (called from
+ * `HouseholdSettingsRepoLive.update` — covers the heartbeat filter, daily reset time, and tz). The
+ * next tick refills.
+ *
+ * Multi-instance note: only one fiber should be writing each row at a time, but UPSERT keyed on
+ * `(profile_id, date)` with a monotonically-advancing `rolled_through` makes redundant writes
+ * idempotent semantically — two instances racing yield the same row either way. An advisory lock is
+ * unnecessary for v1 (one API instance in prod); add one alongside [[RollupLockKeys]] if/when this
+ * is run multi-instance.
  */
 object TimeUsedRollupJob {
 
-  /** Trailing window the fiber re-rolls every tick. Bounded by the raw retention horizon (#811). */
-  val LookbackDays: Int = 30
-
-  /** Refresh cadence — keeps the cache reasonably fresh for the UI's perceived-latency budget. */
-  val Interval: Duration = Duration.ofMinutes(5)
+  /**
+   * Refresh cadence. The tail aggregation handles freshness between ticks; this just bounds the
+   * tail's size so reads don't drift toward a full-day live aggregation as the day wears on.
+   */
+  val Interval: Duration = Duration.ofMinutes(3)
 
   /**
-   * Fiber loop entry point. Mirrors [[RollupJobs.hourlyLoop]]: tick body either succeeds (records a
-   * row), skips on advisory-lock contention (debug log), or fails (records error). Never dies.
+   * Fiber loop entry point. Errors are caught and recorded in `rollup_runs`; the fiber never dies.
    */
   def loop(
       rollup: TimeUsedRollupRepo,
       runs: RollupRepo,
-      svc: TimeStatusService,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
   ): UIO[Unit] =
-    runOnce(rollup, runs, svc, hs, clock)
+    runOnce(rollup, runs, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, clock)
       .repeat(Schedule.fixed(Interval))
       .unit
 
   /**
-   * Single tick body, exposed for the test that exercises one date end-to-end without going through
-   * the fiber loop. The contract is the same as the production tick: compute live, persist via
-   * upsertBatch, return the count of profiles rolled.
+   * Single tick body, exposed for the test that exercises the rollup end-to-end without going
+   * through the fiber loop. Computes today (per `now`) directly from the repos and persists the
+   * resulting (used_seconds, rolled_through = `now`) rows. Returns the count of profiles rolled.
    */
   def oneTickForTest(
       rollup: TimeUsedRollupRepo,
-      svc: TimeStatusService,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
-      date: LocalDate,
-  ): Task[Int] =
-    for {
-      settings <- hs.get
-      states   <- svc.dayStateAllLive(now, date, settings)
-      n        <- rollup.upsertBatch(date, states.view.mapValues(_.usedMinutes).toMap)
-    } yield n
+  ): Task[Int] = doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now)
 
   // ── internals ──────────────────────────────────────────────────────────────
 
   private def runOnce(
       rollup: TimeUsedRollupRepo,
       runs: RollupRepo,
-      svc: TimeStatusService,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
   ): UIO[Unit] =
     for {
       started  <- clock.instant
-      result   <- doTick(rollup, svc, hs, clock).either
+      result   <-
+        clock.instant
+          .flatMap(now =>
+            doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now),
+          )
+          .either
       finished <- clock.instant
       _        <- result match {
         case Right(n) =>
@@ -95,27 +118,44 @@ object TimeUsedRollupJob {
       }
     } yield ()
 
-  // Re-roll the trailing window of past dates (today is excluded — today reads
-  // live so enforcement and /summary agree, and writing today on every tick
-  // would just be noise the UI never reads). Caps at LookbackDays.
+  // The cached row covers presence buckets with `period_start < rolled_through`. Setting
+  // `rolled_through = now` makes the read path's tail-load filter (`period_start >= rolled_through`)
+  // pick up any bucket that lands after this tick — including buckets that finish during the tick
+  // itself but arrive at the DB after the snapshot read. The double-counting risk is bounded by
+  // bucket granularity (5 min); the next tick re-rolls with a fresh `now` and supersedes the row.
   private def doTick(
       rollup: TimeUsedRollupRepo,
-      svc: TimeStatusService,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
+      trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
-      clock: Clock,
-  ): Task[Int] =
-    for {
-      now      <- clock.instant
-      settings <- hs.get
-      today = PolicyService.householdLocalDate(now, settings)
-      // Iterate yesterday → today − LookbackDays, oldest first so a partial
-      // failure leaves the most-stale days re-rolled.
-      dates = (1 to LookbackDays).map(d => today.minusDays(d.toLong)).toList.reverse
-      count <- ZIO.foldLeft(dates)(0) { (acc, d) =>
-        for {
-          states <- svc.dayStateAllLive(now, d, settings)
-          n      <- rollup.upsertBatch(d, states.view.mapValues(_.usedMinutes).toMap)
-        } yield acc + n
-      }
-    } yield count
+      now: Instant,
+  ): Task[Int] = for {
+    settings <- hs.get
+    today = PolicyService.householdLocalDate(now, settings)
+    profiles <- profileRepo.listAll
+    devices  <- deviceRepo.listAll
+    stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+    presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
+    perProfile: Map[ProfileId, RolledDay] = {
+      val stlMap  = stlsP.toMap
+      val devsByP =
+        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+      profiles.iterator.map { p =>
+        val devs = devsByP.getOrElse(p.id, Nil)
+        val mac  = devs.map(_.mac).toSet
+        val pres = presence.filter(r => mac.contains(r.mac))
+        val secs = TimeStatusService.usedSecondsForProfile(
+          p,
+          devs,
+          stlMap.getOrElse(p.id, Nil),
+          pres,
+          settings,
+        )
+        p.id -> RolledDay(secs, now)
+      }.toMap
+    }
+    n <- rollup.upsertBatch(today, perProfile)
+  } yield n
 }

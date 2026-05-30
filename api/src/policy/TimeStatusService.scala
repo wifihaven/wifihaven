@@ -56,20 +56,15 @@ trait TimeStatusService {
   ): Task[Option[ProfileDayState]]
 
   /**
-   * Same as [[todaysState]] but for an explicit date. Used by the `?date=` query-param override on
-   * the seven `/api/time/status/...` endpoints so the UI can scroll back to a historical day; the
+   * Same as [[todaysState]] but for an explicit date. The `?date=` query-param override on the
+   * `/api/time/status/...` endpoints uses this so the UI can scroll back to a historical day; the
    * date is treated as the canonical bucket date (no tz reprojection — `time_usage` /
    * `traffic_reports` are already bucketed under household-local dates).
    *
-   * For past dates this reads `usedMinutes` from the `time_used_daily` rollup (#1160) when
-   * available, falling back to a live aggregation on miss. Today is always live so enforcement
-   * (which threads through [[dayStateAllLive]] on the snapshot path) and the UI never disagree on
-   * the current cap.
-   *
-   * `now` is still needed so the schedule/paused arm of the block evaluation has a wall-clock
-   * instant to test windows against. For historical dates the schedule arm will generally not be
-   * active (today's wall clock is not in yesterday's schedule window), but pinning `now` here keeps
-   * the function total.
+   * For today, this reads the `time_used_daily` rollup (#1160) and adds a live aggregation of the
+   * presence buckets the rollup hasn't yet absorbed (period_start >= rolled_through). On a cache
+   * miss — or for past dates — it falls through to the all-live path so the result is identical to
+   * what `dayStateLive` would have returned.
    */
   def dayState(
       now: Instant,
@@ -80,8 +75,8 @@ trait TimeStatusService {
 
   /**
    * Batched form for [[PolicyService.snapshot]] and the `/api/time/status/summary` route. Emits one
-   * `ProfileDayState` per profile for `date`. For past dates this is served from the
-   * `time_used_daily` rollup; today is computed live.
+   * `ProfileDayState` per profile for `date`. For today this is served from the rollup + a live
+   * tail; for past dates it's all-live.
    */
   def dayStateAll(
       now: Instant,
@@ -118,7 +113,7 @@ class TimeStatusServiceLive(
     trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
     // Defaulting to the noop lets the many call sites in TimeApiSpec / snapshot specs keep their
-    // 7-arg constructions — they exercise today, which always takes the live path anyway.
+    // 7-arg constructions — they exercise the all-live path either way.
     rollupRepo: TimeUsedRollupRepo = NoopTimeUsedRollupRepo,
 ) extends TimeStatusService {
 
@@ -136,10 +131,10 @@ class TimeStatusServiceLive(
       profileId: ProfileId,
   ): Task[Option[ProfileDayState]] = {
     val today = PolicyService.householdLocalDate(now, settings)
-    if (date.isBefore(today))
+    if (date == today)
       rollupRepo.getDayForProfile(profileId, date).flatMap {
-        case Some(used) => dayStateFromRolled(now, date, profileId, used)
-        case None       => dayStateLive(now, date, settings, profileId)
+        case Some(rolled) => dayStateFromRollupAndTail(now, date, settings, profileId, rolled)
+        case None         => dayStateLive(now, date, settings, profileId)
       }
     else dayStateLive(now, date, settings, profileId)
   }
@@ -182,7 +177,7 @@ class TimeStatusServiceLive(
       settings: HouseholdSettings,
   ): Task[Map[ProfileId, ProfileDayState]] = {
     val today = PolicyService.householdLocalDate(now, settings)
-    if (date.isBefore(today)) dayStateAllFromRollup(now, date, settings)
+    if (date == today) dayStateAllFromRollup(now, date, settings)
     else dayStateAllLive(now, date, settings)
   }
 
@@ -225,16 +220,15 @@ class TimeStatusServiceLive(
       }.toMap
     }
 
-  // Build a ProfileDayState for a past date from a precomputed `usedMinutes`,
-  // skipping the heavy presence load. Schedules / paused / extensions / daily
-  // limit / site limits are still loaded live so the block-precedence math
-  // matches the live folder. Per-site `usedMinutes` is reported as zero — the
-  // v1 rollup is profile-total only; per-site is a tracked follow-up.
-  private def dayStateFromRolled(
+  // Today single-profile read: rolled seconds + live aggregation of buckets the rollup hasn't
+  // absorbed yet (period_start >= rolledThrough). Truncation to minutes happens once at the end so
+  // the result is byte-identical to a full live aggregation over the whole day.
+  private def dayStateFromRollupAndTail(
       now: Instant,
       date: LocalDate,
+      settings: HouseholdSettings,
       profileId: ProfileId,
-      usedMinutes: Int,
+      rolled: RolledDay,
   ): Task[Option[ProfileDayState]] =
     profileRepo.findById(profileId).flatMap {
       case None    => ZIO.succeed(None)
@@ -243,23 +237,31 @@ class TimeStatusServiceLive(
           schedules <- scheduleRepo.listForProfile(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           stls      <- siteTimeLimitRepo.listForProfile(profileId)
-          extMins   <- extRepo.getProfileTotalExtension(profileId, date)
-        } yield Some(
-          TimeStatusService.assemble(
-            profile = p,
-            schedules = schedules,
-            dailyLimit = tl.map(_.dailyMinutes),
-            siteLimits = stls,
-            usedMinutes = usedMinutes,
-            extensionMinutes = extMins,
-            date = date,
-            now = now,
-          ),
-        )
+          devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
+          tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
+          extMins <- extRepo.getProfileTotalExtension(profileId, date)
+        } yield {
+          val tailSeconds =
+            TimeStatusService.usedSecondsForProfile(p, devices, stls, tail, settings)
+          val totalUsed   = ((rolled.usedSeconds + tailSeconds) / 60L).toInt
+          Some(
+            TimeStatusService.assemble(
+              profile = p,
+              schedules = schedules,
+              dailyLimit = tl.map(_.dailyMinutes),
+              siteLimits = stls,
+              usedMinutes = totalUsed,
+              extensionMinutes = extMins,
+              date = date,
+              now = now,
+            ),
+          )
+        }
     }
 
-  // Batched variant. On a partial cache miss the missing profiles fall back
-  // to the live aggregation in one go — cheaper than recursing per-profile.
+  // Batched today read. On any cache miss (some profile lacks a rollup row) we fall through to the
+  // all-live path for the entire batch — cheaper than mixing two code paths and the next fiber tick
+  // refills the missing rows. After the fiber settles, every batch is rollup+tail.
   private def dayStateAllFromRollup(
       now: Instant,
       date: LocalDate,
@@ -268,36 +270,66 @@ class TimeStatusServiceLive(
     for {
       profiles <- profileRepo.listAll
       rolled   <- rollupRepo.getDayMap(date)
-      hit  = profiles.filter(p => rolled.contains(p.id))
-      miss = profiles.filterNot(p => rolled.contains(p.id))
-      schedsP <- ZIO.foreach(hit)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
-      tlsP    <- ZIO.foreach(hit)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
-      stlsP   <- ZIO.foreach(hit)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      result   <-
+        if profiles.exists(p => !rolled.contains(p.id)) then dayStateAllLive(now, date, settings)
+        else dayStateAllFromRollupHits(now, date, settings, profiles, rolled)
+    } yield result
+
+  private def dayStateAllFromRollupHits(
+      now: Instant,
+      date: LocalDate,
+      settings: HouseholdSettings,
+      profiles: List[Profile],
+      rolled: Map[ProfileId, RolledDay],
+  ): Task[Map[ProfileId, ProfileDayState]] = {
+    // All rolled_through watermarks come from the same fiber tick in steady state, but a new
+    // profile + fresh tick can land just before the read — so use the earliest watermark and let
+    // per-profile filtering handle any per-row over-fetch.
+    val watermark = rolled.values.iterator.map(_.rolledThrough).min
+    for {
+      devices <- deviceRepo.listAll
+      schedsP <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
+      tlsP    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
+      stlsP   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      tail    <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
       exts    <- extRepo.snapshotAllByProfile(date)
-      live    <-
-        if miss.isEmpty then ZIO.succeed(Map.empty[ProfileId, ProfileDayState])
-        else
-          dayStateAllLive(now, date, settings).map(_.filter { case (pid, _) =>
-            miss.exists(_.id == pid)
-          })
     } yield {
       val schedMap = schedsP.toMap
       val tlMap    = tlsP.toMap
       val stlMap   = stlsP.toMap
-      val cached   = hit.iterator.map { p =>
+      val devsByP  =
+        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+      profiles.iterator.map { p =>
+        val devs        = devsByP.getOrElse(p.id, Nil)
+        val pRolled     = rolled(p.id)
+        // Per-profile watermark may exceed the batch min (e.g. a newer tick partially completed)
+        // — filter the over-fetched tail rows back to the row's own boundary.
+        val pTail       =
+          tail.filter(r =>
+            devs.exists(_.mac == r.mac) && !r.periodStart.isBefore(pRolled.rolledThrough),
+          )
+        val tailSeconds =
+          TimeStatusService.usedSecondsForProfile(
+            p,
+            devs,
+            stlMap.getOrElse(p.id, Nil),
+            pTail,
+            settings,
+          )
+        val totalUsed   = ((pRolled.usedSeconds + tailSeconds) / 60L).toInt
         p.id -> TimeStatusService.assemble(
           profile = p,
           schedules = schedMap.getOrElse(p.id, Nil),
           dailyLimit = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
           siteLimits = stlMap.getOrElse(p.id, Nil),
-          usedMinutes = rolled(p.id),
+          usedMinutes = totalUsed,
           extensionMinutes = exts.getOrElse(p.id, 0),
           date = date,
           now = now,
         )
       }.toMap
-      cached ++ live
     }
+  }
 }
 
 object TimeStatusService {
@@ -340,19 +372,10 @@ object TimeStatusService {
       now: Instant,
       settings: HouseholdSettings,
   ): ProfileDayState = {
-    val patterns   = siteLimits.map(_.domainPattern)
-    val exemptPats = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
-    val perPat     = Presence.patternMinutesByMac(presence, patterns)
-    val perMacTot  = Presence.totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
-
-    // #751: cap-enforcement honours the profile's overlap mode (Sum vs Dedup) — the same branch the
-    // routes used to apply independently.
-    val totalMinutesUsed = profile.crossDeviceOverlapMode match {
-      case CrossDeviceOverlapMode.Sum   =>
-        devices.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
-      case CrossDeviceOverlapMode.Dedup =>
-        Presence.dedupedTotalMinutes(presence, exemptPats, settings.heartbeatFilter)
-    }
+    val patterns         = siteLimits.map(_.domainPattern)
+    val perPat           = Presence.patternMinutesByMac(presence, patterns)
+    val totalSecondsUsed = usedSecondsForProfile(profile, devices, siteLimits, presence, settings)
+    val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
 
     val byDomain: Map[String, Int] = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
       val mins = devices.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
@@ -383,8 +406,32 @@ object TimeStatusService {
   }
 
   /**
-   * Shared assembly used by both [[fold]] (live presence aggregation) and the rollup read path
-   * (#1160), once `usedMinutes` is known. Computes `blocked` / `blockReason` / `remaining` so the
+   * Pure: per-profile total active seconds from a presence batch, applying the heartbeat filter and
+   * the profile's `crossDeviceOverlapMode` (Sum vs Dedup). Shared by [[fold]] (live) and the
+   * rollup+tail read path so the cached and live computations stay structurally identical (#1160
+   * source-of-truth invariant). Returning seconds — not minutes — lets the decomposition rolled +
+   * tail stay exact across the watermark boundary.
+   */
+  def usedSecondsForProfile(
+      profile: Profile,
+      devices: List[Device],
+      siteLimits: List[SiteTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): Long = {
+    val exemptPats = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
+    profile.crossDeviceOverlapMode match {
+      case CrossDeviceOverlapMode.Sum   =>
+        val perMac = Presence.totalSecondsByMac(presence, exemptPats, settings.heartbeatFilter)
+        devices.iterator.map(d => perMac.getOrElse(d.mac, 0L)).sum
+      case CrossDeviceOverlapMode.Dedup =>
+        Presence.dedupedTotalSeconds(presence, exemptPats, settings.heartbeatFilter)
+    }
+  }
+
+  /**
+   * Shared assembly used by both [[fold]] (live presence aggregation) and the rollup+tail read
+   * path, once `usedMinutes` is known. Computes `blocked` / `blockReason` / `remaining` so the
    * cached-read path produces the same precedence Paused > Schedule > TimeLimit as the live path —
    * the source-of-truth invariant is enforced here by construction.
    *
