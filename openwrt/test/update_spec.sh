@@ -322,5 +322,161 @@ grep -q 'restart failed' "$TESTDIR/logger.out" \
   || check "[restart fail] warning logged" "no warning in log"
 rm -rf "$TESTDIR"
 
+# ---- #1178: asset selection across multi-version, multi-package manifests ----
+# Before the fix, the asset regex was '\.apk$' / '\.ipk$' and the script took
+# the FIRST matching asset. With #499's coordinated semver tags and #1041's
+# luci-app-wifihaven package, `openwrt-latest` now publishes four matching
+# .apk assets per release: {luci-app-,}wifihaven_{old,new}_all.apk. The first
+# match was usually luci-app or an older wifihaven, and the script silently
+# either installed the wrong package or short-circuited on a stale digest.
+
+setup_multi_mocks() {
+  TESTDIR=$(mktemp -d -t wifihaven-update-multi.XXXXXX)
+  BINDIR="$TESTDIR/bin"
+  STATE="$TESTDIR/state"
+  mkdir -p "$BINDIR" "$STATE"
+  : > "$TESTDIR/downloads.log"
+
+  cat > "$BINDIR/logger" <<EOF
+#!/bin/sh
+shift 2
+printf '%s\n' "\$*" >> "$TESTDIR/logger.out"
+EOF
+
+  # curl records the URL it was asked to download so the test can assert
+  # which asset was picked. Meta fetches read MOCK_ASSETS_JSON; the smarter
+  # jsonfilter mock below indexes into MOCK_ASSETS instead, so meta body is
+  # only used to satisfy `[ -z "$META" ]`.
+  cat > "$BINDIR/curl" <<EOF
+#!/bin/sh
+out=""
+url=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2;;
+    -*) shift;;
+    *) url="\$1"; shift;;
+  esac
+done
+if [ -n "\$out" ]; then
+  if [ "\${CURL_DOWNLOAD_FAIL:-0}" = "1" ]; then exit 22; fi
+  printf '%s\n' "\$url" >> "$TESTDIR/downloads.log"
+  printf 'fakepkg' > "\$out"
+else
+  printf '%s\n' "{\"assets\":[]}"
+fi
+EOF
+
+  # Smart jsonfilter mock: walks MOCK_ASSETS (newline-separated "url|digest")
+  # and answers any '@.assets[<i>].browser_download_url' / '...digest' query.
+  cat > "$BINDIR/jsonfilter" <<'EOF'
+#!/bin/sh
+expr=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -e) expr="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+cat >/dev/null
+case "$expr" in
+  *.browser_download_url) field=url ;;
+  *.digest) field=digest ;;
+  *) exit 0 ;;
+esac
+idx=$(printf '%s' "$expr" | sed -n 's/.*\[\([0-9]*\)\].*/\1/p')
+line=$(printf '%s\n' "$MOCK_ASSETS" | sed -n "$((idx + 1))p")
+[ -z "$line" ] && exit 0
+url=${line%%|*}
+digest=${line##*|}
+case "$field" in
+  url) printf '%s\n' "$url" ;;
+  digest) printf '%s\n' "$digest" ;;
+esac
+EOF
+
+  INITD="$BINDIR/wifihaven-initd"
+  cat > "$INITD" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TESTDIR/initd.calls"
+exit 0
+EOF
+
+  PATCHED="$TESTDIR/wifihaven-update"
+  sed -e "s|STATE_DIR=/var/lib/wifihaven|STATE_DIR=$STATE|" \
+      -e "s|/etc/init.d/wifihaven|$INITD|g" \
+      "$SCRIPT" > "$PATCHED"
+  chmod +x "$PATCHED" "$BINDIR"/*
+}
+
+picked_url() { tail -n1 "$TESTDIR/downloads.log" 2>/dev/null; }
+
+# Case G (#1178): multi-asset manifest with luci-app listed FIRST and the old
+# wifioven listed BEFORE the new one. Fix must (a) reject luci-app and
+# (b) pick the highest-version wifihaven, not the first matching asset.
+setup_multi_mocks
+mock_apk
+export MOCK_ASSETS="https://example.com/luci-app-wifihaven_0.1.0-1_all.apk|sha256:LUCI_OLD
+https://example.com/luci-app-wifihaven_0.2.8-1_all.apk|sha256:LUCI_NEW
+https://example.com/wifihaven_0.1.0-1_all.apk|sha256:WH_OLD
+https://example.com/wifihaven_0.2.8-1_all.apk|sha256:WH_NEW"
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+URL=$(picked_url)
+case "$URL" in
+  *luci-app*) check "[#1178 multi apk] does not pick luci-app asset" "picked $URL" ;;
+  *) check "[#1178 multi apk] does not pick luci-app asset" ok ;;
+esac
+case "$URL" in
+  *wifihaven_0.2.8-1_all.apk) check "[#1178 multi apk] picks highest-version wifihaven asset" ok ;;
+  *) check "[#1178 multi apk] picks highest-version wifihaven asset" "picked '$URL'" ;;
+esac
+[ "$(stamp_value)" = "sha256:WH_NEW" ] \
+  && check "[#1178 multi apk] stamp recorded matches the new asset" ok \
+  || check "[#1178 multi apk] stamp recorded matches the new asset" "stamp = '$(stamp_value)'"
+rm -rf "$TESTDIR"
+unset MOCK_ASSETS
+
+# Case H (#1178): manifest carries ONLY the old wifihaven version, and the
+# stamp already matches that digest. Script must short-circuit — no download,
+# no apk invocation. Guards against the regression where luci-app in the
+# manifest fooled the script into "upgrading" to an older asset.
+setup_multi_mocks
+mock_apk
+export MOCK_ASSETS="https://example.com/luci-app-wifihaven_0.1.0-1_all.apk|sha256:LUCI_OLD
+https://example.com/wifihaven_0.1.0-1_all.apk|sha256:WH_OLD"
+printf 'sha256:WH_OLD\n' > "$STATE/last_update_digest"
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+[ ! -s "$TESTDIR/downloads.log" ] \
+  && check "[#1178 old-only] no download when wifihaven stamp matches" ok \
+  || check "[#1178 old-only] no download when wifihaven stamp matches" "downloaded: $(picked_url)"
+[ ! -f "$TESTDIR/apk.calls" ] \
+  && check "[#1178 old-only] apk NOT invoked when wifihaven stamp matches" ok \
+  || check "[#1178 old-only] apk NOT invoked when wifihaven stamp matches" "apk.calls exists"
+rm -rf "$TESTDIR"
+unset MOCK_ASSETS
+
+# Case I (#1178): opkg path gets the same tightening. .ipk asset names carry
+# an architecture suffix (e.g. _aarch64_generic.ipk), so the ipk regex shape
+# differs from apk's.
+setup_multi_mocks
+rm -f "$BINDIR/apk"
+mock_opkg
+export MOCK_ASSETS="https://example.com/luci-app-wifihaven_0.1.0-1_aarch64_generic.ipk|sha256:LUCI_OLD_IPK
+https://example.com/luci-app-wifihaven_0.2.8-1_aarch64_generic.ipk|sha256:LUCI_NEW_IPK
+https://example.com/wifihaven_0.1.0-1_aarch64_generic.ipk|sha256:WH_OLD_IPK
+https://example.com/wifihaven_0.2.8-1_aarch64_generic.ipk|sha256:WH_NEW_IPK"
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+URL=$(picked_url)
+case "$URL" in
+  *luci-app*) check "[#1178 multi ipk] does not pick luci-app .ipk" "picked $URL" ;;
+  *) check "[#1178 multi ipk] does not pick luci-app .ipk" ok ;;
+esac
+case "$URL" in
+  *wifihaven_0.2.8-1_aarch64_generic.ipk) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" ok ;;
+  *) check "[#1178 multi ipk] picks highest-version wifihaven .ipk" "picked '$URL'" ;;
+esac
+rm -rf "$TESTDIR"
+unset MOCK_ASSETS
+
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
