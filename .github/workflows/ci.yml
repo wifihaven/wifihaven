@@ -265,20 +265,22 @@ jobs:
       && needs.changes.outputs.migrations == 'true'
       && !contains(github.event.pull_request.labels.*.name, 'migration-coupled-justified')
     runs-on: ubuntu-latest
+    # CodeQL actions/missing-workflow-permissions: the job only needs to
+    # read the repo to diff the branch — no token writes.
+    permissions:
+      contents: read
     steps:
-      # Check out the PR branch tip, NOT the GitHub-generated merge commit.
-      # The merge commit includes any unrelated migrations that landed on
-      # main while this PR was open, which the diff against base.sha then
-      # reports as "added" in this PR — false positives.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      # Diff against the merge-base with origin/main (three-dot semantics),
+      # not pull_request.base.sha. The base.sha can lag the actual main tip
+      # while a PR is open (we observed cdc5faae sticking around after V44
+      # landed on main), and unrelated migrations on main would otherwise
+      # show as "added" in this PR. Matches AGENTS.md "Branch-diff checks".
       - name: Reject migration PRs that also change production source
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash .github/scripts/check-migration-isolation.sh "$BASE_SHA"
+        run: bash .github/scripts/check-migration-isolation.sh origin/main
 
   # ── Shell test discovery ─────────────────────────────────────────────────
   # Auto-discovers and runs every *.test.sh in the repo. Add a new test by
