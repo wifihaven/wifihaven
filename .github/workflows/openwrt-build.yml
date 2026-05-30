@@ -344,8 +344,6 @@ jobs:
             WifiHaven v${{ steps.ver.outputs.version }}.
 
             OpenWRT packages and bootable VM images for this release.
-            The API image of the same version is published to
-            ghcr.io/wifihaven/wifihaven-api:v${{ steps.ver.outputs.version }}.
 
             See `openwrt-latest` for the rolling pointer kept in lockstep.
           prerelease: false
