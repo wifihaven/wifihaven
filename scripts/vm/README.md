@@ -39,7 +39,7 @@ auto-picks a free bridge from the pool — no extra env vars needed for the
 bridge.
 
 ```
-# Creates wh-lan0..wh-lan3 (default pool size 4) and ensures bridge.conf
+# Creates wh-lan0..wh-lan4 (default pool size 5) and ensures bridge.conf
 # has an `allow` line for each. Idempotent.
 sudo scripts/vm/lan-bridge-pool-bootstrap.sh
 ```

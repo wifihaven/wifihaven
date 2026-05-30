@@ -26,12 +26,15 @@ name: VM e2e (Gate 3b — API/UI-side staging smoke)
 #   WH_RUN_ID / WH_PORT_BASE (below) + the wh-lan* bridge pool pick (#891).
 #
 #   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
-#   group: api.lan's /etc/qemu/bridge.conf has 4 bridges (wh-lan0..wh-lan3),
-#   each VM pair consumes one → 4 concurrent pairs max. CI matrix fan-out is
-#   capped at `max-parallel: 3` (below), leaving one bridge for ad-hoc runs,
-#   scripts/e2e-kvm-sanity, and keep-staging-warm. When all 4 are taken,
-#   wh_pick_lan_bridge fails loud ("LAN bridge pool exhausted", exit 1)
-#   instead of queueing forever. Broader capacity plan: #657.
+#   group: api.lan's /etc/qemu/bridge.conf has 5 bridges (wh-lan0..wh-lan4),
+#   each VM pair consumes one → 5 concurrent pairs max. CI matrix fan-out is
+#   capped at `max-parallel: 4` (below), leaving one bridge for ad-hoc runs,
+#   scripts/e2e-kvm-sanity, and keep-staging-warm. The matching global
+#   governor is the runner-instance count on api.lan (4, one per job-bridge);
+#   see docs/ops/kvm-runner.md for the runner-count = bridge-count - 1
+#   invariant (#1163). When all 5 are taken, wh_pick_lan_bridge fails loud
+#   ("LAN bridge pool exhausted", exit 1) instead of queueing forever.
+#   Broader capacity plan: #657.
 
 on:
   workflow_call:
@@ -52,11 +55,11 @@ jobs:
       || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
     timeout-minutes: 20
-    # max-parallel: 3 (#895) — bounded by the 4-bridge pool minus one headroom
+    # max-parallel: 4 (#1163) — bounded by the 5-bridge pool minus one headroom
     # slot (see the concurrency note at the top of this file).
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
         include:
           - pkg_format: ipk
