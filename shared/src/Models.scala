@@ -1308,6 +1308,36 @@ object BlockReason {
     case other                                                 => Unknown(other)
   }
 
+  /**
+   * Inverse of [[fromWire]]. Returns the canonical pre-V40 TEXT-format wire string for a
+   * `BlockReason` — what a router agent prior to #1147 would have written to
+   * `connection_events.reason` (TEXT) or `block_events.reason` (TEXT).
+   *
+   * Used as the source of truth for the back-compat dual-write introduced in V44 (#1176 / #1179):
+   * every write to either table populates `reason_text` from `asWire(reason)` so a rollback to an
+   * image that binds the column as TEXT can still read meaningful values.
+   *
+   * Each non-`Unknown` case round-trips through `fromWire(asWire(r)) == r`. The `Unknown(raw)` case
+   * emits `raw` verbatim — anything `fromWire` couldn't categorize is preserved unmodified, so a
+   * second `fromWire` reparse still produces the same `Unknown(raw)`.
+   */
+  def asWire(r: BlockReason): String = r match {
+    case Allow                    => "allow"
+    case Blocked                  => "blocked"
+    case ExtraAllowed             => "extra_allowed"
+    case ExtraBlocked             => "extra_blocked"
+    case NoProfile                => "no_profile"
+    case MacBlockReason.Paused    => "paused"
+    case MacBlockReason.Schedule  => "schedule"
+    case MacBlockReason.TimeLimit => "time_limit"
+    case MacBlockReason.Manual    => "manual"
+    case MacBlockReason.Unmanaged => "unmanaged_mac"
+    case Category(slug)           => s"category:${slug.value}"
+    case SiteTimeLimit(label)     => s"site_time_limit:$label"
+    case AppBlocked(appId)        => s"app:$appId"
+    case Unknown(raw)             => raw
+  }
+
   // Kind-tagged JSON. Encoder/Decoder are written by hand to keep the wire
   // format stable independent of source-order rearrangement, and to give a
   // single source of truth for the strings the SPA pattern-matches on.

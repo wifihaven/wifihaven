@@ -111,6 +111,11 @@ object Main extends ZIOAppDefault {
       // the tick rather than racing on the same DELETE.
       xaForJobs       <- ZIO.service[Transactor[Task]]
       _               <- RetentionSweepJob.start(xaForJobs)
+      // #1176/#1179: backfill reason_text on connection_events / block_events rows inserted
+      // between V40 and V44 (no reason_text column then). Fork-and-forget so a slow scan on a
+      // cold Render PG doesn't gate the healthcheck; subsequent restarts re-run safely until
+      // no NULLs remain.
+      _               <- ReasonTextBackfill.run(xaForJobs).forkDaemon
       templatesById = templates.map(t => t.slug -> t).toMap
       bundledById   = bundled.map(b => b.id -> b).toMap
       routes <- allRoutes(templatesById, bundledById)
