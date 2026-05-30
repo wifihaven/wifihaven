@@ -31,13 +31,21 @@ log() { logger -t wifihaven "update: $*"; }
 
 # Detect package manager. Prefer apk (24.10+) when both are present, since
 # routers mid-migration may still ship a vestigial opkg binary.
+#
+# PKG_NAME_RE is matched against the asset *basename*, not the full URL, and
+# is tight enough to reject luci-app-wifihaven and any future named variants
+# attached to the same release (#1178). The bare extension regex
+# (PKG_EXT) was too loose: GitHub publishes both luci-app and agent assets
+# under openwrt-latest, and "first match wins" silently picked the wrong one.
 if command -v apk >/dev/null 2>&1; then
   PM=apk
   PKG_EXT='\.apk$'
+  PKG_NAME_RE='^wifihaven_[^_]+_all\.apk$'
   TMP=/tmp/wifihaven-update.apk
 elif command -v opkg >/dev/null 2>&1; then
   PM=opkg
   PKG_EXT='\.ipk$'
+  PKG_NAME_RE='^wifihaven_[^_]+_[^_]+\.ipk$'
   TMP=/tmp/wifihaven-update.ipk
 else
   log "no package manager found (neither apk nor opkg); skipping"
@@ -50,23 +58,39 @@ if [ -z "$META" ]; then
   exit 0
 fi
 
-# Rolling-release freshness signal: the matched asset's sha256 digest. We walk
-# assets[*] in order, take the first whose URL matches our package extension,
-# and read its digest at the same index. (jsonfilter has no native way to
-# project paired fields, hence the index loop.)
-LATEST_URL=
-LATEST_STAMP=
+# Rolling-release freshness signal: the matched asset's sha256 digest. We
+# walk assets[*] collecting every entry whose *basename* matches the
+# agent-package regex (PKG_NAME_RE — see comment near package-manager
+# detection), then pick the highest version. GitHub asset order is not
+# deterministic across re-uploads, so "first match wins" would flap when CI
+# re-attaches the rolling assets (#1178).
+MATCHES=
 i=0
 while :; do
   URL=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].browser_download_url" 2>/dev/null)
   [ -z "$URL" ] && break
-  if printf '%s' "$URL" | grep -qE "$PKG_EXT"; then
-    LATEST_URL="$URL"
-    LATEST_STAMP=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].digest")
-    break
+  BASENAME=${URL##*/}
+  if printf '%s' "$BASENAME" | grep -qE "$PKG_NAME_RE"; then
+    DIGEST=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].digest")
+    # Version is the segment between 'wifihaven_' and the next underscore
+    # (e.g. '0.2.8-1' from wifihaven_0.2.8-1_all.apk).
+    VER=${BASENAME#wifihaven_}
+    VER=${VER%%_*}
+    MATCHES="${MATCHES}${VER} ${DIGEST} ${URL}
+"
   fi
   i=$((i + 1))
 done
+
+# sort -V (version sort) is supported by busybox sort on OpenWRT 23.05+ and
+# handles the rc-style suffixes our semver tags use (e.g. 0.2.8-1).
+LATEST_URL=
+LATEST_STAMP=
+BEST=$(printf '%s' "$MATCHES" | grep -v '^$' | sort -V -k1,1 | tail -n1)
+if [ -n "$BEST" ]; then
+  LATEST_STAMP=$(printf '%s\n' "$BEST" | awk '{print $2}')
+  LATEST_URL=$(printf '%s\n' "$BEST" | awk '{print $3}')
+fi
 if [ -z "$LATEST_STAMP" ] || [ -z "$LATEST_URL" ]; then
   log "could not resolve rolling release digest/asset; skipping"
   exit 0
