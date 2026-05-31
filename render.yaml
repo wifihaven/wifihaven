@@ -144,12 +144,25 @@ services:
       # rollup fiber (#1165/#1167) + slow per-profile UsageSeries reads (#1099)
       # held all 5 connections, the 30s connectionTimeout fired, the healthcheck
       # failed, and Render crash-looped the instance (incident 2026-05-31).
-      # wifihaven-pg-prod is basic-256mb (256 MB RAM → 100 max_connections per
-      # Render's "< 8 GB" tier). 20 gives the single prod instance real headroom
-      # under load while leaving ~80 connections for Render's reserved/maintenance
-      # connections and any future read replica or out-of-band rollup worker.
+      #
+      # #1228: 20 was the over-correction. wifihaven-pg-prod is basic-256mb. The
+      # Postgres hard cap is max_connections=103 (verified live 2026-05-31, no
+      # per-role/per-db connlimit), so 20 is nowhere near the connection ceiling
+      # — the binding constraint is the 256 MB of DB RAM, where every backend
+      # costs several MB. A single instance at 20 runs fine, but Render rolling
+      # deploys briefly run TWO instances (old + new), so peak connections =
+      # 2×poolSize + the rollup/seed fibers. At 20 that overlap (~40+ backends)
+      # pressured the 256 MB instance enough that the NEW instance's startup
+      # queries stalled — it logged "starting on 0.0.0.0:8080" but never bound
+      # the port, and Render failed the deploy at the 15-min port-scan timeout
+      # (deploys dep-d8e4p5… update_failed, prod went undeployable). 8 (matching
+      # staging) caps 2-instance overlap at 2×8=16 plus a few rollup backends —
+      # comfortably within the memory budget — while staying well clear of the
+      # pool-exhaustion crash-loop that killed 5. If the rollup workload later
+      # needs real headroom, upsize the prod Postgres tier and raise this
+      # together rather than racing the pool up against 256 MB of RAM.
       - key: WIFIHAVEN_DB_POOL_SIZE
-        value: "20"
+        value: "8"
       # #786 / #785: bumped to `plan: standard` (2 GB / 1 CPU, $25/mo) after
       # prod started flapping under household load on free's 512 MB cap.
       # Heap sized to leave ~600 MB for OS + JIT + native; revisit if OOM
