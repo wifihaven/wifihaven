@@ -376,6 +376,59 @@ The workflow is two PRs:
 `migration-coupled-justified` label on the PR and explain in the body
 why splitting isn't possible. The check skips when the label is set.
 
+### Migrations that are fast on dev/staging can be minutes-long on prod {#migrations-prod-data-volume}
+
+**A migration's runtime is dominated by prod data volume, which is
+orders of magnitude larger than dev/staging.** The embedded Postgres in
+`TestDatabase` is empty; staging carries days of data; prod carries the
+full accumulated history. A migration that completes in milliseconds
+under test can take **many minutes** on prod — and the API runs Flyway
+on startup, on the critical path, so a slow migration blocks the
+container from binding its port and **Render fails the deploy at the
+15-minute port-scan timeout**.
+
+This actually happened: the V41/V42 partition migrations
+([#805](https://github.com/wifihaven/wifihaven/issues/805),
+[#806](https://github.com/wifihaven/wifihaven/issues/806)) rewrite and
+re-index the two highest-growth tables (`traffic_reports`,
+`connection_events`). Their own comments assert *"at current volume
+this is seconds"* — true against test/embedded volume, false at prod
+scale, where the `ATTACH PARTITION` full-scan validation plus index
+rebuilds ran past 15 minutes and the forward-roll deploy timed out
+(post-mortem: [#1197](https://github.com/wifihaven/wifihaven/issues/1197)).
+
+**Before writing or reviewing any migration, ask: does this touch a
+table whose row count grows unbounded in prod?** The unbounded-growth
+tables are the event/usage surfaces — `traffic_reports`,
+`connection_events`, `block_events`, and the rollup tables that derive
+from them. A schema-metadata-only change (add a column, add an
+index on a *small* table, add a lookup table) is safe. A change that
+**scans, rewrites, copies, re-indexes, or `ATTACH`/`VALIDATE`s** one of
+the growth tables is not — assume minutes, not seconds.
+
+For such a migration:
+
+- **Never trust a "this is fast" comment that was measured on
+  dev/staging.** State the assumption explicitly and flag that it is
+  unverified at prod scale.
+- **Prefer index builds that don't hold the critical path.**
+  `CREATE INDEX CONCURRENTLY` avoids the long exclusive lock — but it
+  **cannot run inside a transaction**, and Flyway wraps each migration
+  in one by default. Splitting it out needs a non-transactional Flyway
+  migration (`-- flyway:transactional=false` is not our current setup),
+  so treat it as a design decision, not a one-liner.
+- **Have an offline plan.** If the migration genuinely must rewrite a
+  growth table, coordinate with the operator: it may need to run
+  out-of-band (operator-applied, deploy paused) rather than on the
+  startup critical path, or the table may need to be truncated/archived
+  first if the historical data is expendable. The #1197 unblock was a
+  one-time `TRUNCATE traffic_reports, connection_events;` — acceptable
+  only because losing ~1 week of history was acceptable; do not assume
+  that's always on the table.
+- **Estimate against prod row counts, not test fixtures.** Ask the
+  operator for the live row count of the affected table before deciding
+  the migration is safe to run on the startup path.
+
 ## Branch-diff checks (CI + pre-push)
 
 CI checks and pre-push checks that compare a branch against `main` MUST diff against the **merge base** with `origin/main`, not `origin/main` directly. Use three-dot syntax (`origin/main...HEAD`) or an explicit `git merge-base origin/main HEAD`. Two-dot (`origin/main..HEAD`) over-reports when `main` has advanced since the branch diverged, producing spurious failures and noise.
