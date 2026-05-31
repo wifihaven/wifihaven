@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       consume_vm_image_artifact:
-        description: "Download the VM image from a sibling build-vm-image job artifact instead of building locally. Master Router CD sets this true so the .img is built once per run."
+        description: "Download the VM image from the sibling build-release-artifacts job instead of building locally. Master Router CD sets this true so the gates boot the exact .img that ships (#1224)."
         type: boolean
         default: false
   workflow_dispatch:
@@ -131,18 +131,17 @@ jobs:
           echo "path=$IMG" >> "$GITHUB_OUTPUT"
           echo "Resolved image: $IMG"
 
-      # Reuse the sibling build-vm-image artifact when invoked from
-      # master-router.yml (consume_vm_image_artifact=true). Today
-      # build-vm-image only matrix-builds .ipk; the .apk arm's download is
-      # a no-op and the next step falls through to a local build.
-      - name: Download VM image artifact (from build-vm-image)
+      # #1224: download the exact per-flavor .img built once pre-gate by
+      # build-release-artifacts (artifact `vm-image-<flavor>`, scoped to this
+      # run). NO continue-on-error and NO local-build fallback when consuming:
+      # Gate 3a must enroll the artifact that ships, so a missing artifact
+      # fails loud rather than silently rebuilding a different image.
+      - name: Download VM image artifact (from build-release-artifacts)
         if: inputs.consume_vm_image_artifact
-        continue-on-error: true
         uses: actions/download-artifact@v6
         with:
-          pattern: openwrt-wifihaven-${{ matrix.pkg_format }}-*-${{ github.sha }}
+          name: vm-image-${{ matrix.pkg_format }}
           path: scripts/vm/.cache
-          merge-multiple: true
 
       - name: Build router image (if not cached / not downloaded)
         run: |

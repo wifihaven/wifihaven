@@ -1,0 +1,297 @@
+name: Build router release artifacts
+
+# Single build job for the router release pipeline (#1224).
+#
+# Builds EVERY shippable artifact exactly once, versioned with the final
+# release version derived here (and nowhere else):
+#
+#   - wifihaven router      .ipk / .apk
+#   - luci-app-wifihaven    .ipk / .apk
+#   - qemu VM images        ipk/OpenWRT 23.05 + apk/OpenWRT 25.12 (raw .img
+#                           for the gates + .tar.gz release tarballs)
+#
+# These exact artifacts are then:
+#   - consumed by Gate 2 / Gate 3a (the raw .img uploads), so the bits we
+#     test are the bits we ship; and
+#   - downloaded verbatim by publish-openwrt-release.yml after approval — no
+#     rebuild, no re-derivation (publish can no longer fail on a compile).
+#
+# Coordinated-version invariant (#499 / #1134): the version is derived ONCE
+# in the `Derive version` step and threaded verbatim into the baked agent
+# VERSION file (#771), every package version, the VM images, and — via the
+# `version` workflow output — the release name and the v<X.Y.Z> tag. All
+# four MUST match; this job is the single point where that version is chosen.
+#
+# Triggers:
+#   - workflow_call — invoked by master-router.yml ahead of the gates.
+#     Exposes `version` so the caller can pass it to the publish job.
+#   - workflow_dispatch — manual debug build (produces -dev.<sha> artifacts).
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "The release version derived once for all artifacts (e.g. 0.2.7, or 0.2.7-dev.<sha> on workflow_dispatch)."
+        value: ${{ jobs.build.outputs.version }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    name: Build all release artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # #499: derive-version.sh counts commits since VERSION last changed;
+          # a shallow clone returns 0 and produces a bogus patch number. Always
+          # fetch full history so the single derivation is correct.
+          fetch-depth: 0
+
+      - name: Derive version
+        id: ver
+        # #499/#1134: single source of truth is the repo-root VERSION file
+        # (MAJOR.MINOR) plus the commit count since that file last changed
+        # (PATCH). This is the ONLY place the release version is computed —
+        # everything downstream (packages, VM images, release tag) consumes
+        # this output verbatim. workflow_dispatch runs append -dev.<sha> so
+        # ad-hoc builds can't collide with a real tagged release.
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            short=$(echo "${GITHUB_SHA}" | cut -c1-7)
+            version=$(./scripts/ci/derive-version.sh --dev "$short")
+          else
+            version=$(./scripts/ci/derive-version.sh)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=1"        >> "$GITHUB_OUTPUT"
+          echo "Derived version: $version"
+
+      - name: Build .ipk
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+          PKG_RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          chmod +x openwrt/build-ipk.sh
+          openwrt/build-ipk.sh
+
+      - name: Verify .ipk contents
+        run: |
+          ipk=$(ls openwrt/wifihaven_*.ipk)
+          echo "Package: $ipk"
+          ls -lh "$ipk"
+          echo "--- ar contents ---"
+          ar t "$ipk"
+          echo "--- control ---"
+          ar p "$ipk" control.tar.gz | tar tz
+          echo "--- data ---"
+          ar p "$ipk" data.tar.gz | tar tz
+
+      # #499: coordinated-version assertion. The version baked into the .ipk's
+      # control file must match the version derived from the repo-root VERSION
+      # file. Fails when VERSION is missing or the .ipk Version line doesn't
+      # start with $(cat VERSION). Guards the static Makefile 0.1.0 sentinel.
+      - name: Assert .ipk version matches VERSION file (#499)
+        run: |
+          set -eu
+          if [ ! -f VERSION ]; then
+            echo "ERROR: repo-root VERSION file is missing (#499)" >&2
+            exit 1
+          fi
+          base=$(tr -d ' \n' < VERSION)
+          ipk=$(ls openwrt/wifihaven_*.ipk)
+          baked=$(ar p "$ipk" control.tar.gz | tar xzO ./control | awk '/^Version:/{print $2}')
+          echo "VERSION base: $base"
+          echo "ipk Version:  $baked"
+          case "$baked" in
+            "$base".*) : ;;
+            *) echo "ERROR: ipk Version '$baked' does not start with VERSION base '$base.'" >&2; exit 1 ;;
+          esac
+          case "$baked" in
+            0.1.0-*) echo "ERROR: ipk Version is the static Makefile sentinel 0.1.0 (#499)" >&2; exit 1 ;;
+          esac
+
+      - name: Build luci-app-wifihaven .ipk
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+          PKG_RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          chmod +x openwrt/luci/build-ipk.sh
+          openwrt/luci/build-ipk.sh
+
+      - name: Verify luci-app-wifihaven .ipk contents
+        run: |
+          ipk=$(ls openwrt/luci/luci-app-wifihaven_*.ipk)
+          echo "Package: $ipk"
+          ls -lh "$ipk"
+          ar p "$ipk" data.tar.gz | tar tz
+
+      - name: Install apk-tools build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config libssl-dev libzstd-dev wget
+
+      - name: Build .apk
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+          PKG_RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          chmod +x openwrt/build-apk.sh
+          openwrt/build-apk.sh
+
+      - name: Build luci-app-wifihaven .apk
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+          PKG_RELEASE: ${{ steps.ver.outputs.release }}
+        run: |
+          chmod +x openwrt/luci/build-apk.sh
+          openwrt/luci/build-apk.sh
+
+      - name: Verify luci-app-wifihaven .apk contents
+        run: |
+          apk_file=$(ls openwrt/luci/luci-app-wifihaven_*.apk)
+          apk_bin="$HOME/.cache/wifihaven-apk-tools/build/src/apk"
+          echo "Package: $apk_file"
+          ls -lh "$apk_file"
+          "$apk_bin" adbdump "$apk_file"
+
+      - name: Verify .apk contents
+        run: |
+          apk_file=$(ls openwrt/wifihaven_*.apk)
+          echo "Package: $apk_file"
+          ls -lh "$apk_file"
+          apk_bin="$HOME/.cache/wifihaven-apk-tools/build/src/apk"
+          echo "--- file type ---"
+          file "$apk_file"
+          echo "--- apk adbdump (metadata + payload listing) ---"
+          "$apk_bin" adbdump "$apk_file"
+
+      # Qemu VM images (#893). Build BOTH flavors from the packages compiled
+      # above (IPK_SOURCE/APK_SOURCE=path) so the image carries the exact
+      # versioned package — no recompile, no version drift. The raw .img is
+      # what Gate 2 / Gate 3a boot.
+      - name: Build qemu VM image (ipk / OpenWRT 23.05)
+        env:
+          PKG_FORMAT: ipk
+          IPK_SOURCE: path
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ipks=("$PWD"/openwrt/wifihaven_*.ipk)
+          IPK_PATH="${ipks[0]}"
+          export IPK_PATH
+          chmod +x scripts/vm/build-router-image.sh
+          scripts/vm/build-router-image.sh
+
+      - name: Build qemu VM image (apk / OpenWRT 25.12)
+        env:
+          PKG_FORMAT: apk
+          APK_SOURCE: path
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=("$PWD"/openwrt/wifihaven_*.apk)
+          APK_PATH="${apks[0]}"
+          export APK_PATH
+          scripts/vm/build-router-image.sh
+
+      # Package each VM image as a release tarball. Contents: the bootable
+      # ext4-combined .img only — router-up.sh (lib.sh:ensure_openwrt_image)
+      # consumes a single raw .img and creates its own qcow2 overlay. Asset
+      # filenames are version-derived from versions.sh; the .sha256 lets
+      # downstream verify the fetch.
+      - name: Package qemu VM images as release tarballs
+        run: |
+          set -euo pipefail
+          ipk_short="$(PKG_FORMAT=ipk bash -c '. scripts/vm/versions.sh; echo "$OPENWRT_VERSION_SHORT"')"
+          apk_short="$(PKG_FORMAT=apk bash -c '. scripts/vm/versions.sh; echo "$OPENWRT_VERSION_SHORT"')"
+          ipk_img="scripts/vm/.cache/openwrt-wifihaven-ipk-${ipk_short}.img"
+          apk_img="scripts/vm/.cache/openwrt-wifihaven-apk-${apk_short}.img"
+          [ -f "$ipk_img" ] || { echo "missing $ipk_img" >&2; exit 1; }
+          [ -f "$apk_img" ] || { echo "missing $apk_img" >&2; exit 1; }
+          mkdir -p release
+          ipk_tar="release/wifihaven-router-openwrt-${ipk_short}-ipk.tar.gz"
+          apk_tar="release/wifihaven-router-openwrt-${apk_short}-apk.tar.gz"
+          tar -czf "$ipk_tar" -C "$(dirname "$ipk_img")" "$(basename "$ipk_img")"
+          tar -czf "$apk_tar" -C "$(dirname "$apk_img")" "$(basename "$apk_img")"
+          ( cd release && sha256sum \
+              "$(basename "$ipk_tar")" \
+              "$(basename "$apk_tar")" \
+              > wifihaven-router-images.sha256 )
+          echo "--- release tarballs ---"
+          ls -lh release/
+
+      # #499: stage wifihaven-version-stamped copies of the VM-image tarballs
+      # alongside the stable-name originals. The rolling openwrt-latest release
+      # keeps the stable filenames (Gate 3b's glob + agent auto-update resolve
+      # them); the v<X.Y.Z> release receives the version-stamped copies so a
+      # specific past release is reachable by URL.
+      - name: Stage versioned VM-image tarball copies (#499)
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.version }}"
+          mkdir -p release/versioned
+          for src in release/wifihaven-router-openwrt-*-ipk.tar.gz release/wifihaven-router-openwrt-*-apk.tar.gz; do
+            [ -f "$src" ] || continue
+            base=$(basename "$src")
+            stamped="release/versioned/${base/wifihaven-router-openwrt-/wifihaven-router-openwrt-${ver}-}"
+            cp "$src" "$stamped"
+          done
+          ( cd release/versioned && sha256sum wifihaven-router-openwrt-*-ipk.tar.gz wifihaven-router-openwrt-*-apk.tar.gz \
+              > wifihaven-router-images.sha256 )
+          ls -lh release/versioned/
+
+      # Collect the four packages into release/ so publish-openwrt-release.yml
+      # can attach everything from a single downloaded artifact tree, decoupled
+      # from the openwrt/ build layout.
+      - name: Assemble release/ package set
+        run: |
+          set -euo pipefail
+          cp openwrt/wifihaven_*.ipk release/
+          cp openwrt/wifihaven_*.apk release/
+          cp openwrt/luci/luci-app-wifihaven_*.ipk release/
+          cp openwrt/luci/luci-app-wifihaven_*.apk release/
+          echo "--- release/ contents ---"
+          ls -lh release/ release/versioned/
+
+      # Raw .img uploads consumed by the gates. Named per flavor (no version /
+      # sha in the name) — artifacts are already scoped to this workflow run,
+      # so a bare name is unambiguous and lets the gates download by an exact,
+      # deterministic name instead of a loose glob.
+      - name: Upload VM image artifact (ipk)
+        uses: actions/upload-artifact@v6
+        with:
+          name: vm-image-ipk
+          path: scripts/vm/.cache/openwrt-wifihaven-ipk-*.img
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload VM image artifact (apk)
+        uses: actions/upload-artifact@v6
+        with:
+          name: vm-image-apk
+          path: scripts/vm/.cache/openwrt-wifihaven-apk-*.img
+          if-no-files-found: error
+          retention-days: 7
+
+      # Everything publish-openwrt-release.yml attaches to the GitHub Release:
+      # the four packages plus the stable-name and version-stamped VM tarballs
+      # (and their sha256 sidecars), preserving the release/ tree layout.
+      - name: Upload release assets artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-assets
+          path: release/**
+          if-no-files-found: error
+          retention-days: 7
