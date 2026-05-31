@@ -6,7 +6,9 @@ import { useAlerts, useDevices, useHouseholdSettings, useProfiles, useInvalidato
 import { useAuth } from '@/hooks/useAuth'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
 import { useNotificationPermission } from '@/hooks/useNotifyOnNewAlerts'
+import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
+import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type { Alert, Device, PatchDeviceRequest, ProfileDetail } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
@@ -42,9 +44,12 @@ export function DevicesPage() {
   const profiles = profilesQuery.data ?? []
   const unmanagedPolicy = householdQuery.data?.unmanagedMacPolicy
   const loading  = devicesQuery.isPending || profilesQuery.isPending
+  // Modal is create-only now (#1000): "Add Device" and "Enroll" unmanaged.
+  // Editing a known device happens inline on its row, autosaved per field.
   const [editing,  setEditing]  = useState<Device | null>(null)
   useEscapeClose(() => setEditing(null), editing !== null)
   const [form,     setForm]     = useState({ mac: '', name: '', profileId: 0 })
+  const [editingMac, setEditingMac] = useState<string | null>(null)
   const highlightMac = useHighlightFromQuery(devices)
 
   const upsertMutation = useMutation({
@@ -100,27 +105,33 @@ export function DevicesPage() {
         {knownDevices.length === 0
           ? <EmptyState title="No devices yet." />
           : knownDevices.map(d => (
-              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-brand-accent/60 ring-inset' : ''}`}>
-                <Link to={`/devices/${encodeURIComponent(d.mac)}/timeline`} className="flex-1 min-w-0 hover:text-brand-accent transition-colors" data-testid={`device-timeline-link-${d.mac}`}>
-                  <p className="font-medium text-brand-ink truncate">{d.name}</p>
-                  <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
-                </Link>
-                <div className="hidden sm:block text-sm">
-                  <span className="bg-brand-accent/10 text-brand-accent border border-brand-accent/20 px-2 py-1 rounded-lg text-xs">
-                    {d.profileName ?? 'No profile'}
-                  </span>
-                </div>
-                {isAdmin && (
-                  <div className="flex gap-2 shrink-0">
-                    <button
-                      onClick={() => { setEditing(d); setForm({ mac: d.mac, name: d.name, profileId: d.profileId ?? profiles[0]?.profile.id ?? 0 }) }}
-                      className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
-                    >Edit</button>
-                    <button
-                      onClick={() => del(d.mac)}
-                      className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
-                    >Remove</button>
+              <div key={d.mac} data-testid={`device-row-${d.mac}`} className={`px-5 py-4 border-b border-brand-border last:border-0 transition-shadow ${highlightMac === d.mac ? 'ring-2 ring-brand-accent/60 ring-inset' : ''}`}>
+                <div className="flex items-center gap-4">
+                  <Link to={`/devices/${encodeURIComponent(d.mac)}/timeline`} className="flex-1 min-w-0 hover:text-brand-accent transition-colors" data-testid={`device-timeline-link-${d.mac}`}>
+                    <p className="font-medium text-brand-ink truncate">{d.name}</p>
+                    <p className="text-xs text-brand-text-muted font-mono">{d.mac}</p>
+                  </Link>
+                  <div className="hidden sm:block text-sm">
+                    <span className="bg-brand-accent/10 text-brand-accent border border-brand-accent/20 px-2 py-1 rounded-lg text-xs">
+                      {d.profileName ?? 'No profile'}
+                    </span>
                   </div>
+                  {isAdmin && (
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        onClick={() => setEditingMac(m => (m === d.mac ? null : d.mac))}
+                        aria-expanded={editingMac === d.mac}
+                        className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
+                      >{editingMac === d.mac ? 'Done' : 'Edit'}</button>
+                      <button
+                        onClick={() => del(d.mac)}
+                        className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                      >Remove</button>
+                    </div>
+                  )}
+                </div>
+                {isAdmin && editingMac === d.mac && (
+                  <DeviceRowEditor device={d} profiles={profiles} onClose={() => setEditingMac(null)} />
                 )}
               </div>
             ))
@@ -183,7 +194,7 @@ export function DevicesPage() {
       {editing && (
         <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl border border-brand-border-strong w-full max-w-sm p-6 space-y-4">
-            <h3 className="text-lg font-bold text-brand-ink">{form.mac ? 'Edit Device' : 'Add Device'}</h3>
+            <h3 className="text-lg font-bold text-brand-ink">{form.mac ? 'Enroll Device' : 'Add Device'}</h3>
             <Field label="MAC Address" value={form.mac} onChange={v => setForm(f => ({...f, mac: v}))} placeholder="aa:bb:cc:dd:ee:ff" mono />
             <Field label="Name" value={form.name} onChange={v => setForm(f => ({...f, name: v}))} placeholder="Kid's iPad" />
             <div>
@@ -200,6 +211,87 @@ export function DevicesPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// #1000 — inline, per-field autosave editor for a known device. Name and
+// profile each debounce-PATCH /devices/:mac independently; the row's status
+// badge aggregates both fields and offers Retry on failure. No Save button.
+function DeviceRowEditor({
+  device, profiles, onClose,
+}: {
+  device: Device
+  profiles: ProfileDetail[]
+  onClose: () => void
+}) {
+  const invalidators = useInvalidators()
+  const [name, setName] = useState(device.name)
+  const [profileId, setProfileId] = useState<number | null>(device.profileId)
+  useEffect(() => { setName(device.name) }, [device.name])
+  useEffect(() => { setProfileId(device.profileId) }, [device.profileId])
+
+  const nameSave = useDebouncedSave(
+    name,
+    async (next: string) => {
+      const trimmed = next.trim()
+      if (!trimmed) throw new Error('Name is required')
+      await api.devices.patch(device.mac, { name: trimmed })
+      await invalidators.deviceMutated()
+    },
+    { key: device.mac },
+  )
+
+  const profileSave = useDebouncedSave(
+    profileId,
+    async (next: number | null) => {
+      await api.devices.patch(device.mac, { profileId: next })
+      await invalidators.deviceMutated()
+    },
+    { key: device.mac },
+  )
+
+  const merged = mergeSaveStatus([nameSave, profileSave])
+
+  return (
+    <div
+      data-testid={`device-editor-${device.mac}`}
+      className="mt-3 pt-3 border-t border-brand-border flex flex-wrap items-end gap-3"
+    >
+      <div className="flex-1 min-w-[12rem]">
+        <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          data-testid={`device-name-input-${device.mac}`}
+          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink focus:outline-none focus:border-brand-accent"
+        />
+      </div>
+      <div className="min-w-[10rem]">
+        <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-1">Profile</label>
+        <select
+          value={profileId ?? ''}
+          onChange={e => setProfileId(e.target.value === '' ? null : Number(e.target.value))}
+          data-testid={`device-profile-select-${device.mac}`}
+          className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink"
+        >
+          {profiles.map(p => <option key={p.profile.id} value={p.profile.id}>{p.profile.name}</option>)}
+        </select>
+      </div>
+      <div className="flex items-center gap-3 pb-2.5">
+        <SaveStatusBadge
+          status={merged.status}
+          error={merged.error}
+          testId={`device-save-status-${device.mac}`}
+          onRetry={merged.retry}
+        />
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
+        >Done</button>
+      </div>
     </div>
   )
 }

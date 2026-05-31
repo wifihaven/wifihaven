@@ -4,10 +4,11 @@ import type {
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
-  PatchAppRequest, RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
+  PatchUserRequest, PatchAppRequest,
+  RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
-  UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesBatchResponse, UsageSeriesResponse, User,
 } from '@/types/api'
 
@@ -127,6 +128,9 @@ export const api = {
     list: () => req<User[]>('GET', '/users'),
     create: (data: CreateUserRequest) =>
       req<{ id: number }>('POST', '/users', data),
+    // #997 / #1001: field-scoped partial update (username / role / profileIds).
+    patch: (id: number, data: PatchUserRequest) =>
+      req<void>('PATCH', `/users/${id}`, data),
     setProfiles: (id: number, profileIds: number[]) =>
       req<void>('PUT', `/users/${id}/profiles`, { profileIds } as SetUserProfilesRequest),
     delete: (id: number) => req<void>('DELETE', `/users/${id}`),
@@ -162,8 +166,6 @@ export const api = {
   // ── Household settings (#334) ──────────────────────────────────────────
   household: {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
-    update: (data: UpdateHouseholdSettingsRequest) =>
-      req<void>('PUT', '/household/settings', data),
     patch: (data: Record<string, unknown>) =>
       req<void>('PATCH', '/household/settings', data),
   },

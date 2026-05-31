@@ -54,13 +54,6 @@ export interface HouseholdSettings {
   unmanagedMacPolicy: UnmanagedMacPolicy
 }
 
-export interface UpdateHouseholdSettingsRequest {
-  dailyResetTime: string
-  dailyResetTz: string
-  heartbeatFilter: HeartbeatFilter
-  unmanagedMacPolicy: UnmanagedMacPolicy
-}
-
 export interface TimeLimit {
   id: number
   profileId: number
@@ -610,6 +603,15 @@ export interface CreateUserRequest {
   password: string
   role: UserRole
   profileIds: number[]
+}
+
+// #997 — field-scoped partial update; the server applies only the keys
+// present. profileIds is replace-set ([] unassigns all). Password changes go
+// through the dedicated change-password endpoint, never here.
+export interface PatchUserRequest {
+  username?: string
+  role?: UserRole
+  profileIds?: number[]
 }
 
 export interface SetUserProfilesRequest {
