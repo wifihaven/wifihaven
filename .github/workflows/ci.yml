@@ -25,10 +25,13 @@ env:
 
 jobs:
   # ── Path filter: decide which downstream jobs need to run on this PR ─────
-  # On workflow_call (from the Master CD workflows) and workflow_dispatch we force every
-  # output to 'true' so the post-merge CD gate and manual runs still execute
-  # the full matrix. On pull_request we let dorny/paths-filter compute deltas
-  # against the PR base. Any change to ci.yml itself also forces everything.
+  # On push (the Master CD workflows reach ci.yml as `push`) and
+  # workflow_dispatch we force every output to 'true' so the post-merge CD
+  # gate and manual runs still execute the full matrix. On pull_request AND
+  # merge_group (the merge queue) we let dorny/paths-filter compute deltas —
+  # against the PR base for PRs, against the merge-base for the queue (#1238)
+  # — so the queue runs only the suites whose paths changed. Any change to
+  # ci.yml itself also forces everything (it's in every filter).
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
@@ -44,22 +47,27 @@ jobs:
       fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
     steps:
-      - name: Force full matrix for non-PR triggers
+      - name: Force full matrix for CD / manual triggers
         id: force
+        # Only push (CD via the Master workflows) and workflow_dispatch force
+        # the whole matrix. merge_group path-filters like a PR (#1238).
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "all=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "all=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "${{ github.event_name }}" in
+            push|workflow_dispatch) echo "all=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                      echo "all=false" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - uses: actions/checkout@v6
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
 
       - uses: dorny/paths-filter@v3
         id: filter
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         with:
+          # On merge_group, diff against the merge-base so the queue runs only
+          # what the queued PR touched. On pull_request, an empty base lets
+          # paths-filter auto-detect the PR base as before.
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
           filters: |
             scala:
               # Narrowed: Scala job only compiles + tests Scala. Docker
@@ -247,19 +255,33 @@ jobs:
   migrations-immutable:
     name: Migrations Immutability Check
     needs: changes
-    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' && needs.changes.outputs.migrations == 'true'
+    # Path-gated like every other job (#1236). Runs on pull_request,
+    # merge_group (queue), and push (CD) — each resolves its own base SHA
+    # below. merge_group/CD always target main, so no base.ref clause.
+    if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      - name: Resolve base SHA
+        id: base
+        # pull_request → PR base; merge_group → merge-base; push → before-SHA.
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT" ;;
+            merge_group)  echo "sha=${{ github.event.merge_group.base_sha }}"  >> "$GITHUB_OUTPUT" ;;
+            push)         echo "sha=${{ github.event.before }}"                >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Reject changes to existing migration files
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
           # Emergency escape hatch for #883 (duplicate V27 rename). The
           # mutation check is bypassed only on this specific PR branch;
-          # the duplicate-version check still runs.
+          # the duplicate-version check still runs. On non-PR events
+          # head.ref is empty, so this resolves to '0'.
           # TODO(#885): remove this env block after the #883 PR has merged.
           ALLOW_MIGRATION_MUTATIONS: ${{ github.event.pull_request.head.ref == 'fix-883-dup-v27' && '1' || '0' }}
         run: bash .github/scripts/check-migrations.sh "$BASE_SHA"
@@ -275,28 +297,56 @@ jobs:
   migration-isolation:
     name: Migration Isolation Check
     needs: changes
+    # Runs on pull_request + merge_group only (NOT push — redundant
+    # post-merge). Path-gated like the rest (#1236). The label escape hatch
+    # is handled two ways: inline `!contains(...)` for PRs (labels are in the
+    # event), and a resolve-step for the queue (merge_group has no labels —
+    # we look them up from the queued PR head SHA).
     if: |
-      github.event_name == 'pull_request'
-      && github.event.pull_request.base.ref == 'main'
-      && needs.changes.outputs.migrations == 'true'
+      needs.changes.outputs.migrations == 'true'
+      && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
       && !contains(github.event.pull_request.labels.*.name, 'migration-coupled-justified')
     runs-on: ubuntu-latest
-    # CodeQL actions/missing-workflow-permissions: the job only needs to
-    # read the repo to diff the branch — no token writes.
+    # CodeQL actions/missing-workflow-permissions: contents:read to diff the
+    # branch; pull-requests:read so `gh pr list` can resolve the queued PR's
+    # labels in merge_group (no token writes).
     permissions:
       contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # Diff against the merge-base with origin/main (three-dot semantics),
-      # not pull_request.base.sha. The base.sha can lag the actual main tip
-      # while a PR is open (we observed cdc5faae sticking around after V44
-      # landed on main), and unrelated migrations on main would otherwise
-      # show as "added" in this PR. Matches AGENTS.md "Branch-diff checks".
+      # In the merge queue the migration-coupled-justified label is not on the
+      # event, so a PR justified at PR time would otherwise fail here. Resolve
+      # the originating PR from the queue head SHA and skip if it's labeled.
+      - name: Check coupled-justified label (merge_group)
+        id: label
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          labels=$(gh pr list --search "${{ github.event.merge_group.head_sha }}" --state all --json labels -q '.[0].labels[].name' 2>/dev/null || true)
+          if echo "$labels" | grep -qx 'migration-coupled-justified'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Diff against the per-event base (three-dot semantics): PR base.sha for
+      # pull_request, merge-base for merge_group. The script already uses
+      # `<base>...HEAD`, so this resolves the same merge-base intent as the old
+      # hardcoded origin/main. Matches AGENTS.md "Branch-diff checks".
+      - name: Resolve base SHA
+        id: base
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT" ;;
+            merge_group)  echo "sha=${{ github.event.merge_group.base_sha }}"  >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Reject migration PRs that also change production source
-        run: bash .github/scripts/check-migration-isolation.sh origin/main
+        if: steps.label.outputs.skip != 'true'
+        run: bash .github/scripts/check-migration-isolation.sh "${{ steps.base.outputs.sha }}"
 
   # ── Shell test discovery ─────────────────────────────────────────────────
   # Auto-discovers and runs every *.test.sh in the repo. Add a new test by
