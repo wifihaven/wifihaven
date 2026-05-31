@@ -1097,6 +1097,71 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
         assertTrue(slugs.toSet == Set("youtube", "music")) &&
         assertTrue(rows.forall(_.countSucceeded == 1))
     },
+    // #857: app attribution must be apex/suffix-aware via HostMatch.lookupApex
+    // — the same matcher the traffic-usage path uses (#1085). app_hosts stores
+    // the apex form ("youtube.com"); a subdomain event ("www.youtube.com")
+    // must attribute to the youtube app, while a lookalike ("notyoutube.com")
+    // must NOT match and falls into __other__.
+    test("#857: GET /api/connection-events/series attributes subdomains to the apex app") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        appRepo  <- ZIO.service[AppRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        ytId     <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+        _        <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+        _        <- connRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("www.youtube.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:01")),
+              HostId.Fqdn(Hostname.unsafe("m.youtube.com")),
+              None,
+              false,
+              BlockReason.fromWire("blocked"),
+              recentTs,
+            ),
+            ConnectionEventInsert(
+              routerId,
+              Some(MacAddress.unsafe("aa:bb:cc:00:00:02")),
+              HostId.Fqdn(Hostname.unsafe("notyoutube.com")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              recentTs,
+            ),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/connection-events/series?bucket=1h&groupBy=app", token)
+        body <- resp.body.asString
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
+        yt   = rows.find(_.groups.getOrElse("app", "") == "youtube")
+        ot   = rows.find(_.groups.getOrElse("app", "") == "__other__")
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.length == 2) &&
+        assertTrue(yt.exists(_.countSucceeded == 1)) &&
+        assertTrue(yt.exists(_.countBlocked == 1)) &&
+        assertTrue(yt.exists(_.appName.contains("YouTube"))) &&
+        assertTrue(yt.exists(_.appIcon.contains("📺"))) &&
+        assertTrue(yt.exists(_.appId.isDefined)) &&
+        assertTrue(ot.exists(_.countSucceeded == 1)) &&
+        assertTrue(ot.exists(_.countBlocked == 0)) &&
+        assertTrue(ot.exists(_.appId.isEmpty))
+    },
     test("GET /api/connection-events/series rejects bucket=off with 400") {
       for {
         _        <- cleanDb
