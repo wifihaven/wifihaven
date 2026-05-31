@@ -119,15 +119,97 @@ describe('DevicesPage — add', () => {
   })
 })
 
-describe('DevicesPage — edit', () => {
-  it('pre-fills modal with existing device values', async () => {
+describe('DevicesPage — inline autosave edit (#1000)', () => {
+  const mac = 'aa:bb:cc:dd:ee:01'
+
+  it('expands an inline editor pre-filled with the device values; no Save button', async () => {
     const user = userEvent.setup()
     renderPage()
-    const ipadRow = await screen.findByTestId('device-row-aa:bb:cc:dd:ee:01')
+    const ipadRow = await screen.findByTestId(`device-row-${mac}`)
     await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
 
-    expect(screen.getByDisplayValue('aa:bb:cc:dd:ee:01')).toBeInTheDocument()
-    expect(screen.getByDisplayValue("Kid's iPad")).toBeInTheDocument()
+    const editor = await screen.findByTestId(`device-editor-${mac}`)
+    expect(within(editor).getByDisplayValue("Kid's iPad")).toBeInTheDocument()
+    expect(
+      (within(editor).getByTestId(`device-profile-select-${mac}`) as HTMLSelectElement).value,
+    ).toBe('1')
+    // Autosave: no explicit Save button on the edit affordance.
+    expect(within(editor).queryByRole('button', { name: /^Save$/ })).not.toBeInTheDocument()
+  })
+
+  it('renaming fires a single debounced PATCH {name} and shows "Saved just now"', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const ipadRow = await screen.findByTestId(`device-row-${mac}`)
+      await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${mac}`)
+      const input = within(editor).getByTestId(`device-name-input-${mac}`)
+
+      await user.clear(input)
+      await user.type(input, 'Living Room iPad')
+      expect(api.devices.patch).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.devices.patch).toHaveBeenCalledTimes(1)
+      expect(api.devices.patch).toHaveBeenCalledWith(mac, { name: 'Living Room iPad' })
+      await waitFor(() =>
+        expect(within(editor).getByTestId(`device-save-status-${mac}`)).toHaveAttribute(
+          'data-status',
+          'saved',
+        ),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reassigning the profile inline fires PATCH {profileId}', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      renderPage()
+      const ipadRow = await screen.findByTestId(`device-row-${mac}`)
+      await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${mac}`)
+
+      await user.selectOptions(within(editor).getByTestId(`device-profile-select-${mac}`), '2')
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(api.devices.patch).toHaveBeenCalledWith(mac, { profileId: 2 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('PATCH failure surfaces inline error + Retry; dirty value retained; Retry re-sends', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      (api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error('boom'),
+      )
+      renderPage()
+      const ipadRow = await screen.findByTestId(`device-row-${mac}`)
+      await user.click(within(ipadRow).getByRole('button', { name: /Edit/ }))
+      const editor = await screen.findByTestId(`device-editor-${mac}`)
+      const input = within(editor).getByTestId(`device-name-input-${mac}`)
+
+      await user.clear(input)
+      await user.type(input, 'Den iPad')
+      await vi.advanceTimersByTimeAsync(700)
+
+      const status = within(editor).getByTestId(`device-save-status-${mac}`)
+      await waitFor(() => expect(status).toHaveAttribute('data-status', 'error'))
+      expect(input).toHaveValue('Den iPad') // dirty value preserved
+
+      await user.click(within(editor).getByTestId(`device-save-status-${mac}-retry`))
+      await waitFor(() => expect(api.devices.patch).toHaveBeenCalledTimes(2))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
