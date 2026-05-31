@@ -4,10 +4,10 @@ import type {
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
-  RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
+  PatchAppRequest, RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
-  UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
 
@@ -359,11 +359,9 @@ export const api = {
     list: () => req<AppDetail[]>('GET', '/apps'),
     get: (id: number) => req<AppDetail>('GET', `/apps/${id}`),
     create: (data: CreateAppRequest) => req<AppDetail>('POST', '/apps', data),
-    update: (id: number, data: UpdateAppRequest) =>
-      req<void>('PUT', `/apps/${id}`, data),
+    patch: (id: number, data: PatchAppRequest) =>
+      req<void>('PATCH', `/apps/${id}`, data),
     delete: (id: number) => req<void>('DELETE', `/apps/${id}`),
-    setHosts: (id: number, hosts: string[]) =>
-      req<void>('PUT', `/apps/${id}/hosts`, { hosts } as SetAppHostsRequest),
     // #766: recently-visited apexes for a device — drives the picker in the
     // apps create/edit flow. Colons in the MAC are sent raw: zio-http doesn't
     // auto-decode percent-encoded colons in path segments, so
