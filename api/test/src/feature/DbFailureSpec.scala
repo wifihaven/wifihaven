@@ -84,6 +84,11 @@ object DbFailureSpec extends ZIOSpecDefault {
         s: java.time.Instant,
     ) =
       throwing
+    def listPresenceRowsInWindow(
+        macs: List[MacAddress],
+        fromInstant: java.time.Instant,
+        toInstant: java.time.Instant,
+    ) = throwing
     def listRawInRange(
         macs: List[MacAddress],
         fromInstant: java.time.Instant,

@@ -205,7 +205,80 @@ object UsageRoutes {
             }
           } yield Response.json(resp.toJson)
         },
+      // #1099: batched per-profile series. The /profiles page resolves the
+      // whole visible profile set in one partition-pruned scan instead of N
+      // parallel single-profile requests.
+      Method.GET / "api" / "usage" / "series" / "batch"                ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
+            pids   <- parseMultiProfileIdParam(req).map(_.distinct)
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
+            date <- ZIO
+              .attempt(LocalDate.parse(dateStr))
+              .orElseFail(Response.badRequest(s"invalid date: $dateStr"))
+            tzStr = req.url.queryParam("tz").getOrElse("UTC")
+            zone <- ZIO
+              .attempt(ZoneId.of(tzStr))
+              .orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
+            topN       = req.url
+              .queryParam("topN")
+              .flatMap(_.toIntOption)
+              .getOrElse(5)
+              .max(1)
+              .min(500)
+            groupByApp = req.url.queryParam("groupBy").exists(_.split(',').contains("app"))
+            appLookup <-
+              if (groupByApp) loadAppLookup(appRepo)
+              else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+            resp      <- buildBatch(
+              pids,
+              date,
+              zone,
+              topN,
+              claims,
+              profileRepo,
+              deviceRepo,
+              trafficRepo,
+              userProfileRepo,
+              groupByApp,
+              appLookup,
+            )
+          } yield Response.json(resp.toJson)
+        },
     )
+
+  // STUB (#1099 red): real batched build lands in the green commit.
+  private def buildBatch(
+      pids: List[ProfileId],
+      date: LocalDate,
+      zone: ZoneId,
+      topN: Int,
+      claims: JwtClaims,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      trafficRepo: TrafficReportRepo,
+      userProfileRepo: UserProfileRepo,
+      groupByApp: Boolean,
+      appLookup: HostId => Option[UsageSeries.AppInfo],
+  ): IO[Response, UsageSeriesBatchResponse] = {
+    val _ =
+      (
+        pids,
+        date,
+        zone,
+        topN,
+        claims,
+        profileRepo,
+        deviceRepo,
+        trafficRepo,
+        userProfileRepo,
+        groupByApp,
+        appLookup,
+      )
+    ZIO.succeed(UsageSeriesBatchResponse(Nil))
+  }
 
   // #1061 — per-app rollup. Joins `app_hosts` to map each host → owning app (a
   // host in two apps deterministically picks the lowest appId so a bucket isn't

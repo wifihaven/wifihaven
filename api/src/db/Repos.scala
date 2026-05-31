@@ -416,6 +416,22 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
+   * #1099: presence rows whose `period_start` falls in `[fromInstant, toInstant)` for the given
+   * macs. Filtering on `period_start` (the table's RANGE partition key, V41) — rather than the
+   * non-key `date` column the day/range variants use — lets Postgres prune to the covering weekly
+   * partitions instead of scanning all of history. This is the difference between a sub-second read
+   * and the multi-minute full-table scan that wedged the /profiles page (see issue #1099). The
+   * query is bounded by a per-statement timeout ([[QueryTimeout.PresenceWindow]]) so a pathological
+   * caller fails fast instead of holding a connection. Same row shape and semantics as
+   * [[listPresenceRows]]; callers compute the window from the requested local day + zone.
+   */
+  def listPresenceRowsInWindow(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
    * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs"
    * (used by the Traffic Usage page in unfiltered mode). Returns Instants (not String date columns)
    * so callers can bucket without re-parsing.
@@ -1394,6 +1410,18 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
 
   def listPresenceRowsSince(macs: List[MacAddress], date: LocalDate, since: Instant) =
     listPresenceRowsBetween(macs, date, date, Some(since))
+
+  def listPresenceRowsInWindow(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]] =
+    ZIO.succeed {
+      // STUB (#1099 red): window ignored until the green commit, so the
+      // equivalence test sees an empty result and fails.
+      val _ = (macs, fromInstant, toInstant)
+      List.empty[wifihaven.api.presence.PresenceRow]
+    }
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   private def listPresenceRowsBetween(
