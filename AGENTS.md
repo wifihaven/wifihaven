@@ -85,14 +85,30 @@ WifiHaven is a self-hosted, network-level parental-control system with per-devic
 ```
 wifihaven/
 ├── shared/        # Domain models shared across all modules (Scala 3, ZIO JSON)
-├── api/           # REST API + web server (ZIO HTTP, Doobie, PostgreSQL)
+├── api/           # REST API (ZIO HTTP, Doobie, PostgreSQL)
 ├── openwrt/       # Lua agent for OpenWRT (dnsmasq + nftables policy enforcement)
 ├── opnsense/      # Python agent for OPNsense (Unbound + pflog usage events)
 └── web/           # React TypeScript dashboard (Vite, Tailwind)
 ```
 
 One JVM process runs in production:
-1. `api` — REST API on :8080, serves the React SPA, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives)
+1. `api` — REST API on :8080, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives). It does **not** serve the React SPA.
+
+The React SPA (`web/`) deploys to **Cloudflare Pages**, independent of the
+API JVM. It is a static bundle that talks to the API over the network like
+any other client. Cloudflare config lives in-repo:
+
+- [`infra/cloudflare/`](infra/cloudflare/) — Terraform (`main.tf`,
+  `variables.tf`) for the Cloudflare account-level resources.
+- [`web/wrangler.toml`](web/wrangler.toml) (prod) and
+  `web/wrangler.staging.toml` (staging) — Wrangler config for
+  `wrangler pages deploy`. Deploys are driven from
+  `.github/workflows/deploy-spa.yml`.
+
+**API and SPA are independently deployed.** Rolling back the API does not
+roll back the SPA, and vice versa. Each has its own deploy history (Render
+for the API, Cloudflare Pages for the SPA). A coordinated rollback means
+rolling back both sides.
 
 Connection-level enforcement and per-device usage tracking run on the gateway router, not on the API host (see the "Architectural model" callout at the top of this file for why):
 - **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage via `/api/router/events` and `/api/router/usage`
@@ -261,7 +277,8 @@ cp config/application.conf.example config/application.conf
 # Run API
 mill api.run
 
-# Run frontend dev server
+# Run frontend dev server (Vite — talks to the local API at :8080;
+# in production the SPA is served by Cloudflare Pages, not by the API)
 cd web && npm run dev
 ```
 
