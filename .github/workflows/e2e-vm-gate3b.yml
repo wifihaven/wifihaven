@@ -26,15 +26,16 @@ name: VM e2e (Gate 3b — API/UI-side staging smoke)
 #   WH_RUN_ID / WH_PORT_BASE (below) + the wh-lan* bridge pool pick (#891).
 #
 #   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
-#   group: api.lan's /etc/qemu/bridge.conf has 5 bridges (wh-lan0..wh-lan4),
-#   each VM pair consumes one → 5 concurrent pairs max. CI matrix fan-out is
-#   capped at `max-parallel: 4` (below), leaving one bridge for ad-hoc runs,
-#   scripts/e2e-kvm-sanity, and keep-staging-warm. The matching global
-#   governor is the runner-instance count on api.lan (4, one per job-bridge);
-#   see docs/ops/kvm-runner.md for the runner-count = bridge-count - 1
-#   invariant (#1163). When all 5 are taken, wh_pick_lan_bridge fails loud
-#   ("LAN bridge pool exhausted", exit 1) instead of queueing forever.
-#   Broader capacity plan: #657.
+#   group: api.lan's /etc/qemu/bridge.conf has 7 bridges (wh-lan0..wh-lan6),
+#   each VM pair consumes one. The pool is sized so usable bridges (6) cover
+#   the worst case across BOTH CD pipelines — Master Router CD's Gate 2 +
+#   Gate 3a and Master API/UI CD's Gate 3b can run concurrently, 2 arms each
+#   = 6 — with wh-lan6 left as manual headroom (#657/#1163). The runner-
+#   instance count on api.lan (4) is a *lower* secondary governor; see
+#   docs/ops/kvm-runner.md for the pool-size - 1 >= worst-case-arms
+#   invariant. When all bridges are taken, wh_pick_lan_bridge first reaps any
+#   orphan leaked by a crashed run, then fails loud ("LAN bridge pool
+#   exhausted", exit 1) instead of queueing forever.
 
 on:
   workflow_call:
@@ -55,8 +56,9 @@ jobs:
       || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
     timeout-minutes: 20
-    # max-parallel: 4 (#1163) — bounded by the 5-bridge pool minus one headroom
-    # slot (see the concurrency note at the top of this file).
+    # max-parallel: 4 (#1163) — the 7-bridge pool (6 usable + 1 headroom)
+    # covers the worst-case 6 concurrent arms across both pipelines (see the
+    # concurrency note at the top of this file).
     strategy:
       fail-fast: false
       max-parallel: 4

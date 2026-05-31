@@ -150,6 +150,106 @@ wh_bridge_reserved() {
   return 1
 }
 
+# --- Orphan reaping (#657 / #1163) -------------------------------------------
+# A bridge is removed from the pool when it has either an attached tap OR a live
+# reservation. A run that ends without its teardown running — a manual session
+# the operator forgot, the keep-staging-warm cron, or a CI job whose host
+# crashed before the `if: always()` teardown step — leaks one or both and
+# permanently shrinks the pool. (This is exactly how run 26716313048 hit "LAN
+# bridge pool exhausted": three VMs from a manual debug session four days
+# earlier were still squatting wh-lan0/wh-lan1.) The reaper below reclaims such
+# leaks before each pick, precisely enough to never disturb a concurrent
+# legitimate run.
+
+# Wall-clock lifetime (whole seconds) of a pid, empty if not running.
+wh_proc_age_secs() {
+  local pid="$1"
+  [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+  ps -o etimes= -p "${pid}" 2>/dev/null | tr -d '[:space:]'
+}
+
+# Longest wall-clock lifetime a *CI* VM can legitimately reach. The VM gates
+# carry timeout-minutes 20–30, so any wh-* qemu older than this on a non-
+# headroom bridge is unambiguously a leaked orphan (its run is long gone). The
+# 45-minute default sits well above the longest job timeout AND above any live
+# concurrent run, so age-reaping can never catch a VM that a real run still
+# owns. Override for unusual hosts.
+WH_VM_MAX_LIFETIME="${WH_VM_MAX_LIFETIME:-2700}"
+
+# pids of wh-* qemu VMs whose LAN netdev is attached to bridge $1. The trailing
+# `([^0-9]|$)` anchors the bridge name so `wh-lan1` does not also match
+# `wh-lan10` (substring) — ERE has no lookahead, and the netdev token is always
+# followed by a space (the next `-device`) or end-of-arg.
+wh_qemu_pids_on_bridge() {
+  local br="$1"
+  pgrep -f "qemu-system-x86_64.*-name wh-.*br=${br}([^0-9]|\$)" 2>/dev/null || true
+}
+
+# pids of ANY qemu attached to bridge $1 (not just our wh-* VMs). Used to decide
+# whether a lingering tap is truly ownerless before deleting it.
+wh_any_qemu_pids_on_bridge() {
+  local br="$1"
+  pgrep -f "qemu-system-x86_64.*br=${br}([^0-9]|\$)" 2>/dev/null || true
+}
+
+# Delete taps on bridge $1 that no qemu owns (qemu exited but its tap lingered,
+# e.g. a hard SIGKILL). No-op while any qemu is still attached — those taps are
+# legitimately in use. Best-effort on privilege: tap teardown needs CAP_NET_ADMIN,
+# granted to the runner via the NOPASSWD `ip` sudoers rule.
+wh_delete_orphan_taps() {
+  local br="$1"
+  local brif="${WH_SYS_CLASS_NET}/${br}/brif"
+  [[ -d "${brif}" ]] || return 0
+  # If any qemu (wh-* or otherwise) still holds the bridge, leave its taps alone.
+  [[ -n "$(wh_any_qemu_pids_on_bridge "${br}")" ]] && return 0
+  local tap
+  while IFS= read -r tap; do
+    [[ -n "${tap}" ]] || continue
+    log "deleting orphan tap ${tap} on ${br} (no owning qemu)"
+    ip link delete "${tap}" 2>/dev/null \
+      || sudo -n ip link delete "${tap}" 2>/dev/null \
+      || log "could not delete tap ${tap} (needs privilege) — leaving for operator"
+  done < <(ls "${brif}" 2>/dev/null)
+}
+
+# Reclaim leaked bridges across the pool given as positional args. Precise by
+# construction — only ever touches a bridge whose owner is provably gone:
+#   1. stale (dead-pid) reservation markers           → removed
+#   2. wh-* qemus older than WH_VM_MAX_LIFETIME on a   → killed (definitive
+#      NON-headroom bridge                                orphan; its run is gone)
+#   3. taps with no owning qemu                         → deleted
+# It NEVER kills a within-lifetime qemu (a live legitimate run, local or a
+# concurrent sibling, is always well under the ceiling) and NEVER age-reaps the
+# headroom bridge (the highest-numbered pool member), so a long-running manual
+# debug VM parked there survives. Long-lived manual VMs therefore belong on the
+# headroom slot — see docs/ops/kvm-runner.md.
+wh_reap_orphan_bridges() {
+  local headroom
+  headroom="$(printf '%s\n' "$@" | sort -V | tail -n1)"
+  local br pid age
+  for br in "$@"; do
+    # (1) Drop a dead-pid reservation as a side effect.
+    wh_bridge_reserved "${br}" >/dev/null 2>&1 || true
+    # (2) Age-reap orphan qemus on non-headroom bridges.
+    if [[ "${br}" != "${headroom}" ]]; then
+      while IFS= read -r pid; do
+        [[ -n "${pid}" ]] || continue
+        age="$(wh_proc_age_secs "${pid}")"
+        [[ "${age}" =~ ^[0-9]+$ ]] || continue
+        if (( age >= WH_VM_MAX_LIFETIME )); then
+          log "reaping orphan qemu pid=${pid} on ${br} (age ${age}s ≥ ${WH_VM_MAX_LIFETIME}s ceiling — no live run owns it)"
+          kill "${pid}" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do kill -0 "${pid}" 2>/dev/null || break; sleep 0.2; done
+          kill -9 "${pid}" 2>/dev/null || true
+          wh_clear_bridge_reservation "${br}"
+        fi
+      done < <(wh_qemu_pids_on_bridge "${br}")
+    fi
+    # (3) Delete taps left behind by a now-dead qemu.
+    wh_delete_orphan_taps "${br}"
+  done
+}
+
 # Pick a LAN bridge from the wh-lan* pool when one wasn't set explicitly (#891).
 #
 # Contract:
@@ -213,6 +313,11 @@ wh_pick_lan_bridge() {
   if ! flock -w 60 9; then
     die "could not acquire bridge-pool lock (${lock_file}) within 60s"
   fi
+  # Reclaim bridges leaked by crashed / out-of-namespace / forgotten runs before
+  # scanning, so a leaked tap or stale marker can't permanently shrink the pool
+  # (#657). Held under the same flock as the scan+reserve below, so two
+  # concurrent pickers can't race on the same orphan.
+  wh_reap_orphan_bridges "${pool[@]}"
   local chosen=""
   local br
   while IFS= read -r br; do

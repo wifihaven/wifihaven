@@ -23,18 +23,20 @@ name: VM e2e (fake API — Gate 2)
 #   pool pick (lib.sh::wh_pick_lan_bridge, #891).
 #
 #   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
-#   group: api.lan's /etc/qemu/bridge.conf has 5 bridges (wh-lan0..wh-lan4),
-#   and each VM pair (router + client) consumes one — so 5 concurrent pairs
-#   is the absolute max. We cap CI matrix fan-out at `max-parallel: 4`
-#   (below) to leave one bridge free for ad-hoc manual runs,
-#   scripts/e2e-kvm-sanity, and the keep-staging-warm cron, so none of those
-#   ever queue behind CI. The matching global governor is the runner-instance
-#   count on api.lan (4, one per job-bridge); see docs/ops/kvm-runner.md
-#   for the runner-count = bridge-count - 1 invariant (#1163).
+#   group: api.lan's /etc/qemu/bridge.conf has 7 bridges (wh-lan0..wh-lan6),
+#   and each VM pair (router + client) consumes one. The pool is sized so
+#   usable bridges (6) cover the worst case across BOTH CD pipelines — Master
+#   Router CD's Gate 2 + Gate 3a and Master API/UI CD's Gate 3b can run
+#   concurrently, 2 arms each = 6 — leaving wh-lan6 as manual headroom for
+#   ad-hoc runs, scripts/e2e-kvm-sanity, and the keep-staging-warm cron
+#   (#657/#1163). The runner-instance count on api.lan (4) is a *lower*
+#   secondary governor; see docs/ops/kvm-runner.md for the
+#   pool-size - 1 >= worst-case-arms invariant.
 #
-#   When all 5 bridges are taken, wh_pick_lan_bridge fails loud with
-#   "LAN bridge pool exhausted" (exit 1) rather than queueing forever — see
-#   scripts/vm/test-lan-bridge-pick.sh. Broader capacity plan: #657.
+#   When all bridges are taken, wh_pick_lan_bridge first reaps any orphan
+#   leaked by a crashed/forgotten run, then fails loud with "LAN bridge pool
+#   exhausted" (exit 1) rather than queueing forever — see
+#   scripts/vm/test-lan-bridge-pick.sh.
 
 on:
   workflow_call:
@@ -69,11 +71,11 @@ jobs:
     # so a regression in one flavor still reports the other arm's status
     # (needed to surface apk-only regressions like the #531 history case).
     # max-parallel: 4 (#1163) — with #891's bridge/port/MAC parameterization
-    # the arms can share a host, bounded by the 5-bridge pool minus one
-    # headroom slot (see the concurrency note at the top of this file). The
-    # 4 self-hosted kvm runner instances on api.lan are the global governor
-    # for cross-workflow concurrency; within a single workflow this cap is
-    # the per-matrix ceiling.
+    # the arms can share a host. The 7-bridge pool (6 usable + 1 headroom)
+    # covers the worst-case 6 concurrent arms across both pipelines; see the
+    # concurrency note at the top of this file. The 4 self-hosted kvm runner
+    # instances on api.lan are the lower global governor for cross-workflow
+    # concurrency; within a single workflow this cap is the per-matrix ceiling.
     strategy:
       fail-fast: false
       max-parallel: 4

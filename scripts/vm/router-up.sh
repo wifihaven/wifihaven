@@ -25,6 +25,17 @@ fi
 # WH_LAN_BRIDGE=wh-lan0 (today's default). Holds a flock until this shell exits.
 wh_pick_lan_bridge
 
+# If we picked a pool bridge but qemu never comes up (image download fails,
+# overlay create errors, qemu refuses to boot), release the reservation we just
+# wrote so the slot isn't stranded until the next pick's reaper notices the
+# dead-pid marker. Cleared once qemu is confirmed running (see end of script).
+_router_booted=0
+_release_reservation_on_fail() {
+  [[ "${_router_booted}" == "1" ]] && return 0
+  [[ -n "${WH_LAN_BRIDGE_PICKED:-}" ]] && wh_clear_bridge_reservation "${WH_LAN_BRIDGE}"
+}
+trap _release_reservation_on_fail EXIT
+
 "${HERE}/lan-bridge-up.sh"
 
 ensure_openwrt_image
@@ -80,6 +91,10 @@ if [[ -n "${WH_LAN_BRIDGE_PICKED:-}" ]]; then
     wh_write_bridge_reservation "${WH_LAN_BRIDGE}" "${_qpid}"
   fi
 fi
+
+# qemu is up and the reservation now carries its pid — the EXIT trap must no
+# longer release the slot.
+_router_booted=1
 
 log "router VM started (pid $(cat "${WH_ROUTER_PIDFILE}" 2>/dev/null || echo '?'))"
 log ""

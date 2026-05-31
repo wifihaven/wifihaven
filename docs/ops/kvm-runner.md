@@ -62,28 +62,73 @@ Cache locations (kept across runs, safe to delete to force a rebuild):
 | `scripts/vm/.cache/imagebuilder/`       | OpenWRT Image Builder working tree     |
 | `.e2e-vm-venv/`                         | pytest venv (created lazily)           |
 
-## Sizing: runner count vs. bridge pool — load-bearing invariant
+## Sizing: bridge pool vs. concurrent demand — load-bearing invariant
 
-> **Invariant (#1163): `runner-count = bridge-pool-size − 1`.** The trailing
-> bridge in the pool is reserved as a manual-headroom slot for ad-hoc runs
-> (`scripts/e2e-kvm-sanity`, operator debugging, the keep-staging-warm
-> cron). Because `wh_pick_lan_bridge`
+> **Invariant (#657 / #1163): `bridge-pool-size − 1 ≥ worst-case concurrent
+> VM matrix arms across ALL pipelines`.** The "−1" is the manual-headroom
+> slot reserved for ad-hoc runs (`scripts/e2e-kvm-sanity`, operator
+> debugging, the keep-staging-warm cron). Because `wh_pick_lan_bridge`
 > ([`scripts/vm/lib.sh`](../../scripts/vm/lib.sh)) hands out the
-> **lowest-numbered free bridge first** and there are never more than
-> `N − 1` concurrent jobs (capped by runner-instance count), the
-> highest-numbered bridge stays free in steady state.
+> **lowest-numbered free bridge first**, the highest-numbered bridge is the
+> last to be taken and stays free as long as the invariant holds.
 >
-> **Touch both knobs together.** If you scale runners, scale bridges. If
-> you scale bridges, scale runners. The matching workflow knob is
-> `max-parallel` in the VM e2e workflows (which equals `runner-count`).
+> **Count the arms, not the runners.** The two CD pipelines can run their VM
+> gates concurrently: **Master Router CD** fans out Gate 2
+> (`e2e-vm-fake.yml`, 2 arms: ipk+apk) and Gate 3a (`e2e-vm-gate3a.yml`,
+> 2 arms); **Master API/UI CD** fans out Gate 3b (`e2e-vm-gate3b.yml`,
+> 2 arms). Worst case = **3 workflows × 2 arms = 6 concurrent VM pairs**,
+> regardless of runner count. So usable bridges must be ≥ 6 → **pool size
+> ≥ 7**.
 >
-> Today's sizing on api.lan: **5 bridges (`wh-lan0..wh-lan4`), 4 runner
-> instances (`actions-runner-1..4`), `max-parallel: 4`.**
+> Today's sizing on api.lan: **7 bridges (`wh-lan0..wh-lan6`; `wh-lan6` =
+> headroom), 4 runner instances (`actions-runner-1..4`), `max-parallel: 4`.**
+
+> **Why we sized to arms, not runners.** The previous invariant tied the pool
+> to the runner count (`runner-count = pool-size − 1`). That made the
+> no-exhaustion guarantee depend on *two* host-side numbers staying in sync —
+> bridge count and runner count — and a drift between them (the pool was left
+> at 4 when it should have been 5) was a contributing cause of run
+> [26716313048](https://github.com/wifihaven/wifihaven/actions/runs/26716313048)
+> exhausting the pool. Sizing to worst-case arms makes the bridge guarantee
+> self-contained: `usable ≥ 6` holds no matter how many runners are online or
+> how `max-parallel` is set. The runner count remains a *secondary, lower*
+> governor (see below) — it can only ever reduce concurrency below the pool
+> ceiling, never exceed it.
 
 The runner-instance count is the global host-concurrency governor: GitHub
-queues jobs naturally when no runner is free, so once all 4 runners are
-busy, sibling jobs wait. No workflow-level `concurrency:` group is needed
-across workflows — the runner pool *is* the queue.
+queues jobs naturally when no runner is free, so with 4 runners at most 4 VM
+pairs run at once even though the pool could host 6. That is fine — the extra
+bridges are headroom against future runner scaling and against the bridge/runner
+drift above. No workflow-level `concurrency:` group is used across the VM gate
+workflows: a shared `concurrency` group is a *mutex* (GitHub allows one running
++ one pending per group and **cancels** any older pending run), which would
+cancel a required gate on the second pipeline — unacceptable for a release gate.
+The pool-size-≥-worst-case-arms invariant is what guarantees no exhaustion
+instead.
+
+### Orphan reaping keeps the pool from silently shrinking
+
+Even a correctly-sized pool degrades if a run ends without its teardown: a
+manual session the operator forgot, the keep-staging-warm cron, or a CI job
+whose host crashed before the `if: always()` teardown step. Each leaks a tap
+and/or a reservation marker, which the picker counts as "in use" forever. To
+stop a single leak from permanently removing a bridge, `wh_pick_lan_bridge`
+runs `wh_reap_orphan_bridges` (`scripts/vm/lib.sh`) under the pool flock before
+every pick. It is precise by construction — it only reclaims a bridge whose
+owner is provably gone:
+
+- **dead-pid reservation markers** are removed;
+- **taps with no owning qemu** (qemu was hard-killed, tap lingered) are deleted;
+- **wh-* qemus older than `WH_VM_MAX_LIFETIME`** (default 45 min, comfortably
+  above the 20–30 min job timeouts) on a **non-headroom** bridge are killed as
+  definitive orphans — their run is long gone.
+
+It never touches a within-lifetime qemu (a live local or concurrent-sibling
+run is always well under the ceiling) and never age-reaps the **headroom**
+(highest-numbered) bridge. **Long-lived manual/debug VMs must therefore use the
+headroom bridge** (e.g. `WH_LAN_BRIDGE=wh-lan6 scripts/vm/router-up.sh`); a
+manual VM parked on a job slot for more than `WH_VM_MAX_LIFETIME` will be reaped
+as a presumed leak.
 
 ## Registering the runners with GitHub
 
@@ -160,12 +205,12 @@ the per-instance systemd unit needs sudo once.
 
 ## Bridge pool (`/etc/qemu/bridge.conf`)
 
-The 4 job-runners share a host-wide pool of LAN bridges. The pool is
+The job-runners share a host-wide pool of LAN bridges. The pool is
 created by `scripts/vm/lan-bridge-pool-bootstrap.sh`, which also appends
 `allow wh-lanN` entries to `/etc/qemu/bridge.conf`.
 
 ```bash
-# Default pool size 5 → wh-lan0..wh-lan4. Override with WH_LAN_BRIDGE_POOL_SIZE.
+# Default pool size 7 → wh-lan0..wh-lan6. Override with WH_LAN_BRIDGE_POOL_SIZE.
 sudo scripts/vm/lan-bridge-pool-bootstrap.sh
 ```
 
@@ -176,15 +221,20 @@ allow wh-lan0   # job slot 0
 allow wh-lan1   # job slot 1
 allow wh-lan2   # job slot 2
 allow wh-lan3   # job slot 3
-allow wh-lan4   # manual headroom (e2e-kvm-sanity, keep-staging-warm, debug)
+allow wh-lan4   # job slot 4
+allow wh-lan5   # job slot 5  (worst-case 6th concurrent VM arm)
+allow wh-lan6   # manual headroom (e2e-kvm-sanity, keep-staging-warm, debug)
 ```
 
 The picker (`scripts/vm/lib.sh::wh_pick_lan_bridge`) treats the pool as a
 uniform set, picking the lowest-numbered free bridge under a host-wide
-flock. **There is no code-level "reserved" flag on `wh-lan4`** — the
-headroom guarantee comes from the runner-count = pool-size − 1 invariant.
-If you bump runner count to 5, `wh-lan4` becomes a job slot and you must
-add `wh-lan5` to preserve headroom.
+flock. **There is no code-level "reserved" flag on `wh-lan6`** — the
+headroom guarantee comes from the pool-size − 1 ≥ worst-case-arms invariant
+above, plus the lowest-first pick order. The orphan reaper *does* treat the
+highest-numbered bridge specially: it is exempt from age-based reaping so a
+long manual debug VM parked there survives. If you add a fourth VM gate
+workflow or widen a matrix, recompute worst-case arms and grow the pool to
+`arms + 1` so the highest bridge stays free.
 
 ## Verifying parallelism
 

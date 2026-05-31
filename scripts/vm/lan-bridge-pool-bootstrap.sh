@@ -3,21 +3,34 @@
 # runs (#891). Idempotent.
 #
 # Creates ${WH_LAN_BRIDGE_POOL_SIZE} bridges named wh-lan0 .. wh-lan${N-1}
-# (default N=5) via `sudo ip link add`, and verifies each is listed in
+# (default N=7) via `sudo ip link add`, and verifies each is listed in
 # /etc/qemu/bridge.conf so qemu-bridge-helper will attach taps.
 #
-# Sizing convention (#1163): N = (concurrent-runner-count) + 1. The trailing
-# bridge is the manual-headroom slot reserved for ad-hoc runs and the
-# keep-staging-warm cron — it stays free because runners only fan out to N-1
-# bridges, and the wh_pick_lan_bridge picker hands out lowest-numbered first.
-# Today: 4 runners, 5 bridges. See docs/ops/kvm-runner.md for the full
-# invariant.
+# Sizing convention (#1163 / #657): N = (worst-case concurrent VM matrix arms
+# across ALL pipelines) + 1. The +1 is the manual-headroom slot reserved for
+# ad-hoc runs and the keep-staging-warm cron — it stays free because the
+# wh_pick_lan_bridge picker hands out the lowest-numbered free bridge first, so
+# the highest-numbered bridge is the last to be taken.
+#
+# Why worst-case arms, not runner-count: the old invariant tied N to the runner
+# count (N = runners + 1). But the two CD pipelines can run their VM gates
+# concurrently — Master Router CD fans out Gate 2 (e2e-vm-fake, 2 arms) + Gate
+# 3a (2 arms), and Master API/UI CD fans out Gate 3b (2 arms) — for up to 6
+# concurrent VM pairs, independent of how many runners are online. Sizing the
+# pool to the runner count made bridge availability depend on a second host-side
+# number staying in sync, which silently drifted and contributed to run
+# 26716313048 exhausting the pool. Sizing to worst-case arms decouples the
+# guarantee from runner count: usable bridges (N-1) >= 6 always holds.
+#
+# Today: 3 VM gate workflows x 2 matrix arms = 6 worst-case arms, so N = 7
+# (wh-lan0..wh-lan6; wh-lan6 = headroom). See docs/ops/kvm-runner.md for the
+# full invariant.
 #
 # Also ensures /etc/qemu/bridge.conf has an `allow wh-lanK` line for each
 # pool bridge (sudo tee -a). Idempotent: existing lines are left alone.
 #
 # Usage:
-#   sudo scripts/vm/lan-bridge-pool-bootstrap.sh           # default size 5
+#   sudo scripts/vm/lan-bridge-pool-bootstrap.sh           # default size 7
 #   WH_LAN_BRIDGE_POOL_SIZE=8 sudo scripts/vm/lan-bridge-pool-bootstrap.sh
 
 set -euo pipefail
@@ -33,7 +46,7 @@ require_cmd() {
 }
 require_cmd ip
 
-SIZE="${WH_LAN_BRIDGE_POOL_SIZE:-5}"
+SIZE="${WH_LAN_BRIDGE_POOL_SIZE:-7}"
 if ! [[ "${SIZE}" =~ ^[0-9]+$ ]] || (( SIZE < 1 )); then
   echo "lan-bridge-pool-bootstrap: WH_LAN_BRIDGE_POOL_SIZE must be a positive integer (got '${SIZE}')" >&2
   exit 2
