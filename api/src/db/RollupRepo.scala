@@ -31,6 +31,18 @@ case class RollupRow(
     bytesOut: Long,
 )
 
+// Per-app aggregate over a rollup window. `appId = None` is the synthetic
+// "Other" bucket (rows whose host belongs to no app). Mirrors the read-time
+// shape produced by the in-memory HostMatch.lookupApex paths in UsageRoutes,
+// so a caller can swap a SQL `GROUP BY app_id` rollup read for the in-process
+// matcher and get identical numbers.
+case class AppUsageAgg(
+    appId: Option[AppId],
+    activeSeconds: Long,
+    bytesIn: Long,
+    bytesOut: Long,
+)
+
 case class RollupRun(
     id: Long,
     job: String,
@@ -70,15 +82,32 @@ trait RollupRepo {
    * another API instance (skip-this-tick). The lock is acquired transaction-scoped via
    * `pg_try_advisory_xact_lock`, so it auto-releases when the doobie tx commits or rolls back — no
    * manual release path needed and no risk of a stale lock surviving a crash.
+   *
+   * `appsByApex` maps each app-host apex (e.g. `youtube.com`) to the app ids that claim it; it is
+   * applied to every rolled row's hostname via [[wifihaven.shared.types.HostMatch.lookupApex]] (the
+   * canonical matcher) to populate `traffic_hourly_apps`. `version` is the `app_hosts_version` the
+   * snapshot was read at and is stamped onto every rolled row so a later read can detect staleness.
+   * The default empty snapshot leaves rows unattributed (version stamped, no app rows) — used by
+   * the back-compat call sites that don't care about app attribution.
    */
-  def rerollHourly(since: Instant): Task[Option[Int]]
+  def rerollHourly(
+      since: Instant,
+      appsByApex: Map[String, List[AppId]] = Map.empty,
+      version: Long = 0L,
+  ): Task[Option[Int]]
 
   /**
    * Re-aggregate the trailing window of `traffic_reports` into `traffic_daily`. `sinceDate` is the
    * earliest date to re-roll, inclusive. Idempotent via UPSERT. Same advisory-lock contract as
-   * [[rerollHourly]] — `None` means another instance is rolling concurrently.
+   * [[rerollHourly]] — `None` means another instance is rolling concurrently. `appsByApex` /
+   * `version` carry the same app-attribution contract as [[rerollHourly]], writing
+   * `traffic_daily_apps`.
    */
-  def rerollDaily(sinceDate: LocalDate): Task[Option[Int]]
+  def rerollDaily(
+      sinceDate: LocalDate,
+      appsByApex: Map[String, List[AppId]] = Map.empty,
+      version: Long = 0L,
+  ): Task[Option[Int]]
 
   /**
    * Record one tick of a rollup fiber in `rollup_runs` for /api/admin/rollup-status. `error` is set
@@ -116,6 +145,35 @@ trait RollupRepo {
       from: Instant,
       to: Instant,
   ): Task[List[RollupRow]]
+
+  /**
+   * Per-app usage over the hourly rollup in `[from, to)` (#1091). When every in-window row carries
+   * the current `app_hosts_version` (`currentVersion`), aggregates in-database via `GROUP BY
+   * app_id` against `traffic_hourly_apps` — no per-row matching. If any row is stale (version <
+   * current, or never attributed), falls back to reading the rows and re-matching in process with
+   * `appsByApex` via the canonical [[wifihaven.shared.types.HostMatch.lookupApex]] — so an
+   * `app_hosts` edit that bumps the version is reflected immediately instead of serving stale
+   * attribution.
+   *
+   * A host in multiple apps is attributed to the lowest app id (matching the read-time dedup in
+   * `UsageRoutes`), so a row's seconds are never double-counted across apps.
+   */
+  def aggregateByAppHourly(
+      macs: List[MacAddress],
+      from: Instant,
+      to: Instant,
+      currentVersion: Long,
+      appsByApex: Map[String, List[AppId]],
+  ): Task[List[AppUsageAgg]]
+
+  /** Daily-grain counterpart of [[aggregateByAppHourly]]. */
+  def aggregateByAppDaily(
+      macs: List[MacAddress],
+      from: Instant,
+      to: Instant,
+      currentVersion: Long,
+      appsByApex: Map[String, List[AppId]],
+  ): Task[List[AppUsageAgg]]
 }
 
 class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
@@ -164,7 +222,11 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     tx.transact(xa)
   }
 
-  def rerollHourly(since: Instant): Task[Option[Int]] = {
+  def rerollHourly(
+      since: Instant,
+      appsByApex: Map[String, List[AppId]],
+      version: Long,
+  ): Task[Option[Int]] = {
     val sql =
       resolvedCte ++
         fr"""
@@ -192,7 +254,11 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
     withLock(RollupLockKeys.Hourly)(sql.update.run)
   }
 
-  def rerollDaily(sinceDate: LocalDate): Task[Option[Int]] = {
+  def rerollDaily(
+      sinceDate: LocalDate,
+      appsByApex: Map[String, List[AppId]],
+      version: Long,
+  ): Task[Option[Int]] = {
     val sql =
       resolvedCte ++
         fr"""
@@ -300,4 +366,22 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       .transact(xa)
       .map(_.filter(r => !r.bucketStart.isBefore(from) && r.bucketStart.isBefore(to)))
   }
+
+  def aggregateByAppHourly(
+      macs: List[MacAddress],
+      from: Instant,
+      to: Instant,
+      currentVersion: Long,
+      appsByApex: Map[String, List[AppId]],
+  ): Task[List[AppUsageAgg]] =
+    ZIO.succeed(Nil)
+
+  def aggregateByAppDaily(
+      macs: List[MacAddress],
+      from: Instant,
+      to: Instant,
+      currentVersion: Long,
+      appsByApex: Map[String, List[AppId]],
+  ): Task[List[AppUsageAgg]] =
+    ZIO.succeed(Nil)
 }

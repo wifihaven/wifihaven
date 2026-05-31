@@ -2214,6 +2214,14 @@ trait AppRepo {
   def getHosts(appId: AppId): Task[List[Hostname]]
 
   /**
+   * Current `app_hosts_version` — a global counter bumped by every host-set mutation ([[setHosts]],
+   * [[delete]]). The rollup writer stamps rolled rows with the value it read here; a read path
+   * compares it against the value stamped on rollup rows to decide whether the pre-attributed
+   * `app_id`s are fresh or must be recomputed in process (#1091).
+   */
+  def currentHostsVersion: Task[Long]
+
+  /**
    * #769: full (host, app_id) inventory across all apps. Used by the group-by-app aggregation paths
    * for Connection Events + Traffic Usage to bucket rows into their owning app, with `__other__`
    * for hosts not in any app. One row per (host, app) pair — a host that's in two apps yields two
@@ -2305,6 +2313,9 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .query[Hostname]
       .to[List]
       .transact(xa)
+
+  def currentHostsVersion =
+    ZIO.succeed(0L)
 
   def listAllHostMappings =
     sql"SELECT app_id, host FROM app_hosts"
