@@ -149,24 +149,29 @@ services:
       # held all 5 connections, the 30s connectionTimeout fired, the healthcheck
       # failed, and Render crash-looped the instance (incident 2026-05-31).
       #
-      # #1228: 20 was the over-correction. wifihaven-pg-prod is basic-256mb. The
-      # Postgres hard cap is max_connections=103 (verified live 2026-05-31, no
-      # per-role/per-db connlimit), so 20 is nowhere near the connection ceiling
-      # — the binding constraint is the 256 MB of DB RAM, where every backend
-      # costs several MB. A single instance at 20 runs fine, but Render rolling
-      # deploys briefly run TWO instances (old + new), so peak connections =
-      # 2×poolSize + the rollup/seed fibers. At 20 that overlap (~40+ backends)
-      # pressured the 256 MB instance enough that the NEW instance's startup
-      # queries stalled — it logged "starting on 0.0.0.0:8080" but never bound
-      # the port, and Render failed the deploy at the 15-min port-scan timeout
-      # (deploys dep-d8e4p5… update_failed, prod went undeployable). 8 (matching
-      # staging) caps 2-instance overlap at 2×8=16 plus a few rollup backends —
-      # comfortably within the memory budget — while staying well clear of the
-      # pool-exhaustion crash-loop that killed 5. If the rollup workload later
-      # needs real headroom, upsize the prod Postgres tier and raise this
-      # together rather than racing the pool up against 256 MB of RAM.
+      # #1228: 20 was the over-correction that wedged prod on basic-256mb. The
+      # Postgres connection cap was never the binding constraint there
+      # (max_connections=103, verified live 2026-05-31, no per-role/per-db
+      # connlimit) — the binding constraint was the 256 MB of DB RAM, where
+      # every backend costs several MB. Render rolling deploys briefly run TWO
+      # instances (old + new), so peak connections = 2×poolSize + the
+      # rollup/seed fibers. At 20 that overlap (~40+ backends) pressured the
+      # 256 MB instance enough that the NEW instance's startup queries stalled
+      # — it logged "starting on 0.0.0.0:8080" but never bound the port, and
+      # Render failed the deploy at the 15-min port-scan timeout (deploys
+      # dep-d8e4p5… update_failed, prod went undeployable). #1228 dropped to 8
+      # as a stopgap and pre-authorized raising it once the tier grew.
+      #
+      # #1251: prod Postgres is now basic-1gb (0.5 vCPU / 1 GB) — 4× the RAM
+      # that was the actual ceiling — so we raise the pool to 12 as #1228
+      # planned. Rolling-deploy peak is 2×12 = 24 backends plus a few
+      # rollup/seed fibers. That sat comfortably under even basic-256mb's 103
+      # connection cap (~4× headroom); basic-1gb's cap scales up with RAM, so
+      # 24 has even more room, and the 1 GB of RAM absorbs 24 backends without
+      # the startup-stall pressure that 40+ caused at 256 MB. Confirm against
+      # `SHOW max_connections;` post-resize if ever pushing the pool higher.
       - key: WIFIHAVEN_DB_POOL_SIZE
-        value: "8"
+        value: "12"
       # #786 / #785: bumped to `plan: standard` (2 GB / 1 CPU, $25/mo) after
       # prod started flapping under household load on free's 512 MB cap.
       # Heap sized to leave ~600 MB for OS + JIT + native; revisit if OOM
@@ -211,11 +216,20 @@ databases:
     region: oregon
 
   # ── Production Postgres ────────────────────────────────────────────────────
-  # Paid plan (basic-256mb) — free PG expires after ~30 days, which would
-  # nuke household data. The basic-256mb tier is the cheapest paid Render
-  # Managed Postgres plan and includes daily backups. Verify in the Render
-  # dashboard after first apply: Databases → wifihaven-pg-prod → Backups tab.
+  # Paid plan — free PG expires after ~30 days, which would nuke household
+  # data. Paid tiers include daily backups; verify in the Render dashboard
+  # after first apply: Databases → wifihaven-pg-prod → Backups tab.
+  #
+  # #1251: bumped basic-256mb (0.1 vCPU / 256 MB) → basic-1gb (0.5 vCPU /
+  # 1 GB). On basic-256mb the CPU rode the 0.1-vCPU ceiling *continuously*
+  # (measured 0.07–0.10 over 2026-05-31 21:25–21:33 UTC, single instance, no
+  # deploy overlap) from steady router-ingest + dashboard + autovacuum, and
+  # RAM sat at ~85% (183–220 MB / 256 MB) — also the connection-overlap
+  # pressure behind the deploy startup stalls (#1228/#1248). The 0.1-vCPU peg
+  # is a tier limit, not a workload spike, so rollup-cadence work (#1230/#1231)
+  # cannot create headroom the tier physically lacks. basic-1gb gives 5× CPU
+  # and 4× RAM, clearing both. Pool raised to 12 in tandem — see web_service.
   - name: wifihaven-pg-prod
-    plan: basic-256mb
+    plan: basic-1gb
     postgresMajorVersion: 16
     region: oregon

@@ -3,6 +3,7 @@ package wifihaven.api.feature
 import wifihaven.api.Readiness
 import zio.*
 import zio.http.*
+import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
