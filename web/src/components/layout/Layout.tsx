@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { ApiUnreachableBanner } from '@/components/ApiUnreachableBanner'
 
 interface NavItem {
   to: string
@@ -222,6 +223,10 @@ export function Layout() {
           </div>
         )}
       </header>
+
+      {/* #1191: global API-unreachable banner; sits just under the header
+          so it's visible on every route without intercepting page layout. */}
+      <ApiUnreachableBanner />
 
       {/* Page content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">

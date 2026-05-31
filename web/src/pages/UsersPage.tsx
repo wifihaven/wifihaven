@@ -22,6 +22,7 @@ export function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState<CreateForm>(emptyCreateForm())
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -36,9 +37,15 @@ export function UsersPage() {
   }, [profiles])
 
   async function reload() {
-    const [u, p] = await Promise.all([api.users.list(), api.profiles.list()])
-    setUsers(u)
-    setProfiles(p)
+    try {
+      const [u, p] = await Promise.all([api.users.list(), api.profiles.list()])
+      setUsers(u)
+      setProfiles(p)
+      setLoadError(null)
+    } catch (e) {
+      // #1191 — surface the fetch failure instead of rendering an empty list.
+      setLoadError(e instanceof Error ? e.message : 'Failed to load users')
+    }
   }
 
   useEffect(() => {
@@ -119,7 +126,18 @@ export function UsersPage() {
       </div>
 
       <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
-        {users.length === 0
+        {users.length === 0 && loadError
+          ? <EmptyState
+              title="Couldn't load users."
+              hint={loadError}
+              action={
+                <button
+                  onClick={() => { setLoading(true); reload().finally(() => setLoading(false)) }}
+                  className="bg-brand-accent text-white text-sm font-semibold px-3 py-1.5 rounded-lg"
+                >Retry</button>
+              }
+            />
+          : users.length === 0
           ? <EmptyState title="No users yet." />
           : users.map(u => (
               <div key={u.id} data-testid={`user-row-${u.id}`} className="flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0">

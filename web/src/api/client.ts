@@ -1,3 +1,4 @@
+import { apiHealth } from '@/api/apiHealth'
 import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
@@ -22,6 +23,11 @@ function getToken(): string | null {
   return localStorage.getItem('token')
 }
 
+// #1191: requests time out at REQUEST_TIMEOUT_MS so a hung backend surfaces
+// the banner instead of spinning forever. Per-call AbortController so we
+// don't leak signal across calls.
+const REQUEST_TIMEOUT_MS = 10_000
+
 async function req<T>(
   method: string,
   path: string,
@@ -32,13 +38,30 @@ async function req<T>(
   const token = getToken()
   if (!skipAuth && token) headers['Authorization'] = `Bearer ${token}`
 
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+  } catch (e) {
+    clearTimeout(timeoutId)
+    // Network error or abort (timeout). Either way the API isn't reachable
+    // right now — light up the global banner via apiHealth.
+    const aborted = e instanceof DOMException && e.name === 'AbortError'
+    apiHealth.reportFailure(aborted ? 'timeout' : 'network')
+    throw e
+  }
+  clearTimeout(timeoutId)
 
   if (res.status === 401) {
+    // 401 is an auth-state outcome, not an API-down signal. The API answered.
+    apiHealth.reportSuccess()
     localStorage.removeItem('token')
     window.location.href = '/login'
     throw new Error('Unauthorised')
@@ -47,6 +70,7 @@ async function req<T>(
   // #586: server enforces must_change_password — redirect to /account so
   // the operator can set a new password before using any other route.
   if (res.status === 403) {
+    apiHealth.reportSuccess()
     const text = await res.text().catch(() => '')
     if (text.includes('password_change_required')) {
       window.location.href = '/account'
@@ -55,10 +79,22 @@ async function req<T>(
     throw new Error(text || `HTTP 403`)
   }
 
-  if (!res.ok) {
+  // #1191: 5xx is the canonical "API is broken" signal — surface the banner.
+  // 4xx (other than the special cases above) is a client error; the API is
+  // alive and answering, so don't trigger the banner on it.
+  if (res.status >= 500) {
+    apiHealth.reportFailure('5xx')
     const text = await res.text().catch(() => res.statusText)
     throw new Error(text || `HTTP ${res.status}`)
   }
+
+  if (!res.ok) {
+    apiHealth.reportSuccess()
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+
+  apiHealth.reportSuccess()
 
   if (res.status === 204 || res.headers.get('content-length') === '0') {
     return undefined as T
