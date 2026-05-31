@@ -1208,3 +1208,60 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     expect(screen.queryByTestId('app-row-50-usage')).not.toBeInTheDocument()
   })
 })
+
+// #1086 — an app-policy edit (toggle exemptFromDaily, switch mode, remove the
+// assignment) feeds the server-side daily-cap math (`buildProfileTimeStatus`),
+// so the profile-wide used/cap text + bar must refetch. The summary is served
+// by `api.time.summaryAll` via the ['time','status','summary','today'] query;
+// invalidating the ['time','status'] subtree refetches it. Before the fix the
+// AppRow only refetched the apps list, so summaryAll was called exactly once
+// (the initial mount) and the headline bar went stale until the 30s window.
+describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#1086)', () => {
+  const khanTimeLimited = {
+    app: { id: 60, name: 'Khan', slug: 'khan', templateId: null, icon: '📚', createdAt: '2026-01-01' },
+    hosts: ['khanacademy.org'],
+    assignments: [
+      { id: 3, appId: 60, profileId: 1, mode: 'time_limited' as const, dailyMinutes: 60, exemptFromDaily: true },
+    ],
+  }
+
+  async function openApps(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+  }
+
+  it('toggling "Counts toward daily limit" invalidates the time-status summary', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khanTimeLimited])
+    const user = userEvent.setup()
+    await openApps(user)
+    const cb = await screen.findByTestId('app-row-60-counts-toward-daily')
+    expect(api.time.summaryAll).toHaveBeenCalledTimes(1)
+    await user.click(cb)
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'time_limited', dailyMinutes: 60, exemptFromDaily: false }),
+    )
+    await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+
+  it('switching an app between modes invalidates the time-status summary', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khanTimeLimited])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-60-block'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(60, 1, { mode: 'blocked', dailyMinutes: null }),
+    )
+    await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+
+  it('removing an app assignment invalidates the time-status summary', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([khanTimeLimited])
+    const user = userEvent.setup()
+    await openApps(user)
+    await user.click(await screen.findByTestId('app-row-60-clear'))
+    await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
+    await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+})
