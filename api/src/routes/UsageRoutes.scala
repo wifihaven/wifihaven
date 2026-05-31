@@ -205,7 +205,108 @@ object UsageRoutes {
             }
           } yield Response.json(resp.toJson)
         },
+      // #1099: batched per-profile series. The /profiles page resolves the
+      // whole visible profile set in one partition-pruned scan instead of N
+      // parallel single-profile requests.
+      Method.GET / "api" / "usage" / "series" / "batch"                ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAuth(req, auth)
+            today  <- clock.today
+            pids   <- parseMultiProfileIdParam(req).map(_.distinct)
+            dateStr = req.url.queryParam("date").getOrElse(today.toString)
+            date <- ZIO
+              .attempt(LocalDate.parse(dateStr))
+              .orElseFail(Response.badRequest(s"invalid date: $dateStr"))
+            tzStr = req.url.queryParam("tz").getOrElse("UTC")
+            zone <- ZIO
+              .attempt(ZoneId.of(tzStr))
+              .orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
+            topN       = req.url
+              .queryParam("topN")
+              .flatMap(_.toIntOption)
+              .getOrElse(5)
+              .max(1)
+              .min(500)
+            groupByApp = req.url.queryParam("groupBy").exists(_.split(',').contains("app"))
+            appLookup <-
+              if (groupByApp) loadAppLookup(appRepo)
+              else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+            resp      <- buildBatch(
+              pids,
+              date,
+              zone,
+              topN,
+              claims,
+              profileRepo,
+              deviceRepo,
+              trafficRepo,
+              userProfileRepo,
+              groupByApp,
+              appLookup,
+            )
+          } yield Response.json(resp.toJson)
+        },
     )
+
+  // #1099: resolve the whole visible profile set in ONE partition-pruned scan.
+  // Loads devices once, unions every requested profile's macs, runs a single
+  // fetchPresenceDayWindow, then partitions the rows by mac and assembles each
+  // profile's response exactly as buildForProfile would. Per-profile read-access
+  // checks are preserved so a caller can't widen its reach via the batch route.
+  private def buildBatch(
+      pids: List[ProfileId],
+      date: LocalDate,
+      zone: ZoneId,
+      topN: Int,
+      claims: JwtClaims,
+      profileRepo: ProfileRepo,
+      deviceRepo: DeviceRepo,
+      trafficRepo: TrafficReportRepo,
+      userProfileRepo: UserProfileRepo,
+      groupByApp: Boolean,
+      appLookup: HostId => Option[UsageSeries.AppInfo],
+  ): IO[Response, UsageSeriesBatchResponse] =
+    for {
+      _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
+      profiles   <- ZIO.foreach(pids) { pid =>
+        profileRepo
+          .findById(pid)
+          .mapError(ErrorMapper.dbErrorToResponse)
+          .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
+      }
+      allDevices <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      devicesByPid = pids.iterator
+        .map(pid => pid -> allDevices.filter(_.profileId.contains(pid)))
+        .toMap
+      allMacs      = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
+      rows <- fetchPresenceDayWindow(trafficRepo, allMacs, date, zone)
+    } yield {
+      val series = profiles.map { profile =>
+        val devices   = devicesByPid.getOrElse(profile.id, Nil)
+        val macSet    = devices.iterator.map(_.mac).toSet
+        val nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
+        val pRows     = rows.filter(r => macSet.contains(r.mac))
+        val (topHosts, bucketsByHost, topDevices, bucketsByDevice) =
+          UsageSeries.buildProfile(pRows, nameByMac, zone, topN, profile.crossDeviceOverlapMode)
+        val (topEntries, bucketsByEntry)                           =
+          if (groupByApp) UsageSeries.buildEntries(pRows, zone, topN, appLookup)
+          else (List.empty[UsageEntityTotal], List.empty[UsageEntityBucket])
+        UsageSeriesResponse(
+          profileId = Some(profile.id),
+          profileName = Some(profile.name),
+          date = date.toString,
+          tz = zone.getId,
+          topHosts = topHosts,
+          buckets = bucketsByHost,
+          topDevices = topDevices,
+          bucketsByDevice = bucketsByDevice,
+          topEntries = topEntries,
+          bucketsByEntry = bucketsByEntry,
+        )
+      }
+      UsageSeriesBatchResponse(series)
+    }
 
   // #1061 — per-app rollup. Joins `app_hosts` to map each host → owning app (a
   // host in two apps deterministically picks the lowest appId so a bucket isn't
@@ -406,8 +507,14 @@ object UsageRoutes {
       bucketsByEntry = bucketsByEntry,
     )
 
-  // Pull the requested local-day window. Two adjacent UTC days bracket every
-  // calendar day in every IANA zone, then filter by `periodStart` in `zone`.
+  // Pull the requested local-day window as a single partition-pruned query
+  // (#1099). The local day [00:00, 24:00) in `zone` maps to a contiguous UTC
+  // instant window, and listPresenceRowsInWindow filters on period_start (the
+  // partition key) so Postgres prunes to just the touched day-partition(s).
+  // This replaces the old three-call (date-1/date/date+1) + zone post-filter,
+  // whose `tr.date` predicate defeated pruning and let one profile scan the
+  // whole table for 90s. The row set is identical: both select exactly the
+  // rows whose period_start falls in the local day.
   private def fetchPresenceDayWindow(
       trafficRepo: TrafficReportRepo,
       macs: List[MacAddress],
@@ -415,16 +522,13 @@ object UsageRoutes {
       zone: ZoneId,
   ): IO[Response, List[wifihaven.api.presence.PresenceRow]] =
     if (macs.isEmpty) ZIO.succeed(Nil)
-    else
-      for {
-        d   <- trafficRepo.listPresenceRows(macs, date).mapError(ErrorMapper.dbErrorToResponse)
-        nxt <- trafficRepo
-          .listPresenceRows(macs, date.plusDays(1))
-          .mapError(ErrorMapper.dbErrorToResponse)
-        prv <- trafficRepo
-          .listPresenceRows(macs, date.minusDays(1))
-          .mapError(ErrorMapper.dbErrorToResponse)
-      } yield (prv ++ d ++ nxt).filter { r => r.periodStart.atZone(zone).toLocalDate == date }
+    else {
+      val from = date.atStartOfDay(zone).toInstant
+      val to   = date.plusDays(1).atStartOfDay(zone).toInstant
+      trafficRepo
+        .listPresenceRowsInWindow(macs, from, to)
+        .mapError(ErrorMapper.dbErrorToResponse)
+    }
 
   // ── #846 Traffic Usage page ───────────────────────────────────────────────
   //
