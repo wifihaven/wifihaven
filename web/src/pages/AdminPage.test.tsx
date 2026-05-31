@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@/api/client', () => ({
@@ -70,13 +70,15 @@ describe('AdminPage — daily reset autosave (#1002)', () => {
 
   it('editing the reset time fires a debounced PATCH {dailyResetTime}', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     try {
       render(<AdminPage />)
       const time = await screen.findByTestId('household-reset-time') as HTMLInputElement
 
-      await user.clear(time)
-      await user.type(time, '06:00')
+      // Set the value atomically: typing a `<input type="time">` char-by-char
+      // under fake timers lets the 700ms debounce fire on a transient partial
+      // value (e.g. '00:59') before the full '06:00' lands. fireEvent.change
+      // gives the debounce a single, final value to latch.
+      fireEvent.change(time, { target: { value: '06:00' } })
       expect(api.household.patch).not.toHaveBeenCalled()
       await vi.advanceTimersByTimeAsync(700)
 
@@ -109,8 +111,7 @@ describe('AdminPage — daily reset autosave (#1002)', () => {
       render(<AdminPage />)
       const time = await screen.findByTestId('household-reset-time') as HTMLInputElement
 
-      await user.clear(time)
-      await user.type(time, '06:00')
+      fireEvent.change(time, { target: { value: '06:00' } })
       await vi.advanceTimersByTimeAsync(700)
 
       const status = screen.getByTestId('household-save-status')
@@ -149,13 +150,11 @@ describe('AdminPage — heartbeat filter autosave (#1002)', () => {
 
   it('editing the bytes threshold fires PATCH {heartbeatFilter:{bytesThreshold}}', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     try {
       render(<AdminPage />)
       const bytes = await screen.findByTestId('heartbeat-filter-bytes') as HTMLInputElement
 
-      await user.clear(bytes)
-      await user.type(bytes, '8192')
+      fireEvent.change(bytes, { target: { value: '8192' } })
       await vi.advanceTimersByTimeAsync(700)
 
       expect(api.household.patch).toHaveBeenCalledWith({

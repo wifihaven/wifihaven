@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ProfileDetail, User } from '@/types/api'
 
@@ -129,8 +129,9 @@ describe('UsersPage — inline autosave edit (#1001)', () => {
       const editor = await screen.findByTestId('user-editor-11')
       const input = within(editor).getByTestId('user-name-input-11')
 
-      await user.clear(input)
-      await user.type(input, 'bobby')
+      // Set atomically: char-by-char typing under fake timers lets the 700ms
+      // debounce fire on a transient partial value, producing extra PATCHes.
+      fireEvent.change(input, { target: { value: 'bobby' } })
       expect(api.users.patch).not.toHaveBeenCalled()
       await vi.advanceTimersByTimeAsync(700)
 
@@ -188,8 +189,7 @@ describe('UsersPage — inline autosave edit (#1001)', () => {
       const editor = await screen.findByTestId('user-editor-11')
       const input = within(editor).getByTestId('user-name-input-11')
 
-      await user.clear(input)
-      await user.type(input, 'bobby')
+      fireEvent.change(input, { target: { value: 'bobby' } })
       await vi.advanceTimersByTimeAsync(700)
 
       const status = within(editor).getByTestId('user-save-status-11')
