@@ -92,23 +92,30 @@ wifihaven/
 ```
 
 One JVM process runs in production:
-1. `api` — REST API on :8080, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives). It does **not** serve the React SPA.
+1. `api` — REST API on :8080, handles auth (JWT), owns the DB, runs `PolicyService` (the only place decision logic lives).
 
-The React SPA (`web/`) deploys to **Cloudflare Pages**, independent of the
-API JVM. It is a static bundle that talks to the API over the network like
-any other client. Cloudflare config lives in-repo:
+SPA hosting differs by environment:
 
-- [`infra/cloudflare/`](infra/cloudflare/) — Terraform (`main.tf`,
-  `variables.tf`) for the Cloudflare account-level resources.
-- [`web/wrangler.toml`](web/wrangler.toml) (prod) and
-  `web/wrangler.staging.toml` (staging) — Wrangler config for
-  `wrangler pages deploy`. Deploys are driven from
-  `.github/workflows/deploy-spa.yml`.
+- **Self-hosted (local / dev / `deploy/install.sh`)**: the SPA is bundled
+  with the API — `web/dist` is baked into the API container and served by
+  the JVM on :8080. One deploy, one rollback.
+- **Staging and production cloud (`staging.wifihaven.net`,
+  `api.wifihaven.net`)**: the SPA deploys to **Cloudflare Pages**,
+  independent of the API. The API JVM serves only `/api/*`; the SPA is a
+  static bundle that talks to the API over the network like any other
+  client. Cloudflare config lives in-repo:
+  - [`infra/cloudflare/`](infra/cloudflare/) — Terraform (`main.tf`,
+    `variables.tf`) for the Cloudflare account-level resources.
+  - [`web/wrangler.toml`](web/wrangler.toml) (prod) and
+    `web/wrangler.staging.toml` (staging) — Wrangler config for
+    `wrangler pages deploy`. Deploys are driven from
+    `.github/workflows/deploy-spa.yml`.
 
-**API and SPA are independently deployed.** Rolling back the API does not
-roll back the SPA, and vice versa. Each has its own deploy history (Render
-for the API, Cloudflare Pages for the SPA). A coordinated rollback means
-rolling back both sides.
+**In the cloud environments, API and SPA roll back independently.**
+Rolling back the API on Render does **not** roll back the SPA on
+Cloudflare Pages, and vice versa. A coordinated rollback must touch
+both sides. This does not apply to the self-hosted install, where the
+SPA ships inside the API image.
 
 Connection-level enforcement and per-device usage tracking run on the gateway router, not on the API host (see the "Architectural model" callout at the top of this file for why):
 - **OpenWRT** — the `openwrt/` Lua agent polls `/api/router/policy` and rewrites nftables rules + a dnsmasq fragment used only for hostname attribution / ipset population; reports usage via `/api/router/events` and `/api/router/usage`
@@ -277,8 +284,9 @@ cp config/application.conf.example config/application.conf
 # Run API
 mill api.run
 
-# Run frontend dev server (Vite — talks to the local API at :8080;
-# in production the SPA is served by Cloudflare Pages, not by the API)
+# Run frontend dev server (Vite — talks to the local API at :8080).
+# Self-hosted/install.sh deploys bundle the SPA into the API image; the
+# cloud staging/prod environments serve it from Cloudflare Pages instead.
 cd web && npm run dev
 ```
 
