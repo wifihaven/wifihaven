@@ -112,6 +112,22 @@ out="$(run_pick)"
 assert "non-zero rc" "RC=1" "${out}"
 assert "pool-exhausted message" "LAN bridge pool exhausted" "${out}"
 cleanup_tmp
+
+echo "test-lan-bridge-pick: case 3 — orphan reaper reclaims dead-pid markers"
+setup_tmp
+# Every bridge carries a reservation whose owning pid is dead (a crashed/
+# forgotten run that never ran teardown). wh_reap_orphan_bridges must reclaim
+# them so the pool isn't falsely reported exhausted. PID 2^31-1 is reserved by
+# Linux and never assigned, so kill -0 always fails → treated as dead.
+dead_pid=2147483647
+for i in 0 1 2 3; do
+  printf 'pid=%s\nrun_id=stale\n' "${dead_pid}" \
+    > "${WH_BRIDGE_RESERVATION_DIR}/wh-lan${i}.reservation"
+done
+out="$(run_pick)"
+assert "rc=0 after reclaim" "RC=0" "${out}"
+assert "picked reclaimed wh-lan0" "WH_LAN_BRIDGE=wh-lan0" "${out}"
+cleanup_tmp
 set -e
 
 echo
