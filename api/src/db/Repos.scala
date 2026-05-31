@@ -1415,13 +1415,51 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
       macs: List[MacAddress],
       fromInstant: Instant,
       toInstant: Instant,
-  ): Task[List[wifihaven.api.presence.PresenceRow]] =
-    ZIO.succeed {
-      // STUB (#1099 red): window ignored until the green commit, so the
-      // equivalence test sees an empty result and fails.
-      val _ = (macs, fromInstant, toInstant)
-      List.empty[wifihaven.api.presence.PresenceRow]
+  ): Task[List[wifihaven.api.presence.PresenceRow]] = {
+    type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
+    macs match {
+      case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
+      case ms  =>
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
+        // Filter on period_start (the partition key) so Postgres can prune to the
+        // single day-partition(s) the window touches. The old day path filtered on
+        // tr.date — not the partition key — which defeated pruning and let one
+        // profile's read scan the whole table for 90s (#1099). Same SELECT/LATERAL
+        // shape as listPresenceRowsBetween, so the row set is identical.
+        val q   =
+          fr"""SELECT tr.mac, tr.date, tr.period_start,
+                      CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                           THEN 'fqdn' ELSE tr.host_type END,
+                      COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                               tr.host_value),
+                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
+               FROM traffic_reports tr
+               LEFT JOIN LATERAL (
+                 SELECT resolved_host_value
+                 FROM connection_events
+                 WHERE mac          = tr.mac
+                   AND dest_ip      = tr.host_value
+                   AND resolved_host_value IS NOT NULL
+                   AND ts >= tr.date::TIMESTAMPTZ
+                   AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+                 ORDER BY ts DESC LIMIT 1
+               ) ce ON tr.host_type IN ('ipv4','ipv6')
+               WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
+                 AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
+                 AND """ ++ Fragments.in(fr"tr.mac", nel)
+        val cio =
+          q.query[Row]
+            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
+              val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
+              wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
+            }
+            .to[List]
+        // Bound each per-request read: a pathological window fails fast with a typed
+        // QueryTimeoutException (→ 503) instead of holding a pool connection open and
+        // wedging the whole instance (#1099).
+        QueryTimeout.bounded(xa, QueryTimeout.PresenceWindow)(cio)
     }
+  }
 
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   private def listPresenceRowsBetween(

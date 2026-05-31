@@ -8,7 +8,7 @@ import type {
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
   UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
-  UsageSeriesResponse, User,
+  UsageSeriesBatchResponse, UsageSeriesResponse, User,
 } from '@/types/api'
 
 // VITE_API_BASE_URL is empty by default (relative path — SPA served from the
@@ -244,6 +244,24 @@ export const api = {
       if (params.topN)      qs.set('topN', String(params.topN))
       if (params.groupBy)   qs.set('groupBy', params.groupBy)
       return req<UsageSeriesResponse>('GET', `/usage/series?${qs}`)
+    },
+    // #1099 — batched per-profile series. profileIds serialize comma-separated
+    // (`profileId=1,2,3`), matching parseMultiProfileIdParam on the API. One
+    // round-trip backs the whole visible profile set instead of N requests.
+    seriesBatch: (params: {
+      profileIds: number[]
+      date?: string
+      tz?: string
+      topN?: number
+      groupBy?: 'app'
+    }) => {
+      const qs = new URLSearchParams()
+      if (params.profileIds.length) qs.set('profileId', params.profileIds.join(','))
+      if (params.date)    qs.set('date', params.date)
+      if (params.tz)      qs.set('tz', params.tz)
+      if (params.topN)    qs.set('topN', String(params.topN))
+      if (params.groupBy) qs.set('groupBy', params.groupBy)
+      return req<UsageSeriesBatchResponse>('GET', `/usage/series/batch?${qs}`)
     },
     // #846 Traffic Usage page — multi-column groupBy.
     // #917: groupBy as repeated query params; empty = strictly aggregate

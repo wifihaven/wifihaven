@@ -142,7 +142,7 @@ object UsageSeriesPerfSpec
       } yield assertTrue(
         windowed.toSet == legacy.toSet,
         windowed.map(_.host.value).toSet == Set("youtube.com", "google.com"),
-        windowed.sizeIs == 2,
+        windowed.size == 2,
       )
     },
     test("(b) batched /usage/series/batch matches the single-profile endpoint per profile") {
@@ -179,12 +179,12 @@ object UsageSeriesPerfSpec
         singleB   <- get(s"/api/usage/series?profileId=${adultsId.value}&date=$today")
           .flatMap(b => ZIO.fromEither(b.fromJson[UsageSeriesResponse]))
         batchBody <- get(
-          s"/api/usage/series/batch?profileId=${kidsId.value}&profileId=${adultsId.value}&date=$today",
+          s"/api/usage/series/batch?profileId=${kidsId.value},${adultsId.value}&date=$today",
         )
         batch     <- ZIO.fromEither(batchBody.fromJson[UsageSeriesBatchResponse])
         byPid = batch.series.flatMap(s => s.profileId.map(_ -> s)).toMap
       } yield assertTrue(
-        batch.series.sizeIs == 2,
+        batch.series.size == 2,
         byPid.get(kidsId).contains(singleA),
         byPid.get(adultsId).contains(singleB),
         singleA.topHosts.map(_.host.value).contains("youtube.com"),
