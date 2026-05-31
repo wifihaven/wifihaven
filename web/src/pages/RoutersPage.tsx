@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/EmptyState'
 export function RoutersPage() {
   const [routers, setRouters] = useState<RouterSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
@@ -39,8 +40,16 @@ export function RoutersPage() {
   }
 
   async function reload() {
-    const list = await api.routers.list()
-    setRouters(list)
+    try {
+      const list = await api.routers.list()
+      setRouters(list)
+      setLoadError(null)
+    } catch (e) {
+      // #1191: keep last-known-good rows so a transient outage doesn't blank
+      // the page, but flip the error state so the list shows "couldn't load"
+      // instead of an empty state when there was nothing cached.
+      setLoadError(e instanceof Error ? e.message : 'Failed to load routers')
+    }
   }
 
   useEffect(() => {
@@ -89,7 +98,18 @@ export function RoutersPage() {
       </div>
 
       <div className="bg-white rounded-2xl border border-brand-border overflow-hidden">
-        {routers.length === 0
+        {routers.length === 0 && loadError
+          ? <EmptyState
+              title="Couldn't load routers."
+              hint={loadError}
+              action={
+                <button
+                  onClick={() => { setLoading(true); reload().finally(() => setLoading(false)) }}
+                  className="bg-brand-accent text-white text-sm font-semibold px-3 py-1.5 rounded-lg"
+                >Retry</button>
+              }
+            />
+          : routers.length === 0
           ? <EmptyState title="No routers enrolled yet." />
           : routers.map(r => (
               <div key={r.id} className="border-b border-brand-border last:border-0">

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { withQuery } from '@/test/queryWrapper'
 
 const navigateMock = vi.fn()
 const logoutMock = vi.fn()
@@ -31,13 +32,15 @@ beforeEach(() => {
 
 function renderLayout() {
   return render(
-    <MemoryRouter initialEntries={['/dashboard']}>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/dashboard" element={<div>dash</div>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>
+    withQuery(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/dashboard" element={<div>dash</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    ),
   )
 }
 
