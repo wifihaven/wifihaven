@@ -2297,15 +2297,20 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
             icon_type=${a.iconType}
           WHERE id=${a.id}""".update.run.transact(xa).unit
 
+  // Every host-set mutation bumps the global app_hosts_version so rollup rows
+  // attributed at an older version are detected as stale on read (#1091).
+  private val bumpHostsVersion =
+    sql"UPDATE app_hosts_version SET version = version + 1".update.run
+
   def delete(id: AppId) =
-    sql"DELETE FROM apps WHERE id=$id".update.run.transact(xa).unit
+    (sql"DELETE FROM apps WHERE id=$id".update.run *> bumpHostsVersion).transact(xa).unit
 
   def setHosts(appId: AppId, hosts: List[Hostname]) = {
     val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
     val ins = hosts.distinct.map(h =>
       sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h) ON CONFLICT DO NOTHING".update.run,
     )
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void) *> bumpHostsVersion).transact(xa).unit
   }
 
   def getHosts(appId: AppId) =
@@ -2315,7 +2320,7 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .transact(xa)
 
   def currentHostsVersion =
-    ZIO.succeed(0L)
+    sql"SELECT version FROM app_hosts_version".query[Long].unique.transact(xa)
 
   def listAllHostMappings =
     sql"SELECT app_id, host FROM app_hosts"

@@ -1,5 +1,6 @@
 package wifihaven.api.db
 
+import cats.data.NonEmptyList
 import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
@@ -8,7 +9,8 @@ import wifihaven.shared.types.*
 import zio.*
 import zio.interop.catz.*
 
-import java.time.{Instant, LocalDate}
+import java.time.temporal.ChronoUnit
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 // ── Rollup tables (#809) ────────────────────────────────────────────────────
 //
@@ -227,13 +229,14 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       appsByApex: Map[String, List[AppId]],
       version: Long,
   ): Task[Option[Int]] = {
-    val sql =
+    val truncSince = since.truncatedTo(ChronoUnit.HOURS)
+    val sql        =
       resolvedCte ++
         fr"""
           AND tr.period_start >= $since
         )
         INSERT INTO traffic_hourly
-          (router_id, mac, hostname, bucket_start, active_seconds, bytes_in, bytes_out, sample_count, rolled_at)
+          (router_id, mac, hostname, bucket_start, active_seconds, bytes_in, bytes_out, sample_count, rolled_at, app_hosts_version)
         SELECT
           router_id, mac, hostname,
           date_trunc('hour', period_start),
@@ -241,17 +244,21 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           SUM(bytes_in)::BIGINT,
           SUM(bytes_out)::BIGINT,
           COUNT(*)::INT,
-          NOW()
+          NOW(),
+          $version
         FROM resolved
         GROUP BY router_id, mac, hostname, date_trunc('hour', period_start)
         ON CONFLICT (router_id, mac, hostname, bucket_start) DO UPDATE SET
-          active_seconds = EXCLUDED.active_seconds,
-          bytes_in       = EXCLUDED.bytes_in,
-          bytes_out      = EXCLUDED.bytes_out,
-          sample_count   = EXCLUDED.sample_count,
-          rolled_at      = EXCLUDED.rolled_at
+          active_seconds    = EXCLUDED.active_seconds,
+          bytes_in          = EXCLUDED.bytes_in,
+          bytes_out         = EXCLUDED.bytes_out,
+          sample_count      = EXCLUDED.sample_count,
+          rolled_at         = EXCLUDED.rolled_at,
+          app_hosts_version = EXCLUDED.app_hosts_version
         """
-    withLock(RollupLockKeys.Hourly)(sql.update.run)
+    withLock(RollupLockKeys.Hourly)(
+      sql.update.run.flatMap(n => attributeHourly(truncSince, appsByApex, version).map(_ => n)),
+    )
   }
 
   def rerollDaily(
@@ -265,25 +272,100 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           AND tr.date >= $sinceDate
         )
         INSERT INTO traffic_daily
-          (router_id, mac, hostname, date, active_seconds, bytes_in, bytes_out, sample_count, rolled_at)
+          (router_id, mac, hostname, date, active_seconds, bytes_in, bytes_out, sample_count, rolled_at, app_hosts_version)
         SELECT
           router_id, mac, hostname, date,
           SUM(active_seconds)::INT,
           SUM(bytes_in)::BIGINT,
           SUM(bytes_out)::BIGINT,
           COUNT(*)::INT,
-          NOW()
+          NOW(),
+          $version
         FROM resolved
         GROUP BY router_id, mac, hostname, date
         ON CONFLICT (router_id, mac, hostname, date) DO UPDATE SET
-          active_seconds = EXCLUDED.active_seconds,
-          bytes_in       = EXCLUDED.bytes_in,
-          bytes_out      = EXCLUDED.bytes_out,
-          sample_count   = EXCLUDED.sample_count,
-          rolled_at      = EXCLUDED.rolled_at
+          active_seconds    = EXCLUDED.active_seconds,
+          bytes_in          = EXCLUDED.bytes_in,
+          bytes_out         = EXCLUDED.bytes_out,
+          sample_count      = EXCLUDED.sample_count,
+          rolled_at         = EXCLUDED.rolled_at,
+          app_hosts_version = EXCLUDED.app_hosts_version
         """
-    withLock(RollupLockKeys.Daily)(sql.update.run)
+    withLock(RollupLockKeys.Daily)(
+      sql.update.run.flatMap(n => attributeDaily(sinceDate, appsByApex, version).map(_ => n)),
+    )
   }
+
+  // ── App attribution (#1091) ───────────────────────────────────────────────
+  //
+  // After a reroll stamps `app_hosts_version` on every rolled row, recompute
+  // the owning app(s) for those rows via the canonical HostMatch.lookupApex and
+  // rewrite the side table. A host belonging to N apps fans out to N side rows;
+  // read-time aggregation collapses the fan to the lowest app id. Runs in the
+  // reroll transaction so attribution is atomic with the rollup write.
+
+  private def attributeHourly(
+      truncSince: Instant,
+      appsByApex: Map[String, List[AppId]],
+      version: Long,
+  ): ConnectionIO[Unit] =
+    for {
+      _    <- sql"DELETE FROM traffic_hourly_apps WHERE bucket_start >= $truncSince".update.run
+      rows <-
+        sql"""SELECT router_id, mac, hostname, bucket_start
+              FROM traffic_hourly WHERE bucket_start >= $truncSince"""
+          .query[(RouterId, MacAddress, String, Instant)]
+          .to[List]
+      tuples = rows.flatMap { case (rid, m, h, bs) =>
+        appsFor(h, appsByApex).map(appId => (rid, m, h, bs, appId, version))
+      }
+      _ <- insertHourlyApps(tuples)
+    } yield ()
+
+  private def attributeDaily(
+      sinceDate: LocalDate,
+      appsByApex: Map[String, List[AppId]],
+      version: Long,
+  ): ConnectionIO[Unit] =
+    for {
+      _    <- sql"DELETE FROM traffic_daily_apps WHERE date >= $sinceDate".update.run
+      rows <-
+        sql"""SELECT router_id, mac, hostname, date
+              FROM traffic_daily WHERE date >= $sinceDate"""
+          .query[(RouterId, MacAddress, String, LocalDate)]
+          .to[List]
+      tuples = rows.flatMap { case (rid, m, h, d) =>
+        appsFor(h, appsByApex).map(appId => (rid, m, h, d, appId, version))
+      }
+      _ <- insertDailyApps(tuples)
+    } yield ()
+
+  // All apps owning `host`, deduped. lookupApex returns the apex-form entry the
+  // FQDN belongs to; that bucket may name several apps (the fan).
+  private def appsFor(host: String, appsByApex: Map[String, List[AppId]]): List[AppId] =
+    HostMatch.lookupApex(host, appsByApex).getOrElse(Nil).distinct
+
+  private def insertHourlyApps(
+      tuples: List[(RouterId, MacAddress, String, Instant, AppId, Long)],
+  ): ConnectionIO[Unit] =
+    if (tuples.isEmpty) doobie.free.connection.unit
+    else
+      Update[(RouterId, MacAddress, String, Instant, AppId, Long)](
+        """INSERT INTO traffic_hourly_apps
+             (router_id, mac, hostname, bucket_start, app_id, app_hosts_version)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+      ).updateMany(tuples).map(_ => ())
+
+  private def insertDailyApps(
+      tuples: List[(RouterId, MacAddress, String, LocalDate, AppId, Long)],
+  ): ConnectionIO[Unit] =
+    if (tuples.isEmpty) doobie.free.connection.unit
+    else
+      Update[(RouterId, MacAddress, String, LocalDate, AppId, Long)](
+        """INSERT INTO traffic_daily_apps
+             (router_id, mac, hostname, date, app_id, app_hosts_version)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+      ).updateMany(tuples).map(_ => ())
 
   def recordRun(
       job: String,
@@ -367,14 +449,58 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       .map(_.filter(r => !r.bucketStart.isBefore(from) && r.bucketStart.isBefore(to)))
   }
 
+  private def macFilter(macs: List[MacAddress]): Fragment =
+    macs match {
+      case Nil => fr""
+      case ms  =>
+        val nel = NonEmptyList.fromListUnsafe(ms.map(_.value))
+        fr"AND " ++ Fragments.in(fr"mac", nel)
+    }
+
   def aggregateByAppHourly(
       macs: List[MacAddress],
       from: Instant,
       to: Instant,
       currentVersion: Long,
       appsByApex: Map[String, List[AppId]],
-  ): Task[List[AppUsageAgg]] =
-    ZIO.succeed(Nil)
+  ): Task[List[AppUsageAgg]] = {
+    val staleSql =
+      fr"""SELECT COUNT(*) FROM traffic_hourly
+           WHERE bucket_start >= $from AND bucket_start < $to
+             AND (app_hosts_version IS NULL OR app_hosts_version < $currentVersion) """ ++
+        macFilter(macs)
+    val freshSql =
+      fr"""SELECT chosen.app_id,
+                  SUM(th.active_seconds)::BIGINT,
+                  SUM(th.bytes_in)::BIGINT,
+                  SUM(th.bytes_out)::BIGINT
+           FROM traffic_hourly th
+           LEFT JOIN LATERAL (
+             SELECT MIN(a.app_id) AS app_id
+             FROM traffic_hourly_apps a
+             WHERE a.router_id    = th.router_id
+               AND a.mac          = th.mac
+               AND a.hostname     = th.hostname
+               AND a.bucket_start = th.bucket_start
+           ) chosen ON TRUE
+           WHERE th.bucket_start >= $from AND th.bucket_start < $to """ ++
+        macFilter(macs) ++
+        fr"GROUP BY chosen.app_id"
+
+    val sqlPath =
+      freshSql
+        .query[(Option[AppId], Long, Long, Long)]
+        .map { case (a, secs, bi, bo) => AppUsageAgg(a, secs, bi, bo) }
+        .to[List]
+        .transact(xa)
+
+    for {
+      stale <- staleSql.query[Long].unique.transact(xa)
+      aggs  <-
+        if (stale == 0L) sqlPath
+        else listHourlyInRange(macs, from, to).map(aggregateInScala(_, appsByApex))
+    } yield aggs
+  }
 
   def aggregateByAppDaily(
       macs: List[MacAddress],
@@ -382,6 +508,65 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
       to: Instant,
       currentVersion: Long,
       appsByApex: Map[String, List[AppId]],
-  ): Task[List[AppUsageAgg]] =
-    ZIO.succeed(Nil)
+  ): Task[List[AppUsageAgg]] = {
+    val fromDate = from.atZone(ZoneOffset.UTC).toLocalDate
+    val toDate   = to.atZone(ZoneOffset.UTC).toLocalDate
+    val staleSql =
+      fr"""SELECT COUNT(*) FROM traffic_daily
+           WHERE date >= $fromDate AND date < $toDate
+             AND (app_hosts_version IS NULL OR app_hosts_version < $currentVersion) """ ++
+        macFilter(macs)
+    val freshSql =
+      fr"""SELECT chosen.app_id,
+                  SUM(td.active_seconds)::BIGINT,
+                  SUM(td.bytes_in)::BIGINT,
+                  SUM(td.bytes_out)::BIGINT
+           FROM traffic_daily td
+           LEFT JOIN LATERAL (
+             SELECT MIN(a.app_id) AS app_id
+             FROM traffic_daily_apps a
+             WHERE a.router_id = td.router_id
+               AND a.mac       = td.mac
+               AND a.hostname  = td.hostname
+               AND a.date      = td.date
+           ) chosen ON TRUE
+           WHERE td.date >= $fromDate AND td.date < $toDate """ ++
+        macFilter(macs) ++
+        fr"GROUP BY chosen.app_id"
+
+    val sqlPath =
+      freshSql
+        .query[(Option[AppId], Long, Long, Long)]
+        .map { case (a, secs, bi, bo) => AppUsageAgg(a, secs, bi, bo) }
+        .to[List]
+        .transact(xa)
+
+    for {
+      stale <- staleSql.query[Long].unique.transact(xa)
+      aggs  <-
+        if (stale == 0L) sqlPath
+        else listDailyInRange(macs, from, to).map(aggregateInScala(_, appsByApex))
+    } yield aggs
+  }
+
+  // Read-time fallback when any in-window rollup row is stale: re-match each
+  // row's host in process via the canonical matcher, deduping a multi-app host
+  // to the lowest app id (matching the SQL path and the UsageRoutes read path).
+  private def aggregateInScala(
+      rows: List[RollupRow],
+      appsByApex: Map[String, List[AppId]],
+  ): List[AppUsageAgg] = {
+    val byApexMin = appsByApex.view.mapValues(_.minBy(_.value)).toMap
+    rows
+      .groupBy(r => r.host.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApexMin)))
+      .map { case (appId, rs) =>
+        AppUsageAgg(
+          appId,
+          rs.iterator.map(_.activeSeconds.toLong).sum,
+          rs.iterator.map(_.bytesIn).sum,
+          rs.iterator.map(_.bytesOut).sum,
+        )
+      }
+      .toList
+  }
 }
