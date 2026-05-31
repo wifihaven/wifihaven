@@ -77,8 +77,15 @@ jobs:
     # turns that spurious red run neutral. `workflow_dispatch` on main still
     # satisfies this; dispatch on a non-main ref is intentionally skipped. (#1136)
     if: github.ref == 'refs/heads/main'
+    # ci.yml's migration-isolation job declares `pull-requests: read` (for the
+    # merge_group `gh pr list` label lookup). GitHub validates a called
+    # workflow's job permissions against the caller's grant at LOAD time,
+    # before `if:` gating — so without this scope the call exceeds the cap and
+    # the whole CD run startup_failures even though that job is skipped on
+    # push. (#1259)
     permissions:
       contents: read
+      pull-requests: read
     uses: ./.github/workflows/ci.yml
 
   # #1224: build EVERY shippable release artifact exactly once, pre-gate,
