@@ -207,6 +207,63 @@ services:
       - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
         generateValue: true
 
+  # ── Metrics collector: Grafana Alloy → Grafana Cloud ─────────────────────────
+  # #1208: the cloud APP-metrics path. Alloy (Prometheus agent-mode) scrapes
+  # each API's INTERNAL Render address — http://wifihaven-api-{prod,staging}:8080
+  # /metrics, never the public api.wifihaven.net — and remote_writes the samples
+  # to Grafana Cloud Prometheus. Config is checked in at deploy/alloy/config.alloy
+  # and baked into a thin image via deploy/alloy/Dockerfile (a runtime:image
+  # service can't mount a repo-local config). See docs/design/metrics-observability.md §6.2.
+  #
+  # NON-CRITICAL (design §6.2): a metrics outage must never affect API
+  # availability or block an API deploy. Nothing here is a dependency of either
+  # API service, and neither API depends on this — the two surfaces fail
+  # independently. This is the APP-metrics producer only; Render's own INFRA
+  # metrics (managed-Postgres CPU/conns/disk) stream separately via #1244.
+  #
+  # type:worker — Alloy has no inbound role (it pulls + pushes), so no port and
+  # no health check. Render workers have no free tier; `starter` is the floor.
+  # Must be region:oregon to share the private network with the API services
+  # (cross-region private networking isn't available).
+  #
+  # autoDeploy:no keeps promotion explicit (manual deploy / `render blueprint
+  # apply`), consistent with the API services. A config.alloy change applies on
+  # the next deploy of this service; it never rides the API CD pipeline.
+  - type: worker
+    runtime: docker
+    name: wifihaven-alloy
+    plan: starter
+    region: oregon
+    autoDeploy: no
+    dockerfilePath: ./deploy/alloy/Dockerfile
+    dockerContext: ./deploy/alloy
+    envVars:
+      # Scrape bearer tokens — pulled from each API service's generated
+      # WIFIHAVEN_METRICS_SCRAPE_TOKEN (#1242) so the values stay in sync
+      # without being committed or hand-copied. config.alloy reads these via
+      # sys.env(...).
+      - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN_PROD
+        fromService:
+          name: wifihaven-api-prod
+          type: web
+          envVarKey: WIFIHAVEN_METRICS_SCRAPE_TOKEN
+      - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN_STAGING
+        fromService:
+          name: wifihaven-api-staging
+          type: web
+          envVarKey: WIFIHAVEN_METRICS_SCRAPE_TOKEN
+      # Grafana Cloud Prometheus remote_write target + credentials. Values are
+      # Render-managed secrets set in the dashboard (out of band) — same
+      # sync:false pattern as other secrets. URL is the Grafana Cloud
+      # remote_write endpoint; USER is the numeric instance id; PASSWORD is a
+      # Grafana Cloud API token with metrics-push scope.
+      - key: GRAFANA_CLOUD_PROM_URL
+        sync: false
+      - key: GRAFANA_CLOUD_PROM_USER
+        sync: false
+      - key: GRAFANA_CLOUD_PROM_PASSWORD
+        sync: false
+
 databases:
   # ── Staging Postgres ───────────────────────────────────────────────────────
   # Free plan — staging data is expendable; recreation is a feature (#585).

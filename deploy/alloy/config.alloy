@@ -1,0 +1,71 @@
+// #1208: Grafana Alloy (Prometheus agent-mode) config for the cloud
+// app-metrics path. Alloy scrapes the API's INTERNAL Render address
+// (never the public api.wifihaven.net) and remote_writes the samples to
+// Grafana Cloud Prometheus. See docs/design/metrics-observability.md §6.2.
+//
+// This is the APP-metrics producer. Render's own INFRA metrics (managed
+// Postgres CPU / connections / disk, service CPU/mem) flow via a separate
+// Render-native OTel stream (#1244, design §6.3) into the same Grafana
+// Cloud stack — do not add them here.
+//
+// All secrets/endpoints come from the Render env (sync:false in
+// render.yaml). Nothing sensitive is committed.
+
+// ── Scrape: production API /metrics (internal address) ──────────────────────
+prometheus.scrape "api_prod" {
+  targets = [
+    {
+      __address__ = "wifihaven-api-prod:8080",
+      instance    = "wifihaven-api-prod",
+      env         = "prod",
+    },
+  ]
+  metrics_path    = "/metrics"
+  scheme          = "http"
+  scrape_interval = "30s"
+
+  // #1242: GET /metrics is gated behind a bearer scrape token. The token is
+  // pulled from the prod API service via render.yaml fromService.
+  authorization {
+    type        = "Bearer"
+    credentials = sys.env("WIFIHAVEN_METRICS_SCRAPE_TOKEN_PROD")
+  }
+
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// ── Scrape: staging API /metrics (internal address) ─────────────────────────
+prometheus.scrape "api_staging" {
+  targets = [
+    {
+      __address__ = "wifihaven-api-staging:8080",
+      instance    = "wifihaven-api-staging",
+      env         = "staging",
+    },
+  ]
+  metrics_path    = "/metrics"
+  scheme          = "http"
+  scrape_interval = "30s"
+
+  authorization {
+    type        = "Bearer"
+    credentials = sys.env("WIFIHAVEN_METRICS_SCRAPE_TOKEN_STAGING")
+  }
+
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// ── Remote write: Grafana Cloud Prometheus ──────────────────────────────────
+// URL + credentials are Render-managed secrets (sync:false). Grafana Cloud
+// uses HTTP basic auth: username = numeric instance/user id, password = a
+// Grafana Cloud API token with metrics-push scope.
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_PROM_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_PROM_USER")
+      password = sys.env("GRAFANA_CLOUD_PROM_PASSWORD")
+    }
+  }
+}
