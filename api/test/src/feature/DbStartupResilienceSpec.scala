@@ -22,7 +22,8 @@ import java.sql.{SQLException, SQLTransientConnectionException}
  * These tests drive the real `Database.withStartupRetry` helper against the embedded Postgres: real
  * PSQLExceptions on the failure paths, a real `SELECT 1` once the simulated outage clears.
  */
-object DbStartupResilienceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres] {
+object DbStartupResilienceSpec
+    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]] {
 
   override val bootstrap = TestDatabase.layer
 

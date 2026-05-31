@@ -2,13 +2,16 @@ package wifihaven.api.db
 
 import com.zaxxer.hikari.HikariDataSource
 import doobie.Transactor
-import wifihaven.api.DbConfig
+import wifihaven.api.{DbConfig, DbResilienceConfig}
 import org.flywaydb.core.Flyway
 import zio.*
 import zio.interop.catz.*
 
+import java.net.{ConnectException, SocketException}
+import java.sql.{SQLException, SQLTransientConnectionException}
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{Executors, ThreadFactory}
+import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext
 
 object Database {
@@ -26,7 +29,15 @@ object Database {
     ds.setPassword(cfg.password)
     ds.setMaximumPoolSize(cfg.poolSize)
     ds.setMinimumIdle(2)
-    ds.setConnectionTimeout(30000)
+    ds.setConnectionTimeout(cfg.resilience.connectionTimeoutMillis)
+    // #1255: with a negative initializationFailTimeout Hikari creates the pool
+    // without probing the DB at construction time and establishes connections
+    // lazily on first use. So a DB that is briefly down at boot can never fail
+    // pool creation (which would propagate to `main` and exit the JVM) — the
+    // first query instead throws a transient error that the startup retry rides
+    // out. Once the DB returns, Hikari's housekeeping re-establishes connections
+    // automatically; a refused/closed connection is never treated as fatal.
+    ds.setInitializationFailTimeout(cfg.resilience.initializationFailTimeoutMillis)
     ds.setIdleTimeout(600000)
     ds.setMaxLifetime(1800000)
     ds
@@ -91,4 +102,71 @@ object Database {
         .migrate()
       ()
     }
+
+  /**
+   * #1255: is `t` (or anything in its cause chain) a *transient* DB-connectivity failure that
+   * warrants a retry — as opposed to a genuine error (bad migration, constraint violation, syntax
+   * error) that must fail fast and loud?
+   *
+   * Transient = the kind of thing a few-second DB restart/failover produces:
+   *   - `SQLTransientConnectionException` — Hikari "Connection is not available, request timed out"
+   *     when the pool can't hand out a live connection.
+   *   - `java.net.ConnectException` — "Connection refused" while the DB is down.
+   *   - `java.net.SocketException` — connection reset / socket closed mid-flight.
+   *   - any `SQLException` whose SQLState is in the connection class `08*` (PostgreSQL: 08001
+   *     unable to connect, 08006 connection failure, …).
+   *
+   * The cause chain matters because Flyway wraps the PSQLException in a FlywayException, which in
+   * turn wraps the underlying ConnectException; the outer type alone tells us nothing.
+   */
+  def isTransientConnectionError(t: Throwable): Boolean = {
+    @tailrec
+    def loop(e: Throwable, seen: List[Throwable]): Boolean =
+      if (e == null || seen.exists(_ eq e)) false
+      else {
+        val hit = e match {
+          case _: SQLTransientConnectionException => true
+          case _: ConnectException                => true
+          case _: SocketException                 => true
+          case sql: SQLException                  =>
+            Option(sql.getSQLState).exists(_.startsWith("08"))
+          case _                                  => false
+        }
+        if (hit) true else loop(e.getCause, e :: seen)
+      }
+    loop(t, Nil)
+  }
+
+  /**
+   * #1255: run a DB-heavy startup effect, retrying *only* on transient connection-class failures
+   * (see [[isTransientConnectionError]]) with bounded exponential backoff + jitter. A genuine error
+   * fails fast on the first attempt; a transient error that outlasts the elapsed budget also fails
+   * (the original error is re-raised) rather than retrying forever. The wrapped effect must be
+   * idempotent — it is re-run from the start on each retry.
+   */
+  def withStartupRetry[R, A](r: DbResilienceConfig, label: String)(
+      io: ZIO[R, Throwable, A],
+  ): ZIO[R, Throwable, A] = {
+    // delay = min(exponential growth, maxBackoff), then jittered; the union keeps
+    // recurring forever (both sides are infinite) — the actual stop conditions are
+    // the intersected schedules below.
+    val backoff  =
+      (Schedule.exponential(r.startupRetryBase) || Schedule.spaced(
+        r.startupRetryMaxBackoff,
+      )).jittered
+    val schedule =
+      backoff &&
+        Schedule.recurWhile[Throwable](isTransientConnectionError) &&
+        Schedule.upTo(r.startupRetryMaxElapsed)
+    io.tapError {
+      case t if isTransientConnectionError(t) =>
+        ZIO.logWarning(
+          s"$label: transient DB connectivity error, retrying with backoff " +
+            s"(base=${r.startupRetryBaseMillis}ms, cap=${r.startupRetryMaxBackoffSeconds}s, " +
+            s"budget=${r.startupRetryMaxElapsedSeconds}s): " +
+            s"${t.getClass.getName}: ${t.getMessage}",
+        )
+      case _                                  => ZIO.unit
+    }.retry(schedule)
+  }
 }

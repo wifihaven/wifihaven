@@ -6,6 +6,23 @@ wifihaven {
     user     = "wifihaven"
     password = "changeme"
     poolSize = 5
+
+    # #1255: tolerate a transient DB outage (a few-second restart during a plan
+    # resize / failover / network blip) instead of crashing the process. The
+    # DB-heavy startup init (migrations + seeds) retries connection-class errors
+    # with bounded exponential backoff + jitter while /api/health stays 503;
+    # genuine errors (a bad migration, a constraint violation) still fail fast.
+    # The whole block is optional — omit it to use the defaults shown here.
+    # resilience {
+    #   startupRetryBaseMillis        = 1000   # base backoff between retries
+    #   startupRetryMaxBackoffSeconds = 30     # cap on a single backoff delay
+    #   startupRetryMaxElapsedSeconds = 300    # total retry budget before failing loudly
+    #   # Hikari initializationFailTimeout. Negative => create the pool even if the
+    #   # DB is down at boot (connections established lazily), so pool creation can
+    #   # never take the process down during a DB blip.
+    #   initializationFailTimeoutMillis = -1
+    #   connectionTimeoutMillis         = 30000
+    # }
   }
 
   http {

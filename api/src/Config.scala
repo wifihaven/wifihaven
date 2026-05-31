@@ -35,7 +35,36 @@ case class DbConfig(
     user: String,
     password: String,
     poolSize: Int,
+    // #1255: tolerance for transient DB unavailability (planned resize, failover,
+    // brief network hiccup). Optional — absent block uses the defaults below.
+    resilience: DbResilienceConfig = DbResilienceConfig(),
 )
+
+// #1255: how the API rides out a *transient* DB outage instead of crashing
+// `main`. The startup DB-heavy init (Flyway migrations, ensureDefault, seeds)
+// retries with bounded exponential backoff + jitter on connection-class
+// failures only; genuine errors (a bad migration, a constraint violation) still
+// fail fast. The Hikari pool is configured so its creation never hard-fails on a
+// DB that is briefly down at boot.
+case class DbResilienceConfig(
+    // base delay for the exponential backoff between startup-init retries
+    startupRetryBaseMillis: Long = 1000,
+    // per-attempt backoff is capped at this so a late retry doesn't sleep for ages
+    startupRetryMaxBackoffSeconds: Long = 30,
+    // total wall-clock budget for retrying; after this the init fails loudly
+    startupRetryMaxElapsedSeconds: Long = 300,
+    // Hikari initializationFailTimeout. Negative => create the pool even if the DB
+    // is down at boot (connections are established lazily on first use), so pool
+    // creation can never take the process down during a DB blip.
+    initializationFailTimeoutMillis: Long = -1,
+    // Hikari connectionTimeout — how long getConnection waits before throwing a
+    // SQLTransientConnectionException (which the startup retry treats as transient).
+    connectionTimeoutMillis: Long = 30000,
+) {
+  def startupRetryBase: zio.Duration       = zio.Duration.fromMillis(startupRetryBaseMillis)
+  def startupRetryMaxBackoff: zio.Duration = zio.Duration.fromSeconds(startupRetryMaxBackoffSeconds)
+  def startupRetryMaxElapsed: zio.Duration = zio.Duration.fromSeconds(startupRetryMaxElapsedSeconds)
+}
 
 case class HttpConfig(
     host: String,
