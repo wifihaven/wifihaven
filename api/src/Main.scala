@@ -68,9 +68,11 @@ object Main extends ZIOAppDefault {
       _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
       _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
       // #809: scheduled re-aggregation of traffic_reports into the rollup
-      // tables. Hourly tick re-rolls the trailing 2h every 5 min; daily tick
-      // re-rolls yesterday + today every hour. Both are forkDaemon so they
-      // run for the lifetime of the process and never block startup.
+      // tables. #1230: cadence matches the tier each table is read at — hourly
+      // tick re-rolls the trailing 2h every hour, daily tick re-rolls the
+      // trailing 2 days once a day (reads of recent windows hit raw
+      // traffic_reports, not these tables). Both are forkDaemon so they run for
+      // the lifetime of the process and never block startup.
       rollupRepo     <- ZIO.service[wifihaven.api.db.RollupRepo]
       clockForJobs   <- ZIO.service[Clock]
       _              <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkDaemon

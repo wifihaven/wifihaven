@@ -41,10 +41,13 @@ import java.time.{Duration, Instant}
 object TimeUsedRollupJob {
 
   /**
-   * Refresh cadence. The tail aggregation handles freshness between ticks; this just bounds the
-   * tail's size so reads don't drift toward a full-day live aggregation as the day wears on.
+   * Refresh cadence. The read path's tail aggregation (`TimeStatusServiceLive`, buckets with
+   * `period_start >= rolled_through`) makes the screen-time figure exact regardless of cadence, so
+   * this interval only bounds the tail's size — it is not a freshness knob. #1230 widened it from
+   * 3m to 15m to cut DB churn on the 256 MB prod instance (#1228): at 5-min bucket granularity the
+   * tail tops out at ~3 rows per profile, a negligible per-read cost for ~5× fewer recompute ticks.
    */
-  val Interval: Duration = Duration.ofMinutes(3)
+  val Interval: Duration = Duration.ofMinutes(15)
 
   /**
    * Fiber loop entry point. Errors are caught and recorded in `rollup_runs`; the fiber never dies.
