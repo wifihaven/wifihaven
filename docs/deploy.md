@@ -139,7 +139,24 @@ Output: `openwrt/wifihaven_<version>-<release>_all.ipk`
 
 ### 2.2 Build and publish: `.ipk` → GitHub Releases
 
-Workflow: `.github/workflows/openwrt-build.yml`.
+Release pipeline (#1224 — build once, test those bits, publish without
+rebuild): driven by `.github/workflows/master-router.yml`:
+
+1. `build-release-artifacts.yml` (pre-gate) — builds **all** shippable
+   artifacts exactly once (router `.ipk`/`.apk`, luci-app `.ipk`/`.apk`,
+   both qemu VM-image tarballs), versioned with the release version derived
+   a single time, and uploads them as workflow artifacts.
+2. Gate 2 / Gate 3a boot the **uploaded** VM image — so the bits tested are
+   the bits that ship.
+3. `approve-production` — manual approval gate.
+4. `publish-openwrt-release.yml` — **downloads** the already-built,
+   already-tested artifacts and attaches them to the rolling
+   `openwrt-latest` and versioned `v<X.Y.Z>` releases. No recompilation and
+   no version re-derivation, so a publish can't fail on a rebuild.
+
+`.github/workflows/openwrt-build.yml` still runs on `openwrt/**` PRs and
+pushes for **build-only validation** (it uploads throwaway artifacts and
+never publishes).
 
 **Release strategy: tagged releases only (Option B from #130).**
 Routers auto-update only when a `vX.Y.Z` tag is pushed. We do *not* publish

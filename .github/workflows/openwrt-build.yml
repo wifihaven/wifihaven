@@ -1,20 +1,19 @@
 name: OpenWRT Package Build
 
-# Release flow (post-#498): the rolling "openwrt-latest" GitHub Release is
-# published exclusively from Master Router CD's publish-openwrt path, behind the
-# manual-approval gate. There is no standalone `push.tags: ["v*"]` trigger —
-# tag pushes would otherwise fire this workflow ungated and race with the
-# coordinated release from master-router.yml (see #498).
+# PR / push validation ONLY (#1224). This workflow compiles the router and
+# luci-app packages on every openwrt/** change to catch build breakage early,
+# uploads them as throwaway workflow artifacts, and stops there.
 #
-# Triggers retained:
-#   - push to main (paths: openwrt/**)  — build-only confidence run, no upload
+# It does NOT publish and is NOT part of Master Router CD. The release path
+# builds every shippable artifact exactly once in build-release-artifacts.yml
+# (pre-gate) and publishes them unchanged in publish-openwrt-release.yml
+# (post-approval). There is no `workflow_call` / `publish_release` path here
+# anymore — that was the duplicate, publish-time rebuild #1224 removed.
+#
+# Triggers:
+#   - push to main (paths: openwrt/**)  — build-only confidence run
 #   - pull_request (paths: openwrt/**)  — PR validation
 #   - workflow_dispatch                 — one-off debug builds
-#   - workflow_call                     — invoked by master-router.yml deploy-production
-#                                         with publish_release: true
-#
-# The build itself still runs for PR / main-push validation; only the public
-# artifact promotion (GitHub Release upload) is gated by `publish_release`.
 on:
   push:
     branches: ["main"]
@@ -22,12 +21,6 @@ on:
   pull_request:
     paths: ["openwrt/**"]
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      publish_release:
-        description: "If true, attach packages to the rolling openwrt-latest GitHub Release. Set only from Master Router CD's publish-openwrt path."
-        type: boolean
-        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -37,7 +30,7 @@ jobs:
     name: Build .ipk and .apk
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v6
@@ -197,186 +190,3 @@ jobs:
           name: wifihaven-apk-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.release }}
           path: openwrt/wifihaven_*.apk
           if-no-files-found: error
-
-      # Qemu VM image build (#893) — produces the bootable router images that
-      # downstream Gate 3b (#655) fetches by stable URL to test API/UI changes
-      # against the last-published router. Gated on publish_release so PR /
-      # main-push validation runs don't pay the ~2× IB cost; this is only the
-      # release pipeline's concern. Reuses the .ipk/.apk built above via
-      # IPK_PATH/APK_PATH so we don't recompile the wifihaven package.
-      - name: Build qemu VM image (ipk / OpenWRT 23.05)
-        if: inputs.publish_release == true
-        env:
-          PKG_FORMAT: ipk
-          IPK_SOURCE: path
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          ipks=("$PWD"/openwrt/wifihaven_*.ipk)
-          IPK_PATH="${ipks[0]}"
-          export IPK_PATH
-          chmod +x scripts/vm/build-router-image.sh
-          scripts/vm/build-router-image.sh
-
-      - name: Build qemu VM image (apk / OpenWRT 25.12)
-        if: inputs.publish_release == true
-        env:
-          PKG_FORMAT: apk
-          APK_SOURCE: path
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          apks=("$PWD"/openwrt/wifihaven_*.apk)
-          APK_PATH="${apks[0]}"
-          export APK_PATH
-          scripts/vm/build-router-image.sh
-
-      # Package each VM image as a release tarball. Contents: the bootable
-      # ext4-combined .img only — scripts/vm/router-up.sh (lib.sh:ensure_openwrt_image)
-      # consumes a single raw .img and creates its own qcow2 overlay, so no
-      # kernel/initrd sidecars are needed. Asset filenames are version-derived
-      # from versions.sh so a future OPENWRT_VERSION_{IPK,APK} bump renames the
-      # asset cleanly; the .sha256 file lets downstream verify the fetch.
-      - name: Package qemu VM images as release tarballs
-        if: inputs.publish_release == true
-        run: |
-          set -euo pipefail
-          # Resolve the major.minor for each flavor (matches build-router-image.sh's
-          # OUTPUT_IMG path).
-          ipk_short="$(PKG_FORMAT=ipk bash -c '. scripts/vm/versions.sh; echo "$OPENWRT_VERSION_SHORT"')"
-          apk_short="$(PKG_FORMAT=apk bash -c '. scripts/vm/versions.sh; echo "$OPENWRT_VERSION_SHORT"')"
-          ipk_img="scripts/vm/.cache/openwrt-wifihaven-ipk-${ipk_short}.img"
-          apk_img="scripts/vm/.cache/openwrt-wifihaven-apk-${apk_short}.img"
-          [ -f "$ipk_img" ] || { echo "missing $ipk_img" >&2; exit 1; }
-          [ -f "$apk_img" ] || { echo "missing $apk_img" >&2; exit 1; }
-          mkdir -p release
-          ipk_tar="release/wifihaven-router-openwrt-${ipk_short}-ipk.tar.gz"
-          apk_tar="release/wifihaven-router-openwrt-${apk_short}-apk.tar.gz"
-          tar -czf "$ipk_tar" -C "$(dirname "$ipk_img")" "$(basename "$ipk_img")"
-          tar -czf "$apk_tar" -C "$(dirname "$apk_img")" "$(basename "$apk_img")"
-          ( cd release && sha256sum \
-              "$(basename "$ipk_tar")" \
-              "$(basename "$apk_tar")" \
-              > wifihaven-router-images.sha256 )
-          echo "--- release assets ---"
-          ls -lh release/
-
-      # #499: stage versioned copies of the VM-image tarballs alongside the
-      # stable-name originals. The openwrt-latest rolling release keeps the
-      # stable filenames so Gate 3b's glob (`wifihaven-router-openwrt-*-
-      # <fmt>.tar.gz`) and any agent auto-update path continue to resolve.
-      # The new v<X.Y.Z> release receives the wifihaven-version-stamped
-      # copies so a specific past release is reachable by URL.
-      - name: Stage versioned VM-image tarball copies (#499)
-        if: inputs.publish_release == true
-        run: |
-          set -euo pipefail
-          ver="${{ steps.ver.outputs.version }}"
-          mkdir -p release/versioned
-          for src in release/wifihaven-router-openwrt-*-ipk.tar.gz release/wifihaven-router-openwrt-*-apk.tar.gz; do
-            [ -f "$src" ] || continue
-            # original: wifihaven-router-openwrt-<short>-<fmt>.tar.gz
-            # stamped:  wifihaven-router-openwrt-<ver>-<short>-<fmt>.tar.gz
-            base=$(basename "$src")
-            stamped="release/versioned/${base/wifihaven-router-openwrt-/wifihaven-router-openwrt-${ver}-}"
-            cp "$src" "$stamped"
-          done
-          ( cd release/versioned && sha256sum wifihaven-router-openwrt-*-ipk.tar.gz wifihaven-router-openwrt-*-apk.tar.gz \
-              > wifihaven-router-images.sha256 )
-          ls -lh release/versioned/
-
-      # Wipe any assets currently attached to openwrt-latest before the
-      # publish step re-uploads the fresh build. softprops/action-gh-release
-      # overwrites assets with the same name but never DELETES unrelated
-      # ones, so older PKG_VERSION artifacts (e.g. wifihaven_0.1.0-1_*)
-      # pile up on the rolling release forever and confuse the auto-
-      # updater's fallback path (#244).
-      - name: Clear stale openwrt-latest assets
-        if: inputs.publish_release == true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          if gh release view openwrt-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release view openwrt-latest --repo "$GITHUB_REPOSITORY" \
-              --json assets --jq '.assets[].name' \
-            | while IFS= read -r name; do
-                [ -z "$name" ] && continue
-                echo "deleting stale asset: $name"
-                gh release delete-asset openwrt-latest "$name" \
-                  --repo "$GITHUB_REPOSITORY" --yes
-              done
-          else
-            echo "openwrt-latest release does not exist yet; nothing to clean"
-          fi
-
-      # Rolling pre-release. Pointer that consumers (Gate 3b, agent auto-
-      # update) keep targeting by stable URL. The versioned release below
-      # is the new canonical artifact; openwrt-latest is intentionally kept
-      # in lockstep so the migration is non-breaking — see #499 PR body.
-      - name: Publish rolling openwrt-latest release (gated by caller)
-        if: inputs.publish_release == true
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: openwrt-latest
-          name: "openwrt-latest (rolling)"
-          body: |
-            Rolling build of the OpenWRT agent from the latest `main`
-            (currently v${{ steps.ver.outputs.version }}).
-            Replaced on every publish from `main` touching `openwrt/**`.
-            For pinned consumers, prefer the v<X.Y.Z> release tag (#499).
-            For #228 live debugging — see #243 / #244.
-          prerelease: true
-          files: |
-            openwrt/wifihaven_*.ipk
-            openwrt/wifihaven_*.apk
-            openwrt/luci/luci-app-wifihaven_*.ipk
-            openwrt/luci/luci-app-wifihaven_*.apk
-            release/wifihaven-router-openwrt-*-ipk.tar.gz
-            release/wifihaven-router-openwrt-*-apk.tar.gz
-            release/wifihaven-router-images.sha256
-
-      # #499: cut the annotated git tag before the release upload so the
-      # tag carries a real tagger + message. softprops/action-gh-release
-      # would otherwise create a lightweight tag. Idempotent: the API/UI
-      # pipeline's cut-release-tag job may have already pushed it; skip
-      # cleanly in that case.
-      - name: Cut annotated v<X.Y.Z> tag (#499)
-        if: inputs.publish_release == true
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: |
-          set -eu
-          tag="v${VERSION}"
-          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
-            echo "Tag ${tag} already exists on origin — skipping."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${tag}" -m "WifiHaven ${tag}"
-          git push origin "${tag}"
-
-      # #499: versioned canonical release. The annotated tag was pushed
-      # in the previous step; this just attaches release assets to it.
-      - name: Publish versioned v<X.Y.Z> release (#499)
-        if: inputs.publish_release == true
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: "v${{ steps.ver.outputs.version }}"
-          body: |
-            WifiHaven v${{ steps.ver.outputs.version }}.
-
-            OpenWRT packages and bootable VM images for this release.
-
-            See `openwrt-latest` for the rolling pointer kept in lockstep.
-          prerelease: false
-          files: |
-            openwrt/wifihaven_*.ipk
-            openwrt/wifihaven_*.apk
-            openwrt/luci/luci-app-wifihaven_*.ipk
-            openwrt/luci/luci-app-wifihaven_*.apk
-            release/versioned/wifihaven-router-openwrt-*-ipk.tar.gz
-            release/versioned/wifihaven-router-openwrt-*-apk.tar.gz
-            release/versioned/wifihaven-router-images.sha256

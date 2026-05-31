@@ -1,17 +1,18 @@
 name: Build OpenWRT VM image
 
-# Two roles:
-#   - PR validation on changes to openwrt/** or scripts/vm/**
-#   - Reusable callee from master-router.yml's build-vm-image job, gated
-#     on approve-production so the artifact only ships for prod-approved
-#     commits
+# PR validation ONLY: smoke-builds the ipk/23.05 router VM image on changes to
+# openwrt/** or scripts/vm/** so image-build breakage surfaces before merge.
+#
+# It is NOT part of Master Router CD. Since #1224 the release pipeline builds
+# both VM-image flavors (versioned, once) in build-release-artifacts.yml and
+# the gates boot those exact artifacts — this workflow no longer feeds the
+# gates, so it carries no `workflow_call` trigger.
 on:
   pull_request:
     paths:
       - "openwrt/**"
       - "scripts/vm/**"
       - ".github/workflows/router-image-build.yml"
-  workflow_call:
   workflow_dispatch:
 
 env:

@@ -499,9 +499,9 @@ jobs:
 
   # 6b. Cut the v<X.Y.Z> annotated git tag (#499). Idempotent: skipped if
   # the tag already exists (e.g. an earlier OpenWRT-only release on the same
-  # SHA already cut it). The OpenWRT publish path in openwrt-build.yml also
-  # creates this tag via softprops/action-gh-release on the v<X.Y.Z> release;
-  # whichever pipeline finishes first wins, the other no-ops.
+  # SHA already cut it). The OpenWRT publish path (publish-openwrt-release.yml)
+  # also creates this tag on the v<X.Y.Z> release; whichever pipeline finishes
+  # first wins, the other no-ops.
   cut-release-tag:
     name: Cut v<X.Y.Z> release tag (#499)
     if: github.ref == 'refs/heads/main'
