@@ -8,7 +8,7 @@ import type {
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
-  UpdateAppRequest, UpdateHouseholdSettingsRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
+  UpdateAppRequest, UpsertAppAssignmentRequest, UpsertDeviceRequest, UpsertProfileRequest, GrantExtensionRequest,
   UsageSeriesResponse, User,
 } from '@/types/api'
 
@@ -166,8 +166,6 @@ export const api = {
   // ── Household settings (#334) ──────────────────────────────────────────
   household: {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
-    update: (data: UpdateHouseholdSettingsRequest) =>
-      req<void>('PUT', '/household/settings', data),
     patch: (data: Record<string, unknown>) =>
       req<void>('PATCH', '/household/settings', data),
   },

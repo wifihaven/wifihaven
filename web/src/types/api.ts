@@ -54,13 +54,6 @@ export interface HouseholdSettings {
   unmanagedMacPolicy: UnmanagedMacPolicy
 }
 
-export interface UpdateHouseholdSettingsRequest {
-  dailyResetTime: string
-  dailyResetTz: string
-  heartbeatFilter: HeartbeatFilter
-  unmanagedMacPolicy: UnmanagedMacPolicy
-}
-
 export interface TimeLimit {
   id: number
   profileId: number
