@@ -38,14 +38,50 @@ object Main extends ZIOAppDefault {
     // closed", logging spurious ERRORs and recording bogus error rows.
     ZIO
       .scoped(for {
-        cfg    <- ZIO.service[AppConfig]
-        _      <- ZIO.logInfo(s"WifiHaven API starting on ${cfg.http.host}:${cfg.http.port}")
-        _      <- ZIO
+        cfg       <- ZIO.service[AppConfig]
+        _         <- ZIO.logInfo(s"WifiHaven API starting on ${cfg.http.host}:${cfg.http.port}")
+        _         <- ZIO
           .logWarning(
             "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
               "Disable in production.",
           )
           .when(cfg.debugEnabled)
+        // #1248: readiness signal. False until migrations + ensureDefault + seeds
+        // complete. /api/health reports 503 status=starting and the real routes
+        // are gated to 503 while false, so we can bind the port immediately
+        // (below) without ever serving a request against an unmigrated schema.
+        readyRef  <- Ref.make(false)
+        // Static definitions load from bundled resource files, not the DB, so we
+        // read them up front and build the routes before binding — no DB work
+        // happens before the port is open.
+        templates <- AppTemplates.loadAll()
+        bundled   <- BundledBlocklists.loadAll()
+        templatesById = templates.map(t => t.slug -> t).toMap
+        bundledById   = bundled.map(b => b.id -> b).toMap
+        routes <- allRoutes(templatesById, bundledById, readyRef.get)
+        withCors = Cors.wrap(routes, cfg.cors)
+        _ <- ZIO
+          .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
+          .when(cfg.cors.origins.nonEmpty)
+        // #1017: zio-http 3.0.1's RequestStreaming.Disabled default cap is 100 KiB;
+        // /api/router/usage bodies routinely exceed that as mac_ip_tracking fills.
+        // Bump to 4 MiB — well above any realistic single-bucket payload and below
+        // Render's edge 413 threshold.
+        serverConfig = Server.Config.default
+          .port(cfg.http.port)
+          .disableRequestStreaming(4 * 1024 * 1024)
+        // #1248: bind the port FIRST. Render's port scan (the ~15-min-timeout gate)
+        // only needs something listening, so it passes in milliseconds even when the
+        // DB is pegged. The DB-heavy init below then runs while the health check
+        // (a separate, longer gate) polls /api/health and waits for readiness — a
+        // slow DB delays promotion, never the port bind. forkScoped so the server
+        // is part of the run scope's lifecycle (interrupted on shutdown like the
+        // rollup fibers, before the Hikari pool finalizer in serverEnv runs).
+        serverFiber <- Server
+          .serve(withCors)
+          .provide(ZLayer.succeed(serverConfig) >>> Server.live)
+          .forkScoped
+        _      <- ZIO.logInfo("HTTP port bound; running DB-heavy startup behind readiness gate")
         _      <- Database.runMigrations(cfg.db)
         _      <- ZIO.logInfo("Database migrations complete")
         // #334: ensure household_settings has its single row, defaulting the
@@ -58,7 +94,6 @@ object Main extends ZIOAppDefault {
         // #768: seed the starter library of app templates. Idempotent — operator
         // host edits on previously-seeded apps are preserved.
         appRepoForSeed <- ZIO.service[AppRepo]
-        templates      <- AppTemplates.loadAll()
         seedSummary    <- AppTemplates.seed(appRepoForSeed, templates)
         _              <- ZIO.logInfo(
           s"app_templates seeded (${templates.size} templates): " +
@@ -77,9 +112,12 @@ object Main extends ZIOAppDefault {
         blRepoForSeed  <- ZIO.service[BlocklistRepo]
         blCacheForSeed <- ZIO.service[BlocklistCache]
         blFetcher      <- ZIO.service[BlocklistFetcher]
-        bundled        <- BundledBlocklists.loadAll()
         _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
         _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+        // #1248: migrations + ensureDefault + seeds are done — flip readiness so
+        // /api/health returns 200 and the gated routes start serving real traffic.
+        _              <- readyRef.set(true)
+        _              <- ZIO.logInfo("readiness flipped → /api/health healthy, API routes ungated")
         // #809: scheduled re-aggregation of traffic_reports into the rollup
         // tables. #1230: cadence matches the tier each table is read at — hourly
         // tick re-rolls the trailing 2h every hour, daily tick re-rolls the
@@ -143,23 +181,8 @@ object Main extends ZIOAppDefault {
         // cold Render PG doesn't gate the healthcheck; subsequent restarts re-run safely until
         // no NULLs remain.
         _               <- ReasonTextBackfill.run(xaForJobs).forkDaemon
-        templatesById = templates.map(t => t.slug -> t).toMap
-        bundledById   = bundled.map(b => b.id -> b).toMap
-        routes <- allRoutes(templatesById, bundledById)
-        withCors = Cors.wrap(routes, cfg.cors)
-        _ <- ZIO
-          .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
-          .when(cfg.cors.origins.nonEmpty)
-        // #1017: zio-http 3.0.1's RequestStreaming.Disabled default cap is 100 KiB;
-        // /api/router/usage bodies routinely exceed that as mac_ip_tracking fills.
-        // Bump to 4 MiB — well above any realistic single-bucket payload and below
-        // Render's edge 413 threshold.
-        serverConfig = Server.Config.default
-          .port(cfg.http.port)
-          .disableRequestStreaming(4 * 1024 * 1024)
-        _ <- Server
-          .serve(withCors)
-          .provide(ZLayer.succeed(serverConfig) >>> Server.live)
+        // Keep the process alive on the already-bound server fiber; exits if it dies.
+        _               <- serverFiber.join
       } yield ())
       .provide(serverEnv)
 
@@ -184,6 +207,7 @@ object Main extends ZIOAppDefault {
   private def allRoutes(
       templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
       bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
+      ready: UIO[Boolean],
   ) =
     for {
       auth          <- ZIO.service[AuthService]
@@ -224,10 +248,19 @@ object Main extends ZIOAppDefault {
       // `++` even though local macOS builds happened to fit. Explicit `Routes[Any, Response]`
       // ascriptions on the chunks ground the inference per chunk so the final fold is
       // a short, well-typed concatenation.
+      // #1248: the observability endpoints are NOT readiness-gated. /api/health
+      // carries its own not-ready logic (503 status=starting until migrations +
+      // seeds finish) so Render's health check can observe startup progress
+      // while the port is already bound; /metrics reads only the in-memory
+      // Prometheus registry (no DB) and must stay scrapeable during a slow
+      // startup — exactly the scenario this gate exists for. Everything else is
+      // gated below.
+      val ungatedRoutes: Routes[Any, Response] =
+        HealthRoutes.routes(ready, dbHealthCheck) ++
+          MetricsRoutes.routes(cfg.metrics, promPublisher)
+
       val systemRoutes: Routes[Any, Response] =
-        HealthRoutes.routes(dbHealthCheck) ++
-          MetricsRoutes.routes(cfg.metrics, promPublisher) ++
-          VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
+        VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
           AuthRoutes.routes(auth, userRepo, upRepo) ++
           ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
           HouseholdSettingsRoutes.routes(auth, hsRepo) ++
@@ -309,6 +342,12 @@ object Main extends ZIOAppDefault {
       val spaRoutes: Routes[Any, Response] =
         if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty
 
-      systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes
+      // #1248: gate all real routes behind readiness (503 until migrations +
+      // seeds complete), then mount the ungated observability routes alongside.
+      ungatedRoutes ++
+        Readiness.gate(
+          systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
+          ready,
+        )
     }
 }
