@@ -27,9 +27,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb  = TestDatabase.cleanAndMigrate
 
   private val kidsMac   = "aa:bb:cc:dd:ee:01"
   private val adultsMac = "aa:bb:cc:dd:ee:02"

@@ -31,9 +31,7 @@ object AppApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def makeRoutes =
     for {

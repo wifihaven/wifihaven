@@ -30,9 +30,7 @@ object TimeUsageBackfillSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private val testDate     = LocalDate.of(2026, 5, 7)
   private val mac1         = MacAddress.unsafe("aa:bb:cc:11:22:33")

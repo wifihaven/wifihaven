@@ -29,9 +29,7 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def settingsTz(hsr: HouseholdSettingsRepo, tz: String): Task[HouseholdSettings] =
     for {

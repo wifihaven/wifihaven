@@ -21,9 +21,7 @@ object RetentionSweepJobSpec
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def seedRouter: RIO[RouterRepo, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("retention-test", Sha256Hex.unsafe("a" * 64)))
@@ -168,13 +166,17 @@ object RetentionSweepJobSpec
       for {
         _   <- cleanDb
         xa  <- ZIO.service[Transactor[Task]]
-        pg  <- ZIO.service[EmbeddedPostgres]
+        // Per-spec DB DataSource — advisory locks are per-database, so the
+        // holder must be on the same DB the repo runs against. Using
+        // `pg.getPostgresDatabase` here would acquire the lock on the
+        // `postgres` admin DB and the repo would never see it (#1188).
+        db  <- ZIO.service[TestDatabase.TestDb]
         rid <- seedRouter
         _   <- insertTraffic(xa, rid, "cc:cc:cc:cc:cc:01", ageDays = 60)
         acquired = new CountDownLatch(1)
         release  = new CountDownLatch(1)
         holder <- ZIO.attemptBlocking {
-          val c = pg.getPostgresDatabase.getConnection
+          val c = db.ds.getConnection
           try {
             val s = c.createStatement()
             s.execute(s"SELECT pg_advisory_lock($key)")

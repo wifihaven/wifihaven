@@ -137,24 +137,27 @@ jobs:
               - '.github/actionlint.yaml'
 
   # ── Scala: format, compile, test ─────────────────────────────────────────
-  # Runs on the 8-vCPU GitHub-hosted larger runner (#1188). Mill's test
-  # parallelism is on by default and spawns up to `MILL_JOBS` worker JVMs
-  # that pull specs from a shared queue — each worker has its own
-  # EmbeddedPostgres singleton, so a wider runner directly buys more
-  # parallel JVMs without any code changes. See docs/testing-parallelism.md.
+  # The dominant test-time cost used to be the per-test Flyway re-run
+  # inside cleanAndMigrate (~400-500 ms × 44 migrations × hundreds of
+  # tests). #1188 moved that work to a one-shot template-DB init at JVM
+  # startup; per-test reset is now a sub-ms `DROP DATABASE + CREATE
+  # DATABASE … TEMPLATE wh_template`. Mill's testParallelism=true
+  # (default) is what runs worker JVMs in parallel across the runner's
+  # vCPUs — each worker has its own EmbeddedPostgres + per-spec DBs
+  # cloned from the template. See docs/testing-parallelism.md.
   scala:
     name: Scala Build & Test
     needs: changes
     if: needs.changes.outputs.scala == 'true'
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
 
     env:
       WIFIHAVEN_JWT_SECRET: test-jwt-secret-for-ci-only
-      # Pass `--jobs $MILL_JOBS` to every mill invocation in this job.
-      # Match worker-JVM count to runner vCPUs — kept explicit so any
-      # change to `runs-on` stays coupled with the worker count it implies
-      # rather than silently inheriting `availableProcessors()`.
-      MILL_JOBS: "8"
+      # Pinned to the standard `ubuntu-latest` runner's 4 vCPUs (matches
+      # mill's default `availableProcessors()` but kept explicit so any
+      # change to `runs-on` stays coupled with the worker count it
+      # implies). Bump in lockstep if the runner gets wider.
+      MILL_JOBS: "4"
 
     steps:
       - uses: actions/checkout@v6

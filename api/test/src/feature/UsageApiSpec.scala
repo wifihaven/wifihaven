@@ -27,9 +27,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb  = TestDatabase.cleanAndMigrate
 
   private val testMac = "aa:bb:cc:dd:ee:01"
 

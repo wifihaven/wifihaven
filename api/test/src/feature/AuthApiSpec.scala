@@ -26,9 +26,7 @@ object AuthApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb  = TestDatabase.cleanAndMigrate
 
   def spec = suite("Auth API")(
     test("admin can login with seeded credentials") {

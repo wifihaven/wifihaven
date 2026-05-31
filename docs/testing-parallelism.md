@@ -1,69 +1,109 @@
 # Test parallelism model
 
-The `Scala Build & Test` job in `.github/workflows/ci.yml` runs `mill
-shared.test` then `mill api.test` on an 8-vCPU GitHub-hosted larger
-runner (`ubuntu-latest-8-cores`). Both modules are tuned to use the full
-runner without any spec-level refactor; this doc explains how, so the next
-person to touch CI doesn't re-introduce the "sequential" comment that used
-to live on the test step.
+The `Scala Build & Test` job in `.github/workflows/ci.yml` runs the
+Scala test suite as fast as we can on the standard 4-vCPU
+`ubuntu-latest` runner. Two pieces matter:
 
-## What's parallel
+1. **Mill's worker-JVM parallelism** spreads the suite across the
+   runner's vCPUs.
+2. **The template-DB pattern in `TestDatabase`** removes the Flyway
+   re-run that used to dominate every test's wall time.
 
-Mill's `TestModule` ships with `testParallelism = true` by default. With a
-single test fork group (Mill's default — `testForkGrouping` returns one
-inner list of all spec FQCNs), Mill spawns up to `--jobs` **worker JVM
-processes** that share a filesystem-backed queue of spec class names. Each
-worker pulls one spec, runs it via the ZIO Test SBT framework, then comes
-back for the next.
+If you change either piece, update both this doc and the inline comment
+on the `scala` job — they were stale for months before #1188 (the
+"sequential to avoid embedded-pg lock contention" claim was wrong, and
+hid a much bigger Flyway-per-test hot spot).
 
-Inside one worker JVM, specs run sequentially through the framework — but
-nothing in that JVM races with another worker's JVM. Crucially each
-worker has its own `EmbeddedPostgres` singleton (the `@volatile var
-pgInstance` in [`api/test/src/TestDatabase.scala`](../api/test/src/TestDatabase.scala)
-is JVM-local), so the per-test `DROP SCHEMA public CASCADE` + Flyway
-migrate done in `TestDatabase.cleanAndMigrate` only ever touches the PG
-that the running worker owns. That's why we can use a shared singleton
-without locking even though it would race if multiple specs in one JVM hit
-it concurrently.
+## Mill worker JVMs
 
-## Worker count is pinned to runner vCPUs
+`TestModule.testParallelism = true` is mill's default. With the suite in
+a single test-fork group (also default), mill spawns `min(--jobs,
+num_specs)` **worker JVM processes** that pull spec classes from a
+shared filesystem-backed queue. Each worker runs one spec at a time
+through the ZIO Test SBT framework, then comes back for the next.
 
-The `scala` job sets `MILL_JOBS: "8"` and every `mill` invocation in that
-job is launched as `mill --jobs "$MILL_JOBS" …`. The default Mill
-behaviour is `availableProcessors()`, which works fine, but pinning the
-value:
+CI pins `MILL_JOBS=4` and passes `--jobs "$MILL_JOBS"` to every `mill`
+invocation in the job, matching the runner's 4 vCPUs. Mill defaults to
+`availableProcessors()`, which would give the same number — pinning is
+just so the runner spec and the worker count travel together if either
+moves.
 
-- keeps the runner spec and the worker count in the same diff (if we go
-  back to `ubuntu-latest`, both numbers move together), and
-- removes ambiguity if a future runner image exposes a different vCPU
-  count than expected.
+Within a worker JVM specs run **sequentially**. Cross-spec concurrency
+only happens across workers. We don't try to run multiple specs
+concurrently inside one JVM — see the "Why not in-JVM-multi-spec
+parallel" note below.
 
-The trade-off in worker count is **JVM + PG boot cost vs spec parallelism**.
-Each worker pays:
+## Template-DB pattern (the actual hot-path fix)
 
-- ~5–8s of JVM + Mill classpath startup, and
-- ~2–5s of `EmbeddedPostgres.start` (initdb + postmaster).
+Before #1188, every test called `cleanAndMigrate`, which did `DROP
+SCHEMA public CASCADE` + `Flyway.migrate()` against the singleton's
+`postgres` database. With 44 migrations that's ~400–500 ms per test;
+across the suite it added roughly two minutes of pure migration work.
 
-…before it runs its first spec. So workers = vCPUs is roughly the sweet
-spot; significantly more workers just multiplies that fixed cost without
-buying you more concurrent CPU work.
+The fix is to do that work exactly once per JVM into a Postgres
+**template database**, then clone the template for every spec.
 
-## Why not in-JVM parallel
+The first time any spec touches `TestDatabase` in a JVM:
 
-The obvious next step — run multiple specs concurrently *inside one JVM*,
-sharing a single `EmbeddedPostgres` — is blocked by the fact that
-`TestDatabase.cleanAndMigrate` resets the schema on the shared DB. To
-make that safe under concurrency every spec would need its own database
-(per-spec `CREATE DATABASE` + Flyway) and the bootstrap layer + every
-spec's `cleanDb` helper would have to be reworked. That's a ~50-file
-mechanical edit for a win that's bounded by the same vCPU ceiling we
-already hit with multiple worker JVMs, so we picked the cheaper path
-first. If we ever outgrow the per-worker PG boot cost (e.g. on a
-much-larger runner where boot dominates), revisit.
+1. Boot one shared `EmbeddedPostgres` (still the JVM-wide singleton).
+2. `CREATE DATABASE wh_template` on it.
+3. Run the production Flyway migrations into `wh_template`.
+4. Apply the test seed tweaks (household_settings row, admin
+   `must_change_password=false`) into `wh_template`.
+
+After that, every `TestDatabase.layer` evaluation:
+
+1. Allocates a unique DB name `wh_test_<n>` (atomic counter).
+2. Issues `CREATE DATABASE wh_test_<n> TEMPLATE wh_template`, which
+   Postgres satisfies with a fast file-level copy — single-digit ms,
+   no Flyway runs.
+3. Hands the spec a `TestDb(name, ds)` and a `Transactor` wired to
+   `ds`.
+
+`cleanAndMigrate` (called per-test by `cleanDb`) now does `DROP
+DATABASE wh_test_<n>` + the same `CREATE DATABASE … TEMPLATE`, after a
+defensive `pg_terminate_backend` to kick any stale connections off the
+target DB so Postgres will let us drop it. Same shape as the bootstrap
+allocation, just resetting an existing slot.
+
+### Cross-spec isolation
+
+Per-spec DB names mean specs that run concurrently (across worker JVMs)
+never touch each other's schema, data, or — importantly —
+**advisory locks**. Postgres advisory locks are per-database, so a
+spec acquiring a lock on `wh_test_42` can't be observed by code running
+in `wh_test_43`.
+
+This is what broke two tests during the #1188 refactor —
+`RollupRepoSpec` and `RetentionSweepJobSpec` were acquiring their
+"holder" lock on `pg.getPostgresDatabase` (the `postgres` admin DB)
+while the production code under test was running against the per-spec
+DB. The holder lock was invisible to the repo and the assertion
+race-passed under the old layout. Both tests now draw the connection
+from `TestDb.ds` for the same per-spec DB the repo runs against. **If
+you write a new test that acquires an advisory lock directly to verify
+contention, draw the connection from `TestDb.ds`, not from
+`EmbeddedPostgres.getPostgresDatabase`.**
+
+## Why not in-JVM-multi-spec parallel
+
+The next obvious step — running multiple `*Spec` objects concurrently
+inside *one* worker JVM, sharing one `EmbeddedPostgres` — needs a
+change to the ZIO Test SBT framework, which today processes its task
+list sequentially within a JVM. The template-DB pattern would make it
+safe (each spec already has its own DB), but the actual parallel
+execution machinery isn't there for free.
+
+The current model — one worker JVM per CPU, each with its own
+`EmbeddedPostgres` singleton and pool of per-spec template clones —
+caps out at runner vCPUs but is the same ceiling we'd hit from
+in-JVM-multi-spec without a much bigger refactor. Revisit if we ever
+move to a runner where the per-worker PG boot cost is the long pole.
 
 ## Local UX
 
 `mill shared.test`, `mill api.test`, `mill __.test` all still work
-locally with no flags. Mill defaults `--jobs` to the host's CPU count,
-which matches the CI behaviour. Pass `--jobs 1` for fully deterministic
-output (useful when debugging a test-ordering issue).
+locally with no flags. Mill defaults `--jobs` to the host's CPU count.
+Pass `--jobs 1` for fully deterministic output (useful when debugging
+a test-ordering issue, or when comparing a hot-path change like
+template-DB to a known-good single-worker baseline).

@@ -37,9 +37,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
 
   override val bootstrap = TestDatabase.layer ++ TestLayers.withClock(testClockAt)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def seedRouter(rRepo: RouterRepo): Task[(RouterId, String)] = {
     val token = "ROUTER_TOKEN_PLAIN"

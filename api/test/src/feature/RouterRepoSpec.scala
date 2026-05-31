@@ -15,9 +15,7 @@ object RouterRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   def spec = suite("OpenWRT repos")(
     suite("RouterRepo")(

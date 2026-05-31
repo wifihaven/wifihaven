@@ -34,9 +34,7 @@ object UserCreateSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb  = TestDatabase.cleanAndMigrate
 
   def spec = suite("User creation sets must_change_password=true")(
     test("userRepo.create stores must_change_password=true") {
