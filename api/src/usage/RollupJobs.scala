@@ -1,7 +1,8 @@
 package wifihaven.api.usage
 
-import wifihaven.api.db.RollupRepo
+import wifihaven.api.db.{AppRepo, RollupRepo}
 import wifihaven.shared.Clock
+import wifihaven.shared.types.AppId
 import zio.*
 
 import java.time.{Duration, LocalDate, ZoneId}
@@ -41,8 +42,8 @@ object RollupJobs {
    * Hourly fiber loop. Re-aggregates the trailing [[HourlyLookback]] window into `traffic_hourly`
    * every [[HourlyInterval]]. Errors are caught and recorded; the fiber never dies.
    */
-  def hourlyLoop(repo: RollupRepo, clock: Clock): UIO[Unit] =
-    runOnce("hourly", repo, clock, oneHourlyTick(repo, _))
+  def hourlyLoop(repo: RollupRepo, appRepo: AppRepo, clock: Clock): UIO[Unit] =
+    runOnce("hourly", repo, clock, oneHourlyTick(repo, appRepo, _))
       .repeat(Schedule.fixed(HourlyInterval))
       .unit
 
@@ -50,25 +51,43 @@ object RollupJobs {
    * Daily fiber loop. Re-aggregates the trailing [[DailyLookback]] window into `traffic_daily`
    * every [[DailyInterval]]. Same error semantics as the hourly fiber.
    */
-  def dailyLoop(repo: RollupRepo, clock: Clock, zone: ZoneId): UIO[Unit] =
-    runOnce("daily", repo, clock, oneDailyTick(repo, _, zone))
+  def dailyLoop(repo: RollupRepo, appRepo: AppRepo, clock: Clock, zone: ZoneId): UIO[Unit] =
+    runOnce("daily", repo, clock, oneDailyTick(repo, appRepo, _, zone))
       .repeat(Schedule.fixed(DailyInterval))
       .unit
 
   // ── tick bodies ────────────────────────────────────────────────────────────
 
-  private def oneHourlyTick(repo: RollupRepo, clock: Clock): Task[Option[Int]] =
+  // The app-hosts snapshot is read once per tick and stamped onto every rolled
+  // row (#1091). Reading it here (rather than per-row) keeps the version the
+  // rows are stamped at consistent for the whole reroll.
+  private def appSnapshot(appRepo: AppRepo): Task[(Map[String, List[AppId]], Long)] =
+    for {
+      mappings <- appRepo.listAllHostMappings
+      version  <- appRepo.currentHostsVersion
+    } yield (mappings.groupBy(_.host.value).view.mapValues(_.map(_.appId)).toMap, version)
+
+  private def oneHourlyTick(repo: RollupRepo, appRepo: AppRepo, clock: Clock): Task[Option[Int]] =
     for {
       now <- clock.instant
       since = now.minus(HourlyLookback).truncatedTo(java.time.temporal.ChronoUnit.HOURS)
-      n <- repo.rerollHourly(since)
+      snap <- appSnapshot(appRepo)
+      (appsByApex, version) = snap
+      n <- repo.rerollHourly(since, appsByApex, version)
     } yield n
 
-  private def oneDailyTick(repo: RollupRepo, clock: Clock, zone: ZoneId): Task[Option[Int]] =
+  private def oneDailyTick(
+      repo: RollupRepo,
+      appRepo: AppRepo,
+      clock: Clock,
+      zone: ZoneId,
+  ): Task[Option[Int]] =
     for {
       now <- clock.instant
       sinceDate = LocalDate.ofInstant(now, zone).minus(DailyLookback)
-      n <- repo.rerollDaily(sinceDate)
+      snap <- appSnapshot(appRepo)
+      (appsByApex, version) = snap
+      n <- repo.rerollDaily(sinceDate, appsByApex, version)
     } yield n
 
   // ── shared run wrapper ─────────────────────────────────────────────────────

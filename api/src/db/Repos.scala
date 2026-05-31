@@ -2214,6 +2214,14 @@ trait AppRepo {
   def getHosts(appId: AppId): Task[List[Hostname]]
 
   /**
+   * Current `app_hosts_version` — a global counter bumped by every host-set mutation ([[setHosts]],
+   * [[delete]]). The rollup writer stamps rolled rows with the value it read here; a read path
+   * compares it against the value stamped on rollup rows to decide whether the pre-attributed
+   * `app_id`s are fresh or must be recomputed in process (#1091).
+   */
+  def currentHostsVersion: Task[Long]
+
+  /**
    * #769: full (host, app_id) inventory across all apps. Used by the group-by-app aggregation paths
    * for Connection Events + Traffic Usage to bucket rows into their owning app, with `__other__`
    * for hosts not in any app. One row per (host, app) pair — a host that's in two apps yields two
@@ -2289,15 +2297,20 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
             icon_type=${a.iconType}
           WHERE id=${a.id}""".update.run.transact(xa).unit
 
+  // Every host-set mutation bumps the global app_hosts_version so rollup rows
+  // attributed at an older version are detected as stale on read (#1091).
+  private val bumpHostsVersion =
+    sql"UPDATE app_hosts_version SET version = version + 1".update.run
+
   def delete(id: AppId) =
-    sql"DELETE FROM apps WHERE id=$id".update.run.transact(xa).unit
+    (sql"DELETE FROM apps WHERE id=$id".update.run *> bumpHostsVersion).transact(xa).unit
 
   def setHosts(appId: AppId, hosts: List[Hostname]) = {
     val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
     val ins = hosts.distinct.map(h =>
       sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h) ON CONFLICT DO NOTHING".update.run,
     )
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void) *> bumpHostsVersion).transact(xa).unit
   }
 
   def getHosts(appId: AppId) =
@@ -2305,6 +2318,9 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .query[Hostname]
       .to[List]
       .transact(xa)
+
+  def currentHostsVersion =
+    sql"SELECT version FROM app_hosts_version".query[Long].unique.transact(xa)
 
   def listAllHostMappings =
     sql"SELECT app_id, host FROM app_hosts"
