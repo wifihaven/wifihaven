@@ -5,6 +5,7 @@ import doobie.implicits.*
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.metrics.{DbPoolMetrics, MetricsRuntime}
 import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
@@ -17,11 +18,15 @@ import zio.http.*
 import zio.interop.catz.*
 import zio.logging.*
 import zio.logging.backend.SLF4J
+import zio.metrics.connectors.prometheus.PrometheusPublisher
+import zio.metrics.jvm.DefaultJvmMetrics
 
 object Main extends ZIOAppDefault {
 
+  // #1242: enable ZIO runtime metrics (fibers, GC, etc.) so they flow into the
+  // Prometheus registry exposed at /metrics, alongside SLF4J logging.
   override val bootstrap =
-    Runtime.removeDefaultLoggers >>> SLF4J.slf4j
+    (Runtime.removeDefaultLoggers >>> SLF4J.slf4j) ++ Runtime.enableRuntimeMetrics
 
   def run =
     (for {
@@ -141,6 +146,11 @@ object Main extends ZIOAppDefault {
         )
         .forkDaemon
       _               <- ZIO.logInfo("rollup fibers forked (hourly + daily + time_used_daily)")
+      // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
+      // for the process and never blocks startup.
+      dbPool          <- ZIO.service[Database.DbPool]
+      _               <- DbPoolMetrics.loop(dbPool.dataSource, dbPool.maxSize).forkDaemon
+      _               <- ZIO.logInfo("db-pool metrics fiber forked")
       _               <- ZIO
         .logWarning(
           "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
@@ -177,7 +187,10 @@ object Main extends ZIOAppDefault {
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
       BlocklistFetcher.live >+>
-      Notifier.live
+      Notifier.live >+>
+      // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
+      MetricsRuntime.prometheus() >+>
+      DefaultJvmMetrics.live
 
   private def allRoutes(
       templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
@@ -185,34 +198,35 @@ object Main extends ZIOAppDefault {
       ready: UIO[Boolean],
   ) =
     for {
-      auth        <- ZIO.service[AuthService]
-      userRepo    <- ZIO.service[UserRepo]
-      upRepo      <- ZIO.service[UserProfileRepo]
-      profileRepo <- ZIO.service[ProfileRepo]
-      schedRepo   <- ZIO.service[ScheduleRepo]
-      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
-      tlRepo      <- ZIO.service[TimeLimitRepo]
-      stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-      deviceRepo  <- ZIO.service[DeviceRepo]
-      blRepo      <- ZIO.service[BlocklistRepo]
-      blCache     <- ZIO.service[BlocklistCache]
-      blFetcher2  <- ZIO.service[BlocklistFetcher]
-      usageRepo   <- ZIO.service[TimeUsageRepo]
-      extRepo     <- ZIO.service[TimeExtensionRepo]
-      routerRepo  <- ZIO.service[RouterRepo]
-      trafficRepo <- ZIO.service[TrafficReportRepo]
-      rollupRepo2 <- ZIO.service[RollupRepo]
-      connRepo    <- ZIO.service[ConnectionEventRepo]
-      blockEvRepo <- ZIO.service[BlockEventRepo]
-      alertRepo   <- ZIO.service[AlertRepo]
-      appRepo     <- ZIO.service[AppRepo]
-      notifier    <- ZIO.service[Notifier]
-      policy      <- ZIO.service[PolicyService]
-      timeStatus  <- ZIO.service[wifihaven.api.policy.TimeStatusService]
-      cfg         <- ZIO.service[AppConfig]
-      clock       <- ZIO.service[Clock]
-      timeCache   <- ZIO.service[TimeStatusCache]
-      xa          <- ZIO.service[Transactor[Task]]
+      auth          <- ZIO.service[AuthService]
+      userRepo      <- ZIO.service[UserRepo]
+      upRepo        <- ZIO.service[UserProfileRepo]
+      profileRepo   <- ZIO.service[ProfileRepo]
+      schedRepo     <- ZIO.service[ScheduleRepo]
+      hsRepo        <- ZIO.service[HouseholdSettingsRepo]
+      tlRepo        <- ZIO.service[TimeLimitRepo]
+      stlRepo       <- ZIO.service[SiteTimeLimitRepo]
+      deviceRepo    <- ZIO.service[DeviceRepo]
+      blRepo        <- ZIO.service[BlocklistRepo]
+      blCache       <- ZIO.service[BlocklistCache]
+      blFetcher2    <- ZIO.service[BlocklistFetcher]
+      usageRepo     <- ZIO.service[TimeUsageRepo]
+      extRepo       <- ZIO.service[TimeExtensionRepo]
+      routerRepo    <- ZIO.service[RouterRepo]
+      trafficRepo   <- ZIO.service[TrafficReportRepo]
+      rollupRepo2   <- ZIO.service[RollupRepo]
+      connRepo      <- ZIO.service[ConnectionEventRepo]
+      blockEvRepo   <- ZIO.service[BlockEventRepo]
+      alertRepo     <- ZIO.service[AlertRepo]
+      appRepo       <- ZIO.service[AppRepo]
+      notifier      <- ZIO.service[Notifier]
+      policy        <- ZIO.service[PolicyService]
+      timeStatus    <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+      cfg           <- ZIO.service[AppConfig]
+      clock         <- ZIO.service[Clock]
+      timeCache     <- ZIO.service[TimeStatusCache]
+      xa            <- ZIO.service[Transactor[Task]]
+      promPublisher <- ZIO.service[PrometheusPublisher]
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield {
@@ -222,12 +236,16 @@ object Main extends ZIOAppDefault {
       // `++` even though local macOS builds happened to fit. Explicit `Routes[Any, Response]`
       // ascriptions on the chunks ground the inference per chunk so the final fold is
       // a short, well-typed concatenation.
-      // #1248: /api/health is NOT readiness-gated — it carries its own
-      // not-ready logic (503 status=starting until migrations + seeds finish)
-      // so Render's health check can observe startup progress while the port is
-      // already bound. Everything else is gated below.
-      val healthRoutes: Routes[Any, Response] =
-        HealthRoutes.routes(ready, dbHealthCheck)
+      // #1248: the observability endpoints are NOT readiness-gated. /api/health
+      // carries its own not-ready logic (503 status=starting until migrations +
+      // seeds finish) so Render's health check can observe startup progress
+      // while the port is already bound; /metrics reads only the in-memory
+      // Prometheus registry (no DB) and must stay scrapeable during a slow
+      // startup — exactly the scenario this gate exists for. Everything else is
+      // gated below.
+      val ungatedRoutes: Routes[Any, Response] =
+        HealthRoutes.routes(ready, dbHealthCheck) ++
+          MetricsRoutes.routes(cfg.metrics, promPublisher)
 
       val systemRoutes: Routes[Any, Response] =
         VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
@@ -313,8 +331,8 @@ object Main extends ZIOAppDefault {
         if (cfg.http.serveSpa) StaticRoutes.routes(cfg.http.staticDir) else Routes.empty
 
       // #1248: gate all real routes behind readiness (503 until migrations +
-      // seeds complete), then mount the ungated health probe alongside.
-      healthRoutes ++
+      // seeds complete), then mount the ungated observability routes alongside.
+      ungatedRoutes ++
         Readiness.gate(
           systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
           ready,

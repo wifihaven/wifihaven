@@ -13,6 +13,12 @@ import scala.concurrent.ExecutionContext
 
 object Database {
 
+  /**
+   * #1243: handle on the live HikariCP pool so the metrics fiber can read `getHikariPoolMXBean`.
+   * Surfaced as a service alongside the `Transactor[Task]` (they share the same datasource).
+   */
+  final case class DbPool(dataSource: HikariDataSource, maxSize: Int)
+
   private def makeDataSource(cfg: DbConfig): HikariDataSource = {
     val ds = new HikariDataSource()
     ds.setJdbcUrl(s"jdbc:postgresql://${cfg.host}:${cfg.port}/${cfg.database}")
@@ -58,13 +64,16 @@ object Database {
   private def acquireDataSource(cfg: DbConfig): ZIO[Scope, Throwable, HikariDataSource] =
     ZIO.acquireRelease(ZIO.attempt(makeDataSource(cfg)))(ds => ZIO.succeed(ds.close()))
 
-  val transactorLayer: ZLayer[DbConfig, Throwable, Transactor[Task]] =
-    ZLayer.scoped {
+  // Outputs both the `Transactor[Task]` and a `DbPool` handle over the same Hikari datasource, so
+  // the #1243 pool-metrics fiber can poll the live MXBean without a second datasource.
+  val transactorLayer: ZLayer[DbConfig, Throwable, Transactor[Task] & DbPool] =
+    ZLayer.scopedEnvironment {
       for {
         cfg       <- ZIO.service[DbConfig]
         connectEC <- makeConnectEC(cfg.poolSize)
         ds        <- acquireDataSource(cfg)
-      } yield Transactor.fromDataSource[Task](ds, connectEC)
+        xa = Transactor.fromDataSource[Task](ds, connectEC)
+      } yield ZEnvironment[Transactor[Task]](xa).add[DbPool](DbPool(ds, cfg.poolSize))
     }
 
   def runMigrations(cfg: DbConfig): Task[Unit] =
