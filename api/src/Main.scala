@@ -79,6 +79,12 @@ object Main extends ZIOAppDefault {
       // a watermarked row; the read path adds a live tail of buckets after the watermark, so
       // /api/time/status/summary serves a rollup + small live aggregation instead of a full
       // per-request day scan.
+      // TODO(#1221): bound the connection hold time of this rollup recompute and
+      // of the per-profile UsageSeries read (#1099) so neither can monopolize the
+      // shared Hikari pool for tens of seconds under load — e.g. a smaller batch,
+      // a time budget, or a separate small pool for the rollup work. The pool-size
+      // bump (this PR) and the dedicated connect EC are the first-order fix; this
+      // is the durability follow-up tracked in #1221.
       timeRollupRepo  <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
       profileRepoForJ <- ZIO.service[wifihaven.api.db.ProfileRepo]
       deviceRepoForJ  <- ZIO.service[wifihaven.api.db.DeviceRepo]
@@ -138,7 +144,7 @@ object Main extends ZIOAppDefault {
   private val serverEnv =
     AppConfig.layer >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.db)) >+>
-      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](c => Database.makeTransactor(c.db))) >+>
+      Database.transactorLayer >+>
       Repos.all >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
       Clock.live >+>
