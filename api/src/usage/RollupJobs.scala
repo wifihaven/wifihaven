@@ -24,19 +24,30 @@ import java.time.{Duration, LocalDate, ZoneId}
 // runs so an operator can tell at a glance whether the rollups are alive.
 object RollupJobs {
 
-  // How many hours back the hourly fiber re-rolls every tick. Two hours is
-  // enough cushion for the closed-hour boundary plus any router clock skew
-  // (#9) without re-aggregating a meaningful slice of history each pass.
+  // How many hours back the hourly fiber re-rolls every tick. Two hours covers
+  // the closed-hour boundary plus router clock skew (#9), and — now that the
+  // fiber ticks hourly (#1230) — gives one tick of self-heal slack: a missed
+  // tick's hour is still inside the next tick's 2h window. Must stay
+  // >= HourlyInterval or a missed tick drops a bucket (see RollupCadenceSpec).
   val HourlyLookback: Duration = Duration.ofHours(2)
 
-  // The daily fiber re-rolls today + yesterday every tick — yesterday because
-  // late-arriving router posts can extend the previous day's traffic_reports
-  // rows past midnight, and today because the rollup should be no more than
-  // an hour stale.
-  val DailyLookback: java.time.Period = java.time.Period.ofDays(1)
+  // The daily fiber re-rolls the trailing two days every tick: yesterday +
+  // today (late-arriving router posts extend the previous day past midnight),
+  // plus one extra day of slack so a missed daily tick (#1230 widened the
+  // cadence to 24h) still self-heals on the next one. Must stay >= 2 days
+  // while DailyInterval is 24h (see RollupCadenceSpec).
+  val DailyLookback: java.time.Period = java.time.Period.ofDays(2)
 
-  val HourlyInterval: Duration = Duration.ofMinutes(5)
-  val DailyInterval: Duration  = Duration.ofMinutes(60)
+  // #1230: re-roll cadences match the tier each table is read at, not the
+  // bucket name. `pickTier` (UsageRoutes) reads ≤24h windows from raw
+  // traffic_reports, 24h–14d from traffic_hourly, >14d from traffic_daily — so
+  // a rolled bucket isn't read until it crosses its threshold. Rolling far more
+  // often just burns DB work on the 256 MB prod instance (#1228). Hourly cadence
+  // gives every hour ~24 re-rolls of slack before it's first read; daily cadence
+  // gives every day ~14 days. The trailing-window lookbacks above keep a single
+  // missed tick self-healing.
+  val HourlyInterval: Duration = Duration.ofHours(1)
+  val DailyInterval: Duration  = Duration.ofHours(24)
 
   /**
    * Hourly fiber loop. Re-aggregates the trailing [[HourlyLookback]] window into `traffic_hourly`
