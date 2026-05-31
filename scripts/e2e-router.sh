@@ -67,6 +67,14 @@ PID=$(echo "$PROF" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 [ -n "$PID" ] || fail "no profile id: $PROF"
 pass "profile id=$PID name=$PROFILE_NAME"
 
+# Extra per-scenario artifacts (coverage-gap scenarios below create their own
+# RUN_ID-namespaced profiles/devices so they don't depend on the heavily-mutated
+# main profile $PID). Scenarios append MACs / profile ids here and cleanup()
+# tears them down on exit regardless of pass/fail. Bash reads these globals at
+# trap-fire time, so appending anywhere before exit is sufficient.
+EXTRA_DEVICES=()
+EXTRA_PROFILES=()
+
 # Register cleanup so test data is removed even on failure.
 cleanup() {
   echo
@@ -74,6 +82,12 @@ cleanup() {
   curl -s -X DELETE "$BASE/api/devices/$MAC"        "${AUTH[@]}" >/dev/null 2>&1 || true
   curl -s -X DELETE "$BASE/api/profiles/$PID"       "${AUTH[@]}" >/dev/null 2>&1 || true
   curl -s -X DELETE "$BASE/api/admin/routers/$RID"  "${AUTH[@]}" >/dev/null 2>&1 || true
+  for m in "${EXTRA_DEVICES[@]:-}"; do
+    [ -n "$m" ] && curl -s -X DELETE "$BASE/api/devices/$m" "${AUTH[@]}" >/dev/null 2>&1 || true
+  done
+  for p in "${EXTRA_PROFILES[@]:-}"; do
+    [ -n "$p" ] && curl -s -X DELETE "$BASE/api/profiles/$p" "${AUTH[@]}" >/dev/null 2>&1 || true
+  done
   pass "test profile + device + router removed"
 }
 trap cleanup EXIT
@@ -558,6 +572,461 @@ case "$CODE" in
   401|403) pass "wrong-password login → $CODE" ;;
   *)       fail "expected 401/403 on wrong password, got $CODE" ;;
 esac
+
+# ════════════════════════════════════════════════════════════════════════════
+# Gate 1 coverage-gap scenarios (#924 #927 #928 #929 #931 #932).
+#
+# Each creates its own RUN_ID-namespaced profile(s) + device(s) so it does not
+# depend on the heavily-mutated main profile $PID (paused + scheduled by the
+# steps above). Artifacts are appended to EXTRA_{PROFILES,DEVICES} and torn down
+# by cleanup() on exit. NOW / FIVE_AGO from §3 are reused where a recent
+# wall-clock timestamp is all that's needed.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── #924: per-FQDN time — proportional (byte-share) vs presence attribution ──
+#
+# Gap from #715: e2e only ever asserted whole-device minutes, never the per-host
+# split on /api/time/status `hostUsage`. Each (mac, period_start) bucket credits
+# every host its FULL duration as `usedMins` (presence) but splits the duration
+# by byte share as `proportionalMins` (#715). Post ONE bucket with two hosts at a
+# 90/10 byte split and assert: the heavy host's proportionalMins exceeds half the
+# (shared) presence minutes, the light host's is strictly below its presence
+# minutes, and heavy > light.
+step "#924: hostUsage proportional vs presence split on /api/time/status"
+P924_ID=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"name\":\"e2e-924-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}" \
+  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+[ -n "$P924_ID" ] || fail "#924: no profile id"
+EXTRA_PROFILES+=("$P924_ID")
+MAC924="e2:92:40:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"mac\":\"$MAC924\",\"name\":\"e2e-924-dev-${RUN_ID}\",\"profileId\":$P924_ID}" >/dev/null
+EXTRA_DEVICES+=("$MAC924")
+
+# 900k vs 100k bytes = 90/10 split, both active the full 300s → presence
+# usedMins=5 for each host; proportional splits 300s into 270s (=4 min) heavy
+# vs 30s (=0 min) light.
+U924_BODY=$(cat <<EOF
+{
+  "routerId": "$RID",
+  "periodStart": "$FIVE_AGO",
+  "periodEnd": "$NOW",
+  "records": [
+    {"mac":"$MAC924","ip":"192.168.4.10","host":{"type":"fqdn","value":"heavy924.example.com"},"activeSeconds":300,"bytesIn":900000,"bytesOut":0},
+    {"mac":"$MAC924","ip":"192.168.4.10","host":{"type":"fqdn","value":"light924.example.com"},"activeSeconds":300,"bytesIn":100000,"bytesOut":0}
+  ]
+}
+EOF
+)
+curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
+  -H 'content-type: application/json' -d "$U924_BODY" >/dev/null
+pass "#924: posted 1 bucket, 2 hosts, 90/10 byte split"
+
+# today-cache TTL is 30s (api/src/cache/TimeStatusCache.scala); allow up to 40s
+# for a poisoned-empty entry to expire on a staging rollover.
+H924_OK=""
+deadline=$(( $(date +%s) + 40 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" "$BASE/api/time/status?profileId=$P924_ID" >"$TMP/s924.json"
+  H924_OK=$(_py "
+import json
+st = json.load(open('$TMP/s924.json'))
+p = next((x for x in st if x.get('profileId') == $P924_ID), None)
+if p is None:
+    print('profile-missing'); raise SystemExit
+hu = {h['host'].get('value'): h for h in p.get('hostUsage', []) if h['host'].get('type') == 'fqdn'}
+heavy = hu.get('heavy924.example.com'); light = hu.get('light924.example.com')
+if not heavy or not light:
+    print('hosts-missing have=' + ','.join(sorted(hu))); raise SystemExit
+ok = (heavy['proportionalMins'] > heavy['usedMins'] / 2
+      and light['proportionalMins'] < light['usedMins']
+      and heavy['proportionalMins'] > light['proportionalMins'])
+print('ok' if ok else 'fail heavy=%s light=%s' % (heavy, light))
+")
+  [ "$H924_OK" = "ok" ] && break
+  sleep 2
+done
+[ "$H924_OK" = "ok" ] || fail "#924: proportional/presence split wrong: $H924_OK"
+pass "#924: heavy proportionalMins > ½ presence; light < presence; heavy > light"
+
+# ── #927: household-local day bucketing of usage across the reset boundary ───
+#
+# Gap from #794/#1104: usage timestamps are attributed to a calendar day by
+# householdLocalDate(periodStart, settings) — projecting into dailyResetTz and
+# rolling back a day when the wall-clock time is before dailyResetTime. e2e never
+# proved that the boundary actually splits two near-simultaneous records onto
+# different days. Read the live settings, find the most-recent reset boundary
+# comfortably in the past, post one record 5 min BEFORE it and one 5 min AFTER,
+# and assert each lands on its expected (different) household-local day and NOT
+# on the other.
+step "#927: usage straddling the daily-reset boundary splits across local days"
+curl -fsS "${AUTH[@]}" "$BASE/api/household/settings" >"$TMP/hs927.json"
+# Compute the boundary + the two periodStart instants + their expected local
+# days, mirroring PolicyService.householdLocalDate in python via zoneinfo.
+read -r BEFORE_TS AFTER_TS DAY_BEFORE DAY_AFTER < <(_py "
+import json
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
+s = json.load(open('$TMP/hs927.json'))
+tz = ZoneInfo(s['dailyResetTz'])
+rt = s['dailyResetTime']  # 'HH:MM' or 'HH:MM:SS'
+parts = [int(x) for x in rt.split(':')]
+reset = time(parts[0], parts[1], parts[2] if len(parts) > 2 else 0)
+def local_date(inst):
+    z = inst.astimezone(tz)
+    return (z.date() - timedelta(days=1)) if z.timetz().replace(tzinfo=None) < reset else z.date()
+now = datetime.now(tz)
+cutoff = now - timedelta(minutes=10)  # boundary must be safely in the past
+cand = datetime.combine(cutoff.date(), reset, tzinfo=tz)
+if cand > cutoff:
+    cand = datetime.combine(cutoff.date() - timedelta(days=1), reset, tzinfo=tz)
+before = cand - timedelta(minutes=5)
+after  = cand + timedelta(minutes=5)
+fmt = lambda d: d.astimezone(ZoneInfo('UTC')).strftime('%Y-%m-%dT%H:%M:%SZ')
+print(fmt(before), fmt(after), local_date(before).isoformat(), local_date(after).isoformat())
+")
+[ -n "$BEFORE_TS" ] && [ -n "$AFTER_TS" ] && [ "$DAY_BEFORE" != "$DAY_AFTER" ] \
+  || fail "#927: boundary computation failed ($BEFORE_TS/$AFTER_TS $DAY_BEFORE/$DAY_AFTER)"
+pass "#927: boundary split → before=$DAY_BEFORE after=$DAY_AFTER"
+
+P927_ID=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"name\":\"e2e-927-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}" \
+  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+[ -n "$P927_ID" ] || fail "#927: no profile id"
+EXTRA_PROFILES+=("$P927_ID")
+MAC927="e2:92:70:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"mac\":\"$MAC927\",\"name\":\"e2e-927-dev-${RUN_ID}\",\"profileId\":$P927_ID}" >/dev/null
+EXTRA_DEVICES+=("$MAC927")
+
+# Two single-host buckets, one each side of the boundary (120s active → 2 min).
+post_usage_927() {  # $1=periodStart  $2=host
+  local body
+  body=$(cat <<EOF
+{"routerId":"$RID","periodStart":"$1","periodEnd":"$AFTER_TS","records":[{"mac":"$MAC927","ip":"192.168.7.27","host":{"type":"fqdn","value":"$2"},"activeSeconds":120,"bytesIn":50000,"bytesOut":5000}]}
+EOF
+)
+  curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
+    -H 'content-type: application/json' -d "$body" >/dev/null
+}
+post_usage_927 "$BEFORE_TS" "before927.example.com"
+post_usage_927 "$AFTER_TS"  "after927.example.com"
+pass "#927: posted before/after-boundary usage"
+
+# Assert each day's hostUsage contains only its own host.
+check_day_927() {  # $1=date  $2=expected-host  $3=other-host
+  local got
+  local deadline=$(( $(date +%s) + 40 ))
+  while (( $(date +%s) < deadline )); do
+    curl -fsS "${AUTH[@]}" "$BASE/api/time/status?profileId=$P927_ID&date=$1" >"$TMP/s927.json"
+    got=$(_py "
+import json
+st = json.load(open('$TMP/s927.json'))
+p = next((x for x in st if x.get('profileId') == $P927_ID), None)
+hosts = {h['host'].get('value') for h in (p or {}).get('hostUsage', [])}
+has_want = '$2' in hosts
+has_other = '$3' in hosts
+print('ok' if (has_want and not has_other) else 'have=' + ','.join(sorted(hosts)))
+")
+    [ "$got" = "ok" ] && break
+    sleep 2
+  done
+  [ "$got" = "ok" ] || fail "#927: day $1 expected only $2, got: $got"
+  pass "#927: day $1 → only $2"
+}
+check_day_927 "$DAY_BEFORE" "before927.example.com" "after927.example.com"
+check_day_927 "$DAY_AFTER"  "after927.example.com"  "before927.example.com"
+
+# ── #928: cross-device overlap Sum vs Dedup totals ───────────────────────────
+#
+# Gap from #751: two devices on one profile active in the SAME period_start
+# bucket must total differently by mode — Sum adds per-device minutes (5+5=10),
+# Dedup unions the bucket once (5). Build one profile per mode with two devices
+# each, post identical overlapping usage, and read /api/time/status/summary
+# (cache-free, overlap-aware via dayStateAll). Assert sum=10, dedup=5, sum>dedup.
+step "#928: cross-device overlap Sum (10) vs Dedup (5) on /api/time/status/summary"
+mk_profile_928() {  # $1=label  $2=mode → echoes id
+  curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"name\":\"e2e-928-$1-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[],\"crossDeviceOverlapMode\":\"$2\"}" \
+    | sed -n 's/.*"id":\([0-9]*\).*/\1/p'
+}
+P928_SUM=$(mk_profile_928 sum sum)
+P928_DED=$(mk_profile_928 dedup dedup)
+[ -n "$P928_SUM" ] && [ -n "$P928_DED" ] || fail "#928: profile create failed"
+EXTRA_PROFILES+=("$P928_SUM" "$P928_DED")
+MAC_S1="e2:92:81:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+MAC_S2="e2:92:82:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+MAC_D1="e2:92:8d:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+MAC_D2="e2:92:8e:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+enroll_928() {  # $1=mac  $2=profileId
+  curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"mac\":\"$1\",\"name\":\"e2e-928-dev-${RUN_ID}\",\"profileId\":$2}" >/dev/null
+  EXTRA_DEVICES+=("$1")
+}
+enroll_928 "$MAC_S1" "$P928_SUM"
+enroll_928 "$MAC_S2" "$P928_SUM"
+enroll_928 "$MAC_D1" "$P928_DED"
+enroll_928 "$MAC_D2" "$P928_DED"
+
+# All four records share the batch periodStart → each profile's two devices land
+# in one common bucket; 300s active → 5 min/device.
+U928_BODY=$(cat <<EOF
+{
+  "routerId": "$RID",
+  "periodStart": "$FIVE_AGO",
+  "periodEnd": "$NOW",
+  "records": [
+    {"mac":"$MAC_S1","ip":"192.168.8.11","host":{"type":"fqdn","value":"shared928.example.com"},"activeSeconds":300,"bytesIn":40000,"bytesOut":4000},
+    {"mac":"$MAC_S2","ip":"192.168.8.12","host":{"type":"fqdn","value":"shared928.example.com"},"activeSeconds":300,"bytesIn":40000,"bytesOut":4000},
+    {"mac":"$MAC_D1","ip":"192.168.8.13","host":{"type":"fqdn","value":"shared928.example.com"},"activeSeconds":300,"bytesIn":40000,"bytesOut":4000},
+    {"mac":"$MAC_D2","ip":"192.168.8.14","host":{"type":"fqdn","value":"shared928.example.com"},"activeSeconds":300,"bytesIn":40000,"bytesOut":4000}
+  ]
+}
+EOF
+)
+curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
+  -H 'content-type: application/json' -d "$U928_BODY" >/dev/null
+pass "#928: posted overlapping usage to 4 devices (2 per profile)"
+
+SUMM_OK=""
+deadline=$(( $(date +%s) + 20 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" "$BASE/api/time/status/summary" >"$TMP/s928.json"
+  SUMM_OK=$(_py "
+import json
+xs = json.load(open('$TMP/s928.json'))
+by = {x['profileId']: x['usedMins'] for x in xs}
+s = by.get($P928_SUM); d = by.get($P928_DED)
+ok = (s == 10 and d == 5 and s > d)
+print('ok' if ok else 'sum=%s dedup=%s' % (s, d))
+")
+  [ "$SUMM_OK" = "ok" ] && break
+  sleep 2
+done
+[ "$SUMM_OK" = "ok" ] || fail "#928: expected sum=10 dedup=5, got: $SUMM_OK"
+pass "#928: Sum=10, Dedup=5 (overlapping bucket counted once under Dedup)"
+
+# ── #929: new-device alert on an unseen MAC + dismiss ────────────────────────
+#
+# Gap from #711: a dhcp_lease for a MAC we've never seen must raise a pending
+# new_device alert; dismissing it (POST /api/alerts/{id}/deny) removes it from
+# the default (pending-only) feed and the repo won't resurrect it.
+step "#929: dhcp_lease for unseen MAC raises new_device alert; deny dismisses it"
+MAC929="e2:92:90:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+DHCP929=$(cat <<EOF
+{"routerId":"$RID","events":[{"type":"dhcp_lease","mac":"$MAC929","ip":"192.168.9.29","hostname":"newdev-${RUN_ID}","ts":"$NOW"}]}
+EOF
+)
+curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
+  -H 'content-type: application/json' -d "$DHCP929" >/dev/null
+EXTRA_DEVICES+=("$MAC929")  # tear down the auto-created device row
+pass "#929: dhcp_lease posted for unseen MAC $MAC929"
+
+ALERT929=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" "$BASE/api/alerts" >"$TMP/al929.json"
+  ALERT929=$(_py "
+import json
+mac = '$MAC929'.lower()
+for a in json.load(open('$TMP/al929.json')):
+    if a.get('kind') == 'new_device' and a.get('mac','').lower() == mac and a.get('status') == 'pending':
+        print(a['id']); break
+")
+  [ -n "$ALERT929" ] && break
+  sleep 1
+done
+[ -n "$ALERT929" ] || fail "#929: no pending new_device alert for $MAC929"
+pass "#929: raised pending new_device alert id=$ALERT929"
+
+curl -fsS -X POST "$BASE/api/alerts/$ALERT929/deny" "${AUTH[@]}" >/dev/null
+curl -fsS "${AUTH[@]}" "$BASE/api/alerts" >"$TMP/al929b.json"
+STILL929=$(_py "
+import json
+mac = '$MAC929'.lower()
+n = sum(1 for a in json.load(open('$TMP/al929b.json'))
+        if a.get('kind') == 'new_device' and a.get('mac','').lower() == mac and a.get('status') == 'pending')
+print(n)
+")
+[ "$STILL929" = "0" ] || fail "#929: alert still pending after deny (count=$STILL929)"
+pass "#929: alert dismissed — absent from pending feed"
+
+# ── #931: connection-events /series buckets + groupBy; raw via /api/logs ─────
+#
+# Gap from #847: assert the aggregated series reconciles succeeded/blocked counts
+# under a real groupBy, that raw rows are served by /api/logs (not /series), and
+# that bucket=off is rejected by /series (the contract steers raw to /api/logs).
+step "#931: /series aggregates (groupBy=device) reconcile; raw via /api/logs"
+P931_ID=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"name\":\"e2e-931-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}" \
+  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+[ -n "$P931_ID" ] || fail "#931: no profile id"
+EXTRA_PROFILES+=("$P931_ID")
+MAC931="e2:93:10:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"mac\":\"$MAC931\",\"name\":\"e2e-931-dev-${RUN_ID}\",\"profileId\":$P931_ID}" >/dev/null
+EXTRA_DEVICES+=("$MAC931")
+
+# 3 allowed + 2 blocked connection_attempts, all "now", unique dest IPs.
+EVT931=$(_py "
+import json, uuid
+mac, ts = '$MAC931', '$NOW'
+evs = []
+for i in range(3):
+    evs.append({'type':'connection_attempt','mac':mac,'host':{'type':'fqdn','value':f'ok931-{i}.example.com'},'destIp':f'203.0.113.{30+i}','allowed':True,'reason':'allow','ts':ts,'eventId':str(uuid.uuid4())})
+for i in range(2):
+    evs.append({'type':'connection_attempt','mac':mac,'host':{'type':'fqdn','value':f'blk931-{i}.example.com'},'destIp':f'203.0.113.{40+i}','allowed':False,'reason':'blocked','ts':ts,'eventId':str(uuid.uuid4())})
+print(json.dumps({'routerId':'$RID','events':evs}))
+")
+curl -fsS -X POST "$BASE/api/router/events" "${RAUTH[@]}" \
+  -H 'content-type: application/json' -d "$EVT931" >/dev/null
+pass "#931: posted 3 allowed + 2 blocked connection_attempts"
+
+SER931=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" \
+    "$BASE/api/connection-events/series?bucket=1h&mac=$MAC931&groupBy=device&hours=1" \
+    >"$TMP/ser931.json"
+  SER931=$(_py "
+import json
+rows = json.load(open('$TMP/ser931.json')).get('rows', [])
+succ = sum(r.get('countSucceeded', 0) for r in rows)
+blk  = sum(r.get('countBlocked', 0) for r in rows)
+has_dev = all('device' in r.get('groups', {}) for r in rows) and len(rows) > 0
+print('ok' if (succ == 3 and blk == 2 and has_dev) else 'succ=%s blk=%s rows=%s' % (succ, blk, len(rows)))
+")
+  [ "$SER931" = "ok" ] && break
+  sleep 1
+done
+[ "$SER931" = "ok" ] || fail "#931: series reconcile failed: $SER931"
+pass "#931: /series countSucceeded=3 countBlocked=2, grouped by device"
+
+# Raw individual rows come from /api/logs (not /series).
+RAW931=""
+deadline=$(( $(date +%s) + 15 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" "$BASE/api/logs?mac=$MAC931&hours=1" >"$TMP/raw931.json"
+  RAW931=$(_py "
+import json
+rows = json.load(open('$TMP/raw931.json')).get('rows', [])
+print('ok' if len(rows) == 5 else 'rows=%s' % len(rows))
+")
+  [ "$RAW931" = "ok" ] && break
+  sleep 1
+done
+[ "$RAW931" = "ok" ] || fail "#931: /api/logs raw rows != 5: $RAW931"
+pass "#931: /api/logs returned all 5 raw rows"
+
+# bucket=off must be rejected by /series (raw belongs to /api/logs).
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" \
+  "$BASE/api/connection-events/series?bucket=off&mac=$MAC931&hours=1")
+[ "$CODE" = "400" ] || fail "#931: expected 400 for bucket=off on /series, got $CODE"
+pass "#931: /series rejects bucket=off (400)"
+
+# ── #932: /api/usage/traffic raw + aggregated bytes reconcile ────────────────
+#
+# Gap from #846: assert the traffic endpoint serves raw rows (bucket=raw), folds
+# them into aggregated byte sums (bucket=1h, groupBy=domain) that reconcile to
+# what was posted, and rejects unknown bucket / unimplemented groupBy=apex. Also
+# smoke /api/usage/series for the same device. NOTE: unlike the issue's wording,
+# /api/usage/series does NOT take bucket/groupBy=device — bucket lives only on
+# /api/usage/traffic and /series's groupBy supports only 'app' (see PR notes).
+step "#932: /api/usage/traffic raw rows + aggregated byte reconcile"
+P932_ID=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"name\":\"e2e-932-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}" \
+  | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+[ -n "$P932_ID" ] || fail "#932: no profile id"
+EXTRA_PROFILES+=("$P932_ID")
+MAC932="e2:93:20:${mac_suffix:0:2}:${mac_suffix:2:2}:${mac_suffix:4:2}"
+curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"mac\":\"$MAC932\",\"name\":\"e2e-932-dev-${RUN_ID}\",\"profileId\":$P932_ID}" >/dev/null
+EXTRA_DEVICES+=("$MAC932")
+
+U932_BODY=$(cat <<EOF
+{
+  "routerId": "$RID",
+  "periodStart": "$FIVE_AGO",
+  "periodEnd": "$NOW",
+  "records": [
+    {"mac":"$MAC932","ip":"192.168.32.10","host":{"type":"fqdn","value":"a932.example.com"},"activeSeconds":120,"bytesIn":300000,"bytesOut":0},
+    {"mac":"$MAC932","ip":"192.168.32.10","host":{"type":"fqdn","value":"b932.example.com"},"activeSeconds":120,"bytesIn":100000,"bytesOut":0}
+  ]
+}
+EOF
+)
+curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
+  -H 'content-type: application/json' -d "$U932_BODY" >/dev/null
+pass "#932: posted 2 hosts (300k + 100k bytes_in)"
+
+# from/to are ISO instants; wrap the posted window.
+T932_FROM=$(_py "from datetime import datetime,timezone,timedelta; print((datetime.now(timezone.utc)-timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+T932_TO=$(_py "from datetime import datetime,timezone,timedelta; print((datetime.now(timezone.utc)+timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+
+RAW932=""
+deadline=$(( $(date +%s) + 20 ))
+while (( $(date +%s) < deadline )); do
+  curl -fsS "${AUTH[@]}" \
+    "$BASE/api/usage/traffic?mac=$MAC932&bucket=raw&from=$T932_FROM&to=$T932_TO" \
+    >"$TMP/raw932.json"
+  RAW932=$(_py "
+import json
+r = json.load(open('$TMP/raw932.json'))
+rows = [x for x in r.get('rawRows', []) if x['host'].get('value','').endswith('932.example.com')]
+total_in = sum(x['bytesIn'] for x in rows)
+print('ok' if (r.get('bucket') == 'raw' and total_in == 400000 and len(rows) == 2) else 'bucket=%s rows=%s in=%s' % (r.get('bucket'), len(rows), total_in))
+")
+  [ "$RAW932" = "ok" ] && break
+  sleep 2
+done
+[ "$RAW932" = "ok" ] || fail "#932: raw rows reconcile failed: $RAW932"
+pass "#932: bucket=raw → 2 rows, bytesIn sum=400000"
+
+curl -fsS "${AUTH[@]}" \
+  "$BASE/api/usage/traffic?mac=$MAC932&bucket=1h&groupBy=domain&from=$T932_FROM&to=$T932_TO" \
+  >"$TMP/agg932.json"
+AGG932=$(_py "
+import json
+r = json.load(open('$TMP/agg932.json'))
+rows = r.get('aggregateRows', [])
+total_in = sum(x['totalBytesIn'] for x in rows)
+total_out = sum(x['totalBytesOut'] for x in rows)
+domains = {v for x in rows for v in x.get('groups', {}).values()} | {x['soleDomain'] for x in rows if x.get('soleDomain')}
+ours = {d for d in domains if d and d.endswith('932.example.com')}
+ok = ('domain' in r.get('groupBy', []) and total_in == 400000 and total_out == 0 and len(ours) == 2)
+print('ok' if ok else 'groupBy=%s in=%s out=%s domains=%s' % (r.get('groupBy'), total_in, total_out, sorted(ours)))
+")
+[ "$AGG932" = "ok" ] || fail "#932: aggregated reconcile failed: $AGG932"
+pass "#932: bucket=1h groupBy=domain → bytesIn sum=400000, 2 domains"
+
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" \
+  "$BASE/api/usage/traffic?mac=$MAC932&bucket=bogus&from=$T932_FROM&to=$T932_TO")
+[ "$CODE" = "400" ] || fail "#932: expected 400 for unknown bucket, got $CODE"
+pass "#932: unknown bucket → 400"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" \
+  "$BASE/api/usage/traffic?mac=$MAC932&bucket=1h&groupBy=apex&from=$T932_FROM&to=$T932_TO")
+[ "$CODE" = "400" ] || fail "#932: expected 400 for groupBy=apex (unimplemented), got $CODE"
+pass "#932: groupBy=apex → 400 (not implemented)"
+
+# /api/usage/series smoke — the screen-time series surface for the same device.
+curl -fsS "${AUTH[@]}" "$BASE/api/usage/series?mac=$MAC932" >"$TMP/ser932.json"
+SER932=$(_py "
+import json
+r = json.load(open('$TMP/ser932.json'))
+print('ok' if isinstance(r.get('topHosts'), list) and isinstance(r.get('buckets'), list) else 'shape-bad')
+")
+[ "$SER932" = "ok" ] || fail "#932: /api/usage/series shape unexpected: $SER932"
+pass "#932: /api/usage/series returns topHosts + buckets arrays"
 
 echo
 echo "All router e2e checks passed."
