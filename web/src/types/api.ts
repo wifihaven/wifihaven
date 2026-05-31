@@ -719,15 +719,15 @@ export interface CreateAppRequest {
   hosts: string[]
 }
 
-export interface UpdateAppRequest {
-  name: string
+// #999/#1003 — field-scoped partial update for PATCH /apps/:id. Omitted keys
+// are untouched; `null` clears a nullable field; `hosts` is a full replace
+// (matches PUT /apps/:id/hosts). `slug` is immutable post-create.
+export interface PatchAppRequest {
+  name?: string
   icon?: string | null
   iconType?: IconType
   templateId?: number | null
-}
-
-export interface SetAppHostsRequest {
-  hosts: string[]
+  hosts?: string[]
 }
 
 // #766 — recently-visited apex picker payload. One row per PSL-collapsed

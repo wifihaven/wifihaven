@@ -1840,72 +1840,155 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val wantsProfile = groupBy.contains("profile")
     val wantsApp     = groupBy.contains("app")
 
-    // #769: app slug for each connection-event row by joining the resolved
-    // host through `app_hosts` (host equality on the canonical hostname; the
-    // CRUD layer strips a leading "*." before insert so "youtube.com" is the
-    // stored form). Rows with no app membership bucket to `__other__`. The
-    // join is gated on wantsApp so a host in multiple apps doesn't fan out
-    // the row count when the operator isn't drilling on app.
-    val appSlugExpr = if (wantsApp) fr"COALESCE(aps.slug, '__other__')" else fr"NULL::TEXT"
-    val appNameExpr = if (wantsApp) fr"COALESCE(aps.name, 'Other')" else fr"NULL::TEXT"
-    val appIconExpr = if (wantsApp) fr"aps.icon" else fr"NULL::TEXT"
-    val appIdExpr   = if (wantsApp) fr"aps.id" else fr"NULL::BIGINT"
-
-    // Always SELECT all group expressions (NULL when not requested) so
-    // the result tuple has a constant shape and doobie can decode it.
-    val selDomain  = if (wantsDomain) domainExpr else fr"NULL::TEXT"
-    val selDevice  = if (wantsDevice) deviceExpr else fr"NULL::TEXT"
-    val selProfile = if (wantsProfile) profileExpr else fr"NULL::TEXT"
-    val selAppSlug = appSlugExpr
-    val selAppName = appNameExpr
-    val selAppIcon = appIconExpr
-    val selAppId   = appIdExpr
-
-    // GROUP BY only the requested columns, plus the window bucket. App needs
-    // (slug, name, icon, id) so the GROUP BY can carry through metadata; in
-    // practice (slug) alone uniquely identifies the row but name/icon/id are
-    // functionally dependent so adding them is safe and avoids MAX() casts.
-    //
     // #862: the window bucket uses the full date_bin/to_char expression (not
     // the SELECT alias) so the HAVING clause for the keyset cursor below can
     // reference the same expression — PG doesn't recognize SELECT aliases in
     // HAVING.
-    val winExpr      = fr"""to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
+    val winExpr = fr"""to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
                           AT TIME ZONE 'UTC',
                           'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
-    val groupByParts = List(
-      Some(winExpr),
-      Option.when(wantsDomain)(domainExpr),
-      Option.when(wantsDevice)(deviceExpr),
-      Option.when(wantsProfile)(profileExpr),
-      Option.when(wantsApp)(appSlugExpr),
-      Option.when(wantsApp)(appNameExpr),
-      Option.when(wantsApp)(appIconExpr),
-      Option.when(wantsApp)(appIdExpr),
-    ).flatten
-    val groupByCols  = groupByParts.reduce(_ ++ fr"," ++ _)
 
-    // #862: stable lexicographic group key for keyset paging. Concatenates the
-    // SELECTed group values (or empty string when not requested) with a
-    // delimiter unlikely to collide with hostnames / device names.
-    val groupKeyParts = List(
-      Option.when(wantsDomain)(fr"COALESCE(" ++ domainExpr ++ fr", '')"),
-      Option.when(wantsDevice)(fr"COALESCE(" ++ deviceExpr ++ fr", '')"),
-      Option.when(wantsProfile)(fr"COALESCE(" ++ profileExpr ++ fr", '')"),
-    ).flatten
-    val groupKeyExpr  = groupKeyParts match {
-      case Nil   => fr"''"
-      case parts => parts.reduce((a, b) => a ++ fr"|| chr(31) ||" ++ b)
-    }
+    // Shared FROM + filter fragments. Extracted ahead of the SELECT so the
+    // #857 host-resolution probe below can reuse the exact same window + filter
+    // predicates as the aggregation, guaranteeing both see the same host set.
+    val fromJoins = fr"""FROM connection_events ce
+           LEFT JOIN devices d  ON d.mac = ce.mac
+           LEFT JOIN profiles p ON p.id  = d.profile_id
+           LEFT JOIN routers r  ON r.id  = ce.router_id"""
+    // #862: window anchor moves from "now" to `until` (defaults to NOW()).
+    val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val window    =
+      fr"AND ce.ts > " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND ce.ts <= " ++ anchor
+    val byMac     = cats.data.NonEmptyList
+      .fromList(f.macs)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
+    val byDev     = cats.data.NonEmptyList
+      .fromList(f.deviceIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
+    val byPid     = cats.data.NonEmptyList
+      .fromList(f.profileIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
+    val byBl      = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
+    val byDom     = f.domain.fold(fr"")(d =>
+      fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
+    )
+    val byLoc     = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    val byMc      = if (f.includeMulticast) fr"" else multicastFilterSql
+    val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc
 
-    val base    =
-      fr"""SELECT """ ++ selDomain ++ fr"AS grp_domain," ++
-        selDevice ++ fr"AS grp_device," ++
-        selProfile ++ fr"AS grp_profile," ++
-        selAppSlug ++ fr"AS grp_app_slug," ++
-        selAppName ++ fr"AS grp_app_name," ++
-        selAppIcon ++ fr"AS grp_app_icon," ++
-        selAppId ++ fr"""AS grp_app_id,
+    // #857: resolve each in-window host to its app(s) in Scala via
+    // HostMatch.lookupApex — the single host→apex matcher shared with the
+    // traffic-usage aggregator (#1085) and PolicyService. We deliberately do
+    // NOT match in SQL: app_hosts stores apex-form hosts ("youtube.com"), but
+    // connection_events carry FQDNs ("www.youtube.com"), so an exact SQL join
+    // would drop subdomains into __other__. Instead we fetch the apex→app
+    // inventory + the distinct in-window hosts, run lookupApex per host, and
+    // feed the resolved concrete (fqdn → app) pairs back into the aggregation
+    // as a VALUES join. A host in N apps yields N pairs (fan-out preserved).
+    // #1091 can later swap this read to a denormalized app_id column without
+    // changing semantics, since lookupApex stays the source of truth.
+    val resolveAppPairs: ConnectionIO[List[(String, (String, String, Option[String], Long))]] =
+      if (!wantsApp)
+        List.empty[(String, (String, String, Option[String], Long))].pure[ConnectionIO]
+      else
+        for {
+          memberships <-
+            fr"""SELECT ah.host, a.slug, a.name, a.icon, a.id
+                 FROM app_hosts ah JOIN apps a ON a.id = ah.app_id"""
+              .query[(String, String, String, Option[String], Long)]
+              .to[List]
+          hosts       <-
+            (fr"SELECT DISTINCT " ++ domainExpr ++ fr" " ++ fromJoins ++ fr"WHERE 1=1" ++ filters)
+              .query[Option[String]]
+              .to[List]
+        } yield {
+          val byApex: Map[String, List[(String, String, Option[String], Long)]] =
+            memberships.groupMap(_._1)(m => (m._2, m._3, m._4, m._5))
+          hosts.flatten.distinct.flatMap { h =>
+            HostMatch.lookupApex(h, byApex).getOrElse(Nil).map(row => (h, row))
+          }
+        }
+
+    resolveAppPairs
+      .flatMap { appPairs =>
+        val hasAppMap = wantsApp && appPairs.nonEmpty
+
+        // App expressions. With resolved pairs we COALESCE off the VALUES alias
+        // `am`; when grouping by app but nothing matched, everything collapses to
+        // __other__; otherwise NULL (un-drilled path keeps its constant shape).
+        val appSlugExpr =
+          if (hasAppMap) fr"COALESCE(am.slug, '__other__')"
+          else if (wantsApp) fr"'__other__'::TEXT"
+          else fr"NULL::TEXT"
+        val appNameExpr =
+          if (hasAppMap) fr"COALESCE(am.name, 'Other')"
+          else if (wantsApp) fr"'Other'::TEXT"
+          else fr"NULL::TEXT"
+        val appIconExpr = if (hasAppMap) fr"am.icon" else fr"NULL::TEXT"
+        val appIdExpr   = if (hasAppMap) fr"am.app_id" else fr"NULL::BIGINT"
+
+        // Always SELECT all group expressions (NULL when not requested) so
+        // the result tuple has a constant shape and doobie can decode it.
+        val selDomain  = if (wantsDomain) domainExpr else fr"NULL::TEXT"
+        val selDevice  = if (wantsDevice) deviceExpr else fr"NULL::TEXT"
+        val selProfile = if (wantsProfile) profileExpr else fr"NULL::TEXT"
+        val selAppSlug = appSlugExpr
+        val selAppName = appNameExpr
+        val selAppIcon = appIconExpr
+        val selAppId   = appIdExpr
+
+        // GROUP BY only the requested columns, plus the window bucket. App needs
+        // (slug, name, icon, id) so the GROUP BY can carry through metadata; in
+        // practice (slug) alone uniquely identifies the row but name/icon/id are
+        // functionally dependent so adding them is safe and avoids MAX() casts.
+        // Gated on hasAppMap: when grouping by app with no matches the app
+        // columns are constants, which we leave out of GROUP BY (a constant
+        // SELECT is fine ungrouped) so PG never sees a constant in GROUP BY.
+        val groupByParts = List(
+          Some(winExpr),
+          Option.when(wantsDomain)(domainExpr),
+          Option.when(wantsDevice)(deviceExpr),
+          Option.when(wantsProfile)(profileExpr),
+          Option.when(hasAppMap)(appSlugExpr),
+          Option.when(hasAppMap)(appNameExpr),
+          Option.when(hasAppMap)(appIconExpr),
+          Option.when(hasAppMap)(appIdExpr),
+        ).flatten
+        val groupByCols  = groupByParts.reduce(_ ++ fr"," ++ _)
+
+        // #862: stable lexicographic group key for keyset paging. Concatenates the
+        // SELECTed group values (or empty string when not requested) with a
+        // delimiter unlikely to collide with hostnames / device names.
+        val groupKeyParts = List(
+          Option.when(wantsDomain)(fr"COALESCE(" ++ domainExpr ++ fr", '')"),
+          Option.when(wantsDevice)(fr"COALESCE(" ++ deviceExpr ++ fr", '')"),
+          Option.when(wantsProfile)(fr"COALESCE(" ++ profileExpr ++ fr", '')"),
+        ).flatten
+        val groupKeyExpr  = groupKeyParts match {
+          case Nil   => fr"''"
+          case parts => parts.reduce((a, b) => a ++ fr"|| chr(31) ||" ++ b)
+        }
+
+        // #857: resolved (fqdn → app) pairs as a VALUES table. Explicit casts on
+        // every row so PG never has to infer a column type from an all-NULL icon.
+        val appJoin = if (hasAppMap) {
+          val values = appPairs
+            .map { case (h, (slug, name, icon, id)) =>
+              fr"($h::TEXT, $slug::TEXT, $name::TEXT, $icon::TEXT, $id::BIGINT)"
+            }
+            .reduce((a, b) => a ++ fr"," ++ b)
+          fr"LEFT JOIN (VALUES" ++ values ++ fr") AS am(host, slug, name, icon, app_id) ON am.host = " ++
+            domainExpr
+        } else fr""
+
+        val base    =
+          fr"""SELECT """ ++ selDomain ++ fr"AS grp_domain," ++
+            selDevice ++ fr"AS grp_device," ++
+            selProfile ++ fr"AS grp_profile," ++
+            selAppSlug ++ fr"AS grp_app_slug," ++
+            selAppName ++ fr"AS grp_app_name," ++
+            selAppIcon ++ fr"AS grp_app_icon," ++
+            selAppId ++ fr"""AS grp_app_id,
                   to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
                           AT TIME ZONE 'UTC',
                           'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS window_start,
@@ -1926,139 +2009,110 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                        THEN MAX(""" ++ domainExpr ++ fr""") END            AS sole_domain,
                   CASE WHEN COUNT(DISTINCT """ ++ appSlugExpr ++ fr""") = 1
                        THEN MAX(""" ++ appNameExpr ++ fr""") END           AS sole_app
-           FROM connection_events ce
-           LEFT JOIN devices d  ON d.mac = ce.mac
-           LEFT JOIN profiles p ON p.id  = d.profile_id
-           LEFT JOIN routers r  ON r.id  = ce.router_id""" ++
-        // #769: only join through app_hosts when grouping by app — a host in
-        // multiple apps would otherwise fan out the row count. The join is
-        // gated so wantsApp=false stays a single-row-per-event path.
-        (if (wantsApp)
-           fr"""LEFT JOIN app_hosts ah ON ah.host = """ ++ domainExpr ++ fr"""
-           LEFT JOIN apps aps   ON aps.id = ah.app_id"""
-         else fr"") ++
-        fr"""WHERE 1=1"""
-    // #862: window anchor moves from "now" to `until` (defaults to NOW()).
-    val anchor  = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
-    val window  =
-      fr"AND ce.ts > " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND ce.ts <= " ++ anchor
-    val byMac   = cats.data.NonEmptyList
-      .fromList(f.macs)
-      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"ce.mac", nel))
-    val byDev   = cats.data.NonEmptyList
-      .fromList(f.deviceIds)
-      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
-    val byPid   = cats.data.NonEmptyList
-      .fromList(f.profileIds)
-      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
-    val byBl    = f.blocked.fold(fr"")(b => fr"AND ce.allowed = ${!b}")
-    val byDom   = f.domain.fold(fr"")(d =>
-      fr"AND COALESCE(ce.resolved_host_value, ce.host_value) ILIKE ${s"%$d%"}",
-    )
-    val byLoc   = f.location.fold(fr"")(l => fr"AND r.name = $l")
-    val byMc    = if (f.includeMulticast) fr"" else multicastFilterSql
-    // #862: keyset cursor on (window_start DESC, group_key ASC). HAVING uses
-    // the full window/groupkey expressions (PG doesn't allow SELECT aliases
-    // in HAVING).
-    // Tuple lex `(a,b) < (x,y)` only matches when both columns sort the same
-    // direction. Our order is (window_start DESC, group_key ASC), so we
-    // split into an OR: strictly-older window, OR same window with a
-    // strictly-greater key.
-    val having  = (f.cursorWs, f.cursorKey) match {
-      case (Some(ws), Some(k)) =>
-        fr"HAVING " ++ winExpr ++ fr"< $ws OR (" ++ winExpr ++ fr"= $ws AND " ++
-          groupKeyExpr ++ fr"> $k)"
-      case _                   => fr""
-    }
-    // #862: stable secondary order so keyset cursor is deterministic. Was
-    // COUNT(*) DESC which is unstable under inserts. When groupBy is empty
-    // (#917 one-row-per-window mode), there's no secondary key and PG rejects
-    // a literal '' in ORDER BY ("non-integer constant in ORDER BY"), so we
-    // drop the second clause.
-    val orderBy =
-      if (groupKeyParts.isEmpty) fr"ORDER BY window_start DESC"
-      else fr"ORDER BY window_start DESC, " ++ groupKeyExpr ++ fr" ASC"
-    (base ++ window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc ++
-      fr"GROUP BY " ++ groupByCols ++ fr" " ++ having ++
-      orderBy ++ fr"LIMIT ${f.limit}")
-      .query[
-        (
-            Option[String], // grp_domain
-            Option[String], // grp_device
-            Option[String], // grp_profile
-            Option[String], // grp_app_slug
-            Option[String], // grp_app_name
-            Option[String], // grp_app_icon
-            Option[Long],   // grp_app_id
-            String,         // window_start
-            Int,            // count_succeeded
-            Int,            // count_blocked
-            String,         // last_seen
-            Option[String], // top_device
-            Int,            // distinct_devices
-            Int,            // distinct_profiles
-            Int,            // distinct_domains
-            Int,            // distinct_apps
-            Option[String], // sole_device   (null when distinct != 1)
-            Option[String], // sole_profile
-            Option[String], // sole_domain
-            Option[String], // sole_app
-        ),
-      ]
-      .map {
-        case (
-              gd,
-              gv,
-              gp,
-              gas,
-              gan,
-              gai,
-              gid,
-              ws,
-              sc,
-              bl,
-              ls,
-              td,
-              dd,
-              dpr,
-              dm,
-              dap,
-              sde,
-              spr,
-              sdo,
-              sap,
-            ) =>
-          val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
-          gd.foreach(v => groupMap += ("domain" -> v))
-          gv.foreach(v => groupMap += ("device" -> v))
-          gp.foreach(v => groupMap += ("profile" -> v))
-          gas.foreach(v => groupMap += ("app" -> v))
-          // Only surface sole* when the column is NOT in groupBy — when it IS,
-          // the value is already in `groups`.
-          ConnectionEventAggRow(
-            groups = groupMap.toMap,
-            windowStart = ws,
-            countSucceeded = sc,
-            countBlocked = bl,
-            lastSeen = ls,
-            topDevice = td,
-            distinctDevices = dd,
-            distinctProfiles = dpr,
-            distinctDomains = dm,
-            distinctApps = dap,
-            soleDevice = if (wantsDevice) None else sde,
-            soleProfile = if (wantsProfile) None else spr,
-            soleDomain = if (wantsDomain) None else sdo,
-            soleApp = if (wantsApp) None else sap,
-            // appId is the BIGINT primary key for the apps table; the
-            // synthetic "__other__" bucket has no row in apps so app_id is
-            // NULL on the wire.
-            appId = if (wantsApp) gid.map(AppId(_)) else None,
-            appName = if (wantsApp) gan else None,
-            appIcon = if (wantsApp) gai else None,
-          )
+           """ ++ fromJoins ++ appJoin ++ fr"""WHERE 1=1"""
+        // #862: keyset cursor on (window_start DESC, group_key ASC). HAVING uses
+        // the full window/groupkey expressions (PG doesn't allow SELECT aliases
+        // in HAVING).
+        // Tuple lex `(a,b) < (x,y)` only matches when both columns sort the same
+        // direction. Our order is (window_start DESC, group_key ASC), so we
+        // split into an OR: strictly-older window, OR same window with a
+        // strictly-greater key.
+        val having  = (f.cursorWs, f.cursorKey) match {
+          case (Some(ws), Some(k)) =>
+            fr"HAVING " ++ winExpr ++ fr"< $ws OR (" ++ winExpr ++ fr"= $ws AND " ++
+              groupKeyExpr ++ fr"> $k)"
+          case _                   => fr""
+        }
+        // #862: stable secondary order so keyset cursor is deterministic. Was
+        // COUNT(*) DESC which is unstable under inserts. When groupBy is empty
+        // (#917 one-row-per-window mode), there's no secondary key and PG rejects
+        // a literal '' in ORDER BY ("non-integer constant in ORDER BY"), so we
+        // drop the second clause.
+        val orderBy =
+          if (groupKeyParts.isEmpty) fr"ORDER BY window_start DESC"
+          else fr"ORDER BY window_start DESC, " ++ groupKeyExpr ++ fr" ASC"
+        (base ++ filters ++
+          fr"GROUP BY " ++ groupByCols ++ fr" " ++ having ++
+          orderBy ++ fr"LIMIT ${f.limit}")
+          .query[
+            (
+                Option[String], // grp_domain
+                Option[String], // grp_device
+                Option[String], // grp_profile
+                Option[String], // grp_app_slug
+                Option[String], // grp_app_name
+                Option[String], // grp_app_icon
+                Option[Long],   // grp_app_id
+                String,         // window_start
+                Int,            // count_succeeded
+                Int,            // count_blocked
+                String,         // last_seen
+                Option[String], // top_device
+                Int,            // distinct_devices
+                Int,            // distinct_profiles
+                Int,            // distinct_domains
+                Int,            // distinct_apps
+                Option[String], // sole_device   (null when distinct != 1)
+                Option[String], // sole_profile
+                Option[String], // sole_domain
+                Option[String], // sole_app
+            ),
+          ]
+          .map {
+            case (
+                  gd,
+                  gv,
+                  gp,
+                  gas,
+                  gan,
+                  gai,
+                  gid,
+                  ws,
+                  sc,
+                  bl,
+                  ls,
+                  td,
+                  dd,
+                  dpr,
+                  dm,
+                  dap,
+                  sde,
+                  spr,
+                  sdo,
+                  sap,
+                ) =>
+              val groupMap = scala.collection.mutable.LinkedHashMap.empty[String, String]
+              gd.foreach(v => groupMap += ("domain" -> v))
+              gv.foreach(v => groupMap += ("device" -> v))
+              gp.foreach(v => groupMap += ("profile" -> v))
+              gas.foreach(v => groupMap += ("app" -> v))
+              // Only surface sole* when the column is NOT in groupBy — when it IS,
+              // the value is already in `groups`.
+              ConnectionEventAggRow(
+                groups = groupMap.toMap,
+                windowStart = ws,
+                countSucceeded = sc,
+                countBlocked = bl,
+                lastSeen = ls,
+                topDevice = td,
+                distinctDevices = dd,
+                distinctProfiles = dpr,
+                distinctDomains = dm,
+                distinctApps = dap,
+                soleDevice = if (wantsDevice) None else sde,
+                soleProfile = if (wantsProfile) None else spr,
+                soleDomain = if (wantsDomain) None else sdo,
+                soleApp = if (wantsApp) None else sap,
+                // appId is the BIGINT primary key for the apps table; the
+                // synthetic "__other__" bucket has no row in apps so app_id is
+                // NULL on the wire.
+                appId = if (wantsApp) gid.map(AppId(_)) else None,
+                appName = if (wantsApp) gan else None,
+                appIcon = if (wantsApp) gai else None,
+              )
+          }
+          .to[List]
       }
-      .to[List]
       .transact(xa)
   }
 

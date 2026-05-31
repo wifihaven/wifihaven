@@ -24,6 +24,20 @@ const SIZE_TEXT: Record<NonNullable<Props['size']>, string> = {
 // malicious icon string can never reach the DOM as an attacker-controlled
 // `src`. Base64 PNGs are wrapped here so callers never construct the data:
 // URI from raw input.
+// #1081 — some surfaces (the Connection Events and Traffic Usage tables) carry
+// only the icon string with no `iconType`, because the aggregated wire rows
+// don't include it. When the type is absent we infer it: an https URL is a
+// favicon/image, anything else is treated as an emoji/text glyph. An explicit
+// `iconType` always wins, so callers can force text even for URL-shaped strings.
+function resolveIconType(icon: string, iconType?: IconType): IconType {
+  if (iconType) return iconType
+  try {
+    return new URL(icon).protocol === 'https:' ? 'url' : 'emoji'
+  } catch {
+    return 'emoji'
+  }
+}
+
 function safeImageSrc(icon: string, iconType: IconType): string | null {
   if (iconType === 'url') {
     try {
@@ -41,9 +55,10 @@ function safeImageSrc(icon: string, iconType: IconType): string | null {
   return null
 }
 
-export function AppIcon({ icon, iconType = 'emoji', size = 'md', className }: Props) {
+export function AppIcon({ icon, iconType, size = 'md', className }: Props) {
   const px = SIZE_PX[size]
-  const src = icon && iconType !== 'emoji' ? safeImageSrc(icon, iconType) : null
+  const effectiveType = icon ? resolveIconType(icon, iconType) : 'emoji'
+  const src = icon && effectiveType !== 'emoji' ? safeImageSrc(icon, effectiveType) : null
   if (src) {
     return (
       <img
@@ -59,7 +74,7 @@ export function AppIcon({ icon, iconType = 'emoji', size = 'md', className }: Pr
   }
   return (
     <span aria-hidden className={`${SIZE_TEXT[size]} ${className ?? ''}`}>
-      {iconType === 'emoji' ? (icon || '◳') : '◳'}
+      {effectiveType === 'emoji' ? (icon || '◳') : '◳'}
     </span>
   )
 }

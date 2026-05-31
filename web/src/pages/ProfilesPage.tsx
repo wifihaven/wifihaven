@@ -1442,7 +1442,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                       onClick={() => addApp(a)}
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left"
                     >
-                      <span className="text-base w-5 text-center" aria-hidden>{a.app.icon || '◳'}</span>
+                      <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
                       <span className="text-sm text-brand-ink flex-1 truncate">{a.app.name}</span>
                       <span className="text-xs text-brand-text-muted">{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</span>
                     </button>
@@ -1466,6 +1466,27 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   // bar simply doesn't render until the value arrives.
   usedMins?: number
 }) {
+  // #1086 — app-policy edits (mode switch, exemptFromDaily toggle, removal)
+  // feed the server-side daily-cap math, so a successful write must invalidate
+  // the ['time','status'] subtree to refetch the profile-wide used/cap bar.
+  // `onChanged` (reloadApps) only refreshes the component-state apps list, not
+  // the react-query time-status caches — so we wrap the writes in mutations
+  // that run `profileMutated()` on success, mirroring `grantMutation`.
+  const invalidators = useInvalidators()
+  const setPolicyMutation = useMutation({
+    mutationFn: (vars: { mode: AppMode; dailyMinutes: number | null; exemptFromDaily?: boolean }) =>
+      api.apps.setPolicy(app.app.id, profileId, {
+        mode: vars.mode,
+        dailyMinutes: vars.dailyMinutes,
+        ...(vars.exemptFromDaily !== undefined ? { exemptFromDaily: vars.exemptFromDaily } : {}),
+      }),
+    onSuccess: () => invalidators.profileMutated(),
+  })
+  const deletePolicyMutation = useMutation({
+    mutationFn: () => api.apps.deletePolicy(app.app.id, profileId),
+    onSuccess: () => invalidators.profileMutated(),
+  })
+
   const current = findAssignment(app, profileId)
   const [minutesDraft, setMinutesDraft] = useState<string>(() =>
     current?.mode === 'time_limited' && current.dailyMinutes != null
@@ -1488,11 +1509,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
     setBusy(true)
     setLocalError(null)
     try {
-      await api.apps.setPolicy(app.app.id, profileId, {
-        mode,
-        dailyMinutes,
-        ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
-      })
+      await setPolicyMutation.mutateAsync({ mode, dailyMinutes, exemptFromDaily })
       await onChanged()
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : 'Failed to update')
@@ -1505,7 +1522,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
     setBusy(true)
     setLocalError(null)
     try {
-      await api.apps.deletePolicy(app.app.id, profileId)
+      await deletePolicyMutation.mutateAsync()
       setMinutesDraft('')
       await onChanged()
     } catch (e) {

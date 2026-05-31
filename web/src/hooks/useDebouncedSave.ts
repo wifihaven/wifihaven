@@ -8,10 +8,14 @@ export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 export interface UseDebouncedSave {
   status: SaveStatus
   error: string | null
+  // True when the live value differs from the last-saved baseline and no save
+  // has completed for it yet — i.e. a change is queued or in flight. Drives the
+  // "Unsaved" indicator (#1003).
+  dirty: boolean
   flush: () => Promise<void>
-  // #995: re-attempt the last value after a failed save without losing the
-  // dirty form value. The form keeps the value in its own state, so retrying
-  // just re-commits the current value.
+  // Re-run the save that last failed (#1003 / #995) without losing the dirty
+  // form value — the form keeps the value in its own state. No-op unless
+  // status is 'error'.
   retry: () => Promise<void>
 }
 
@@ -31,6 +35,7 @@ export function useDebouncedSave<T>(
   const baselineRef = useRef<T>(value)
   const lastKeyRef  = useRef(key)
   const pendingRef  = useRef<T | null>(null)
+  const failedRef   = useRef<T | null>(null)
   const timerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const eq = equals ?? Object.is
@@ -51,6 +56,7 @@ export function useDebouncedSave<T>(
     try {
       await save(v)
       baselineRef.current = v
+      failedRef.current = null
       // If newer changes came in while saving, leave them for the next tick.
       if (pendingRef.current != null && !eq(pendingRef.current, v)) {
         // pendingRef holds the latest value; let the effect re-schedule.
@@ -61,6 +67,7 @@ export function useDebouncedSave<T>(
         savedTimerRef.current = setTimeout(() => setStatus('idle'), 1500)
       }
     } catch (e) {
+      failedRef.current = v
       setStatus('error')
       setError(e instanceof Error ? e.message : 'Save failed')
     }
@@ -104,11 +111,13 @@ export function useDebouncedSave<T>(
   }
 
   async function retry() {
-    if (status !== 'error') return
-    await commit(value)
+    const v = failedRef.current
+    if (v !== null) await commit(v as T)
   }
 
-  return { status, error, flush, retry }
+  const dirty = !eq(value, baselineRef.current)
+
+  return { status, error, dirty, flush, retry }
 }
 
 // #995: aggregate several field-level save states into one section-level
