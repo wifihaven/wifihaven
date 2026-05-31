@@ -274,6 +274,10 @@ jobs:
         with:
           name: vm-image-ipk
           path: scripts/vm/.cache/openwrt-wifihaven-ipk-*.img
+          # The .img lives under scripts/vm/.cache/, a dotted dir; upload-artifact
+          # v4+ defaults include-hidden-files: false and drops files under hidden
+          # path components, so without this the glob matches but the file is excluded.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
@@ -282,6 +286,9 @@ jobs:
         with:
           name: vm-image-apk
           path: scripts/vm/.cache/openwrt-wifihaven-apk-*.img
+          # See note on the ipk upload above: .cache/ is hidden, so files under it
+          # are excluded by default unless include-hidden-files is set.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
