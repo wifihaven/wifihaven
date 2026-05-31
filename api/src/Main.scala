@@ -82,42 +82,58 @@ object Main extends ZIOAppDefault {
           .provide(ZLayer.succeed(serverConfig) >>> Server.live)
           .forkScoped
         _      <- ZIO.logInfo("HTTP port bound; running DB-heavy startup behind readiness gate")
-        _      <- Database.runMigrations(cfg.db)
-        _      <- ZIO.logInfo("Database migrations complete")
-        // #334: ensure household_settings has its single row, defaulting the
-        // daily-reset tz to the API server's local zone on first install. No-op
-        // on subsequent boots because of ON CONFLICT DO NOTHING.
+        // Service handles are pure layer reads (no DB I/O); resolve them up front
+        // so the retried DB-init block below is purely the idempotent DB work.
         hsRepo <- ZIO.service[HouseholdSettingsRepo]
-        tz = java.time.ZoneId.systemDefault()
-        _ <- hsRepo.ensureDefault(tz)
-        _ <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
-        // #768: seed the starter library of app templates. Idempotent — operator
-        // host edits on previously-seeded apps are preserved.
         appRepoForSeed <- ZIO.service[AppRepo]
-        seedSummary    <- AppTemplates.seed(appRepoForSeed, templates)
-        _              <- ZIO.logInfo(
-          s"app_templates seeded (${templates.size} templates): " +
-            s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
-            s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated.mkString("[", ",", "]")}, " +
-            s"augmented=${seedSummary.augmented.size} " +
-            seedSummary.augmented
-              .map(a => s"${a.slug}+[${a.addedHosts.mkString(",")}]")
-              .mkString("[", ",", "]") + ", " +
-            s"preserved=${seedSummary.preserved.size}",
-        )
-        // #958: seed the bundled category blocklists. Inline lists pull hosts
-        // straight from YAML; remote lists fetch from the declared upstream URL
-        // (cached in-memory after first success — see BlocklistCache). REPLACE
-        // semantics; remote-fetch failures leave existing DB rows untouched.
         blRepoForSeed  <- ZIO.service[BlocklistRepo]
         blCacheForSeed <- ZIO.service[BlocklistCache]
         blFetcher      <- ZIO.service[BlocklistFetcher]
-        _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
-        _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+        tz = java.time.ZoneId.systemDefault()
+        // #1255: a transient DB outage (a few seconds during a resize/failover/
+        // restart) used to throw a Hikari/PSQL connection error straight to
+        // `main`, exiting the JVM and crash-looping until the DB returned. Wrap
+        // the DB-heavy init so connection-class failures retry with bounded
+        // exponential backoff + jitter while readiness stays false (/api/health
+        // 503). Genuine errors (a bad migration, a constraint violation) still
+        // fail fast and loud — see Database.isTransientConnectionError. The block
+        // is idempotent (Flyway tracks applied migrations; ensureDefault is
+        // ON CONFLICT DO NOTHING; the seeds are REPLACE / idempotent), so a retry
+        // safely re-runs it from the start.
+        _            <- Database.withStartupRetry(cfg.db.resilience, "startup DB init") {
+          for {
+            _ <- Database.runMigrations(cfg.db)
+            _ <- ZIO.logInfo("Database migrations complete")
+            // #334: ensure household_settings has its single row, defaulting the
+            // daily-reset tz to the API server's local zone on first install.
+            _ <- hsRepo.ensureDefault(tz)
+            _ <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+            // #768: seed the starter library of app templates. Idempotent —
+            // operator host edits on previously-seeded apps are preserved.
+            seedSummary <- AppTemplates.seed(appRepoForSeed, templates)
+            _           <- ZIO.logInfo(
+              s"app_templates seeded (${templates.size} templates): " +
+                s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
+                s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated
+                    .mkString("[", ",", "]")}, " +
+                s"augmented=${seedSummary.augmented.size} " +
+                seedSummary.augmented
+                  .map(a => s"${a.slug}+[${a.addedHosts.mkString(",")}]")
+                  .mkString("[", ",", "]") + ", " +
+                s"preserved=${seedSummary.preserved.size}",
+            )
+            // #958: seed the bundled category blocklists. Inline lists pull hosts
+            // straight from YAML; remote lists fetch from the declared upstream
+            // URL (cached in-memory after first success — see BlocklistCache).
+            // REPLACE semantics; remote-fetch failures leave existing rows alone.
+            _           <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
+            _           <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+          } yield ()
+        }
         // #1248: migrations + ensureDefault + seeds are done — flip readiness so
         // /api/health returns 200 and the gated routes start serving real traffic.
-        _              <- readyRef.set(true)
-        _              <- ZIO.logInfo("readiness flipped → /api/health healthy, API routes ungated")
+        _            <- readyRef.set(true)
+        _            <- ZIO.logInfo("readiness flipped → /api/health healthy, API routes ungated")
         // #809: scheduled re-aggregation of traffic_reports into the rollup
         // tables. #1230: cadence matches the tier each table is read at — hourly
         // tick re-rolls the trailing 2h every hour, daily tick re-rolls the
@@ -125,9 +141,9 @@ object Main extends ZIOAppDefault {
         // traffic_reports, not these tables). #1247: forkScoped (not forkDaemon)
         // into the run scope so they are interrupted before the Hikari pool
         // closes on shutdown; the fork never blocks startup either way.
-        rollupRepo     <- ZIO.service[wifihaven.api.db.RollupRepo]
-        clockForJobs   <- ZIO.service[Clock]
-        _              <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
+        rollupRepo   <- ZIO.service[wifihaven.api.db.RollupRepo]
+        clockForJobs <- ZIO.service[Clock]
+        _            <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
         _ <- RollupJobs.dailyLoop(rollupRepo, appRepoForSeed, clockForJobs, tz).forkScoped
         // #1160: per-(profile, today) `used_seconds` cache. Tick aggregates today's presence into
         // a watermarked row; the read path adds a live tail of buckets after the watermark, so
