@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AppDetail, ProfileDetail } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
@@ -188,8 +188,9 @@ describe('AppsPage — inline edit autosave (#1003)', () => {
       render(withQuery(<AppsPage />))
       await expandYouTube(user)
       const nameInput = screen.getByTestId('app-name-input-10') as HTMLInputElement
-      await user.clear(nameInput)
-      await user.type(nameInput, 'YT')
+      // Set atomically: char-by-char typing under fake timers lets the 700ms
+      // debounce fire on a transient partial value, producing extra PATCHes.
+      fireEvent.change(nameInput, { target: { value: 'YT' } })
 
       // Pre-debounce: dirty, no save yet.
       expect(patchMock()).not.toHaveBeenCalled()
@@ -219,8 +220,7 @@ describe('AppsPage — inline edit autosave (#1003)', () => {
       await expandYouTube(user)
       await user.click(screen.getByTestId('icon-picker-tab-url'))
       const urlInput = screen.getByTestId('icon-picker-url-input') as HTMLInputElement
-      await user.clear(urlInput)
-      await user.type(urlInput, 'https://example.com/icon.png')
+      fireEvent.change(urlInput, { target: { value: 'https://example.com/icon.png' } })
 
       await vi.advanceTimersByTimeAsync(700)
 
@@ -276,8 +276,7 @@ describe('AppsPage — inline edit autosave (#1003)', () => {
       render(withQuery(<AppsPage />))
       await expandYouTube(user)
       const nameInput = screen.getByTestId('app-name-input-10') as HTMLInputElement
-      await user.clear(nameInput)
-      await user.type(nameInput, 'YT')
+      fireEvent.change(nameInput, { target: { value: 'YT' } })
 
       await vi.advanceTimersByTimeAsync(700)
 

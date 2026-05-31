@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
@@ -501,8 +501,9 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
       await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
 
       const input = within(kidsCard).getByTestId('profile-time-limit-1')
-      await user.clear(input)
-      await user.type(input, '90')
+      // Set atomically: char-by-char typing under fake timers lets the 700ms
+      // debounce fire on a transient partial value, producing extra PUTs.
+      fireEvent.change(input, { target: { value: '90' } })
 
       // Pre-debounce: no save yet.
       expect(api.profiles.update).not.toHaveBeenCalled()

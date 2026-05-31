@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { Device, ProfileDetail } from '@/types/api'
@@ -147,8 +147,9 @@ describe('DevicesPage — inline autosave edit (#1000)', () => {
       const editor = await screen.findByTestId(`device-editor-${mac}`)
       const input = within(editor).getByTestId(`device-name-input-${mac}`)
 
-      await user.clear(input)
-      await user.type(input, 'Living Room iPad')
+      // Set atomically: typing char-by-char under fake timers lets the 700ms
+      // debounce fire on a transient partial value, producing extra PATCHes.
+      fireEvent.change(input, { target: { value: 'Living Room iPad' } })
       expect(api.devices.patch).not.toHaveBeenCalled()
 
       await vi.advanceTimersByTimeAsync(700)
@@ -197,8 +198,7 @@ describe('DevicesPage — inline autosave edit (#1000)', () => {
       const editor = await screen.findByTestId(`device-editor-${mac}`)
       const input = within(editor).getByTestId(`device-name-input-${mac}`)
 
-      await user.clear(input)
-      await user.type(input, 'Den iPad')
+      fireEvent.change(input, { target: { value: 'Den iPad' } })
       await vi.advanceTimersByTimeAsync(700)
 
       const status = within(editor).getByTestId(`device-save-status-${mac}`)
