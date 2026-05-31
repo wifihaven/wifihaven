@@ -22,6 +22,7 @@ stale_qemu_sweep() {
 if ! router_is_running; then
   log "router VM not running"
   rm -f "${WH_ROUTER_PIDFILE}" "${WH_ROUTER_MONITOR_SOCK}"
+  rmdir "${WH_SOCK_DIR}" 2>/dev/null || true
   stale_qemu_sweep
   # Release the bridge-pool reservation (#907) even on the not-running path —
   # a failed router-up.sh leaves a reservation containing a now-dead PID, which
@@ -59,6 +60,7 @@ if kill -0 "${pid}" 2>/dev/null; then
 fi
 
 rm -f "${WH_ROUTER_PIDFILE}" "${WH_ROUTER_MONITOR_SOCK}"
+rmdir "${WH_SOCK_DIR}" 2>/dev/null || true
 stale_qemu_sweep
 # Release the bridge-pool reservation (#907). Safe no-op if we weren't using
 # a pool bridge — wh_clear_bridge_reservation just rm -f's the marker file.

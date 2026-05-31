@@ -191,9 +191,12 @@ router-down.sh               # graceful shutdown via monitor → SIGTERM → SIG
 lan-bridge-down.sh           # tear down the bridge (only when all VMs are stopped)
 ```
 
-`router-up.sh` writes its overlay, pidfile, monitor socket, and serial console
-log under `.run/router/`. Snapshots live inside the overlay (qcow2 internal
-snapshots) and can be inspected with `qemu-img snapshot -l`.
+`router-up.sh` writes its overlay, pidfile, and serial console log under
+`.run/router/`. The QEMU monitor socket lives **outside** `.run/`, under a short
+base dir (`${XDG_RUNTIME_DIR:-/tmp}/wh-vm/…`, exported as `WH_SOCK_DIR`), because
+the AF_UNIX `sun_path` limit caps socket paths at ~108 chars and the `.run/` tree
+sits under a deep CI runner home. Snapshots live inside the overlay (qcow2
+internal snapshots) and can be inspected with `qemu-img snapshot -l`.
 
 ### Image pinning + bumping
 
@@ -215,9 +218,11 @@ The OpenWRT version and SHA256 are pinned in [`config.sh`](config.sh)
   Stock OpenWRT root password is empty on first boot — set one immediately or
   wait for #150 (custom image bakes in a known test password + SSH key).
 - **LuCI HTTP**: `http://127.0.0.1:${WH_ROUTER_HTTP_PORT}` (default 8080).
-- **QEMU monitor** (savevm / loadvm / info network / system_powerdown):
+- **QEMU monitor** (savevm / loadvm / info network / system_powerdown). The
+  socket path is printed by `router-up.sh`; it lives under `WH_SOCK_DIR`
+  (`${XDG_RUNTIME_DIR:-/tmp}/wh-vm/…/router-monitor.sock`), not under `.run/`:
   ```bash
-  socat - UNIX-CONNECT:scripts/vm/.run/router/monitor.sock
+  socat - UNIX-CONNECT:"${XDG_RUNTIME_DIR:-/tmp}/wh-vm/router-monitor.sock"
   ```
 
 ### Snapshots

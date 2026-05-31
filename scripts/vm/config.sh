@@ -42,6 +42,28 @@ if [[ -n "${WH_RUN_ID}" ]]; then
 else
   WH_RUN_DIR="${WH_VM_DIR}/.run"
 fi
+# Short base dir for qemu UNIX *control sockets* (router monitor, client QMP).
+# These MUST NOT live under .run/: the AF_UNIX sun_path limit is ~108 chars,
+# and the .run/ tree sits under a deep CI runner home
+# (.../_work/wifihaven/wifihaven/scripts/vm/.run/<run-id>/router/monitor.sock).
+# The multi-instance self-hosted runner from #1163 lengthened that prefix
+# (actions-runner → actions-runner-4), pushing the monitor socket path past the
+# ceiling — qemu refused to create the socket and no VM gate could boot. Keeping
+# the sockets in /run (or /tmp) makes the path independent of the runner home.
+# Only the sockets relocate here; serial logs, overlays, pidfiles, and bridge
+# markers stay under .run/ so nothing else moves.
+if [[ -n "${WH_RUN_ID}" ]]; then
+  WH_SOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/wh-vm/${WH_RUN_ID}"
+else
+  WH_SOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/wh-vm"
+fi
+
+# QMP control-socket path for a client slot. Lives under WH_SOCK_DIR (short
+# path) rather than ${WH_RUN_DIR}/<name>/ for the sun_path reason above.
+wh_client_qmp_sock() {
+  printf '%s/client-%s-qmp.sock' "${WH_SOCK_DIR}" "$1"
+}
+
 WH_KEYS_DIR="${WH_VM_DIR}/keys"
 WH_CLIENT_BASE_IMG="${WH_CACHE_DIR}/client-base.qcow2"
 WH_CLIENT_SSH_KEY="${WH_KEYS_DIR}/client_test_ed25519"
@@ -81,7 +103,9 @@ WH_ROUTER_BASE_IMG="${WH_CACHE_DIR}/${WH_OPENWRT_IMAGE%.gz}"
 WH_ROUTER_RUN_DIR="${WH_RUN_DIR}/router"
 WH_ROUTER_OVERLAY="${WH_ROUTER_RUN_DIR}/overlay.qcow2"
 WH_ROUTER_PIDFILE="${WH_ROUTER_RUN_DIR}/qemu.pid"
-WH_ROUTER_MONITOR_SOCK="${WH_ROUTER_RUN_DIR}/monitor.sock"
+# Monitor socket lives under WH_SOCK_DIR (short path), not WH_ROUTER_RUN_DIR —
+# see the WH_SOCK_DIR note above for the sun_path reason.
+WH_ROUTER_MONITOR_SOCK="${WH_SOCK_DIR}/router-monitor.sock"
 WH_ROUTER_SERIAL_LOG="${WH_ROUTER_RUN_DIR}/console.log"
 
 # QEMU `-name` for the router VM. Suffixed with WH_RUN_ID so `pgrep -f` in
