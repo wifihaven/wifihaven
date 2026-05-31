@@ -23,11 +23,17 @@ name: Build router release artifacts
 # four MUST match; this job is the single point where that version is chosen.
 #
 # Triggers:
-#   - workflow_call — invoked by master-router.yml ahead of the gates.
-#     Exposes `version` so the caller can pass it to the publish job.
+#   - workflow_call — invoked by master-router.yml ahead of the gates. The
+#     caller passes publish_release: true to force the clean release version
+#     (see the Derive version step), and consumes the `version` output.
 #   - workflow_dispatch — manual debug build (produces -dev.<sha> artifacts).
 on:
   workflow_call:
+    inputs:
+      publish_release:
+        description: "True when invoked from Master Router CD's release pipeline. Forces the clean release version regardless of the inherited triggering event. Leave false/unset for debug builds."
+        type: boolean
+        default: false
     outputs:
       version:
         description: "The release version derived once for all artifacts (e.g. 0.2.7, or 0.2.7-dev.<sha> on workflow_dispatch)."
@@ -57,17 +63,41 @@ jobs:
           # fetch full history so the single derivation is correct.
           fetch-depth: 0
 
+      # Surface inputs.publish_release as a step output so the Derive version
+      # step can branch on it from plain shell. The input is read in an `if:`
+      # condition — the only `inputs.*` form actionlint accepts here, since
+      # this workflow also declares a no-input `workflow_dispatch` trigger,
+      # which collapses the `inputs` object type to `{}` for `run:`/`env:`
+      # interpolations. When publish_release is false/unset this step is
+      # skipped and steps.publish.outputs.release is empty.
+      - name: Determine publish mode
+        id: publish
+        if: inputs.publish_release == true
+        run: echo "release=true" >> "$GITHUB_OUTPUT"
+
       - name: Derive version
         id: ver
         # #499/#1134: single source of truth is the repo-root VERSION file
         # (MAJOR.MINOR) plus the commit count since that file last changed
         # (PATCH). This is the ONLY place the release version is computed —
         # everything downstream (packages, VM images, release tag) consumes
-        # this output verbatim. workflow_dispatch runs append -dev.<sha> so
-        # ad-hoc builds can't collide with a real tagged release.
+        # this output verbatim.
+        #
+        # Branch on the publish flag, NOT github.event_name: a reusable
+        # workflow called via `workflow_call` inherits the CALLER's triggering
+        # event, so when master-router.yml is itself dispatched manually this
+        # workflow still sees event_name == 'workflow_dispatch' even though
+        # it's the real release path. The -dev.<sha> suffix is invalid apk
+        # (APKv3) version syntax — apk-tools only accepts a -r<N> release
+        # suffix and rejects the package — so a release build must always
+        # derive the clean release version. Ad-hoc workflow_dispatch debug
+        # builds (publish_release unset) still get -dev.<sha> so they can't
+        # collide with a real tagged release.
         run: |
           set -eu
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ steps.publish.outputs.release }}" = "true" ]; then
+            version=$(./scripts/ci/derive-version.sh)
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             short=$(echo "${GITHUB_SHA}" | cut -c1-7)
             version=$(./scripts/ci/derive-version.sh --dev "$short")
           else
