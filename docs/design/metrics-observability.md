@@ -429,6 +429,66 @@ self-hosted, imported into Grafana Cloud.
 > service is non-critical and its failure is alert-worthy but not
 > deploy-blocking.
 
+### 6.3 Cloud / Render — Render's _own_ infrastructure metrics
+
+§6.2 covers the **application** metrics surface (the API's `/metrics`).
+It cannot, by construction, see Render's **infrastructure** metrics:
+**managed-Postgres CPU / memory / active connections / disk** and **service
+instance CPU/mem**. Render's managed Postgres exposes no Prometheus
+endpoint, so the Alloy-scrapes-`/metrics` path structurally never reaches
+it. Yet those are precisely the signals the 2026-05-31 incident turned on
+(DB CPU pegged by the rollup cadence; HikariCP pool exhaustion against the
+DB connection ceiling), and they were all read by hand off Render
+dashboards. They must land in the **same** Grafana Cloud stack as a second
+producer.
+
+**Decision: Render native OpenTelemetry Metrics Streaming → Grafana
+Cloud.** Render streams OTLP-formatted metrics for every service **and
+managed datastore** in the workspace straight to a Grafana Cloud OTLP
+endpoint — no collector to run for this path (independent of the §6.2
+Alloy service). For Postgres it carries active connections + limit, CPU,
+memory, disk I/O, replication/apply lag, transaction volume, slow locks,
+and table scans; names arrive `render.*` and Grafana normalizes to
+`render_*` series (~50–150 series, well inside the §7 budget).
+
+- **Plan gating / cost:** metrics streaming requires the workspace on
+  **Pro plan or higher** — **$25/mo flat** under Render's new pricing
+  (legacy was $19/user/mo and auto-migrates by 2026-08-01); no per-stream
+  charge. This is the only real cost of the cloud observability story.
+- **Secrets:** the Grafana Cloud OTLP token is a **Render-managed secret**,
+  never committed (same handling as `WIFIHAVEN_JWT_SECRET` etc.).
+
+**Fallback if Pro isn't approved — Render REST API poller.** The same DB
+signals are reachable on the **current plan** via the Render REST API
+(`GET /v1/metrics/cpu` accepts service _and_ Postgres ids;
+`GET /v1/metrics/active-connections` for Postgres; `GET /v1/metrics/memory`;
+`resolutionSeconds ≥ 30`). A tiny exporter polls these and re-exposes them
+as Prometheus text for the §6.2 collector to forward — **$0** incremental,
+but a component we own and maintain (token as a Render-managed secret, rate
+limits, series mapping). Scoped fully so it's a drop-in if cost wins.
+
+**Recommendation: the native stream.** Zero custom code, officially
+supported, covers DB CPU + connections + disk + replication — the exact
+incident class — into the same Grafana Cloud as the app metrics. The poller
+is the documented $0 fallback. The $25/mo Pro upgrade is an operator cost
+decision.
+
+**Rejected — Render Datadog integration.** Also exports Postgres
+host/disk metrics and would satisfy the requirement, but splits dashboards
+off the in-repo Grafana JSON (§8) onto a second, costlier backend that
+diverges from the Grafana-Cloud choice. Noted only as an "if we ever
+standardize on Datadog" escape hatch.
+
+**Deploy events** are not carried by metrics streams. The deploy↔metrics
+correlation (hand-done on 05-31) is closed separately via **Render
+webhooks → Grafana annotations**, so deploy markers render across every
+dashboard. Tracked as its own sub-issue (§10).
+
+This is the portability payoff again: the **API binary stays
+environment-agnostic** (it only ever exposes `/metrics`); the cloud-only
+infra-metrics producer is pure Render configuration plus, in the fallback,
+one small exporter.
+
 ---
 
 ## 7. `/metrics` auth, retention, and sizing
@@ -563,4 +623,17 @@ feature-test stack; for the Lua agent, `busted` unit tests with injected
    router panels to populate)._
 7. **Cardinality + retention review gate.** §9 checklist; required before
    first prod scrape. _Depends on: #1–#6._
+8. **Render infrastructure metrics → Grafana Cloud** (§6.3). Native OTel
+   Metrics Streaming (Pro plan) for service + managed-Postgres CPU / memory
+   / active-connections / disk; REST API poller as the $0 fallback. Closes
+   the #1240 "DB CPU / connection-count at the Render level" gap.
+   ([#1244](https://github.com/wifihaven/wifihaven/issues/1244).) _Depends
+   on: a live Grafana Cloud stack (#5). Cloud-only._
+9. **Render deploy-event annotations** (§6.3). Render webhooks → Grafana
+   annotations so deploy markers render across every dashboard.
+   ([#1245](https://github.com/wifihaven/wifihaven/issues/1245).) _Depends
+   on: a live Grafana Cloud stack (#5). Cloud-only._
 ```
+
+The §10 numbering above predates these issues being filed; the filed
+issue set is #1204–#1210 (items 1–7) plus #1244/#1245 (items 8–9).

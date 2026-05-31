@@ -379,6 +379,16 @@ class RollupRepoLive(xa: Transactor[Task]) extends RollupRepo {
           VALUES ($job, $startedAt, $finishedAt, $status, $error, $rowsUpserted)""".update.run
       .transact(xa)
       .unit
+      // #1243: publish the time-series alongside the existing rollup_runs row. The /api/admin/
+      // rollup-status point-in-time view is unchanged; this just exports to Prometheus.
+      .zipLeft(
+        wifihaven.api.metrics.AppMetrics.recordRollup(
+          job = job,
+          status = status,
+          durationSeconds = (finishedAt.toEpochMilli - startedAt.toEpochMilli) / 1000.0,
+          rows = rowsUpserted,
+        ),
+      )
 
   def recentRuns(limit: Int): Task[List[RollupRun]] =
     sql"""SELECT id, job, started_at, finished_at, status, error, rows_upserted

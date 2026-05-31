@@ -38,6 +38,7 @@ val zioHttpVersion     = "3.0.1"
 val zioJsonVersion     = "0.7.3"
 val zioConfigVersion   = "4.0.2"
 val zioLoggingVersion  = "2.3.1"
+val zioMetricsVersion  = "2.3.1"
 val doobieVersion      = "1.0.0-RC5"
 val flywayVersion      = "10.17.3"
 val jwtVersion         = "10.0.1"
@@ -109,6 +110,7 @@ object api extends CommonModule {
     mvn"dev.zio::zio-config-magnolia:$zioConfigVersion",
     mvn"dev.zio::zio-logging:$zioLoggingVersion",
     mvn"dev.zio::zio-logging-slf4j:$zioLoggingVersion",
+    mvn"dev.zio::zio-metrics-connectors-prometheus:$zioMetricsVersion",
     mvn"org.tpolecat::doobie-core:$doobieVersion",
     mvn"org.tpolecat::doobie-postgres:$doobieVersion",
     mvn"org.tpolecat::doobie-hikari:$doobieVersion",
