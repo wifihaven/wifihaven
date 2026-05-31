@@ -8,6 +8,11 @@ config wifihaven 'wifihaven'
 	# Router UUID returned during enrollment
 	option router_id ''
 
+	# Auto-update channel (#772): 'stable' (default) tracks the highest
+	# non-prerelease v<X.Y.Z> release; 'canary' tracks the openwrt-canary
+	# pre-release, which receives builds during the pre-promotion soak window.
+	option update_channel 'stable'
+
 	# LAN subnet prefix used to identify outbound (egress) flows
 	option lan_prefix '192.168.1.'
 

@@ -49,6 +49,21 @@ grep -q 'releases/tags/openwrt-latest' "$SCRIPT" \
   && check "keeps openwrt-latest as fallback" ok \
   || check "keeps openwrt-latest as fallback" "missing fallback endpoint"
 
+# 4a-i (#772). Reads the update channel from UCI, defaulting to stable.
+grep -q 'uci -q get wifihaven.wifihaven.update_channel' "$SCRIPT" \
+  && check "[#772] reads update_channel from UCI" ok \
+  || check "[#772] reads update_channel from UCI" "no uci update_channel read"
+
+# 4a-ii (#772). Canary channel polls the dedicated openwrt-canary pre-release.
+grep -q 'releases/tags/\$CANARY_TAG\|releases/tags/openwrt-canary' "$SCRIPT" \
+  && check "[#772] canary channel targets openwrt-canary tag" ok \
+  || check "[#772] canary channel targets openwrt-canary tag" "no canary tag endpoint"
+
+# 4a-iii (#772). Unknown/unset channel collapses to stable.
+grep -q 'echo stable' "$SCRIPT" \
+  && check "[#772] update_channel defaults to stable" ok \
+  || check "[#772] update_channel defaults to stable" "no stable default"
+
 # 4b. Persists the last-installed version under /var/lib/wifihaven.
 grep -q 'last_update_version' "$SCRIPT" \
   && check "persists last-installed version under /var/lib/wifihaven" ok \
@@ -225,6 +240,17 @@ EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$TESTDIR/initd.calls"
 exit \${MOCK_INITD_EXIT:-0}
+EOF
+
+  # uci mock (#772). Only answers the update_channel query the script makes;
+  # returns $MOCK_CHANNEL (default empty → script's `|| echo stable` applies).
+  # Other queries exit nonzero, matching `uci -q get` on a missing key.
+  cat > "$BINDIR/uci" <<EOF
+#!/bin/sh
+case "\$*" in
+  *update_channel*) [ -n "\${MOCK_CHANNEL:-}" ] && printf '%s\n' "\$MOCK_CHANNEL" || exit 1 ;;
+  *) exit 1 ;;
+esac
 EOF
 
   PATCHED="$TESTDIR/wifihaven-update"
@@ -412,6 +438,70 @@ case "$URL" in
 esac
 rm -rf "$TESTDIR"
 unset MOCK_ASSETS
+
+# ── Channel selection (#772) ──────────────────────────────────────────────
+
+# Case J (#772): canary channel installs from the openwrt-canary pre-release.
+# The canary tag_name is non-semver ("openwrt-canary"), so the comparable
+# version is derived from the selected asset (0.3.0). Installed 0.2.7 → install.
+setup_mocks
+mock_apk
+printf '0.2.7\n' > "$VERS_DIR/VERSION"
+MOCK_CHANNEL=canary MOCK_TAG=openwrt-canary \
+  MOCK_ASSETS='https://example.com/wifihaven_0.3.0-1_all.apk
+https://example.com/wifihaven_0.3.0-1_all.ipk' \
+  PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+URL=$(picked_url)
+case "$URL" in
+  */tags/openwrt-canary*|*wifihaven_0.3.0-1_all.apk) check "[#772 canary] installs canary asset" ok ;;
+  *) check "[#772 canary] installs canary asset" "picked '$URL'" ;;
+esac
+[ "$(stamp_value)" = "0.3.0" ] \
+  && check "[#772 canary] stamp = asset-derived version (not tag_name)" ok \
+  || check "[#772 canary] stamp = asset-derived version (not tag_name)" "stamp = '$(stamp_value)'"
+rm -rf "$TESTDIR"
+
+# Case K (#772): canary no-op — installed == canary asset version → skip,
+# no reinstall on every cron tick despite the rolling non-semver tag_name.
+setup_mocks
+mock_apk
+printf '0.3.0\n' > "$VERS_DIR/VERSION"
+MOCK_CHANNEL=canary MOCK_TAG=openwrt-canary \
+  MOCK_ASSETS='https://example.com/wifihaven_0.3.0-1_all.apk' \
+  PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+N=$(count_restart_calls)
+[ "$N" = "0" ] \
+  && check "[#772 canary no-op] restart NOT called when version matches" ok \
+  || check "[#772 canary no-op] restart NOT called when version matches" "expected 0, got $N"
+rm -rf "$TESTDIR"
+
+# Case L (#772): canary tag 404 → hold on current version, NO fallback to
+# stable / openwrt-latest, no reinstall.
+setup_mocks
+mock_apk
+printf '0.2.7\n' > "$VERS_DIR/VERSION"
+MOCK_CHANNEL=canary MOCK_HTTP_CODE=404 \
+  PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+grep -q 'canary channel: openwrt-canary not published yet' "$TESTDIR/logger.out" \
+  && check "[#772 canary 404] logs not-published-yet and holds" ok \
+  || check "[#772 canary 404] logs not-published-yet and holds" "no canary-404 log"
+N=$(count_restart_calls)
+[ "$N" = "0" ] \
+  && check "[#772 canary 404] does NOT fall back / reinstall" ok \
+  || check "[#772 canary 404] does NOT fall back / reinstall" "expected 0, got $N"
+rm -rf "$TESTDIR"
+unset MOCK_CHANNEL MOCK_TAG MOCK_HTTP_CODE
+
+# Case M (#772): default (no UCI key) behaves as stable — unchanged path,
+# still hits /releases/latest and installs the semver asset.
+setup_mocks
+mock_apk
+printf '0.2.7\n' > "$VERS_DIR/VERSION"
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+[ "$(stamp_value)" = "0.2.8" ] \
+  && check "[#772 default] absent UCI key → stable path (v0.2.8)" ok \
+  || check "[#772 default] absent UCI key → stable path (v0.2.8)" "stamp = '$(stamp_value)'"
+rm -rf "$TESTDIR"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -54,14 +54,42 @@ else
   exit 0
 fi
 
-# Fetch /releases/latest, falling back to the rolling openwrt-latest tag on
-# 404 to keep a fresh repo (no v<X.Y.Z> tag yet) self-healing.
+# Update channel (#772). Default "stable" reproduces the historical
+# behaviour: poll /releases/latest (the highest non-prerelease v<X.Y.Z>).
+# "canary" polls the dedicated openwrt-canary pre-release, which the release
+# pipeline publishes on approval *before* the stable semver tag is cut,
+# giving a soak window for a small cohort. The UCI key is snake_case to
+# match the other wifihaven options; the conceptual/wire name is
+# updateChannel. Unknown/unset values fall back to stable.
+CHANNEL=$(uci -q get wifihaven.wifihaven.update_channel 2>/dev/null || echo stable)
+case "$CHANNEL" in
+  canary) CHANNEL=canary ;;
+  *)      CHANNEL=stable ;;
+esac
+
+# Pick the release endpoint for this channel. stable keeps the baked-in
+# /releases/latest API_URL and 404-falls-back to the rolling openwrt-latest
+# tag so a fresh repo with no v<X.Y.Z> release stays self-healing
+# (TODO(#1170): drop the fallback once the versioned path is universal).
+# canary targets the openwrt-canary pre-release tag; a 404 there means no
+# canary build has been published yet, so we hold on the current version
+# rather than silently dropping back to stable.
+CANARY_TAG=openwrt-canary
+if [ "$CHANNEL" = canary ]; then
+  API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/$CANARY_TAG"
+fi
+
 HTTP_CODE=$(curl -s -o /tmp/wifihaven-update.meta -w '%{http_code}' "$API_URL" 2>/dev/null || echo "000")
 case "$HTTP_CODE" in
   200)
     META=$(cat /tmp/wifihaven-update.meta)
     ;;
   404)
+    if [ "$CHANNEL" = canary ]; then
+      log "canary channel: $CANARY_TAG not published yet (http 404); staying on current version"
+      rm -f /tmp/wifihaven-update.meta
+      exit 0
+    fi
     log "warn: $API_URL returned 404; falling back to openwrt-latest (TODO(#1170): remove once versioned path is universal)"
     META=$(curl -sf "$FALLBACK_API_URL") || META=
     ;;
@@ -107,6 +135,17 @@ LATEST_URL=
 BEST=$(printf '%s' "$MATCHES" | grep -v '^$' | sort -V -k1,1 | tail -n1)
 if [ -n "$BEST" ]; then
   LATEST_URL=$(printf '%s\n' "$BEST" | awk '{print $2}')
+fi
+
+# On canary, tag_name is the rolling "openwrt-canary" string, not a
+# v<X.Y.Z> — so LATEST_VERSION derived from the tag above is not comparable
+# to the baked VERSION file and would force a reinstall on every cron tick.
+# Derive the comparable version from the selected asset instead
+# (e.g. "0.3.6-1" -> "0.3.6"); consecutive canary builds carry distinct
+# patch numbers (derive-version.sh), so this still detects real changes.
+if [ "$CHANNEL" = canary ] && [ -n "$BEST" ]; then
+  BEST_VER=$(printf '%s\n' "$BEST" | awk '{print $1}')
+  LATEST_VERSION=${BEST_VER%-*}
 fi
 if [ -z "$LATEST_URL" ] || [ -z "$LATEST_VERSION" ]; then
   log "could not resolve asset url / version from release metadata; skipping"
