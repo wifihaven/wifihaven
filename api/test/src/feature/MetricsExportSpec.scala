@@ -9,7 +9,6 @@ import wifihaven.api.usage.TimeUsedRollupJob
 import wifihaven.shared.Clock
 import wifihaven.testinfra.*
 import zio.*
-import zio.http.*
 import zio.metrics.connectors.prometheus.PrometheusPublisher
 import zio.test.*
 
@@ -30,10 +29,10 @@ object MetricsExportSpec
   // A Hikari pool wired to the per-spec embedded DB, so getHikariPoolMXBean is real.
   private def hikari(
       maxSize: Int,
-  ): ZIO[EmbeddedPostgres & TestDb & Scope, Throwable, HikariDataSource] =
+  ): ZIO[EmbeddedPostgres & TestDatabase.TestDb & Scope, Throwable, HikariDataSource] =
     for {
       pg <- ZIO.service[EmbeddedPostgres]
-      db <- ZIO.service[TestDb]
+      db <- ZIO.service[TestDatabase.TestDb]
       ds <- ZIO.acquireRelease(ZIO.attempt {
         val h = new HikariDataSource()
         h.setJdbcUrl(pg.getJdbcUrl("postgres", db.name))
@@ -66,13 +65,15 @@ object MetricsExportSpec
         assertTrue(body.contains("wifihaven_db_pool_total_connections")) &&
         assertTrue(body.contains("wifihaven_db_pool_threads_awaiting_connection")) &&
         assertTrue(body.contains("wifihaven_db_pool_max_size")) &&
-        // max_size gauge was set to 7
+        // max_size gauge was set to 7 (sample line: `name 7.0 <timestamp>`)
         assertTrue(
           body.linesIterator.exists(l =>
-            l.startsWith("wifihaven_db_pool_max_size") && l.trim.endsWith("7.0"),
+            l.startsWith("wifihaven_db_pool_max_size ") && l.split(" ").lift(1).contains("7.0"),
           ),
         ))
-        .provide(MetricsRuntime.prometheus(pollInterval))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]](
+          MetricsRuntime.prometheus(pollInterval),
+        )
     } @@ TestAspect.withLiveClock,
     test("driving a rollup tick emits the rollup counter/histogram/gauge series") {
       (for {
@@ -107,7 +108,10 @@ object MetricsExportSpec
         assertTrue(body.contains("wifihaven_rollup_duration_seconds")) &&
         assertTrue(body.contains("wifihaven_rollup_rows_upserted")) &&
         assertTrue(body.contains("time_used_daily")))
-        .provide(MetricsRuntime.prometheus(pollInterval), Clock.live)
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]](
+          MetricsRuntime.prometheus(pollInterval),
+          Clock.live,
+        )
     } @@ TestAspect.withLiveClock,
   ) @@ TestAspect.sequential
 }

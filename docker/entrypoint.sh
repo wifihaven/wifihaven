@@ -19,6 +19,8 @@ set -euo pipefail
 : "${WIFIHAVEN_DEBUG:=}"
 : "${WIFIHAVEN_ALLOWED_ORIGINS:=}"
 : "${WIFIHAVEN_UI_ALLOWED_HOSTS:=}"
+: "${WIFIHAVEN_METRICS_ENABLED:=true}"
+: "${WIFIHAVEN_METRICS_SCRAPE_TOKEN:=}"
 
 export WIFIHAVEN_LOG_LEVEL WIFIHAVEN_DEBUG
 
@@ -52,6 +54,10 @@ wifihaven {
   }
   policy {
     uiAllowedHosts = "${WIFIHAVEN_UI_ALLOWED_HOSTS}"
+  }
+  metrics {
+    enabled     = ${WIFIHAVEN_METRICS_ENABLED}
+    scrapeToken = "${WIFIHAVEN_METRICS_SCRAPE_TOKEN}"
   }
 }
 EOF

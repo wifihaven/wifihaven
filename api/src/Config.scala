@@ -12,6 +12,7 @@ case class AppConfig(
     jwt: JwtConfig,
     cors: CorsConfig,
     policy: PolicyConfig = PolicyConfig(),
+    metrics: MetricsConfig = MetricsConfig(),
 ) {
   // WIFIHAVEN_DEBUG env var: when set to a non-empty, non-"0"/"false"/"no"
   // value, mounts the read-only /api/debug/* endpoints (loopback only).
@@ -47,6 +48,19 @@ case class JwtConfig(
     secret: String,
     expiryHours: Int,
 )
+
+// #1242: Prometheus /metrics exposition. `enabled` mounts the GET /metrics
+// route; when off, non-/metrics behaviour is unchanged and the route 404s.
+// `scrapeToken`, when non-empty, is required as `Authorization: Bearer <token>`
+// — the API is internet-facing on Render, so prod/staging set it. Empty (the
+// self-hosted default) leaves /metrics open on the loopback-bound deployment.
+case class MetricsConfig(
+    enabled: Boolean = true,
+    scrapeToken: String = "",
+) {
+  val scrapeTokenOpt: Option[String] =
+    Option(scrapeToken).map(_.trim).filter(_.nonEmpty)
+}
 
 // #612: cross-origin browser access for the split SPA.
 // `allowedOrigins` is a comma-separated list of full origins (scheme+host+

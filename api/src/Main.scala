@@ -5,6 +5,7 @@ import doobie.implicits.*
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.metrics.{DbPoolMetrics, MetricsRuntime}
 import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
@@ -17,11 +18,15 @@ import zio.http.*
 import zio.interop.catz.*
 import zio.logging.*
 import zio.logging.backend.SLF4J
+import zio.metrics.connectors.prometheus.PrometheusPublisher
+import zio.metrics.jvm.DefaultJvmMetrics
 
 object Main extends ZIOAppDefault {
 
+  // #1242: enable ZIO runtime metrics (fibers, GC, etc.) so they flow into the
+  // Prometheus registry exposed at /metrics, alongside SLF4J logging.
   override val bootstrap =
-    Runtime.removeDefaultLoggers >>> SLF4J.slf4j
+    (Runtime.removeDefaultLoggers >>> SLF4J.slf4j) ++ Runtime.enableRuntimeMetrics
 
   def run =
     (for {
@@ -105,6 +110,11 @@ object Main extends ZIOAppDefault {
         )
         .forkDaemon
       _               <- ZIO.logInfo("rollup fibers forked (hourly + daily + time_used_daily)")
+      // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
+      // for the process and never blocks startup.
+      dbPool          <- ZIO.service[Database.DbPool]
+      _               <- DbPoolMetrics.loop(dbPool.dataSource, dbPool.maxSize).forkDaemon
+      _               <- ZIO.logInfo("db-pool metrics fiber forked")
       _               <- ZIO
         .logWarning(
           "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
@@ -156,41 +166,45 @@ object Main extends ZIOAppDefault {
       TimeStatusCache.live() >+>
       BlocklistCache.live >+>
       BlocklistFetcher.live >+>
-      Notifier.live
+      Notifier.live >+>
+      // #1242: Prometheus publisher + snapshot listener, and JVM metrics collectors.
+      MetricsRuntime.prometheus() >+>
+      DefaultJvmMetrics.live
 
   private def allRoutes(
       templates: Map[wifihaven.shared.types.AppTemplateId, AppTemplate],
       bundledBlocklists: Map[wifihaven.shared.types.BlocklistId, BundledBlocklist],
   ) =
     for {
-      auth        <- ZIO.service[AuthService]
-      userRepo    <- ZIO.service[UserRepo]
-      upRepo      <- ZIO.service[UserProfileRepo]
-      profileRepo <- ZIO.service[ProfileRepo]
-      schedRepo   <- ZIO.service[ScheduleRepo]
-      hsRepo      <- ZIO.service[HouseholdSettingsRepo]
-      tlRepo      <- ZIO.service[TimeLimitRepo]
-      stlRepo     <- ZIO.service[SiteTimeLimitRepo]
-      deviceRepo  <- ZIO.service[DeviceRepo]
-      blRepo      <- ZIO.service[BlocklistRepo]
-      blCache     <- ZIO.service[BlocklistCache]
-      blFetcher2  <- ZIO.service[BlocklistFetcher]
-      usageRepo   <- ZIO.service[TimeUsageRepo]
-      extRepo     <- ZIO.service[TimeExtensionRepo]
-      routerRepo  <- ZIO.service[RouterRepo]
-      trafficRepo <- ZIO.service[TrafficReportRepo]
-      rollupRepo2 <- ZIO.service[RollupRepo]
-      connRepo    <- ZIO.service[ConnectionEventRepo]
-      blockEvRepo <- ZIO.service[BlockEventRepo]
-      alertRepo   <- ZIO.service[AlertRepo]
-      appRepo     <- ZIO.service[AppRepo]
-      notifier    <- ZIO.service[Notifier]
-      policy      <- ZIO.service[PolicyService]
-      timeStatus  <- ZIO.service[wifihaven.api.policy.TimeStatusService]
-      cfg         <- ZIO.service[AppConfig]
-      clock       <- ZIO.service[Clock]
-      timeCache   <- ZIO.service[TimeStatusCache]
-      xa          <- ZIO.service[Transactor[Task]]
+      auth          <- ZIO.service[AuthService]
+      userRepo      <- ZIO.service[UserRepo]
+      upRepo        <- ZIO.service[UserProfileRepo]
+      profileRepo   <- ZIO.service[ProfileRepo]
+      schedRepo     <- ZIO.service[ScheduleRepo]
+      hsRepo        <- ZIO.service[HouseholdSettingsRepo]
+      tlRepo        <- ZIO.service[TimeLimitRepo]
+      stlRepo       <- ZIO.service[SiteTimeLimitRepo]
+      deviceRepo    <- ZIO.service[DeviceRepo]
+      blRepo        <- ZIO.service[BlocklistRepo]
+      blCache       <- ZIO.service[BlocklistCache]
+      blFetcher2    <- ZIO.service[BlocklistFetcher]
+      usageRepo     <- ZIO.service[TimeUsageRepo]
+      extRepo       <- ZIO.service[TimeExtensionRepo]
+      routerRepo    <- ZIO.service[RouterRepo]
+      trafficRepo   <- ZIO.service[TrafficReportRepo]
+      rollupRepo2   <- ZIO.service[RollupRepo]
+      connRepo      <- ZIO.service[ConnectionEventRepo]
+      blockEvRepo   <- ZIO.service[BlockEventRepo]
+      alertRepo     <- ZIO.service[AlertRepo]
+      appRepo       <- ZIO.service[AppRepo]
+      notifier      <- ZIO.service[Notifier]
+      policy        <- ZIO.service[PolicyService]
+      timeStatus    <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+      cfg           <- ZIO.service[AppConfig]
+      clock         <- ZIO.service[Clock]
+      timeCache     <- ZIO.service[TimeStatusCache]
+      xa            <- ZIO.service[Transactor[Task]]
+      promPublisher <- ZIO.service[PrometheusPublisher]
       routerAuth    = new RouterAuthLive(routerRepo)
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield {
@@ -202,6 +216,7 @@ object Main extends ZIOAppDefault {
       // a short, well-typed concatenation.
       val systemRoutes: Routes[Any, Response] =
         HealthRoutes.routes(dbHealthCheck) ++
+          MetricsRoutes.routes(cfg.metrics, promPublisher) ++
           VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
           AuthRoutes.routes(auth, userRepo, upRepo) ++
           ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++

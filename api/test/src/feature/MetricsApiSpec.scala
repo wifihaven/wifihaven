@@ -36,19 +36,26 @@ object MetricsApiSpec extends ZIOSpecDefault {
       "GET /metrics returns 200 text/plain with HELP/TYPE, a runtime metric, and a custom metric",
     ) {
       val probe = Metric.counter("wifihaven_test_probe_total")
-      (for {
-        _    <- probe.update(1L)
-        _    <- ZIO.sleep(800.millis)
-        resp <- scrape(MetricsConfig(enabled = true), None).merge
-        body <- resp.body.asString
-        ct = resp.header(Header.ContentType).map(_.renderedValue).getOrElse("")
-      } yield assertTrue(resp.status == Status.Ok) &&
-        assertTrue(ct.startsWith("text/plain")) &&
-        assertTrue(body.contains("# HELP")) &&
-        assertTrue(body.contains("# TYPE")) &&
-        assertTrue(body.contains("jvm")) &&
-        assertTrue(body.contains("wifihaven_test_probe_total")))
-        .provide(DefaultJvmMetrics.live, MetricsRuntime.prometheus(pollInterval))
+      ZIO
+        .scoped {
+          for {
+            // Build DefaultJvmMetrics.live explicitly so its collectors run and the
+            // jvm_* series register. Its output is Unit, which ZIO would prune if
+            // it were just listed in `.provide`.
+            _    <- DefaultJvmMetrics.live.build
+            _    <- probe.update(1L)
+            _    <- ZIO.sleep(800.millis)
+            resp <- scrape(MetricsConfig(enabled = true), None).merge
+            body <- resp.body.asString
+            ct = resp.header(Header.ContentType).map(_.renderedValue).getOrElse("")
+          } yield assertTrue(resp.status == Status.Ok) &&
+            assertTrue(ct.startsWith("text/plain")) &&
+            assertTrue(body.contains("# HELP")) &&
+            assertTrue(body.contains("# TYPE")) &&
+            assertTrue(body.contains("jvm")) &&
+            assertTrue(body.contains("wifihaven_test_probe_total"))
+        }
+        .provide(MetricsRuntime.prometheus(pollInterval))
     } @@ TestAspect.withLiveClock,
     test("with a scrape token configured, no/invalid bearer is 401 and the right bearer is 200") {
       val cfg = MetricsConfig(enabled = true, scrapeToken = "s3cret-token")
