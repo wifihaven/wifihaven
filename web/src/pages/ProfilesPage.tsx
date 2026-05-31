@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
+import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
   CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
@@ -878,8 +879,8 @@ function ProfileShellRow({
 // Subsection is collapsed-by-default. Collapsed header carries the at-a-
 // glance summary: "Daily limit: X min" + one row per schedule. Expanded body
 // holds the editable inputs (daily cap, schedules editor, overlap radios).
-// SaveStatus + the SaveStatusBadge component are imported from the shared
-// useDebouncedSave hook (#973).
+// SaveStatus comes from the shared useDebouncedSave hook; SaveStatusBadge is
+// the shared component in components/SaveStatusBadge.tsx (#973, #995).
 
 interface TimeFormState {
   timeLimit: string
@@ -1708,26 +1709,6 @@ function Subsection({
     </div>
   )
 }
-
-function SaveStatusBadge({
-  status, error, testId,
-}: { status: SaveStatus; error: string | null; testId: string }) {
-  if (status === 'saving') {
-    return <span data-testid={testId} data-status="saving" className="text-xs text-brand-text-muted">Saving…</span>
-  }
-  if (status === 'saved') {
-    return <span data-testid={testId} data-status="saved" className="text-xs text-brand-accent">Saved</span>
-  }
-  if (status === 'error') {
-    return (
-      <span data-testid={testId} data-status="error" className="text-xs text-red-700" title={error ?? ''}>
-        Save failed
-      </span>
-    )
-  }
-  return <span data-testid={testId} data-status="idle" className="text-xs text-transparent select-none">·</span>
-}
-
 
 // #973 — inline devices editor. Each row toggle issues PATCH /devices/:mac
 // with {profileId} (assign) or {profileId: null} (detach). The status badge

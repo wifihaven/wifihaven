@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 
-export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+// 'dirty' covers the debounce window (a change is pending but not yet sent);
+// 'saving' is the in-flight request. The UI groups both under an "Unsaved"
+// affordance (#995). 'saved' is transient and decays back to 'idle'.
+export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 
 export interface UseDebouncedSave {
   status: SaveStatus
   error: string | null
   flush: () => Promise<void>
+  // #995: re-attempt the last value after a failed save without losing the
+  // dirty form value. The form keeps the value in its own state, so retrying
+  // just re-commits the current value.
+  retry: () => Promise<void>
 }
 
 // #973: debounce field changes into a single save. Tracks the LATEST baseline
@@ -47,7 +54,7 @@ export function useDebouncedSave<T>(
       // If newer changes came in while saving, leave them for the next tick.
       if (pendingRef.current != null && !eq(pendingRef.current, v)) {
         // pendingRef holds the latest value; let the effect re-schedule.
-        setStatus('idle')
+        setStatus('dirty')
       } else {
         setStatus('saved')
         if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
@@ -60,8 +67,14 @@ export function useDebouncedSave<T>(
   }
 
   useEffect(() => {
-    if (eq(value, baselineRef.current)) return
+    if (eq(value, baselineRef.current)) {
+      // Reverted back to the saved value before the debounce fired — drop the
+      // pending "Unsaved" state. The cleanup below already cleared the timer.
+      setStatus(s => (s === 'dirty' ? 'idle' : s))
+      return
+    }
     pendingRef.current = value
+    setStatus('dirty')
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
       const v = pendingRef.current
@@ -90,5 +103,35 @@ export function useDebouncedSave<T>(
     }
   }
 
-  return { status, error, flush }
+  async function retry() {
+    if (status !== 'error') return
+    await commit(value)
+  }
+
+  return { status, error, flush, retry }
+}
+
+// #995: aggregate several field-level save states into one section-level
+// indicator (e.g. an Admin card with three independently-saving fields).
+// Precedence: any in-flight → 'saving'; else any pending → 'dirty'; else any
+// failed → 'error'; else any recently-saved → 'saved'; else 'idle'. `retry`
+// re-attempts every errored field; `error` surfaces the first failure.
+export function mergeSaveStatus(
+  parts: ReadonlyArray<{ status: SaveStatus; error: string | null; retry: () => Promise<void> }>,
+): { status: SaveStatus; error: string | null; retry: () => Promise<void> } {
+  const has = (s: SaveStatus) => parts.some(p => p.status === s)
+  const status: SaveStatus = has('saving')
+    ? 'saving'
+    : has('dirty')
+      ? 'dirty'
+      : has('error')
+        ? 'error'
+        : has('saved')
+          ? 'saved'
+          : 'idle'
+  const error = parts.find(p => p.status === 'error')?.error ?? null
+  const retry = async () => {
+    await Promise.all(parts.filter(p => p.status === 'error').map(p => p.retry()))
+  }
+  return { status, error, retry }
 }
