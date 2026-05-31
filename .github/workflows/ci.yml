@@ -137,14 +137,24 @@ jobs:
               - '.github/actionlint.yaml'
 
   # ── Scala: format, compile, test ─────────────────────────────────────────
+  # Runs on the 8-vCPU GitHub-hosted larger runner (#1188). Mill's test
+  # parallelism is on by default and spawns up to `MILL_JOBS` worker JVMs
+  # that pull specs from a shared queue — each worker has its own
+  # EmbeddedPostgres singleton, so a wider runner directly buys more
+  # parallel JVMs without any code changes. See docs/testing-parallelism.md.
   scala:
     name: Scala Build & Test
     needs: changes
     if: needs.changes.outputs.scala == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
 
     env:
       WIFIHAVEN_JWT_SECRET: test-jwt-secret-for-ci-only
+      # Pass `--jobs $MILL_JOBS` to every mill invocation in this job.
+      # Match worker-JVM count to runner vCPUs — kept explicit so any
+      # change to `runs-on` stays coupled with the worker count it implies
+      # rather than silently inheriting `availableProcessors()`.
+      MILL_JOBS: "8"
 
     steps:
       - uses: actions/checkout@v6
@@ -215,17 +225,20 @@ jobs:
         env:
           JAVA_OPTS: "-Xss8m"
           JAVA_TOOL_OPTIONS: "-Xss8m"
-        run: mill __.compile
+        run: mill --jobs "$MILL_JOBS" __.compile
 
-      - name: Run all tests (sequential to avoid embedded-pg lock contention)
-        # api.test spins up EmbeddedPostgres; running sequentially avoids
-        # JVM-wide file-lock contention if more DB-heavy tests are added later.
+      - name: Run all tests
+        # NOT sequential: Mill's testParallelism=true (default) spawns up
+        # to MILL_JOBS worker JVMs that pull specs from a shared queue.
+        # Each worker has its own EmbeddedPostgres singleton — no DB-level
+        # contention across specs. shared.test is tiny (~2s) and stays in
+        # one fork. docs/testing-parallelism.md has the full model.
         env:
           JAVA_OPTS: "-Xss8m"
           JAVA_TOOL_OPTIONS: "-Xss8m"
         run: |
-          mill shared.test
-          mill api.test
+          mill --jobs "$MILL_JOBS" shared.test
+          mill --jobs "$MILL_JOBS" api.test
 
   # ── Migrations: forbid changes to existing files on PRs to main ─────────
   migrations-immutable:
