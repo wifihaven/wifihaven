@@ -9,9 +9,8 @@ vi.mock('@/api/client', () => ({
     apps: {
       list: vi.fn(),
       create: vi.fn(),
-      update: vi.fn(),
+      patch: vi.fn(),
       delete: vi.fn(),
-      setHosts: vi.fn(),
       recentApexes: vi.fn(),
     },
     profiles: {
@@ -31,15 +30,12 @@ function makeProfile(id: number, name: string): ProfileDetail {
     profile: {
       id, name,
       blockedCategories: [],
-      
-      
       paused: false,
       failureMode: 'last-known-good',
       crossDeviceOverlapMode: 'sum',
     },
     schedules: [],
     timeLimit: null,
-    
   }
 }
 
@@ -54,6 +50,7 @@ function makeApp(over: Partial<AppDetail['app']> & { id: number; name: string; s
       slug: over.slug,
       templateId: over.templateId ?? null,
       icon: over.icon ?? null,
+      iconType: over.iconType,
       createdAt: '2026-05-01T00:00:00Z',
     },
     hosts: [],
@@ -62,7 +59,7 @@ function makeApp(over: Partial<AppDetail['app']> & { id: number; name: string; s
 }
 
 const youtube: AppDetail = {
-  ...makeApp({ id: 10, name: 'YouTube', slug: 'youtube', icon: '📺' }),
+  ...makeApp({ id: 10, name: 'YouTube', slug: 'youtube', icon: '📺', iconType: 'emoji' }),
   hosts: ['youtube.com', 'googlevideo.com'],
   assignments: [
     { id: 100, appId: 10, profileId: 1, mode: 'time_limited', dailyMinutes: 60, exemptFromDaily: true },
@@ -73,6 +70,10 @@ const reddit: AppDetail = {
   ...makeApp({ id: 11, name: 'Reddit', slug: 'reddit' }),
   hosts: ['reddit.com'],
   assignments: [],
+}
+
+function patchMock() {
+  return api.apps.patch as unknown as ReturnType<typeof vi.fn>
 }
 
 beforeEach(() => {
@@ -94,6 +95,7 @@ beforeEach(() => {
         subdomains: ['m.youtube.com', 'www.youtube.com'] },
     ],
   })
+  patchMock().mockResolvedValue(undefined)
 })
 
 describe('AppsPage — list', () => {
@@ -101,11 +103,9 @@ describe('AppsPage — list', () => {
     render(withQuery(<AppsPage />))
     await screen.findByText('YouTube')
     expect(screen.getByText('Reddit')).toBeInTheDocument()
-    // YouTube row: 2 hosts, 1 profile
     const ytRow = screen.getByRole('button', { name: /youtube/i })
     expect(within(ytRow).getByText(/2 hosts/i)).toBeInTheDocument()
     expect(within(ytRow).getByText(/1 profile/i)).toBeInTheDocument()
-    // Reddit row: 1 host, no profiles
     const rdRow = screen.getByRole('button', { name: /reddit/i })
     expect(within(rdRow).getByText(/1 host/i)).toBeInTheDocument()
     expect(within(rdRow).getByText(/no profiles/i)).toBeInTheDocument()
@@ -118,8 +118,8 @@ describe('AppsPage — list', () => {
   })
 })
 
-describe('AppsPage — create flow', () => {
-  it('round-trips name + hosts through POST /apps and reloads the list', async () => {
+describe('AppsPage — create flow (stays explicit, no autosave)', () => {
+  it('round-trips name + hosts through POST /apps and reloads the list; never PATCHes', async () => {
     (api.apps.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...makeApp({ id: 12, name: 'Discord', slug: 'discord' }),
       hosts: ['discord.com'],
@@ -133,7 +133,6 @@ describe('AppsPage — create flow', () => {
       screen.getByPlaceholderText(/youtube\.com/i),
       'discord.com, *.discordapp.net',
     )
-    // After create, the list will include the new app
     ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
       youtube, reddit,
       { ...makeApp({ id: 12, name: 'Discord', slug: 'discord' }), hosts: ['discord.com'] },
@@ -147,45 +146,10 @@ describe('AppsPage — create flow', () => {
       })
     })
     await screen.findByText('Discord')
+    // The create flow must never autosave.
+    expect(patchMock()).not.toHaveBeenCalled()
   })
-})
 
-describe('AppsPage — edit flow', () => {
-  it('renders existing hosts as chips and round-trips edits via PUT /apps + PUT /apps/:id/hosts', async () => {
-    const user = userEvent.setup()
-    render(withQuery(<AppsPage />))
-    await user.click(await screen.findByRole('button', { name: /youtube/i }))
-    // Existing host chips
-    expect(screen.getByText('youtube.com')).toBeInTheDocument()
-    expect(screen.getByText('googlevideo.com')).toBeInTheDocument()
-    // Remove a host
-    await user.click(screen.getByRole('button', { name: /remove googlevideo\.com/i }))
-    expect(screen.queryByText('googlevideo.com')).not.toBeInTheDocument()
-    // Add a new host via the Add button
-    await user.type(
-      screen.getByPlaceholderText(/^example\.com$/i),
-      '*.ytimg.com',
-    )
-    await user.click(screen.getByRole('button', { name: 'Add' }))
-    expect(screen.getByText('*.ytimg.com')).toBeInTheDocument()
-    // Rename
-    const nameInput = screen.getByDisplayValue('YouTube') as HTMLInputElement
-    await user.clear(nameInput)
-    await user.type(nameInput, 'YT')
-    await user.click(screen.getByRole('button', { name: /^save$/i }))
-    await waitFor(() => {
-      expect(api.apps.update).toHaveBeenCalledWith(10, {
-        name: 'YT',
-        icon: '📺',
-        iconType: 'emoji',
-        templateId: null,
-      })
-      expect(api.apps.setHosts).toHaveBeenCalledWith(10, ['youtube.com', '*.ytimg.com'])
-    })
-  })
-})
-
-describe('AppsPage — icon picker (#1004)', () => {
   it('emoji tab: typed value is sent with iconType=emoji on create', async () => {
     (api.apps.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...makeApp({ id: 20, name: 'Discord', slug: 'discord' }),
@@ -205,84 +169,164 @@ describe('AppsPage — icon picker (#1004)', () => {
         hosts: [],
       })
     })
-  })
-
-  it('URL tab: pasted URL is sent with iconType=url on edit', async () => {
-    const user = userEvent.setup()
-    render(withQuery(<AppsPage />))
-    await user.click(await screen.findByRole('button', { name: /youtube/i }))
-    await user.click(screen.getByTestId('icon-picker-tab-url'))
-    const urlInput = screen.getByTestId('icon-picker-url-input') as HTMLInputElement
-    await user.clear(urlInput)
-    await user.type(urlInput, 'https://example.com/icon.png')
-    await user.click(screen.getByRole('button', { name: /^save$/i }))
-    await waitFor(() => {
-      expect(api.apps.update).toHaveBeenCalledWith(10, {
-        name: 'YouTube',
-        icon: 'https://example.com/icon.png',
-        iconType: 'url',
-        templateId: null,
-      })
-    })
-  })
-
-  it('Favicon tab: picking a host saves DuckDuckGo URL with iconType=url', async () => {
-    const user = userEvent.setup()
-    render(withQuery(<AppsPage />))
-    await user.click(await screen.findByRole('button', { name: /youtube/i }))
-    await user.click(screen.getByTestId('icon-picker-tab-favicon'))
-    await user.click(screen.getByTestId('icon-picker-favicon-youtube.com'))
-    await user.click(screen.getByRole('button', { name: /^save$/i }))
-    await waitFor(() => {
-      expect(api.apps.update).toHaveBeenCalledWith(10, {
-        name: 'YouTube',
-        icon: 'https://icons.duckduckgo.com/ip3/youtube.com.ico',
-        iconType: 'url',
-        templateId: null,
-      })
-    })
-  })
-
-  it('Switching tabs preserves the name field', async () => {
-    const user = userEvent.setup()
-    render(withQuery(<AppsPage />))
-    await screen.findByText('YouTube')
-    await user.click(screen.getByRole('button', { name: /new app/i }))
-    await user.type(screen.getByPlaceholderText('YouTube'), 'Discord')
-    await user.click(screen.getByTestId('icon-picker-tab-url'))
-    await user.click(screen.getByTestId('icon-picker-tab-emoji'))
-    expect((screen.getByPlaceholderText('YouTube') as HTMLInputElement).value).toBe('Discord')
+    expect(patchMock()).not.toHaveBeenCalled()
   })
 })
 
-describe('AppsPage — recent-activity picker (#766)', () => {
-  it('opens picker from the create flow, multi-selects apexes, and appends them to the hosts input', async () => {
-    (api.apps.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...makeApp({ id: 13, name: 'YT', slug: 'yt' }),
-      hosts: ['youtube.com', 'googlevideo.com'],
-    })
-    const user = userEvent.setup()
-    render(withQuery(<AppsPage />))
-    await screen.findByText('YouTube')
-    await user.click(screen.getByRole('button', { name: /new app/i }))
-    await user.type(screen.getByPlaceholderText('YouTube'), 'YT')
-    await user.click(screen.getByRole('button', { name: /pick from recent activity/i }))
-    await screen.findByText(/top apexes a device hit/i)
-    await waitFor(() => expect(api.apps.recentApexes).toHaveBeenCalled())
-    await user.click(await screen.findByLabelText('Select youtube.com'))
-    await user.click(screen.getByLabelText('Select googlevideo.com'))
-    await user.click(screen.getByTestId('picker-add-button'))
-    const textarea = screen.getByPlaceholderText(/youtube\.com/i) as HTMLTextAreaElement
-    await waitFor(() => {
-      expect(textarea.value).toMatch(/youtube\.com/)
-      expect(textarea.value).toMatch(/googlevideo\.com/)
-    })
+describe('AppsPage — inline edit autosave (#1003)', () => {
+  async function expandYouTube(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole('button', { name: /youtube/i }))
+    // Inline editor surfaces, no Save button.
+    await screen.findByTestId('app-name-input-10')
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument()
+  }
+
+  it('renaming autosaves via PATCH after debounce — no Save button; Unsaved then Saved just now', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      render(withQuery(<AppsPage />))
+      await expandYouTube(user)
+      const nameInput = screen.getByTestId('app-name-input-10') as HTMLInputElement
+      await user.clear(nameInput)
+      await user.type(nameInput, 'YT')
+
+      // Pre-debounce: dirty, no save yet.
+      expect(patchMock()).not.toHaveBeenCalled()
+      expect(screen.getByTestId('app-name-status-10')).toHaveAttribute('data-status', 'dirty')
+      expect(screen.getByTestId('app-name-status-10')).toHaveTextContent(/unsaved/i)
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(patchMock()).toHaveBeenCalledTimes(1)
+      expect(patchMock()).toHaveBeenLastCalledWith(10, { name: 'YT' })
+
+      await waitFor(() => {
+        const status = screen.getByTestId('app-name-status-10')
+        expect(status).toHaveAttribute('data-status', 'saved')
+        expect(status).toHaveTextContent(/saved just now/i)
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('opens picker from the edit flow and appends apexes to existing chips', async () => {
+  it('changing the icon autosaves via PATCH with icon + iconType', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      render(withQuery(<AppsPage />))
+      await expandYouTube(user)
+      await user.click(screen.getByTestId('icon-picker-tab-url'))
+      const urlInput = screen.getByTestId('icon-picker-url-input') as HTMLInputElement
+      await user.clear(urlInput)
+      await user.type(urlInput, 'https://example.com/icon.png')
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(patchMock()).toHaveBeenLastCalledWith(10, {
+        icon: 'https://example.com/icon.png',
+        iconType: 'url',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('adding a host autosaves the full host list via PATCH (full-replace)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      render(withQuery(<AppsPage />))
+      await expandYouTube(user)
+      await user.type(screen.getByPlaceholderText(/^example\.com$/i), '*.ytimg.com')
+      await user.click(screen.getByRole('button', { name: 'Add' }))
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(patchMock()).toHaveBeenLastCalledWith(10, {
+        hosts: ['youtube.com', 'googlevideo.com', '*.ytimg.com'],
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('removing a host autosaves the reduced host list via PATCH', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      render(withQuery(<AppsPage />))
+      await expandYouTube(user)
+      await user.click(screen.getByRole('button', { name: /remove googlevideo\.com/i }))
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(patchMock()).toHaveBeenLastCalledWith(10, { hosts: ['youtube.com'] })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('save failure shows inline error + Retry; dirty value stays; Retry re-sends', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      patchMock().mockRejectedValueOnce(new Error('boom'))
+      render(withQuery(<AppsPage />))
+      await expandYouTube(user)
+      const nameInput = screen.getByTestId('app-name-input-10') as HTMLInputElement
+      await user.clear(nameInput)
+      await user.type(nameInput, 'YT')
+
+      await vi.advanceTimersByTimeAsync(700)
+
+      await waitFor(() => {
+        expect(screen.getByTestId('app-name-status-10')).toHaveAttribute('data-status', 'error')
+      })
+      // Dirty value stays in the form.
+      expect((screen.getByTestId('app-name-input-10') as HTMLInputElement).value).toBe('YT')
+
+      // Retry re-sends the same PATCH and succeeds.
+      patchMock().mockResolvedValueOnce(undefined)
+      await user.click(screen.getByRole('button', { name: /retry/i }))
+      await waitFor(() => {
+        expect(patchMock()).toHaveBeenLastCalledWith(10, { name: 'YT' })
+        expect(screen.getByTestId('app-name-status-10')).toHaveAttribute('data-status', 'saved')
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('AppsPage — icon picker on inline edit (#1004)', () => {
+  it('Favicon tab: picking a host autosaves DuckDuckGo URL with iconType=url', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    try {
+      render(withQuery(<AppsPage />))
+      await user.click(await screen.findByRole('button', { name: /youtube/i }))
+      await screen.findByTestId('app-name-input-10')
+      await user.click(screen.getByTestId('icon-picker-tab-favicon'))
+      await user.click(screen.getByTestId('icon-picker-favicon-youtube.com'))
+      await vi.advanceTimersByTimeAsync(700)
+      expect(patchMock()).toHaveBeenLastCalledWith(10, {
+        icon: 'https://icons.duckduckgo.com/ip3/youtube.com.ico',
+        iconType: 'url',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('AppsPage — recent-activity picker on inline edit (#766)', () => {
+  it('opens picker from the inline editor and appends apexes to existing chips', async () => {
     const user = userEvent.setup()
     render(withQuery(<AppsPage />))
     await user.click(await screen.findByRole('button', { name: /reddit/i }))
+    await screen.findByTestId('app-name-input-11')
     await user.click(screen.getByRole('button', { name: /pick from recent activity/i }))
     await waitFor(() => expect(api.apps.recentApexes).toHaveBeenCalled())
     await user.click(await screen.findByLabelText('Select googlevideo.com'))
@@ -293,11 +337,12 @@ describe('AppsPage — recent-activity picker (#766)', () => {
   })
 })
 
-describe('AppsPage — delete flow', () => {
+describe('AppsPage — delete flow (inline)', () => {
   it('warns when the app has profile assignments and names them', async () => {
     const user = userEvent.setup()
     render(withQuery(<AppsPage />))
     await user.click(await screen.findByRole('button', { name: /youtube/i }))
+    await screen.findByTestId('app-name-input-10')
     await user.click(screen.getByRole('button', { name: /delete app/i }))
     expect(screen.getByText(/assigned to/i)).toBeInTheDocument()
     expect(screen.getAllByText(/Kids/).length).toBeGreaterThan(0)
@@ -311,6 +356,7 @@ describe('AppsPage — delete flow', () => {
     const user = userEvent.setup()
     render(withQuery(<AppsPage />))
     await user.click(await screen.findByRole('button', { name: /reddit/i }))
+    await screen.findByTestId('app-name-input-11')
     await user.click(screen.getByRole('button', { name: /delete app/i }))
     expect(screen.queryByText(/assigned to/i)).not.toBeInTheDocument()
     expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
@@ -328,17 +374,15 @@ describe('AppsPage — host input copy (#1006)', () => {
     await user.click(await screen.findByRole('button', { name: /new app/i }))
     const textarea = screen.getByPlaceholderText(/youtube\.com/i) as HTMLTextAreaElement
     expect(textarea.placeholder).not.toContain('*.')
-    // Open edit modal too — checks the single-host input placeholder.
     await user.click(screen.getByRole('button', { name: /^cancel$/i }))
     await user.click(await screen.findByRole('button', { name: /youtube/i }))
     const hostInput = screen.getByPlaceholderText(/^example\.com$/i) as HTMLInputElement
     expect(hostInput.placeholder).not.toContain('*.')
-    // No visible UI string should mention *.example.com.
     expect(screen.queryByText(/\*\.example\.com/i)).not.toBeInTheDocument()
   })
 })
 
-describe('AppsPage — Escape closes modals (#1008)', () => {
+describe('AppsPage — Escape closes create modal (#1008)', () => {
   it('closes the create modal on Escape', async () => {
     const user = userEvent.setup()
     render(withQuery(<AppsPage />))
@@ -359,7 +403,6 @@ describe('AppsPage — Escape closes modals (#1008)', () => {
     await user.click(screen.getByRole('button', { name: /pick from recent activity/i }))
     await screen.findByText(/top apexes a device hit/i)
     await user.keyboard('{Escape}')
-    // Picker closes but the underlying create modal stays open.
     await waitFor(() => {
       expect(screen.queryByText(/top apexes a device hit/i)).not.toBeInTheDocument()
     })
