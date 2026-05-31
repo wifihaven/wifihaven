@@ -103,7 +103,11 @@ object RollupJobs {
 
   // ── shared run wrapper ─────────────────────────────────────────────────────
 
-  private def runOnce(
+  // `private[api]` so the shutdown-handling spec can drive a single tick with an
+  // injected body (a failing/never-completing effect) without going through the
+  // forever-looping fiber. The production `body` is always one of the tick
+  // functions above.
+  private[api] def runOnce(
       job: String,
       repo: RollupRepo,
       clock: Clock,
