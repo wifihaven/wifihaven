@@ -62,47 +62,74 @@ Cache locations (kept across runs, safe to delete to force a rebuild):
 | `scripts/vm/.cache/imagebuilder/`       | OpenWRT Image Builder working tree     |
 | `.e2e-vm-venv/`                         | pytest venv (created lazily)           |
 
-## Registering the runner with GitHub
+## Sizing: runner count vs. bridge pool — load-bearing invariant
 
-The runner installs under `~/actions-runner` in the runner user's home directory
-— no sudo needed for the install itself.
+> **Invariant (#1163): `runner-count = bridge-pool-size − 1`.** The trailing
+> bridge in the pool is reserved as a manual-headroom slot for ad-hoc runs
+> (`scripts/e2e-kvm-sanity`, operator debugging, the keep-staging-warm
+> cron). Because `wh_pick_lan_bridge`
+> ([`scripts/vm/lib.sh`](../../scripts/vm/lib.sh)) hands out the
+> **lowest-numbered free bridge first** and there are never more than
+> `N − 1` concurrent jobs (capped by runner-instance count), the
+> highest-numbered bridge stays free in steady state.
+>
+> **Touch both knobs together.** If you scale runners, scale bridges. If
+> you scale bridges, scale runners. The matching workflow knob is
+> `max-parallel` in the VM e2e workflows (which equals `runner-count`).
+>
+> Today's sizing on api.lan: **5 bridges (`wh-lan0..wh-lan4`), 4 runner
+> instances (`actions-runner-1..4`), `max-parallel: 4`.**
+
+The runner-instance count is the global host-concurrency governor: GitHub
+queues jobs naturally when no runner is free, so once all 4 runners are
+busy, sibling jobs wait. No workflow-level `concurrency:` group is needed
+across workflows — the runner pool *is* the queue.
+
+## Registering the runners with GitHub
+
+Each runner instance installs under `~/actions-runner-N` in the runner
+user's home directory (N = 1..4 today). The install itself needs no sudo;
+the per-instance systemd unit needs sudo once.
 
 1. Pick the runner user (non-root). It must be in the `kvm` and `docker`
    groups and have the NOPASSWD `ip` rule from `docs/vm-e2e-ubuntu.md`.
    The natural choice is whichever user you already bootstrapped the VM
    harness with.
 
-2. Get a one-time registration token (from any machine with `gh` auth — the
-   token's only valid ~1 hour, so do this right before step 4):
+2. As the runner user, download and unpack the latest runner release once
+   into a tarball — you'll unpack a fresh copy into each instance dir.
+   Check <https://github.com/actions/runner/releases> for the current
+   version.
    ```bash
-   gh api -X POST repos/wifihaven/wifihaven/actions/runners/registration-token --jq .token
-   ```
-
-3. As the runner user, download and unpack the latest runner release. Check
-   <https://github.com/actions/runner/releases> for the current version.
-   ```bash
-   mkdir -p ~/actions-runner && cd ~/actions-runner
    RUNNER_VER=2.321.0    # ← update to current
-   curl -fsSL -o runner.tar.gz \
+   curl -fsSL -o /tmp/runner.tar.gz \
      "https://github.com/actions/runner/releases/download/v${RUNNER_VER}/actions-runner-linux-x64-${RUNNER_VER}.tar.gz"
-   tar xzf runner.tar.gz && rm runner.tar.gz
    ```
 
-4. Configure with the labels the workflow expects (paste the token from #2):
+3. For each instance `N` in `1..4`, fetch a **fresh** one-time registration
+   token (each is valid ~1 hour and is single-use) and configure a separate
+   work directory. **All instances carry the same labels** — `kvm` is what
+   the workflows match on:
    ```bash
-   cd ~/actions-runner
-   ./config.sh \
-     --url https://github.com/wifihaven/wifihaven \
-     --token <REGISTRATION_TOKEN> \
-     --name wifihaven-kvm-1 \
-     --labels self-hosted,linux,kvm \
-     --work _work \
-     --unattended
+   for N in 1 2 3 4; do
+     mkdir -p ~/actions-runner-$N && cd ~/actions-runner-$N
+     tar xzf /tmp/runner.tar.gz
+     TOKEN=$(gh api -X POST \
+       repos/wifihaven/wifihaven/actions/runners/registration-token --jq .token)
+     ./config.sh \
+       --url https://github.com/wifihaven/wifihaven \
+       --token "$TOKEN" \
+       --name "wifihaven-kvm-$N" \
+       --labels self-hosted,linux,kvm \
+       --work _work \
+       --unattended
+   done
    ```
 
-5. Smoke-test interactively before installing as a service:
+4. Smoke-test one instance interactively before installing the systemd
+   units:
    ```bash
-   ./run.sh
+   cd ~/actions-runner-1 && ./run.sh
    ```
    In another shell, dispatch the sanity workflow and watch it land:
    ```bash
@@ -111,22 +138,71 @@ The runner installs under `~/actions-runner` in the runner user's home directory
    ```
    Ctrl-C `./run.sh` once the workflow finishes.
 
-6. Install as a systemd service so the runner survives reboots. A template
-   lives at [`scripts/ci/kvm-runner.service`](../../scripts/ci/kvm-runner.service).
-   This is the only step that needs sudo:
+5. Install the systemd **template** unit so each runner instance survives
+   reboots. Template lives at
+   [`scripts/ci/kvm-runner@.service`](../../scripts/ci/kvm-runner@.service);
+   `%i` expands to the instance index, so a single file enables N services
+   (`kvm-runner@1`, `kvm-runner@2`, …). This is the only step that needs
+   sudo:
    ```bash
-   sudo cp scripts/ci/kvm-runner.service /etc/systemd/system/kvm-runner.service
+   sudo cp 'scripts/ci/kvm-runner@.service' /etc/systemd/system/kvm-runner@.service
    sudo sed -i \
      -e "s|<RUNNER_USER>|$USER|g" \
-     -e "s|<RUNNER_HOME>|$HOME/actions-runner|g" \
-     /etc/systemd/system/kvm-runner.service
+     -e "s|<RUNNER_HOME_BASE>|$HOME/actions-runner|g" \
+     /etc/systemd/system/kvm-runner@.service
    sudo systemctl daemon-reload
-   sudo systemctl enable --now kvm-runner.service
-   journalctl -u kvm-runner -f
+   sudo systemctl enable --now kvm-runner@{1,2,3,4}.service
+   journalctl -u 'kvm-runner@*' -f
    ```
 
-6. Verify the runner appears under
+6. Verify all 4 runners appear under
    `Settings → Actions → Runners` with the `kvm` label and status `Idle`.
+
+## Bridge pool (`/etc/qemu/bridge.conf`)
+
+The 4 job-runners share a host-wide pool of LAN bridges. The pool is
+created by `scripts/vm/lan-bridge-pool-bootstrap.sh`, which also appends
+`allow wh-lanN` entries to `/etc/qemu/bridge.conf`.
+
+```bash
+# Default pool size 5 → wh-lan0..wh-lan4. Override with WH_LAN_BRIDGE_POOL_SIZE.
+sudo scripts/vm/lan-bridge-pool-bootstrap.sh
+```
+
+Resulting `/etc/qemu/bridge.conf` (on top of any pre-existing entries):
+
+```
+allow wh-lan0   # job slot 0
+allow wh-lan1   # job slot 1
+allow wh-lan2   # job slot 2
+allow wh-lan3   # job slot 3
+allow wh-lan4   # manual headroom (e2e-kvm-sanity, keep-staging-warm, debug)
+```
+
+The picker (`scripts/vm/lib.sh::wh_pick_lan_bridge`) treats the pool as a
+uniform set, picking the lowest-numbered free bridge under a host-wide
+flock. **There is no code-level "reserved" flag on `wh-lan4`** — the
+headroom guarantee comes from the runner-count = pool-size − 1 invariant.
+If you bump runner count to 5, `wh-lan4` becomes a job slot and you must
+add `wh-lan5` to preserve headroom.
+
+## Verifying parallelism
+
+After all four runners are online, confirm the matrix arms actually run
+concurrently with a `workflow_dispatch`:
+
+```bash
+gh workflow run e2e-vm-fake.yml -R wifihaven/wifihaven
+RUN_ID=$(gh run list -R wifihaven/wifihaven \
+  --workflow=e2e-vm-fake.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run view "$RUN_ID" -R wifihaven/wifihaven --json jobs \
+  --jq '.jobs[] | {name, startedAt, completedAt}'
+```
+
+Both matrix arms' `startedAt` timestamps should overlap (typically within
+a few seconds of each other) instead of one arm starting only after the
+other completes. If they're back-to-back, only one runner is online or
+`max-parallel` is below the matrix size.
 
 ## Runtime privileges
 
@@ -149,7 +225,7 @@ the VM e2e harness on this host as a regular user, you're done.
 > **Don't re-add `NoNewPrivileges=true` to the systemd unit.** It refuses
 > the setuid transition for the `sudo ip link …` call above and breaks VM
 > bring-up with `sudo: The "no new privileges" flag is set …`. The unit
-> file in `scripts/ci/kvm-runner.service` deliberately omits it; the
+> file in `scripts/ci/kvm-runner@.service` deliberately omits it; the
 > NOPASSWD sudoers rule on `/usr/sbin/ip` is already the security gate.
 
 ## Trust model

@@ -1,20 +1,22 @@
-## systemd unit template for the WifiHaven KVM self-hosted GitHub Actions runner.
+## systemd template unit for the WifiHaven KVM self-hosted GitHub Actions
+## runners. Each instance maps to ~/actions-runner-%i in the runner user's
+## home directory, where %i is the instance index (1..N).
 ##
 ## Install via:
-##   sudo cp scripts/ci/kvm-runner.service /etc/systemd/system/kvm-runner.service
+##   sudo cp 'scripts/ci/kvm-runner@.service' /etc/systemd/system/kvm-runner@.service
 ##   sudo sed -i \
 ##     -e "s|<RUNNER_USER>|$USER|g" \
-##     -e "s|<RUNNER_HOME>|$HOME/actions-runner|g" \
-##     /etc/systemd/system/kvm-runner.service
+##     -e "s|<RUNNER_HOME_BASE>|$HOME/actions-runner|g" \
+##     /etc/systemd/system/kvm-runner@.service
 ##   sudo systemctl daemon-reload
-##   sudo systemctl enable --now kvm-runner.service
+##   sudo systemctl enable --now kvm-runner@{1,2,3,4}.service
 ##
-## See docs/ops/kvm-runner.md for full setup, including registration.
-## Defaults assume the runner lives at ~/actions-runner in the runner
-## user's home directory.
+## See docs/ops/kvm-runner.md for full setup, including per-instance
+## registration. The runner-count must match (bridge-pool-size - 1) so the
+## manual-headroom slot stays free — see the invariant called out in that doc.
 
 [Unit]
-Description=GitHub Actions runner (WifiHaven, KVM)
+Description=GitHub Actions runner (WifiHaven, KVM) — instance %i
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -25,10 +27,10 @@ Type=simple
 User=<RUNNER_USER>
 Group=<RUNNER_USER>
 
-# Directory created by ./config.sh (where run.sh + _work live).
-WorkingDirectory=<RUNNER_HOME>
+# Per-instance work tree created by ./config.sh in actions-runner-%i.
+WorkingDirectory=<RUNNER_HOME_BASE>-%i
 
-ExecStart=<RUNNER_HOME>/run.sh
+ExecStart=<RUNNER_HOME_BASE>-%i/run.sh
 
 # The runner manages its own graceful shutdown when it receives SIGTERM —
 # it finishes the current job before exiting. Allow time for an e2e run.

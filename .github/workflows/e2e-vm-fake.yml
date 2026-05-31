@@ -23,15 +23,16 @@ name: VM e2e (fake API — Gate 2)
 #   pool pick (lib.sh::wh_pick_lan_bridge, #891).
 #
 #   The hard ceiling on concurrent VM pairs is the bridge pool, NOT this
-#   group: api.lan's /etc/qemu/bridge.conf has 4 bridges (wh-lan0..wh-lan3),
-#   and each VM pair (router + client) consumes one — so 4 concurrent pairs
-#   is the absolute max. We cap CI matrix fan-out at `max-parallel: 3`
+#   group: api.lan's /etc/qemu/bridge.conf has 5 bridges (wh-lan0..wh-lan4),
+#   and each VM pair (router + client) consumes one — so 5 concurrent pairs
+#   is the absolute max. We cap CI matrix fan-out at `max-parallel: 4`
 #   (below) to leave one bridge free for ad-hoc manual runs,
 #   scripts/e2e-kvm-sanity, and the keep-staging-warm cron, so none of those
-#   ever queue behind CI. Bumping to 4 is a one-line change if pressure
-#   justifies giving up the headroom slot.
+#   ever queue behind CI. The matching global governor is the runner-instance
+#   count on api.lan (4, one per job-bridge); see docs/ops/kvm-runner.md
+#   for the runner-count = bridge-count - 1 invariant (#1163).
 #
-#   When all 4 bridges are taken, wh_pick_lan_bridge fails loud with
+#   When all 5 bridges are taken, wh_pick_lan_bridge fails loud with
 #   "LAN bridge pool exhausted" (exit 1) rather than queueing forever — see
 #   scripts/vm/test-lan-bridge-pick.sh. Broader capacity plan: #657.
 
@@ -67,15 +68,15 @@ jobs:
     # #685: matrix over ipk-23.05 and apk-25.12 router images. fail-fast=false
     # so a regression in one flavor still reports the other arm's status
     # (needed to surface apk-only regressions like the #531 history case).
-    # max-parallel: 3 (#895) — with #891's bridge/port/MAC parameterization
-    # the arms can share a host, bounded by the 4-bridge pool minus one
-    # headroom slot (see the concurrency note at the top of this file). Today
-    # the single self-hosted kvm runner still serializes the arms via runner
-    # availability; once a second runner is added they parallelize up to the
-    # cap automatically.
+    # max-parallel: 4 (#1163) — with #891's bridge/port/MAC parameterization
+    # the arms can share a host, bounded by the 5-bridge pool minus one
+    # headroom slot (see the concurrency note at the top of this file). The
+    # 4 self-hosted kvm runner instances on api.lan are the global governor
+    # for cross-workflow concurrency; within a single workflow this cap is
+    # the per-matrix ceiling.
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
         include:
           - pkg_format: ipk
@@ -94,7 +95,7 @@ jobs:
       # Per-job scope for the qemu `-name wh-*-${WH_RUN_ID}` suffix and the
       # .run/<id>/ state dir (config.sh:91,145,40-44). Lets teardown's
       # pkill backstop match only this run's qemu, never a sibling's.
-      # Now that #895 lets matrix arms run in parallel (max-parallel: 3),
+      # Now that #895 lets matrix arms run in parallel (max-parallel: 4),
       # the id MUST be unique per arm — two concurrently-booting arms sharing
       # one .run/<id>/ would clobber each other's overlay/pid/monitor.sock —
       # so we append the pkg_format. github.run_id already makes it unique

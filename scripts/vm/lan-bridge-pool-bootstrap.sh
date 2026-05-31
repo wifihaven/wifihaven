@@ -3,14 +3,21 @@
 # runs (#891). Idempotent.
 #
 # Creates ${WH_LAN_BRIDGE_POOL_SIZE} bridges named wh-lan0 .. wh-lan${N-1}
-# (default N=4) via `sudo ip link add`, and verifies each is listed in
+# (default N=5) via `sudo ip link add`, and verifies each is listed in
 # /etc/qemu/bridge.conf so qemu-bridge-helper will attach taps.
+#
+# Sizing convention (#1163): N = (concurrent-runner-count) + 1. The trailing
+# bridge is the manual-headroom slot reserved for ad-hoc runs and the
+# keep-staging-warm cron — it stays free because runners only fan out to N-1
+# bridges, and the wh_pick_lan_bridge picker hands out lowest-numbered first.
+# Today: 4 runners, 5 bridges. See docs/ops/kvm-runner.md for the full
+# invariant.
 #
 # Also ensures /etc/qemu/bridge.conf has an `allow wh-lanK` line for each
 # pool bridge (sudo tee -a). Idempotent: existing lines are left alone.
 #
 # Usage:
-#   sudo scripts/vm/lan-bridge-pool-bootstrap.sh           # default size 4
+#   sudo scripts/vm/lan-bridge-pool-bootstrap.sh           # default size 5
 #   WH_LAN_BRIDGE_POOL_SIZE=8 sudo scripts/vm/lan-bridge-pool-bootstrap.sh
 
 set -euo pipefail
@@ -26,7 +33,7 @@ require_cmd() {
 }
 require_cmd ip
 
-SIZE="${WH_LAN_BRIDGE_POOL_SIZE:-4}"
+SIZE="${WH_LAN_BRIDGE_POOL_SIZE:-5}"
 if ! [[ "${SIZE}" =~ ^[0-9]+$ ]] || (( SIZE < 1 )); then
   echo "lan-bridge-pool-bootstrap: WH_LAN_BRIDGE_POOL_SIZE must be a positive integer (got '${SIZE}')" >&2
   exit 2
