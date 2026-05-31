@@ -1,0 +1,45 @@
+-- V46__add_connection_events_attr_index.sql
+-- #1254: the byte-rollup hostname-attribution lateral (the #809 reroll in
+-- RollupRepoLive.resolvedCte, mirrored by TrafficReportRepoLive) pegged prod DB
+-- CPU at 100% continuously. The lateral, run once per traffic_reports row, is:
+--
+--   SELECT resolved_host_value FROM connection_events
+--   WHERE mac = tr.mac AND dest_ip = tr.host_value
+--     AND resolved_host_value IS NOT NULL
+--     AND ts >= tr.date AND ts < tr.date + INTERVAL '1 day'
+--   ORDER BY ts DESC LIMIT 1
+--
+-- connection_events already carries idx_conn_events_mac_dest_resolved
+-- (mac, dest_ip) WHERE resolved_host_value IS NOT NULL (V22, re-established in
+-- V42), but it has no `ts` column. With (mac, dest_ip) alone the planner would
+-- have to read every all-time row for that pair, then filter the day-range and
+-- sort for the LIMIT 1 — so it never picks it. Instead, prod EXPLAIN (2026-05-31)
+-- showed the lateral using (mac, ts) on most weekly partitions and, on the
+-- largest one (connection_events_2026_22, ~15k rows), falling back to the
+-- ts-only idx_conn_events_ts: Index Cond on the ts range, Filter on mac/dest_ip.
+-- That scans a full day of events per traffic_reports row; ~70k tr rows × a
+-- day's worth of events ≈ 1e8 touches, queries ran 9+ minutes, rerolls piled up
+-- and CPU never idled.
+--
+-- A composite (mac, dest_ip, ts) lets the planner serve the whole lateral from
+-- one index seek: (mac, dest_ip) equality + the ts range + the ORDER BY ts DESC
+-- LIMIT 1, no heap filter, no sort. Strictly the cheapest plan, so it wins over
+-- both the (mac, ts) and ts-only fallbacks. The reroll drops from minutes to
+-- sub-millisecond per row. The partial predicate matches the lateral's
+-- `resolved_host_value IS NOT NULL` and keeps the index to the small fraction of
+-- rows that carry a resolution. This index is a strict superset of
+-- idx_conn_events_mac_dest_resolved (same leading columns + predicate); the
+-- older index could be dropped as a follow-up, left in place here to keep this
+-- change to the one index the incident needs.
+--
+-- Partitioning: connection_events is weekly RANGE-partitioned (V42). Creating
+-- the index on the parent propagates it to every existing and future partition,
+-- which is what we want. A partitioned-parent CREATE INDEX cannot be
+-- CONCURRENTLY, but the partitions are tiny (single-digit MB) so the build is
+-- sub-second on the Flyway startup path. Column types match the lateral's
+-- predicates (mac, dest_ip TEXT; ts TIMESTAMPTZ), so the composite btree is used
+-- directly.
+
+CREATE INDEX IF NOT EXISTS idx_conn_events_attr
+  ON connection_events (mac, dest_ip, ts)
+  WHERE resolved_host_value IS NOT NULL;
