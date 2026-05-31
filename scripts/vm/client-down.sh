@@ -24,7 +24,7 @@ done
 
 RUN_DIR="${WH_RUN_DIR}/${NAME}"
 PIDFILE="${RUN_DIR}/qemu.pid"
-QMP_SOCK="${RUN_DIR}/qemu.sock"
+QMP_SOCK="$(wh_client_qmp_sock "${NAME}")"
 
 if [[ ! -d "${RUN_DIR}" ]]; then
   echo "[client-down] '${NAME}' not running (no ${RUN_DIR})"
@@ -61,6 +61,8 @@ if [[ -n "${PID}" ]] && kill -0 "${PID}" 2>/dev/null; then
 fi
 
 rm -rf "${RUN_DIR}"
+rm -f "${QMP_SOCK}"
+rmdir "${WH_SOCK_DIR}" 2>/dev/null || true
 
 # Fallback: a previous run was killed hard (e.g., CI cancellation) and
 # left a qemu alive without an up-to-date pidfile. Kill by name so the
