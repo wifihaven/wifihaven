@@ -605,6 +605,15 @@ export interface CreateUserRequest {
   profileIds: number[]
 }
 
+// #997 — field-scoped partial update; the server applies only the keys
+// present. profileIds is replace-set ([] unassigns all). Password changes go
+// through the dedicated change-password endpoint, never here.
+export interface PatchUserRequest {
+  username?: string
+  role?: UserRole
+  profileIds?: number[]
+}
+
 export interface SetUserProfilesRequest {
   profileIds: number[]
 }

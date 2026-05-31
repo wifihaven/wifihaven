@@ -3,7 +3,17 @@ import { api } from '@/api/client'
 import type { CreateUserRequest, ProfileDetail, User, UserRole } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
+import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { EmptyState } from '@/components/EmptyState'
+import { SaveStatusBadge } from '@/components/SaveStatusBadge'
+
+// Set-equality for the profileIds replace-set — order from toggling is
+// irrelevant, so the autosave hook should treat [1,2] and [2,1] as equal.
+function sameIdSet(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false
+  const s = new Set(a)
+  return b.every(x => s.has(x))
+}
 
 const ROLES: UserRole[] = ['admin', 'adult', 'child']
 
@@ -25,8 +35,8 @@ export function UsersPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState<CreateForm>(emptyCreateForm())
+  // Which user row is expanded for inline (autosaved) editing.
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [editProfileIds, setEditProfileIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -58,12 +68,6 @@ export function UsersPage() {
     setError(null)
   }
 
-  function startEdit(u: User) {
-    setEditingId(u.id)
-    setEditProfileIds([...u.profileIds])
-    setError(null)
-  }
-
   async function saveCreate() {
     if (!createForm.username.trim()) { setError('Username is required'); return }
     if (!createForm.password) { setError('Password is required'); return }
@@ -81,21 +85,6 @@ export function UsersPage() {
       await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create user')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function saveEdit() {
-    if (editingId == null) return
-    setSaving(true)
-    setError(null)
-    try {
-      await api.users.setProfiles(editingId, editProfileIds)
-      setEditingId(null)
-      await reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update profiles')
     } finally {
       setSaving(false)
     }
@@ -140,39 +129,45 @@ export function UsersPage() {
           : users.length === 0
           ? <EmptyState title="No users yet." />
           : users.map(u => (
-              <div key={u.id} data-testid={`user-row-${u.id}`} className="flex items-center gap-4 px-5 py-4 border-b border-brand-border last:border-0">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-brand-ink truncate">{u.username}</p>
-                  <p className="text-xs text-brand-text-muted">
-                    <span className={`inline-block px-2 py-0.5 rounded font-mono mr-2 ${
-                      u.role === 'admin'
-                        ? 'bg-brand-accent/10 text-brand-accent'
-                        : u.role === 'adult'
-                          ? 'bg-blue-500/10 text-blue-700'
-                          : 'bg-amber-500/10 text-amber-700'
-                    }`}>{u.role}</span>
-                  </p>
+              <div key={u.id} data-testid={`user-row-${u.id}`} className="px-5 py-4 border-b border-brand-border last:border-0">
+                <div className="flex items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-brand-ink truncate">{u.username}</p>
+                    <p className="text-xs text-brand-text-muted">
+                      <span className={`inline-block px-2 py-0.5 rounded font-mono mr-2 ${
+                        u.role === 'admin'
+                          ? 'bg-brand-accent/10 text-brand-accent'
+                          : u.role === 'adult'
+                            ? 'bg-blue-500/10 text-blue-700'
+                            : 'bg-amber-500/10 text-amber-700'
+                      }`}>{u.role}</span>
+                    </p>
+                  </div>
+                  <div className="hidden sm:flex flex-wrap gap-1 max-w-md justify-end">
+                    {u.profileIds.length === 0
+                      ? <span className="text-xs text-brand-text-muted">No profiles</span>
+                      : u.profileIds.map(pid => (
+                          <span key={pid} className="text-xs bg-brand-alt text-brand-text border border-brand-border-strong px-2 py-1 rounded-lg">
+                            {profileNameById.get(pid) ?? `#${pid}`}
+                          </span>
+                        ))
+                    }
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => setEditingId(id => (id === u.id ? null : u.id))}
+                      aria-expanded={editingId === u.id}
+                      className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
+                    >{editingId === u.id ? 'Done' : 'Edit'}</button>
+                    <button
+                      onClick={() => del(u)}
+                      className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
+                    >Delete</button>
+                  </div>
                 </div>
-                <div className="hidden sm:flex flex-wrap gap-1 max-w-md justify-end">
-                  {u.profileIds.length === 0
-                    ? <span className="text-xs text-brand-text-muted">No profiles</span>
-                    : u.profileIds.map(pid => (
-                        <span key={pid} className="text-xs bg-brand-alt text-brand-text border border-brand-border-strong px-2 py-1 rounded-lg">
-                          {profileNameById.get(pid) ?? `#${pid}`}
-                        </span>
-                      ))
-                  }
-                </div>
-                <div className="flex gap-2 shrink-0">
-                  <button
-                    onClick={() => startEdit(u)}
-                    className="text-xs text-brand-text hover:text-brand-ink bg-brand-alt px-3 py-1.5 rounded-lg transition-colors"
-                  >Edit profiles</button>
-                  <button
-                    onClick={() => del(u)}
-                    className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors"
-                  >Delete</button>
-                </div>
+                {editingId === u.id && (
+                  <UserRowEditor user={u} profiles={profiles} reload={reload} />
+                )}
               </div>
             ))
         }
@@ -230,29 +225,97 @@ export function UsersPage() {
         </Modal>
       )}
 
-      {editingId !== null && (
-        <Modal
-          title={`Edit profiles · ${users.find(u => u.id === editingId)?.username ?? ''}`}
-          onClose={() => setEditingId(null)}
-        >
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-sm rounded-xl px-4 py-2">
-              {error}
-            </div>
-          )}
-          <ProfilePicker
-            profiles={profiles}
-            selected={editProfileIds}
-            onChange={setEditProfileIds}
-          />
-          <ModalFooter
-            saving={saving}
-            onCancel={() => setEditingId(null)}
-            onSave={saveEdit}
-            saveLabel="Save"
-          />
-        </Modal>
-      )}
+    </div>
+  )
+}
+
+function UserRowEditor({
+  user, profiles, reload,
+}: {
+  user: User
+  profiles: ProfileDetail[]
+  reload: () => Promise<void>
+}) {
+  const [username, setUsername] = useState(user.username)
+  const [role, setRole] = useState<UserRole>(user.role)
+  const [profileIds, setProfileIds] = useState<number[]>(user.profileIds)
+  useEffect(() => { setUsername(user.username) }, [user.username])
+  useEffect(() => { setRole(user.role) }, [user.role])
+  useEffect(() => { setProfileIds(user.profileIds) }, [user.profileIds])
+
+  const nameSave = useDebouncedSave(
+    username,
+    async (next: string) => {
+      const trimmed = next.trim()
+      if (!trimmed) throw new Error('Username is required')
+      await api.users.patch(user.id, { username: trimmed })
+      await reload()
+    },
+    { key: user.id },
+  )
+
+  const roleSave = useDebouncedSave(
+    role,
+    async (next: UserRole) => {
+      await api.users.patch(user.id, { role: next })
+      await reload()
+    },
+    { key: user.id },
+  )
+
+  const profilesSave = useDebouncedSave(
+    profileIds,
+    async (next: number[]) => {
+      await api.users.patch(user.id, { profileIds: next })
+      await reload()
+    },
+    { key: user.id, equals: sameIdSet },
+  )
+
+  const merged = mergeSaveStatus([nameSave, roleSave, profilesSave])
+
+  return (
+    <div data-testid={`user-editor-${user.id}`} className="mt-4 pt-4 border-t border-brand-border space-y-4">
+      <div className="flex items-center justify-between">
+        <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider">Username</label>
+        <SaveStatusBadge
+          testId={`user-save-status-${user.id}`}
+          status={merged.status}
+          error={merged.error}
+          onRetry={merged.retry}
+        />
+      </div>
+      <input
+        type="text"
+        data-testid={`user-name-input-${user.id}`}
+        value={username}
+        onChange={e => setUsername(e.target.value)}
+        className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-3 text-brand-ink focus:outline-none focus:border-brand-accent"
+      />
+      <div>
+        <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">Role</label>
+        <div className="flex gap-2">
+          {ROLES.map(r => {
+            const on = role === r
+            return (
+              <button key={r} type="button"
+                onClick={() => setRole(r)}
+                className={`text-sm px-4 py-2 rounded-lg border transition-colors ${
+                  on
+                    ? 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
+                    : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
+                }`}>
+                {r}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <ProfilePicker
+        profiles={profiles}
+        selected={profileIds}
+        onChange={setProfileIds}
+      />
     </div>
   )
 }

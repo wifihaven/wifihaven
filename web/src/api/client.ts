@@ -4,6 +4,7 @@ import type {
   DashboardNow, DashboardStats, Device,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
+  PatchUserRequest,
   RecentApexesResponse, RouterSummary, SetAppHostsRequest, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
@@ -127,6 +128,9 @@ export const api = {
     list: () => req<User[]>('GET', '/users'),
     create: (data: CreateUserRequest) =>
       req<{ id: number }>('POST', '/users', data),
+    // #997 / #1001: field-scoped partial update (username / role / profileIds).
+    patch: (id: number, data: PatchUserRequest) =>
+      req<void>('PATCH', `/users/${id}`, data),
     setProfiles: (id: number, profileIds: number[]) =>
       req<void>('PUT', `/users/${id}/profiles`, { profileIds } as SetUserProfilesRequest),
     delete: (id: number) => req<void>('DELETE', `/users/${id}`),
