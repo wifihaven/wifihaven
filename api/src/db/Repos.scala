@@ -416,6 +416,22 @@ trait TrafficReportRepo {
   ): Task[List[wifihaven.api.presence.PresenceRow]]
 
   /**
+   * #1099: presence rows whose `period_start` falls in `[fromInstant, toInstant)` for the given
+   * macs. Filtering on `period_start` (the table's RANGE partition key, V41) — rather than the
+   * non-key `date` column the day/range variants use — lets Postgres prune to the covering weekly
+   * partitions instead of scanning all of history. This is the difference between a sub-second read
+   * and the multi-minute full-table scan that wedged the /profiles page (see issue #1099). The
+   * query is bounded by a per-statement timeout ([[QueryTimeout.PresenceWindow]]) so a pathological
+   * caller fails fast instead of holding a connection. Same row shape and semantics as
+   * [[listPresenceRows]]; callers compute the window from the requested local day + zone.
+   */
+  def listPresenceRowsInWindow(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]]
+
+  /**
    * #846: raw rows in `[fromInstant, toInstant)` for the given macs. `macs = Nil` means "all macs"
    * (used by the Traffic Usage page in unfiltered mode). Returns Instants (not String date columns)
    * so callers can bucket without re-parsing.
@@ -1395,6 +1411,56 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   def listPresenceRowsSince(macs: List[MacAddress], date: LocalDate, since: Instant) =
     listPresenceRowsBetween(macs, date, date, Some(since))
 
+  def listPresenceRowsInWindow(
+      macs: List[MacAddress],
+      fromInstant: Instant,
+      toInstant: Instant,
+  ): Task[List[wifihaven.api.presence.PresenceRow]] = {
+    type Row = (MacAddress, LocalDate, Instant, HostId, Int, Long, Long, Instant, Instant)
+    macs match {
+      case Nil => ZIO.succeed(List.empty[wifihaven.api.presence.PresenceRow])
+      case ms  =>
+        val nel = cats.data.NonEmptyList.fromListUnsafe(ms.map(_.value))
+        // Filter on period_start (the partition key) so Postgres can prune to the
+        // single day-partition(s) the window touches. The old day path filtered on
+        // tr.date — not the partition key — which defeated pruning and let one
+        // profile's read scan the whole table for 90s (#1099). Same SELECT/LATERAL
+        // shape as listPresenceRowsBetween, so the row set is identical.
+        val q   =
+          fr"""SELECT tr.mac, tr.date, tr.period_start,
+                      CASE WHEN tr.host_type IN ('ipv4','ipv6') AND ce.resolved_host_value IS NOT NULL
+                           THEN 'fqdn' ELSE tr.host_type END,
+                      COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END,
+                               tr.host_value),
+                      tr.active_seconds, tr.bytes_in, tr.bytes_out, tr.period_start, tr.period_end
+               FROM traffic_reports tr
+               LEFT JOIN LATERAL (
+                 SELECT resolved_host_value
+                 FROM connection_events
+                 WHERE mac          = tr.mac
+                   AND dest_ip      = tr.host_value
+                   AND resolved_host_value IS NOT NULL
+                   AND ts >= tr.date::TIMESTAMPTZ
+                   AND ts <  (tr.date + INTERVAL '1 day')::TIMESTAMPTZ
+                 ORDER BY ts DESC LIMIT 1
+               ) ce ON tr.host_type IN ('ipv4','ipv6')
+               WHERE tr.period_start >= $fromInstant AND tr.period_start < $toInstant
+                 AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
+                 AND """ ++ Fragments.in(fr"tr.mac", nel)
+        val cio =
+          q.query[Row]
+            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
+              val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
+              wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
+            }
+            .to[List]
+        // Bound each per-request read: a pathological window fails fast with a typed
+        // QueryTimeoutException (→ 503) instead of holding a pool connection open and
+        // wedging the whole instance (#1099).
+        QueryTimeout.bounded(xa, QueryTimeout.PresenceWindow)(cio)
+    }
+  }
+
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   private def listPresenceRowsBetween(
       macs: List[MacAddress],
@@ -2214,6 +2280,14 @@ trait AppRepo {
   def getHosts(appId: AppId): Task[List[Hostname]]
 
   /**
+   * Current `app_hosts_version` — a global counter bumped by every host-set mutation ([[setHosts]],
+   * [[delete]]). The rollup writer stamps rolled rows with the value it read here; a read path
+   * compares it against the value stamped on rollup rows to decide whether the pre-attributed
+   * `app_id`s are fresh or must be recomputed in process (#1091).
+   */
+  def currentHostsVersion: Task[Long]
+
+  /**
    * #769: full (host, app_id) inventory across all apps. Used by the group-by-app aggregation paths
    * for Connection Events + Traffic Usage to bucket rows into their owning app, with `__other__`
    * for hosts not in any app. One row per (host, app) pair — a host that's in two apps yields two
@@ -2289,15 +2363,20 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
             icon_type=${a.iconType}
           WHERE id=${a.id}""".update.run.transact(xa).unit
 
+  // Every host-set mutation bumps the global app_hosts_version so rollup rows
+  // attributed at an older version are detected as stale on read (#1091).
+  private val bumpHostsVersion =
+    sql"UPDATE app_hosts_version SET version = version + 1".update.run
+
   def delete(id: AppId) =
-    sql"DELETE FROM apps WHERE id=$id".update.run.transact(xa).unit
+    (sql"DELETE FROM apps WHERE id=$id".update.run *> bumpHostsVersion).transact(xa).unit
 
   def setHosts(appId: AppId, hosts: List[Hostname]) = {
     val del = sql"DELETE FROM app_hosts WHERE app_id=$appId".update.run
     val ins = hosts.distinct.map(h =>
       sql"INSERT INTO app_hosts(app_id,host) VALUES($appId,$h) ON CONFLICT DO NOTHING".update.run,
     )
-    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void) *> bumpHostsVersion).transact(xa).unit
   }
 
   def getHosts(appId: AppId) =
@@ -2305,6 +2384,9 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .query[Hostname]
       .to[List]
       .transact(xa)
+
+  def currentHostsVersion =
+    sql"SELECT version FROM app_hosts_version".query[Long].unique.transact(xa)
 
   def listAllHostMappings =
     sql"SELECT app_id, host FROM app_hosts"

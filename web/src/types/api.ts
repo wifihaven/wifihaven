@@ -447,6 +447,13 @@ export interface UsageSeriesResponse {
   bucketsByEntry?: UsageEntityBucket[]
 }
 
+// #1099 — batched per-profile series: one round-trip resolves the whole
+// visible profile set instead of N parallel /usage/series calls. Each entry is
+// the same shape the single-profile endpoint returns.
+export interface UsageSeriesBatchResponse {
+  series: UsageSeriesResponse[]
+}
+
 // #846 — Traffic Usage page. Wire-distinct from UsageSeriesResponse: that one
 // drives the screen-time minutes chart; this one drives raw + aggregated bytes
 // inspection. 1m bucket and apex/app groupBy are reserved (router cadence /

@@ -64,6 +64,14 @@ services:
           property: password
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
+      # #1221: HikariCP pool size. The HOCON default (5) crash-looped prod
+      # under concurrent ingest + the time_used_daily rollup fiber + slow
+      # UsageSeries reads (pool exhausted → 30s connectionTimeout → healthcheck
+      # fails → crash loop). wifihaven-pg-staging is free (256 MB RAM → 100
+      # max_connections). Staging is single-instance and low-traffic, so 8 is
+      # ample and stays well clear of Render's reserved connections.
+      - key: WIFIHAVEN_DB_POOL_SIZE
+        value: "8"
       # #590: Render Hobby caps at ~512 MB. Leave headroom for OS + JIT +
       # native heap; bump or move to `plan: pro` if OOM appears in logs.
       - key: JVM_HEAP_OPTS
@@ -131,6 +139,17 @@ services:
           property: password
       - key: WIFIHAVEN_HTTP_PORT
         value: 8080
+      # #1221: HikariCP pool size. The HOCON default (5) is fatal here — under
+      # household load, concurrent router ingest POSTs + the time_used_daily
+      # rollup fiber (#1165/#1167) + slow per-profile UsageSeries reads (#1099)
+      # held all 5 connections, the 30s connectionTimeout fired, the healthcheck
+      # failed, and Render crash-looped the instance (incident 2026-05-31).
+      # wifihaven-pg-prod is basic-256mb (256 MB RAM → 100 max_connections per
+      # Render's "< 8 GB" tier). 20 gives the single prod instance real headroom
+      # under load while leaving ~80 connections for Render's reserved/maintenance
+      # connections and any future read replica or out-of-band rollup worker.
+      - key: WIFIHAVEN_DB_POOL_SIZE
+        value: "20"
       # #786 / #785: bumped to `plan: standard` (2 GB / 1 CPU, $25/mo) after
       # prod started flapping under household load on free's 512 MB cap.
       # Heap sized to leave ~600 MB for OS + JIT + native; revisit if OOM

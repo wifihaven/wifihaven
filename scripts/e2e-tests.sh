@@ -202,5 +202,121 @@ else
   pass "docker not available — skipped"
 fi
 
+# ── #933: remaining admin endpoints (dashboard, household-settings, me, ─────
+#         time-extend round-trip, change-password) ─────────────────────────
+# These five admin/auth surfaces have no Gate 1 coverage. They are read-only
+# or self-contained except change-password, which we exercise via a throwaway
+# non-admin user so the shared admin credential is never mutated.
+
+step "Dashboard now snapshot (#933)"
+# GET /api/dashboard/now → DashboardNow(asOf, profiles[]). Assert both keys
+# (presence + shape), not just HTTP 200.
+curl -fsS "${AUTH[@]}" "$BASE/api/dashboard/now" >"$TMP/dash.json"
+_py "
+import json
+d = json.load(open('$TMP/dash.json'))
+assert isinstance(d.get('asOf'), str) and d['asOf'], 'asOf missing/empty: %r' % d.get('asOf')
+assert isinstance(d.get('profiles'), list), 'profiles not a list: %r' % d.get('profiles')
+"
+pass "dashboard/now has asOf + profiles[]"
+
+step "Household settings (#933)"
+# GET /api/household/settings → HouseholdSettings. dailyResetTime/dailyResetTz
+# drive every household-local date computation, so assert they're present.
+curl -fsS "${AUTH[@]}" "$BASE/api/household/settings" >"$TMP/hs.json"
+_py "
+import json
+s = json.load(open('$TMP/hs.json'))
+assert isinstance(s.get('dailyResetTime'), str) and s['dailyResetTime'], 'dailyResetTime missing: %r' % s
+assert isinstance(s.get('dailyResetTz'), str) and s['dailyResetTz'], 'dailyResetTz missing: %r' % s
+assert 'heartbeatFilter' in s, 'heartbeatFilter missing: %r' % s
+"
+pass "household/settings has dailyResetTime + dailyResetTz + heartbeatFilter"
+
+step "Identity endpoint /api/me (#933)"
+# GET /api/me → MeResponse(username, role, profileIds). We logged in as admin,
+# so assert both fields reflect that.
+curl -fsS "${AUTH[@]}" "$BASE/api/me" >"$TMP/me.json"
+_py "
+import json
+m = json.load(open('$TMP/me.json'))
+assert m.get('username') == 'admin', 'expected username=admin, got %r' % m.get('username')
+assert m.get('role') == 'admin', 'expected role=admin, got %r' % m.get('role')
+assert isinstance(m.get('profileIds'), list), 'profileIds not a list: %r' % m.get('profileIds')
+"
+pass "/api/me returns admin identity"
+
+step "Time-extension grant round-trips (#933)"
+# POST /api/time/extend grants extra minutes for a profile under the
+# household-local "today" bucket; GET /api/time/extensions/{profileId} must
+# then list the grant for that same day. Assert the granted minutes survive
+# the round-trip (not just that the POST returned 200).
+EXTEND_MINS=17
+GRANT=$(curl -fsS -X POST "$BASE/api/time/extend" \
+  "${AUTH[@]}" -H 'content-type: application/json' \
+  -d "{\"profileId\":$PID,\"extraMinutes\":$EXTEND_MINS,\"note\":\"e2e ${RUN_ID}\"}")
+echo "$GRANT" | grep -q "\"grantedMinutes\":$EXTEND_MINS" \
+  || fail "extend did not echo grantedMinutes=$EXTEND_MINS: $GRANT"
+curl -fsS "${AUTH[@]}" "$BASE/api/time/extensions/$PID" >"$TMP/exts.json"
+_py "
+import json
+exts = json.load(open('$TMP/exts.json'))
+mine = [e for e in exts if e.get('extraMinutes') == $EXTEND_MINS and (e.get('note') or '') == 'e2e ${RUN_ID}']
+assert mine, 'granted extension not found in listing: %r' % exts
+"
+pass "time/extend grant round-trips into extensions listing"
+
+step "Change-password via throwaway user (#933)"
+# Exercise POST /api/auth/change-password without touching the admin
+# credential: create a non-admin user, log in as them, rotate their password,
+# confirm the new password authenticates and the old one no longer does, then
+# delete the user. The user is cleaned up by the trap below even on failure.
+CP_USER="e2e-cp-${RUN_ID}"
+CP_PW1="cp-pw1-${RUN_ID}"
+CP_PW2="cp-pw2-${RUN_ID}"
+NEW_USER_ID=""
+
+cleanup_tests_933() {
+  local rc=$?
+  rm -rf "$TMP"
+  [ -n "$NEW_USER_ID" ] && curl -s -X DELETE "$BASE/api/users/$NEW_USER_ID" "${AUTH[@]}" >/dev/null 2>&1 || true
+  curl -s -X DELETE "$BASE/api/devices/$TEST_MAC" "${AUTH[@]}" >/dev/null 2>&1 || true
+  curl -s -X DELETE "$BASE/api/profiles/$PID" "${AUTH[@]}" >/dev/null 2>&1 || true
+  return $rc
+}
+trap cleanup_tests_933 EXIT
+
+CREATE_USER=$(curl -fsS -X POST "$BASE/api/users" \
+  "${AUTH[@]}" -H 'content-type: application/json' \
+  -d "{\"username\":\"$CP_USER\",\"password\":\"$CP_PW1\",\"role\":\"adult\",\"profileIds\":[]}")
+NEW_USER_ID=$(echo "$CREATE_USER" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+[ -n "$NEW_USER_ID" ] || fail "no user id in create response: $CREATE_USER"
+pass "created throwaway user id=$NEW_USER_ID"
+
+# Log in as the throwaway user to obtain its own token.
+CP_LOGIN=$(curl -fsS -X POST "$BASE/api/auth/login" \
+  -H 'content-type: application/json' \
+  -d "{\"username\":\"$CP_USER\",\"password\":\"$CP_PW1\"}")
+CP_TOKEN=$(echo "$CP_LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+[ -n "$CP_TOKEN" ] || fail "no token for throwaway user: $CP_LOGIN"
+
+# Rotate the password using the user's own credentials.
+curl -fsS -X POST "$BASE/api/auth/change-password" \
+  -H "authorization: Bearer $CP_TOKEN" -H 'content-type: application/json' \
+  -d "{\"currentPassword\":\"$CP_PW1\",\"newPassword\":\"$CP_PW2\"}" >/dev/null
+pass "change-password accepted"
+
+# New password authenticates...
+NEW_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/auth/login" \
+  -H 'content-type: application/json' \
+  -d "{\"username\":\"$CP_USER\",\"password\":\"$CP_PW2\"}")
+[ "$NEW_CODE" = "200" ] || fail "new password did not authenticate (got $NEW_CODE)"
+# ...and the old one no longer does.
+OLD_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/auth/login" \
+  -H 'content-type: application/json' \
+  -d "{\"username\":\"$CP_USER\",\"password\":\"$CP_PW1\"}")
+[ "$OLD_CODE" = "401" ] || fail "old password still authenticates (got $OLD_CODE)"
+pass "password rotated: new pw 200, old pw 401"
+
 echo
 echo "All e2e checks passed."

@@ -13,9 +13,10 @@
 # State for a running client lives under ${WH_RUN_DIR}/<name>/:
 #   overlay.qcow2  — disk overlay (discarded by client-down.sh)
 #   qemu.pid       — qemu pid
-#   qemu.sock      — QMP monitor socket
 #   ssh.port       — host port for SSH
 #   mac            — the LAN-side MAC, for `client-exec.sh` debugging
+# The QMP control socket lives outside .run/, under WH_SOCK_DIR (a short base
+# path), because the AF_UNIX sun_path limit caps socket paths at ~108 chars.
 
 set -euo pipefail
 
@@ -90,7 +91,7 @@ if [[ -f "${RUN_DIR}/qemu.pid" ]] && kill -0 "$(cat "${RUN_DIR}/qemu.pid")" 2>/d
   exit 1
 fi
 rm -rf "${RUN_DIR}"
-mkdir -p "${RUN_DIR}"
+mkdir -p "${RUN_DIR}" "${WH_SOCK_DIR}"
 
 if [[ -z "${SSH_PORT}" ]]; then
   SSH_PORT="${WH_CLIENT_SSH_PORT_BASE}"
@@ -116,7 +117,10 @@ MGMT_NETDEV="user,id=mgmt,net=10.0.2.0/24,host=10.0.2.2,dhcpstart=10.0.2.15,rest
 MGMT_DEVICE="virtio-net-pci,netdev=mgmt"
 
 PIDFILE="${RUN_DIR}/qemu.pid"
-QMP_SOCK="${RUN_DIR}/qemu.sock"
+# QMP socket lives under WH_SOCK_DIR (short path) — see config.sh WH_SOCK_DIR
+# note for the AF_UNIX sun_path reason. Clear any stale socket from a prior run.
+QMP_SOCK="$(wh_client_qmp_sock "${NAME}")"
+rm -f "${QMP_SOCK}"
 
 # Background the qemu process. -daemonize gives us a stable pidfile.
 qemu-system-x86_64 \

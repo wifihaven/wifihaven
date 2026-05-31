@@ -40,14 +40,14 @@ object Main extends ZIOAppDefault {
       // on subsequent boots because of ON CONFLICT DO NOTHING.
       hsRepo <- ZIO.service[HouseholdSettingsRepo]
       tz = java.time.ZoneId.systemDefault()
-      _               <- hsRepo.ensureDefault(tz)
-      _               <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
+      _              <- hsRepo.ensureDefault(tz)
+      _              <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
       // #768: seed the starter library of app templates. Idempotent — operator
       // host edits on previously-seeded apps are preserved.
-      appRepoForSeed  <- ZIO.service[AppRepo]
-      templates       <- AppTemplates.loadAll()
-      seedSummary     <- AppTemplates.seed(appRepoForSeed, templates)
-      _               <- ZIO.logInfo(
+      appRepoForSeed <- ZIO.service[AppRepo]
+      templates      <- AppTemplates.loadAll()
+      seedSummary    <- AppTemplates.seed(appRepoForSeed, templates)
+      _              <- ZIO.logInfo(
         s"app_templates seeded (${templates.size} templates): " +
           s"created=${seedSummary.created.size} ${seedSummary.created.mkString("[", ",", "]")}, " +
           s"repopulated=${seedSummary.repopulated.size} ${seedSummary.repopulated.mkString("[", ",", "]")}, " +
@@ -61,24 +61,30 @@ object Main extends ZIOAppDefault {
       // straight from YAML; remote lists fetch from the declared upstream URL
       // (cached in-memory after first success — see BlocklistCache). REPLACE
       // semantics; remote-fetch failures leave existing DB rows untouched.
-      blRepoForSeed   <- ZIO.service[BlocklistRepo]
-      blCacheForSeed  <- ZIO.service[BlocklistCache]
-      blFetcher       <- ZIO.service[BlocklistFetcher]
-      bundled         <- BundledBlocklists.loadAll()
-      _               <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
-      _               <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+      blRepoForSeed  <- ZIO.service[BlocklistRepo]
+      blCacheForSeed <- ZIO.service[BlocklistCache]
+      blFetcher      <- ZIO.service[BlocklistFetcher]
+      bundled        <- BundledBlocklists.loadAll()
+      _              <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
+      _              <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
       // #809: scheduled re-aggregation of traffic_reports into the rollup
       // tables. Hourly tick re-rolls the trailing 2h every 5 min; daily tick
       // re-rolls yesterday + today every hour. Both are forkDaemon so they
       // run for the lifetime of the process and never block startup.
-      rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
-      clockForJobs    <- ZIO.service[Clock]
-      _               <- RollupJobs.hourlyLoop(rollupRepo, clockForJobs).forkDaemon
-      _               <- RollupJobs.dailyLoop(rollupRepo, clockForJobs, tz).forkDaemon
+      rollupRepo     <- ZIO.service[wifihaven.api.db.RollupRepo]
+      clockForJobs   <- ZIO.service[Clock]
+      _              <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkDaemon
+      _ <- RollupJobs.dailyLoop(rollupRepo, appRepoForSeed, clockForJobs, tz).forkDaemon
       // #1160: per-(profile, today) `used_seconds` cache. Tick aggregates today's presence into
       // a watermarked row; the read path adds a live tail of buckets after the watermark, so
       // /api/time/status/summary serves a rollup + small live aggregation instead of a full
       // per-request day scan.
+      // TODO(#1221): bound the connection hold time of this rollup recompute and
+      // of the per-profile UsageSeries read (#1099) so neither can monopolize the
+      // shared Hikari pool for tens of seconds under load — e.g. a smaller batch,
+      // a time budget, or a separate small pool for the rollup work. The pool-size
+      // bump (this PR) and the dedicated connect EC are the first-order fix; this
+      // is the durability follow-up tracked in #1221.
       timeRollupRepo  <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
       profileRepoForJ <- ZIO.service[wifihaven.api.db.ProfileRepo]
       deviceRepoForJ  <- ZIO.service[wifihaven.api.db.DeviceRepo]
@@ -138,7 +144,7 @@ object Main extends ZIOAppDefault {
   private val serverEnv =
     AppConfig.layer >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.db)) >+>
-      ZLayer.fromZIO(ZIO.serviceWith[AppConfig](c => Database.makeTransactor(c.db))) >+>
+      Database.transactorLayer >+>
       Repos.all >+>
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
       Clock.live >+>

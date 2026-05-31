@@ -7,7 +7,7 @@ HERE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 source "${HERE_LIB}/config.sh"
 
-mkdir -p "${WH_CACHE_DIR}" "${WH_ROUTER_RUN_DIR}"
+mkdir -p "${WH_CACHE_DIR}" "${WH_ROUTER_RUN_DIR}" "${WH_SOCK_DIR}"
 
 log() { printf '[router-vm] %s\n' "$*" >&2; }
 die() { printf '[router-vm] error: %s\n' "$*" >&2; exit 1; }

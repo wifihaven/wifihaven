@@ -891,6 +891,15 @@ case class UsageSeriesResponse(
     bucketsByEntry: List[UsageEntityBucket] = Nil,
 ) derives JsonCodec
 
+// #1099: batched per-profile series for the /profiles page. One request
+// resolves the whole visible profile set in a single partition-pruned scan
+// instead of N parallel `/api/usage/series?profileId=` round-trips. Each
+// element is identical to what the single-profile endpoint returns for that
+// profile, so callers can treat the entries interchangeably.
+case class UsageSeriesBatchResponse(
+    series: List[UsageSeriesResponse],
+) derives JsonCodec
+
 // ── Traffic Usage page (#846) ─────────────────────────────────────────────
 //
 // New page-backing endpoint for raw-row inspection and group-by-domain
