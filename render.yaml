@@ -99,6 +99,10 @@ services:
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
         generateValue: true
+      # #1242: GET /metrics is internet-facing on Render, so gate it behind a
+      # bearer token. Generated ONCE on first apply; share with the scraper.
+      - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
+        generateValue: true
 
   # ── Production API ─────────────────────────────────────────────────────────
   - type: web
@@ -192,6 +196,10 @@ services:
         value: "false"
       # Generated ONCE on first apply. Never rotate — see header.
       - key: WIFIHAVEN_JWT_SECRET
+        generateValue: true
+      # #1242: GET /metrics is internet-facing on Render, so gate it behind a
+      # bearer token. Generated ONCE on first apply; share with the scraper.
+      - key: WIFIHAVEN_METRICS_SCRAPE_TOKEN
         generateValue: true
 
 databases:

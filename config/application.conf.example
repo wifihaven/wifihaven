@@ -45,4 +45,14 @@ wifihaven {
     # Precursor to the DB-backed global profile in #937.
     uiAllowedHosts = ""
   }
+
+  metrics {
+    # #1242: Prometheus exposition at GET /metrics (JVM + runtime + app
+    # gauges/counters). enabled=false leaves the route unmounted.
+    enabled = true
+    # When set, GET /metrics requires `Authorization: Bearer <token>`.
+    # Leave empty for self-hosted installs where the API isn't publicly
+    # exposed; set a token on internet-facing (Render) deployments.
+    scrapeToken = ""
+  }
 }
