@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog, TrafficUsageBucket } from '@/types/api'
 import { blockReasonText } from '@/types/blockReason'
+import { AppIcon } from '@/components/AppIcon'
 import { HostCell } from '@/components/HostCell'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
 import { HeaderFilter } from '@/components/usage/HeaderFilter'
@@ -367,9 +368,7 @@ function AppCell({
   if (active) {
     return (
       <span className="inline-flex items-center gap-1.5">
-        {appIcon && (
-          <span aria-hidden="true" className="text-base leading-none">{appIcon}</span>
-        )}
+        {appIcon && <AppIcon icon={appIcon} size="sm" />}
         <span>{appName ?? 'Other'}</span>
       </span>
     )
