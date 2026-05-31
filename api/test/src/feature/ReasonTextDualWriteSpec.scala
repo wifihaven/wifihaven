@@ -33,9 +33,7 @@ object ReasonTextDualWriteSpec
       : ZLayer[Any, Throwable, TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]] =
     TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def seedRouter(rRepo: RouterRepo): Task[RouterId] = {
     val token = "ROUTER_TOKEN_PLAIN"

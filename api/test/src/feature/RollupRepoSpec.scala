@@ -25,9 +25,7 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   // Seed one router row so the rollup tables' FK has something to point at.
   private def seedRouter: RIO[RouterRepo, RouterId] =
@@ -221,15 +219,16 @@ object RollupRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         start = LocalDate.of(2026, 3, 1).atStartOfDay(ZoneOffset.UTC).toInstant
         _       <- seedReports(rid, start, 6, bytesPerBucket = 25L)
         rollup  <- ZIO.service[RollupRepo]
-        pg      <- ZIO.service[EmbeddedPostgres]
-        // Hold the session-level lock on a dedicated connection for the
-        // duration of the racing rerollHourly call. `pg_advisory_lock` blocks
-        // if the lock is contended; we use `pg_try_advisory_lock` here so the
-        // setup call returns immediately (the lock is free at this point).
+        db      <- ZIO.service[TestDatabase.TestDb]
+        // Hold the session-level lock on a dedicated connection drawn from
+        // the *same* per-spec database the repo runs against — pg advisory
+        // locks are per-database, so a lock acquired on a different DB
+        // (e.g. the `postgres` admin DB) would not be visible to the repo
+        // and the test would race-pass (#1188).
         skipped <- ZIO.scoped {
           for {
             conn <- ZIO.acquireRelease(
-              ZIO.attempt(pg.getPostgresDatabase.getConnection),
+              ZIO.attempt(db.ds.getConnection),
             )(c => ZIO.attempt(c.close()).ignore)
             _    <- ZIO.attempt {
               val rs = conn

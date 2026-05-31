@@ -37,9 +37,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb  = TestDatabase.cleanAndMigrate
 
   private val macKid   = "aa:bb:cc:dd:ee:01"
   private val macAdult = "aa:bb:cc:dd:ee:02"

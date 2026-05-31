@@ -34,9 +34,7 @@ object BundledBlocklistsSpec
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   /** Fetcher that returns canned hosts for known URLs and fails for everything else. */
   final class StubFetcher(responses: Map[String, List[Hostname]], failures: Set[String] = Set.empty)

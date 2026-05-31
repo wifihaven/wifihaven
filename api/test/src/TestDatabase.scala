@@ -9,19 +9,40 @@ import zio.*
 import zio.interop.catz.*
 
 /**
- * Spins up a real embedded Postgres, runs Flyway migrations, provides a Transactor.
+ * Spins up a real embedded Postgres once per JVM, creates a per-spec Postgres database by cloning a
+ * pre-migrated template, and provides a `Transactor` wired to that per-spec database.
  *
- * A single EmbeddedPostgres instance is shared across all specs in the same JVM to avoid concurrent
- * initdb failures on ARM Mac (Postgres runs under Rosetta x86 emulation). Each test calls
- * cleanAndMigrate to reset state before running.
+ * ==Why the template-DB pattern (#1188)==
+ *
+ * The naïve approach — run Flyway from scratch in `cleanAndMigrate` between every test — dominates
+ * the test-suite wall time: each `DROP SCHEMA + Flyway migrate` is ~400–500 ms with 44 migrations,
+ * and the suite calls `cleanDb` once per test. For ~250 tests that's roughly two minutes of pure
+ * migration work.
+ *
+ * Instead, on first use this object boots one shared `EmbeddedPostgres` for the JVM, creates a
+ * `wh_template` database in it, runs the production Flyway migrations into `wh_template` exactly
+ * once, and applies the standard test-only seed tweaks (household_settings row, admin
+ * must_change_password=false) into `wh_template`.
+ *
+ * Each spec's `TestDatabase.layer` then allocates a fresh per-spec database with a unique name
+ * (`wh_test_<n>`) by issuing `CREATE DATABASE … TEMPLATE wh_template`, which Postgres satisfies
+ * with a file-level copy — no Flyway runs at all per spec or per test. `cleanAndMigrate` resets the
+ * per-spec database the same way (drop + re-clone) so each test starts from the template's
+ * post-Flyway, post-seed state.
+ *
+ * Cross-spec isolation comes from the unique database name: even when multiple specs run in the
+ * same JVM and call `cleanAndMigrate` concurrently, they each operate on their own DB.
  */
 object TestDatabase {
 
-  // JVM-wide singleton: started once, shared across all ZIOSpec bootstrap layers
-  // in this JVM. We don't use `lazy val` here — Scala 3 lazy vals can let two
-  // racing threads both run the initializer, and EmbeddedPostgres.prepareBinaries
-  // takes an internal file lock that throws OverlappingFileLockException on the
-  // second concurrent call. Explicit double-checked locking serializes init.
+  private val TemplateDbName = "wh_template"
+
+  // JVM-wide singleton: started once, shared across all ZIOSpec bootstrap layers in this JVM.
+  // We don't use `lazy val` here — Scala 3 lazy vals can let two racing threads both run the
+  // initializer, and EmbeddedPostgres.prepareBinaries takes an internal file lock that throws
+  // OverlappingFileLockException on the second concurrent call. Explicit double-checked locking
+  // serialises init. The template DB + Flyway migrate also happens inside this critical section
+  // so it runs exactly once per JVM.
   private val pgLock                                 = new Object
   @volatile private var pgInstance: EmbeddedPostgres = null
   private def sharedPg: EmbeddedPostgres             = {
@@ -31,92 +52,142 @@ object TestDatabase {
       pgLock.synchronized {
         if pgInstance == null then {
           val pg = EmbeddedPostgres.start()
-          runMigrations(pg)
+          initialiseTemplate(pg)
           pgInstance = pg
         }
         pgInstance
       }
   }
 
-  /** Run the production Flyway migrations (`classpath:db/migration`) against the embedded PG. */
-  private[testinfra] def runMigrations(pg: EmbeddedPostgres): Unit = {
+  /**
+   * Create the template DB, migrate it, and apply standard test seed tweaks. Called exactly once
+   * per JVM, under `pgLock`. After this returns, `wh_template` is the source of truth that every
+   * per-spec DB clones from.
+   */
+  private def initialiseTemplate(pg: EmbeddedPostgres): Unit = {
+    execOnPostgresDb(pg, s"""CREATE DATABASE "$TemplateDbName"""")
+    val templateDs = pg.getDatabase("postgres", TemplateDbName)
     Flyway
       .configure()
-      .dataSource(pg.getPostgresDatabase)
+      .dataSource(templateDs)
       .locations("classpath:db/migration")
       .baselineOnMigrate(true)
       .load()
       .migrate()
+    val conn       = templateDs.getConnection
+    try {
+      val st = conn.createStatement()
+      // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can read
+      // household_settings during tests. Use UTC so DST doesn't perturb existing expectations.
+      st.execute(
+        "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz) " +
+          "VALUES (1, '00:00', 'UTC') ON CONFLICT (id) DO NOTHING",
+      )
+      // #586: V18 sets must_change_password=true for the seeded admin so production deployments
+      // force a password rotation. In tests we want the admin fully operational.
+      st.execute("UPDATE users SET must_change_password=false WHERE username='admin'")
+    } finally conn.close()
     ()
   }
+
+  /**
+   * Per-spec database identity. Allocated fresh by `testDb` for every bootstrap of
+   * `TestDatabase.layer`. The `ds` is non-pooled (zonky's `getDatabase` returns a JDBC-URL-backed
+   * DataSource), so a drop-and-recreate of `name` invalidates nothing held in the Transactor — the
+   * next `xa.run` opens a fresh connection to the freshly-cloned DB.
+   */
+  final case class TestDb(name: String, ds: javax.sql.DataSource)
+
+  // Atomic counter for unique DB names. Crosses spec boundaries within a JVM.
+  private val dbCounter = new java.util.concurrent.atomic.AtomicLong(0)
 
   /** Provides the shared EmbeddedPostgres instance (no lifecycle: lives for JVM lifetime). */
   val embeddedPg: ZLayer[Any, Throwable, EmbeddedPostgres] =
     ZLayer.fromZIO(ZIO.attemptBlocking(sharedPg))
 
-  /** Transactor wired to the embedded PG. */
-  val transactor: ZLayer[EmbeddedPostgres, Throwable, Transactor[Task]] =
+  /** Allocates a fresh per-spec database by cloning the JVM's pre-migrated template. */
+  val testDb: ZLayer[EmbeddedPostgres, Throwable, TestDb] =
     ZLayer.fromZIO {
       for {
         pg <- ZIO.service[EmbeddedPostgres]
-        ds = pg.getPostgresDatabase
-        xa = Transactor.fromDataSource[Task](ds, scala.concurrent.ExecutionContext.global)
+        n  <- ZIO.succeed(dbCounter.incrementAndGet())
+        dbName = s"wh_test_$n"
+        _ <- cloneTemplateInto(pg, dbName)
+      } yield TestDb(dbName, pg.getDatabase("postgres", dbName))
+    }
+
+  /**
+   * Drop `dbName` (terminating live backends first so PG will let us) and recreate it as a copy of
+   * `wh_template`. Postgres turns `CREATE DATABASE … TEMPLATE` into a fast file-level copy, so this
+   * runs in single-digit milliseconds even with 44 migrations' worth of schema.
+   */
+  private def cloneTemplateInto(pg: EmbeddedPostgres, dbName: String): Task[Unit] =
+    ZIO.attemptBlocking {
+      val conn = pg.getPostgresDatabase.getConnection
+      try {
+        val st = conn.createStatement()
+        // Terminate any lingering backends on this DB so the DROP below succeeds. Skip our own
+        // backend (pg_backend_pid()) since it's on the `postgres` DB, not `dbName`, but be
+        // defensive anyway. Both template and target need to be free of other connections.
+        st.execute(
+          s"""SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+              WHERE datname IN ('$dbName', '$TemplateDbName') AND pid <> pg_backend_pid()""",
+        )
+        st.execute(s"""DROP DATABASE IF EXISTS "$dbName"""")
+        st.execute(s"""CREATE DATABASE "$dbName" TEMPLATE "$TemplateDbName"""")
+        ()
+      } finally conn.close()
+    }
+
+  /** Execute a single SQL statement against the singleton's `postgres` admin DB. */
+  private def execOnPostgresDb(pg: EmbeddedPostgres, sql: String): Unit = {
+    val conn = pg.getPostgresDatabase.getConnection
+    try {
+      val _ = conn.createStatement().execute(sql)
+    } finally conn.close()
+  }
+
+  /** Transactor wired to the per-spec database. */
+  val transactor: ZLayer[TestDb, Throwable, Transactor[Task]] =
+    ZLayer.fromZIO {
+      for {
+        db <- ZIO.service[TestDb]
+        xa = Transactor.fromDataSource[Task](db.ds, scala.concurrent.ExecutionContext.global)
       } yield xa
     }
 
   /**
-   * Drop and recreate the public schema, then re-run migrations. This is faster and more reliable
-   * than Flyway's clean() + migrate() in Flyway 10.
+   * Reset the per-spec database to the template's post-Flyway, post-seed state.
+   *
+   * Replaces the legacy `DROP SCHEMA public CASCADE + Flyway migrate + reseed`, which spent
+   * ~400–500 ms per call re-running 44 migrations. Template clone is single-digit ms — see the
+   * class doc for the full rationale (#1188).
    */
-  val cleanAndMigrate: ZIO[EmbeddedPostgres, Throwable, Unit] =
+  val cleanAndMigrate: ZIO[EmbeddedPostgres & TestDb, Throwable, Unit] =
     for {
       pg <- ZIO.service[EmbeddedPostgres]
-      _  <- ZIO.attempt {
-        val conn = pg.getPostgresDatabase.getConnection
-        try {
-          conn.createStatement().execute("DROP SCHEMA public CASCADE")
-          conn.createStatement().execute("CREATE SCHEMA public")
-        } finally conn.close()
-      }
-      _  <- ZIO.attempt(runMigrations(pg))
-      // #334: replicate Main.ensureDefault so PolicyService.snapshot/decide can
-      // read household_settings during tests. Use UTC so DST doesn't perturb
-      // existing test expectations.
-      _  <- ZIO.attempt {
-        val conn = pg.getPostgresDatabase.getConnection
-        try {
-          conn
-            .createStatement()
-            .execute(
-              "INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz) " +
-                "VALUES (1, '00:00', 'UTC') ON CONFLICT (id) DO NOTHING",
-            )
-        } finally conn.close()
-      }
-      // #586: V18 migration sets must_change_password=true for the seeded admin so
-      // production deployments force a password rotation. In tests we want the admin
-      // to be fully operational, so clear the flag after each migration reset.
-      _  <- ZIO.attempt {
-        val conn = pg.getPostgresDatabase.getConnection
-        try {
-          conn
-            .createStatement()
-            .execute("UPDATE users SET must_change_password=false WHERE username='admin'")
-        } finally conn.close()
-      }
+      db <- ZIO.service[TestDb]
+      _  <- cloneTemplateInto(pg, db.name)
     } yield ()
 
-  /** All repo types bundled for convenience */
+  /**
+   * All repo types bundled for convenience.
+   *
+   * `TestDb` is included so a spec that declares `ZIOSpec[TestDatabase.AllRepos & …]` gets the
+   * per-spec DB handle in its environment automatically — `cleanAndMigrate` needs it, and the
+   * bootstrap layer always provides it.
+   */
   type AllRepos =
-    UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo &
+    TestDb & UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo &
       TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TimeUsageRepo &
       TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo & ConnectionEventRepo &
       AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo
 
-  val layer: ZLayer[Any, Throwable, EmbeddedPostgres & Transactor[Task] & AllRepos] = {
+  val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg
-    val xa = pg >>> transactor
-    pg ++ xa ++ (xa >>> Repos.all)
+    val td = pg >>> testDb
+    val xa = td >>> transactor
+    pg ++ td ++ xa ++ (xa >>> Repos.all)
   }
 }
 

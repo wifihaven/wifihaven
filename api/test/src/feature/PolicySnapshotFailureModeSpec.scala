@@ -22,9 +22,7 @@ object PolicySnapshotFailureModeSpec
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   def spec = suite("PolicySnapshot — failureMode (#385)")(
     test("snapshot carries each profile's failureMode value") {

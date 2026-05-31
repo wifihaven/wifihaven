@@ -26,9 +26,7 @@ object PartitioningSpec
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def seedRouter: RIO[RouterRepo, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("partition-test", Sha256Hex.unsafe("a" * 64)))

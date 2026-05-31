@@ -35,9 +35,7 @@ object PolicySnapshotBlockIpOnlySpec
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, adminJwt, clock)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   def spec = suite("PolicySnapshot — blockIpOnly (#424)")(
     test("default is false for seeded profiles") {

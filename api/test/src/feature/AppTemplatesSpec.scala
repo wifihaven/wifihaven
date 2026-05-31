@@ -32,9 +32,7 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def url(p: String) = URL.decode(p).toOption.get
 

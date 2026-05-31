@@ -28,9 +28,7 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
       ur    <- ZIO.service[UserRepo]
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
-  private def cleanDb  = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb  = TestDatabase.cleanAndMigrate
 
   // Router name doubles as location until routers.location column lands (#136).
   private def seedRouter(name: String = "home"): ZIO[RouterRepo, Throwable, RouterId] =

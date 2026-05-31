@@ -20,9 +20,7 @@ object DebugApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(LocalDateTime.of(2026, 5, 11, 12, 0))
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def buildRoutes(enabled: Boolean) =
     for {

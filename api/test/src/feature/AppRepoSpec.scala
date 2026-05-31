@@ -13,9 +13,7 @@ object AppRepoSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Tr
 
   override val bootstrap = TestDatabase.layer
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private val youtube = Hostname.unsafe("youtube.com")
   private val ytimg   = Hostname.unsafe("ytimg.com")

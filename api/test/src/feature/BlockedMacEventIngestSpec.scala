@@ -38,9 +38,7 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       clock <- ZIO.service[Clock]
     } yield AuthServiceLive(ur, jwtCfg, clock)
 
-  private def cleanDb = ZIO.serviceWithZIO[EmbeddedPostgres](pg =>
-    TestDatabase.cleanAndMigrate.provide(ZLayer.succeed(pg)),
-  )
+  private val cleanDb = TestDatabase.cleanAndMigrate
 
   private val mac = MacAddress.unsafe("aa:bb:cc:11:22:33")
 
