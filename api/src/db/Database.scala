@@ -19,6 +19,12 @@ object Database {
     ds.setConnectionTimeout(30000)
     ds.setIdleTimeout(600000)
     ds.setMaxLifetime(1800000)
+    // #1197: do not block JVM startup on a successful first connection. If
+    // Postgres is cold at boot, Hikari's default initializationFailTimeout=1
+    // would attempt-and-fail-fast which is fine, but the route handler path
+    // is what eventually retries. Setting -1 explicitly documents that
+    // pool init is best-effort and never gates port-bind.
+    ds.setInitializationFailTimeout(-1)
     Transactor.fromDataSource[Task](ds, scala.concurrent.ExecutionContext.global)
   }
 

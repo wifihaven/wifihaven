@@ -25,27 +25,77 @@ object Main extends ZIOAppDefault {
 
   def run =
     (for {
-      cfg    <- ZIO.service[AppConfig]
-      _      <- ZIO.logInfo(s"WifiHaven API starting on ${cfg.http.host}:${cfg.http.port}")
-      _      <- ZIO
+      cfg       <- ZIO.service[AppConfig]
+      _         <- ZIO.logInfo(s"WifiHaven API starting on ${cfg.http.host}:${cfg.http.port}")
+      _         <- ZIO
         .logWarning(
           "WIFIHAVEN_DEBUG=1 set — /api/debug/* endpoints are MOUNTED (loopback only). " +
             "Disable in production.",
         )
         .when(cfg.debugEnabled)
-      _      <- Database.runMigrations(cfg.db)
-      _      <- ZIO.logInfo("Database migrations complete")
+      // YAML loads are file-system only (no DB) and feed route construction, so they
+      // run on the port-bind critical path. The DB-touching warm-up below forks.
+      templates <- AppTemplates.loadAll()
+      bundled   <- BundledBlocklists.loadAll()
+      templatesById = templates.map(t => t.slug -> t).toMap
+      bundledById   = bundled.map(b => b.id -> b).toMap
+      routes <- allRoutes(templatesById, bundledById)
+      withCors = Cors.wrap(routes, cfg.cors)
+      _ <- ZIO
+        .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
+        .when(cfg.cors.origins.nonEmpty)
+      // #1017: zio-http 3.0.1's RequestStreaming.Disabled default cap is 100 KiB;
+      // /api/router/usage bodies routinely exceed that as mac_ip_tracking fills.
+      // Bump to 4 MiB — well above any realistic single-bucket payload and below
+      // Render's edge 413 threshold.
+      serverConfig = Server.Config.default
+        .port(cfg.http.port)
+        .disableRequestStreaming(4 * 1024 * 1024)
+      tz           = java.time.ZoneId.systemDefault()
+      warmup       = warmupChain(cfg, tz, templates, bundled)
+      serve        = Server
+        .serve(withCors)
+        .provide(ZLayer.succeed(serverConfig) >>> Server.live)
+      // #1197: bind :8080 immediately and run all DB warm-up in a forked daemon.
+      // Previously the entire warm-up chain (Flyway + seeds + remote blocklist
+      // fetches) ran on the critical path, so a cold Render Postgres at deploy
+      // time exceeded the 15-min port-scan window and the deploy failed.
+      _ <- Bootstrap.boot(warmup, serve)
+    } yield ()).provide(serverEnv)
+
+  /**
+   * The full DB warm-up chain. Runs in a forked daemon (see Bootstrap.boot). Order matters:
+   * migrations must precede any seed; rollup/retention jobs are themselves forkDaemon and never
+   * block the warm-up either.
+   *
+   * If any step fails, Bootstrap logs the cause and lets the server keep running. Subsequent
+   * restarts retry. Operator alerting on errored deploys catches genuine breakage.
+   */
+  private def warmupChain(
+      cfg: AppConfig,
+      tz: java.time.ZoneId,
+      templates: List[AppTemplate],
+      bundled: List[BundledBlocklist],
+  ): ZIO[
+    HouseholdSettingsRepo & AppRepo & BlocklistRepo & BlocklistCache & BlocklistFetcher &
+      wifihaven.api.db.RollupRepo & Clock & wifihaven.api.db.TimeUsedRollupRepo &
+      wifihaven.api.db.ProfileRepo & wifihaven.api.db.DeviceRepo &
+      wifihaven.api.db.SiteTimeLimitRepo & wifihaven.api.db.TrafficReportRepo & Transactor[Task],
+    Throwable,
+    Unit,
+  ] =
+    for {
+      _               <- Database.runMigrations(cfg.db)
+      _               <- ZIO.logInfo("Database migrations complete")
       // #334: ensure household_settings has its single row, defaulting the
       // daily-reset tz to the API server's local zone on first install. No-op
       // on subsequent boots because of ON CONFLICT DO NOTHING.
-      hsRepo <- ZIO.service[HouseholdSettingsRepo]
-      tz = java.time.ZoneId.systemDefault()
+      hsRepo          <- ZIO.service[HouseholdSettingsRepo]
       _               <- hsRepo.ensureDefault(tz)
       _               <- ZIO.logInfo(s"household_settings ensured (install-default tz=${tz.getId})")
       // #768: seed the starter library of app templates. Idempotent — operator
       // host edits on previously-seeded apps are preserved.
       appRepoForSeed  <- ZIO.service[AppRepo]
-      templates       <- AppTemplates.loadAll()
       seedSummary     <- AppTemplates.seed(appRepoForSeed, templates)
       _               <- ZIO.logInfo(
         s"app_templates seeded (${templates.size} templates): " +
@@ -57,28 +107,19 @@ object Main extends ZIOAppDefault {
             .mkString("[", ",", "]") + ", " +
           s"preserved=${seedSummary.preserved.size}",
       )
-      // #958: seed the bundled category blocklists. Inline lists pull hosts
-      // straight from YAML; remote lists fetch from the declared upstream URL
-      // (cached in-memory after first success — see BlocklistCache). REPLACE
-      // semantics; remote-fetch failures leave existing DB rows untouched.
+      // #958: seed the bundled category blocklists.
       blRepoForSeed   <- ZIO.service[BlocklistRepo]
       blCacheForSeed  <- ZIO.service[BlocklistCache]
       blFetcher       <- ZIO.service[BlocklistFetcher]
-      bundled         <- BundledBlocklists.loadAll()
       _               <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
       _               <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
-      // #809: scheduled re-aggregation of traffic_reports into the rollup
-      // tables. Hourly tick re-rolls the trailing 2h every 5 min; daily tick
-      // re-rolls yesterday + today every hour. Both are forkDaemon so they
-      // run for the lifetime of the process and never block startup.
+      // #809: rollup fibers — fork inside the warm-up daemon; they live for the
+      // lifetime of the process.
       rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       clockForJobs    <- ZIO.service[Clock]
       _               <- RollupJobs.hourlyLoop(rollupRepo, clockForJobs).forkDaemon
       _               <- RollupJobs.dailyLoop(rollupRepo, clockForJobs, tz).forkDaemon
-      // #1160: per-(profile, today) `used_seconds` cache. Tick aggregates today's presence into
-      // a watermarked row; the read path adds a live tail of buckets after the watermark, so
-      // /api/time/status/summary serves a rollup + small live aggregation instead of a full
-      // per-request day scan.
+      // #1160: per-(profile, today) used_seconds cache.
       timeRollupRepo  <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
       profileRepoForJ <- ZIO.service[wifihaven.api.db.ProfileRepo]
       deviceRepoForJ  <- ZIO.service[wifihaven.api.db.DeviceRepo]
@@ -106,34 +147,12 @@ object Main extends ZIOAppDefault {
       _               <- BundledBlocklists
         .seed(blRepoForSeed, blCacheForSeed, blFetcher, BundledBlocklists.devTestBlocklists)
         .when(cfg.seedTestBlocklists)
-      // #811: daily retention sweep. Forks a daemon fiber that runs at 03:00 UTC.
-      // Multi-instance-safe via Postgres advisory lock — losing instances skip
-      // the tick rather than racing on the same DELETE.
+      // #811: daily retention sweep.
       xaForJobs       <- ZIO.service[Transactor[Task]]
       _               <- RetentionSweepJob.start(xaForJobs)
-      // #1176/#1179: backfill reason_text on connection_events / block_events rows inserted
-      // between V40 and V44 (no reason_text column then). Fork-and-forget so a slow scan on a
-      // cold Render PG doesn't gate the healthcheck; subsequent restarts re-run safely until
-      // no NULLs remain.
+      // #1176/#1179: backfill reason_text on rows inserted between V40 and V44.
       _               <- ReasonTextBackfill.run(xaForJobs).forkDaemon
-      templatesById = templates.map(t => t.slug -> t).toMap
-      bundledById   = bundled.map(b => b.id -> b).toMap
-      routes <- allRoutes(templatesById, bundledById)
-      withCors = Cors.wrap(routes, cfg.cors)
-      _ <- ZIO
-        .logInfo(s"CORS enabled for origins: ${cfg.cors.origins.mkString(", ")}")
-        .when(cfg.cors.origins.nonEmpty)
-      // #1017: zio-http 3.0.1's RequestStreaming.Disabled default cap is 100 KiB;
-      // /api/router/usage bodies routinely exceed that as mac_ip_tracking fills.
-      // Bump to 4 MiB — well above any realistic single-bucket payload and below
-      // Render's edge 413 threshold.
-      serverConfig = Server.Config.default
-        .port(cfg.http.port)
-        .disableRequestStreaming(4 * 1024 * 1024)
-      _ <- Server
-        .serve(withCors)
-        .provide(ZLayer.succeed(serverConfig) >>> Server.live)
-    } yield ()).provide(serverEnv)
+    } yield ()
 
   private val serverEnv =
     AppConfig.layer >+>
