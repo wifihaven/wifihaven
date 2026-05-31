@@ -10,6 +10,7 @@ import type {
   TrafficUsageRawRow,
   TrafficUsageResponse,
 } from '@/types/api'
+import { AppIcon } from '@/components/AppIcon'
 import { HostCell } from '@/components/HostCell'
 import { BucketSelector } from '@/components/usage/BucketSelector'
 import { GroupableHeader } from '@/components/usage/GroupableHeader'
@@ -536,9 +537,7 @@ function AppCell({
   if (active) {
     return (
       <span className="inline-flex items-center gap-1.5">
-        {appIcon && (
-          <span aria-hidden="true" className="text-base leading-none">{appIcon}</span>
-        )}
+        {appIcon && <AppIcon icon={appIcon} size="sm" />}
         <span>{appName ?? 'Other'}</span>
       </span>
     )

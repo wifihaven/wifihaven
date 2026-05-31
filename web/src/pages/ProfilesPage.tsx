@@ -1441,7 +1441,7 @@ function AppsSection({ profileId, isNew, apps, onChanged, testIdPrefix = 'apps-s
                       onClick={() => addApp(a)}
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white hover:bg-brand-alt border border-brand-border-strong text-left"
                     >
-                      <span className="text-base w-5 text-center" aria-hidden>{a.app.icon || '◳'}</span>
+                      <AppIcon icon={a.app.icon} iconType={a.app.iconType} size="sm" className="w-5 text-center" />
                       <span className="text-sm text-brand-ink flex-1 truncate">{a.app.name}</span>
                       <span className="text-xs text-brand-text-muted">{a.hosts.length} host{a.hosts.length === 1 ? '' : 's'}</span>
                     </button>
