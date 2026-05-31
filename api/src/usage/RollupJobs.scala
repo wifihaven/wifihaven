@@ -118,15 +118,19 @@ object RollupJobs {
       result   <- body(clock).either
       finished <- clock.instant
       _        <- result match {
-        case Right(Some(n)) =>
+        case Right(Some(n))                            =>
           ZIO.logInfo(s"rollup $job tick ok rows=$n") *>
             repo.recordRun(job, started, finished, "ok", None, n).ignore
-        case Right(None)    =>
+        case Right(None)                               =>
           // Another instance held the advisory lock — expected under
           // multi-instance deploys, log at debug and don't write a
           // rollup_runs row (would noise up the admin view).
           ZIO.logDebug(s"rollup $job tick skipped (advisory lock held)")
-        case Left(e)        =>
+        case Left(e) if RollupShutdown.isPoolClosed(e) =>
+          // #1247: pool closed out from under a mid-flight tick during shutdown.
+          // Benign — don't log ERROR or record a bogus error run.
+          ZIO.logDebug(s"rollup $job tick aborted (pool closed during shutdown)")
+        case Left(e)                                   =>
           ZIO.logErrorCause(s"rollup $job tick failed", Cause.fail(e)) *>
             repo
               .recordRun(job, started, finished, "error", Some(e.getMessage.take(500)), 0)
