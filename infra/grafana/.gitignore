@@ -1,0 +1,12 @@
+# State files: hold resource IDs and may include sensitive values. Local
+# state only for now — TODO(#1270) to move to a remote backend.
+*.tfstate
+*.tfstate.*
+
+# Plugin cache. Large; restored by `terraform init`.
+.terraform/
+
+# tfvars: contains the Grafana service-account token and stack URL — both
+# secrets. Never committed (unlike infra/cloudflare, where the tfvars IDs are
+# non-secret). CI supplies these via the GRAFANA_URL / GRAFANA_AUTH secrets.
+terraform.tfvars

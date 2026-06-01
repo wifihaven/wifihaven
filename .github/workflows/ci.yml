@@ -46,6 +46,7 @@ jobs:
       contract: ${{ steps.filter.outputs.contract || steps.force.outputs.all }}
       fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
+      grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
         id: force
@@ -135,6 +136,10 @@ jobs:
             render:
               - '.github/workflows/ci.yml'
               - 'render.yaml'
+            grafana-tf:
+              - '.github/workflows/ci.yml'
+              - 'infra/grafana/**'
+              - 'deploy/grafana/dashboards/**'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'
@@ -533,6 +538,41 @@ jobs:
         # before they reach Render's blueprint importer.
         run: ruby -ryaml -e "YAML.load_file('render.yaml')"
 
+  # ── infra/grafana Terraform: fmt + validate ─────────────────────────────
+  # Mirrors render-blueprint: a cheap config-quality gate for the Grafana
+  # Cloud dashboard deploy layer (#1270). Catches fmt drift and invalid HCL
+  # before deploy-grafana.yml runs `terraform apply` on main. Also json-parses
+  # every committed dashboard so a malformed export can't reach Grafana.
+  grafana-terraform:
+    name: Grafana Terraform Lint
+    needs: changes
+    if: needs.changes.outputs.grafana-tf == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.3'
+
+      - name: terraform fmt
+        working-directory: infra/grafana
+        run: terraform fmt -check -diff
+
+      - name: terraform init + validate
+        working-directory: infra/grafana
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Validate dashboard JSON parses
+        run: |
+          for f in deploy/grafana/dashboards/*.json; do
+            echo "Checking $f"
+            python3 -m json.tool "$f" > /dev/null
+          done
+
   # ── GitHub Actions workflow lint ─────────────────────────────────────────
   # actionlint statically checks every workflow under .github/workflows/ for
   # syntax errors, bad expressions, unknown runner labels, and (via the
@@ -610,6 +650,7 @@ jobs:
       - python-tests
       - fake-api-tests
       - render-blueprint
+      - grafana-terraform
       - actionlint
       - frontend
     runs-on: ubuntu-latest
