@@ -287,7 +287,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         finalStats.hits == statsAfterGrant.hits + 1L,
       )
     },
-    test("Cache-Control: max-age=30 for today, max-age=3600 for past") {
+    test("Cache-Control: no-store for today, max-age=3600 for past") {
       for {
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
@@ -306,7 +306,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         todayResp <- get(routes, s"/api/time/status?profileId=${kidsId.value}&date=$today", token)
         pastResp  <- get(routes, s"/api/time/status?profileId=${kidsId.value}&date=$past", token)
       } yield assertTrue(
-        todayResp.headers.get("Cache-Control").exists(_.contains("max-age=30")),
+        todayResp.headers.get("Cache-Control").exists(_.contains("no-store")),
         pastResp.headers.get("Cache-Control").exists(_.contains("max-age=3600")),
       )
     },
