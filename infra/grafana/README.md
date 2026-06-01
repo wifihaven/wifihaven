@@ -72,7 +72,8 @@ and the GitHub Actions secrets.
 ## Prerequisites
 
 1. A Grafana Cloud stack exists (free tier is fine; see design §6.2) — one
-   stack serves every environment.
+   stack serves every environment. Ours is
+   [`wifihaven.grafana.net`](https://wifihaven.grafana.net).
 2. A **Grafana service-account token** for the stack with dashboard write
    scope: Grafana Cloud → Administration → Service accounts → add token.
 3. Terraform ≥ 1.6 installed (`brew install terraform`).
@@ -86,7 +87,7 @@ or Terraform change triggers the pipeline. Authentication comes from two
 GitHub Actions secrets set out-of-band (never committed):
 
 ```sh
-gh secret set GRAFANA_URL  -R wifihaven/wifihaven --body 'https://<stack>.grafana.net'
+gh secret set GRAFANA_URL  -R wifihaven/wifihaven --body 'https://wifihaven.grafana.net'
 gh secret set GRAFANA_AUTH -R wifihaven/wifihaven --body '<service-account token>'
 ```
 
@@ -103,7 +104,7 @@ precedent).
 ```sh
 cd infra/grafana
 
-export TF_VAR_grafana_url=https://<stack>.grafana.net
+export TF_VAR_grafana_url=https://wifihaven.grafana.net
 export TF_VAR_grafana_auth=<service-account token>
 # optional: export TF_VAR_folder_uid=<pre-created folder uid>
 
