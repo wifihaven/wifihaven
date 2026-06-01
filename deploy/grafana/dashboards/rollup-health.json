@@ -108,20 +108,20 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
-          "legendFormat": "p50 {{job}}",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
-          "legendFormat": "p95 {{job}}",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
-          "legendFormat": "p99 {{job}}",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p99",
           "refId": "C"
         }
       ]
