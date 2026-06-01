@@ -17,17 +17,20 @@ import zio.test.*
 
 import java.time.ZoneOffset
 
-// #813: window-driven source-tier routing. The aggregated path of
-// /api/usage/traffic picks the smallest table that can serve the requested
-// window:
-//   ≤ 24h           → traffic_reports (5-min raw)
-//   > 24h and ≤ 14d → traffic_hourly
-//   > 14d           → traffic_daily
+// #813/#1262: BUCKET-driven source-tier routing. The aggregated path of
+// /api/usage/traffic picks the table from the requested bucket, never from the
+// window — bucket and range are independent client choices:
+//   raw / 1m / 10m → traffic_reports (5-min raw)
+//   1h / 12h       → traffic_hourly
+//   1d / 1w        → traffic_daily
+//
+// #1262: a wide window must NOT coarsen the caller's bucket. A fine bucket over
+// a 30-day window is served from raw (bounded by keyset pagination), at the
+// requested width, with no `X-Bucket-Promoted-From` promotion.
 //
 // These tests pre-populate the rollup tables (via the same `rerollHourly` /
 // `rerollDaily` repo calls the scheduled fibers use) and then verify the
-// endpoint reads from the right tier by checking response shape and the
-// `X-Bucket-Promoted-From` header on too-fine-for-tier requests.
+// endpoint reads from the tier the bucket selects.
 object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
   override val bootstrap =
@@ -103,8 +106,8 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       .mapError(e => new RuntimeException(e.toString))
       .map(_.token.value)
 
-  def spec = suite("/api/usage/traffic source-tier routing (#813)")(
-    test("7-day window reads traffic_hourly (rollup seeded → results > 0)") {
+  def spec = suite("/api/usage/traffic bucket-driven source-tier routing (#813/#1262)")(
+    test("bucket=1h reads traffic_hourly (rollup seeded → results > 0)") {
       val today = TestClock.schoolDayAfternoon.toLocalDate
       val from  = today.minusDays(7).atStartOfDay(ZoneOffset.UTC).toInstant
       val to    = today.atStartOfDay(ZoneOffset.UTC).toInstant
@@ -124,7 +127,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         rb     <- buildRoutes
         (routes, auth) = rb
         token <- loginAdmin(auth)
-        // 7-day window, bucket=1h → tier=Hourly.
+        // bucket=1h → tier=Hourly (independent of the 7-day window).
         url = URL
           .decode(
             s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=1h&groupBy=domain",
@@ -141,7 +144,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         resp.headers.get("X-Bucket-Promoted-From").isEmpty,
       )
     },
-    test("30-day window reads traffic_daily") {
+    test("bucket=1d reads traffic_daily") {
       val today = TestClock.schoolDayAfternoon.toLocalDate
       val from  = today.minusDays(30).atStartOfDay(ZoneOffset.UTC).toInstant
       val to    = today.atStartOfDay(ZoneOffset.UTC).toInstant
@@ -175,7 +178,13 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         out.aggregateRows.nonEmpty,
       )
     },
-    test("30-day window with bucket=10m auto-promotes and sets X-Bucket-Promoted-From") {
+    // #1262 regression: bucket and range are independent. A 10m bucket over a
+    // 30-day window must stay 10m and be served from raw — NOT promoted to the
+    // daily tier's 1d the way the old window-driven routing did. Seeds an hour
+    // of raw rows inside the window so the served grain is observable: 10-min
+    // buckets ⇒ several sub-hour rows. If the bucket were coarsened to 1d this
+    // collapses to a single daily row read from the (empty) daily rollup.
+    test("bucket=10m over a 30-day window stays 10m and reads raw (no promotion)") {
       val today = TestClock.schoolDayAfternoon.toLocalDate
       val from  = today.minusDays(30).atStartOfDay(ZoneOffset.UTC).toInstant
       val to    = today.atStartOfDay(ZoneOffset.UTC).toInstant
@@ -186,13 +195,16 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         deviceRepo  <- ZIO.service[DeviceRepo]
         kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
         _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
-        _           <- seedRouter
-        rb          <- buildRoutes
+        routerId    <- seedRouter
+        // 1h of 5-min raw rows on day -5, inside the 30-day window.
+        seedStart = today.minusDays(5).atStartOfDay(ZoneOffset.UTC).toInstant
+        _  <- seedRaw(routerId, seedStart, 12)
+        rb <- buildRoutes
         (routes, auth) = rb
         token <- loginAdmin(auth)
         url = URL
           .decode(
-            s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=10m",
+            s"/api/usage/traffic?mac=$testMac&from=$from&to=$to&bucket=10m&groupBy=domain",
           )
           .toOption
           .get
@@ -201,9 +213,13 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
       } yield assertTrue(
         resp.status == Status.Ok,
-        // Bucket promoted from 10m to 1d (the daily tier's finest bucket).
-        out.bucket == "1d",
-        resp.headers.get("X-Bucket-Promoted-From").exists(_.contains("10m")),
+        // Requested width is honored, never coarsened by the range.
+        out.bucket == "10m",
+        // 1h of data at 10m grain ⇒ multiple sub-hour windows (came from raw,
+        // not a single daily-rollup row).
+        out.aggregateRows.size >= 2,
+        // No silent promotion.
+        resp.headers.get("X-Bucket-Promoted-From").isEmpty,
       )
     },
   ) @@ TestAspect.sequential
