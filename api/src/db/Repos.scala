@@ -483,6 +483,33 @@ trait ConnectionEventRepo {
       bucketSeconds: Int,
       groupBy: Set[String],
   ): Task[List[ConnectionEventAggRow]]
+
+  /**
+   * #1265: re-aggregate the trailing N hours of `connection_events` into
+   * `connection_events_hourly`. Counterpart of [[RollupRepo.rerollHourly]] but for the event-count
+   * tier. `since` is the earliest `ts` to re-roll, inclusive; callers truncate it to an hour
+   * boundary so every bucket in the window is recomputed in full. Idempotent via UPSERT keyed
+   * `(router_id, mac, hostname, bucket_start)` — re-rolling an already-rolled bucket replaces it
+   * with the freshly summed counts.
+   *
+   * Returns `Some(n)` rows touched on success, `None` when another instance held the advisory lock
+   * (skip-this-tick). The lock is transaction-scoped (`pg_try_advisory_xact_lock`) and
+   * auto-releases on commit/rollback. The source scan is bounded by `idx_conn_events_ts` plus
+   * weekly partition pruning, so a tick never scans the full unbounded table (#1254 class).
+   *
+   * Hostname is post-resolved (`COALESCE(resolved_host_value, host_value)`) so the read path stays
+   * join-free for the host dimension; device/profile/app attribution stays a read-time join off
+   * `mac`. NULL macs fold into a `''` bucket so window totals stay faithful to raw.
+   */
+  def rerollConnEventsHourly(since: Instant): Task[Option[Int]]
+
+  /**
+   * #1265: daily-grain counterpart of [[rerollConnEventsHourly]] writing `connection_events_daily`.
+   * `sinceDate` is the earliest UTC date to re-roll, inclusive. Same advisory-lock + idempotency
+   * contract.
+   */
+  def rerollConnEventsDaily(sinceDate: LocalDate): Task[Option[Int]]
+
   def stats: Task[DashboardStats]
   def topBlocked(hours: Int, limit: Int): Task[List[DomainCount]]
 
@@ -2180,6 +2207,94 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           .to[List]
       }
       .transact(xa)
+  }
+
+  // ── Connection-event rollups (#1265) ───────────────────────────────────────
+  //
+  // The event-count analogue of RollupRepo's traffic rollups. Unlike traffic,
+  // there is NO app side table and NO resolve LATERAL: connection_events already
+  // carries resolved_host_value, and app/device/profile attribution is a
+  // read-time join. So the reroll is a single GROUP BY with split allowed/blocked
+  // FILTER counts, matching exactly what querySeries projects.
+  //
+  // The trailing-window source scan is bounded by idx_conn_events_ts (and weekly
+  // partition pruning), so a tick never seq-scans the unbounded base table.
+
+  // Run the upsert inside a tx guarded by a transaction-scoped advisory lock; if
+  // another instance holds it, commit immediately with None. The lock
+  // auto-releases on commit/rollback — no manual unlock to leak. Mirrors
+  // RollupRepoLive.withLock.
+  private def withRollupLock(key: Long)(upsert: doobie.ConnectionIO[Int]): Task[Option[Int]] = {
+    val tx = for {
+      got <- sql"SELECT pg_try_advisory_xact_lock($key)".query[Boolean].unique
+      n   <- if (got) upsert.map(Option(_)) else doobie.free.connection.pure(Option.empty[Int])
+    } yield n
+    tx.transact(xa)
+  }
+
+  // date_bin anchor matches querySeries' '2000-01-01 00:00:00' origin so rolled
+  // hourly buckets line up exactly with what the on-the-fly read computes.
+  def rerollConnEventsHourly(since: Instant): Task[Option[Int]] = {
+    val truncSince = since.truncatedTo(java.time.temporal.ChronoUnit.HOURS)
+    val sql        =
+      sql"""
+        INSERT INTO connection_events_hourly
+          (router_id, mac, hostname, bucket_start, count_succeeded, count_blocked, sample_count, rolled_at)
+        SELECT
+          ce.router_id,
+          COALESCE(ce.mac, ''),
+          COALESCE(ce.resolved_host_value, ce.host_value),
+          date_bin(INTERVAL '1 hour', ce.ts, TIMESTAMP '2000-01-01 00:00:00'),
+          COUNT(*) FILTER (WHERE ce.allowed)::INT,
+          COUNT(*) FILTER (WHERE NOT ce.allowed)::INT,
+          COUNT(*)::INT,
+          NOW()
+        FROM connection_events ce
+        WHERE ce.ts >= $truncSince
+        GROUP BY ce.router_id, COALESCE(ce.mac, ''),
+                 COALESCE(ce.resolved_host_value, ce.host_value),
+                 date_bin(INTERVAL '1 hour', ce.ts, TIMESTAMP '2000-01-01 00:00:00')
+        ON CONFLICT (router_id, mac, hostname, bucket_start) DO UPDATE SET
+          count_succeeded = EXCLUDED.count_succeeded,
+          count_blocked   = EXCLUDED.count_blocked,
+          sample_count    = EXCLUDED.sample_count,
+          rolled_at       = EXCLUDED.rolled_at
+      """
+    withRollupLock(RollupLockKeys.ConnEventsHourly)(sql.update.run)
+  }
+
+  def rerollConnEventsDaily(sinceDate: LocalDate): Task[Option[Int]] = {
+    // Filter on raw `ts` (not a function of ts) so the source scan stays on
+    // idx_conn_events_ts + partition pruning — wrapping ts in
+    // `(ts AT TIME ZONE 'UTC')::DATE` in the predicate would force a full-table
+    // scan (#1254 class). The lower bound is sinceDate's UTC midnight; any event
+    // whose UTC date is >= sinceDate has ts >= that instant.
+    val sinceTs = sinceDate.atStartOfDay(java.time.ZoneOffset.UTC).toInstant
+    val sql     =
+      sql"""
+        INSERT INTO connection_events_daily
+          (router_id, mac, hostname, date, count_succeeded, count_blocked, sample_count, rolled_at)
+        SELECT
+          ce.router_id,
+          COALESCE(ce.mac, ''),
+          COALESCE(ce.resolved_host_value, ce.host_value),
+          (ce.ts AT TIME ZONE 'UTC')::DATE,
+          COUNT(*) FILTER (WHERE ce.allowed)::INT,
+          COUNT(*) FILTER (WHERE NOT ce.allowed)::INT,
+          COUNT(*)::INT,
+          NOW()
+        FROM connection_events ce
+        WHERE ce.ts >= $sinceTs
+        GROUP BY ce.router_id, COALESCE(ce.mac, ''),
+                 COALESCE(ce.resolved_host_value, ce.host_value),
+                 (ce.ts AT TIME ZONE 'UTC')::DATE
+        ON CONFLICT (router_id, mac, hostname, date) DO UPDATE SET
+          count_succeeded = EXCLUDED.count_succeeded,
+          count_blocked   = EXCLUDED.count_blocked,
+          sample_count    = EXCLUDED.sample_count,
+          rolled_at       = EXCLUDED.rolled_at
+      """
+    withRollupLock(RollupLockKeys.ConnEventsDaily)(sql.update.run)
   }
 
   def stats =

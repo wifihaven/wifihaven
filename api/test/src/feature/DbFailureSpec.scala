@@ -11,7 +11,7 @@ import zio.json.*
 import zio.test.*
 
 import java.sql.SQLException
-import java.time.Instant
+import java.time.{Instant, LocalDate}
 import java.util.UUID
 
 /**
@@ -175,6 +175,8 @@ object DbFailureSpec extends ZIOSpecDefault {
     def findRecentFqdnFor(r: RouterId, ip: IpAddress, since: Instant)                   = throwing
     def backfillResolvedFor(r: RouterId, ip: IpAddress, fqdn: Hostname, since: Instant) =
       throwing
+    def rerollConnEventsHourly(since: Instant)                                          = throwing
+    def rerollConnEventsDaily(sinceDate: LocalDate)                                     = throwing
   }
 
   private def jsonField(body: String, key: String): Option[String] =

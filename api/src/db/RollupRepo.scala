@@ -70,8 +70,12 @@ case class RollupRun(
 // column in the rollups, written at reroll time with the current household
 // filter settings.
 object RollupLockKeys {
-  val Hourly: Long = 0x1108L << 32 | 0x0001L
-  val Daily: Long  = 0x1108L << 32 | 0x0002L
+  val Hourly: Long           = 0x1108L << 32 | 0x0001L
+  val Daily: Long            = 0x1108L << 32 | 0x0002L
+  // #1265: connection-event rollup tier. Distinct keys so a CE reroll never
+  // cross-serializes with a traffic reroll (they touch disjoint tables).
+  val ConnEventsHourly: Long = 0x1108L << 32 | 0x0003L
+  val ConnEventsDaily: Long  = 0x1108L << 32 | 0x0004L
 }
 
 trait RollupRepo {
