@@ -72,3 +72,39 @@ describe('usage.seriesBatch (#1099)', () => {
     expect(res.series[0].topHosts[0].host.value).toBe('youtube.com')
   })
 })
+
+// #1299 — the Profiles "+Time" grant didn't refresh the used/cap bar until a
+// force-reload. Root cause: today-mode time-status GETs are served with
+// `Cache-Control: max-age=30`, and `req()` did not opt out of the browser HTTP
+// cache, so React Query's post-mutation refetch was answered from cache with a
+// stale `extensionMins`. Every API call must send `cache: 'no-store'` so the
+// browser cache can never shadow a fresh read; React Query stays the only cache.
+describe('req opts every call out of the browser HTTP cache (#1299)', () => {
+  beforeEach(() => {
+    localStorage.setItem('token', 'tok')
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    localStorage.clear()
+  })
+
+  it('GET reads pass cache: no-store to fetch (the time-status summary path)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okJson([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.time.summaryAll()
+
+    const opts = fetchMock.mock.calls[0][1] as RequestInit
+    expect(opts.cache).toBe('no-store')
+  })
+
+  it('mutations also pass cache: no-store (the +Time grant path)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okJson({ id: 1, grantedMinutes: 30 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.time.grantExtension({ profileId: 1, extraMinutes: 30, note: null })
+
+    const opts = fetchMock.mock.calls[0][1] as RequestInit
+    expect(opts.cache).toBe('no-store')
+  })
+})
