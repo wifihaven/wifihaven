@@ -42,7 +42,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (job, status) (rate(wifihaven_rollup_runs_total[5m]))",
+          "expr": "sum by (job, status) (rate(wifihaven_rollup_runs_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{job}} / {{status}}",
           "refId": "A"
         }
@@ -79,7 +79,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(wifihaven_rollup_runs_total{status=\"error\"}[5m])) / clamp_min(sum(rate(wifihaven_rollup_runs_total[5m])), 1)",
+          "expr": "sum(rate(wifihaven_rollup_runs_total{status=\"error\", env=\"$env\"}[5m])) / clamp_min(sum(rate(wifihaven_rollup_runs_total{env=\"$env\"}[5m])), 1)",
           "legendFormat": "error ratio",
           "refId": "A"
         }
@@ -108,19 +108,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p50 {{job}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p95 {{job}}",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p99 {{job}}",
           "refId": "C"
         }
@@ -149,7 +149,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "wifihaven_rollup_rows_upserted",
+          "expr": "wifihaven_rollup_rows_upserted{env=\"$env\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -162,7 +162,24 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(env)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [],
+        "query": { "query": "label_values(env)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "default", "value": "default" },
         "hide": 0,
         "includeAll": false,
         "label": "Datasource",

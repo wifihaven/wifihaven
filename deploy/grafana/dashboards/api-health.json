@@ -41,13 +41,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(jvm_memory_bytes_used{area=\"heap\"})",
+          "expr": "sum(jvm_memory_bytes_used{area=\"heap\", env=\"$env\"})",
           "legendFormat": "heap used",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(jvm_memory_bytes_max{area=\"heap\"})",
+          "expr": "sum(jvm_memory_bytes_max{area=\"heap\", env=\"$env\"})",
           "legendFormat": "heap max",
           "refId": "B"
         }
@@ -84,7 +84,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "wifihaven_db_pool_threads_awaiting_connection",
+          "expr": "wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"}",
           "legendFormat": "threads awaiting",
           "refId": "A"
         }
@@ -112,7 +112,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "rate(jvm_gc_collection_seconds_sum[5m])",
+          "expr": "rate(jvm_gc_collection_seconds_sum{env=\"$env\"}[5m])",
           "legendFormat": "{{gc}}",
           "refId": "A"
         }
@@ -150,25 +150,25 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "wifihaven_db_pool_active_connections",
+          "expr": "wifihaven_db_pool_active_connections{env=\"$env\"}",
           "legendFormat": "active",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "wifihaven_db_pool_idle_connections",
+          "expr": "wifihaven_db_pool_idle_connections{env=\"$env\"}",
           "legendFormat": "idle",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "wifihaven_db_pool_total_connections",
+          "expr": "wifihaven_db_pool_total_connections{env=\"$env\"}",
           "legendFormat": "total",
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "wifihaven_db_pool_max_size",
+          "expr": "wifihaven_db_pool_max_size{env=\"$env\"}",
           "legendFormat": "max",
           "refId": "D"
         }
@@ -197,19 +197,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "jvm_threads_current",
+          "expr": "jvm_threads_current{env=\"$env\"}",
           "legendFormat": "current",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "jvm_threads_daemon",
+          "expr": "jvm_threads_daemon{env=\"$env\"}",
           "legendFormat": "daemon",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "jvm_threads_peak",
+          "expr": "jvm_threads_peak{env=\"$env\"}",
           "legendFormat": "peak",
           "refId": "C"
         }
@@ -238,7 +238,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "rate(process_cpu_seconds_total[5m])",
+          "expr": "rate(process_cpu_seconds_total{env=\"$env\"}[5m])",
           "legendFormat": "cpu cores",
           "refId": "A"
         }
@@ -266,7 +266,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "process_resident_memory_bytes",
+          "expr": "process_resident_memory_bytes{env=\"$env\"}",
           "legendFormat": "rss",
           "refId": "A"
         }
@@ -294,7 +294,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(jvm_memory_bytes_used{area=\"nonheap\"})",
+          "expr": "sum(jvm_memory_bytes_used{area=\"nonheap\", env=\"$env\"})",
           "legendFormat": "non-heap used",
           "refId": "A"
         }
@@ -307,7 +307,24 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(env)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [],
+        "query": { "query": "label_values(env)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "default", "value": "default" },
         "hide": 0,
         "includeAll": false,
         "label": "Datasource",
