@@ -137,6 +137,9 @@ object ContractGoldenSpec extends ZIOSpecDefault {
       test("register_router_request.json decodes round-trip-clean") {
         assertRoundTrip[RegisterRouterRequest]("router-to-api/register_router_request.json")
       },
+      test("router_metrics_batch.json decodes round-trip-clean") {
+        assertRoundTrip[RouterMetricsBatch]("router-to-api/router_metrics_batch.json")
+      },
     ),
   )
 }
