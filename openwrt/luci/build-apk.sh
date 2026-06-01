@@ -77,7 +77,7 @@ rm -f "$OUT_APK"
     --info "license:MIT" \
     --info "url:https://github.com/wifihaven/wifihaven" \
     --info "maintainer:WifiHaven <noreply@example.com>" \
-    --info "depends:luci-base wifihaven" \
+    --info "depends:luci-base luci-compat wifihaven" \
     --files "$WORK/data" \
     --output "$OUT_APK"
 
