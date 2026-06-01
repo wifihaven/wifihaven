@@ -1147,6 +1147,37 @@ object TimeRoutes {
 // ── Query log routes ───────────────────────────────────────────────────────
 
 object LogRoutes {
+  // #1265: choose the source table for /api/connection-events/series. Mirrors
+  // UsageRoutes.pickTier on the traffic side: the bucket width caps how coarse
+  // a rollup may serve it (via the shared wifihaven.shared.BucketPolicy, so the
+  // two endpoints can't drift), and a wide window justifies coarsening on cost
+  // grounds. The finer of (cap, window-pref) wins. Raw → None (read the live
+  // connection_events table). includeMulticast forces raw, because the reroll
+  // excludes multicast/broadcast at write time so the rollups can't serve it.
+  private def seriesGrain(
+      bucket: ConnectionEventBucket,
+      hours: Int,
+      includeMulticast: Boolean,
+  ): Option[BucketGrain] =
+    if (includeMulticast) None
+    else {
+      val cap                       = BucketPolicy.grainForBucket(bucket.wire)
+      val pref                      =
+        if (hours <= 24) BucketGrain.Raw
+        else if (hours <= 14 * 24) BucketGrain.Hourly
+        else BucketGrain.Daily
+      def rank(g: BucketGrain): Int = g match {
+        case BucketGrain.Raw    => 0
+        case BucketGrain.Hourly => 1
+        case BucketGrain.Daily  => 2
+      }
+      val chosen                    = if (rank(pref) <= rank(cap)) pref else cap
+      chosen match {
+        case BucketGrain.Raw => None
+        case g               => Some(g)
+      }
+    }
+
   // #862: tiny parse helpers for pagination params. Pulled into top-level so
   // both /api/logs and /api/connection-events/series use the same shape.
   private def parseInstantOpt(req: Request, name: String): IO[Response, Option[java.time.Instant]] =
@@ -1310,9 +1341,12 @@ object LogRoutes {
               cursorKey = cursorOpt.map(_.key),
               includeMulticast = req.url.queryParam("includeMulticast").contains("true"),
             )
-            rows <- connRepo
-              .querySeries(filter, bucket.seconds, groupByCodes)
-              .mapError(ErrorMapper.dbErrorToResponse)
+            // #1265: route coarse + wide reads to the rollup tables; fine,
+            // short, or multicast-inclusive reads stay on raw connection_events.
+            rows <- (seriesGrain(bucket, filter.hours, filter.includeMulticast) match {
+              case None    => connRepo.querySeries(filter, bucket.seconds, groupByCodes)
+              case Some(g) => connRepo.querySeriesRollup(filter, bucket.seconds, groupByCodes, g)
+            }).mapError(ErrorMapper.dbErrorToResponse)
             nextCur =
               if (rows.size < limit) None
               else
