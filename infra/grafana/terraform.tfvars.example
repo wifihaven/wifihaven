@@ -1,7 +1,15 @@
-# Copy to terraform.tfvars (gitignored) and fill in, OR export as TF_VAR_*.
-# Both values are secrets — terraform.tfvars is gitignored; never commit real
-# values. In CI these come from the GRAFANA_URL / GRAFANA_AUTH GitHub Actions
-# secrets (see .github/workflows/deploy-grafana.yml).
+# For a MANUAL single-environment apply. Copy to terraform.tfvars
+# (gitignored) and fill in, OR export as TF_VAR_*. Both values are secrets —
+# never commit real values.
+#
+# In CD these are NOT read from a tfvars file: master-api-ui.yml feeds them
+# per environment from the GRAFANA_URL_STAGING / GRAFANA_AUTH_STAGING and
+# GRAFANA_URL_PROD / GRAFANA_AUTH_PROD GitHub Actions secrets.
 
 grafana_url  = "https://<your-stack>.grafana.net"
 grafana_auth = "<Grafana service-account token — Administration → Service accounts>"
+
+# Optional: uid of a pre-created folder to hold the dashboards. Leave unset
+# to use the stack's General folder. Not managed as a resource (keeps the
+# apply stateless-idempotent in CD).
+# folder_uid = "wifihaven"

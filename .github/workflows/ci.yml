@@ -541,8 +541,9 @@ jobs:
   # ── infra/grafana Terraform: fmt + validate ─────────────────────────────
   # Mirrors render-blueprint: a cheap config-quality gate for the Grafana
   # Cloud dashboard deploy layer (#1270). Catches fmt drift and invalid HCL
-  # before deploy-grafana.yml runs `terraform apply` on main. Also json-parses
-  # every committed dashboard so a malformed export can't reach Grafana.
+  # before the master-api-ui.yml deploy-grafana-{staging,prod} jobs run
+  # `terraform apply`. Also json-parses every committed dashboard so a
+  # malformed export can't reach Grafana.
   grafana-terraform:
     name: Grafana Terraform Lint
     needs: changes
