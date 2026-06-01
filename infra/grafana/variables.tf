@@ -7,7 +7,7 @@ variable "grafana_url" {
 variable "grafana_auth" {
   type        = string
   sensitive   = true
-  description = "Grafana service-account token (per stack) with dashboard write scope. Create in Grafana Cloud → Administration → Service accounts. In CD this is GRAFANA_AUTH_STAGING / GRAFANA_AUTH_PROD; never committed."
+  description = "Grafana service-account token with dashboard write scope. Create in Grafana Cloud → Administration → Service accounts. In CD this is the GRAFANA_AUTH secret; never committed."
 }
 
 variable "folder_uid" {

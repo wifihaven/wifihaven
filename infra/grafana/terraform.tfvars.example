@@ -3,8 +3,8 @@
 # never commit real values.
 #
 # In CD these are NOT read from a tfvars file: master-api-ui.yml feeds them
-# per environment from the GRAFANA_URL_STAGING / GRAFANA_AUTH_STAGING and
-# GRAFANA_URL_PROD / GRAFANA_AUTH_PROD GitHub Actions secrets.
+# from the GRAFANA_URL / GRAFANA_AUTH GitHub Actions secrets (one Grafana
+# Cloud stack serves every environment).
 
 grafana_url  = "https://<your-stack>.grafana.net"
 grafana_auth = "<Grafana service-account token — Administration → Service accounts>"

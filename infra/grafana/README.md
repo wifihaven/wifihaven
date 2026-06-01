@@ -31,25 +31,23 @@ Manages:
   - api-health HTTP request-rate/latency panels → folded back in with
     [#1204](https://github.com/wifihaven/wifihaven/issues/1204) (tracked in [#1281](https://github.com/wifihaven/wifihaven/issues/1281))
 
-## Per-environment, in the CD pipeline
+## In the CD pipeline
 
-This config is applied **once per Grafana Cloud stack**. It is wired into
-the Master API/UI CD pipeline
-([`master-api-ui.yml`](../../.github/workflows/master-api-ui.yml)),
-mirroring the SPA's staging-then-prod split:
+This config is applied to **one Grafana Cloud stack that serves every
+environment**. It is wired into the Master API/UI CD pipeline
+([`master-api-ui.yml`](../../.github/workflows/master-api-ui.yml)) as a
+single job:
 
-- `deploy-grafana-staging` — applies to the **staging** stack in parallel
-  with `deploy-staging` / `deploy-spa-staging`, on the same test gate.
-- `deploy-grafana-prod` — applies to the **prod** stack after the
-  `approve-production` manual gate, alongside `deploy-prod-render` /
-  `deploy-spa-prod`.
+- `deploy-grafana` — applies the dashboards after the `approve-production`
+  manual gate, alongside `deploy-prod-render` / `deploy-spa-prod`.
 
-So staging dashboards ship with the staging deploy and prod dashboards ship
-with the prod deploy. The target stack is selected purely by the
-`grafana_url` / `grafana_auth` variables, fed from per-environment secrets.
-Both jobs are **non-critical** (`continue-on-error`, design §6.2): a
-dashboard-deploy failure is alert-worthy but never blocks the API/SPA
-release.
+There is no staging/prod split because the dashboards are
+environment-agnostic: each selects its data via the templated
+`${datasource}` variable at view time, so the same JSON renders against
+whichever Prometheus the viewer points it at. The target stack is selected
+purely by the `grafana_url` / `grafana_auth` variables. The job is
+**non-critical** (`continue-on-error`, design §6.2): a dashboard-deploy
+failure is alert-worthy but never blocks the API/SPA release.
 
 ### Stateless by design
 
@@ -65,39 +63,36 @@ unset the dashboards land in the stack's General folder. A consequence of
 statelessness: a dashboard removed from the repo is not auto-deleted from
 the stack — delete it by hand.
 
-**Not managed here**: the Grafana Cloud stacks themselves (created once per
-environment in the dashboard), the Prometheus datasource (dashboards use a
+**Not managed here**: the Grafana Cloud stack itself (created once in the
+dashboard), the Prometheus datasource (dashboards use a
 templated `${datasource}` variable resolved at view time, so the same JSON
 loads in both Grafana Cloud and a self-hosted provisioned Grafana, #1207),
 and the GitHub Actions secrets.
 
 ## Prerequisites
 
-1. A Grafana Cloud stack exists per environment (free tier is fine; see
-   design §6.2) — one for staging, one for prod.
-2. A **Grafana service-account token** per stack with dashboard write scope:
-   Grafana Cloud → Administration → Service accounts → add token.
+1. A Grafana Cloud stack exists (free tier is fine; see design §6.2) — one
+   stack serves every environment.
+2. A **Grafana service-account token** for the stack with dashboard write
+   scope: Grafana Cloud → Administration → Service accounts → add token.
 3. Terraform ≥ 1.6 installed (`brew install terraform`).
 
 ## CI / auto-deploy (the normal path)
 
 Deploys run from the Master API/UI CD pipeline on push to `main` (see
-[Per-environment, in the CD pipeline](#per-environment-in-the-cd-pipeline)
-above). The `master-api-ui.yml` `paths:` filter already includes
-`infra/**` and `deploy/**`, so a dashboard or Terraform change triggers the
-pipeline. Authentication comes from four GitHub Actions secrets set
-out-of-band (never committed):
+[In the CD pipeline](#in-the-cd-pipeline) above). The `master-api-ui.yml`
+`paths:` filter already includes `infra/**` and `deploy/**`, so a dashboard
+or Terraform change triggers the pipeline. Authentication comes from two
+GitHub Actions secrets set out-of-band (never committed):
 
 ```sh
-gh secret set GRAFANA_URL_STAGING  -R wifihaven/wifihaven --body 'https://<staging-stack>.grafana.net'
-gh secret set GRAFANA_AUTH_STAGING -R wifihaven/wifihaven --body '<staging service-account token>'
-gh secret set GRAFANA_URL_PROD     -R wifihaven/wifihaven --body 'https://<prod-stack>.grafana.net'
-gh secret set GRAFANA_AUTH_PROD    -R wifihaven/wifihaven --body '<prod service-account token>'
+gh secret set GRAFANA_URL  -R wifihaven/wifihaven --body 'https://<stack>.grafana.net'
+gh secret set GRAFANA_AUTH -R wifihaven/wifihaven --body '<service-account token>'
 ```
 
-Until a given environment's pair is set, that environment's deploy job is a
-no-op gate. The PR acceptance bar is `terraform fmt`/`validate`-clean config
-plus `actionlint`-clean workflows, not a live deploy.
+Until both are set, the deploy job is a no-op gate. The PR acceptance bar is
+`terraform fmt`/`validate`-clean config plus `actionlint`-clean workflows,
+not a live deploy.
 
 `terraform fmt -check` + `terraform validate` for this directory also run in
 CI as the `grafana-terraform` lint job (mirrors the `render-blueprint`

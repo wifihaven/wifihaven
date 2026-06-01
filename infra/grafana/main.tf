@@ -5,11 +5,13 @@
 #     deploy/grafana/dashboards/, sourced directly from the in-repo file so
 #     the committed JSON stays canonical (no copy, no drift).
 #
-# Per-environment: this same config is applied once per Grafana Cloud stack.
-# In CD (master-api-ui.yml) it runs twice — against the staging stack on the
-# staging deploy, and against the prod stack after the production-approval
-# gate — authenticated by per-environment service-account tokens. The
-# `grafana_url` / `grafana_auth` variables select the target stack.
+# Single stack: this config is applied to one Grafana Cloud stack that serves
+# every environment. In CD (master-api-ui.yml) the `deploy-grafana` job runs
+# it once, after the production-approval gate, authenticated by the
+# `grafana_url` / `grafana_auth` variables (fed from the GRAFANA_URL /
+# GRAFANA_AUTH secrets). Dashboards are environment-agnostic — they select
+# their data via the templated `${datasource}` variable at view time — so a
+# per-environment dashboard copy is unnecessary.
 #
 # Stateless by design. The CD jobs run on ephemeral runners with no
 # persisted state, so every apply starts from an empty state. That is safe
@@ -23,15 +25,14 @@
 # the dashboards land in the stack's General folder.
 #
 # Does NOT manage:
-#   - The Grafana Cloud stack / instance itself (created once per environment
-#     via the Grafana Cloud dashboard).
+#   - The Grafana Cloud stack / instance itself (created once via the Grafana
+#     Cloud dashboard).
 #   - The datasource: dashboards reference a templated `${datasource}`
 #     variable resolved at view time, so the same JSON loads against the
 #     Grafana Cloud Prometheus datasource (cloud path) and a self-hosted
 #     provisioned Prometheus (#1207) without edits.
-#   - The service-account token (operator creates it per stack in Grafana
-#     Cloud; value supplied via `grafana_auth` / the GRAFANA_AUTH_* secret,
-#     never committed).
+#   - The service-account token (operator creates it in Grafana Cloud; value
+#     supplied via `grafana_auth` / the GRAFANA_AUTH secret, never committed).
 
 terraform {
   required_version = ">= 1.6"
