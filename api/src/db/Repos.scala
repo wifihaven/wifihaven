@@ -8,6 +8,7 @@ import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.shared.Schedule
 import wifihaven.api.db.TypeMeta.given
+import wifihaven.api.metrics.DbMetrics
 import zio.*
 import zio.interop.catz.*
 import java.time.{Instant, LocalDate, LocalTime, ZoneId}
@@ -366,6 +367,12 @@ trait RouterRepo {
   def completeEnrollment(id: RouterId, tokenHash: Sha256Hex): Task[Unit]
   def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]): Task[Unit]
 
+  /**
+   * #1204: routers whose last_seen_at is at or after `cutoff`. Drives the agent_connected_routers
+   * gauge.
+   */
+  def countSeenSince(cutoff: Instant): Task[Int]
+
   def delete(id: RouterId): Task[Unit]
 }
 
@@ -547,11 +554,13 @@ trait ConnectionEventRepo {
 
 class UserRepoLive(xa: Transactor[Task]) extends UserRepo {
   def findByUsername(u: String)             =
-    sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE username=$u"
-      .query[(UserId, String, String, UserRole, Instant, Boolean)]
-      .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
-      .option
-      .transact(xa)
+    DbMetrics.timed("user.findByUsername")(
+      sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE username=$u"
+        .query[(UserId, String, String, UserRole, Instant, Boolean)]
+        .map { case (id, un, ph, role, ca, mcp) => DbUser(id, un, ph, role, ca, mcp) }
+        .option
+        .transact(xa),
+    )
   def findById(id: UserId)                  =
     sql"SELECT id,username,password_hash,role,created_at,must_change_password FROM users WHERE id=$id"
       .query[(UserId, String, String, UserRole, Instant, Boolean)]
@@ -652,11 +661,13 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     CrossDeviceOverlapMode.parse(r._7).getOrElse(CrossDeviceOverlapMode.Sum),
   )
   def listAll                                       =
-    sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles ORDER BY id"
-      .query[R]
-      .map(toP)
-      .to[List]
-      .transact(xa)
+    DbMetrics.timed("profile.listAll")(
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles ORDER BY id"
+        .query[R]
+        .map(toP)
+        .to[List]
+        .transact(xa),
+    )
   def findById(id: ProfileId)                       =
     sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles WHERE id=$id"
       .query[R]
@@ -808,21 +819,23 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
 
 class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
   def listAll                                                                          =
-    sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
-      .query[
-        (
-            DeviceId,
-            MacAddress,
-            String,
-            Option[ProfileId],
-            Option[String],
-            Option[IpAddress],
-            Option[String],
-        ),
-      ]
-      .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
-      .to[List]
-      .transact(xa)
+    DbMetrics.timed("device.listAll")(
+      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id ORDER BY d.name"
+        .query[
+          (
+              DeviceId,
+              MacAddress,
+              String,
+              Option[ProfileId],
+              Option[String],
+              Option[IpAddress],
+              Option[String],
+          ),
+        ]
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .to[List]
+        .transact(xa),
+    )
   def findByMac(mac: MacAddress)                                                       =
     sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
       .query[
@@ -1327,11 +1340,13 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       .option
       .transact(xa)
   def findByTokenHash(h: Sha256Hex)                                         =
-    (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
-      .query[R]
-      .map(toR)
-      .option
-      .transact(xa)
+    DbMetrics.timed("router.findByTokenHash")(
+      (fr"SELECT " ++ cols ++ fr" FROM routers WHERE token_hash=$h")
+        .query[R]
+        .map(toR)
+        .option
+        .transact(xa),
+    )
   def create(name: String, enrollmentTokenHash: Sha256Hex)                  =
     sql"INSERT INTO routers(name,enrollment_token_hash) VALUES($name,$enrollmentTokenHash) RETURNING id"
       .query[RouterId]
@@ -1349,6 +1364,13 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
           WHERE id=$id""".update.run
       .transact(xa)
       .unit
+  def countSeenSince(cutoff: Instant)                                       =
+    DbMetrics.timed("router.countSeenSince")(
+      sql"SELECT count(*) FROM routers WHERE last_seen_at >= $cutoff"
+        .query[Int]
+        .unique
+        .transact(xa),
+    )
   def delete(id: RouterId)                                                  =
     sql"DELETE FROM routers WHERE id=$id".update.run.transact(xa).unit
 }
@@ -1371,9 +1393,11 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   private def toT(r: R)                               =
     TrafficReport(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8, r._9, r._10, r._11)
   def insertBatch(reports: List[TrafficReportInsert]) =
-    Update[TrafficReportInsert](
-      "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
-    ).updateMany(reports).transact(xa)
+    DbMetrics.timed("traffic.insertBatch")(
+      Update[TrafficReportInsert](
+        "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
+      ).updateMany(reports).transact(xa),
+    )
   // TODO(#730): remove this read-side join once usage records carry dest_ip.
   // Promotes ipv4/ipv6-typed traffic_reports rows to their resolved fqdn at
   // SELECT time via the same LATERAL join used in TimeUsageRepoLive.

@@ -3,6 +3,7 @@ package wifihaven.api.auth
 import at.favre.lib.crypto.bcrypt.BCrypt
 import wifihaven.api.JwtConfig
 import wifihaven.api.db.*
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import pdi.jwt.*
@@ -58,7 +59,7 @@ class AuthServiceLive(
   private val secret                 = jwtConfig.secret
 
   def login(username: String, password: String): IO[AuthError, LoginResponse] =
-    for {
+    (for {
       user  <- userRepo
         .findByUsername(username)
         .mapError(e => AuthError.Unexpected(e.getMessage))
@@ -77,7 +78,17 @@ class AuthServiceLive(
       token <- ZIO
         .attempt(JwtZIOJson.encode(claim, secret, algo))
         .mapError(e => AuthError.Unexpected(e.getMessage))
-    } yield LoginResponse(JwtToken.unsafe(token), user.role, user.username, user.mustChangePassword)
+    } yield LoginResponse(
+      JwtToken.unsafe(token),
+      user.role,
+      user.username,
+      user.mustChangePassword,
+    ))
+      .tapError {
+        // #1204: a bad password or unknown user both collapse to InvalidCredentials.
+        case AuthError.InvalidCredentials => AppMetrics.recordAuthFailure("bad_password")
+        case _                            => ZIO.unit
+      }
 
   // We delegate expiration/not-before checks to our injected Clock (see below).
   private val jwtOpts = JwtOptions(expiration = false, notBefore = false)
@@ -105,18 +116,33 @@ class AuthServiceLive(
           ZIO.fail(AuthError.TokenExpired).when(claims.exp < now).as(claims)
         }
       }
+      .tapError {
+        // #1204: only the expired case is a bounded, security-relevant reason. A
+        // malformed/forged token (InvalidToken) is not in the §5.2 reason enum.
+        case AuthError.TokenExpired => AppMetrics.recordAuthFailure("expired_token")
+        case _                      => ZIO.unit
+      }
+
+  // #1204: a role check that fails Forbidden is the forbidden_role signal. verify's
+  // own failures (expired_token) are already counted above, so they don't surface as
+  // Forbidden here — no double counting.
+  private def tapForbiddenRole(z: IO[AuthError, JwtClaims]): IO[AuthError, JwtClaims] =
+    z.tapError {
+      case AuthError.Forbidden => AppMetrics.recordAuthFailure("forbidden_role")
+      case _                   => ZIO.unit
+    }
 
   def requireAdmin(token: String): IO[AuthError, JwtClaims] =
-    verify(token).flatMap { claims =>
+    tapForbiddenRole(verify(token).flatMap { claims =>
       if claims.role == "admin" then ZIO.succeed(claims)
       else ZIO.fail(AuthError.Forbidden)
-    }
+    })
 
   def requireWriter(token: String): IO[AuthError, JwtClaims] =
-    verify(token).flatMap { claims =>
+    tapForbiddenRole(verify(token).flatMap { claims =>
       if claims.role == "admin" || claims.role == "adult" then ZIO.succeed(claims)
       else ZIO.fail(AuthError.Forbidden)
-    }
+    })
 
   def requirePasswordChanged(token: String): IO[AuthError, JwtClaims] =
     verify(token).flatMap { claims =>

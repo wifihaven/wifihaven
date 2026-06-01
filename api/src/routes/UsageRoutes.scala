@@ -717,8 +717,10 @@ object UsageRoutes {
             )
       }
       // #858: zero-bytes-zero-seconds rows are filtered at SQL level in
-      // listRawInRange so the application never sees them. TODO(#864) wire
-      // a metric for "rows filtered" once observability lands.
+      // listRawInRange so the application never sees them. #864: they're counted
+      // at ingest into traffic_reports_filtered_zero_bytes_total (see
+      // RouterIngestRoutes.handleUsage), so a return of the #858 regression is
+      // now a metric rather than a per-request log.
       profiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
       profNames = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap

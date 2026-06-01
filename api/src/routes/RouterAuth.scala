@@ -1,6 +1,7 @@
 package wifihaven.api.routes
 
 import wifihaven.api.db.RouterRepo
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.shared.Router
 import wifihaven.shared.types.*
 import zio.*
@@ -50,4 +51,12 @@ class RouterAuthLive(repo: RouterRepo) extends RouterAuth {
             ZIO.fromOption(_).orElseFail(Response.unauthorized("Invalid router token")),
           )
       }
+      // #1204: count only the 401s (missing / unrecognized token), not a 500 from a
+      // transient DB error that ErrorMapper also turns into a Response.
+      .tapError(resp =>
+        AppMetrics
+          .recordAuthFailure("bad_router_token")
+          .when(resp.status == Status.Unauthorized)
+          .unit,
+      )
 }

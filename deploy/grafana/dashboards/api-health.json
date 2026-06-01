@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven API process health: JVM heap/GC/threads, process CPU/memory, and the HikariCP connection pool (the 2026-05-31 crash-loop leading indicator). Series from zio.metrics.jvm.DefaultJvmMetrics and the wifihaven_db_pool_* gauges (#1242/#1243). HTTP request-rate/latency panels are deferred until the zio-http metrics middleware lands (#1204). See docs/design/metrics-observability.md §5.",
+  "description": "WifiHaven API process health: JVM heap/GC/threads, process CPU/memory, and the HikariCP connection pool (the 2026-05-31 crash-loop leading indicator). Series from zio.metrics.jvm.DefaultJvmMetrics and the wifihaven_db_pool_* gauges (#1242/#1243). HTTP request-rate/latency and the other application self-metrics live on the 'WifiHaven — API self-metrics' dashboard (#1204). See docs/design/metrics-observability.md §5.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
