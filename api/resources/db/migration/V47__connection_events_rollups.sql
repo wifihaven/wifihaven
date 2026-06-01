@@ -96,15 +96,19 @@ CREATE INDEX idx_ce_daily_mac_date ON connection_events_daily (mac, date DESC);
 -- /api/admin/rollup-status already reads the last N runs regardless of job name.
 
 -- ── Historical backfill — OPERATOR-APPLIED, OUT-OF-BAND. DO NOT UNCOMMENT. ───
--- AGENTS.md #migrations-prod-data-volume: `connection_events` is an
--- unbounded-growth event table. A full-history aggregation scans every row.
--- Against the empty embedded Postgres in tests this is milliseconds; against
--- prod it is MINUTES, and Flyway runs on the API startup critical path, so an
--- inline backfill here risks blowing Render's 15-minute port-scan deploy
--- timeout — the exact failure mode of #1197 (the V41/V42 partition migrations
--- whose "this is seconds" comment was measured on dev/staging and was false at
--- prod scale). So unlike V38, the backfill is NOT inlined and NOT run on
--- startup.
+-- `connection_events` is weekly RANGE-partitioned (V42 / #806) and capped to
+-- ~30 days by the #811 retention sweep (RetentionSweepJob.EventsRetentionDays),
+-- so a backfill scans at most ~30 days of rows — NOT all history. (AGENTS.md
+-- #migrations-prod-data-volume lists it as "unbounded-growth", but that
+-- describes the ingest rate; retention bounds the stored size a scan touches,
+-- and that's the dimension that drives backfill cost.) Even so, ~30 days at
+-- prod connection rates is a single large GROUP-BY pass that can run MINUTES,
+-- and Flyway executes migrations on the API startup critical path — so an
+-- inline backfill here would risk Render's 15-minute port-scan deploy timeout
+-- (the failure mode of #1197, where the V41/V42 partition migrations' "this is
+-- seconds" comment held on dev/staging but not at prod scale). So unlike V38,
+-- the backfill is NOT inlined and NOT run on startup; it stays operator-applied
+-- and off-path defensively.
 --
 -- Going-forward population is handled entirely by the reroll fibers (follow-up
 -- PR). For historical rows, the operator runs the block below out-of-band
@@ -112,7 +116,8 @@ CREATE INDEX idx_ce_daily_mac_date ON connection_events_daily (mac, date DESC);
 -- `connection_events` row count. The source scan is a bounded range scan per
 -- bucket-grain via the existing idx_conn_events_ts (ts DESC) / idx_conn_events_
 -- mac_ts (mac, ts DESC) — confirm with EXPLAIN (ANALYZE) against prod-like
--- volume before running (#1261).
+-- volume before running (#1261). Note the daily rollup can only be seeded ~30
+-- days deep from raw; its 180-day horizon fills forward via the fibers.
 --
 -- INSERT INTO connection_events_hourly
 --   (router_id, mac, hostname, bucket_start,
