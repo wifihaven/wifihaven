@@ -13,9 +13,6 @@ name: Master API/UI CD
 #     → deploy-staging               (curl staging deploy hook; wait for /api/health)
 #       ‖ deploy-spa-staging         (build + wrangler push to Cloudflare Pages — parallel
 #                                     with deploy-staging, gated on the same test chain)
-#       ‖ deploy-grafana-staging     (terraform apply of deploy/grafana/dashboards/* to the
-#                                     STAGING Grafana Cloud stack — parallel, same test gate,
-#                                     non-critical/continue-on-error)
 #     → smoke-staging                (lightweight curl checks against api-staging.wifihaven.net
 #                                     AND staging.wifihaven.net SPA)
 #     → api-smoke-staging            (Gate 1 — admin + router API contract smoke against staging)
@@ -31,9 +28,10 @@ name: Master API/UI CD
 #                                       • deploy-prod-render — curl prod deploy hook + health poll
 #                                       • deploy-spa-prod    — build + wrangler push to
 #                                                              wifihaven Pages project (#613)
-#                                       • deploy-grafana-prod — terraform apply of the in-repo
-#                                                              dashboards to the PROD Grafana
-#                                                              Cloud stack (non-critical)
+#
+# Grafana dashboard deploy lives on its own pipeline (master-grafana.yml),
+# fired only by dashboard/Terraform changes under deploy/grafana/** and
+# infra/grafana/** — see the `paths:` exclusions below.
 #
 # OpenWRT release lives on master-router.yml. shared/** wire-schema changes
 # fire BOTH pipelines until #597 (capability negotiation) lands — the
@@ -58,6 +56,12 @@ on:
       - '.github/workflows/master-api-ui.yml'
       - '.github/workflows/e2e-vm-gate3b.yml'
       - '.github/workflows/ci.yml'
+      # Grafana dashboards/Terraform deploy on their own pipeline
+      # (master-grafana.yml). Excluded here so a dashboard-only change does
+      # not trigger a full API/SPA redeploy. A push that also touches api/web/
+      # etc. still matches those positive patterns and runs this pipeline.
+      - '!deploy/grafana/**'
+      - '!infra/grafana/**'
   workflow_dispatch:
 
 # Workflow-level concurrency scoped to THIS pipeline's group name — api/ui
@@ -333,58 +337,6 @@ jobs:
           # Cloudflare Pages deployments API rejects multi-byte UTF-8
           # (e.g. `§`) with code 8000111 despite advertising UTF-8.
           command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"
-
-  # ── 4c. Deploy Grafana dashboards to Grafana Cloud (staging) ──────────────
-  # Provisions the in-repo dashboards (deploy/grafana/dashboards/*.json) into
-  # the STAGING Grafana Cloud stack via the infra/grafana Terraform. Runs in
-  # parallel with deploy-staging / deploy-spa-staging on the same test gate;
-  # the prod stack is deployed later, after the production-approval gate
-  # (deploy-grafana-prod), so staging dashboards ship with staging and prod
-  # dashboards ship with prod — the same staging-then-prod split the SPA uses.
-  #
-  # Non-critical (design §6.2): a dashboard-deploy failure is alert-worthy but
-  # must never block the API/SPA release, so continue-on-error is set. Until
-  # the GRAFANA_URL_STAGING / GRAFANA_AUTH_STAGING secrets are set out-of-band
-  # the apply is gated off and the job is a no-op.
-  deploy-grafana-staging:
-    name: Deploy Grafana dashboards (staging)
-    if: github.ref == 'refs/heads/main'
-    needs: [ci-tests, bootstrap-smoke, e2e, prod-stack-smoke]
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Check staging Grafana secrets are configured
-        id: gate
-        env:
-          GRAFANA_URL: ${{ secrets.GRAFANA_URL_STAGING }}
-          GRAFANA_AUTH: ${{ secrets.GRAFANA_AUTH_STAGING }}
-        run: |
-          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GRAFANA_URL_STAGING / GRAFANA_AUTH_STAGING not set — skipping staging dashboard deploy."
-          fi
-
-      - name: Set up Terraform
-        if: steps.gate.outputs.configured == 'true'
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.15.3'
-
-      - name: Terraform init + apply (staging stack)
-        if: steps.gate.outputs.configured == 'true'
-        working-directory: infra/grafana
-        env:
-          TF_VAR_grafana_url: ${{ secrets.GRAFANA_URL_STAGING }}
-          TF_VAR_grafana_auth: ${{ secrets.GRAFANA_AUTH_STAGING }}
-        run: |
-          terraform init -input=false
-          terraform apply -auto-approve -input=false
 
   # ── 5. Smoke-test staging ─────────────────────────────────────────────────
   # Fast (<2 min) end-user-facing checks against the deployed staging URL.
@@ -677,50 +629,3 @@ jobs:
           workingDirectory: web
           # See staging step for why --commit-message is forced ASCII.
           command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"
-
-  # 6e. Deploy Grafana dashboards to Grafana Cloud (prod). The prod analogue
-  # of deploy-grafana-staging — applies the same in-repo dashboards to the
-  # PROD Grafana Cloud stack, gated on approve-production so prod dashboards
-  # only ship once the production deploy is approved (mirrors deploy-spa-prod).
-  # Non-critical (design §6.2): continue-on-error keeps a dashboard hiccup
-  # from failing the production release. A no-op until GRAFANA_URL_PROD /
-  # GRAFANA_AUTH_PROD are set out-of-band.
-  deploy-grafana-prod:
-    name: Deploy Grafana dashboards (prod) (deploy-production)
-    if: github.ref == 'refs/heads/main'
-    needs: [approve-production]
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Check prod Grafana secrets are configured
-        id: gate
-        env:
-          GRAFANA_URL: ${{ secrets.GRAFANA_URL_PROD }}
-          GRAFANA_AUTH: ${{ secrets.GRAFANA_AUTH_PROD }}
-        run: |
-          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GRAFANA_URL_PROD / GRAFANA_AUTH_PROD not set — skipping prod dashboard deploy."
-          fi
-
-      - name: Set up Terraform
-        if: steps.gate.outputs.configured == 'true'
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.15.3'
-
-      - name: Terraform init + apply (prod stack)
-        if: steps.gate.outputs.configured == 'true'
-        working-directory: infra/grafana
-        env:
-          TF_VAR_grafana_url: ${{ secrets.GRAFANA_URL_PROD }}
-          TF_VAR_grafana_auth: ${{ secrets.GRAFANA_AUTH_PROD }}
-        run: |
-          terraform init -input=false
-          terraform apply -auto-approve -input=false
