@@ -458,11 +458,11 @@ object DeviceRoutes {
 // ── Time routes ────────────────────────────────────────────────────────────
 
 object TimeRoutes {
-  // #802: cache-control freshness windows mirror the in-process TimeStatusCache TTLs
-  // (today=30s, past=1h). SPAs and intermediaries can use these to skip refetches when
-  // the local copy is fresh; mutating endpoints don't depend on these for correctness.
-  private val TodayMaxAgeSeconds: Long = 30L
-  private val PastMaxAgeSeconds: Long  = 3600L
+  // #802/#1299: today-mode reads are authenticated and mutation-sensitive (a +Time grant
+  // must show up immediately), so they're served no-store — the browser HTTP cache must
+  // never answer a post-mutation refetch with a stale extensionMins. Past data is logically
+  // immutable and safe to cache for an hour.
+  private val PastMaxAgeSeconds: Long = 3600L
 
   // #802: emit a hit-rate summary every N requests. Cheap heuristic — no scheduler.
   private val StatsLogEveryNRequests = 100
@@ -815,13 +815,13 @@ object TimeRoutes {
         },
     )
 
-  // #802: Cache-Control header derived from whether the response covers today.
-  // Today: short max-age so the SPA picks up bucket churn within the cache window.
+  // #802/#1299: Cache-Control header derived from whether the response covers today.
+  // Today: no-store — authenticated and mutation-sensitive, so the SPA's post-mutation
+  //        refetch must never be answered from the browser HTTP cache (stale extensionMins).
   // Past:  long max-age — past data is logically immutable.
-  // `private` because mutating endpoints (POST /api/time/extend) don't need it and we
-  // want to avoid intermediary caching for the JWT-authenticated traffic.
+  // `private` because mutating endpoints (POST /api/time/extend) don't need it.
   private def cacheControlFor(isTodayMode: Boolean): Header.CacheControl =
-    if isTodayMode then Header.CacheControl.MaxAge(TodayMaxAgeSeconds.toInt)
+    if isTodayMode then Header.CacheControl.NoStore
     else Header.CacheControl.MaxAge(PastMaxAgeSeconds.toInt)
 
   // #802: emit a one-line stats log every N (hits+misses), no scheduler needed. Sampled
