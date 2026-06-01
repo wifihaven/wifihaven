@@ -211,10 +211,15 @@ fi
 # ── test (b): second invocation reclaims stale client, no hard-fail ───────────
 
 # Simulate a stale client: create a RUN_DIR with a live-looking pid.
-# Use the test script's own PID ($$) — guaranteed to be alive.
+# Use a disposable background sleep — guaranteed alive and safe for
+# client-down.sh to terminate (unlike using $$ which would kill this script).
+/bin/sleep 300 &
+STALE_PID=$!
+_STRAY_PIDS+=( "${STALE_PID}" )
+
 rm -rf "${REAL_CLIENT_RUN_DIR}"
 mkdir -p "${REAL_CLIENT_RUN_DIR}"
-echo "$$" > "${REAL_CLIENT_RUN_DIR}/qemu.pid"
+echo "${STALE_PID}" > "${REAL_CLIENT_RUN_DIR}/qemu.pid"
 
 out="$(run_client_up "client1")"
 if echo "${out}" | grep -q "already running"; then

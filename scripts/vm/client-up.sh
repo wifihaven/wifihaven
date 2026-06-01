@@ -86,12 +86,40 @@ if [[ -f "${WH_CLIENT_SSH_KEY}" ]]; then
 fi
 
 RUN_DIR="${WH_RUN_DIR}/${NAME}"
+
+# Within a single WH_RUN_ID, this client slot is single-tenant. If a stale
+# client is found (e.g. left by a previous test whose client-up timed out and
+# leaked the qemu — #1286), reclaim it rather than hard-failing. This is
+# belt-and-suspenders with the EXIT trap below; without it, a leak from any
+# code path would cascade into "already running" failures for every subsequent
+# scenario test.
 if [[ -f "${RUN_DIR}/qemu.pid" ]] && kill -0 "$(cat "${RUN_DIR}/qemu.pid")" 2>/dev/null; then
-  echo "client-up.sh: client '${NAME}' already running (pid $(cat "${RUN_DIR}/qemu.pid"))" >&2
-  exit 1
+  echo "[client-up] stale '${NAME}' found (pid $(cat "${RUN_DIR}/qemu.pid")) — reclaiming" >&2
+  "${HERE}/client-down.sh" --name "${NAME}" >&2 || true
 fi
 rm -rf "${RUN_DIR}"
 mkdir -p "${RUN_DIR}" "${WH_SOCK_DIR}"
+
+# EXIT trap: if the client never becomes reachable (or any failure between
+# here and the "client booted" sentinel), kill the qemu we just spawned and
+# remove the run directory so no orphan is left behind. Mirrors the pattern
+# from router-up.sh (#1225). Once the client is confirmed reachable, set
+# _client_booted=1 so the trap becomes a no-op on the success path.
+_client_booted=0
+# shellcheck disable=SC2329  # invoked via trap EXIT, not a direct call
+_cleanup_on_fail() {
+  [[ "${_client_booted}" == "1" ]] && return 0
+  local _pid=""
+  if [[ -f "${RUN_DIR}/qemu.pid" ]]; then
+    _pid="$(cat "${RUN_DIR}/qemu.pid" 2>/dev/null || true)"
+  fi
+  if [[ -n "${_pid}" ]] && kill -0 "${_pid}" 2>/dev/null; then
+    echo "[client-up] cleaning up orphan qemu (pid ${_pid})" >&2
+    kill -KILL "${_pid}" 2>/dev/null || true
+  fi
+  rm -rf "${RUN_DIR}"
+}
+trap _cleanup_on_fail EXIT
 
 if [[ -z "${SSH_PORT}" ]]; then
   SSH_PORT="${WH_CLIENT_SSH_PORT_BASE}"
@@ -148,6 +176,7 @@ while (( $(date +%s) < deadline )); do
         -i "${WH_CLIENT_SSH_KEY}" -p "${SSH_PORT}" \
         root@127.0.0.1 true 2>/dev/null; then
     echo "[client-up] '${NAME}' ready"
+    _client_booted=1   # disarm EXIT trap — clean exit from here
     exit 0
   fi
   sleep 1
