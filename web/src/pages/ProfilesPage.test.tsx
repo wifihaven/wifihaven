@@ -313,6 +313,54 @@ describe('ProfilesPage — +Time mutation (#972 / #946)', () => {
   })
 })
 
+// #1299 — granting +Time must refresh the collapsed summary's used/cap text +
+// bar (and the #975 "(+Xm)" extension surfacing) WITHOUT a reload. The summary
+// is served by `api.time.summaryAll` via the ['time','status','summary','today']
+// query; the grant mutation's onSuccess invalidates the ['time','status']
+// subtree (the #946 pattern, shared by the #1086 app-policy edits below), which
+// matches that key as a prefix and forces a refetch. This test is the
+// regression guard for that invalidation: drop the `invalidators.timeStatus()`
+// call in ProfilesPage's grantMutation.onSuccess and it goes red (summaryAll is
+// called once, the "(+30m)" suffix never appears).
+describe('ProfilesPage — +Time grant refreshes the summary used/cap (#1299)', () => {
+  it('grant refetches the time-status summary and surfaces the new extension without a reload', async () => {
+    const summaryFn = api.time.summaryAll as unknown as ReturnType<typeof vi.fn>
+    // Mount sees no extension; the post-grant refetch sees +30m on Kids.
+    summaryFn.mockResolvedValueOnce([kidsSummary, adultsSummary])
+    summaryFn.mockResolvedValue([
+      { ...kidsSummary, extensionMins: 30, remainingMins: 105 },
+      adultsSummary,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+
+    // Pre-grant: base cap only, no "(+…)" suffix.
+    const time = within(kidsCard).getByTestId('profile-summary-time-1')
+    expect(time).toHaveTextContent('45m')
+    expect(time).toHaveTextContent('2:00')
+    expect(time).not.toHaveTextContent('(+')
+    expect(summaryFn).toHaveBeenCalledTimes(1)
+
+    await user.click(within(kidsCard).getByTestId('profile-row-grant-1'))
+    await user.click(screen.getByRole('button', { name: /^Grant 30m$/ }))
+
+    await waitFor(() =>
+      expect(api.time.grantExtension).toHaveBeenCalledWith({
+        profileId: 1, extraMinutes: 30, note: null,
+      }),
+    )
+    // The summary query is invalidated → refetched (no reload).
+    await waitFor(() => expect(summaryFn).toHaveBeenCalledTimes(2))
+    // 120 base + 30 extension = 150 = "2:30", with the #975 "(+30m)" call-out.
+    await waitFor(() => {
+      const t = within(kidsCard).getByTestId('profile-summary-time-1')
+      expect(t).toHaveTextContent('2:30')
+      expect(t).toHaveTextContent('(+30m)')
+    })
+  })
+})
+
 describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
   // #1063 — Pause/Resume + Delete were moved from the expanded body into the
   // collapsed summary row (alongside the +Time button). The card no longer
