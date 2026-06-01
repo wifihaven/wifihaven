@@ -51,6 +51,9 @@ define Package/$(PKG_NAME)/install
 
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-wifihaven.json $(1)/usr/share/luci/menu.d/
+
+	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
+	$(INSTALL_BIN) ./root/usr/libexec/rpcd/wifihaven $(1)/usr/libexec/rpcd/wifihaven
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))

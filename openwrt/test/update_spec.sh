@@ -60,9 +60,10 @@ grep -q '@.published_at\|@.assets\[.*\].digest' "$SCRIPT" \
   || check "no leftover digest/published_at decision logic" ok
 
 # 4d. #1178: rejects luci-app via a tightened regex (not bare extension).
-grep -q "PKG_NAME_RE='\^wifihaven_" "$SCRIPT" \
-  && check "[#1178] uses tightened PKG_NAME_RE to reject luci-app" ok \
-  || check "[#1178] uses tightened PKG_NAME_RE to reject luci-app" "missing PKG_NAME_RE"
+# The refactored script uses AGENT_PKG_NAME_RE for the agent package (#1181).
+grep -q "AGENT_PKG_NAME_RE='\^wifihaven_" "$SCRIPT" \
+  && check "[#1178] uses tightened AGENT_PKG_NAME_RE to reject luci-app" ok \
+  || check "[#1178] uses tightened AGENT_PKG_NAME_RE to reject luci-app" "missing AGENT_PKG_NAME_RE"
 
 # 4e. Installs via apk add --allow-untrusted on apk path.
 grep -q 'apk add --allow-untrusted' "$SCRIPT" \
@@ -75,7 +76,7 @@ grep -q 'opkg install --force-reinstall' "$SCRIPT" \
   || check "uses opkg install --force-reinstall" "must --force-reinstall"
 
 # 6. Cleans up the downloaded package after install
-grep -qE 'rm -f .*(\.ipk|\.apk|\$TMP|"\$TMP")' "$SCRIPT" \
+grep -qE 'rm -f .*(\.ipk|\.apk|\$TMP|"\$TMP"|"\$_tmp")' "$SCRIPT" \
   && check "cleans up downloaded package after install" ok \
   || check "cleans up downloaded package after install" "no rm -f for downloaded package"
 
@@ -264,13 +265,24 @@ count_restart_calls() {
   fi
 }
 
-stamp_value() { cat "$STATE/last_update_version" 2>/dev/null || echo ""; }
-picked_url() { tail -n1 "$TESTDIR/downloads.log" 2>/dev/null; }
+# Per-package stamp files (introduced in #1181 multi-package refactor).
+stamp_value()      { cat "$STATE/last_update_version.wifihaven" 2>/dev/null || echo ""; }
+luci_stamp_value() { cat "$STATE/last_update_version.luci-app-wifihaven" 2>/dev/null || echo ""; }
+# picked_url: first downloaded URL (the agent asset, picked before luci-app).
+picked_url() { head -n1 "$TESTDIR/downloads.log" 2>/dev/null; }
+
+# Seed the luci stamp as current so agent-only tests don't see luci as stale.
+seed_luci_stamp_current() {
+  mkdir -p "$STATE"
+  printf '0.2.8\n' > "$STATE/last_update_version.luci-app-wifihaven"
+}
 
 # Case A: installed != latest on apk → restart called once, stamp = 0.2.8.
+# Seed luci stamp as current so only agent upgrade runs (#1181 multi-pkg).
 setup_mocks
 mock_apk
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 N=$(count_restart_calls)
 [ "$N" = "1" ] \
@@ -288,6 +300,7 @@ rm -rf "$TESTDIR"
 setup_mocks
 mock_opkg
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 N=$(count_restart_calls)
 [ "$N" = "1" ] \
@@ -299,23 +312,27 @@ N=$(count_restart_calls)
 rm -rf "$TESTDIR"
 
 # Case C: installed == latest → restart NOT called, no apk invocation.
+# Both agent and luci current; no updates should run (#1181 multi-pkg).
 setup_mocks
 mock_apk
 printf '0.2.8\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 N=$(count_restart_calls)
 [ "$N" = "0" ] \
   && check "[no-op] restart NOT called when version matches" ok \
   || check "[no-op] restart NOT called when version matches" "expected 0, got $N"
-[ ! -f "$TESTDIR/apk.calls" ] \
-  && check "[no-op] apk NOT invoked when version matches" ok \
-  || check "[no-op] apk NOT invoked when version matches" "apk.calls exists"
+# apk info is called for version detection; only check that apk add was NOT called.
+! grep -q '^add ' "$TESTDIR/apk.calls" 2>/dev/null \
+  && check "[no-op] apk add NOT invoked when version matches" ok \
+  || check "[no-op] apk add NOT invoked when version matches" "apk add found in apk.calls"
 rm -rf "$TESTDIR"
 
 # Case D: install failure (apk exits nonzero) → restart NOT called, stamp not advanced.
 setup_mocks
 mock_apk
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 MOCK_APK_EXIT=1 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 N=$(count_restart_calls)
 [ "$N" = "0" ] \
@@ -330,14 +347,16 @@ rm -rf "$TESTDIR"
 setup_mocks
 mock_apk
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 CURL_DOWNLOAD_FAIL=1 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 N=$(count_restart_calls)
 [ "$N" = "0" ] \
   && check "[download fail] restart NOT called" ok \
   || check "[download fail] restart NOT called" "expected 0, got $N"
-[ ! -f "$TESTDIR/apk.calls" ] \
-  && check "[download fail] apk NOT invoked" ok \
-  || check "[download fail] apk NOT invoked" "apk.calls exists"
+# apk info is called for version detection; only check that apk add was NOT called.
+! grep -q '^add ' "$TESTDIR/apk.calls" 2>/dev/null \
+  && check "[download fail] apk add NOT invoked" ok \
+  || check "[download fail] apk add NOT invoked" "apk add found in apk.calls"
 rm -rf "$TESTDIR"
 unset CURL_DOWNLOAD_FAIL
 
@@ -345,11 +364,12 @@ unset CURL_DOWNLOAD_FAIL
 setup_mocks
 mock_apk
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 MOCK_INITD_EXIT=1 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 [ "$(stamp_value)" = "0.2.8" ] \
   && check "[restart fail] stamp still written" ok \
   || check "[restart fail] stamp still written" "stamp = '$(stamp_value)'"
-grep -q 'restart failed' "$TESTDIR/logger.out" \
+grep -q 'reload failed\|restart failed' "$TESTDIR/logger.out" \
   && check "[restart fail] warning logged" ok \
   || check "[restart fail] warning logged" "no warning in log"
 rm -rf "$TESTDIR"
@@ -359,6 +379,7 @@ rm -rf "$TESTDIR"
 setup_mocks
 mock_apk
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 MOCK_HTTP_CODE=404 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 grep -q 'returned 404 (no versioned release published); skipping' "$TESTDIR/logger.out" \
   && check "[#1170 404 skip] error logged about missing versioned release" ok \
@@ -367,18 +388,21 @@ N=$(count_restart_calls)
 [ "$N" = "0" ] \
   && check "[#1170 404 skip] does NOT install/restart" ok \
   || check "[#1170 404 skip] does NOT install/restart" "expected 0, got $N"
-[ ! -f "$TESTDIR/apk.calls" ] \
-  && check "[#1170 404 skip] apk NOT invoked" ok \
-  || check "[#1170 404 skip] apk NOT invoked" "apk.calls exists"
+# apk info -v may be called for version detection; only check apk add was NOT called.
+! grep -q '^add ' "$TESTDIR/apk.calls" 2>/dev/null \
+  && check "[#1170 404 skip] apk add NOT invoked" ok \
+  || check "[#1170 404 skip] apk add NOT invoked" "apk add found in apk.calls"
 rm -rf "$TESTDIR"
 unset MOCK_HTTP_CODE
 
 # Case H (#1178): multi-asset manifest with luci-app listed FIRST and an
 # older wifihaven listed BEFORE the new one. Script must (a) reject luci-app
-# and (b) pick the highest-version wifihaven .apk, not the first match.
+# as the agent download and (b) pick the highest-version wifihaven .apk.
+# Seed luci stamp current so only the agent download is in play.
 setup_mocks
 mock_apk
 printf '0.1.0-1\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 export MOCK_ASSETS='https://example.com/luci-app-wifihaven_0.1.0-1_all.apk
 https://example.com/luci-app-wifihaven_0.2.8-1_all.apk
 https://example.com/wifihaven_0.1.0-1_all.apk
@@ -401,6 +425,7 @@ setup_mocks
 rm -f "$BINDIR/apk"
 mock_opkg
 printf '0.1.0-1\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
 export MOCK_ASSETS='https://example.com/luci-app-wifihaven_0.1.0-1_all.ipk
 https://example.com/luci-app-wifihaven_0.2.8-1_all.ipk
 https://example.com/wifihaven_0.1.0-1_all.ipk

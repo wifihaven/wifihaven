@@ -1,11 +1,17 @@
 {
   "luci-app-wifihaven": {
-    "description": "Grant UCI access for luci-app-wifihaven",
+    "description": "Grant UCI access and wifihaven rpcd methods for luci-app-wifihaven",
     "read": {
-      "uci": ["wifihaven"]
+      "uci": ["wifihaven"],
+      "ubus": {
+        "wifihaven": ["versions"]
+      }
     },
     "write": {
-      "uci": ["wifihaven"]
+      "uci": ["wifihaven"],
+      "ubus": {
+        "wifihaven": ["update"]
+      }
     }
   }
 }

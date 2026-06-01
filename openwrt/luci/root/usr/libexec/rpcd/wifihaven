@@ -1,0 +1,115 @@
+#!/bin/sh
+# rpcd plug-in for luci-app-wifihaven (#1181).
+#
+# Exposes shell methods callable from LuCI via ubus/rpcd:
+#   wifihaven.versions  — installed + available version info (cached)
+#   wifihaven.update    — run /usr/sbin/wifihaven-update; stream log lines
+#
+# rpcd calls this script with two arguments: the method name and a JSON
+# object of parameters (which we ignore for these read/exec methods).
+#
+# Available-version cache: /var/lib/wifihaven/available_version_cache
+# contains "VERSION TIMESTAMP" on one line. We refresh it if the timestamp
+# is older than CACHE_TTL_SECS (5 minutes by default), so the page does not
+# hit GitHub on every refresh.
+
+CACHE_FILE=/var/lib/wifihaven/available_version_cache
+CACHE_TTL_SECS=300
+GITHUB_API=https://api.github.com/repos/wifihaven/wifihaven/releases/latest
+
+case "$1" in
+  list)
+    printf '{"versions":{},"update":{}}\n'
+    ;;
+
+  call)
+    case "$2" in
+      versions)
+        # ── installed versions ──────────────────────────────────────────────
+        AGENT_VER=""
+        LUCI_VER=""
+        if command -v apk >/dev/null 2>&1; then
+          AGENT_VER=$(apk info -v wifihaven 2>/dev/null | head -1 | sed 's/^wifihaven-//; s/-r.*//')
+          LUCI_VER=$(apk info -v luci-app-wifihaven 2>/dev/null | head -1 | sed 's/^luci-app-wifihaven-//; s/-r.*//')
+        elif command -v opkg >/dev/null 2>&1; then
+          AGENT_VER=$(opkg info wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-[^-]*$//')
+          LUCI_VER=$(opkg info luci-app-wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-[^-]*$//')
+        fi
+        # Prefer baked-in VERSION file if present.
+        FILE_VER=$(cat /usr/lib/wifihaven/VERSION 2>/dev/null | tr -d '[:space:]' || true)
+        if [ -n "$FILE_VER" ]; then
+          AGENT_VER="$FILE_VER"
+        fi
+
+        # ── available version (GitHub, cached) ─────────────────────────────
+        AVAIL_VER=""
+        NOW=$(date +%s 2>/dev/null || echo 0)
+        CACHED_VER=""
+        CACHED_TS=0
+        if [ -f "$CACHE_FILE" ]; then
+          CACHED_VER=$(awk '{print $1}' "$CACHE_FILE" 2>/dev/null || true)
+          CACHED_TS=$(awk '{print $2}' "$CACHE_FILE" 2>/dev/null || echo 0)
+        fi
+        AGE=$(( NOW - CACHED_TS ))
+        if [ -n "$CACHED_VER" ] && [ "$AGE" -lt "$CACHE_TTL_SECS" ]; then
+          AVAIL_VER="$CACHED_VER"
+        else
+          TAG=$(curl -sf "$GITHUB_API" 2>/dev/null | jsonfilter -e '@.tag_name' 2>/dev/null || true)
+          if [ -n "$TAG" ]; then
+            AVAIL_VER=$(printf '%s' "$TAG" | sed 's/^v//')
+            mkdir -p /var/lib/wifihaven
+            printf '%s %s\n' "$AVAIL_VER" "$NOW" > "$CACHE_FILE"
+          else
+            # Use stale cache rather than returning empty on transient failure.
+            AVAIL_VER="$CACHED_VER"
+          fi
+        fi
+
+        # ── JSON output ─────────────────────────────────────────────────────
+        printf '{"agent_installed":"%s","luci_installed":"%s","available":"%s"}\n' \
+          "$AGENT_VER" "$LUCI_VER" "$AVAIL_VER"
+        ;;
+
+      update)
+        # Run wifihaven-update and emit its syslog lines as a JSON stream.
+        # We run the script in background, then tail logread for its output,
+        # and finally report the exit code.
+        LOGFILE=/tmp/wifihaven-update-rpcd.log
+        rm -f "$LOGFILE"
+
+        /usr/sbin/wifihaven-update >"$LOGFILE" 2>&1
+        RC=$?
+
+        # Emit structured JSON result with captured output and exit code.
+        OUTPUT=$(cat "$LOGFILE" 2>/dev/null || true)
+        # Also grab recent syslog lines tagged wifihaven for the update run.
+        SYSLOG=$(logread -e wifihaven 2>/dev/null | tail -20 || true)
+        rm -f "$LOGFILE"
+
+        # Escape for JSON: replace backslash, double-quote, newline, tab.
+        escape_json() {
+          printf '%s' "$1" \
+            | sed 's/\\/\\\\/g' \
+            | sed 's/"/\\"/g' \
+            | sed ':a;N;$!ba;s/\n/\\n/g' \
+            | sed 's/\t/\\t/g'
+        }
+        OUTPUT_ESC=$(escape_json "$OUTPUT")
+        SYSLOG_ESC=$(escape_json "$SYSLOG")
+
+        printf '{"exit_code":%d,"output":"%s","log":"%s"}\n' \
+          "$RC" "$OUTPUT_ESC" "$SYSLOG_ESC"
+        ;;
+
+      *)
+        printf '{"error":"unknown method"}\n'
+        exit 1
+        ;;
+    esac
+    ;;
+
+  *)
+    printf '{"error":"unknown action"}\n'
+    exit 1
+    ;;
+esac

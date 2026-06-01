@@ -1,13 +1,13 @@
 #!/bin/sh
-# Auto-updater for the wifihaven package (#244).
+# Auto-updater for wifihaven packages (#244, #1181).
 #
-# Pulls the latest non-prerelease `v<X.Y.Z>` GitHub Release and re-installs
-# only when the released `tag_name` differs from the version baked into
-# /usr/lib/wifihaven/VERSION at build time (#771). The rolling
-# `openwrt-latest` pre-release is excluded from `/releases/latest` because
-# it's published with prerelease:true, so this endpoint always returns the
-# semver release published by .github/workflows/openwrt-build.yml (#499 /
-# #1134).
+# Independently evaluates and upgrades BOTH wifihaven (the agent) and
+# luci-app-wifihaven (the LuCI UI) on each run. Each package has its own
+# version stamp so they can move at different rates.
+#
+# Pulls from the latest non-prerelease `v<X.Y.Z>` GitHub Release. The
+# rolling `openwrt-latest` pre-release is excluded from `/releases/latest`
+# because it's published with prerelease:true.
 #
 # Versioned releases are now universal (the router CD pipeline publishes a
 # v<X.Y.Z> tag on every release), so a 404 from /releases/latest is a hard
@@ -23,34 +23,47 @@ set -u
 API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/latest"
 INSTALLED_VERSION_FILE=/usr/lib/wifihaven/VERSION
 STATE_DIR=/var/lib/wifihaven
-# Stores the version string of the package last installed (e.g. "0.2.8").
-# Old routers carrying a sha256 digest here from the rolling-release era
-# will simply mismatch on first run and reinstall once, then settle.
-STAMP_FILE="$STATE_DIR/last_update_version"
 
 log() { logger -t wifihaven "update: $*"; }
 
 # Detect package manager. Prefer apk (24.10+) when both are present, since
 # routers mid-migration may still ship a vestigial opkg binary.
 #
-# PKG_NAME_RE is matched against the asset *basename* (#1178) and is tight
-# enough to reject luci-app-wifihaven and any future named variants attached
-# to the same release. A bare extension match was too loose: GitHub releases
-# carry both the luci-app and the agent assets, and "first match wins"
-# silently picked the wrong one.
+# AGENT_PKG_NAME_RE and LUCI_PKG_NAME_RE are matched against the asset
+# *basename* (#1178) and are tight enough to reject each other and any
+# future named variants attached to the same release. A bare extension
+# match was too loose: GitHub releases carry both the luci-app and the
+# agent assets, and "first match wins" silently picked the wrong one.
 if command -v apk >/dev/null 2>&1; then
   PM=apk
   PKG_EXT=apk
-  PKG_NAME_RE='^wifihaven_[^_]+_all\.apk$'
-  TMP=/tmp/wifihaven-update.apk
+  AGENT_PKG_NAME_RE='^wifihaven_[^_]+_all\.apk$'
+  LUCI_PKG_NAME_RE='^luci-app-wifihaven_[^_]+_all\.apk$'
 elif command -v opkg >/dev/null 2>&1; then
   PM=opkg
   PKG_EXT=ipk
-  PKG_NAME_RE='^wifihaven_[^_]+_[^_]+\.ipk$'
-  TMP=/tmp/wifihaven-update.ipk
+  AGENT_PKG_NAME_RE='^wifihaven_[^_]+_[^_]+\.ipk$'
+  LUCI_PKG_NAME_RE='^luci-app-wifihaven_[^_]+_[^_]+\.ipk$'
 else
   log "no package manager found (neither apk nor opkg); skipping"
   exit 0
+fi
+
+# One-time migration: old stamp file (digest-era) or bare version stamp →
+# per-package stamp. If the old `last_update_digest` exists and the new
+# per-package stamp doesn't, move it as the agent stamp (best-effort).
+OLD_DIGEST_STAMP="$STATE_DIR/last_update_digest"
+AGENT_STAMP="$STATE_DIR/last_update_version.wifihaven"
+LUCI_STAMP="$STATE_DIR/last_update_version.luci-app-wifihaven"
+
+# Also migrate the plain version stamp used by the previous generation of
+# this script.
+OLD_VERSION_STAMP="$STATE_DIR/last_update_version"
+if [ -f "$OLD_VERSION_STAMP" ] && [ ! -f "$AGENT_STAMP" ]; then
+  mv "$OLD_VERSION_STAMP" "$AGENT_STAMP" 2>/dev/null || true
+fi
+if [ -f "$OLD_DIGEST_STAMP" ] && [ ! -f "$AGENT_STAMP" ]; then
+  mv "$OLD_DIGEST_STAMP" "$AGENT_STAMP" 2>/dev/null || true
 fi
 
 # Fetch /releases/latest. Versioned releases are universal (#1170), so a 404
@@ -77,99 +90,153 @@ if [ -z "$META" ]; then
   exit 0
 fi
 
-# Extract tag_name and the highest-version matching asset URL. A versioned
-# release normally carries a single wifihaven_<X.Y.Z>-<rel>_all.<ext> asset,
-# but we still walk the full list, reject luci-app (#1178), and `sort -V`
-# in case multiple revisions are ever attached.
+# Extract the release tag_name once (shared across packages). A versioned
+# release normally carries a single wifihaven_<X.Y.Z>-<rel>_all.<ext> asset
+# and a single luci-app-wifihaven_<X.Y.Z>-<rel>_all.<ext> asset, but we
+# still walk the full list and `sort -V` in case multiple revisions are ever
+# attached.
 TAG=$(printf '%s' "$META" | jsonfilter -e '@.tag_name')
 LATEST_VERSION=$(printf '%s' "$TAG" | sed 's/^v//')
-MATCHES=
-i=0
-while :; do
-  URL=$(printf '%s' "$META" | jsonfilter -e "@.assets[$i].browser_download_url" 2>/dev/null)
-  [ -z "$URL" ] && break
-  BASENAME=${URL##*/}
-  if printf '%s' "$BASENAME" | grep -qE "$PKG_NAME_RE"; then
-    # Version is the segment between 'wifihaven_' and the next underscore
-    # (e.g. '0.2.8-1' from wifihaven_0.2.8-1_all.apk).
-    VER=${BASENAME#wifihaven_}
-    VER=${VER%%_*}
-    MATCHES="${MATCHES}${VER} ${URL}
-"
-  fi
-  i=$((i + 1))
-done
-
-# sort -V (version sort) is supported by busybox sort on OpenWRT 23.05+ and
-# handles the rc-style suffixes our semver tags use (e.g. 0.2.8-1).
-LATEST_URL=
-BEST=$(printf '%s' "$MATCHES" | grep -v '^$' | sort -V -k1,1 | tail -n1)
-if [ -n "$BEST" ]; then
-  LATEST_URL=$(printf '%s\n' "$BEST" | awk '{print $2}')
-fi
-if [ -z "$LATEST_URL" ] || [ -z "$LATEST_VERSION" ]; then
-  log "could not resolve asset url / version from release metadata; skipping"
+if [ -z "$LATEST_VERSION" ]; then
+  log "could not resolve version from release metadata; skipping"
   exit 0
 fi
+
+# ── per-package update helper ────────────────────────────────────────────────
+# update_package <pkg_name> <pkg_name_re> <stamp_file> <installed_version>
+#                <tmp_path> <reload_cmd>
+#
+# Walks the release asset list, picks the highest-version asset matching
+# pkg_name_re, compares installed_version to LATEST_VERSION, and installs
+# if they differ. On success, writes LATEST_VERSION to stamp_file and runs
+# reload_cmd (may be empty, meaning "no reload needed").
+#
+# Returns 0 on success or skip, 1 on failure.
+update_package() {
+  _pkg="$1"
+  _re="$2"
+  _stamp="$3"
+  _installed="$4"
+  _tmp="$5"
+  _reload_cmd="$6"
+
+  # Walk asset list and pick highest-version matching URL.
+  _matches=
+  _i=0
+  while :; do
+    _url=$(printf '%s' "$META" | jsonfilter -e "@.assets[$_i].browser_download_url" 2>/dev/null)
+    [ -z "$_url" ] && break
+    _base=${_url##*/}
+    if printf '%s' "$_base" | grep -qE "$_re"; then
+      # Version segment is between the package-name prefix + '_' and next '_'.
+      # For wifihaven: 'wifihaven_0.2.8-1_all.apk' → '0.2.8-1'
+      # For luci-app-wifihaven: 'luci-app-wifihaven_0.2.8-1_all.apk' → '0.2.8-1'
+      _ver=${_base#*_}
+      _ver=${_ver%%_*}
+      _matches="${_matches}${_ver} ${_url}
+"
+    fi
+    _i=$((_i + 1))
+  done
+
+  # sort -V (version sort) is supported by busybox sort on OpenWRT 23.05+ and
+  # handles the rc-style suffixes our semver tags use (e.g. 0.2.8-1).
+  _latest_url=
+  _best=$(printf '%s' "$_matches" | grep -v '^$' | sort -V -k1,1 | tail -n1)
+  if [ -n "$_best" ]; then
+    _latest_url=$(printf '%s\n' "$_best" | awk '{print $2}')
+  fi
+  if [ -z "$_latest_url" ]; then
+    log "$_pkg: no matching asset in release; skipping"
+    return 0
+  fi
+
+  # Skip if the package manager reports the current version, OR if our stamp
+  # already records it (the stamp is authoritative when the package manager
+  # metadata is unavailable or stale — e.g. luci-app not yet installed on an
+  # older router that pre-dates luci support).
+  _stamped=$(cat "$_stamp" 2>/dev/null | tr -d '[:space:]' || true)
+  if [ "$_stamped" = "$LATEST_VERSION" ]; then
+    return 0
+  fi
+  if [ -n "$_installed" ] && [ "$_installed" = "$LATEST_VERSION" ]; then
+    return 0
+  fi
+
+  log "$_pkg: version $_installed -> $LATEST_VERSION; upgrading via $PM"
+  if ! curl -fsSL -o "$_tmp" "$_latest_url"; then
+    log "$_pkg: download failed: $_latest_url"
+    rm -f "$_tmp"
+    return 1
+  fi
+
+  case "$PM" in
+    apk)
+      if apk add --allow-untrusted "$_tmp" >/tmp/wifihaven-update.log 2>&1; then
+        log "$_pkg: installed version $LATEST_VERSION"
+        rm -f "$_tmp" /tmp/wifihaven-update.log
+      else
+        log "$_pkg: apk add failed; see /tmp/wifihaven-update.log"
+        rm -f "$_tmp"
+        return 1
+      fi
+      ;;
+    opkg)
+      if opkg install --force-reinstall "$_tmp" >/tmp/wifihaven-update.log 2>&1; then
+        log "$_pkg: installed version $LATEST_VERSION"
+        rm -f "$_tmp" /tmp/wifihaven-update.log
+      else
+        log "$_pkg: opkg install failed; see /tmp/wifihaven-update.log"
+        rm -f "$_tmp"
+        return 1
+      fi
+      ;;
+  esac
+
+  # Stamp BEFORE reload: a reload failure must not leave the stamp unrecorded,
+  # otherwise every cron tick would re-install but never advance the stamp.
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$LATEST_VERSION" > "$_stamp"
+
+  if [ -n "$_reload_cmd" ]; then
+    log "$_pkg: running reload: $_reload_cmd"
+    if eval "$_reload_cmd" >/tmp/wifihaven-update-reload.log 2>&1; then
+      log "$_pkg: reload succeeded"
+      rm -f /tmp/wifihaven-update-reload.log
+    else
+      log "$_pkg: warn: reload failed; new code loads on next reboot (see /tmp/wifihaven-update-reload.log)"
+    fi
+  fi
+
+  return 0
+}
+
+# ── 1. Agent (wifihaven) ─────────────────────────────────────────────────────
 
 # Installed version: prefer the baked-in VERSION file (#771); fall back to
 # the package manager's own metadata, which covers older agents that pre-
 # date the bake step.
-INSTALLED_VERSION=$(cat "$INSTALLED_VERSION_FILE" 2>/dev/null | tr -d '[:space:]' || true)
-if [ -z "$INSTALLED_VERSION" ]; then
+AGENT_INSTALLED=$(cat "$INSTALLED_VERSION_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+if [ -z "$AGENT_INSTALLED" ]; then
   case "$PM" in
-    opkg) INSTALLED_VERSION=$(opkg info wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-.*//') ;;
-    apk)  INSTALLED_VERSION=$(apk info -v wifihaven 2>/dev/null | head -1 | sed 's/^wifihaven-//; s/-r.*//') ;;
+    opkg) AGENT_INSTALLED=$(opkg info wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-.*//') ;;
+    apk)  AGENT_INSTALLED=$(apk info -v wifihaven 2>/dev/null | head -1 | sed 's/^wifihaven-//; s/-r.*//') ;;
   esac
 fi
 
-if [ -n "$INSTALLED_VERSION" ] && [ "$INSTALLED_VERSION" = "$LATEST_VERSION" ]; then
-  exit 0
-fi
+AGENT_RELOAD="/etc/init.d/wifihaven restart"
+update_package "wifihaven" "$AGENT_PKG_NAME_RE" "$AGENT_STAMP" "$AGENT_INSTALLED" \
+  "/tmp/wifihaven-update.${PKG_EXT}" "$AGENT_RELOAD" || true
 
-log "agent version $INSTALLED_VERSION -> $LATEST_VERSION; upgrading via $PM"
-if ! curl -fsSL -o "$TMP" "$LATEST_URL"; then
-  log "download failed: $LATEST_URL"
-  rm -f "$TMP"
-  exit 1
-fi
+# ── 2. LuCI app (luci-app-wifihaven) ─────────────────────────────────────────
 
+LUCI_INSTALLED=
 case "$PM" in
-  apk)
-    if apk add --allow-untrusted "$TMP" >/tmp/wifihaven-update.log 2>&1; then
-      log "installed version $LATEST_VERSION"
-      rm -f "$TMP" /tmp/wifihaven-update.log
-    else
-      log "apk add failed; see /tmp/wifihaven-update.log"
-      rm -f "$TMP"
-      exit 1
-    fi
-    ;;
-  opkg)
-    if opkg install --force-reinstall "$TMP" >/tmp/wifihaven-update.log 2>&1; then
-      log "installed version $LATEST_VERSION"
-      rm -f "$TMP" /tmp/wifihaven-update.log
-    else
-      log "opkg install failed; see /tmp/wifihaven-update.log"
-      rm -f "$TMP"
-      exit 1
-    fi
-    ;;
+  opkg) LUCI_INSTALLED=$(opkg info luci-app-wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-.*//') ;;
+  apk)  LUCI_INSTALLED=$(apk info -v luci-app-wifihaven 2>/dev/null | head -1 | sed 's/^luci-app-wifihaven-//; s/-r.*//') ;;
 esac
 
-# Stamp BEFORE restart: a restart failure (procd hiccup, etc.) must not leave
-# the version unrecorded — otherwise every cron tick would re-install but
-# never move the stamp forward. Next reboot recovers the agent code regardless.
-mkdir -p "$STATE_DIR"
-printf '%s\n' "$LATEST_VERSION" > "$STAMP_FILE"
-
-# Lua loads modules once at process start, so freshly-installed files only take
-# effect after the agent restarts (#909). Best-effort: if procd is wedged, log
-# and move on — next reboot resolves it.
-log "restarting wifihaven service to load new agent code"
-if /etc/init.d/wifihaven restart >/tmp/wifihaven-update-restart.log 2>&1; then
-  log "wifihaven service restarted"
-  rm -f /tmp/wifihaven-update-restart.log
-else
-  log "warn: /etc/init.d/wifihaven restart failed; agent will continue on old code until next reboot (see /tmp/wifihaven-update-restart.log)"
-fi
+# Reload uhttpd so the new LuCI Lua files are picked up without a full reboot.
+LUCI_RELOAD="/etc/init.d/uhttpd reload"
+update_package "luci-app-wifihaven" "$LUCI_PKG_NAME_RE" "$LUCI_STAMP" "$LUCI_INSTALLED" \
+  "/tmp/wifihaven-update-luci.${PKG_EXT}" "$LUCI_RELOAD" || true
