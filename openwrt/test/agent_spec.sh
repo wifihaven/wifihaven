@@ -52,5 +52,43 @@ else
   check "selfheal_cron called at agent startup (#903)" "module required but selfheal_cron() never invoked"
 fi
 
+# #1206: the metrics module must be required, a registry created, and the
+# observability push wired in. Guard each half so a future refactor can't
+# silently drop the 60 s push (the dnsmasq_restarts_total telemetry that
+# motivated the feature would go dark with no test failure otherwise).
+if grep -q '^local metrics[[:space:]]*=[[:space:]]*require("wifihaven\.metrics")' "$SCRIPT"; then
+  check "metrics module required at agent startup (#1206)" ok
+else
+  check "metrics module required at agent startup (#1206)" "missing 'require(\"wifihaven.metrics\")' — no metrics push"
+fi
+
+if grep -q 'metrics\.new(' "$SCRIPT"; then
+  check "metrics registry created at agent startup (#1206)" ok
+else
+  check "metrics registry created at agent startup (#1206)" "module required but metrics.new() never called"
+fi
+
+if grep -q 'metrics\.post(' "$SCRIPT"; then
+  check "metrics push wired into the agent loop (#1206)" ok
+else
+  check "metrics push wired into the agent loop (#1206)" "registry built but metrics.post() never called — push won't happen"
+fi
+
+# The push MUST run on its own timer, decoupled from the ~5 s policy poll
+# (#1206 explicitly: a dedicated metrics_report_interval, not coupled to the
+# policy cadence). Assert the independent knob + a last_metrics_run scheduler
+# slot distinct from last_policy_run.
+if grep -q 'metrics_report_interval' "$SCRIPT"; then
+  check "metrics push reads its own metrics_report_interval knob (#1206)" ok
+else
+  check "metrics push reads its own metrics_report_interval knob (#1206)" "no metrics_report_interval — push is coupled to the policy poll"
+fi
+
+if grep -q 'last_metrics_run' "$SCRIPT"; then
+  check "metrics push has its own scheduler slot (#1206)" ok
+else
+  check "metrics push has its own scheduler slot (#1206)" "no last_metrics_run — timer not independent of the policy poll"
+fi
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -1,0 +1,145 @@
+{
+  "routerId" : "11111111-2222-3333-4444-555555555555",
+  "agentVersion" : "0.3.1",
+  "agentStartedAt" : "2026-05-30T09:00:00Z",
+  "sampledAt" : "2026-05-30T14:01:00Z",
+  "counters" : [
+    {
+      "name" : "dnsmasq_restarts_total",
+      "labels" : {
+        "reason" : "boot"
+      },
+      "value" : 1.0
+    },
+    {
+      "name" : "dnsmasq_restarts_total",
+      "labels" : {
+        "reason" : "policy_change"
+      },
+      "value" : 12.0
+    },
+    {
+      "name" : "policy_apply_total",
+      "labels" : {
+        "result" : "nft_failed"
+      },
+      "value" : 3.0
+    },
+    {
+      "name" : "policy_apply_total",
+      "labels" : {
+        "result" : "ok"
+      },
+      "value" : 880.0
+    },
+    {
+      "name" : "snapshot_poll_total",
+      "labels" : {
+        "result" : "200"
+      },
+      "value" : 140.0
+    },
+    {
+      "name" : "snapshot_poll_total",
+      "labels" : {
+        "result" : "304"
+      },
+      "value" : 9300.0
+    },
+    {
+      "name" : "snapshot_poll_total",
+      "labels" : {
+        "result" : "error"
+      },
+      "value" : 6.0
+    }
+  ],
+  "gauges" : [
+    {
+      "name" : "agent_uptime_seconds",
+      "labels" : { },
+      "value" : 18060.0
+    },
+    {
+      "name" : "agent_version",
+      "labels" : {
+        "version" : "0.3.1"
+      },
+      "value" : 1.0
+    }
+  ],
+  "histograms" : [
+    {
+      "name" : "policy_apply_duration_seconds",
+      "labels" : { },
+      "buckets" : [
+        {
+          "le" : "0.01",
+          "count" : 0.0
+        },
+        {
+          "le" : "0.05",
+          "count" : 1.0
+        },
+        {
+          "le" : "0.1",
+          "count" : 1.0
+        },
+        {
+          "le" : "0.5",
+          "count" : 2.0
+        },
+        {
+          "le" : "1",
+          "count" : 3.0
+        },
+        {
+          "le" : "5",
+          "count" : 3.0
+        },
+        {
+          "le" : "+Inf",
+          "count" : 3.0
+        }
+      ],
+      "sum" : 0.82,
+      "count" : 3.0
+    },
+    {
+      "name" : "snapshot_poll_duration_seconds",
+      "labels" : { },
+      "buckets" : [
+        {
+          "le" : "0.01",
+          "count" : 1.0
+        },
+        {
+          "le" : "0.05",
+          "count" : 2.0
+        },
+        {
+          "le" : "0.1",
+          "count" : 2.0
+        },
+        {
+          "le" : "0.5",
+          "count" : 3.0
+        },
+        {
+          "le" : "1",
+          "count" : 3.0
+        },
+        {
+          "le" : "5",
+          "count" : 3.0
+        },
+        {
+          "le" : "+Inf",
+          "count" : 3.0
+        }
+      ],
+      "sum" : 0.328,
+      "count" : 3.0
+    }
+  ]
+}

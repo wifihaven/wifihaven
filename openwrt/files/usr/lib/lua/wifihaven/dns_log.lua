@@ -18,6 +18,12 @@
 --   instance.lookup(ip) → string | nil
 --   instance.tick(now)             -- evict expired entries (cheap; safe to call often)
 --   instance.size() → integer       -- testable
+--
+-- TODO(#1302): classify and count DNS query outcomes here
+-- (dns_queries_total{result} — resolved / nxdomain / servfail) and feed them
+-- into the agent's in-process metrics registry so they ship in the 60 s
+-- RouterMetricsBatch push (#1206). Deferred from #1206 to keep that PR focused
+-- on the apply/poll/restart telemetry.
 
 local M = {}
 

@@ -42,6 +42,11 @@ local usage_int = s:option(Value, "usage_report_interval", translate("Usage repo
 usage_int.datatype = "uinteger"
 usage_int.placeholder = "60"
 
+local metrics_int = s:option(Value, "metrics_report_interval", translate("Metrics push interval (s)"),
+  translate("How often to push the agent's cumulative observability metrics to /api/router/metrics. Independent of the policy poll; counters self-heal on a missed push. Suggested 30–300."))
+metrics_int.datatype = "uinteger"
+metrics_int.placeholder = "60"
+
 local activity_sample_int = s:option(Value, "activity_sample_int", translate("Activity sample interval (s)"),
   translate("How often to sample per-MAC activity for activeSeconds accounting. Lower = more accurate, more CPU. Suggested 5–30. Must evenly divide usage_report_interval."))
 activity_sample_int.datatype = "uinteger"

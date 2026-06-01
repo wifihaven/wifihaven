@@ -391,7 +391,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Router metrics batch ingest rate (#1205)",
-      "description": "sum by (status) (rate(router_metrics_batches_total[5m])) — POST /api/router/metrics outcomes. status ∈ {ok, malformed, router_mismatch}. `ok` tracks the live router fleet push rate; a rising malformed/router_mismatch rate flags a misbehaving or misconfigured agent. The per-agent router-fleet panels are deferred to #1279 (blocked on agent metrics #1206).",
+      "description": "sum by (status) (rate(router_metrics_batches_total[5m])) — POST /api/router/metrics outcomes. status ∈ {ok, malformed, router_mismatch}. `ok` tracks the live router fleet push rate; a rising malformed/router_mismatch rate flags a misbehaving or misconfigured agent. Fleet-aggregate panels for the router-sourced agent metrics live on the 'Router fleet (agent metrics)' dashboard (#1206); per-(router_id) drill-down is deferred to #1279.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 40 },
       "id": 12,
