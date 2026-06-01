@@ -261,9 +261,18 @@ jobs:
     if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Same merge-ref-vs-base.sha staleness as migration-isolation below:
+      # the check diffs `base.sha...HEAD` (three-dot), so HEAD must be the
+      # true PR head, not the synthetic merge ref, or the merge-base resolves
+      # wrong and the diff over-reports. (Lower blast radius here — the diff
+      # is scoped to the migration dir and only blocks mutations, which never
+      # land on main — but the pattern is identical, so pin it for the same
+      # reason.) On push/merge_group github.sha is the real commit, so the
+      # fallback is correct.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Resolve base SHA
         id: base
@@ -314,9 +323,23 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      # Check out the REAL PR head, not the default synthetic merge ref.
+      # The "Resolve base SHA" step below passes the CURRENT main tip
+      # (pull_request.base.sha) as BASE, and the script diffs `BASE...HEAD`
+      # (three-dot = merge-base). When HEAD is the merge ref it can be stale
+      # relative to base.sha (main advances after the merge ref was computed),
+      # which defeats the merge-base resolution and collapses the diff to
+      # two-dot semantics — picking up every file main changed since the PR
+      # branched. That false-positived a migration-only PR (#1267) for
+      # touching render.yaml, which #1268/#1208 had changed on main after the
+      # PR branched. Pinning HEAD to the true PR head makes the merge-base
+      # resolve to the real branch point. For merge_group the checked-out
+      # commit is the real queued commit (github.sha), so the fallback is
+      # already correct there.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       # In the merge queue the migration-coupled-justified label is not on the
       # event, so a PR justified at PR time would otherwise fail here. Resolve
