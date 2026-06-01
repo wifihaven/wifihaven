@@ -214,19 +214,28 @@ def router(router_session, fake_server, fake_api) -> EnrolledRouter:
 
 @pytest.fixture()
 def client_factory():
-    booted: list[str] = []
+    # Names of clients that were *started* (even if client_up raised mid-setup)
+    # so the finalizer can unconditionally tear them down and leave no orphan.
+    # Tracked separately from a "booted" list so a setup failure that leaves
+    # a partially-started client still gets cleaned up (#1286).
+    started: list[str] = []
 
     def _boot(*, mac: str | None = None, name: str = "client1", ssh_port: int | None = None) -> Client:
         chosen_mac = mac or _gen_mac()
+        # Record the name before calling client_up so the finalizer tears it
+        # down even if client_up raises (e.g. SSH-wait timeout after qemu start).
+        started.append(name)
         c = client_up(mac=chosen_mac, name=name, ssh_port=ssh_port)
-        booted.append(name)
         return c
 
     yield _boot
 
     if not KEEP_VMS:
-        for name in booted:
-            client_down(name)
+        for name in started:
+            try:
+                client_down(name)
+            except Exception:  # noqa: BLE001
+                log.warning("client_factory teardown: client_down(%r) raised; ignoring", name)
 
 
 @pytest.fixture()
