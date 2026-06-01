@@ -388,5 +388,30 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       } yield assertTrue(kidEa.contains("khanacademy.org")) &&
         assertTrue(!adultEa.contains("khanacademy.org"))
     },
+    test(
+      "#1307: snapshot carries the global infra allowlist independent of any profile",
+    ) {
+      // Prod miss (2026-06-01): when Kids hit its daily cap, the @blocked_macs
+      // drop also killed transitive infra hosts (connectivitycheck.gstatic.com,
+      // ocsp2.g.aaplimg.com, clientservices.googleapis.com) that the allowed app
+      // depends on — so the app *appeared* blocked though its own domain was
+      // reachable. The fix is a curated, network-wide infra allowlist that the
+      // block path never drops, shipped as a top-level snapshot field so the
+      // router can carve it out for ALL macs (not per-(mac,app)). Assert it is
+      // present even on a freshly migrated DB with no profiles/apps assigned.
+      for {
+        _    <- cleanDb
+        svc  <- makePs
+        snap <- svc.snapshot
+        infra = snap.infraAllow.map(_.value).toSet
+      } yield assertTrue(snap.infraAllow.nonEmpty) &&
+        assertTrue(infra == PolicyService.infraAllowHosts.map(_.value).toSet) &&
+        assertTrue(infra.contains("connectivitycheck.gstatic.com")) &&
+        assertTrue(infra.contains("clientservices.googleapis.com")) &&
+        // Apple geo-edge CDN apex covers the OCSP/CDN shards seen in prod
+        // (ocsp2.g.aaplimg.com, gspe79-cdn.g.aaplimg.com) via dnsmasq's
+        // host+subdomain match.
+        assertTrue(infra.contains("g.aaplimg.com"))
+    },
   ) @@ TestAspect.sequential
 }
