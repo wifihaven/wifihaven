@@ -61,6 +61,7 @@ object DbFailureSpec extends ZIOSpecDefault {
     def findById(id: RouterId)                                                = throwing
     def findByEnrollmentTokenHash(h: Sha256Hex)                               = throwing
     def findByTokenHash(h: Sha256Hex)                                         = throwing
+    def countSeenSince(cutoff: java.time.Instant)                             = throwing
     def create(n: String, h: Sha256Hex)                                       = throwing
     def completeEnrollment(id: RouterId, h: Sha256Hex)                        = throwing
     def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]) = throwing

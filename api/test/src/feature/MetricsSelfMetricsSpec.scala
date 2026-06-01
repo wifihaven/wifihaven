@@ -55,7 +55,9 @@ object MetricsSelfMetricsSpec
       pub <- ZIO.service[PrometheusPublisher]
       routes = MetricsRoutes.routes(MetricsConfig(enabled = true), pub)
       resp <- routes(Request.get("/metrics"))
-      body <- resp.body.asString.orElseFail(Response.internalServerError())
+      body <- resp.body.asString.orElseFail(
+        Response.internalServerError("scrape body decode failed"),
+      )
     } yield body
 
   /**
@@ -140,7 +142,7 @@ object MetricsSelfMetricsSpec
 
         // Let the publisher snapshot the registry (poll is 100ms; live clock keeps the fiber ticking).
         _    <- ZIO.sleep(700.millis)
-        body <- scrape.merge
+        body <- scrape.catchAll(resp => resp.body.asString.orDie)
 
         httpLines = seriesLines(body, "http_requests_total")
       } yield

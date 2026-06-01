@@ -1,6 +1,7 @@
 package wifihaven.api.routes
 
 import wifihaven.api.db.*
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.policy.PolicyService
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -118,8 +119,14 @@ object RouterIngestRoutes {
   ): IO[Response, Unit] = {
     // #1010: bucket usage by the household's logical "today" (TZ + non-midnight
     // reset_time), matching the read-side date used by PolicyService.snapshot.
-    val date    = PolicyService.householdLocalDate(periodStart, settings)
-    val inserts = records.map(r =>
+    val date         = PolicyService.householdLocalDate(periodStart, settings)
+    // #864: a healthy agent never reports a row with no bytes and no active
+    // seconds. The read side already filters these (listRawInRange), so they're
+    // dead weight; count them here at ingest so a silent return of the #858 agent
+    // regression shows up as a rising rate rather than a per-request warn-log.
+    val zeroByteRows =
+      records.count(r => r.activeSeconds == 0L && r.bytesIn == 0L && r.bytesOut == 0L)
+    val inserts      = records.map(r =>
       TrafficReportInsert(
         routerId,
         r.mac,
@@ -134,6 +141,7 @@ object RouterIngestRoutes {
       ),
     )
     for {
+      _        <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
       // Idempotency: ON CONFLICT DO NOTHING returns the count of NEW rows.
       // Only those rows should drive time_usage / device updates; replays return 0.
       newCount <- trafficRepo.insertBatch(inserts).mapError(ErrorMapper.dbErrorToResponse)
