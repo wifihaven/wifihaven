@@ -16,7 +16,7 @@ BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
 # first run to this value. e2e scripts execute *after* `compose up --wait`,
 # so the DB is always in the post-rotation state by the time we log in.
 # Against the deployed staging API (Gate 1 / #653) this is overridden from
-# the workflow's STAGING_ADMIN_PASS secret.
+# the workflow's WH_STAGING_ADMIN_PASS secret.
 ADMIN_PASS="${ADMIN_PASS:-fake-router-bootstrap-pw-do-not-use-elsewhere}"
 # Unique suffix so we don't collide with residue from a previous run against
 # a persistent backend (staging). Against the disposable compose stack this

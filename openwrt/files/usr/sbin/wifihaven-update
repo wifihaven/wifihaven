@@ -9,10 +9,10 @@
 # semver release published by .github/workflows/openwrt-build.yml (#499 /
 # #1134).
 #
-# Bootstrap fallback: if /releases/latest returns 404 (no versioned release
-# yet on a fresh repo) we fall back to the rolling openwrt-latest tag with
-# a WARNING log. Remove the fallback once the versioned path is universal —
-# tracked in TODO below.
+# Versioned releases are now universal (the router CD pipeline publishes a
+# v<X.Y.Z> tag on every release), so a 404 from /releases/latest is a hard
+# skip: log an error and exit cleanly. We no longer fall back to the rolling
+# openwrt-latest tag (#1170; refs #244 / #499 / #1134).
 #
 # Supports both opkg (OpenWRT <= 23.05) and apk-tools (OpenWRT 24.10+).
 # /etc/config/wifihaven is declared as a conffile, so router_token survives
@@ -21,7 +21,6 @@
 set -u
 
 API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/latest"
-FALLBACK_API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/tags/openwrt-latest"
 INSTALLED_VERSION_FILE=/usr/lib/wifihaven/VERSION
 STATE_DIR=/var/lib/wifihaven
 # Stores the version string of the package last installed (e.g. "0.2.8").
@@ -54,16 +53,17 @@ else
   exit 0
 fi
 
-# Fetch /releases/latest, falling back to the rolling openwrt-latest tag on
-# 404 to keep a fresh repo (no v<X.Y.Z> tag yet) self-healing.
+# Fetch /releases/latest. Versioned releases are universal (#1170), so a 404
+# means no published semver release — a hard skip, not a fallback.
 HTTP_CODE=$(curl -s -o /tmp/wifihaven-update.meta -w '%{http_code}' "$API_URL" 2>/dev/null || echo "000")
 case "$HTTP_CODE" in
   200)
     META=$(cat /tmp/wifihaven-update.meta)
     ;;
   404)
-    log "warn: $API_URL returned 404; falling back to openwrt-latest (TODO(#1170): remove once versioned path is universal)"
-    META=$(curl -sf "$FALLBACK_API_URL") || META=
+    log "error: $API_URL returned 404 (no versioned release published); skipping"
+    rm -f /tmp/wifihaven-update.meta
+    exit 0
     ;;
   *)
     log "could not fetch $API_URL (http $HTTP_CODE); skipping"
@@ -80,8 +80,7 @@ fi
 # Extract tag_name and the highest-version matching asset URL. A versioned
 # release normally carries a single wifihaven_<X.Y.Z>-<rel>_all.<ext> asset,
 # but we still walk the full list, reject luci-app (#1178), and `sort -V`
-# in case multiple revisions are ever attached. The fallback openwrt-latest
-# release uses the same asset layout, so this works for both paths.
+# in case multiple revisions are ever attached.
 TAG=$(printf '%s' "$META" | jsonfilter -e '@.tag_name')
 LATEST_VERSION=$(printf '%s' "$TAG" | sed 's/^v//')
 MATCHES=

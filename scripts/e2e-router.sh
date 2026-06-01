@@ -19,7 +19,7 @@ BASE="${E2E_BASE_URL:-http://127.0.0.1:8080}"
 SPA_BASE="${E2E_SPA_URL:-$BASE}"
 # See scripts/e2e-tests.sh — fake-router rotates the seeded admin password on
 # first boot, so by the time this script runs the DB has the rotated value.
-# Against deployed staging (Gate 1 / #653) overridden from STAGING_ADMIN_PASS.
+# Against deployed staging (Gate 1 / #653) overridden from WH_STAGING_ADMIN_PASS.
 ADMIN_PASS="${ADMIN_PASS:-fake-router-bootstrap-pw-do-not-use-elsewhere}"
 # Unique suffix avoids collisions with residue from a previous (or concurrent)
 # run against a persistent backend (staging). On the disposable compose stack
