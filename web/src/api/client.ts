@@ -49,6 +49,13 @@ async function req<T>(
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
+      // #1299: never let the browser HTTP cache answer an API read. Today-mode
+      // time-status GETs are served with Cache-Control: max-age=30, so without
+      // this a React Query refetch fired right after a mutation (e.g. the +Time
+      // grant invalidating ['time','status']) could be served the stale cached
+      // body — the used/cap bar then wouldn't update until a force-reload.
+      // React Query remains the single source of client-side caching.
+      cache: 'no-store',
     })
   } catch (e) {
     clearTimeout(timeoutId)
