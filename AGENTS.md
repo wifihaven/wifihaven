@@ -490,6 +490,43 @@ Before the PR merges:
 > Out of scope here: automated query-plan regression testing in CI — a
 > heavier, separate idea. This rule is just the agent-workflow guardrail.
 
+## A new metric ships with its dashboard {#metrics-need-a-dashboard}
+
+**A PR that adds or changes an emitted metric series must also add or update
+a Grafana panel that consumes it, in the same PR.** A metric nobody can see
+is dead weight: it costs cardinality and registry space but never reaches an
+operator's eyes until an incident, which is exactly when you don't want to be
+authoring PromQL from scratch.
+
+"Emitted metric series" means any new `Metric.counter` / `histogram` / `gauge`
+(or `AppMetrics`/`MetricGuard` helper) whose name reaches the `/metrics`
+exposition. Adding a label to an existing series counts too if it changes what
+an operator would want to slice by.
+
+In the same PR:
+
+1. **Add the panel where it belongs.** Dashboards are checked-in JSON under
+   [`deploy/grafana/dashboards/`](deploy/grafana/dashboards/), deployed by
+   [`master-grafana.yml`](.github/workflows/master-grafana.yml) via the
+   [`infra/grafana`](infra/grafana/) Terraform. Extend an existing dashboard
+   when the metric fits its theme (process health vs. application
+   self-metrics vs. rollup health); add a new `*.json` and register it in
+   `infra/grafana/main.tf`'s `dashboards` list when it's a new concern.
+2. **Target the series you actually emit — never a design-doc catalog.** Grep
+   `api/src` for the exact metric name and labels and write the PromQL against
+   that. Histograms render as `<name>_bucket{le=…}` / `_sum` / `_count` (use
+   `histogram_quantile`); the zio-prometheus connector does **not** append
+   `_total` to counters, so the name in code is the name in the query. Do not
+   ship no-data panels for metrics that aren't emitted yet — defer those to
+   the follow-up PR that instruments them.
+3. **Keep labels low-cardinality in the query, too.** Slice only by bounded
+   label keys (templated `route`, `op`, `reason`, `status`); never by a
+   per-mac / per-domain / per-device / per-ip value. If the firewall would
+   reject the label, the panel shouldn't group by it.
+4. **The CI gate is `grafana-terraform`** ([`ci.yml`](.github/workflows/ci.yml)):
+   `terraform fmt -check`, `terraform validate`, and `python3 -m json.tool`
+   on every dashboard. Run all three locally before pushing.
+
 ## Branch-diff checks (CI + pre-push)
 
 CI checks and pre-push checks that compare a branch against `main` MUST diff against the **merge base** with `origin/main`, not `origin/main` directly. Use three-dot syntax (`origin/main...HEAD`) or an explicit `git merge-base origin/main HEAD`. Two-dot (`origin/main..HEAD`) over-reports when `main` has advanced since the branch diverged, producing spurious failures and noise.
