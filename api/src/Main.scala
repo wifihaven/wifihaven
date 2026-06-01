@@ -5,7 +5,13 @@ import doobie.implicits.*
 import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
-import wifihaven.api.metrics.{DbPoolMetrics, HttpMetrics, MetricsRuntime, RouterPresenceMetrics}
+import wifihaven.api.metrics.{
+  DbPoolMetrics,
+  HttpMetrics,
+  MetricsRuntime,
+  RouterMetricsService,
+  RouterPresenceMetrics,
+}
 import wifihaven.api.notify.Notifier
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
@@ -271,7 +277,8 @@ object Main extends ZIOAppDefault {
       timeCache     <- ZIO.service[TimeStatusCache]
       xa            <- ZIO.service[Transactor[Task]]
       promPublisher <- ZIO.service[PrometheusPublisher]
-      routerAuth    = new RouterAuthLive(routerRepo)
+      routerAuth = new RouterAuthLive(routerRepo)
+      routerMetrics <- RouterMetricsService.make
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
     } yield {
       // #1177: split the route composition into typed chunks. A flat `++` chain across
@@ -355,6 +362,7 @@ object Main extends ZIOAppDefault {
             alertRepo,
             hsRepo,
           ) ++
+          RouterMetricsRoutes.routes(routerAuth, routerMetrics) ++
           AlertRoutes.routes(
             auth,
             alertRepo,

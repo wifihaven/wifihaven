@@ -1096,6 +1096,51 @@ case class UsageReport(
 ) derives JsonCodec
 
 /**
+ * #1205 / design §3.2 — the router → API metrics push batch. The OpenWRT agent posts one of these
+ * to `POST /api/router/metrics` every ~60 s. Counters are **cumulative running totals** since agent
+ * start; the server re-bases when `agentStartedAt` changes (agent restart) instead of recording a
+ * negative delta, so duplicate/retried batches never double-count (see RouterMetricsService).
+ *
+ * Deliberately a standalone JSON document with no HTTP-framing dependence: when #1023 (websocket
+ * transport) lands it rehomes verbatim as `{"op":"metrics","payload":<this body>}` and dispatches
+ * into the same carrier-agnostic RouterMetricsService.
+ *
+ * The agent sends only the *extra* labels per series (e.g. `reason`/`result`/`status`/`version`);
+ * the server attaches the bounded `router_id` (and `installation_id` once that concept lands)
+ * dimension itself.
+ */
+case class MetricCounter(name: String, labels: Map[String, String] = Map.empty, value: Double)
+    derives JsonCodec
+
+case class MetricGauge(name: String, labels: Map[String, String] = Map.empty, value: Double)
+    derives JsonCodec
+
+/**
+ * A single cumulative bucket: observations with value ≤ `le` (`"+Inf"` for the overflow bucket).
+ */
+case class MetricHistogramBucket(le: String, count: Double) derives JsonCodec
+
+case class MetricHistogram(
+    name: String,
+    labels: Map[String, String] = Map.empty,
+    buckets: List[MetricHistogramBucket],
+    sum: Double,
+    count: Double,
+) derives JsonCodec
+
+case class RouterMetricsBatch(
+    routerId: RouterId,
+    agentVersion: String,
+    // Counter-reset sentinel: a changed value between batches means the agent restarted and its
+    // cumulative counters reset to zero, so the server re-bases rather than seeing a negative delta.
+    agentStartedAt: String,
+    sampledAt: String,
+    counters: List[MetricCounter] = Nil,
+    gauges: List[MetricGauge] = Nil,
+    histograms: List[MetricHistogram] = Nil,
+) derives JsonCodec
+
+/**
  * Router event payload. `type` discriminates:
  *   - "connection_attempt": (mac, host, destIp, allowed, reason, ts)
  *   - "dhcp_lease": (mac, ip, hostname, ts) — `hostname` here is the DHCP-advertised name, which by

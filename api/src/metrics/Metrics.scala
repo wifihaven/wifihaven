@@ -37,15 +37,32 @@ object MetricGuard {
     )
 
   /**
-   * §5.2 — metric name → its permitted label keys. The only (name, keys) pairs that may be emitted.
+   * §5.1/§5.2 — metric name → its permitted label keys. The only (name, keys) pairs that may be
+   * emitted. `router_id` (and `installation_id`, once that concept lands) are bounded fleet-size
+   * dimensions the server attaches to every router-pushed series (§4.2) — they are deliberately NOT
+   * in [[ForbiddenKeys]].
    */
   val Allowed: Map[String, Set[String]] = Map(
+    // §5.2 API self-metrics.
     "http_requests_total"                       -> Set("route", "method", "status"),
     "http_request_duration_seconds"             -> Set("route", "method"),
     "db_query_duration_seconds"                 -> Set("op"),
     "auth_failures_total"                       -> Set("reason"),
     "agent_connected_routers"                   -> Set.empty[String],
     "traffic_reports_filtered_zero_bytes_total" -> Set.empty[String],
+    // §5.1 router-sourced, pushed via POST /api/router/metrics (#1205). Every one carries the
+    // server-attached `router_id` + `installation_id` plus its own bounded enum label.
+    "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
+    "policy_apply_total"                        -> Set("result", "router_id", "installation_id"),
+    "policy_apply_duration_seconds"             -> Set("router_id", "installation_id"),
+    "snapshot_poll_total"                       -> Set("result", "router_id", "installation_id"),
+    "snapshot_poll_duration_seconds"            -> Set("router_id", "installation_id"),
+    "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
+    "agent_version"                             -> Set("version", "router_id", "installation_id"),
+    "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
+    "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
+    // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
+    "router_metrics_batches_total"              -> Set("status"),
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -165,6 +182,30 @@ object AppMetrics {
 
   def setConnectedRouters(count: Int): UIO[Unit] =
     MetricGuard.gauge("agent_connected_routers", Map.empty, count.toDouble)
+
+  // ── Router metrics ingest (#1205) ────────────────────────────────────────────
+  // One increment per POST /api/router/metrics. `status` ∈ {ok, malformed,
+  // router_mismatch}. The concrete server-side health signal for the push path.
+
+  def recordRouterMetricsBatch(status: String): UIO[Unit] =
+    MetricGuard.counter("router_metrics_batches_total", Map("status" -> status))
+
+  // §5.1 — server-side histogram boundaries for the router-pushed duration histograms. The agent
+  // (#1206) reports cumulative bucket counts on these same boundaries; RouterMetricsService folds
+  // the per-batch bucket-count deltas back into these registry histograms.
+  val PolicyApplyDurationBoundaries: MetricKeyType.Histogram.Boundaries =
+    MetricKeyType.Histogram.Boundaries.fromChunk(Chunk(0.01, 0.05, 0.1, 0.5, 1.0, 5.0))
+
+  val SnapshotPollDurationBoundaries: MetricKeyType.Histogram.Boundaries =
+    MetricKeyType.Histogram.Boundaries.fromChunk(Chunk(0.01, 0.05, 0.1, 0.5, 1.0, 5.0))
+
+  /**
+   * Boundaries keyed by router-pushed histogram name; the fold falls back to this when unmatched.
+   */
+  val RouterHistogramBoundaries: Map[String, MetricKeyType.Histogram.Boundaries] = Map(
+    "policy_apply_duration_seconds"  -> PolicyApplyDurationBoundaries,
+    "snapshot_poll_duration_seconds" -> SnapshotPollDurationBoundaries,
+  )
 
   // ── Rollup health (#1243) ──────────────────────────────────────────────────
   // Emitted from RollupRepoLive.recordRun — the single completion point both the
