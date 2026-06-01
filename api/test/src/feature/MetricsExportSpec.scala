@@ -107,7 +107,10 @@ object MetricsExportSpec
       } yield assertTrue(body.contains("wifihaven_rollup_runs_total")) &&
         assertTrue(body.contains("wifihaven_rollup_duration_seconds")) &&
         assertTrue(body.contains("wifihaven_rollup_rows_upserted")) &&
-        assertTrue(body.contains("time_used_daily")))
+        assertTrue(body.contains("time_used_daily")) &&
+        // #1291: the fiber name is tagged under `rollup_job`, never the reserved
+        // `job` label (which Alloy clobbers with the scrape component name).
+        assertTrue(body.contains("rollup_job=\"time_used_daily\"")))
         .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Transactor[Task]](
           MetricsRuntime.prometheus(pollInterval),
           Clock.live,
