@@ -22,7 +22,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Rollup run rate by job / status",
-      "description": "sum by (job, status) (rate(wifihaven_rollup_runs_total[5m])). status is \"ok\" or \"error\".",
+      "description": "sum by (rollup_job, status) (rate(wifihaven_rollup_runs_total[5m])). status is \"ok\" or \"error\".",
       "type": "timeseries",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
       "id": 1,
@@ -42,8 +42,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (job, status) (rate(wifihaven_rollup_runs_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{job}} / {{status}}",
+          "expr": "sum by (rollup_job, status) (rate(wifihaven_rollup_runs_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{rollup_job}} / {{status}}",
           "refId": "A"
         }
       ]
@@ -108,20 +108,20 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
-          "legendFormat": "p50 {{job}}",
+          "expr": "histogram_quantile(0.50, sum by (le, rollup_job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p50 {{rollup_job}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
-          "legendFormat": "p95 {{job}}",
+          "expr": "histogram_quantile(0.95, sum by (le, rollup_job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p95 {{rollup_job}}",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
-          "legendFormat": "p99 {{job}}",
+          "expr": "histogram_quantile(0.99, sum by (le, rollup_job) (rate(wifihaven_rollup_duration_seconds_bucket{env=\"$env\"}[5m])))",
+          "legendFormat": "p99 {{rollup_job}}",
           "refId": "C"
         }
       ]
@@ -150,7 +150,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "wifihaven_rollup_rows_upserted{env=\"$env\"}",
-          "legendFormat": "{{job}}",
+          "legendFormat": "{{rollup_job}}",
           "refId": "A"
         }
       ]

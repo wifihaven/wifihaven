@@ -183,9 +183,9 @@ object AppMetrics {
 
   /** Record a completed rollup run. `status` is "ok" or "error". */
   def recordRollup(job: String, status: String, durationSeconds: Double, rows: Int): UIO[Unit] =
-    rollupRuns.tagged("job", job).tagged("status", status).update(1L) *>
-      rollupDuration.tagged("job", job).update(math.max(0.0, durationSeconds)) *>
-      rollupRows.tagged("job", job).update(rows.toDouble)
+    rollupRuns.tagged("rollup_job", job).tagged("status", status).update(1L) *>
+      rollupDuration.tagged("rollup_job", job).update(math.max(0.0, durationSeconds)) *>
+      rollupRows.tagged("rollup_job", job).update(rows.toDouble)
 
   // ── DB connection pool (#1243, #1221) ───────────────────────────────────────
   // Set from the polling fiber in DbPoolMetrics. threads_awaiting was the
