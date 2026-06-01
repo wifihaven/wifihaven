@@ -15,6 +15,7 @@
 local uci        = require("uci")
 local policy     = require("wifihaven.policy")
 local blocklists = require("wifihaven.blocklists")
+local metrics    = require("wifihaven.metrics")
 local usage      = require("wifihaven.usage")
 local conntrack  = require("wifihaven.conntrack")
 local nflog      = require("wifihaven.nflog")
@@ -41,6 +42,11 @@ local max_batch     = tonumber(uci_get("event_batch_size",        "50"))
 local flush_int     = tonumber(uci_get("event_flush_interval",    "10"))
 local policy_int    = tonumber(uci_get("policy_poll_interval",    "5"))
 local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
+-- #1206: observability push runs on its OWN timer, decoupled from the ~5 s
+-- policy poll. Cumulative counters are shipped to /api/router/metrics every
+-- 60 s by default (matches usage_report_interval cadence but is a separate
+-- knob; the server re-bases off agentStartedAt so a missed push self-heals).
+local metrics_int   = tonumber(uci_get("metrics_report_interval", "60"))
 local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local debug_opt     = uci_get("debug",                            "0")
 
@@ -49,8 +55,53 @@ log.init({ debug = debug_opt })
 -- nil on a checkout / older install — header is then simply omitted.
 local agent_version = version.read()
 local policy_opts   = { agent_version = agent_version }
-log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds activity_sample_int=%ds agent_version=%s",
-         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, activity_sample_int, tostring(agent_version))
+log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds metrics_int=%ds activity_sample_int=%ds agent_version=%s",
+         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, metrics_int, activity_sample_int, tostring(agent_version))
+
+-- ── Metrics registry (#1206) ─────────────────────────────────────────────────
+-- In-process cumulative counters since process start. NEVER reset on the
+-- agent: the server re-bases off agentStartedAt (the restart sentinel, fixed
+-- for this process's life), so a failed push self-heals on the next success
+-- with no double-count. agentStartedAt is wall-clock RFC3339 UTC captured once
+-- here. The 60 s push timer lives in the on_tick loop below.
+local agent_started_at   = os.date("!%Y-%m-%dT%H:%M:%SZ")
+-- Monotonic anchor for the agent_uptime_seconds gauge: uptime = now - this.
+-- Monotonic (not wall-clock) so an NTP/DST jump can't make uptime go backward.
+local agent_started_mono = clock.monotonic_seconds()
+local mreg = metrics.new({
+  router_id     = router_id,
+  agent_version = agent_version or "",
+  started_at    = agent_started_at,
+})
+-- agent_version info gauge: constant value 1 carrying the version as a label,
+-- so an operator can slice the fleet by running version (Prometheus info-gauge
+-- idiom). Set once — the version doesn't change within a process lifetime.
+metrics.set_gauge(mreg, "agent_version", { version = agent_version or "" }, 1)
+
+-- Instrumentation helpers. Kept here (not in policy.lua) so the agent owns the
+-- reason/result enums and policy.lua stays metrics-agnostic — it only exposes
+-- the on_apply observation seam (#1206).
+--
+-- record_apply(reason) returns an on_apply callback for policy.apply: it
+-- increments policy_apply_total{result} on every apply and, when an actual
+-- dnsmasq restart happened (NOT the #414 nft-only short-circuit),
+-- dnsmasq_restarts_total{reason}. `reason` is decided by the caller from
+-- context: "boot" for startup applies, "policy_change" for the timer/failover
+-- re-applies.
+local function record_apply(reason)
+  return function(info)
+    metrics.inc_counter(mreg, "policy_apply_total", { result = info.result })
+    if info.dnsmasq_restarted then
+      metrics.inc_counter(mreg, "dnsmasq_restarts_total", { reason = reason })
+    end
+  end
+end
+
+-- record_poll(status) classifies a policy.fetch outcome into the bounded
+-- snapshot_poll_total{result} enum (200 / 304 / error) and increments it.
+local function record_poll(result)
+  metrics.inc_counter(mreg, "snapshot_poll_total", { result = result })
+end
 
 -- activity_sample_int should evenly divide usage_report_interval, or the last
 -- partial bucket at report flush time is shorter than the others. Warn and
@@ -251,6 +302,7 @@ local last_snapshot       = nil
 local in_failover_render  = false
 local last_policy_run     = 0
 local last_usage_run      = 0
+local last_metrics_run    = 0
 local last_activity_sample = 0
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
@@ -265,7 +317,12 @@ local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs 
 do
   local cached = policy.load_snapshot(read_file, log)
   if cached then
-    if policy.apply(cached, write_file, run_cmd, log) then
+    local t0 = clock.monotonic_seconds()
+    local applied = policy.apply(cached, write_file, run_cmd, log,
+                                 { on_apply = record_apply("boot") })
+    metrics.observe(mreg, "policy_apply_duration_seconds", {},
+                    clock.monotonic_seconds() - t0)
+    if applied then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
       last_snapshot = cached
@@ -287,9 +344,18 @@ local last_usage_wall_ts = os.time()
 
 do
   log.debug("startup: initial policy fetch")
+  local pt0 = clock.monotonic_seconds()
   local snap, etag = policy.fetch(api_url, router_token, nil, http_get, log, policy_opts)
+  metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
+                  clock.monotonic_seconds() - pt0)
   if snap then
-    if policy.apply(snap, write_file, run_cmd, log) then
+    record_poll("200")
+    local at0 = clock.monotonic_seconds()
+    local applied = policy.apply(snap, write_file, run_cmd, log,
+                                 { on_apply = record_apply("boot") })
+    metrics.observe(mreg, "policy_apply_duration_seconds", {},
+                    clock.monotonic_seconds() - at0)
+    if applied then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
       persist_blocked_reasons()
       current_etag = etag
@@ -299,6 +365,9 @@ do
       log.info("startup: applied initial policy etag=%s", tostring(etag))
     end
   else
+    -- nil snap with an etag is a 304 (unlikely on the first poll since we send
+    -- no If-None-Match, but classify defensively); nil etag is a fetch error.
+    record_poll(etag and "304" or "error")
     log.warn("startup: initial policy fetch returned no snapshot (will retry on timer)")
   end
   -- Scheduler timers use the monotonic clock so backward wall-clock jumps
@@ -306,6 +375,7 @@ do
   local mono = clock.monotonic_seconds()
   last_policy_run        = mono
   last_usage_run         = mono
+  last_metrics_run       = mono
   last_activity_sample   = mono
 end
 
@@ -437,10 +507,17 @@ conntrack.watch({
     -- Policy timer
     if (mono - last_policy_run) >= policy_int then
       last_policy_run = mono
+      local pt0 = clock.monotonic_seconds()
       local snap, etag = policy.fetch(api_url, router_token, current_etag, http_get, log, policy_opts)
+      metrics.observe(mreg, "snapshot_poll_duration_seconds", {},
+                      clock.monotonic_seconds() - pt0)
       local fetch_ok
       if snap then
+        record_poll("200")
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
+        -- TODO(#1301): emit blocklist_fetch_failures_total{status} here from
+        -- bl_result.errors once the status enum is designed alongside the
+        -- broader blocklist-application work (#705).
         local bl_result = blocklists.fetch_and_cache(
           snap, http_get, nil, "/etc/wifihaven/blocklists")
         if #bl_result.errors > 0 then
@@ -454,7 +531,12 @@ conntrack.watch({
         -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
         -- just need to clear the flag below.
-        if policy.apply(snap, write_file, run_cmd, log) then
+        local at0 = clock.monotonic_seconds()
+        local applied = policy.apply(snap, write_file, run_cmd, log,
+                                     { on_apply = record_apply("policy_change") })
+        metrics.observe(mreg, "policy_apply_duration_seconds", {},
+                        clock.monotonic_seconds() - at0)
+        if applied then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
           persist_blocked_reasons()
           current_etag = etag
@@ -465,12 +547,14 @@ conntrack.watch({
           fetch_ok = true
         end
       elseif etag then
+        record_poll("304")
         current_etag = etag  -- 304: just update etag
         policy.mark_poll_success(wall)  -- 304 still counts as a successful poll
         log.debug("policy timer: 304 not modified etag=%s poll_age=%s",
                   tostring(etag), policy.format_poll_age(policy.poll_age_seconds(wall)))
         fetch_ok = true
       else
+        record_poll("error")
         log.debug("policy timer: fetch failed poll_age=%s",
                   policy.format_poll_age(policy.poll_age_seconds(wall)))
         fetch_ok = false
@@ -492,7 +576,12 @@ conntrack.watch({
           -- with the computed opts. Skip if we have no cached snapshot at
           -- all (cold boot during outage): the #308 boot skeleton stays in
           -- effect and there's nothing useful we can render.
-          if policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts) then
+          fo_opts.on_apply = record_apply("policy_change")
+          local ft0 = clock.monotonic_seconds()
+          local fo_applied = policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts)
+          metrics.observe(mreg, "policy_apply_duration_seconds", {},
+                          clock.monotonic_seconds() - ft0)
+          if fo_applied then
             if new_in_failover then
               log.info("failover render: poll failed, applying failover chain for closed-mode profiles (poll_age=%s)",
                        policy.format_poll_age(policy.poll_age_seconds(wall)))
@@ -570,6 +659,22 @@ conntrack.watch({
                    #usage_queue.buckets)
         end
       end
+    end
+
+    -- Metrics push timer (#1206). Independent of the ~5 s policy poll: ships
+    -- the cumulative registry to /api/router/metrics every metrics_int seconds
+    -- (default 60). Best-effort — on a failed POST the counters are RETAINED
+    -- (metrics.post never resets the registry), so the next success carries the
+    -- full total and the server re-bases off agentStartedAt. No retry queue.
+    if (mono - last_metrics_run) >= metrics_int then
+      last_metrics_run = mono
+      -- Refresh instantaneous gauges just before the snapshot. uptime is
+      -- derived from the monotonic clock so a wall-clock jump can't make it
+      -- go backward.
+      metrics.set_gauge(mreg, "agent_uptime_seconds", {},
+                        mono - agent_started_mono)
+      local sampled_at = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
+      metrics.post(api_url, router_token, mreg, sampled_at, http_post, log)
     end
 
     -- Drain any retry-queued buckets whose backoff has elapsed (monotonic now).

@@ -102,6 +102,11 @@ jobs:
               - 'openwrt/files/usr/lib/lua/wifihaven/render.nft'
               - 'openwrt/files/usr/lib/lua/wifihaven/conntrack.lua'
               - 'openwrt/files/usr/lib/lua/wifihaven/usage.lua'
+              # #1206: metrics.lua is the production builder for the
+              # router_metrics_batch.json fixture (build_metrics_batch in
+              # contract_gen.lua calls it), so a change here can drift the
+              # contract — run the bidirectional job when it moves.
+              - 'openwrt/files/usr/lib/lua/wifihaven/metrics.lua'
               - 'openwrt/test/shim/**'
               - 'api/**'
               - 'shared/**'

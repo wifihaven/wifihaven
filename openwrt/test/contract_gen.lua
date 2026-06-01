@@ -31,6 +31,7 @@
 local jsonc     = require("luci.jsonc")
 local conntrack = require("wifihaven.conntrack")
 local usage     = require("wifihaven.usage")
+local metrics   = require("wifihaven.metrics")
 
 -- ── Canonical pretty JSON encoder ─────────────────────────────────────────
 -- Stable enough that the CI drift guard's `git diff --exit-code` is
@@ -51,6 +52,13 @@ local function is_array(t)
 end
 
 local encode
+
+-- Sentinel for an *empty JSON object* (`{}`), distinct from an empty array
+-- (`[ ]`). is_array() can't tell an empty map from an empty list, and the
+-- default treats empty tables as arrays. The metrics builder uses this for
+-- empty `labels` maps so the fixture matches what production luci.jsonc
+-- emits (`{}`) and what the zio-json `Map[String,String]` decoder accepts.
+local EMPTY_OBJECT = setmetatable({}, {})
 
 local function encode_string(s)
   -- Defer to cjson via luci.jsonc.stringify for proper escaping.
@@ -77,6 +85,14 @@ encode = function(v, indent)
   local next_indent = indent .. "  "
   local t = type(v)
   if t ~= "table" then return encode_scalar(v) end
+
+  -- Explicit empty-object sentinel (distinct from empty array).
+  if v == EMPTY_OBJECT then return "{ }" end
+  -- Raw pre-formatted number token (see jnum) — emit verbatim. Lets the
+  -- metrics fixture render Double-typed fields in their decoder-canonical
+  -- form (whole numbers as `N.0`) so the ContractGoldenSpec round-trip,
+  -- which re-encodes through zio-json `Double`, matches byte-for-byte.
+  if v.__raw ~= nil then return v.__raw end
 
   local arr, n = is_array(v)
   if arr then
@@ -125,6 +141,22 @@ end
 
 local function canonical_pretty(v)
   return encode(v) .. "\n"
+end
+
+-- Render a number in the decoder-canonical form zio-json emits for a Scala
+-- `Double` field: whole numbers as `N.0` (e.g. 1 → "1.0", 880 → "880.0"),
+-- fractional numbers in their minimal %.14g form (0.82 → "0.82"). All numeric
+-- fields in RouterMetricsBatch are typed `Double`, so the metrics fixture must
+-- emit them this way for the ContractGoldenSpec round-trip (decode → re-encode
+-- through zio-json) to match byte-for-byte. Returns a __raw token (see encode).
+local function jnum(n)
+  local s
+  if n == math.floor(n) and math.abs(n) < 1e15 then
+    s = string.format("%.1f", n)
+  else
+    s = string.format("%.14g", n)
+  end
+  return { __raw = s }
 end
 
 -- ── Helpers to stamp ordering on production-built event tables ────────────
@@ -271,6 +303,83 @@ local function build_usage_report()
   return stamp(report, { "routerId", "periodStart", "periodEnd", "records" })
 end
 
+-- ── Build router_metrics_batch.json via metrics.build_batch ───────────────
+-- #1206. The agent's production metrics push body is assembled by
+-- metrics.build_batch (the SAME function the live 60 s push timer calls), so
+-- this fixture is generated from real production code. We populate a registry
+-- with one representative series per §5.1 emitted metric (cumulative counters,
+-- the two info/uptime gauges, both duration histograms), then stamp field
+-- ordering so the JSON key order is stable across regens. agentStartedAt is
+-- pinned (the API's restart sentinel) and routerId matches the other fixtures.
+
+local METRICS_BATCH_ORDER = {
+  "routerId", "agentVersion", "agentStartedAt", "sampledAt",
+  "counters", "gauges", "histograms",
+}
+local SERIES_ORDER = { "name", "labels", "value" }
+local HISTOGRAM_ORDER = { "name", "labels", "buckets", "sum", "count" }
+local BUCKET_ORDER = { "le", "count" }
+
+local function build_metrics_batch()
+  local reg = metrics.new({
+    router_id     = "11111111-2222-3333-4444-555555555555",
+    agent_version = "0.3.1",
+    started_at    = "2026-05-30T09:00:00Z",
+  })
+
+  -- Counters — cumulative running totals since agent start (§3.2).
+  metrics.inc_counter(reg, "dnsmasq_restarts_total", { reason = "boot" }, 1)
+  metrics.inc_counter(reg, "dnsmasq_restarts_total", { reason = "policy_change" }, 12)
+  metrics.inc_counter(reg, "policy_apply_total", { result = "ok" }, 880)
+  metrics.inc_counter(reg, "policy_apply_total", { result = "nft_failed" }, 3)
+  metrics.inc_counter(reg, "snapshot_poll_total", { result = "200" }, 140)
+  metrics.inc_counter(reg, "snapshot_poll_total", { result = "304" }, 9300)
+  metrics.inc_counter(reg, "snapshot_poll_total", { result = "error" }, 6)
+
+  -- Gauges — instantaneous; agent_version is an info gauge (value 1).
+  metrics.set_gauge(reg, "agent_uptime_seconds", {}, 18060)
+  metrics.set_gauge(reg, "agent_version", { version = "0.3.1" }, 1)
+
+  -- Histograms — observe a few values so the cumulative buckets are non-trivial.
+  metrics.observe(reg, "policy_apply_duration_seconds", {}, 0.02)
+  metrics.observe(reg, "policy_apply_duration_seconds", {}, 0.2)
+  metrics.observe(reg, "policy_apply_duration_seconds", {}, 0.6)
+  metrics.observe(reg, "snapshot_poll_duration_seconds", {}, 0.008)
+  metrics.observe(reg, "snapshot_poll_duration_seconds", {}, 0.02)
+  metrics.observe(reg, "snapshot_poll_duration_seconds", {}, 0.3)
+
+  local batch = metrics.build_batch(reg, "2026-05-30T14:01:00Z")
+
+  -- An empty `labels` map must serialize as a JSON object (`{}`), the way
+  -- production luci.jsonc emits it and the way the zio-json
+  -- `Map[String,String]` decoder accepts it — not as an empty array.
+  local function fix_labels(s)
+    if s.labels and next(s.labels) == nil then s.labels = EMPTY_OBJECT end
+  end
+
+  for _, c in ipairs(batch.counters or {}) do
+    fix_labels(c)
+    c.value = jnum(c.value)
+    stamp(c, SERIES_ORDER)
+  end
+  for _, g in ipairs(batch.gauges or {}) do
+    fix_labels(g)
+    g.value = jnum(g.value)
+    stamp(g, SERIES_ORDER)
+  end
+  for _, h in ipairs(batch.histograms or {}) do
+    fix_labels(h)
+    h.sum = jnum(h.sum)
+    h.count = jnum(h.count)
+    stamp(h, HISTOGRAM_ORDER)
+    for _, b in ipairs(h.buckets or {}) do
+      b.count = jnum(b.count)
+      stamp(b, BUCKET_ORDER)
+    end
+  end
+  return stamp(batch, METRICS_BATCH_ORDER)
+end
+
 -- ── register_router_request.json ─────────────────────────────────────────
 -- The register POST is built in openwrt/install.sh via shell `printf`, not
 -- lua, so there is no production lua function to call. We mirror the shell
@@ -309,6 +418,7 @@ function M.fixtures()
     return {
       ["router-to-api/router_events_request.json"]   = canonical_pretty(build_router_events_request()),
       ["router-to-api/usage_report.json"]            = canonical_pretty(build_usage_report()),
+      ["router-to-api/router_metrics_batch.json"]    = canonical_pretty(build_metrics_batch()),
       ["router-to-api/register_router_request.json"] = canonical_pretty(build_register_request()),
     }
   end)

@@ -210,9 +210,30 @@ local function first_extrablocked_host(dnsmasq_content)
       or dnsmasq_content:match("^nftset=/([^/\n]+)/[^\n]-#eb_")
 end
 
+-- True when a reload_fn / os.execute-style exit status indicates success.
+-- os.execute returns 0 on Lua 5.1 and `true` on 5.2+; the agent's run_cmd
+-- forwards either, and tests inject numeric exit codes directly.
+local function exec_ok(rc)
+  return rc == 0 or rc == true
+end
+
 function M.apply(snapshot, write_fn, reload_fn, log, opts)
   log = log or default_log()
   opts = opts or {}
+  -- #1206 metrics seam: an optional opts.on_apply(info) callback is invoked
+  -- exactly once per apply with { result, dnsmasq_restarted }. This lets the
+  -- agent increment policy_apply_total{result} and dnsmasq_restarts_total at
+  -- the real restart call site without policy.lua depending on the metrics
+  -- module. `result` is the apply outcome enum (write_failed / nft_failed /
+  -- smoke_warn / ok); `dnsmasq_restarted` is true only when we actually issued
+  -- a dnsmasq restart (false on the #414 nft-only short-circuit). The callback
+  -- is for observability only — it never alters the boolean return.
+  local on_apply = opts.on_apply
+  local function report(result, dnsmasq_restarted)
+    if on_apply then
+      pcall(on_apply, { result = result, dnsmasq_restarted = dnsmasq_restarted })
+    end
+  end
   local dnsmasq_content = render.dnsmasq(snapshot)
   local nft_content     = render.nft(snapshot, opts)
 
@@ -230,12 +251,14 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   local ok1, err1 = write_fn("/tmp/dnsmasq.d/wifihaven.conf", dnsmasq_content)
   if not ok1 then
     log.err("policy.apply: write dnsmasq conf failed: %s", tostring(err1))
+    report("write_failed", false)
     return false
   end
 
   local ok2, err2 = write_fn("/tmp/nftables.d/wifihaven.nft", nft_content)
   if not ok2 then
     log.err("policy.apply: write nft file failed: %s", tostring(err2))
+    report("write_failed", false)
     return false
   end
 
@@ -255,17 +278,20 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
   -- Single atomic `nft -f`. The rendered file's prelude removes both the
   -- boot default-deny skeleton (table inet wifihaven_boot — #308) and any
   -- prior runtime table in one transaction, then installs the new ruleset.
-  reload_fn("nft -f /tmp/nftables.d/wifihaven.nft")
+  local nft_rc = reload_fn("nft -f /tmp/nftables.d/wifihaven.nft")
+  local nft_ok = exec_ok(nft_rc)
 
   -- #328 / #351 smoke probe. Runs only when we actually restarted dnsmasq:
   -- the probe exists to catch "we restarted but dnsmasq is still serving
   -- a stale config", so it adds nothing when no restart happened.
+  local smoke_warn = false
   if dnsmasq_changed then
     local probe_domain = first_extrablocked_host(dnsmasq_content)
     if probe_domain then
       local check = opts.dns_check_fn or default_dns_check
       local result = check(probe_domain)
       if is_blocked_at_connection(result) then
+        smoke_warn = true
         log.warn(
           "policy.apply: smoke check failed; dnsmasq may be serving a stale " ..
           "config — got %q for %s (expected a real upstream IP)",
@@ -273,6 +299,20 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
       end
     end
   end
+
+  -- #1206: classify the apply outcome for policy_apply_total{result}. nft
+  -- load failure ranks above the smoke warning (it's the harder failure);
+  -- the boolean return is unchanged so failover/enforcement control flow is
+  -- untouched — this is observation only.
+  local result
+  if not nft_ok then
+    result = "nft_failed"
+  elseif smoke_warn then
+    result = "smoke_warn"
+  else
+    result = "ok"
+  end
+  report(result, dnsmasq_changed)
 
   return true
 end
