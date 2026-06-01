@@ -2,11 +2,38 @@
 
 <h2><%:WifiHaven Status%></h2>
 
-<div class="cbi-section">
-  <p>
-    <%:Read-only overview of the WifiHaven agent. Populated fields are stubs in this scaffold (see #748).%>
-  </p>
+<div class="cbi-section" id="wifihaven-versions">
+  <h3><%:Version%></h3>
+  <table class="cbi-section-table" id="wifihaven-version-table">
+    <tr class="cbi-section-table-titles">
+      <th class="cbi-section-table-cell"><%:Package%></th>
+      <th class="cbi-section-table-cell"><%:Installed%></th>
+      <th class="cbi-section-table-cell"><%:Available%></th>
+    </tr>
+    <tr class="cbi-section-table-row">
+      <td><%:Agent (wifihaven)%></td>
+      <td id="wh-agent-installed"><em><%:loading…%></em></td>
+      <td id="wh-available" rowspan="2"><em><%:loading…%></em></td>
+    </tr>
+    <tr class="cbi-section-table-row">
+      <td><%:UI (luci-app-wifihaven)%></td>
+      <td id="wh-luci-installed"><em><%:loading…%></em></td>
+    </tr>
+  </table>
+</div>
 
+<div class="cbi-section">
+  <h3><%:Update%></h3>
+  <p><%:Run the auto-updater now. Upgrades both the agent and the LuCI app to the latest published version. The page will refresh version info after the update completes.%></p>
+  <button id="wh-update-btn" class="btn cbi-button cbi-button-apply" onclick="whRunUpdate()">
+    <%:Update now%>
+  </button>
+  <div id="wh-update-status" style="margin-top:0.5em;"></div>
+  <pre id="wh-update-log" style="display:none;background:#1a1a1a;color:#eee;padding:0.5em;max-height:20em;overflow-y:auto;font-size:0.85em;"></pre>
+</div>
+
+<div class="cbi-section">
+  <h3><%:Agent overview%></h3>
   <table class="cbi-section-table">
     <tr class="cbi-section-table-titles">
       <th class="cbi-section-table-cell"><%:Field%></th>
@@ -37,5 +64,73 @@
     <code>/etc/init.d/wifihaven restart</code>.
   </p>
 </div>
+
+<script type="text/javascript">
+(function() {
+  // Load version information via ubus/rpcd wifihaven.versions call.
+  function whLoadVersions() {
+    XHR.get('<%=luci.dispatcher.build_url("admin", "services", "wifihaven", "versions")%>', null,
+      function(x, data) {
+        if (!data) {
+          document.getElementById('wh-agent-installed').textContent = '<%:error loading%>';
+          document.getElementById('wh-luci-installed').textContent = '<%:error loading%>';
+          document.getElementById('wh-available').textContent = '<%:error loading%>';
+          return;
+        }
+        var ai = data.agent_installed || '<%:unknown%>';
+        var li = data.luci_installed  || '<%:unknown%>';
+        var av = data.available       || '<%:unknown%>';
+        document.getElementById('wh-agent-installed').textContent = ai;
+        document.getElementById('wh-luci-installed').textContent  = li;
+        document.getElementById('wh-available').textContent       = av;
+      }
+    );
+  }
+
+  window.whRunUpdate = function() {
+    var btn    = document.getElementById('wh-update-btn');
+    var status = document.getElementById('wh-update-status');
+    var log    = document.getElementById('wh-update-log');
+
+    btn.disabled = true;
+    btn.textContent = '<%:Updating…%>';
+    status.textContent = '<%:Running wifihaven-update, please wait…%>';
+    log.style.display = 'none';
+    log.textContent = '';
+
+    XHR.get('<%=luci.dispatcher.build_url("admin", "services", "wifihaven", "update")%>', null,
+      function(x, data) {
+        btn.disabled = false;
+        btn.textContent = '<%:Update now%>';
+
+        if (!data) {
+          status.textContent = '<%:Update failed: no response from server.%>';
+          return;
+        }
+
+        var rc  = data.exit_code;
+        var out = (data.output || '') + (data.log ? '\n' + data.log : '');
+
+        if (rc === 0) {
+          status.textContent = '<%:Update completed successfully.%>';
+        } else {
+          status.textContent = '<%:Update failed (exit code: %>'.replace('%>', rc + ').%>');
+        }
+
+        if (out.trim()) {
+          log.textContent = out;
+          log.style.display = 'block';
+        }
+
+        // Refresh version table after update.
+        whLoadVersions();
+      }
+    );
+  };
+
+  // Load versions on page load.
+  whLoadVersions();
+})();
+</script>
 
 <%+footer%>

@@ -59,13 +59,17 @@ mkdir -p "$WORK/data/usr/lib/lua/luci/view/wifihaven"
 mkdir -p "$WORK/data/usr/share/rpcd/acl.d"
 mkdir -p "$WORK/data/usr/share/luci/menu.d"
 
+mkdir -p "$WORK/data/usr/libexec/rpcd"
+
 cp "$SCRIPT_DIR/luasrc/controller/wifihaven.lua"          "$WORK/data/usr/lib/lua/luci/controller/"
 cp "$SCRIPT_DIR/luasrc/model/cbi/wifihaven/settings.lua"  "$WORK/data/usr/lib/lua/luci/model/cbi/wifihaven/"
 cp "$SCRIPT_DIR/luasrc/view/wifihaven/status.htm"         "$WORK/data/usr/lib/lua/luci/view/wifihaven/"
 cp "$SCRIPT_DIR/root/usr/share/rpcd/acl.d/luci-app-wifihaven.json" "$WORK/data/usr/share/rpcd/acl.d/"
 cp "$SCRIPT_DIR/root/usr/share/luci/menu.d/luci-app-wifihaven.json" "$WORK/data/usr/share/luci/menu.d/"
+cp "$SCRIPT_DIR/root/usr/libexec/rpcd/wifihaven"          "$WORK/data/usr/libexec/rpcd/wifihaven"
 
 find "$WORK/data" -type f -exec chmod 0644 {} \;
+chmod 0755 "$WORK/data/usr/libexec/rpcd/wifihaven"
 
 # ── build .apk ───────────────────────────────────────────────────────────────
 rm -f "$OUT_APK"
