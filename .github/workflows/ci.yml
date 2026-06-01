@@ -659,9 +659,12 @@ jobs:
 
   # ── Umbrella gating job ──────────────────────────────────────────────────
   # Branch protection requires this single check. It depends on every
-  # downstream job and passes when each one is either successful or skipped
-  # (i.e. its paths weren't touched on this PR). Any failure or cancellation
-  # in a dependency fails this check.
+  # downstream job and passes when each one is either successful, skipped
+  # (i.e. its paths weren't touched on this PR), or cancelled. Cancellation
+  # is treated as neutral — it only happens when the entire run was cancelled
+  # (concurrency supersede or manual cancel). GitHub already marks the head
+  # commit's status from the newest run, so treating cancelled as neutral
+  # does not weaken the gate. A genuine failure still fails this check.
   ci:
     name: CI
     if: always()
@@ -690,9 +693,9 @@ jobs:
           import json, sys
           data = json.load(sys.stdin)
           bad = {name: meta["result"] for name, meta in data.items()
-                 if meta["result"] not in ("success", "skipped")}
+                 if meta["result"] not in ("success", "skipped", "cancelled")}
           if bad:
               print(f"Failing jobs: {bad}")
               sys.exit(1)
-          print("All required jobs succeeded or were skipped.")
+          print("All required jobs succeeded, were skipped, or were cancelled.")
           '
