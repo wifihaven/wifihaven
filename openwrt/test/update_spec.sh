@@ -44,10 +44,10 @@ grep -q 'releases/latest' "$SCRIPT" \
   && check "fetches /releases/latest" ok \
   || check "fetches /releases/latest" "wrong API endpoint"
 
-# 4a. Keeps the openwrt-latest URL only as a 404 fallback.
+# 4a. #1170: no openwrt-latest fallback endpoint — a 404 is a hard skip.
 grep -q 'releases/tags/openwrt-latest' "$SCRIPT" \
-  && check "keeps openwrt-latest as fallback" ok \
-  || check "keeps openwrt-latest as fallback" "missing fallback endpoint"
+  && check "[#1170] no openwrt-latest fallback endpoint remains" "still references fallback endpoint" \
+  || check "[#1170] no openwrt-latest fallback endpoint remains" ok
 
 # 4b. Persists the last-installed version under /var/lib/wifihaven.
 grep -q 'last_update_version' "$SCRIPT" \
@@ -144,10 +144,11 @@ shift 2
 printf '%s\n' "\$*" >> "$TESTDIR/logger.out"
 EOF
 
-  # Mock curl. Three call shapes:
+  # Mock curl. Two call shapes the script uses:
   #   1) Meta fetch with -o + -w (HTTP code capture): /releases/latest path.
   #   2) Asset download with -o (no -w): record URL into downloads.log.
-  #   3) Bare GET (no -o, no -w): fallback openwrt-latest fetch.
+  # (The bare-GET branch below is vestigial — the openwrt-latest fallback
+  # was removed in #1170 — but harmless if ever hit.)
   cat > "$BINDIR/curl" <<'CURL_EOF'
 #!/bin/sh
 out=""
@@ -353,18 +354,22 @@ grep -q 'restart failed' "$TESTDIR/logger.out" \
   || check "[restart fail] warning logged" "no warning in log"
 rm -rf "$TESTDIR"
 
-# Case G: /releases/latest 404 → falls back to openwrt-latest, logs WARNING.
+# Case G (#1170): /releases/latest 404 → hard skip. Logs an error, does NOT
+# fall back to openwrt-latest, and never installs/restarts.
 setup_mocks
 mock_apk
 printf '0.2.7\n' > "$VERS_DIR/VERSION"
 MOCK_HTTP_CODE=404 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
-grep -q 'returned 404; falling back to openwrt-latest' "$TESTDIR/logger.out" \
-  && check "[404 fallback] WARNING logged about fallback" ok \
-  || check "[404 fallback] WARNING logged about fallback" "no fallback warning"
+grep -q 'returned 404 (no versioned release published); skipping' "$TESTDIR/logger.out" \
+  && check "[#1170 404 skip] error logged about missing versioned release" ok \
+  || check "[#1170 404 skip] error logged about missing versioned release" "no 404-skip error"
 N=$(count_restart_calls)
-[ "$N" = "1" ] \
-  && check "[404 fallback] still installs via fallback tag" ok \
-  || check "[404 fallback] still installs via fallback tag" "expected 1, got $N"
+[ "$N" = "0" ] \
+  && check "[#1170 404 skip] does NOT install/restart" ok \
+  || check "[#1170 404 skip] does NOT install/restart" "expected 0, got $N"
+[ ! -f "$TESTDIR/apk.calls" ] \
+  && check "[#1170 404 skip] apk NOT invoked" ok \
+  || check "[#1170 404 skip] apk NOT invoked" "apk.calls exists"
 rm -rf "$TESTDIR"
 unset MOCK_HTTP_CODE
 
