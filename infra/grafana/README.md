@@ -34,24 +34,25 @@ Manages:
 ## In the CD pipeline
 
 This config is applied to **one Grafana Cloud stack that serves every
-environment**. It is wired into the Master API/UI CD pipeline
-([`master-api-ui.yml`](../../.github/workflows/master-api-ui.yml)) as a
-single job:
-
-- `deploy-grafana` — applies the dashboards after the `approve-production`
-  manual gate, alongside `deploy-prod-render` / `deploy-spa-prod`.
+environment**. It has its own deployment pipeline,
+[`master-grafana.yml`](../../.github/workflows/master-grafana.yml) (the
+`deploy-grafana` job), with a tight `paths:` scope — it fires **only** when a
+dashboard JSON or its Terraform changes (`deploy/grafana/**`,
+`infra/grafana/**`). It is deliberately *not* part of the API/SPA pipeline:
+a dashboard change is independent of the API release cadence, so it neither
+re-runs on every API/web push nor sits behind the `approve-production` gate.
+A push to `main` that touches those paths applies straight through (the
+change already passed PR review + the `grafana-terraform` lint job).
 
 There is no staging/prod split because the dashboards are
 environment-agnostic: each selects its data via the templated
 `${datasource}` variable at view time, so the same JSON renders against
 whichever Prometheus the viewer points it at. The target stack is selected
-purely by the `grafana_url` / `grafana_auth` variables. The job is
-**non-critical** (`continue-on-error`, design §6.2): a dashboard-deploy
-failure is alert-worthy but never blocks the API/SPA release.
+purely by the `grafana_url` / `grafana_auth` variables.
 
 ### Stateless by design
 
-The CD jobs run on ephemeral runners with no persisted Terraform state, so
+The CD job runs on an ephemeral runner with no persisted Terraform state, so
 every apply starts empty. That is safe because each `grafana_dashboard` is
 upserted by its stable `uid` (`overwrite = true`) — applying against an
 empty state updates the existing dashboard rather than erroring on a
@@ -80,11 +81,12 @@ and the GitHub Actions secrets.
 
 ## CI / auto-deploy (the normal path)
 
-Deploys run from the Master API/UI CD pipeline on push to `main` (see
-[In the CD pipeline](#in-the-cd-pipeline) above). The `master-api-ui.yml`
-`paths:` filter already includes `infra/**` and `deploy/**`, so a dashboard
-or Terraform change triggers the pipeline. Authentication comes from two
-GitHub Actions secrets set out-of-band (never committed):
+Deploys run from the `master-grafana.yml` pipeline on push to `main` (see
+[In the CD pipeline](#in-the-cd-pipeline) above). Its `paths:` filter is
+scoped to `deploy/grafana/**` and `infra/grafana/**`, so a dashboard or
+Terraform change triggers the pipeline — and nothing else does.
+Authentication comes from two GitHub Actions secrets set out-of-band (never
+committed):
 
 ```sh
 gh secret set GRAFANA_URL  -R wifihaven/wifihaven --body 'https://wifihaven.grafana.net'

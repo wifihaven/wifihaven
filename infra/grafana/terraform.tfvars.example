@@ -2,7 +2,7 @@
 # (gitignored) and fill in, OR export as TF_VAR_*. Both values are secrets —
 # never commit real values.
 #
-# In CD these are NOT read from a tfvars file: master-api-ui.yml feeds them
+# In CD these are NOT read from a tfvars file: master-grafana.yml feeds them
 # from the GRAFANA_URL / GRAFANA_AUTH GitHub Actions secrets (one Grafana
 # Cloud stack serves every environment).
 

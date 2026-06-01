@@ -6,12 +6,13 @@
 #     the committed JSON stays canonical (no copy, no drift).
 #
 # Single stack: this config is applied to one Grafana Cloud stack that serves
-# every environment. In CD (master-api-ui.yml) the `deploy-grafana` job runs
-# it once, after the production-approval gate, authenticated by the
-# `grafana_url` / `grafana_auth` variables (fed from the GRAFANA_URL /
-# GRAFANA_AUTH secrets). Dashboards are environment-agnostic — they select
-# their data via the templated `${datasource}` variable at view time — so a
-# per-environment dashboard copy is unnecessary.
+# every environment. Its own CD pipeline (master-grafana.yml, the
+# `deploy-grafana` job) runs it on push to main whenever a dashboard or this
+# Terraform changes, authenticated by the `grafana_url` / `grafana_auth`
+# variables (fed from the GRAFANA_URL / GRAFANA_AUTH secrets). Dashboards are
+# environment-agnostic — they select their data via the templated
+# `${datasource}` variable at view time — so a per-environment dashboard copy
+# is unnecessary.
 #
 # Stateless by design. The CD jobs run on ephemeral runners with no
 # persisted state, so every apply starts from an empty state. That is safe
