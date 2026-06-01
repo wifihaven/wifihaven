@@ -56,15 +56,25 @@ typed names used here even though the current code is stringly):
 case class PolicySnapshot(
     etag: ETag,
     generatedAt: Instant,
+    global: GlobalPolicy,                      // fleet-wide; applied to every MAC (§0.3)
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],   // wire-dedup only; not consulted at enforcement
     blocklists: Map[BlocklistId, Blocklist],
 )
 
+case class GlobalPolicy(
+    version: GlobalPolicyVersion,              // content hash — audit + ETag input
+    infraAllow: List[Hostname],                // @global_allow — beats ALL drops, all MACs
+    alwaysBlocked: List[Hostname],             // @global_block — beats profile/device allow
+    blocklistIds: List[BlocklistId],           // global category lists, applied to all MACs
+)
+
 case class DevicePolicy(
     profileId: Option[ProfileId],
     name: String,
-    rules: Option[BlockRules],                 // if Some, replaces profile rules entirely
+    rules: Option[BlockRules],                 // if Some, the API-resolved per-MAC rules
+                                               //   (profile+device merged server-side);
+                                               //   replaces the profile lookup at the router
 )
 
 case class ProfilePolicy(
@@ -107,10 +117,11 @@ sealed trait BlockReason
 
 sealed trait MacBlockReason extends BlockReason
 object MacBlockReason:
-  case object Paused    extends MacBlockReason
-  case object Schedule  extends MacBlockReason
-  case object TimeLimit extends MacBlockReason
-  case object Manual    extends MacBlockReason
+  case object Paused      extends MacBlockReason
+  case object Schedule    extends MacBlockReason
+  case object TimeLimit   extends MacBlockReason
+  case object Manual      extends MacBlockReason
+  case object DefaultDeny extends MacBlockReason   // profile is default-deny baseline (§0.3)
 
 object BlockReason:
   // Per-flow drop reasons — emitted by the router at connection-drop time
@@ -151,6 +162,52 @@ Enforcement plane per field:
 dnsmasq's role is exclusively: forward DNS upstream, populate per-host
 nftables ipsets via `--ipset=`, and write a query log that `dns-tail` reads
 for usage attribution (§7.2). It is **never** the enforcement plane.
+
+### 0.3 The global policy layer (#1308)
+
+Fleet-wide policy is carried **once** in `snapshot.global`, not copied into
+every profile/MAC. It is a small flat section — **not a third tier** in the
+device-replaces-profile resolution above — applied uniformly to every MAC at
+the router:
+
+- `global.infraAllow` → a single `@global_allow` ipset (the connectivity /
+  PKI / captive-portal hosts that must survive any block). It is the
+  fleet-wide analogue of `extraAllowed` and **suppresses every drop path for
+  every MAC**, including a global block.
+- `global.alwaysBlocked` / `global.blocklistIds` → `@global_block`-class
+  ipsets that drop for every MAC and are suppressed **only** by
+  `@global_allow` — a profile or device's own `extraAllowed` does **not**
+  un-block them.
+
+For a forwarded packet from MAC `m` to destination `d` the drop predicate is:
+
+```
+drop(m, d) ⇔
+      ( global_block_hit(d) ∧ ¬global_allow_hit(d) )
+   ∨  ( m ∈ blocked_macs     ∧ ¬ea_hit(m,d) ∧ ¬global_allow_hit(d) )
+   ∨  ( eb_hit(m,d)          ∧ ¬ea_hit(m,d) ∧ ¬global_allow_hit(d) )
+   ∨  ( bl_hit(m,d)          ∧ ¬ea_hit(m,d) ∧ ¬global_allow_hit(d) )
+   ∨  ( blockIpOnly(m)       ∧ d ∉ resolved_<m> )
+```
+
+Per-MAC `ea_hit` suppresses the per-MAC drops but **not** `global_block`; only
+`global_allow` does. That is what makes the override directions precise:
+**infra allow always wins**, a **global block a profile may not un-block**,
+and a **global default a profile may override** (defaults are resolved
+server-side into per-MAC `BlockRules` and never reach the wire as "global").
+The router still never sees a profile, schedule, or tier. The infra allowlist
+is a security-sensitive bypass surface — curated, versioned
+(`GlobalPolicy.version`), and auditable. See
+[`docs/design/global-policy-layer.md`](design/global-policy-layer.md) for the
+full composition model, precedence table, and per-profile **default-deny**
+mode (`blocked = true` baseline + `MacBlockReason.DefaultDeny`, with
+`extraAllowed` and `global.infraAllow` carving out).
+
+> **Status (#1308).** This is the target. Until the follow-ups land, the
+> infra/UI hosts are still copied into each profile's `extraAllowed`
+> (`PolicyService.computeBlockRules`); #1307 ships the infra allowlist the
+> same copy-into-every-profile way as a near-term fix. This design removes
+> that redundancy.
 
 > **Known deviations from this model as of May 2026** (tracked follow-ups,
 > not the canonical design):
@@ -372,6 +429,12 @@ Modified` if the client's ETag still matches.
 {
   "etag": "sha256:abc123...",
   "generatedAt": "2026-05-02T14:00:00Z",
+  "global": {
+    "version": "gp-7f3a91c0",
+    "infraAllow": ["connectivitycheck.gstatic.com", "ocsp.digicert.com"],
+    "alwaysBlocked": [],
+    "blocklistIds": []
+  },
   "devices": {
     "aa:bb:cc:11:22:33": {
       "profileId": 3,
@@ -419,6 +482,9 @@ ETag is computed deterministically over snapshot content.
 
 Notes:
 
+- The `global` section is carried once and applied to every MAC (§0.3). The
+  infra-allow hosts are **not** copied into each profile's `extraAllowed`;
+  changing them rewrites only `global` and its `version`.
 - The first device above takes its rules from the `"kids"` profile.
 - The second device overrides the profile entirely — its `rules` are used
   verbatim. The override replaces; it does not merge with the profile.
