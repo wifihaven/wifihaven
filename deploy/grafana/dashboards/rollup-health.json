@@ -177,7 +177,7 @@
         "type": "custom"
       },
       {
-        "current": { "selected": true, "text": "default", "value": "default" },
+        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
         "hide": 0,
         "includeAll": false,
         "label": "Datasource",
