@@ -1810,6 +1810,35 @@ describe("render extraAllowed enforcement (#421)", function()
       1, true))
   end)
 
+  -- #1307: the carve-out must apply for *every* MacBlockReason, not just
+  -- Paused. The prod miss was an allowed app (Math Academy) dropped when the
+  -- profile's daily limit ran out (reason TimeLimit). Lock that the
+  -- blocked-AND-has-extraAllowed MAC is pulled out of @blocked_macs and gets
+  -- the `ip daddr != @ea_...` exception with the TimeLimit reason comment.
+  it("#1307: carves extraAllowed out of the TimeLimit @blocked_macs drop", function()
+    local s = snap_ea()
+    s.profiles["3"].rules.blocked = true
+    s.profiles["3"].rules.blockReason = "TimeLimit"
+    s.profiles["3"].rules.extraAllowed = { "mathacademy.com" }
+    local nft = render.nft(s)
+    -- MAC pulled out of the @blocked_macs set (it has extraAllowed).
+    local pos = nft:find("set blocked_macs", 1, true)
+    local blk_end = nft:find("\n  }", pos, true)
+    local blk = nft:sub(pos, blk_end)
+    assert.is_nil(blk:find("aa:bb:cc:11:22:33", 1, true))
+    -- Per-MAC v4 + v6 drops carry the ea exception and the TimeLimit reason.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_mathacademy_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
+      1, true))
+    -- And the block-page DNAT for the allowed host is likewise carved out.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
 end)
 
 -- ── render.write_blocked_reasons (#437) ──────────────────────────────────────

@@ -334,6 +334,41 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
         assertTrue(!ea.contains("youtube.com"))
     },
+    test(
+      "#1307: AppMode.Allowed app stays in extraAllowed when daily cap exhausted (blocked=TimeLimit)",
+    ) {
+      // Prod miss (Kids/Math Academy, 2026-06-01): an allowed-mode app got
+      // blocked when the profile's daily time limit ran out. extraAllowed must
+      // beat the TimeLimit block at the snapshot layer (#421), exactly as it
+      // does for pause/schedule. Mirrors the prod assignment: mode=Allowed,
+      // exemptFromDaily=true, single apex host.
+      val mac = "aa:bb:cc:dd:ee:13"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
+        appId <- ar.create("Math Academy", "math-academy", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
+        rid   <- seedRouterRow
+        // Burn 35 min on an unrelated host → exhausts the 30-min daily cap.
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+        eb    = rules.extraBlocked.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(ea.contains("mathacademy.com")) &&
+        assertTrue(!eb.contains("mathacademy.com"))
+    },
     test("#1105: same app assigned to two profiles with different exempt flags → independent") {
       for {
         _     <- cleanDb
