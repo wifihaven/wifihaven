@@ -277,5 +277,59 @@ object ConnectionEventRollupSpec
         runs.exists(r => r.job == RollupJobs.ConnEventsHourlyJob && r.status == "ok"),
       )
     },
+    // #1265 (PR3): the rollup is the source for the DEFAULT /series view, which
+    // excludes IPv4/IPv6 multicast + broadcast (#969). Since the rollup carries
+    // no host_type/host_value, the read path can't re-filter, so the reroll must
+    // exclude multicast at write time — keeping the rollup == default-view set.
+    test("rerollConnEventsHourly/Daily exclude multicast + broadcast destinations") {
+      for {
+        _   <- cleanDb
+        rid <- seedRouter
+        bucket = LocalDate.of(2026, 2, 1).atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(3600)
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        mcast = (ip: String) =>
+          ConnectionEventInsert(
+            rid,
+            None,
+            HostId.IPv4(IpAddress.unsafe(ip)),
+            None,
+            true,
+            BlockReason.fromWire("allowed"),
+            bucket.plusSeconds(30),
+          )
+        _           <- connRepo.insertBatch(
+          List(
+            event(rid, "keep.com", allowed = true, bucket.plusSeconds(10)),
+            mcast("239.255.255.250"), // SSDP multicast (224.0.0.0/4)
+            mcast("255.255.255.255"), // IPv4 broadcast
+            ConnectionEventInsert(
+              rid,
+              None,
+              HostId.IPv6(IpAddress.unsafe("ff02::fb")),
+              None,
+              true,
+              BlockReason.fromWire("allowed"),
+              bucket.plusSeconds(40),
+            ),                        // IPv6 multicast (ff00::/8)
+          ),
+        )
+        _           <- connRepo.rerollConnEventsHourly(bucket.minusSeconds(3600))
+        _           <- connRepo.rerollConnEventsDaily(LocalDate.of(2026, 2, 1).minusDays(1))
+        xa          <- ZIO.service[Transactor[Task]]
+        hourlyHosts <-
+          sql"SELECT hostname FROM connection_events_hourly ORDER BY hostname"
+            .query[String]
+            .to[List]
+            .transact(xa)
+        dailyHosts  <-
+          sql"SELECT hostname FROM connection_events_daily ORDER BY hostname"
+            .query[String]
+            .to[List]
+            .transact(xa)
+      } yield assertTrue(
+        hourlyHosts == List("keep.com"),
+        dailyHosts == List("keep.com"),
+      )
+    },
   ) @@ TestAspect.sequential
 }

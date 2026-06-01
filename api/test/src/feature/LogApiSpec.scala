@@ -9,15 +9,18 @@ import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import doobie.*
+import doobie.implicits.*
+import zio.interop.catz.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
 import zio.test.*
-import zio.test.Assertion.*
 
-import java.time.Instant
+import java.time.{Instant, LocalDate, ZoneOffset}
 
-object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
+object LogApiSpec
+    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
 
   override val bootstrap =
     TestDatabase.layer ++ TestLayers.withClock(TestClock.schoolDayAfternoon)
@@ -47,6 +50,44 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
     )
 
   private def recentTs = Instant.now().minusSeconds(300)
+
+  private def ceFqdn(
+      routerId: RouterId,
+      mac: String,
+      host: String,
+      allowed: Boolean,
+  ): ConnectionEventInsert =
+    ConnectionEventInsert(
+      routerId,
+      Some(MacAddress.unsafe(mac)),
+      HostId.Fqdn(Hostname.unsafe(host)),
+      None,
+      allowed,
+      BlockReason.fromWire(if (allowed) "allowed" else "category:adult"),
+      recentTs,
+    )
+
+  private def ceMulticast(routerId: RouterId, ip: String): ConnectionEventInsert =
+    ConnectionEventInsert(
+      routerId,
+      None,
+      HostId.IPv4(IpAddress.unsafe(ip)),
+      None,
+      true,
+      BlockReason.fromWire("allowed"),
+      recentTs,
+    )
+
+  // #1265: roll the just-inserted events into both rollup tiers, then wipe the
+  // raw table. A subsequent /series read that still returns the data could only
+  // have been served by a rollup table — the proof that tier-routing engaged.
+  private def rollAndWipeRaw(connRepo: ConnectionEventRepo) =
+    for {
+      _  <- connRepo.rerollConnEventsHourly(Instant.now().minusSeconds(7200))
+      _  <- connRepo.rerollConnEventsDaily(LocalDate.now(ZoneOffset.UTC).minusDays(1))
+      xa <- ZIO.service[Transactor[Task]]
+      _  <- sql"DELETE FROM connection_events".update.run.transact(xa)
+    } yield ()
 
   def spec = suite("Log API (connection_events)")(
     test("GET /api/logs returns events mapped to QueryLog shape with router name as location") {
@@ -1406,6 +1447,205 @@ object LogApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clo
             .find(_.groups.get("domain").contains("239.255.255.250"))
             .exists(_.countSucceeded == 2),
         )
+    },
+    // ── #1265: rollup tier read-routing ──────────────────────────────────────
+    // Proof technique: insert events, roll them into the hourly+daily rollups,
+    // then DELETE the raw connection_events. A /series read that still returns
+    // the counts could only have come from a rollup table.
+    test("#1265: coarse bucket + wide window is served from the DAILY rollup (raw wiped)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = false),
+            ceFqdn(routerId, "aa:bb:cc:00:00:02", "youtube.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "facebook.com", allowed = true),
+          ),
+        )
+        _        <- rollAndWipeRaw(connRepo)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        // bucket=1d → Daily cap; hours=720 (30d) → Daily window preference.
+        resp <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720",
+          token,
+        )
+        body <- resp.body.asString
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
+        yt   = rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
+        fb   = rows.find(_.groups.getOrElse("domain", "") == "facebook.com")
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(yt.exists(r => r.countSucceeded == 2 && r.countBlocked == 1)) &&
+        assertTrue(yt.exists(_.distinctDevices == 2)) &&
+        assertTrue(fb.exists(r => r.countSucceeded == 1 && r.countBlocked == 0))
+    },
+    test("#1265: coarse bucket + medium window is served from the HOURLY rollup (raw wiped)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = false),
+            ceFqdn(routerId, "aa:bb:cc:00:00:02", "facebook.com", allowed = true),
+          ),
+        )
+        _        <- rollAndWipeRaw(connRepo)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        // bucket=1h → Hourly cap; hours=48 (2d) → Hourly window preference.
+        resp <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1h&groupBy=domain&hours=48",
+          token,
+        )
+        body <- resp.body.asString
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        rows = page.rows
+        yt   = rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
+        fb   = rows.find(_.groups.getOrElse("domain", "") == "facebook.com")
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(yt.exists(r => r.countSucceeded == 1 && r.countBlocked == 1)) &&
+        assertTrue(fb.exists(r => r.countSucceeded == 1 && r.countBlocked == 0))
+    },
+    test("#1265: fine bucket + short window stays on RAW (empty after raw wiped)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true)),
+        )
+        _        <- rollAndWipeRaw(connRepo)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        // bucket=10m → Raw cap; default hours=24 → Raw. Must NOT touch a rollup.
+        respFine   <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=10m&groupBy=domain",
+          token,
+        )
+        bodyFine   <- respFine.body.asString
+        pageFine   <- ZIO.fromEither(bodyFine.fromJson[ConnectionEventSeriesPage])
+        // bucket=1h but default hours=24 → window preference Raw → stays raw.
+        respNarrow <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1h&groupBy=domain",
+          token,
+        )
+        bodyNarrow <- respNarrow.body.asString
+        pageNarrow <- ZIO.fromEither(bodyNarrow.fromJson[ConnectionEventSeriesPage])
+      } yield assertTrue(respFine.status == Status.Ok) &&
+        assertTrue(pageFine.rows.isEmpty) &&
+        assertTrue(pageNarrow.rows.isEmpty)
+    },
+    test("#1265: includeMulticast=true always falls back to RAW (empty after raw wiped)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true),
+            ceMulticast(routerId, "239.255.255.250"),
+          ),
+        )
+        _        <- rollAndWipeRaw(connRepo)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        // Default (multicast excluded) coarse+wide read is served by the rollup,
+        // and the rollup excludes multicast at write time → only youtube.
+        respDef <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720",
+          token,
+        )
+        bodyDef <- respDef.body.asString
+        pageDef <- ZIO.fromEither(bodyDef.fromJson[ConnectionEventSeriesPage])
+        // includeMulticast=true cannot be served by the rollup (no host_type), so
+        // it must fall back to raw — which we wiped → empty.
+        respInc <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720&includeMulticast=true",
+          token,
+        )
+        bodyInc <- respInc.body.asString
+        pageInc <- ZIO.fromEither(bodyInc.fromJson[ConnectionEventSeriesPage])
+      } yield assertTrue(pageDef.rows.flatMap(_.groups.get("domain")) == List("youtube.com")) &&
+        assertTrue(pageInc.rows.isEmpty)
+    },
+    test("#1265: blocked filter on the rollup path sums only the matching count column") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true),
+            ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = false),
+          ),
+        )
+        _        <- rollAndWipeRaw(connRepo)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        respB <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720&blocked=true",
+          token,
+        )
+        bodyB <- respB.body.asString
+        pageB <- ZIO.fromEither(bodyB.fromJson[ConnectionEventSeriesPage])
+        respA <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720&blocked=false",
+          token,
+        )
+        bodyA <- respA.body.asString
+        pageA <- ZIO.fromEither(bodyA.fromJson[ConnectionEventSeriesPage])
+        ytB = pageB.rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
+        ytA = pageA.rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
+      } yield assertTrue(ytB.exists(r => r.countBlocked == 1 && r.countSucceeded == 0)) &&
+        assertTrue(ytA.exists(r => r.countSucceeded == 2 && r.countBlocked == 0))
+    },
+    test("#1265: rollup-served lastSeen is bucket-granular (equals windowStart)") {
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        _        <- connRepo.insertBatch(
+          List(ceFqdn(routerId, "aa:bb:cc:00:00:01", "youtube.com", allowed = true)),
+        )
+        _        <- rollAndWipeRaw(connRepo)
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(
+          routes,
+          "/api/connection-events/series?bucket=1d&groupBy=domain&hours=720",
+          token,
+        )
+        body <- resp.body.asString
+        page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
+        yt = page.rows.find(_.groups.getOrElse("domain", "") == "youtube.com")
+      } yield assertTrue(yt.exists(r => r.lastSeen == r.windowStart))
     },
   ) @@ TestAspect.sequential
 }

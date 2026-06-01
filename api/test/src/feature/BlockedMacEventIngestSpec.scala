@@ -163,9 +163,14 @@ object BlockedMacEventIngestSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         )
         body = RouterEventsRequest(id, evs).toJson
         _        <- post(ingest, "/api/router/events", body, tk)
+        // hours=24 keeps this on the raw tier (#1265): a freshly-ingested,
+        // not-yet-rerolled event is only visible on the live connection_events
+        // table. A wider window would route to the hourly rollup (rollup-lag by
+        // design — that path is covered in LogApiSpec). This test is about
+        // ingest visibility, so it reads the fresh path.
         resp     <- get(
           logRoutes,
-          s"/api/connection-events/series?bucket=1h&blocked=true&hours=168",
+          s"/api/connection-events/series?bucket=1h&blocked=true&hours=24",
           adminTok,
         )
         respBody <- resp.body.asString

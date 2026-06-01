@@ -492,6 +492,27 @@ trait ConnectionEventRepo {
   ): Task[List[ConnectionEventAggRow]]
 
   /**
+   * #1265: rollup-backed counterpart of [[querySeries]]. Reads pre-aggregated counts from
+   * `connection_events_hourly` / `connection_events_daily` (selected by `grain`) instead of
+   * scanning the raw `connection_events` table, re-binning the stored grain up to the requested
+   * `bucketSeconds`. Produces the same [[ConnectionEventAggRow]] shape, with two deliberate
+   * differences from the raw path (the rollup is lossy by design):
+   *   - `lastSeen` is bucket-granular (the rebinned window boundary), since the rollup only stores
+   *     bucket starts, not individual event timestamps;
+   *   - multicast/broadcast rows are absent because the reroll excludes them at write time, so this
+   *     path must only be chosen when `includeMulticast` is false (the route enforces this).
+   *
+   * `count_succeeded` / `count_blocked` are summed (not re-derived from an `allowed` split, which
+   * the rollup does not carry); the `blocked` filter narrows to the matching count column.
+   */
+  def querySeriesRollup(
+      f: LogFilter,
+      bucketSeconds: Int,
+      groupBy: Set[String],
+      grain: BucketGrain,
+  ): Task[List[ConnectionEventAggRow]]
+
+  /**
    * #1265: re-aggregate the trailing N hours of `connection_events` into
    * `connection_events_hourly`. Counterpart of [[RollupRepo.rerollHourly]] but for the event-count
    * tier. `since` is the earliest `ts` to re-roll, inclusive; callers truncate it to an hour
@@ -1939,35 +1960,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // defaults to "2026-05-21 22:00:00+00" (space separator) which `new Date(...)`
   // rejects as Invalid Date.
   def querySeries(f: LogFilter, bucketSeconds: Int, groupBy: Set[String]) = {
-    // #862: inline `bucketSeconds` as a SQL literal (it's a server-controlled
-    // enum value, not user input) so the SELECT and GROUP BY copies of the
-    // date_bin expression are byte-identical. Postgres matches the SELECT
-    // expression against GROUP BY by parse tree; if doobie assigns different
-    // parameter positions to the two copies, the match fails and PG raises
-    // "ce.ts must appear in GROUP BY".
-    val bucketIv    = Fragment.const(s"make_interval(secs => $bucketSeconds)")
-    val domainExpr  = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
-    val deviceExpr  = fr"COALESCE(d.name, ce.mac::TEXT)"
-    val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
+    val domainExpr = fr"COALESCE(ce.resolved_host_value, ce.host_value)"
+    val deviceExpr = fr"COALESCE(d.name, ce.mac::TEXT)"
+    // Raw path bins on the per-event timestamp.
+    val tsBin      = fr"ce.ts"
 
-    // #917: strictly additive — empty set = no drill, one row per window.
-    // Multi-group composes freely across {domain, device, profile, app}.
-    val wantsDomain  = groupBy.contains("domain")
-    val wantsDevice  = groupBy.contains("device")
-    val wantsProfile = groupBy.contains("profile")
-    val wantsApp     = groupBy.contains("app")
-
-    // #862: the window bucket uses the full date_bin/to_char expression (not
-    // the SELECT alias) so the HAVING clause for the keyset cursor below can
-    // reference the same expression — PG doesn't recognize SELECT aliases in
-    // HAVING.
-    val winExpr = fr"""to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
-                          AT TIME ZONE 'UTC',
-                          'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
-
-    // Shared FROM + filter fragments. Extracted ahead of the SELECT so the
-    // #857 host-resolution probe below can reuse the exact same window + filter
-    // predicates as the aggregation, guaranteeing both see the same host set.
     val fromJoins = fr"""FROM connection_events ce
            LEFT JOIN devices d  ON d.mac = ce.mac
            LEFT JOIN profiles p ON p.id  = d.profile_id
@@ -1992,6 +1989,159 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     val byLoc     = f.location.fold(fr"")(l => fr"AND r.name = $l")
     val byMc      = if (f.includeMulticast) fr"" else multicastFilterSql
     val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc ++ byMc
+
+    val succProj     = fr"COUNT(*) FILTER (WHERE ce.allowed)::INT"
+    val blkProj      = fr"COUNT(*) FILTER (WHERE NOT ce.allowed)::INT"
+    val lastSeenExpr =
+      fr"""to_char(MAX(ce.ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
+
+    runSeries(
+      f,
+      bucketSeconds,
+      groupBy,
+      fromJoins,
+      filters,
+      domainExpr,
+      deviceExpr,
+      tsBin,
+      succProj,
+      blkProj,
+      lastSeenExpr,
+    )
+  }
+
+  // #1265: rollup-backed `/series`. Reads pre-aggregated counts from the hourly
+  // or daily rollup (per `grain`) and re-bins them up to `bucketSeconds`. Shares
+  // all of runSeries' projection/cursor/decode machinery with the raw path; only
+  // the source-specific fragments differ:
+  //   - source is the rollup table aliased `cer`, bin on its bucket boundary;
+  //   - counts are SUMmed from the stored split columns (no per-event `allowed`);
+  //   - the `blocked` filter narrows to the matching count column and zeroes the
+  //     opposite projection so a mixed (mac,host,bucket) row contributes one side;
+  //   - no multicast filter — the reroll already excluded those at write time, so
+  //     this path is only chosen when includeMulticast is false (route enforces).
+  def querySeriesRollup(
+      f: LogFilter,
+      bucketSeconds: Int,
+      groupBy: Set[String],
+      grain: BucketGrain,
+  ) = {
+    val isDaily    = grain == BucketGrain.Daily
+    val table      =
+      if (isDaily) fr"connection_events_daily cer" else fr"connection_events_hourly cer"
+    // Bin on the stored bucket boundary (timestamptz). For daily, lift the DATE
+    // to a UTC midnight timestamptz so date_bin sees the same type as the hourly
+    // bucket_start and the raw ce.ts path.
+    val tsBin      =
+      if (isDaily) fr"(cer.date::timestamp AT TIME ZONE 'UTC')" else fr"cer.bucket_start"
+    val domainExpr = fr"cer.hostname"
+    // Rollup folds NULL mac to ''; lift it back to NULL so the device name
+    // COALESCE matches the raw path's `COALESCE(d.name, ce.mac::TEXT)`.
+    val deviceExpr = fr"COALESCE(d.name, NULLIF(cer.mac, ''))"
+
+    val fromJoins = fr"FROM " ++ table ++ fr"""
+           LEFT JOIN devices d  ON d.mac = cer.mac
+           LEFT JOIN profiles p ON p.id  = d.profile_id
+           LEFT JOIN routers r  ON r.id  = cer.router_id"""
+    val anchor    = f.until.fold(fr"NOW()")(u => fr"$u::TIMESTAMPTZ")
+    val window    =
+      fr"AND " ++ tsBin ++ fr"> " ++ anchor ++ fr"- make_interval(hours => ${f.hours}) AND " ++
+        tsBin ++ fr"<= " ++ anchor
+    val byMac     = cats.data.NonEmptyList
+      .fromList(f.macs)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"cer.mac", nel))
+    val byDev     = cats.data.NonEmptyList
+      .fromList(f.deviceIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.id", nel))
+    val byPid     = cats.data.NonEmptyList
+      .fromList(f.profileIds)
+      .fold(fr"")(nel => fr"AND " ++ Fragments.in(fr"d.profile_id", nel))
+    // Rollup has split counts, not a per-event `allowed` flag: narrow to the
+    // matching count column rather than filtering individual events.
+    val byBl      = f.blocked.fold(fr"")(b =>
+      if (b) fr"AND cer.count_blocked > 0" else fr"AND cer.count_succeeded > 0",
+    )
+    val byDom     = f.domain.fold(fr"")(d => fr"AND cer.hostname ILIKE ${s"%$d%"}")
+    val byLoc     = f.location.fold(fr"")(l => fr"AND r.name = $l")
+    // No multicast filter: excluded at reroll write time.
+    val filters   = window ++ byMac ++ byDev ++ byPid ++ byBl ++ byDom ++ byLoc
+
+    // Sum the stored split counts. When the caller narrows to blocked/allowed,
+    // zero the opposite projection so a row mixing both contributes only the
+    // matching side (mirrors the raw path's FILTER collapsing to one side).
+    val succProj     =
+      if (f.blocked.contains(true)) fr"0::INT" else fr"COALESCE(SUM(cer.count_succeeded), 0)::INT"
+    val blkProj      =
+      if (f.blocked.contains(false)) fr"0::INT" else fr"COALESCE(SUM(cer.count_blocked), 0)::INT"
+    // lastSeen is bucket-granular (the rollup stores no per-event ts): bin
+    // MAX(bucket) to the requested window so it equals window_start.
+    val bucketIv     = Fragment.const(s"make_interval(secs => $bucketSeconds)")
+    val lastSeenExpr =
+      fr"""to_char(date_bin($bucketIv, MAX(""" ++ tsBin ++ fr"""), TIMESTAMP '2000-01-01 00:00:00')
+                          AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
+
+    runSeries(
+      f,
+      bucketSeconds,
+      groupBy,
+      fromJoins,
+      filters,
+      domainExpr,
+      deviceExpr,
+      tsBin,
+      succProj,
+      blkProj,
+      lastSeenExpr,
+    )
+  }
+
+  // #847 + #846 + #1265: shared aggregation engine for both the raw and
+  // rollup-backed `/series` reads. Callers supply the source-specific fragments
+  // (FROM/joins, row filters, the domain/device group expressions, the
+  // timestamp to bin on, the succeeded/blocked count projections, and the
+  // last_seen projection); everything else — app resolution, multi-group
+  // composition, keyset cursor, ORDER BY, and the result decode — is identical.
+  //
+  // Buckets are computed in UTC via date_bin — the UI re-renders boundaries in
+  // household-local tz for display. #846: emit ISO 8601 with a T separator and
+  // trailing Z so JS Date.parse accepts these without a per-field workaround.
+  private def runSeries(
+      f: LogFilter,
+      bucketSeconds: Int,
+      groupBy: Set[String],
+      fromJoins: Fragment,
+      filters: Fragment,
+      domainExpr: Fragment,
+      deviceExpr: Fragment,
+      tsBin: Fragment,
+      succProj: Fragment,
+      blkProj: Fragment,
+      lastSeenExpr: Fragment,
+  ): Task[List[ConnectionEventAggRow]] = {
+    // #862: inline `bucketSeconds` as a SQL literal (it's a server-controlled
+    // enum value, not user input) so the SELECT and GROUP BY copies of the
+    // date_bin expression are byte-identical. Postgres matches the SELECT
+    // expression against GROUP BY by parse tree; if doobie assigns different
+    // parameter positions to the two copies, the match fails and PG raises
+    // "must appear in GROUP BY".
+    val bucketIv    = Fragment.const(s"make_interval(secs => $bucketSeconds)")
+    val profileExpr = fr"COALESCE(p.name, '(unassigned)')"
+
+    // #917: strictly additive — empty set = no drill, one row per window.
+    // Multi-group composes freely across {domain, device, profile, app}.
+    val wantsDomain  = groupBy.contains("domain")
+    val wantsDevice  = groupBy.contains("device")
+    val wantsProfile = groupBy.contains("profile")
+    val wantsApp     = groupBy.contains("app")
+
+    // #862: the window bucket uses the full date_bin/to_char expression (not
+    // the SELECT alias) so the HAVING clause for the keyset cursor below can
+    // reference the same expression — PG doesn't recognize SELECT aliases in
+    // HAVING.
+    val winExpr =
+      fr"""to_char(date_bin($bucketIv, """ ++ tsBin ++ fr""", TIMESTAMP '2000-01-01 00:00:00')
+                          AT TIME ZONE 'UTC',
+                          'YYYY-MM-DD"T"HH24:MI:SS"Z"')"""
 
     // #857: resolve each in-window host to its app(s) in Scala via
     // HostMatch.lookupApex — the single host→apex matcher shared with the
@@ -2105,14 +2255,11 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
             selAppSlug ++ fr"AS grp_app_slug," ++
             selAppName ++ fr"AS grp_app_name," ++
             selAppIcon ++ fr"AS grp_app_icon," ++
-            selAppId ++ fr"""AS grp_app_id,
-                  to_char(date_bin($bucketIv, ce.ts, TIMESTAMP '2000-01-01 00:00:00')
-                          AT TIME ZONE 'UTC',
-                          'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS window_start,
-                  COUNT(*) FILTER (WHERE ce.allowed)::INT      AS count_succeeded,
-                  COUNT(*) FILTER (WHERE NOT ce.allowed)::INT  AS count_blocked,
-                  to_char(MAX(ce.ts) AT TIME ZONE 'UTC',
-                          'YYYY-MM-DD"T"HH24:MI:SS"Z"')  AS last_seen,
+            selAppId ++ fr"AS grp_app_id," ++
+            winExpr ++ fr"AS window_start," ++
+            succProj ++ fr"AS count_succeeded," ++
+            blkProj ++ fr"AS count_blocked," ++
+            lastSeenExpr ++ fr"""AS last_seen,
                   mode() WITHIN GROUP (ORDER BY """ ++ deviceExpr ++ fr""") AS top_device,
                   COUNT(DISTINCT """ ++ deviceExpr ++ fr""")::INT          AS distinct_devices,
                   COUNT(DISTINCT """ ++ profileExpr ++ fr""")::INT         AS distinct_profiles,
@@ -2260,9 +2407,13 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // hourly buckets line up exactly with what the on-the-fly read computes.
   def rerollConnEventsHourly(since: Instant): Task[Option[Int]] = {
     val truncSince = since.truncatedTo(java.time.temporal.ChronoUnit.HOURS)
-    val sql        =
-      sql"""
-        INSERT INTO connection_events_hourly
+    // #1265 (PR3): exclude multicast/broadcast at write time so the rollup
+    // matches /series's DEFAULT (includeMulticast=false) view. The rollup drops
+    // host_type/host_value, so the read path can't re-filter — the only place to
+    // apply the #969 exclusion is here, against the raw columns. A read that
+    // wants multicast (includeMulticast=true) falls back to raw.
+    val head       =
+      fr"""INSERT INTO connection_events_hourly
           (router_id, mac, hostname, bucket_start, count_succeeded, count_blocked, sample_count, rolled_at)
         SELECT
           ce.router_id,
@@ -2274,17 +2425,18 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           COUNT(*)::INT,
           NOW()
         FROM connection_events ce
-        WHERE ce.ts >= $truncSince
-        GROUP BY ce.router_id, COALESCE(ce.mac, ''),
+        WHERE ce.ts >= $truncSince"""
+    val tail       =
+      fr"""GROUP BY ce.router_id, COALESCE(ce.mac, ''),
                  COALESCE(ce.resolved_host_value, ce.host_value),
                  date_bin(INTERVAL '1 hour', ce.ts, TIMESTAMP '2000-01-01 00:00:00')
         ON CONFLICT (router_id, mac, hostname, bucket_start) DO UPDATE SET
           count_succeeded = EXCLUDED.count_succeeded,
           count_blocked   = EXCLUDED.count_blocked,
           sample_count    = EXCLUDED.sample_count,
-          rolled_at       = EXCLUDED.rolled_at
-      """
-    withRollupLock(RollupLockKeys.ConnEventsHourly)(sql.update.run)
+          rolled_at       = EXCLUDED.rolled_at"""
+    val q          = head ++ fr" " ++ multicastFilterSql ++ fr" " ++ tail
+    withRollupLock(RollupLockKeys.ConnEventsHourly)(q.update.run)
   }
 
   def rerollConnEventsDaily(sinceDate: LocalDate): Task[Option[Int]] = {
@@ -2294,9 +2446,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // scan (#1254 class). The lower bound is sinceDate's UTC midnight; any event
     // whose UTC date is >= sinceDate has ts >= that instant.
     val sinceTs = sinceDate.atStartOfDay(java.time.ZoneOffset.UTC).toInstant
-    val sql     =
-      sql"""
-        INSERT INTO connection_events_daily
+    // #1265 (PR3): same multicast exclusion as the hourly reroll — see note there.
+    val head    =
+      fr"""INSERT INTO connection_events_daily
           (router_id, mac, hostname, date, count_succeeded, count_blocked, sample_count, rolled_at)
         SELECT
           ce.router_id,
@@ -2308,17 +2460,18 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
           COUNT(*)::INT,
           NOW()
         FROM connection_events ce
-        WHERE ce.ts >= $sinceTs
-        GROUP BY ce.router_id, COALESCE(ce.mac, ''),
+        WHERE ce.ts >= $sinceTs"""
+    val tail    =
+      fr"""GROUP BY ce.router_id, COALESCE(ce.mac, ''),
                  COALESCE(ce.resolved_host_value, ce.host_value),
                  (ce.ts AT TIME ZONE 'UTC')::DATE
         ON CONFLICT (router_id, mac, hostname, date) DO UPDATE SET
           count_succeeded = EXCLUDED.count_succeeded,
           count_blocked   = EXCLUDED.count_blocked,
           sample_count    = EXCLUDED.sample_count,
-          rolled_at       = EXCLUDED.rolled_at
-      """
-    withRollupLock(RollupLockKeys.ConnEventsDaily)(sql.update.run)
+          rolled_at       = EXCLUDED.rolled_at"""
+    val q       = head ++ fr" " ++ multicastFilterSql ++ fr" " ++ tail
+    withRollupLock(RollupLockKeys.ConnEventsDaily)(q.update.run)
   }
 
   def stats =
