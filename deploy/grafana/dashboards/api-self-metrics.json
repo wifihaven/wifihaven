@@ -42,7 +42,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (status) (rate(http_requests_total[5m]))",
+          "expr": "sum by (status) (rate(http_requests_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -71,19 +71,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -120,13 +120,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))",
+          "expr": "sum(rate(http_requests_total{status=~\"5..\", env=\"$env\"}[5m])) / sum(rate(http_requests_total{env=\"$env\"}[5m]))",
           "legendFormat": "5xx",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(http_requests_total{status=~\"4..\"}[5m])) / sum(rate(http_requests_total[5m]))",
+          "expr": "sum(rate(http_requests_total{status=~\"4..\", env=\"$env\"}[5m])) / sum(rate(http_requests_total{env=\"$env\"}[5m]))",
           "legendFormat": "4xx",
           "refId": "B"
         }
@@ -155,7 +155,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
@@ -184,7 +184,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "topk(10, sum by (route, method) (rate(http_requests_total[5m])))",
+          "expr": "topk(10, sum by (route, method) (rate(http_requests_total{env=\"$env\"}[5m])))",
           "legendFormat": "{{method}} {{route}}",
           "refId": "A"
         }
@@ -213,7 +213,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (op) (rate(db_query_duration_seconds_count[5m]))",
+          "expr": "sum by (op) (rate(db_query_duration_seconds_count{env=\"$env\"}[5m]))",
           "legendFormat": "{{op}}",
           "refId": "A"
         }
@@ -242,7 +242,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le, op) (rate(db_query_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, op) (rate(db_query_duration_seconds_bucket{env=\"$env\"}[5m])))",
           "legendFormat": "{{op}}",
           "refId": "A"
         }
@@ -271,7 +271,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (reason) (rate(auth_failures_total[5m]))",
+          "expr": "sum by (reason) (rate(auth_failures_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -310,7 +310,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "agent_connected_routers",
+          "expr": "agent_connected_routers{env=\"$env\"}",
           "legendFormat": "connected",
           "refId": "A"
         }
@@ -346,7 +346,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "rate(traffic_reports_filtered_zero_bytes_total[5m])",
+          "expr": "rate(traffic_reports_filtered_zero_bytes_total{env=\"$env\"}[5m])",
           "legendFormat": "filtered rows/s",
           "refId": "A"
         }
@@ -382,7 +382,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (reason) (rate(metrics_rejected_total[5m]))",
+          "expr": "sum by (reason) (rate(metrics_rejected_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -395,7 +395,22 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [
+          { "selected": true, "text": "prod", "value": "prod" },
+          { "selected": false, "text": "staging", "value": "staging" }
+        ],
+        "query": "prod,staging",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
         "hide": 0,
         "includeAll": false,
         "label": "Datasource",
