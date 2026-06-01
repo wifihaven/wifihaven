@@ -19,7 +19,7 @@ mkdir "$WORK/ctrl"
 cat > "$WORK/ctrl/control" <<EOF
 Package: luci-app-wifihaven
 Version: ${PKG_VERSION}-${PKG_RELEASE}
-Depends: luci-base, wifihaven
+Depends: luci-base, luci-compat, wifihaven
 Architecture: all
 Maintainer: WifiHaven <noreply@example.com>
 Description: LuCI web UI for the WifiHaven router agent. Exposes cadence

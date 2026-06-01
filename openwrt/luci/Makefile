@@ -8,7 +8,7 @@ PKG_MAINTAINER:=WifiHaven <noreply@example.com>
 PKG_LICENSE:=MIT
 
 LUCI_TITLE:=LuCI support for WifiHaven
-LUCI_DEPENDS:=+luci-base +wifihaven
+LUCI_DEPENDS:=+luci-base +luci-compat +wifihaven
 LUCI_PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk

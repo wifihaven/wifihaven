@@ -176,6 +176,27 @@ grep -q "uhttpd-mod-lua" "$ROOT/build-apk.sh" \
   || check "build-apk.sh depends pulls in uhttpd-mod-lua" \
            "missing uhttpd-mod-lua dep in build-apk.sh"
 
+# #1278: luci-app-wifihaven is a classic Lua/CBI LuCI app. On modern OpenWRT
+# (23.05+, apk-based 24.10) luci-base is the ucode/JS framework; the server-
+# side Lua dispatcher/CBI runtime ships separately in luci-compat. Without it
+# the page renders "No Lua runtime installed." All three dep declarations for
+# the luci app (Makefile + both build scripts, since Image Builder reads the
+# built package metadata, not the Makefile) must pull in luci-compat.
+grep -q "luci-compat" "$ROOT/luci/Makefile" \
+  && check "luci/Makefile LUCI_DEPENDS pulls in luci-compat" ok \
+  || check "luci/Makefile LUCI_DEPENDS pulls in luci-compat" \
+           "missing luci-compat dep in luci/Makefile"
+
+grep -q "luci-compat" "$ROOT/luci/build-ipk.sh" \
+  && check "luci/build-ipk.sh Depends pulls in luci-compat" ok \
+  || check "luci/build-ipk.sh Depends pulls in luci-compat" \
+           "missing luci-compat dep in luci/build-ipk.sh"
+
+grep -q "luci-compat" "$ROOT/luci/build-apk.sh" \
+  && check "luci/build-apk.sh depends pulls in luci-compat" ok \
+  || check "luci/build-apk.sh depends pulls in luci-compat" \
+           "missing luci-compat dep in luci/build-apk.sh"
+
 # #704: ensure_dnsmasq_full apk branch must use `apk info -e`, not
 # `apk list -I`.  On apk-tools v3 (OpenWRT 24.10+) `apk list -I` exits 0
 # with empty stdout when the package is absent, so the old check always
