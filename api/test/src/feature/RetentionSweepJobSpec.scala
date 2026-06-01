@@ -146,6 +146,40 @@ object RetentionSweepJobSpec
         assertTrue(res.exists(_.exists(r => r.table == "traffic_hourly" && r.rowsDeleted == 1))) &&
         assertTrue(res.exists(_.exists(r => r.table == "traffic_daily" && r.rowsDeleted == 1)))
     },
+    test("deletes connection_events_hourly older than 90d and _daily older than 180d") {
+      for {
+        _    <- cleanDb
+        xa   <- ZIO.service[Transactor[Task]]
+        rid  <- seedRouter
+        // hourly: 100d old expires, 89d old kept
+        _    <- sql"""INSERT INTO connection_events_hourly
+                       (router_id, mac, hostname, bucket_start,
+                        count_succeeded, count_blocked, sample_count)
+                     VALUES
+                       ($rid, 'dd:dd:dd:dd:dd:01', 'example.com',
+                        NOW() - INTERVAL '100 days', 1, 0, 1),
+                       ($rid, 'dd:dd:dd:dd:dd:02', 'example.com',
+                        NOW() - INTERVAL '89 days', 1, 0, 1)""".update.run.transact(xa)
+        // daily: 200d old expires, 179d old kept (uses `date` column)
+        _    <- sql"""INSERT INTO connection_events_daily
+                       (router_id, mac, hostname, date,
+                        count_succeeded, count_blocked, sample_count)
+                     VALUES
+                       ($rid, 'ee:ee:ee:ee:ee:01', 'example.com',
+                        (NOW() - INTERVAL '200 days')::date, 1, 0, 1),
+                       ($rid, 'ee:ee:ee:ee:ee:02', 'example.com',
+                        (NOW() - INTERVAL '179 days')::date, 1, 0, 1)""".update.run.transact(xa)
+        res  <- RetentionSweepJob.sweepOnce(xa)
+        hRow <- sql"SELECT count(*) FROM connection_events_hourly".query[Int].unique.transact(xa)
+        dRow <- sql"SELECT count(*) FROM connection_events_daily".query[Int].unique.transact(xa)
+      } yield assertTrue(hRow == 1) && assertTrue(dRow == 1) &&
+        assertTrue(
+          res.exists(_.exists(r => r.table == "connection_events_hourly" && r.rowsDeleted == 1)),
+        ) &&
+        assertTrue(
+          res.exists(_.exists(r => r.table == "connection_events_daily" && r.rowsDeleted == 1)),
+        )
+    },
     test("acquires + releases advisory lock cleanly across consecutive ticks") {
       // If the previous tick failed to release the lock, the next tick would
       // come back as `None` (skipped). Verify two ticks in a row both run.

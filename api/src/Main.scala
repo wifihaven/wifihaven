@@ -145,6 +145,15 @@ object Main extends ZIOAppDefault {
         clockForJobs <- ZIO.service[Clock]
         _            <- RollupJobs.hourlyLoop(rollupRepo, appRepoForSeed, clockForJobs).forkScoped
         _ <- RollupJobs.dailyLoop(rollupRepo, appRepoForSeed, clockForJobs, tz).forkScoped
+        // #1265: connection-event rollup tier — same cadence/lookback as the
+        // traffic rollups, re-rolling the trailing windows into
+        // connection_events_hourly / _daily. forkScoped so they're interrupted
+        // before the Hikari pool closes on shutdown.
+        connRepoForJobs <- ZIO.service[ConnectionEventRepo]
+        _ <- RollupJobs.connEventsHourlyLoop(connRepoForJobs, rollupRepo, clockForJobs).forkScoped
+        _ <- RollupJobs
+          .connEventsDailyLoop(connRepoForJobs, rollupRepo, clockForJobs, tz)
+          .forkScoped
         // #1160: per-(profile, today) `used_seconds` cache. Tick aggregates today's presence into
         // a watermarked row; the read path adds a live tail of buckets after the watermark, so
         // /api/time/status/summary serves a rollup + small live aggregation instead of a full
@@ -172,7 +181,9 @@ object Main extends ZIOAppDefault {
             clockForJobs,
           )
           .forkScoped
-        _               <- ZIO.logInfo("rollup fibers forked (hourly + daily + time_used_daily)")
+        _               <- ZIO.logInfo(
+          "rollup fibers forked (hourly + daily + time_used_daily + conn_events_hourly + conn_events_daily)",
+        )
         // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
         // for the process and never blocks startup.
         dbPool          <- ZIO.service[Database.DbPool]
