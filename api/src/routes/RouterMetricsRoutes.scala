@@ -1,6 +1,6 @@
 package wifihaven.api.routes
 
-import wifihaven.api.metrics.RouterMetricsService
+import wifihaven.api.metrics.{AppMetrics, RouterMetricsService}
 import wifihaven.shared.RouterMetricsBatch
 import zio.*
 import zio.http.*
@@ -27,10 +27,12 @@ object RouterMetricsRoutes {
             batch  <- ZIO
               .fromEither(body.fromJson[RouterMetricsBatch])
               .mapError(e => Response.badRequest(e))
-            _      <- ZIO
-              .fail(Response.text("router_id mismatch").status(Status.Forbidden))
+              .tapError(_ => AppMetrics.recordRouterMetricsBatch("malformed"))
+            _      <- (AppMetrics.recordRouterMetricsBatch("router_mismatch") *>
+              ZIO.fail(Response.text("router_id mismatch").status(Status.Forbidden)))
               .when(batch.routerId != router.id)
             _      <- svc.ingest(batch)
+            _      <- AppMetrics.recordRouterMetricsBatch("ok")
           } yield Response.ok
         },
     )

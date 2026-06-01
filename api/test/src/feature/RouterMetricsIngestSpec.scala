@@ -68,11 +68,16 @@ object RouterMetricsIngestSpec
 
   /**
    * The numeric value of the first non-comment line of `metric` that contains every `mustContain`.
+   * Exposition lines are `name{labels} <value> <timestampMs>`, so the value is the second-to-last
+   * whitespace token when a timestamp is present (this connector always emits one).
    */
   private def seriesValue(body: String, metric: String, mustContain: String*): Option[Double] =
     body.linesIterator
       .filter(l => !l.startsWith("#") && l.startsWith(metric) && mustContain.forall(l.contains))
-      .flatMap(_.trim.split("\\s+").lastOption)
+      .flatMap { l =>
+        val toks = l.trim.split("\\s+")
+        if toks.length >= 3 then toks.lift(toks.length - 2) else toks.lastOption
+      }
       .flatMap(_.toDoubleOption)
       .toList
       .headOption
