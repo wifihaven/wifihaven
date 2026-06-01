@@ -101,10 +101,13 @@ jobs:
             release/wifihaven-router-openwrt-*-apk.tar.gz
             release/wifihaven-router-images.sha256
 
-      # #499: cut the annotated git tag before the versioned release upload so
-      # the tag carries a real tagger + message (softprops would otherwise
-      # create a lightweight tag). Idempotent: the API/UI pipeline's
-      # cut-release-tag job may have already pushed it; skip cleanly if so.
+      # #499/#1293: Router CD is the sole author of the v<X.Y.Z> tag — it owns
+      # the coordinated release whose shippable artifacts are published here,
+      # so the tag never exists before the release it names. We cut the
+      # annotated tag before the versioned release upload so it carries a real
+      # tagger + message (softprops would otherwise create a lightweight tag).
+      # The existence check is kept as a safety net against retries; under
+      # normal operation no other pipeline pushes this tag.
       - name: Cut annotated v<X.Y.Z> tag (#499)
         env:
           VERSION: ${{ inputs.version }}
