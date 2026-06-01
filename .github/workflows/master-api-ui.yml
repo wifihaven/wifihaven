@@ -516,49 +516,7 @@ jobs:
           echo "Promoting $src → $dst"
           docker buildx imagetools create -t "$dst" "$src"
 
-  # 6b. Cut the v<X.Y.Z> annotated git tag (#499). Idempotent: skipped if
-  # the tag already exists (e.g. an earlier OpenWRT-only release on the same
-  # SHA already cut it). The OpenWRT publish path (publish-openwrt-release.yml)
-  # also creates this tag on the v<X.Y.Z> release; whichever pipeline finishes
-  # first wins, the other no-ops.
-  cut-release-tag:
-    name: Cut v<X.Y.Z> release tag (#499)
-    if: github.ref == 'refs/heads/main'
-    needs: [approve-production, retag-latest]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          # Need a token with push perms; GITHUB_TOKEN at `contents: write`
-          # is enough for ref creation.
-          persist-credentials: true
-
-      - name: Derive version
-        id: ver
-        run: |
-          set -eu
-          version=$(./scripts/ci/derive-version.sh)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Push annotated tag (idempotent)
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: |
-          set -eu
-          tag="v${VERSION}"
-          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
-            echo "Tag ${tag} already exists on origin — skipping."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${tag}" -m "WifiHaven ${tag}"
-          git push origin "${tag}"
-
-  # 6c. Trigger the Render prod deploy hook + wait for healthy. Prod tracks
+  # 6b. Trigger the Render prod deploy hook + wait for healthy. Prod tracks
   # the `:latest` tag, so this must run after retag-latest has moved the
   # pointer — or Render will deploy whatever was on `:latest` before. We
   # depend on retag-latest to enforce ordering.
