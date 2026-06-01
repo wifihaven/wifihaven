@@ -8,10 +8,28 @@ Manages:
 
 - One `grafana_dashboard` per JSON under
   [`deploy/grafana/dashboards/`](../../deploy/grafana/dashboards/) —
-  `api-health`, `router-fleet`, `dnsmasq-enforcement`,
-  `data-quality-ingest`. Each is sourced via
+  `api-health` and `rollup-health`. Each is sourced via
   `config_json = file(".../deploy/grafana/dashboards/<name>.json")`, so the
   committed JSON is canonical and there is no second copy to drift.
+
+  These two cover **only the metrics actually emitted today** (#1242/#1243):
+  the `zio.metrics.jvm.DefaultJvmMetrics` JVM/process series, the
+  `wifihaven_db_pool_*` HikariCP gauges, and the `wifihaven_rollup_*` series.
+  The remaining design-doc §5 dashboards are deferred until their metrics
+  are instrumented — each ships in its own follow-up PR alongside the
+  emitting code, so no dashboard is deployed against a series that does not
+  exist:
+  - router-fleet → [#1279](https://github.com/wifihaven/wifihaven/issues/1279)
+    (blocked on [#1206](https://github.com/wifihaven/wifihaven/issues/1206) /
+    [#1205](https://github.com/wifihaven/wifihaven/issues/1205))
+  - dnsmasq-enforcement → [#1280](https://github.com/wifihaven/wifihaven/issues/1280)
+    (blocked on [#1206](https://github.com/wifihaven/wifihaven/issues/1206) /
+    [#705](https://github.com/wifihaven/wifihaven/issues/705))
+  - data-quality-ingest → [#1281](https://github.com/wifihaven/wifihaven/issues/1281)
+    (blocked on [#864](https://github.com/wifihaven/wifihaven/issues/864) /
+    [#1204](https://github.com/wifihaven/wifihaven/issues/1204))
+  - api-health HTTP request-rate/latency panels → folded back in with
+    [#1204](https://github.com/wifihaven/wifihaven/issues/1204) (tracked in [#1281](https://github.com/wifihaven/wifihaven/issues/1281))
 
 ## Per-environment, in the CD pipeline
 
@@ -100,7 +118,7 @@ terraform apply
 ```
 
 Or copy `terraform.tfvars.example` → `terraform.tfvars` (gitignored — both
-values are secrets) and fill it in. Apply creates 4 dashboard resources.
+values are secrets) and fill it in. Apply creates 2 dashboard resources.
 
 ## Subsequent changes
 
