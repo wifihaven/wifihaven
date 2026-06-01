@@ -1,0 +1,87 @@
+name: Master Grafana CD
+
+# Grafana dashboard deployment pipeline — reconciles the single Grafana Cloud
+# stack (wifihaven.grafana.net) to the in-repo dashboards.
+#
+# Split out of master-api-ui.yml (#1283): the dashboard deploy has nothing to
+# do with the API/SPA release cadence, and folding it into that pipeline meant
+# it re-ran on every api/web/config push (and was gated behind the production
+# approval). As its own pipeline with a tight path scope it only fires when a
+# dashboard JSON or its Terraform actually changes, and never blocks — or is
+# blocked by — an API/SPA release.
+#
+# Flow (one job):
+#   deploy-grafana — terraform apply of the in-repo dashboards
+#     (deploy/grafana/dashboards/*.json) to the single Grafana Cloud stack via
+#     the infra/grafana Terraform.
+#
+# One stack serves every environment: the dashboards select their data via the
+# templated ${datasource} variable at view time, so there is no per-environment
+# copy and no staging/prod split. The apply is idempotent — each
+# grafana_dashboard is upserted by its stable uid (overwrite = true) — so a
+# re-run just reconciles the stack to the repo.
+#
+# No production-approval gate: a dashboard change is low-risk and independent
+# of the API/SPA release, so it ships straight from a push to main (the change
+# already went through PR review + the ci.yml grafana-terraform lint job).
+#
+# Path scope: see on.push.paths below. Docs and unrelated infra fire nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/grafana/**'
+      - 'infra/grafana/**'
+      - '.github/workflows/master-grafana.yml'
+  workflow_dispatch:
+
+# Scoped to this pipeline's own group — a newer dashboard push pre-empts an
+# in-flight apply (the next run reconciles to the latest repo state anyway).
+concurrency:
+  group: master-grafana-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-grafana:
+    name: Deploy Grafana dashboards
+    # Gate to main: the path filter lets feature-branch pushes create a run,
+    # but on a non-main ref no job is eligible and GitHub records a spurious
+    # 0-job failure. Skipping (not failing) keeps that neutral. (mirrors the
+    # master-router.yml `if` guard, #1136)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Grafana secrets are configured
+        id: gate
+        env:
+          GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
+          GRAFANA_AUTH: ${{ secrets.GRAFANA_AUTH }}
+        run: |
+          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GRAFANA_URL / GRAFANA_AUTH not set — skipping dashboard deploy."
+          fi
+
+      - name: Set up Terraform
+        if: steps.gate.outputs.configured == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.3'
+
+      - name: Terraform init + apply
+        if: steps.gate.outputs.configured == 'true'
+        working-directory: infra/grafana
+        env:
+          TF_VAR_grafana_url: ${{ secrets.GRAFANA_URL }}
+          TF_VAR_grafana_auth: ${{ secrets.GRAFANA_AUTH }}
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false

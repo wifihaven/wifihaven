@@ -16,6 +16,9 @@ import java.time.{Duration as JDuration, ZoneOffset, ZonedDateTime}
  *   - `connection_events` — drop rows older than 30 days
  *   - `traffic_hourly` — drop rows older than 90 days (gated on #809 table presence)
  *   - `traffic_daily` — drop rows older than 180 days (gated on #809 table presence; `date` col)
+ *   - `connection_events_hourly` — drop rows older than 90 days (#1265; gated on V47 table
+ *     presence)
+ *   - `connection_events_daily` — drop rows older than 180 days (#1265; gated; `date` col)
  *
  * Multi-instance-safe via a session-scoped Postgres advisory lock. Losing the race makes the tick a
  * no-op. The lock auto-releases if the connection drops, so a crashing instance can't wedge it.
@@ -33,10 +36,14 @@ object RetentionSweepJob {
 
   // Retention horizons (days). Hardcoded for v1; operator-tunable config
   // (`usage.rawRetentionDays` etc.) is a follow-up.
-  val RawRetentionDays: Int    = 30
-  val EventsRetentionDays: Int = 30
-  val HourlyRetentionDays: Int = 90
-  val DailyRetentionDays: Int  = 180
+  val RawRetentionDays: Int              = 30
+  val EventsRetentionDays: Int           = 30
+  val HourlyRetentionDays: Int           = 90
+  val DailyRetentionDays: Int            = 180
+  // #1265: connection-event rollups share the traffic-rollup horizons (raw 30d
+  // already covered by EventsRetentionDays; hourly 3mo / daily 6mo here).
+  val ConnEventsHourlyRetentionDays: Int = 90
+  val ConnEventsDailyRetentionDays: Int  = 180
 
   // Daily run hour (UTC). Design doc prefers router-local, but the API is
   // multi-household so picking *a* local zone is ill-defined. v1 = UTC; revisit
@@ -75,15 +82,22 @@ object RetentionSweepJob {
 
   private def sweepAllTables: ConnectionIO[List[SweepResult]] =
     for {
-      raw    <- deleteOlderThan("traffic_reports", "period_start", RawRetentionDays)
-      events <- deleteOlderThan("connection_events", "ts", EventsRetentionDays)
-      hourly <- ifTableExists("traffic_hourly") {
+      raw      <- deleteOlderThan("traffic_reports", "period_start", RawRetentionDays)
+      events   <- deleteOlderThan("connection_events", "ts", EventsRetentionDays)
+      hourly   <- ifTableExists("traffic_hourly") {
         deleteOlderThan("traffic_hourly", "bucket_start", HourlyRetentionDays)
       }
-      daily  <- ifTableExists("traffic_daily") {
+      daily    <- ifTableExists("traffic_daily") {
         // V38's traffic_daily uses `date` (DATE), not `bucket_start` — see
         // docs/design/usage-retention.md §3.
         deleteOlderThan("traffic_daily", "date", DailyRetentionDays)
+      }
+      ceHourly <- ifTableExists("connection_events_hourly") {
+        deleteOlderThan("connection_events_hourly", "bucket_start", ConnEventsHourlyRetentionDays)
+      }
+      ceDaily  <- ifTableExists("connection_events_daily") {
+        // V47's connection_events_daily uses `date` (DATE), not `bucket_start`.
+        deleteOlderThan("connection_events_daily", "date", ConnEventsDailyRetentionDays)
       }
     } yield {
       val base = List(
@@ -92,7 +106,9 @@ object RetentionSweepJob {
       )
       val h    = hourly.map(SweepResult("traffic_hourly", _)).toList
       val d    = daily.map(SweepResult("traffic_daily", _)).toList
-      base ++ h ++ d
+      val ceH  = ceHourly.map(SweepResult("connection_events_hourly", _)).toList
+      val ceD  = ceDaily.map(SweepResult("connection_events_daily", _)).toList
+      base ++ h ++ d ++ ceH ++ ceD
     }
 
   private def ifTableExists[A](table: String)(body: => ConnectionIO[A]): ConnectionIO[Option[A]] =

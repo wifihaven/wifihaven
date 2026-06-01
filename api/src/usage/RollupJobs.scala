@@ -1,6 +1,6 @@
 package wifihaven.api.usage
 
-import wifihaven.api.db.{AppRepo, RollupRepo}
+import wifihaven.api.db.{AppRepo, ConnectionEventRepo, RollupRepo}
 import wifihaven.shared.Clock
 import wifihaven.shared.types.AppId
 import zio.*
@@ -66,6 +66,50 @@ object RollupJobs {
     runOnce("daily", repo, clock, oneDailyTick(repo, appRepo, _, zone))
       .repeat(Schedule.fixed(DailyInterval))
       .unit
+
+  // #1265: connection-event rollup loops. Same cadence/lookback as the traffic
+  // rollups — they re-roll the same trailing windows, just into the
+  // connection_events_* tables via ConnectionEventRepo. recordRun observability
+  // reuses the shared RollupRepo + rollup_runs table under the job names below.
+  val ConnEventsHourlyJob: String = "connection_events_hourly"
+  val ConnEventsDailyJob: String  = "connection_events_daily"
+
+  def connEventsHourlyLoop(
+      connRepo: ConnectionEventRepo,
+      rollupRepo: RollupRepo,
+      clock: Clock,
+  ): UIO[Unit] =
+    runOnce(ConnEventsHourlyJob, rollupRepo, clock, oneConnHourlyTick(connRepo, _))
+      .repeat(Schedule.fixed(HourlyInterval))
+      .unit
+
+  def connEventsDailyLoop(
+      connRepo: ConnectionEventRepo,
+      rollupRepo: RollupRepo,
+      clock: Clock,
+      zone: ZoneId,
+  ): UIO[Unit] =
+    runOnce(ConnEventsDailyJob, rollupRepo, clock, oneConnDailyTick(connRepo, _, zone))
+      .repeat(Schedule.fixed(DailyInterval))
+      .unit
+
+  private def oneConnHourlyTick(connRepo: ConnectionEventRepo, clock: Clock): Task[Option[Int]] =
+    for {
+      now <- clock.instant
+      since = now.minus(HourlyLookback).truncatedTo(java.time.temporal.ChronoUnit.HOURS)
+      n <- connRepo.rerollConnEventsHourly(since)
+    } yield n
+
+  private def oneConnDailyTick(
+      connRepo: ConnectionEventRepo,
+      clock: Clock,
+      zone: ZoneId,
+  ): Task[Option[Int]] =
+    for {
+      now <- clock.instant
+      sinceDate = LocalDate.ofInstant(now, zone).minus(DailyLookback)
+      n <- connRepo.rerollConnEventsDaily(sinceDate)
+    } yield n
 
   // ── tick bodies ────────────────────────────────────────────────────────────
 
