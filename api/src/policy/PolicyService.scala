@@ -185,7 +185,8 @@ class PolicyServiceLive(
         c -> Blocklist(version = version, url = BlocklistUrl.unsafe(s"/api/blocklists/${c.value}"))
       }.toMap
 
-      val core = SnapshotCore(devicePolicies, profilePolicies, pBlocklists)
+      val core =
+        SnapshotCore(devicePolicies, profilePolicies, pBlocklists, PolicyService.infraAllowHosts)
       val etag = PolicyService.computeEtag(core)
       PolicySnapshot(
         etag = etag,
@@ -193,6 +194,7 @@ class PolicyServiceLive(
         devices = devicePolicies,
         profiles = profilePolicies,
         blocklists = pBlocklists,
+        infraAllow = PolicyService.infraAllowHosts,
       )
     }
 
@@ -411,9 +413,38 @@ private case class SnapshotCore(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
+    infraAllow: List[Hostname],
 )
 
 object PolicyService {
+
+  /**
+   * #1307: curated, network-wide infrastructure allowlist. The whole-MAC block path (paused /
+   * schedule / time-limit / manual) carves these out so they stay reachable for every device —
+   * without them, an allowed app appears blocked because its transitive deps (connectivity check,
+   * OCSP cert validation, CDN/PKI) are killed by the whole-MAC drop even though the app's own
+   * domain is in extraAllowed (prod miss, Kids/Math Academy, 2026-06-01).
+   *
+   * This is a security-sensitive bypass surface: keep it small, and document why each host is here.
+   * dnsmasq's nftset= populator matches a host AND its subdomains, so an apex entry (e.g.
+   * `g.aaplimg.com`) covers shard hostnames (`ocsp2.g.aaplimg.com`, `gspe79-cdn.g.aaplimg.com`).
+   */
+  val infraAllowHosts: List[Hostname] = List(
+    // Connectivity / captive-portal probes — if dropped, the OS reports "No
+    // Internet" and apps refuse to issue requests at all.
+    "connectivitycheck.gstatic.com", // Android / Chrome connectivity probe
+    "captive.apple.com",             // iOS / macOS captive-portal probe
+    // Certificate validation (OCSP / CRL) — cert-chain checks fail when dropped.
+    "ocsp.apple.com",                // Apple OCSP responder
+    "ocsp2.apple.com",               // Apple OCSP responder (secondary)
+    "crl.apple.com",                 // Apple CRL distribution
+    "g.aaplimg.com",                 // Apple geo-edge CDN: OCSP + asset shards
+    "ocsp.pki.goog",                 // Google Trust Services OCSP
+    "ocsp.digicert.com",             // DigiCert OCSP (common CA for app backends)
+    // Google client services used during connectivity / config negotiation.
+    "clientservices.googleapis.com",
+  ).map(Hostname.unsafe)
+
   val layer: ZLayer[
     AppConfig & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
@@ -480,6 +511,10 @@ object PolicyService {
     core.blocklists.toList
       .sortBy(_._1.value)
       .foreach((k, v) => parts += s"bl:${k.value}=${v.version.value}")
+    // #1307: fold the infra allowlist in so a curated-list change bumps the
+    // etag and agents re-fetch (it's a baked constant today, but enforcement
+    // depends on it, so it belongs in the snapshot signature).
+    parts += s"infra:${core.infraAllow.map(_.value).sorted.mkString(",")}"
     ETag.unsafe("\"sha256:" + sha256Hex(parts.mkString("\n")) + "\"")
   }
 

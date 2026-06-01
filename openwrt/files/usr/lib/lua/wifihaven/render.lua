@@ -250,6 +250,26 @@ local function block_ip_only_macs(snapshot)
 end
 M.block_ip_only_macs = block_ip_only_macs
 
+-- #1307: global infrastructure allowlist. snapshot.infraAllow is a curated,
+-- network-wide host list (connectivity-check, OCSP, Apple/Google PKI/CDN) that
+-- the whole-MAC block path must never drop, so an allowed app's transitive
+-- deps stay reachable when the daily limit / schedule / pause blocks the rest
+-- of the network. Returns the hosts sorted + deduplicated; the carve-out is a
+-- SINGLE shared set (infra_allow / infra_allow6) applied to ALL macs, unlike
+-- the per-(MAC, host) ea_ sets.
+local function infra_allow_hosts(snapshot)
+  local seen, hosts = {}, {}
+  for _, h in ipairs(snapshot.infraAllow or {}) do
+    if not seen[h] then
+      seen[h] = true
+      hosts[#hosts + 1] = h
+    end
+  end
+  table.sort(hosts)
+  return hosts
+end
+M.infra_allow_hosts = infra_allow_hosts
+
 -- ---------------------------------------------------------------------------
 -- render.dnsmasq(snapshot) → string
 -- ---------------------------------------------------------------------------
@@ -312,6 +332,25 @@ function M.dnsmasq(snapshot)
             host,
             ea_set_name(mac, host), ea6_set_name(mac, host)))
         end
+      end
+      emit("")
+    end
+  end
+
+  -- #1307: global infra allowlist populator. One shared v4/v6 set
+  -- (infra_allow / infra_allow6) holds the resolved IPs of every host in
+  -- snapshot.infraAllow; the whole-MAC block path carves `ip daddr !=
+  -- @infra_allow` out so these stay reachable for ALL macs. dnsmasq matches a
+  -- host AND its subdomains, so an apex like `g.aaplimg.com` covers shard
+  -- hostnames (ocsp2.g.aaplimg.com, gspe79-cdn.g.aaplimg.com).
+  do
+    local infra_hosts = infra_allow_hosts(snapshot)
+    if #infra_hosts > 0 then
+      emit("# global infra allowlist → infra_allow / infra_allow6 nftsets (#1307)")
+      for _, host in ipairs(infra_hosts) do
+        emit(string.format(
+          "nftset=/%s/4#inet#wifihaven#infra_allow,6#inet#wifihaven#infra_allow6",
+          host))
       end
       emit("")
     end
@@ -542,6 +581,29 @@ function M.nft(snapshot, opts)
   ind("}")
   emit("")
 
+  -- #1307: global infra allowlist sets. Shared across ALL macs (unlike the
+  -- per-(MAC, host) ea_ sets), populated at DNS resolve time by dnsmasq
+  -- nftset= (rendered above). The whole-MAC block drop + DNAT carve out
+  -- `ip daddr != @infra_allow` so connectivity-check / OCSP / PKI / CDN hosts
+  -- stay reachable even for a blocked MAC. Declared only when non-empty so an
+  -- empty allowlist preserves the pre-#1307 family-agnostic drop shape.
+  local infra_hosts   = infra_allow_hosts(snapshot)
+  local infra_enabled = #infra_hosts > 0
+  if infra_enabled then
+    ind("set infra_allow {")
+    ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+    ind("set infra_allow6 {")
+    ind2("type ipv6_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+  end
+
   -- #351/#392: per-host v4 + v6 sets for extraBlocked. Each set is populated
   -- at DNS resolve time by dnsmasq nftset= (rendered by dnsmasq() above):
   -- A records → eb_<host>, AAAA → eb6_<host>. Dynamic + 1h timeout so
@@ -606,6 +668,21 @@ function M.nft(snapshot, opts)
       end
     end
     return table.concat(parts)
+  end
+
+  -- #1307: global infra allowlist carve-out suffix. A single `ip daddr !=
+  -- @infra_allow` (or v6) clause, shared by every mac — appended only to the
+  -- whole-MAC block path (paused/schedule/time-limit/manual). Returns "" when
+  -- the allowlist is empty, so behaviour is unchanged in that case. Not
+  -- appended to targeted eb_/bl_ host/category drops or blockIpOnly (those are
+  -- intentional and, for blockIpOnly, have no allowlist carve-out by design).
+  local function infra_suffix(family)
+    if not infra_enabled then return "" end
+    if family == "ip6" then
+      return " ip6 daddr != @infra_allow6"
+    else
+      return " ip daddr != @infra_allow"
+    end
   end
 
   -- #351: per-(MAC, host) drop pairs. We build the cross-product from each
@@ -722,16 +799,28 @@ function M.nft(snapshot, opts)
   -- driven by a single drop rule. MACs without extraAllowed get one
   -- family-agnostic per-MAC drop; MACs with extraAllowed get per-family
   -- rules carrying the ea exception (same shape as pre-#1122).
+  -- #1307: when the infra allowlist is non-empty, a blocked-without-ea MAC
+  -- can no longer use a single family-agnostic drop (it must carry an `ip
+  -- daddr != @infra_allow` predicate, which is per-family). It splits into v4
+  -- + v6 drops with the infra carve-out. Empty allowlist → unchanged single
+  -- family-agnostic drop.
   for _, mac in ipairs(blocked_macs_list) do
-    ind2(string.format("ether saddr %s%s", mac,
-                       drop_suffix(mac, blocked_reason_by_mac[mac] or "blocked")))
+    local reason = blocked_reason_by_mac[mac] or "blocked"
+    if infra_enabled then
+      ind2(string.format("ether saddr %s%s%s", mac, infra_suffix("ip"),
+                         drop_suffix(mac, reason)))
+      ind2(string.format("ether saddr %s%s%s", mac, infra_suffix("ip6"),
+                         drop_suffix(mac, reason)))
+    else
+      ind2(string.format("ether saddr %s%s", mac, drop_suffix(mac, reason)))
+    end
   end
   for _, mac in ipairs(blocked_ea_macs) do
     local reason = blocked_reason_by_mac[mac] or "blocked"
-    ind2(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
-                       drop_suffix(mac, reason)))
-    ind2(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
-                       drop_suffix(mac, reason)))
+    ind2(string.format("ether saddr %s%s%s%s", mac, ea_suffix(mac, "ip"),
+                       infra_suffix("ip"), drop_suffix(mac, reason)))
+    ind2(string.format("ether saddr %s%s%s%s", mac, ea_suffix(mac, "ip6"),
+                       infra_suffix("ip6"), drop_suffix(mac, reason)))
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
@@ -782,13 +871,17 @@ function M.nft(snapshot, opts)
     ind("chain wifihaven_block_nat {")
     ind2("type nat hook prerouting priority dstnat; policy accept;")
     if #blocked_macs_list > 0 then
-      ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
+      -- #1307: carve the infra allowlist out of the whole-MAC block-page DNAT
+      -- too, so infra hosts reach the network instead of the block page.
+      ind2(string.format(
+        "ether saddr @blocked_macs%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        infra_suffix("ip")))
     end
     -- #421: blocked + extraAllowed → per-MAC v4 DNAT with ea exception.
     for _, mac in ipairs(blocked_ea_macs) do
       ind2(string.format(
-        "ether saddr %s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-        mac, ea_suffix(mac, "ip")))
+        "ether saddr %s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        mac, ea_suffix(mac, "ip"), infra_suffix("ip")))
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
@@ -812,15 +905,17 @@ function M.nft(snapshot, opts)
     -- `ip6 daddr != ::1` guards against self-DNAT recursion if the block
     -- page itself ever issues an outbound v6 request.
     if #blocked_macs_list > 0 then
-      ind2("ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 dnat ip6 to ::1:8081")
+      ind2(string.format(
+        "ether saddr @blocked_macs ip6 daddr != ::1%s tcp dport 80 dnat ip6 to ::1:8081",
+        infra_suffix("ip6")))
     end
     -- #421: blocked + extraAllowed → per-MAC v6 DNAT with ea6 exception.
     -- `ip6 daddr != ::1` guards against self-DNAT (same as the @blocked_macs
     -- v6 line above).
     for _, mac in ipairs(blocked_ea_macs) do
       ind2(string.format(
-        "ether saddr %s ip6 daddr != ::1%s tcp dport 80 dnat ip6 to ::1:8081",
-        mac, ea_suffix(mac, "ip6")))
+        "ether saddr %s ip6 daddr != ::1%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        mac, ea_suffix(mac, "ip6"), infra_suffix("ip6")))
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(

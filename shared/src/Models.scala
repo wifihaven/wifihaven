@@ -1293,6 +1293,12 @@ case class PolicySnapshot(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
+    // #1307: curated, network-wide infrastructure allowlist (connectivity-check,
+    // OCSP, Apple/Google PKI/CDN). The whole-MAC block path (paused/schedule/
+    // time-limit) NEVER drops these, for all profiles, so allowed apps stay
+    // usable when the daily limit is hit. Enforced at the router as a carve-out
+    // that beats @blocked_macs but applies to ALL macs, not per-(mac,app).
+    infraAllow: List[Hostname],
 ) derives JsonCodec
 
 // ── Block reasons (snapshot + router-emitted) ─────────────────────────────
