@@ -1,0 +1,17 @@
+# Grafana dashboard provisioning for the self-hosted metrics overlay.
+# Auto-loads the versioned JSON in deploy/grafana/dashboards/ (api-health,
+# api-self-metrics, router-fleet, rollup-health). The repo copy is canonical
+# (design §8); edits made in the UI are not persisted back here.
+
+apiVersion: 1
+
+providers:
+  - name: wifihaven
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

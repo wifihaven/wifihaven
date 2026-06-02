@@ -1,0 +1,78 @@
+# Metrics overlay: self-hosted Prometheus + Grafana. (#1207)
+#
+# Opt-in. Layer it on top of the prod stack — without it, the API runs
+# exactly as before and no metrics stack exists:
+#
+#   docker compose \
+#     -f deploy/docker-compose.prod.yml \
+#     -f deploy/docker-compose.metrics.yml \
+#     --env-file deploy/.env up -d
+#
+# Prometheus scrapes the API's /metrics over the internal compose network
+# (api:8080); /metrics is never published on a host port. Grafana is published
+# on a LAN-local host port for the operator. Both Prometheus config and Grafana
+# datasource/dashboard provisioning are checked into the repo — declarative, no
+# dashboard clicking. See docs/design/metrics-observability.md §6.1 / §7.2 / §8.
+
+services:
+  # Forward the scrape token into the API so GET /metrics enforces it when set.
+  # Empty (the default) leaves /metrics open on the internal network — fine,
+  # since it is never exposed beyond the compose network.
+  api:
+    environment:
+      WIFIHAVEN_METRICS_SCRAPE_TOKEN: ${WIFIHAVEN_METRICS_SCRAPE_TOKEN:-}
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Prometheus has no env-var expansion in its config file, so the bearer
+      # token is materialized to a file (on the writable data volume) at
+      # startup and referenced via credentials_file in prometheus.yml.
+      WIFIHAVEN_METRICS_SCRAPE_TOKEN: ${WIFIHAVEN_METRICS_SCRAPE_TOKEN:-}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    # No published host port — Prometheus is reachable only in-network
+    # (Grafana proxies to it as http://prometheus:9090).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$${WIFIHAVEN_METRICS_SCRAPE_TOKEN}" > /prometheus/scrape_token
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=90d \
+          --web.enable-lifecycle
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${WIFIHAVEN_GRAFANA_ADMIN_PASSWORD:?WIFIHAVEN_GRAFANA_ADMIN_PASSWORD required for the metrics overlay}
+      # Operator-local dashboard tool; no public sign-up, no anonymous access.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      # LAN-local by default — bind to loopback or a LAN address, not 0.0.0.0.
+      - "${WIFIHAVEN_GRAFANA_BIND:-127.0.0.1}:${WIFIHAVEN_GRAFANA_PORT:-3000}:3000"
+
+volumes:
+  promdata:
+  grafanadata:

@@ -1,0 +1,17 @@
+# Grafana datasource provisioning for the self-hosted metrics overlay.
+# Points Grafana at the in-network Prometheus service. Set as the default
+# datasource so the dashboards' ${datasource} template variable (type:
+# datasource, query: prometheus) resolves to it automatically.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: wifihaven-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
