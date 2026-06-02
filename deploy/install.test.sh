@@ -224,6 +224,66 @@ else
   fail "install.sh does not default to renamed install paths (#359)"
 fi
 
+# ── 12. #1328: metrics opt-in is off by default. The normalization regex
+#       only flips METRICS_ENABLED for y/yes/1/true; everything else (incl.
+#       the "N" default) stays off. Extract the snippet and exercise it.
+metrics_enabled_for() {
+  WIFIHAVEN_ENABLE_METRICS="$1" bash -c '
+    METRICS_ENABLED=0
+    if [[ "${WIFIHAVEN_ENABLE_METRICS}" =~ ^([Yy]([Ee][Ss])?|1|[Tt][Rr][Uu][Ee])$ ]]; then
+      METRICS_ENABLED=1
+    fi
+    echo "$METRICS_ENABLED"'
+}
+metrics_off_ok=1
+for v in "N" "n" "no" "" "0" "false" "anything"; do
+  [[ "$(metrics_enabled_for "$v")" == "0" ]] || metrics_off_ok=0
+done
+metrics_on_ok=1
+for v in "y" "Y" "yes" "YES" "1" "true" "TRUE"; do
+  [[ "$(metrics_enabled_for "$v")" == "1" ]] || metrics_on_ok=0
+done
+if [[ "${metrics_off_ok}" -eq 1 && "${metrics_on_ok}" -eq 1 ]]; then
+  pass "metrics opt-in: off for N/empty/0/false, on for y/yes/1/true (#1328)"
+else
+  fail "metrics opt-in normalization wrong (off_ok=${metrics_off_ok} on_ok=${metrics_on_ok})"
+fi
+
+# ── 13. #1328: install.sh layers the metrics overlay only when enabled and
+#       fetches it via a repo tarball (the dashboards dir isn't raw-enumerable).
+if grep -q 'COMPOSE_FILE_ARGS+=(-f docker-compose.metrics.yml)' "${SCRIPT}" \
+   && grep -q 'fetch_metrics_overlay' "${SCRIPT}" \
+   && grep -q 'archive/refs/heads' "${SCRIPT}"; then
+  pass "install.sh layers metrics overlay + fetches it via tarball (#1328)"
+else
+  fail "install.sh missing metrics overlay layering / tarball fetch (#1328)"
+fi
+
+# ── 14. #1328: helper scripts source compose.env and default to prod-only
+#       when it's absent (back-compat with pre-metrics installs).
+SCRIPTS_DIR="$(dirname "${SCRIPT}")/scripts"
+helpers_ok=1
+for s in start stop restart logs status update; do
+  f="${SCRIPTS_DIR}/${s}.sh"
+  grep -q 'COMPOSE_FILE_ARGS=(-f docker-compose.prod.yml)' "$f" || helpers_ok=0
+  grep -q '\[ -f compose.env \] && source compose.env' "$f"     || helpers_ok=0
+  grep -q 'docker compose "${COMPOSE_FILE_ARGS\[@\]}"' "$f"      || helpers_ok=0
+done
+if [[ "${helpers_ok}" -eq 1 ]]; then
+  pass "helper scripts source compose.env with prod-only fallback (#1328)"
+else
+  fail "helper scripts not wired to compose.env (#1328)"
+fi
+
+# ── 15. #1328: update.sh refreshes the metrics overlay + dashboards from main
+#       (via the tarball) when metrics is enabled.
+if grep -q 'archive/refs/heads' "${SCRIPTS_DIR}/update.sh" \
+   && grep -q 'metrics_enabled' "${SCRIPTS_DIR}/update.sh"; then
+  pass "update.sh refreshes metrics overlay + dashboards when enabled (#1328)"
+else
+  fail "update.sh does not refresh metrics overlay when enabled (#1328)"
+fi
+
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]
