@@ -9,6 +9,10 @@ reach this api over the network (see [`docs/architecture.md`](../docs/architectu
 | File                              | Purpose |
 | --------------------------------- | ------- |
 | `docker-compose.prod.yml`         | Single-stack compose: postgres + api. |
+| `docker-compose.metrics.yml`      | Opt-in overlay: Prometheus + Grafana for self-hosted metrics (#1207). |
+| `prometheus/prometheus.yml`       | Prometheus scrape config used by the metrics overlay. |
+| `grafana/provisioning/`           | Grafana datasource + dashboard provisioning for the overlay. |
+| `grafana/dashboards/`             | Versioned dashboard JSON loaded by the overlay (and Grafana Cloud). |
 | `.env.example`                    | Template for secrets/config. Copy to `.env`. |
 | `wifihaven-api.service`           | Legacy systemd unit for host-based deploys. Kept for reference; new installs should use Compose. |
 
@@ -39,6 +43,42 @@ compose network and is unreachable from the host or LAN.
 
 Default admin login: `admin / changeme` — change it immediately via
 `POST /api/auth/change-password`.
+
+## Metrics (optional): Prometheus + Grafana
+
+The API exposes Prometheus metrics at `GET /metrics`. To collect and visualize
+them on the self-hosted host, layer the metrics overlay on top of the prod
+stack — it adds Prometheus and Grafana, both checked-in declaratively
+(see [`docs/design/metrics-observability.md`](../docs/design/metrics-observability.md) §6.1):
+
+```bash
+# In deploy/.env, set at least WIFIHAVEN_GRAFANA_ADMIN_PASSWORD (required by
+# the overlay). Optionally set WIFIHAVEN_METRICS_SCRAPE_TOKEN to require a
+# bearer token on /metrics.
+
+docker compose \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.metrics.yml \
+  --env-file deploy/.env up -d
+```
+
+- **`/metrics` is never published on a host port.** Prometheus scrapes the API
+  in-network as `api:8080`; nothing on the host or LAN can reach `/metrics`
+  directly.
+- **Grafana** is published on `127.0.0.1:3000` by default (override with
+  `WIFIHAVEN_GRAFANA_BIND` / `WIFIHAVEN_GRAFANA_PORT`). Log in as `admin` with
+  `WIFIHAVEN_GRAFANA_ADMIN_PASSWORD`. The Prometheus datasource and the
+  dashboards under `grafana/dashboards/` are provisioned automatically.
+- **Opt-in.** Omit `-f deploy/docker-compose.metrics.yml` and the API runs
+  exactly as before with no metrics stack. Prometheus retains 90 days locally
+  on the `promdata` volume (§7.2).
+
+Common operations use the same `-f prod -f metrics` invocation, e.g.:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml -f deploy/docker-compose.metrics.yml \
+  --env-file deploy/.env logs -f prometheus grafana
+```
 
 ## Design notes
 
