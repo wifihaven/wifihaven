@@ -66,6 +66,12 @@ typed names used here even though the current code is stringly):
 case class PolicySnapshot(
     etag: ETag,
     generatedAt: Instant,
+    global: BlockRules,                        // fleet-wide; applied to every MAC (§0.3).
+                                               //   Same shape as ProfilePolicy.rules:
+                                               //   extraAllowed = always-reachable hosts
+                                               //   (UI, block page, connectivity, PKI),
+                                               //   extraBlocked/blocklistIds = global
+                                               //   blocks, blocked = network lockdown.
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],   // wire-dedup only; not consulted at enforcement
     blocklists: Map[BlocklistId, Blocklist],
@@ -74,7 +80,9 @@ case class PolicySnapshot(
 case class DevicePolicy(
     profileId: Option[ProfileId],
     name: String,
-    rules: Option[BlockRules],                 // if Some, replaces profile rules entirely
+    rules: Option[BlockRules],                 // if Some, the API-resolved per-MAC rules
+                                               //   (profile+device merged server-side);
+                                               //   replaces the profile lookup at the router
 )
 
 case class ProfilePolicy(
@@ -117,10 +125,11 @@ sealed trait BlockReason
 
 sealed trait MacBlockReason extends BlockReason
 object MacBlockReason:
-  case object Paused    extends MacBlockReason
-  case object Schedule  extends MacBlockReason
-  case object TimeLimit extends MacBlockReason
-  case object Manual    extends MacBlockReason
+  case object Paused      extends MacBlockReason
+  case object Schedule    extends MacBlockReason
+  case object TimeLimit   extends MacBlockReason
+  case object Manual      extends MacBlockReason
+  case object DefaultDeny extends MacBlockReason   // profile is default-deny baseline (§0.3)
 
 object BlockReason:
   // Per-flow drop reasons — emitted by the router at connection-drop time
@@ -161,6 +170,55 @@ Enforcement plane per field:
 dnsmasq's role is exclusively: forward DNS upstream, populate per-host
 nftables ipsets via `--ipset=`, and write a query log that `dns-tail` reads
 for usage attribution (§7.2). It is **never** the enforcement plane.
+
+### 0.3 The global policy layer (#1308)
+
+Fleet-wide policy is carried **once** in `snapshot.global`, not copied into
+every profile/MAC. **It is a `BlockRules` — the same shape `ProfilePolicy.rules`
+carries** — applied to every MAC, **not a third tier** in the
+device-replaces-profile resolution above. Each field keeps its usual router
+behaviour, just fleet-wide: `global.extraAllowed` = hosts always reachable from
+every MAC (the WifiHaven UI / block page, connectivity check, PKI — the router
+does not care *why*); `global.extraBlocked` / `global.blocklistIds` = blocks a
+profile may not un-block; `global.blocked` = whole-network lockdown;
+`global.blockIpOnly` = network-wide strict mode.
+
+Composition has a fixed precedence. Let `G` = `snapshot.global` and `R` = the
+MAC's resolved per-MAC `BlockRules`; for a forwarded packet from MAC `m` to
+destination `d`:
+
+```
+ga(d)       ⇔ d ∈ G.extraAllowed
+gblock(d)   ⇔ G.blocked ∨ d ∈ G.extraBlocked ∨ d ∈ ⋃ ipset(G.blocklistIds)
+rblock(m,d) ⇔ R.blocked ∨ d ∈ R.extraBlocked ∨ d ∈ ⋃ ipset(R.blocklistIds)
+
+drop(m, d) ⇔
+      ¬ga(d) ∧ ( gblock(d) ∨ ( d ∉ R.extraAllowed ∧ rblock(m,d) ) )
+   ∨  (G.blockIpOnly ∨ R.blockIpOnly) ∧ d ∉ resolved_<m>
+```
+
+The ladder, top wins: `global.extraAllowed` → global block → per-MAC
+`extraAllowed` → per-MAC block → `blockIpOnly` (orthogonal). Per-MAC
+`extraAllowed` suppresses per-MAC blocks but **not** a global block; only
+`global.extraAllowed` does. That makes the override directions precise:
+**`global.extraAllowed` always wins**, a **global block a profile may not
+un-block**, and a **global *default* a profile may override** (loosenable
+defaults are resolved server-side into per-MAC `BlockRules` and never reach the
+wire as "global"). On OpenWRT this is two extra fleet-wide ipsets
+(`@global_allow`, `@global_block`) layered on the per-MAC rules; the router
+still never sees a profile, schedule, or tier. `global.extraAllowed` is a
+security-sensitive bypass surface — curated and auditable server-side (the
+*why* stays in the DB; the wire carries only the hostname list). See
+[`docs/design/global-policy-layer.md`](design/global-policy-layer.md) for the
+full composition model, precedence table, and per-profile **default-deny**
+mode (`blocked = true` baseline + `MacBlockReason.DefaultDeny`, with
+`extraAllowed` and `global.extraAllowed` carving out).
+
+> **Status (#1308).** This is the target. Until the follow-ups land, the
+> always-reachable hosts are still copied into each profile's `extraAllowed`
+> (`PolicyService.computeBlockRules`); #1307 ships its allowlist the same
+> copy-into-every-profile way as a near-term fix. This design removes that
+> redundancy.
 
 > **Known deviations from this model as of May 2026** (tracked follow-ups,
 > not the canonical design):
@@ -441,6 +499,14 @@ Modified` if the client's ETag still matches.
 {
   "etag": "sha256:abc123...",
   "generatedAt": "2026-05-02T14:00:00Z",
+  "global": {
+    "blocked": false,
+    "blockReason": null,
+    "extraBlocked": [],
+    "extraAllowed": ["connectivitycheck.gstatic.com", "ocsp.digicert.com", "wifihaven.local"],
+    "blocklistIds": [],
+    "blockIpOnly": false
+  },
   "devices": {
     "aa:bb:cc:11:22:33": {
       "profileId": 3,
@@ -488,6 +554,10 @@ ETag is computed deterministically over snapshot content.
 
 Notes:
 
+- The `global` section is a `BlockRules` carried once and applied to every MAC
+  (§0.3). Its `extraAllowed` holds the always-reachable hosts (UI, block page,
+  connectivity, PKI) — **not** copied into each profile's `extraAllowed`;
+  changing them rewrites only `global` and the snapshot `etag`.
 - The first device above takes its rules from the `"kids"` profile.
 - The second device overrides the profile entirely — its `rules` are used
   verbatim. The override replaces; it does not merge with the profile.
