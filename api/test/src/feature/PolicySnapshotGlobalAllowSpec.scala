@@ -58,7 +58,7 @@ object PolicySnapshotGlobalAllowSpec
   private val expected: Set[String] = uiHosts.map(_.value).toSet
 
   def spec = suite("policy snapshot — global allow hosts (#944)")(
-    test("empty uiAllowedHosts → snapshot extraAllowed is just the app-derived list") {
+    test("empty uiAllowedHosts → snapshot extraAllowed is the app-derived list plus infra hosts") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -90,7 +90,8 @@ object PolicySnapshotGlobalAllowSpec
         ) // uiAllowedHosts defaults to Nil
         snap <- svc.snapshot
       } yield assertTrue(
-        snap.profiles(kids.id).rules.extraAllowed.map(_.value) == List("user.example"),
+        snap.profiles(kids.id).rules.extraAllowed.map(_.value).toSet ==
+          (Set("user.example") ++ PolicyService.infraAllowHosts.map(_.value).toSet),
       )
     },
     test("every profile's emitted extraAllowed includes all configured ui hosts (union)") {

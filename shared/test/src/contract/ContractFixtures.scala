@@ -102,11 +102,6 @@ object ContractFixtures {
           url = BlocklistUrl.unsafe("https://example.org/lists/adult.txt"),
         ),
       ),
-      // #1307: global infra allowlist the whole-MAC block path never drops.
-      infraAllow = List(
-        Hostname.parse("connectivitycheck.gstatic.com").toOption.get,
-        Hostname.parse("g.aaplimg.com").toOption.get,
-      ),
     )
   }
 

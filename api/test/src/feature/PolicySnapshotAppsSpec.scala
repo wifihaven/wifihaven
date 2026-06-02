@@ -212,8 +212,11 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         rules = snap.profiles(kids).rules
       } yield assertTrue(!rules.extraAllowed.map(_.value).contains("noone.example.com")) &&
         assertTrue(!rules.extraBlocked.map(_.value).contains("noone.example.com")) &&
-        // Kids profile defaults preserved (categories from seedKidsProfile not touched here).
-        assertTrue(rules.extraAllowed.isEmpty)
+        // Kids profile defaults preserved: extraAllowed carries only the #1307
+        // global infra allowlist, no app hosts leak in.
+        assertTrue(
+          rules.extraAllowed.map(_.value).toSet == PolicyService.infraAllowHosts.map(_.value).toSet,
+        )
     },
     // ── #1105: time_limited app with exemptFromDaily carves around @blocked_macs ──
     test(
@@ -369,6 +372,37 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(ea.contains("mathacademy.com")) &&
         assertTrue(!eb.contains("mathacademy.com"))
     },
+    test(
+      "#1307: global infra hosts are in every profile's extraAllowed, even when blocked=TimeLimit",
+    ) {
+      // Allowed-mode apps appeared blocked when the daily cap ran out because
+      // the whole-MAC @blocked_macs drop killed transitive connectivity-check /
+      // OCSP / CDN dependencies. We ship a curated infra allowlist in every
+      // profile's extraAllowed (relying on the existing #421 ea_ enforcement)
+      // until the global policy layer (#1308) removes the per-profile copy. No
+      // snapshot-shape change: this stays functional, not policy-based (#1311).
+      val mac = "aa:bb:cc:dd:ee:14"
+      for {
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        sr   <- ZIO.service[ScheduleRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        tlr  <- ZIO.service[TimeLimitRepo]
+        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        _    <- tlr.upsert(kid, 30)
+        _    <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
+        rid  <- seedRouterRow
+        // Burn past the 30-min cap → blocked=TimeLimit, no app assignments.
+        _    <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        svc  <- makePsAt(TestClock.schoolDayAfternoon)
+        snap <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea)) &&
+        assertTrue(ea.contains("connectivitycheck.gstatic.com"))
+    },
     test("#1105: same app assigned to two profiles with different exempt flags → independent") {
       for {
         _     <- cleanDb
@@ -387,31 +421,6 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         adultEa = snap.profiles(adult).rules.extraAllowed.map(_.value).toSet
       } yield assertTrue(kidEa.contains("khanacademy.org")) &&
         assertTrue(!adultEa.contains("khanacademy.org"))
-    },
-    test(
-      "#1307: snapshot carries the global infra allowlist independent of any profile",
-    ) {
-      // Prod miss (2026-06-01): when Kids hit its daily cap, the @blocked_macs
-      // drop also killed transitive infra hosts (connectivitycheck.gstatic.com,
-      // ocsp2.g.aaplimg.com, clientservices.googleapis.com) that the allowed app
-      // depends on — so the app *appeared* blocked though its own domain was
-      // reachable. The fix is a curated, network-wide infra allowlist that the
-      // block path never drops, shipped as a top-level snapshot field so the
-      // router can carve it out for ALL macs (not per-(mac,app)). Assert it is
-      // present even on a freshly migrated DB with no profiles/apps assigned.
-      for {
-        _    <- cleanDb
-        svc  <- makePs
-        snap <- svc.snapshot
-        infra = snap.infraAllow.map(_.value).toSet
-      } yield assertTrue(snap.infraAllow.nonEmpty) &&
-        assertTrue(infra == PolicyService.infraAllowHosts.map(_.value).toSet) &&
-        assertTrue(infra.contains("connectivitycheck.gstatic.com")) &&
-        assertTrue(infra.contains("clientservices.googleapis.com")) &&
-        // Apple geo-edge CDN apex covers the OCSP/CDN shards seen in prod
-        // (ocsp2.g.aaplimg.com, gspe79-cdn.g.aaplimg.com) via dnsmasq's
-        // host+subdomain match.
-        assertTrue(infra.contains("g.aaplimg.com"))
     },
   ) @@ TestAspect.sequential
 }

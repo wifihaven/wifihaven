@@ -59,7 +59,6 @@ case class PolicySnapshot(
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],   // wire-dedup only; not consulted at enforcement
     blocklists: Map[BlocklistId, Blocklist],
-    infraAllow: List[Hostname],                // #1307: global infra allowlist; whole-MAC block never drops these
 )
 
 case class DevicePolicy(
@@ -409,8 +408,7 @@ Modified` if the client's ETag still matches.
   "blocklists": {
     "ads":   { "version": "2026-04-29", "url": "/api/blocklists/ads.rpz" },
     "adult": { "version": "2026-04-29", "url": "/api/blocklists/adult.rpz" }
-  },
-  "infraAllow": ["connectivitycheck.gstatic.com", "g.aaplimg.com"]
+  }
 }
 ```
 
@@ -429,16 +427,6 @@ Notes:
 - All schedule / time-limit / pause / category evaluation has already
   happened server-side in `PolicyService` and is reflected in
   `blocked` / `blockReason` / `extraBlocked` / `blocklistIds`.
-- `infraAllow` (#1307) is a curated, network-wide host list (connectivity
-  check, OCSP, Apple/Google PKI/CDN) that the whole-MAC block path never
-  drops, for every device. It is enforced at the router as a single shared
-  `infra_allow` / `infra_allow6` ipset carve-out (`ip daddr != @infra_allow`)
-  on the `@blocked_macs` drop + block-page DNAT — same precedence as
-  `extraAllowed`, but applied to all MACs rather than per-(MAC, host). It is
-  NOT carved out of targeted `extraBlocked` / `blocklistIds` / `blockIpOnly`
-  drops, which remain intentional. The list is baked into the API
-  (`PolicyService.infraAllowHosts`) and folded into the ETag so a change
-  re-propagates to agents.
 
 > **Implementation status (post-#354).** The snapshot wire format now
 > matches the target shape above. Server-side evaluation of pause /
