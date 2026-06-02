@@ -47,6 +47,7 @@ jobs:
       fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
+      deploy-webhook: ${{ steps.filter.outputs.deploy-webhook || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
         id: force
@@ -145,6 +146,11 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'infra/grafana/**'
               - 'deploy/grafana/dashboards/**'
+            # #1245: standalone Render→Grafana deploy-annotation receiver.
+            # stdlib-only, so its own pytest job rather than the opnsense one.
+            deploy-webhook:
+              - '.github/workflows/ci.yml'
+              - 'deploy/deploy-webhook/**'
             migrations:
               - '.github/workflows/ci.yml'
               - '.github/scripts/check-migrations.sh'
@@ -530,6 +536,27 @@ jobs:
         working-directory: opnsense
         run: python -m pytest test/ -v
 
+  # ── deploy-webhook: Render→Grafana annotation receiver tests (#1245) ────
+  deploy-webhook-tests:
+    name: Deploy Webhook Tests
+    needs: changes
+    if: needs.changes.outputs.deploy-webhook == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run deploy-webhook tests
+        working-directory: deploy/deploy-webhook
+        run: python -m pytest test/ -v
+
   # ── Gate-2 fake API shim: aiohttp service unit tests (#682) ─────────────
   fake-api-tests:
     name: Fake API Shim Tests
@@ -682,6 +709,7 @@ jobs:
       - lua-tests
       - contract-tests
       - python-tests
+      - deploy-webhook-tests
       - fake-api-tests
       - render-blueprint
       - grafana-terraform
