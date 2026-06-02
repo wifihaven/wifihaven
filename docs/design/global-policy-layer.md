@@ -494,8 +494,18 @@ isolation rule.
 
 ## 9. Rollout
 
-Pre-v1.0, agent and API tandem-deploy (no compat shims). Order: ship the
-`shared` shape and `PolicyService` emission first (router ignores the new
-`global` field until it knows the ipsets — additive, harmless), then the
-router composition, then retire the #1307 copy. The migration PR precedes the
-`PolicyService` PR per the schema-only isolation rule.
+Prod is deployed, so the router↔API snapshot is a backwards-compatible
+contract: API and agent deploy independently, and `global` is an **additive**
+field. A current agent ignores keys it doesn't recognize — OpenWRT parses the
+body with `luci.jsonc.parse` into a plain Lua table, reads only the keys it
+knows, and round-trips the rest untouched via `jsonc.stringify`; OPNsense does
+not parse the snapshot at all yet (TODO #112). So shipping `global` does not
+require a coordinated agent release — an old agent keeps enforcing exactly as
+before until a new agent learns to compose it.
+
+Order: ship the `shared` shape and `PolicyService` emission first (old agents
+ignore `global`; new behavior is inert until the router learns the ipsets),
+then the router composition, then retire the #1307 copy. The migration PR
+precedes the `PolicyService` PR per the schema-only isolation rule. This stays
+backwards-compatible only by addition (no field removals/renames on the wire)
+until capability negotiation / wire versioning lands (#376).
