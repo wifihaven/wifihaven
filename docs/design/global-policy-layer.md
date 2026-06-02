@@ -44,41 +44,56 @@ From `AGENTS.md` and `docs/architecture.md` §0 — these are load-bearing:
    `BlockRules` map plus a small flat global section.
 3. **`extraAllowed` beats every per-MAC block path** (#421,
    `memory/feedback_extraallowed_beats_blocked.md`). The global layer must not
-   weaken this, and the global infra allowlist must carve out *every* drop —
+   weaken this, and `global.extraAllowed` must carve out *every* drop —
    including a global block.
 
 ## 3. Wire-shape changes
 
-### 3.1 New `GlobalPolicy` section
+### 3.1 The global section is a `BlockRules`
 
-`PolicySnapshot` gains one field carrying fleet-wide policy once:
+`PolicySnapshot` gains one field carrying fleet-wide policy once. **Its shape
+is `BlockRules` — the exact shape `ProfilePolicy.rules` already carries.** No
+new struct, and no field describes *why* a host is allowed or blocked, only
+*what the router does*:
 
 ```scala
 case class PolicySnapshot(
     etag:        ETag,
     generatedAt: String,
-    global:      GlobalPolicy,                     // NEW — fleet-wide, applied to every MAC
+    global:      BlockRules,                        // NEW — applied to every MAC (see §5.2)
     devices:     Map[MacAddress, DevicePolicy],
-    profiles:    Map[ProfileId, ProfilePolicy],    // wire-dedup only; never seen by enforcement
+    profiles:    Map[ProfileId, ProfilePolicy],     // wire-dedup only; never seen by enforcement
     blocklists:  Map[BlocklistId, Blocklist],
-)
-
-case class GlobalPolicy(
-    version:       GlobalPolicyVersion,            // content hash — audit + ETag input
-    infraAllow:    List[Hostname],                 // @global_allow — beats ALL drops, all MACs
-    alwaysBlocked: List[Hostname],                 // @global_block — beats profile/device allow
-    blocklistIds:  List[BlocklistId],              // global category lists, applied to all MACs
 )
 ```
 
-Only **router-relevant, fleet-wide** policy lives here. `infraAllow` is the
-#1307 set, relocated out of per-MAC `extraAllowed`. `alwaysBlocked` and the
-global `blocklistIds` are room for the "global hard block" requirement; they
-ship empty until their follow-up lands, but the shape is fixed now.
+Reusing `BlockRules` means each field has the same router behaviour it has on a
+profile, just applied to every MAC:
 
-**`GlobalPolicy` carries its own `version`** so the SPA/audit tooling and the
-snapshot ETag can both reference it, and so a change to the curated infra
-allowlist is individually auditable (see [§7](#7-curation-versioning-and-audit)).
+| `global` field | Router behaviour (all MACs) |
+|----------------|-----------------------------|
+| `extraAllowed` | Hosts reachable from every MAC. **Carves out every block**, per-MAC or global. This is where the connectivity-check / PKI / captive-portal hosts **and** the WifiHaven UI / block-page hosts go — the router does not care *why* a host is on this list, only that it is always reachable. Replaces both the #1307 per-profile copy and the `uiAllowedHosts` copy (`PolicyService.scala:549`). |
+| `extraBlocked` | Hosts blocked for every MAC. A profile/device may **not** un-block them (only `global.extraAllowed` can). |
+| `blocklistIds` | Category lists applied to every MAC. Same un-blockable semantics as `global.extraBlocked`. |
+| `blocked` | Whole-network lockdown: drop all forwarded traffic for every MAC except `global.extraAllowed`. A global kill switch. |
+| `blockReason` | Block-page text when `global.blocked` is set. |
+| `blockIpOnly` | Strict-IP mode for every MAC (drop destinations not resolved locally for that MAC). |
+
+So we get the "global allowlist" the issue asked for as `global.extraAllowed`,
+plus a global hard-block, a network lockdown, and a network-wide strict mode —
+all from one shape we already ship and the router already understands. Most
+deployments set only `global.extraAllowed`; the rest default to the
+allow-all/empty values of `BlockRules.allowAll`.
+
+**No `version` field on the wire.** The snapshot `etag` already changes when
+`global` changes, so the router needs nothing extra. Curation and audit of
+*which* hosts are on `global.extraAllowed` (and why) is a server-side / DB
+concern, not wire shape — see [§7](#7-curation-and-audit).
+
+**Is there any reason `global` should differ from a profile's `BlockRules`?**
+No field needs to. The only thing that is global-specific is the
+*composition precedence* (`global` outranks per-MAC; see
+[§5.2](#52-stage-2--global-composition)) — that is router behaviour, not shape.
 
 ### 3.2 What is *not* in the global section
 
@@ -95,8 +110,9 @@ the wire would invite the router to "merge," which violates invariant #2.
 
 `BlockRules` is unchanged. `DevicePolicy.rules: Option[BlockRules]` and
 `ProfilePolicy` are unchanged in shape. What changes is **what the API puts in
-them** (see [§5](#5-composition--override-model)) and that `extraAllowed` no
-longer carries the infra/UI hosts (those moved to `global.infraAllow`).
+them** (see [§5](#5-composition--override-model)) and that per-MAC
+`extraAllowed` no longer carries the always-reachable hosts (those moved to
+`global.extraAllowed`).
 
 `MacBlockReason` gains one case for block-page text:
 
@@ -117,7 +133,7 @@ baseline; a concurrent Paused/Schedule/TimeLimit reports the stronger reason).
 ## 4. Default-deny per profile
 
 A profile in default-deny mode has baseline **block-all**; only its
-`extraAllowed` (plus `global.infraAllow`) is reachable.
+`extraAllowed` (plus `global.extraAllowed`) is reachable.
 
 **Representation requires no new router field.** Default-deny *is* exactly
 `blocked = true` with `extraAllowed` carving out — the router already enforces
@@ -126,7 +142,7 @@ that (#421). So `PolicyService` collapses a default-deny profile to:
 ```
 blocked      = true
 blockReason  = DefaultDeny      (unless a stronger reason already applies)
-extraAllowed = <profile/device allow list>     // global.infraAllow is NOT copied here
+extraAllowed = <profile/device allow list>     // global.extraAllowed is NOT copied here
 extraBlocked = []               // pointless under block-all — omitted to slim the wire
 blocklistIds = []               // pointless under block-all — omitted
 blockIpOnly  = <as configured>
@@ -134,16 +150,17 @@ blockIpOnly  = <as configured>
 
 Interactions:
 
-- **Global infra allowlist** still carves out, because `global.infraAllow`
-  is a separate flat layer applied to every MAC at the router — independent of
-  whether the MAC's `blocked` flag came from default-deny, a schedule, or a
-  pause. OCSP/PKI/captive-portal hosts stay reachable.
+- **`global.extraAllowed`** still carves out, because it is a separate layer
+  applied to every MAC at the router — independent of whether the MAC's
+  `blocked` flag came from default-deny, a schedule, or a pause. The
+  always-reachable hosts (UI, block page, connectivity check, PKI) stay
+  reachable.
 - **Per-device overrides** compose per [§5](#5-composition--override-model): a
   device override fully specifies the per-MAC rules, so a device may run
   allow-by-default under a default-deny profile, or vice versa.
 - **`blockIpOnly`** — default-deny + `blockIpOnly` is the **strictest**
   combination. `blocked = true` drops everything except `extraAllowed ∪
-  global.infraAllow`; `blockIpOnly` independently drops any destination IP not
+  global.extraAllowed`; `blockIpOnly` independently drops any destination IP not
   in `resolved_<m>` (the set dnsmasq populated from *this MAC's* lookups). A
   packet survives **both** only if its destination is (a) explicitly allowed
   **and** (b) was resolved through our local DNS for this MAC. Allowed hosts
@@ -191,50 +208,56 @@ under default-deny. If a profile is allow-by-default with
 only `x`, a union would carry `a, b, c` through the device's block-all and
 defeat the intent. Replace avoids this footgun and keeps the model
 predictable. The #1308 redundancy is removed not by switching to merge but by
-**relocating the shared concern (infra/UI allow) to the global layer** — which
-was the thing actually being copied. Profile/device `extraAllowed` now carries
-only profile/device-specific allows, so replace no longer forces copying the
-fleet-wide set.
+**relocating the shared always-reachable hosts to `global.extraAllowed`** —
+which was the thing actually being copied. Profile/device `extraAllowed` now
+carries only profile/device-specific allows, so replace no longer forces
+copying the fleet-wide set.
 
 (A future structured-patch override — `inherit | replace | extend` — is a
 possible enhancement if operators need "add one allow on top of the profile"
 without restating it. It is out of scope here; replace is the baseline.)
 
-### 5.2 Stage 2 — global envelope (flat, fleet-wide)
+### 5.2 Stage 2 — global composition
 
-The global section is **not** a third tier in the stage-1 merge. It is an
-orthogonal envelope the router applies uniformly to every MAC:
+The global `BlockRules` is **not** a third tier in the stage-1 merge. The
+router applies it to every MAC alongside that MAC's resolved `BlockRules`, with
+a fixed precedence: **`global.extraAllowed` outranks everything; global blocks
+outrank per-MAC allow; per-MAC allow outranks per-MAC blocks.**
 
-- `global.infraAllow` → a single `@global_allow` ipset that suppresses **every**
-  drop path for **every** MAC. It is the fleet-wide analogue of `extraAllowed`,
-  and it ranks **above** the global block.
-- `global.alwaysBlocked` / `global.blocklistIds` → `@global_block`-class ipsets
-  that drop for every MAC and are suppressed **only** by `@global_allow` — a
-  profile or device's own `extraAllowed` does **not** un-block them.
-
-The router drop predicate (extending the one documented in
-`openwrt/.../render.lua`) becomes, for a forwarded packet from MAC `m` to
-destination `d`:
+Let `G` = the global `BlockRules`, `R` = the MAC's resolved per-MAC
+`BlockRules` (stage 1), and for a forwarded packet from MAC `m` to destination
+`d`:
 
 ```
-drop(m, d) ⇔
-      ( global_block_hit(d)        ∧ ¬global_allow_hit(d) )
-   ∨  ( m ∈ blocked_macs            ∧ ¬ea_hit(m,d) ∧ ¬global_allow_hit(d) )
-   ∨  ( eb_hit(m,d)                 ∧ ¬ea_hit(m,d) ∧ ¬global_allow_hit(d) )
-   ∨  ( bl_hit(m,d)                 ∧ ¬ea_hit(m,d) ∧ ¬global_allow_hit(d) )
-   ∨  ( blockIpOnly(m)              ∧ d ∉ resolved_<m> )
+ga(d)        ⇔  d ∈ G.extraAllowed
+ra(m,d)      ⇔  d ∈ R.extraAllowed
+gblock(d)    ⇔  G.blocked ∨ d ∈ G.extraBlocked ∨ d ∈ ⋃ ipset(G.blocklistIds)
+rblock(m,d)  ⇔  R.blocked ∨ d ∈ R.extraBlocked ∨ d ∈ ⋃ ipset(R.blocklistIds)
+
+drop(m,d) ⇔
+      ¬ga(d) ∧ ( gblock(d) ∨ ( ¬ra(m,d) ∧ rblock(m,d) ) )
+   ∨  (G.blockIpOnly ∨ R.blockIpOnly) ∧ d ∉ resolved_<m>
 ```
 
-Key asymmetry: per-MAC `ea_hit` suppresses the per-MAC drops
-(`blocked_macs` / `eb_` / `bl_`) but **not** `global_block`. Only
-`global_allow` suppresses `global_block`. This is what makes "a profile may
-not un-block a global block" true while "infra allow always wins" remains
-true. `global_allow` and `@ea_` hosts are resolved by dnsmasq into
-`resolved_<m>`, so both compose with `blockIpOnly` exactly as `extraAllowed`
-does today (no carve-out needed because they are already resolved).
+Read it as a precedence ladder, top wins:
 
-This is two flat fleet-wide ipsets, not tier logic — the router still never
-sees a profile or a schedule.
+1. `ga(d)` — `global.extraAllowed`. Suppresses every hostname/MAC drop, global
+   or per-MAC. Nothing overrides it.
+2. `gblock(d)` — a global block. Beaten only by `ga`; a per-MAC `ra` does
+   **not** suppress it ("a profile may not un-block a global block").
+3. `ra(m,d)` — per-MAC `extraAllowed`. Suppresses the per-MAC blocks only
+   (#421).
+4. `rblock(m,d)` — per-MAC blocks.
+5. `blockIpOnly` (global OR per-MAC) — orthogonal; no allowlist carve-out
+   because allowed hosts are resolved into `resolved_<m>` by dnsmasq and so
+   pass the IP-only test naturally.
+
+On OpenWRT this is two extra fleet-wide ipsets — `@global_allow` (`ga`) and
+`@global_block` (`gblock` hosts/categories; plus a global blocked flag) —
+layered onto the existing per-MAC `@ea_` / `@blocked_macs` / `@eb_` / `@bl_`
+rules. It is **not** tier logic: the router still never sees a profile, a
+schedule, or "global vs profile" — it sees one more `BlockRules` whose drops
+rank above the per-MAC ones and whose `extraAllowed` ranks above everything.
 
 ### 5.3 Precedence table
 
@@ -243,25 +266,27 @@ For each policy dimension, who wins across global / profile / device, and why.
 
 | Dimension | Global | Profile | Device | Resolution | Why |
 |-----------|--------|---------|--------|------------|-----|
-| **Infra allowlist** (`global.infraAllow`) | ✅ always carves out, beats every block incl. global block | — | — | Global wins absolutely | Security/connectivity survival surface; must never be un-reachable |
-| **Global hard block** (`global.alwaysBlocked`, `global.blocklistIds`) | ✅ beats profile/device allow | cannot un-block | cannot un-block | Global wins over per-MAC allow; only infra-allow saves | Fleet-wide mandatory block (e.g. malware) a profile must not loosen |
-| **Manual / pause / schedule / time-limit** (`blocked`) | infra-allow carves out | sets it | device override sets it (replace) | Device replaces profile; `extraAllowed` + infra-allow carve out | #421 — admin allow beats the MAC block |
-| **`extraBlocked`** (per-MAC host block) | infra-allow carves out | profile list | device list (replace) | `extraAllowed` + infra-allow carve out; device replaces profile | #421 |
-| **`extraAllowed`** (per-MAC allow) | — | profile list | device list (replace) | Beats per-MAC blocks; loses to `global_block`; device replaces profile | Allow-wins within the MAC, but cannot override a fleet mandate |
-| **`blocklistIds`** (per-MAC category) | global set adds (mandatory) | profile set | device set (replace) | Per-MAC: `extraAllowed`/infra-allow carve out. Global set: only infra-allow | Profile categories are loosenable; global ones are not |
-| **`blockIpOnly`** | default (loosenable) | profile value overrides default | device value overrides (replace) | Strictest applicable per-MAC value after replace; global is only a default | A profile may opt in/out of strict IP mode; global just seeds the default |
-| **Default-deny baseline** | — | per-profile flag → `blocked=true` | device override may flip | Device replaces profile | Per-profile inversion of the allow-by-default model |
-| **Schedules / time limits** | — | profile-evaluated → `blocked` | follows the MAC | Orthogonal `OR` into `blocked`; `extraAllowed` carves out | Time-based blocks compose with everything else |
+| **`extraAllowed`** | ✅ always carves out — beats every block, global or per-MAC | per-MAC list | per-MAC list (replace) | `global.extraAllowed` is the top of the ladder; per-MAC `extraAllowed` beats per-MAC blocks only (#421) | Always-reachable hosts (UI, block page, connectivity, PKI) must never be un-reachable |
+| **`extraBlocked`** | beats profile/device allow; only `global.extraAllowed` saves | per-MAC list | per-MAC list (replace) | Global block beaten only by `global.extraAllowed`; per-MAC block carved out by per-MAC `extraAllowed` | A global host block is mandatory; a profile host block is loosenable by the MAC |
+| **`blocklistIds`** | beats profile/device allow; only `global.extraAllowed` saves | per-MAC set | per-MAC set (replace) | Same as `extraBlocked` | Global categories are mandatory; profile categories are loosenable |
+| **`blocked`** | whole-network lockdown; only `global.extraAllowed` saves | per-MAC (pause/schedule/time-limit/manual) | per-MAC (replace) | Global lockdown beaten only by `global.extraAllowed`; per-MAC block carved out by per-MAC `extraAllowed` | Network kill switch vs. per-MAC block |
+| **`blockIpOnly`** | applies to all MACs if set | per-MAC value | per-MAC value (replace) | `global.blockIpOnly ∨ R.blockIpOnly`; strictest wins; no allow carve-out | Strict-IP is a floor the network can raise; a profile may also raise it |
+| **Default-deny baseline** | — | per-profile flag → `blocked=true` | device override may flip (replace) | Collapses into per-MAC `blocked`; composes as the `blocked` row | Per-profile inversion of allow-by-default |
+| **Schedules / time limits** | — | profile-evaluated → `blocked` | follows the MAC | Orthogonal `OR` into per-MAC `blocked`; `extraAllowed` carves out | Time-based blocks compose with everything else |
 | **`failureMode`** | — | per-profile | follows the MAC | Per-profile, unchanged | Router behaviour on poll failure (#422) |
 
 Reading the override directions the issue asked for explicitly:
 
-- **Infra allowlist = global always wins / always carves out.** Top of the
-  ladder.
-- **Global block = profile may NOT un-block.** Profile/device `extraAllowed`
-  does not suppress `@global_block`; only `@global_allow` does.
-- **Global default (e.g. `blockIpOnly` default) = profile may override.**
-  Resolved server-side; never reaches the wire as "global."
+- **`global.extraAllowed` = global always wins / always carves out.** Top of
+  the ladder — beats global blocks and per-MAC blocks alike.
+- **Global block (`global.extraBlocked` / `global.blocklistIds` /
+  `global.blocked`) = profile may NOT un-block.** A per-MAC `extraAllowed` does
+  not suppress a global block; only `global.extraAllowed` does.
+- **A global *default* (e.g. a household default `blockIpOnly`) = profile may
+  override.** This is resolved server-side into the per-MAC `BlockRules` and
+  never reaches the wire as "global" (see [§3.2](#32-what-is-not-in-the-global-section));
+  it is distinct from `global.blockIpOnly`, which is an enforced network-wide
+  floor.
 
 ## 6. JSON wire examples
 
@@ -272,15 +297,18 @@ Reading the override directions the issue asked for explicitly:
   "etag": "sha256:abc123...",
   "generatedAt": "2026-06-01T14:00:00Z",
   "global": {
-    "version": "gp-7f3a91c0",
-    "infraAllow": [
+    "blocked": false,
+    "blockReason": null,
+    "extraBlocked": [],
+    "extraAllowed": [
       "connectivitycheck.gstatic.com",
       "captive.apple.com",
       "ocsp.digicert.com",
-      "ocsp.pki.goog"
+      "ocsp.pki.goog",
+      "wifihaven.local"
     ],
-    "alwaysBlocked": [],
-    "blocklistIds": []
+    "blocklistIds": [],
+    "blockIpOnly": false
   },
   "devices": {
     "aa:bb:cc:11:22:33": { "profileId": 3, "name": "kid-ipad", "rules": null },
@@ -318,9 +346,14 @@ Reading the override directions the issue asked for explicitly:
 }
 ```
 
-Note: the infra hosts appear **once** under `global`, not duplicated into the
-`kids` profile's `extraAllowed` or into every device. Changing the infra
-allowlist rewrites only `global` (and its `version`), not every profile entry.
+Note: the always-reachable hosts (connectivity check, PKI, **and** the
+WifiHaven UI/block-page host `wifihaven.local`) appear **once** under
+`global.extraAllowed`, not duplicated into the `kids` profile's `extraAllowed`
+or into every device. The router does not distinguish "infra" from "UI" — both
+are just always-reachable hosts. Changing the list rewrites only `global`
+(and the snapshot `etag`), not every profile entry. `global` is a plain
+`BlockRules`: the empty/false fields mean "no global block, no global lockdown,
+no global strict-IP."
 
 ### 6.2 A default-deny profile
 
@@ -344,7 +377,7 @@ allowlist rewrites only `global` (and its `version`), not every profile entry.
 ```
 
 A device on profile `7` (`rules: null`) is reachable only at `pbskids.org`,
-`khanacademykids.org`, and the `global.infraAllow` hosts — and, because
+`khanacademykids.org`, and the `global.extraAllowed` hosts — and, because
 `blockIpOnly` is on, only when those are reached via locally-resolved IPs.
 `extraBlocked` / `blocklistIds` are omitted (empty) because they are redundant
 under block-all.
@@ -371,74 +404,80 @@ under block-all.
 ```
 
 This device runs allow-by-default even though its profile is default-deny — the
-override **replaces** the profile's rules entirely. It still inherits the
-fleet-wide `global` envelope (infra allow carves out; any future global block
-applies).
+override **replaces** the profile's rules entirely. It still composes with the
+fleet-wide `global` `BlockRules` (`global.extraAllowed` carves out; any global
+block applies).
 
-## 7. Curation, versioning, and audit
+## 7. Curation and audit
 
-The global infra allowlist is a **security-sensitive bypass surface**: a host
-on it is reachable from every device regardless of any block. It must be
-curated, versioned, and auditable.
+`global.extraAllowed` is a **security-sensitive bypass surface**: a host on it
+is reachable from every device regardless of any block. It must be curated and
+auditable. This is a **server-side / DB concern, not wire shape** — the wire
+carries only the flat hostname list the router needs; the *why* and *who*
+stay in the database.
 
-- **Dedicated table, not the operator's general settings.** A
-  `global_infra_allow` table with audit columns (`added_by`, `added_at`,
-  `reason`, soft-delete `removed_by`/`removed_at`). Edits append/soft-delete;
-  history is retained.
-- **Versioned.** `GlobalPolicy.version` is a content hash over the resolved
-  global section; it feeds the snapshot ETag and lets the SPA show "infra
-  allowlist last changed …".
-- **Separate from operator-editable global blocks.** `global.alwaysBlocked` /
-  global `blocklistIds` are operator policy; `infraAllow` is a tightly-curated
-  connectivity-survival list. They share the wire section but have distinct
-  authoring surfaces and permissions.
-- **Auditable in the UI.** A read-only audit view of who changed the infra
-  allowlist and why (see SPA follow-up).
+- **Dedicated table.** A `global_allow` table with audit columns (`added_by`,
+  `added_at`, `reason`, soft-delete `removed_by`/`removed_at`) feeds
+  `global.extraAllowed`. Edits append/soft-delete; history is retained. The
+  *reason* (connectivity survival, PKI, the WifiHaven UI/block page, an
+  operator carve-out) lives here as metadata — the router never sees it.
+- **No wire version needed.** The snapshot `etag` already changes when
+  `global` changes; the SPA can show "global allowlist last changed …" from
+  the audit table's timestamps.
+- **Distinct authoring surfaces, one wire shape.** Global *blocks*
+  (`global.extraBlocked` / `global.blocklistIds` / `global.blocked`) are
+  operator policy with their own UI and permissions; the curated always-allow
+  list is tightly controlled. They collapse into one `global` `BlockRules` on
+  the wire but are edited separately server-side.
+- **Auditable in the UI.** A read-only audit view of who changed the global
+  allow list and why (see SPA follow-up).
 
 ## 8. Follow-up implementation issues
 
 To be filed by the operator / orchestration session (not by this design PR):
 
-1. **`shared` models.** Add `GlobalPolicy`, `GlobalPolicyVersion`,
-   `PolicySnapshot.global`, and `MacBlockReason.DefaultDeny`; codecs; ETag
-   input. Update `BlockRules.allowAll` usages as needed. (No router/SPA logic.)
+1. **`shared` models.** Add `PolicySnapshot.global: BlockRules` and
+   `MacBlockReason.DefaultDeny`; codecs; ETag input. No new struct — `global`
+   reuses `BlockRules`. (No router/SPA logic.)
 2. **DB migration (schema-only PR, per the migration-isolation rule).**
-   `global_infra_allow` table (audit columns + soft-delete), `global_blocks`
-   table, `profiles.default_deny` column, and a household-level global
-   `blocklistIds` association. Touches only small/lookup tables — not the
-   unbounded-growth event tables — so it is metadata-only and safe on the
-   startup path. Ships in its own PR with only `*.sql` + docs.
-3. **`PolicyService` changes.** Emit the `global` section from the new tables;
-   **stop** copying `uiAllowedHosts` into per-MAC `extraAllowed`
-   (`PolicyService.scala:549`) and out of the unmanaged-block path
-   (`:169`) — relocate to `global.infraAllow`; evaluate per-profile
-   default-deny → `blocked=true` + `DefaultDeny` reason; resolve global
-   defaults (e.g. `blockIpOnly`) server-side; produce merged device overrides.
-   Instrument: a counter for global-section size / version changes and a gauge
-   for default-deny profile count (per the "new functionality ships with
-   metrics" rule) + a Grafana panel.
-4. **Router carve-out (openwrt `render.lua` + agent; opnsense parity).** Add
-   `@global_allow` (suppresses all drops, all MACs) and `@global_block`
-   (suppressed only by `@global_allow`) ipsets; update the drop predicate per
-   [§5.2](#52-stage-2--global-envelope-flat-fleet-wide); populate the global
-   ipsets via dnsmasq `nftset=` callbacks; lua tests in `openwrt/test/`.
-5. **SPA settings.** Global infra-allow management page with the audit view;
+   `global_allow` table (audit columns + soft-delete), a `global_blocks` table
+   (hosts) + household-level global `blocklistIds` association + global
+   `blocked`/`blockIpOnly` flags, and a `profiles.default_deny` column. Touches
+   only small/lookup tables — not the unbounded-growth event tables — so it is
+   metadata-only and safe on the startup path. Ships in its own PR with only
+   `*.sql` + docs.
+3. **`PolicyService` changes.** Assemble the `global` `BlockRules` from the new
+   tables; **stop** copying `uiAllowedHosts` into per-MAC `extraAllowed`
+   (`PolicyService.scala:549`) and out of the unmanaged-block path (`:169`) —
+   relocate to `global.extraAllowed`; evaluate per-profile default-deny →
+   `blocked=true` + `DefaultDeny` reason; resolve global *defaults* (the
+   loosenable kind) server-side; produce merged device overrides. Instrument: a
+   counter for global-section size / change events and a gauge for default-deny
+   profile count (per the "new functionality ships with metrics" rule) + a
+   Grafana panel.
+4. **Router global composition (openwrt `render.lua` + agent; opnsense
+   parity).** Add `@global_allow` (suppresses every drop, all MACs) and
+   `@global_block` (suppressed only by `@global_allow`) ipsets + a global
+   blocked/blockIpOnly flag; implement the drop predicate per
+   [§5.2](#52-stage-2--global-composition); populate the global ipsets via
+   dnsmasq `nftset=` callbacks; lua tests in `openwrt/test/`.
+5. **SPA settings.** Global always-allow management page with the audit view;
    global-blocks management; per-profile default-deny toggle; per-device
    override editor that reflects replace semantics (and warns that overriding a
    default-deny profile fully restates it).
-6. **Retire the #1307 copy.** Once `global.infraAllow` ships, remove the
+6. **Retire the #1307 copy.** Once `global.extraAllowed` ships, remove the
    per-profile copy introduced by
    [#1307](https://github.com/wifihaven/wifihaven/issues/1307).
-7. **Tests (feature + router).** Global infra-allow carves out a `blocked=true`
-   MAC; `global_block` beats profile `extraAllowed` but `global.infraAllow`
-   beats `global_block`; default-deny + `blockIpOnly` reaches only
-   allowed-and-locally-resolved hosts; default-deny profile collapses to
-   `blocked=true` + `DefaultDeny`.
+7. **Tests (feature + router).** `global.extraAllowed` carves out a
+   `blocked=true` MAC; a global block beats a per-MAC `extraAllowed` but
+   `global.extraAllowed` beats the global block; default-deny + `blockIpOnly`
+   reaches only allowed-and-locally-resolved hosts; default-deny profile
+   collapses to `blocked=true` + `DefaultDeny`.
 
 ## 9. Rollout
 
 Pre-v1.0, agent and API tandem-deploy (no compat shims). Order: ship the
 `shared` shape and `PolicyService` emission first (router ignores the new
-`global` section until it knows the ipsets — additive, harmless), then the
-router carve-out, then retire the #1307 copy. The migration PR precedes the
+`global` field until it knows the ipsets — additive, harmless), then the
+router composition, then retire the #1307 copy. The migration PR precedes the
 `PolicyService` PR per the schema-only isolation rule.
