@@ -167,6 +167,65 @@ for usage attribution (§7.2). It is **never** the enforcement plane.
 >   top level — the DB column is per-profile and we keep it that way until
 >   there's a reason to consolidate.
 
+### 0.3 The snapshot is a minimal functional shape, not a policy model
+
+`BlockRules` is the complete wire vocabulary for enforcement, and keeping it
+that small is a deliberate design constraint, not an accident waiting to be
+"fixed" by adding fields. The snapshot carries only the **functional** data the
+router must act on; it is not a serialization of the server's richer policy
+model. When you reach for a new field, stop and check whether an existing
+functional field already expresses the behaviour.
+
+**1. The snapshot is the minimal functional shape needed to enforce.** Every
+field exists because the router has to act on it: drop all traffic
+(`blocked`), drop a host (`extraBlocked`), allow a host (`extraAllowed`), drop a
+category (`blocklistIds`), drop literal-IP traffic (`blockIpOnly`). If a new
+policy concept can be expressed through one of these, it **MUST** be — adding a
+new field for the concept itself is forbidden.
+
+The motivating example: while shipping the global infra allowlist
+([#1307](https://github.com/wifihaven/wifihaven/issues/1307)) — a curated set of
+infrastructure hosts that must stay reachable so allowed-mode apps keep working
+even when a whole MAC is blocked — an initial attempt added a top-level
+`PolicySnapshot.infraAllow` set (and even carried the *reason* each host was
+allowed) straight to the router. That was wrong: an always-allowed host is
+functionally indistinguishable from any other `extraAllowed` entry, and the
+router has no need for a separate "infra" channel or for *why* the host is
+allowed. The correct fix resolves the infra hosts server-side and copies them
+into every profile's `extraAllowed`, relying on the enforcement that already
+exists for that field. The router learns nothing new.
+
+**2. No policy *reasons* on the wire except where functionally required.**
+`blockReason: Option[MacBlockReason]` is the single intentional exception, and
+it exists only to choose block-page copy — it is **never** read for
+enforcement (see §0.2 and the type split that keeps router-only reasons out of
+the snapshot). Do not add analogous "why" metadata for allow/deny decisions. The
+server collapses the reasoning into functional data; the router applies that
+data blind. A field whose only consumer is human-readable explanation does not
+belong in the enforcement snapshot.
+
+**3. Policy lives server-side, in `PolicyService`.** All composition — global
+defaults, profile rules, per-device overrides, schedules, time limits, category
+membership, app modes, and the infra allowlist — collapses server-side into the
+per-MAC `BlockRules` described above. A new policy concept lands in
+`PolicyService` and presents to the router as one of the existing functional
+fields. The router never sees the tiers, the precedence order, or the inputs
+that produced the result.
+
+**4. Redundancy and wire-shape are separate concerns.** Copying a shared set
+(like the infra allowlist) into every profile's `extraAllowed` duplicates data
+across the snapshot, and that is an acceptable wire shape. The duplication is a
+distinct optimization, tracked by the global-policy-layer work in
+[#1308](https://github.com/wifihaven/wifihaven/issues/1308) (carry the global
+set once, with an override model), and it must be solved **without** teaching the
+router about policy tiers. Reducing bytes on the wire is never a reason to push
+a policy concept onto the dumb applier.
+
+This guardrail is recorded in
+[#1311](https://github.com/wifihaven/wifihaven/issues/1311); the same principle
+is summarized in the top-level [`AGENTS.md`](../AGENTS.md) architectural-model
+section.
+
 ## 1. Why this exists
 
 The original architecture ran a DNS server and a pcap-based traffic monitor on
