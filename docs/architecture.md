@@ -27,6 +27,16 @@ asked for. dnsmasq does not return a fake answer for any blocked host — the
 host resolves normally, the device opens a TCP connection, and nftables
 either drops the SYN (blocked) or DNATs HTTP/80 to the local block page.
 
+> **Corollary — "a hostname resolved" tells you nothing about reachability.**
+> The resolved IP is precisely what nftables drops, so never infer "DNS
+> resolved ⇒ not blocked," and never describe a fix as "allow the domain's
+> DNS." An allowlist entry carves the host's *resolved IPs* out of the
+> forward-drop via the per-`(mac, host)` `ea_` ipset that dnsmasq's nftset
+> callback populates at resolve time (§0.2 `extraAllowed`) — it does not
+> change any DNS answer. This connection-layer-vs-DNS confusion recurs in
+> agent work (e.g. [#1307](https://github.com/wifihaven/wifihaven/issues/1307));
+> see [#1313](https://github.com/wifihaven/wifihaven/issues/1313).
+
 We rejected DNS-based blocking (sinkhole / RPZ / NXDOMAIN) because:
 
 - DoH / DoT bypasses any DNS-layer block trivially.

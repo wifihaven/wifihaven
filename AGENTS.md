@@ -15,6 +15,19 @@ hostname attribution (forward-lookup ipset population so nftables can match
 on `(mac, dst ip ∈ resolved-hosts-for-this-mac)`), but it is not the
 enforcer.
 
+> **ANTI-PATTERN — never reason "resolved ⇒ reachable / not blocked."**
+> A successful DNS lookup proves nothing about whether traffic is allowed:
+> DNS *always* resolves, and the resolved IP is exactly what nftables drops.
+> Reachability is a connection-layer property, not a DNS one. So:
+> - Do NOT conclude "the app's domain resolved fine, so it wasn't blocked."
+> - Do NOT describe a fix as "allow the domain's DNS." An allow entry works
+>   by carving the host's *resolved IPs* out of the forward-drop — the
+>   per-`(mac, host)` `ea_` ipset that dnsmasq's nftset callback populates at
+>   resolve time — it does not touch DNS at all.
+>
+> This slip recurs (e.g. [#1307](https://github.com/wifihaven/wifihaven/issues/1307));
+> see [#1313](https://github.com/wifihaven/wifihaven/issues/1313).
+
 **2. The router agent is a dumb applier.** The API server ships a policy
 snapshot in which every decision is already pre-computed. After a one-time
 resolution step, the enforcement pipeline sees a `Map[MacAddress, BlockRules]`
