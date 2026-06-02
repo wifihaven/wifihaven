@@ -62,6 +62,36 @@ the router as one of the fields above. **Do not add decision logic — schedule
 evaluation, time accounting, category lookup, role-based defaults — to the
 router agent.**
 
+### The snapshot is a minimal functional shape, not a policy model
+
+The fields above are the *whole* wire vocabulary, and that is deliberate. The
+snapshot carries only the **functional** data the router must act on to
+enforce — it is not a mirror of the server's policy model.
+
+- **Express new policy via existing functional fields — never add a field for
+  the concept itself.** If a new policy idea can be carried by a field that
+  already exists, it MUST be. An "always-allow this host" rule is functionally
+  just another `extraAllowed` entry; a "block this app" rule is just
+  `extraBlocked` / `blocklistIds`. Adding a new top-level channel (e.g. an
+  `infraAllow` set) to name the *concept* pushes a policy tier onto the router
+  and is wrong. (This was the original misstep in
+  [#1307](https://github.com/wifihaven/wifihaven/issues/1307) — the global
+  infra allowlist now ships by copying its hosts into every profile's
+  `extraAllowed`, not via a new field.)
+- **No policy *reasons* on the wire except where functionally required.**
+  `blockReason` is the one intentional exception, and it exists only to pick
+  block-page copy — it is never read for enforcement. Do not add "why"
+  metadata for allow/deny decisions; the server resolves policy into functional
+  data and the router applies it blind.
+- **Redundancy and wire-shape are separate concerns.** Copying a shared set
+  (like the infra allowlist) into every profile's `extraAllowed` is the correct
+  wire shape even though it duplicates data. The duplication is a separate
+  optimization, tracked by the global-policy-layer work in
+  [#1308](https://github.com/wifihaven/wifihaven/issues/1308) — and reducing it
+  must NOT come at the cost of teaching the router about policy tiers. See
+  [#1311](https://github.com/wifihaven/wifihaven/issues/1311) for the full
+  rationale.
+
 See [`docs/architecture.md`](docs/architecture.md) for the full snapshot
 shape, wire JSON examples, and the enforcement model.
 
