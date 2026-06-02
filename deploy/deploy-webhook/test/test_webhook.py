@@ -139,8 +139,8 @@ class TestBuildAnnotation:
         assert "prod" in ann["tags"]
         assert "wifihaven-api-prod" in ann["tags"]
         assert "live" in ann["tags"]
-        # timestamp parsed from the payload, not the fallback
-        assert ann["time"] == 1748655180000
+        # timestamp parsed from the payload (2026-05-31T01:33:00Z), not the fallback
+        assert ann["time"] == 1780191180000
 
     def test_falls_back_to_service_name_without_sha(self):
         ev = parse_event(FAILED_BODY)
