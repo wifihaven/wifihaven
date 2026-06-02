@@ -26,7 +26,6 @@ import hashlib
 import hmac
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -282,10 +281,12 @@ def main():
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        # Ctrl-C / SIGINT is a normal shutdown; the finally below closes the
+        # socket cleanly, so swallow it and exit 0.
         pass
     finally:
         server.server_close()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
