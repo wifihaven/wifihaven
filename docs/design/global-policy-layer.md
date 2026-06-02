@@ -434,19 +434,34 @@ stay in the database.
 
 ## 8. Follow-up implementation issues
 
-To be filed by the operator / orchestration session (not by this design PR):
+Filed against this design. Dependency order is shown; the migration PR (item 2)
+precedes the PolicyService adoption PR (item 3) per the schema-only
+isolation rule.
 
-1. **`shared` models.** Add `PolicySnapshot.global: BlockRules` and
+| # | Issue | Depends on |
+|---|-------|------------|
+| 1 | [#1316 — shared: add `PolicySnapshot.global` (BlockRules) + `MacBlockReason.DefaultDeny`](https://github.com/wifihaven/wifihaven/issues/1316) | — |
+| 2 | [#1317 — db: migration for global policy tables + `profiles.default_deny` (schema-only PR)](https://github.com/wifihaven/wifihaven/issues/1317) | — |
+| 3 | [#1318 — PolicyService: assemble global section, relocate `uiAllowedHosts`, default-deny eval](https://github.com/wifihaven/wifihaven/issues/1318) | #1316, #1317 |
+| 4 | [#1319 — router: global composition (`@global_allow` / `@global_block`) on OpenWRT + OPNsense](https://github.com/wifihaven/wifihaven/issues/1319) | #1316, #1318 |
+| 5 | [#1320 — web: global allow/block management + audit view, default-deny toggle, device override editor](https://github.com/wifihaven/wifihaven/issues/1320) | #1317, #1318 |
+| 6 | [#1321 — policy: retire the #1307 per-profile infra-allow copy](https://github.com/wifihaven/wifihaven/issues/1321) | #1318, #1319 |
+| 7 | [#1322 — test: global policy layer + default-deny coverage (feature + router)](https://github.com/wifihaven/wifihaven/issues/1322) | #1318, #1319 |
+
+1. **[#1316](https://github.com/wifihaven/wifihaven/issues/1316) — `shared`
+   models.** Add `PolicySnapshot.global: BlockRules` and
    `MacBlockReason.DefaultDeny`; codecs; ETag input. No new struct — `global`
    reuses `BlockRules`. (No router/SPA logic.)
-2. **DB migration (schema-only PR, per the migration-isolation rule).**
-   `global_allow` table (audit columns + soft-delete), a `global_blocks` table
-   (hosts) + household-level global `blocklistIds` association + global
+2. **[#1317](https://github.com/wifihaven/wifihaven/issues/1317) — DB migration
+   (schema-only PR, per the migration-isolation rule).** `global_allow` table
+   (audit columns + soft-delete), a `global_blocks` table (hosts) +
+   household-level global `blocklistIds` association + global
    `blocked`/`blockIpOnly` flags, and a `profiles.default_deny` column. Touches
    only small/lookup tables — not the unbounded-growth event tables — so it is
    metadata-only and safe on the startup path. Ships in its own PR with only
    `*.sql` + docs.
-3. **`PolicyService` changes.** Assemble the `global` `BlockRules` from the new
+3. **[#1318](https://github.com/wifihaven/wifihaven/issues/1318) —
+   `PolicyService` changes.** Assemble the `global` `BlockRules` from the new
    tables; **stop** copying `uiAllowedHosts` into per-MAC `extraAllowed`
    (`PolicyService.scala:549`) and out of the unmanaged-block path (`:169`) —
    relocate to `global.extraAllowed`; evaluate per-profile default-deny →
@@ -455,24 +470,27 @@ To be filed by the operator / orchestration session (not by this design PR):
    counter for global-section size / change events and a gauge for default-deny
    profile count (per the "new functionality ships with metrics" rule) + a
    Grafana panel.
-4. **Router global composition (openwrt `render.lua` + agent; opnsense
-   parity).** Add `@global_allow` (suppresses every drop, all MACs) and
-   `@global_block` (suppressed only by `@global_allow`) ipsets + a global
-   blocked/blockIpOnly flag; implement the drop predicate per
+4. **[#1319](https://github.com/wifihaven/wifihaven/issues/1319) — Router global
+   composition (openwrt `render.lua` + agent; opnsense parity).** Add
+   `@global_allow` (suppresses every drop, all MACs) and `@global_block`
+   (suppressed only by `@global_allow`) ipsets + a global blocked/blockIpOnly
+   flag; implement the drop predicate per
    [§5.2](#52-stage-2--global-composition); populate the global ipsets via
    dnsmasq `nftset=` callbacks; lua tests in `openwrt/test/`.
-5. **SPA settings.** Global always-allow management page with the audit view;
+5. **[#1320](https://github.com/wifihaven/wifihaven/issues/1320) — SPA
+   settings.** Global always-allow management page with the audit view;
    global-blocks management; per-profile default-deny toggle; per-device
    override editor that reflects replace semantics (and warns that overriding a
    default-deny profile fully restates it).
-6. **Retire the #1307 copy.** Once `global.extraAllowed` ships, remove the
-   per-profile copy introduced by
-   [#1307](https://github.com/wifihaven/wifihaven/issues/1307).
-7. **Tests (feature + router).** `global.extraAllowed` carves out a
-   `blocked=true` MAC; a global block beats a per-MAC `extraAllowed` but
-   `global.extraAllowed` beats the global block; default-deny + `blockIpOnly`
-   reaches only allowed-and-locally-resolved hosts; default-deny profile
-   collapses to `blocked=true` + `DefaultDeny`.
+6. **[#1321](https://github.com/wifihaven/wifihaven/issues/1321) — Retire the
+   #1307 copy.** Once `global.extraAllowed` ships, remove the per-profile copy
+   introduced by [#1307](https://github.com/wifihaven/wifihaven/issues/1307).
+7. **[#1322](https://github.com/wifihaven/wifihaven/issues/1322) — Tests
+   (feature + router).** `global.extraAllowed` carves out a `blocked=true` MAC;
+   a global block beats a per-MAC `extraAllowed` but `global.extraAllowed` beats
+   the global block; default-deny + `blockIpOnly` reaches only
+   allowed-and-locally-resolved hosts; default-deny profile collapses to
+   `blocked=true` + `DefaultDeny`.
 
 ## 9. Rollout
 
