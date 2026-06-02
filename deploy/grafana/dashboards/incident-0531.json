@@ -1,0 +1,268 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "WifiHaven — 2026-05-31 pool-exhaustion incident correlation (#1331, follow-up to #1244/#1240/#471). Reproduces the 05-31 view: DB CPU (render_service_cpu_time_seconds, Render OTel stream verified #1244), Postgres active connections vs the configured ceiling (render_postgres_connections / render_postgres_connection_limit, both Render-emitted), and HikariCP threads-awaiting (wifihaven_db_pool_threads_awaiting_connection, the app /metrics gauge from #1243 — the leading indicator of the crash loop) on one shared time axis. render_* are pinned to service_name=\"wifihaven-pg-prod\" (bounded label); the pool gauge is pinned to env=\"$env\". Deploy markers (#1245) pair against these series once landed.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "2026-05-31 incident — DB CPU vs connections vs pool pending",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Incident correlation (one time axis): DB CPU + active conns vs limit + HikariCP pending",
+      "description": "The single 05-31 correlation panel. DB CPU (cores, left axis) = rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m]). Active connections and the connection limit (count, right axis) = render_postgres_connections / render_postgres_connection_limit, same service_name. HikariCP threads-awaiting (count, right axis) = wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"} — when pending climbs as connections hit the limit and DB CPU pegs, that is the 05-31 pool-exhaustion signature.",
+      "type": "timeseries",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 1 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1, "axisPlacement": "left", "axisLabel": "DB CPU (cores)" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "active connections" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.axisLabel", "value": "connections / pending" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "connection limit" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "HikariCP threads awaiting" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.fillOpacity", "value": 20 },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "DB CPU (cores)" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m])",
+          "legendFormat": "DB CPU (cores)",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "render_postgres_connections{service_name=\"wifihaven-pg-prod\"}",
+          "legendFormat": "active connections",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "render_postgres_connection_limit{service_name=\"wifihaven-pg-prod\"}",
+          "legendFormat": "connection limit",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"}",
+          "legendFormat": "HikariCP threads awaiting",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "DB CPU (cores)",
+      "description": "rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m]) — the Postgres instance CPU in cores. render_service_cpu_time_seconds is a cumulative seconds counter from Render's OTel stream (#1244), rated over 5m. Pegged at the ceiling during the 05-31 missing-index incident (#809).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 13 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m])",
+          "legendFormat": "DB CPU (cores)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Active connections vs ceiling",
+      "description": "render_postgres_connections (active) vs render_postgres_connection_limit (the configured ceiling), service_name=\"wifihaven-pg-prod\". When active approaches the limit the pool can no longer hand out connections — the proximate cause of the 05-31 HikariCP exhaustion.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 13 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "connection limit" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "render_postgres_connections{service_name=\"wifihaven-pg-prod\"}",
+          "legendFormat": "active connections",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "render_postgres_connection_limit{service_name=\"wifihaven-pg-prod\"}",
+          "legendFormat": "connection limit",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "HikariCP threads awaiting (pending)",
+      "description": "wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"} — application threads blocked waiting for a pool connection (DbPoolMetrics, #1243). This was the leading indicator of the 05-31 crash loop: it climbs to non-zero the moment the pool saturates, before requests start timing out.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 13 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"}",
+          "legendFormat": "threads awaiting",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["wifihaven", "incident", "db"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [
+          { "selected": true, "text": "prod", "value": "prod" },
+          { "selected": false, "text": "staging", "value": "staging" }
+        ],
+        "query": "prod,staging",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "WifiHaven — 2026-05-31 incident correlation",
+  "uid": "wifihaven-incident-0531",
+  "version": 1,
+  "weekStart": ""
+}

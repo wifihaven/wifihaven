@@ -59,7 +59,7 @@ provider "grafana" {
 
 locals {
   folder     = var.folder_uid != "" ? var.folder_uid : null
-  dashboards = ["api-health", "api-self-metrics", "router-fleet", "rollup-health"]
+  dashboards = ["api-health", "api-self-metrics", "router-fleet", "rollup-health", "incident-0531"]
   dashfiles  = { for name in local.dashboards : name => "${path.module}/../../deploy/grafana/dashboards/${name}.json" }
 }
 
