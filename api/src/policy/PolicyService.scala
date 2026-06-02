@@ -453,6 +453,30 @@ object PolicyService {
       )
   }
 
+  /**
+   * #1307: curated infrastructure hosts that every device needs reachable for an allowed-mode app
+   * to actually work — connectivity-check probes, CA OCSP/CRL responders, and the Apple/Google edge
+   * CDNs that serve those. The whole-MAC `@blocked_macs` drop (paused / schedule / daily-limit)
+   * only spares each profile's explicit `extraAllowed` hosts, so without these an allowed app's
+   * apex host resolves while its transitive dependencies are dropped and the app *appears* blocked.
+   *
+   * We ship these by copying them into every profile's `extraAllowed`; the existing #421 ea_
+   * enforcement then makes them beat the block. This is deliberately functional, not a new snapshot
+   * field — the router needs the hosts, not the reason they're allowed (#1311). The global policy
+   * layer (#1308) will let us state this once instead of per-profile, removing the redundancy.
+   */
+  val infraAllowHosts: List[Hostname] = List(
+    "connectivitycheck.gstatic.com", // Android / Chrome connectivity probe
+    "captive.apple.com",             // iOS / macOS captive-portal probe
+    "ocsp.apple.com",                // Apple OCSP responder
+    "ocsp2.apple.com",               // Apple OCSP responder (secondary)
+    "crl.apple.com",                 // Apple CRL distribution
+    "g.aaplimg.com",                 // Apple geo-edge CDN: OCSP + asset shards
+    "ocsp.pki.goog",                 // Google Trust Services OCSP
+    "ocsp.digicert.com",             // DigiCert OCSP (common CA for app backends)
+    "clientservices.googleapis.com", // Google client-services bootstrap
+  ).map(Hostname.unsafe)
+
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
   def blocklistContentVersion(domains: Iterable[String]): String = {
     val body = domains.toList.sorted.mkString("\n")
@@ -546,7 +570,11 @@ object PolicyService {
       // (allow beats block at the router). Configured via wifihaven.policy
       // .uiAllowedHosts per-deployment so prod doesn't allow staging through
       // and vice versa. Will become DB-backed per #937.
-      extraAllowed = (appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts).distinct,
+      // #1307: union the curated infra allowlist so connectivity-check / OCSP /
+      // CDN dependencies of an allowed app survive the whole-MAC block. Copied
+      // per-profile for now; the global policy layer (#1308) will dedup this.
+      extraAllowed =
+        (appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts ++ infraAllowHosts).distinct,
       blocklistIds = profile.blockedCategories,
       blockIpOnly = profile.blockIpOnly,
     )
