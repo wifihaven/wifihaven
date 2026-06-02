@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven — 2026-05-31 pool-exhaustion incident correlation (#1331, follow-up to #1244/#1240/#471). Reproduces the 05-31 view: DB CPU (render_service_cpu_time_seconds, Render OTel stream verified #1244), Postgres active connections vs the configured ceiling (render_postgres_connections / render_postgres_connection_limit, both Render-emitted), and HikariCP threads-awaiting (wifihaven_db_pool_threads_awaiting_connection, the app /metrics gauge from #1243 — the leading indicator of the crash loop) on one shared time axis. render_* are pinned to service_name=\"wifihaven-pg-prod\" (bounded label); the pool gauge is pinned to env=\"$env\". Deploy markers (#1245) pair against these series once landed.",
+  "description": "WifiHaven — database health (#1331, follow-up to #1244/#1240/#471). Postgres instance CPU, active connections vs the configured ceiling, and the application HikariCP pool's threads-awaiting, on one shared time axis. These three together are the pool-saturation signature that drove the 2026-05-31 crash loop, so the correlation panel doubles as the standing DB-saturation view. Sources: render_service_cpu_time_seconds / render_postgres_connections / render_postgres_connection_limit (Render OTel stream verified #1244, pinned service_name=\"wifihaven-pg-prod\") and wifihaven_db_pool_threads_awaiting_connection (app /metrics gauge, DbPoolMetrics #1243, pinned env=\"$env\"). Deploy markers (#1245) pair against these series once landed.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -24,13 +24,13 @@
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
       "panels": [],
-      "title": "2026-05-31 incident — DB CPU vs connections vs pool pending",
+      "title": "DB saturation — CPU vs connections vs pool pending",
       "type": "row"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Incident correlation (one time axis): DB CPU + active conns vs limit + HikariCP pending",
-      "description": "The single 05-31 correlation panel. DB CPU (cores, left axis) = rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m]). Active connections and the connection limit (count, right axis) = render_postgres_connections / render_postgres_connection_limit, same service_name. HikariCP threads-awaiting (count, right axis) = wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"} — when pending climbs as connections hit the limit and DB CPU pegs, that is the 05-31 pool-exhaustion signature.",
+      "title": "DB saturation correlation (one time axis): CPU + active conns vs limit + HikariCP pending",
+      "description": "The standing DB-saturation view (also the 2026-05-31 incident signature). DB CPU (cores, left axis) = rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m]). Active connections and the connection limit (count, right axis) = render_postgres_connections / render_postgres_connection_limit, same service_name. HikariCP threads-awaiting (count, right axis) = wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"} — when pending climbs as connections hit the limit and DB CPU pegs, the pool is saturating.",
       "type": "timeseries",
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 1 },
       "id": 1,
@@ -108,7 +108,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "DB CPU (cores)",
-      "description": "rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m]) — the Postgres instance CPU in cores. render_service_cpu_time_seconds is a cumulative seconds counter from Render's OTel stream (#1244), rated over 5m. Pegged at the ceiling during the 05-31 missing-index incident (#809).",
+      "description": "rate(render_service_cpu_time_seconds{service_name=\"wifihaven-pg-prod\"}[5m]) — the Postgres instance CPU in cores. render_service_cpu_time_seconds is a cumulative seconds counter from Render's OTel stream (#1244), rated over 5m. Sustained high CPU is the classic missing-index / runaway-query signal (the 05-31 #809 incident).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 13 },
       "id": 2,
@@ -144,7 +144,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Active connections vs ceiling",
-      "description": "render_postgres_connections (active) vs render_postgres_connection_limit (the configured ceiling), service_name=\"wifihaven-pg-prod\". When active approaches the limit the pool can no longer hand out connections — the proximate cause of the 05-31 HikariCP exhaustion.",
+      "description": "render_postgres_connections (active) vs render_postgres_connection_limit (the configured ceiling), service_name=\"wifihaven-pg-prod\". When active approaches the limit Postgres can no longer accept new connections and the application pool starts queueing.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 13 },
       "id": 3,
@@ -188,7 +188,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "HikariCP threads awaiting (pending)",
-      "description": "wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"} — application threads blocked waiting for a pool connection (DbPoolMetrics, #1243). This was the leading indicator of the 05-31 crash loop: it climbs to non-zero the moment the pool saturates, before requests start timing out.",
+      "description": "wifihaven_db_pool_threads_awaiting_connection{env=\"$env\"} — application threads blocked waiting for a pool connection (DbPoolMetrics, #1243). Non-zero means the pool is saturated; it climbs before requests start timing out, so it is the earliest pool-exhaustion signal (the leading indicator of the 05-31 crash loop).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 13 },
       "id": 4,
@@ -224,7 +224,7 @@
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["wifihaven", "incident", "db"],
+  "tags": ["wifihaven", "db"],
   "templating": {
     "list": [
       {
@@ -261,8 +261,8 @@
   "time": { "from": "now-6h", "to": "now" },
   "timepicker": {},
   "timezone": "",
-  "title": "WifiHaven — 2026-05-31 incident correlation",
-  "uid": "wifihaven-incident-0531",
+  "title": "WifiHaven — DB health",
+  "uid": "wifihaven-db-health",
   "version": 1,
   "weekStart": ""
 }
