@@ -88,9 +88,20 @@ curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/ins
 | `WIFIHAVEN_API_HOST_PORT` | host port to bind | `8080` |
 | `WIFIHAVEN_API_BIND` | host interface to bind on | `0.0.0.0` |
 | `WIFIHAVEN_NEW_ADMIN_PW` | new admin password (skips rotation prompt) | prompt |
+| `WIFIHAVEN_ENABLE_METRICS` | opt in to the Prometheus + Grafana metrics stack (#1207) — fetches the overlay, generates a Grafana admin password, and brings it up alongside the API | off |
+| `WIFIHAVEN_GRAFANA_BIND` | host interface Grafana binds (only when metrics enabled) | `127.0.0.1` |
+| `WIFIHAVEN_GRAFANA_PORT` | host port for Grafana (only when metrics enabled) | `3000` |
 | `WIFIHAVEN_NONINTERACTIVE` | if set, never prompt; fail if any required value is missing | unset |
 
 Run `bash install.sh --help` to print the same list.
+
+Metrics are **opt-in and off by default** — a non-interactive install without
+`WIFIHAVEN_ENABLE_METRICS` is byte-for-byte what it is today (no Prometheus,
+no Grafana, no Grafana vars in `.env`). With it set, the installer prints the
+Grafana URL and the generated `admin` password at the end and the helper
+scripts manage the metrics services too (`update.sh` refreshes dashboards from
+main). The manual `-f prod -f metrics` overlay path is in
+[`deploy/README.md`](../deploy/README.md#metrics-optional-prometheus--grafana).
 
 The rest of this document is the manual walkthrough — read it if you'd
 rather understand each step, or if the script doesn't fit your environment

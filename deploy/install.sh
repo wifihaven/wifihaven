@@ -29,13 +29,20 @@
 #                            now; port-aware allow/block tracked in #296.
 #                            Empty = no global allow list. (default: prompt)
 #   WIFIHAVEN_NEW_ADMIN_PW   new admin password          (default: prompt)
+#   WIFIHAVEN_ENABLE_METRICS opt in to the Prometheus + Grafana metrics stack
+#                            (#1207). Off by default; non-interactive installs
+#                            default off. Accepts y/yes/1/true to enable.
+#   WIFIHAVEN_GRAFANA_BIND   host interface Grafana binds (default: 127.0.0.1,
+#                            only used when metrics enabled)
+#   WIFIHAVEN_GRAFANA_PORT   host port for Grafana        (default: 3000,
+#                            only used when metrics enabled)
 #   WIFIHAVEN_NONINTERACTIVE if set, never prompt; fail if any value missing.
 
 set -euo pipefail
 
 case "${1:-}" in
   -h|--help)
-    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
 esac
@@ -44,6 +51,13 @@ REPO_RAW="${WIFIHAVEN_REPO_RAW:-https://raw.githubusercontent.com/wifihaven/wifi
 COMPOSE_URL="${REPO_RAW}/deploy/docker-compose.prod.yml"
 ENV_EXAMPLE_URL="${REPO_RAW}/deploy/.env.example"
 HELPER_SCRIPTS=(start stop restart logs status update)
+
+# Git ref the metrics-overlay tarball is fetched from. The metrics overlay
+# pulls a whole-repo tarball (the grafana/dashboards/ directory is not
+# enumerable via raw URLs and would rot if hardcoded), then extracts the
+# deploy/ subtree. Defaults to main; override for testing a branch.
+REPO_REF="${WIFIHAVEN_REPO_REF:-main}"
+REPO_TARBALL_URL="${WIFIHAVEN_REPO_TARBALL_URL:-https://github.com/wifihaven/wifihaven/archive/refs/heads/${REPO_REF}.tar.gz}"
 
 c_red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 c_green()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -109,6 +123,40 @@ prompt_secret() {
 genpw()    { openssl rand -base64 24 | tr -d '\n=/+' | cut -c1-24; }
 gensecret(){ openssl rand -base64 48 | tr -d '\n'; }
 
+# fetch_metrics_overlay DEST_DIR
+#
+# Downloads the repo tarball and copies the metrics-overlay subtree
+# (docker-compose.metrics.yml + prometheus/ + grafana/) into DEST_DIR,
+# mirroring the deploy/ layout so the overlay's relative paths resolve. A
+# tarball is used rather than individually-named raw URLs because the
+# grafana/dashboards/ directory is not enumerable over raw.githubusercontent
+# and a hardcoded filename list would rot as dashboards are added (#1328).
+fetch_metrics_overlay() {
+  local dest="$1"
+  local tmp src
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL "$REPO_TARBALL_URL" -o "${tmp}/repo.tar.gz"; then
+    rm -rf "$tmp"
+    die "Could not download repo tarball from ${REPO_TARBALL_URL} (needed for the metrics overlay)."
+  fi
+  if ! tar -xzf "${tmp}/repo.tar.gz" -C "$tmp"; then
+    rm -rf "$tmp"
+    die "Could not extract repo tarball (needed for the metrics overlay)."
+  fi
+  # The tarball's top-level dir is wifihaven-<ref>; find the deploy/ subtree
+  # by name rather than guessing it, so any ref resolves.
+  src="$(find "$tmp" -maxdepth 2 -type d -name deploy | head -1)"
+  if [ -z "$src" ] || [ ! -f "${src}/docker-compose.metrics.yml" ]; then
+    rm -rf "$tmp"
+    die "Repo tarball did not contain deploy/docker-compose.metrics.yml."
+  fi
+  cp "${src}/docker-compose.metrics.yml" "${dest}/"
+  rm -rf "${dest}/prometheus" "${dest}/grafana"
+  cp -R "${src}/prometheus" "${dest}/"
+  cp -R "${src}/grafana"    "${dest}/"
+  rm -rf "$tmp"
+}
+
 cat <<'BANNER'
 
           _  __ _ _
@@ -166,6 +214,25 @@ prompt WIFIHAVEN_UI_ALLOWED_HOSTS \
                                 "Admin UI hostname(s) (comma-sep, blank = none)" \
                                 ""
 
+# Opt-in metrics stack (#1207, #1328). Off by default; non-interactive
+# installs default off. When on we also fetch the overlay files, generate a
+# Grafana admin password, and layer docker-compose.metrics.yml at bring-up.
+prompt WIFIHAVEN_ENABLE_METRICS "Enable Prometheus + Grafana metrics stack? (y/N)" "N"
+METRICS_ENABLED=0
+if [[ "${WIFIHAVEN_ENABLE_METRICS}" =~ ^([Yy]([Ee][Ss])?|1|[Tt][Rr][Uu][Ee])$ ]]; then
+  METRICS_ENABLED=1
+fi
+
+# Compose files that make up this install. The metrics overlay is layered
+# only when opted in; the same array is persisted to compose.env for the
+# helper scripts and used for every compose invocation below.
+COMPOSE_FILE_ARGS=(-f docker-compose.prod.yml)
+if [ "$METRICS_ENABLED" -eq 1 ]; then
+  COMPOSE_FILE_ARGS+=(-f docker-compose.metrics.yml)
+  prompt WIFIHAVEN_GRAFANA_BIND "Grafana bind address (127.0.0.1 keeps it host-local)" "127.0.0.1"
+  prompt WIFIHAVEN_GRAFANA_PORT "Grafana host port"                                     "3000"
+fi
+
 # ── 3. Install directory ──────────────────────────────────────────────────
 
 step "Preparing $WIFIHAVEN_INSTALL_DIR"
@@ -222,6 +289,20 @@ for s in "${HELPER_SCRIPTS[@]}"; do
   chmod +x "${s}.sh"
 done
 ok "docker-compose.prod.yml + .env.example + ${#HELPER_SCRIPTS[@]} helper scripts downloaded"
+
+if [ "$METRICS_ENABLED" -eq 1 ]; then
+  fetch_metrics_overlay "$PWD"
+  # compose.env records the layered compose files so the helper scripts pick
+  # up the metrics overlay too. Written only when metrics is enabled — a
+  # default install leaves no compose.env and the scripts fall back to the
+  # prod stack alone, byte-for-byte as before.
+  cat > compose.env <<EOF
+# Generated by deploy/install.sh — sourced by the helper scripts so they
+# manage the same compose files this install was brought up with.
+COMPOSE_FILE_ARGS=(${COMPOSE_FILE_ARGS[*]})
+EOF
+  ok "metrics overlay downloaded (docker-compose.metrics.yml + prometheus/ + grafana/)"
+fi
 
 # ── 5. Refuse to clobber an existing install ──────────────────────────────
 #
@@ -314,18 +395,37 @@ WIFIHAVEN_API_PORT=${WIFIHAVEN_API_HOST_PORT}
 # paused household member can still reach the admin UI to unpause themselves.
 WIFIHAVEN_UI_ALLOWED_HOSTS=${WIFIHAVEN_UI_ALLOWED_HOSTS}
 EOF
+
+if [ "$METRICS_ENABLED" -eq 1 ]; then
+  GRAFANA_ADMIN_PASSWORD="$(genpw)"
+  cat >> .env <<EOF
+
+# Metrics overlay (#1207) — read by docker-compose.metrics.yml.
+# Grafana admin login is 'admin' with this generated password.
+WIFIHAVEN_GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+WIFIHAVEN_GRAFANA_BIND=${WIFIHAVEN_GRAFANA_BIND}
+WIFIHAVEN_GRAFANA_PORT=${WIFIHAVEN_GRAFANA_PORT}
+# /metrics is internal-only on the compose network, so no scrape token is
+# needed for the self-hosted overlay. Set one to require a bearer token.
+WIFIHAVEN_METRICS_SCRAPE_TOKEN=
+EOF
+fi
 chmod 600 .env
-ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"
+if [ "$METRICS_ENABLED" -eq 1 ]; then
+  ok "Wrote .env (db password, JWT secret, Grafana admin password auto-generated, chmod 600)"
+else
+  ok "Wrote .env (db password and JWT secret auto-generated, chmod 600)"
+fi
 
 
 # ── 6. Pull + start ───────────────────────────────────────────────────────
 
 step "Pulling image"
-docker compose -f docker-compose.prod.yml --env-file .env pull
+docker compose "${COMPOSE_FILE_ARGS[@]}" --env-file .env pull
 ok "Image pulled"
 
 step "Starting stack"
-docker compose -f docker-compose.prod.yml --env-file .env up -d
+docker compose "${COMPOSE_FILE_ARGS[@]}" --env-file .env up -d
 ok "Containers started"
 
 # ── 7. Wait for health ────────────────────────────────────────────────────
@@ -370,14 +470,14 @@ wait_for_api() {
   echo
   echo "Recent api container logs:"
   echo "------------------------------------------------------------------"
-  docker compose -f docker-compose.prod.yml --env-file .env logs api --tail=100 || true
+  docker compose "${COMPOSE_FILE_ARGS[@]}" --env-file .env logs api --tail=100 || true
   echo "------------------------------------------------------------------"
   echo "Container status:"
-  docker compose -f docker-compose.prod.yml --env-file .env ps || true
+  docker compose "${COMPOSE_FILE_ARGS[@]}" --env-file .env ps || true
   echo
   echo "Common causes:"
   echo "  - DB credentials in .env don't match what postgres was created with"
-  echo "    (try: docker compose -f docker-compose.prod.yml --env-file .env down -v"
+  echo "    (try: docker compose ${COMPOSE_FILE_ARGS[*]} --env-file .env down -v"
   echo "     and re-run install.sh)"
   echo "  - WIFIHAVEN_JWT_SECRET missing or empty in .env"
   echo "  - Postgres still initializing (rare; retry install.sh once)"
@@ -584,3 +684,20 @@ Next steps:
   To turn it off: ${SUDO:+sudo }systemctl disable --now wifihaven-update.timer
      See docs/deploy.md §1.3.
 EOF
+
+if [ "$METRICS_ENABLED" -eq 1 ]; then
+  GRAFANA_URL="http://${WIFIHAVEN_GRAFANA_BIND}:${WIFIHAVEN_GRAFANA_PORT}"
+  echo
+  c_green "  Metrics stack (Prometheus + Grafana) is enabled."
+  cat <<EOF
+
+  Grafana     : ${GRAFANA_URL}
+  Login       : admin / ${GRAFANA_ADMIN_PASSWORD}
+                (also saved in ${WIFIHAVEN_INSTALL_DIR}/.env as
+                 WIFIHAVEN_GRAFANA_ADMIN_PASSWORD)
+
+  The Prometheus datasource and dashboards are auto-provisioned. The helper
+  scripts manage the metrics services too; update.sh refreshes the dashboards
+  from main. /metrics is internal-only and never published on a host port.
+EOF
+fi

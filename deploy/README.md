@@ -46,9 +46,26 @@ Default admin login: `admin / changeme` — change it immediately via
 
 ## Metrics (optional): Prometheus + Grafana
 
-The API exposes Prometheus metrics at `GET /metrics`. To collect and visualize
-them on the self-hosted host, layer the metrics overlay on top of the prod
-stack — it adds Prometheus and Grafana, both checked-in declaratively
+The API exposes Prometheus metrics at `GET /metrics`. The installer can wire up
+the metrics stack for you — opt in by setting `WIFIHAVEN_ENABLE_METRICS=1`
+(or answering `y` at the prompt):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wifihaven/wifihaven/main/deploy/install.sh \
+  | WIFIHAVEN_ENABLE_METRICS=1 bash
+```
+
+With the flag set, the installer fetches the overlay (a repo tarball, so all
+dashboards come along), generates `WIFIHAVEN_GRAFANA_ADMIN_PASSWORD`, prompts
+for the Grafana bind/port, brings up Prometheus + Grafana alongside the API,
+and prints the Grafana URL + admin password at the end. The helper scripts
+(`start`/`stop`/`restart`/`status`/`update`) then manage the metrics services
+too, and `update.sh` refreshes the dashboards from main. Without the flag the
+install is unchanged — no metrics services, no Grafana vars in `.env`.
+
+To layer the overlay manually instead (on an existing install or for a one-off),
+add it on top of the prod stack — it adds Prometheus and Grafana, both
+checked-in declaratively
 (see [`docs/design/metrics-observability.md`](../docs/design/metrics-observability.md) §6.1):
 
 ```bash
