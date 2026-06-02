@@ -170,8 +170,11 @@ profile).
   category-list serialization, snapshot builder with apps + blocklists
   composed.
 - **Contract (Gate 1)**: `shared/contract/api-to-router/policy_snapshot.json`
-  golden — blocklists field shape stays stable; any change requires
-  tandem-deploy planning.
+  golden — blocklists field shape stays stable. Now that prod is deployed
+  the snapshot is a public contract: changes must be additive and
+  ignore-unknown-tolerant (see "Backwards compatibility" in `AGENTS.md`);
+  non-additive changes are gated on wire versioning
+  ([#376](https://github.com/wifihaven/wifihaven/issues/376)).
 - **Router (Gate 2 / #654)**: blocklist fetch via `If-None-Match`, periodic
   refresh timer, empty-status logging (sub-G items #705/#709), HTTPS DNAT
   (#383), unmanaged-MAC fallthrough (#374), block-page redirect emits

@@ -147,9 +147,16 @@ client (`web/src/api/client.ts`) and its DTOs into a small `web-shared/`
 package (or use Capacitor's bundle which is the SPA itself, so the share is
 free).
 
-Monorepo wins: single-PR atomic API+mobile changes (no compat shims), one CI
-config, one issue tracker. Separate-repo costs (independent CI, cross-repo
-PRs, version skew) are not justified at household scale.
+Monorepo wins: single-PR atomic API+mobile *source* changes, one CI config,
+one issue tracker. Separate-repo costs (independent CI, cross-repo PRs,
+version skew) are not justified at household scale.
+
+Note: the monorepo makes the *source* change atomic, but it does **not**
+make the *deploy* atomic. Now that prod is live the API↔client wire is a
+public contract (see "Backwards compatibility" in `AGENTS.md`), and a mobile
+binary already on a user's device can't be force-updated in lockstep with the
+API — so API changes the mobile app depends on must still be additive and
+backwards compatible, exactly as for the router↔API wire.
 
 ---
 
