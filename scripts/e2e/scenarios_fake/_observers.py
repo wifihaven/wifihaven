@@ -87,11 +87,49 @@ def eb_set_name(host: str) -> str:
     return "eb_" + host.replace(".", "_").replace(":", "_")
 
 
+def bl_set_name(bl_id: str) -> str:
+    """render.lua::bl_sanitize(): `[.:-\\s]` → `_`.
+
+    Category-blocklist drop-sets are named `bl_<sanitized_id>` where
+    bl_sanitize replaces dots, colons, hyphens, and whitespace with
+    underscores. See render.lua `bl_sanitize()`.
+
+    Example: id="e2e-cname-bl" → "bl_e2e_cname_bl"
+    """
+    sanitized = re.sub(r"[.\:\-\s]", "_", bl_id)
+    return "bl_" + sanitized
+
+
 def wait_eb_set_populated(host: str, *, timeout_s: float = 90) -> list[str]:
     name = eb_set_name(host)
     def probe():
         elems = router_nft_set(name)
         return elems if elems else None
+    return wait_until(
+        probe, timeout_s=timeout_s, interval_s=3,
+        description=f"nft set {name} to gain at least one element",
+    )
+
+
+def wait_bl_set_populated(bl_id: str, *, timeout_s: float = 90) -> list[str]:
+    """Wait until the nft bl_ category-drop-set for a blocklist id has at
+    least one element.
+
+    This is the router-state side of the bl_ category-blocklist assertion — it
+    confirms dns-tail's bl_ populator (added by #1348/#1350) added a
+    directly-queried CNAME-target's IP to the category drop-set. The primary
+    assertion in G4 is still traffic-level (wait_block_page), but this check
+    surfaces the specific sub-component that failed when the traffic probe
+    catches a regression. Mirrors wait_eb_set_populated.
+
+    bl_set_name(id) → render.lua::bl_sanitize convention.
+    """
+    name = bl_set_name(bl_id)
+
+    def probe():
+        elems = router_nft_set(name)
+        return elems if elems else None
+
     return wait_until(
         probe, timeout_s=timeout_s, interval_s=3,
         description=f"nft set {name} to gain at least one element",

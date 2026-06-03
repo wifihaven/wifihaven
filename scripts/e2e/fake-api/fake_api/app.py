@@ -105,6 +105,31 @@ async def post_usage(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def get_blocklist(request: web.Request) -> web.Response:
+    """Serve a blocklist by id — mirrors the real GET /api/blocklists/<id>.
+
+    The agent's blocklists.lua fetches this URL, parses it as a
+    newline-delimited host list (lines starting with # are comments), and
+    caches the result on disk keyed by (id, version). The fake serves
+    whatever content was registered via POST /test/blocklist; if no content
+    has been registered for the id it returns 404 so the agent logs a fetch
+    error (matching the behaviour of an unknown blocklist id in production).
+    """
+    unauth = _require_bearer(request)
+    if unauth is not None:
+        return unauth
+    state: State = request.app[STATE_KEY]
+    bl_id = request.match_info["id"]
+    content = state.get_blocklist(bl_id)
+    if content is None:
+        return web.Response(status=404, text=f"blocklist {bl_id!r} not registered")
+    return web.Response(
+        status=200,
+        text=content,
+        content_type="text/plain",
+    )
+
+
 # --- Test-control endpoints --------------------------------------------------
 
 
@@ -205,6 +230,31 @@ async def test_get_policy_fetches(request: web.Request) -> web.Response:
     )
 
 
+async def test_post_blocklist(request: web.Request) -> web.Response:
+    """Register blocklist content for GET /api/blocklists/<id>.
+
+    Body: { "id": "<blocklist-id>", "hosts": ["host1", "host2", ...] }
+
+    The hosts are stored as a newline-delimited plain-text body, exactly the
+    format blocklists.lua expects. An empty `hosts` list is valid — it
+    registers an empty blocklist (useful for clearing a previous registration
+    without removing the id from the snapshot's `blocklists` dict).
+    """
+    body = await _read_json(request)
+    bl_id = body.get("id")
+    if not bl_id or not isinstance(bl_id, str):
+        raise web.HTTPBadRequest(reason="missing or invalid 'id' field")
+    hosts = body.get("hosts", [])
+    if not isinstance(hosts, list):
+        raise web.HTTPBadRequest(reason="'hosts' must be a list")
+    content = "\n".join(str(h) for h in hosts)
+    if content:
+        content += "\n"
+    state: State = request.app[STATE_KEY]
+    state.set_blocklist(bl_id, content)
+    return web.json_response({"ok": True, "id": bl_id, "host_count": len(hosts)})
+
+
 async def test_post_reset(request: web.Request) -> web.Response:
     state: State = request.app[STATE_KEY]
     state.reset()
@@ -232,7 +282,9 @@ def make_app(state: State | None = None) -> web.Application:
     app.router.add_get("/api/router/policy", get_policy)
     app.router.add_post("/api/router/events", post_events)
     app.router.add_post("/api/router/usage", post_usage)
+    app.router.add_get("/api/blocklists/{id}", get_blocklist)
     app.router.add_post("/test/snapshot", test_post_snapshot)
+    app.router.add_post("/test/blocklist", test_post_blocklist)
     app.router.add_get("/test/events", test_get_events)
     app.router.add_get("/test/usage", test_get_usage)
     app.router.add_get("/test/register", test_get_register)

@@ -52,6 +52,11 @@ class State:
     usage: list[UsageRecord] = field(default_factory=list)
     policy_fetches: list[PolicyFetchRecord] = field(default_factory=list)
     clock_base: str | None = None
+    # blocklist content keyed by blocklist id: id → newline-delimited host list.
+    # Served at GET /api/blocklists/<id>. Populated by POST /test/blocklist.
+    # Persists across resets so tests don't have to re-register them after each
+    # router restore; a test that needs a clean slate can POST an empty body.
+    blocklists: dict[str, str] = field(default_factory=dict)
     _next_event_id: int = 1
     _next_usage_id: int = 1
     _next_policy_fetch_id: int = 1
@@ -112,6 +117,20 @@ class State:
         self.usage.append(UsageRecord(id=rec_id, body=body))
         return rec_id
 
+    def set_blocklist(self, id: str, content: str) -> None:
+        """Set the content for a blocklist (newline-delimited host list).
+
+        Content is intentionally preserved across `reset()` calls so test
+        scenarios don't have to re-register blocklist bodies after each
+        per-function router restore. A scenario that needs an empty slate can
+        call `set_blocklist(id, "")` explicitly.
+        """
+        self.blocklists[id] = content
+
+    def get_blocklist(self, id: str) -> str | None:
+        """Return the content for a blocklist id, or None if not registered."""
+        return self.blocklists.get(id)
+
     def reset(self) -> None:
         self.snapshot = copy.deepcopy(self.initial_snapshot)
         self.registers.clear()
@@ -122,3 +141,4 @@ class State:
         self._next_usage_id = 1
         self._next_policy_fetch_id = 1
         self.clock_base = None
+        # Note: blocklists are intentionally NOT cleared here — see set_blocklist.

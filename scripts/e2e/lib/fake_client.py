@@ -40,6 +40,27 @@ class FakeAPIClient:
         """Clear captured state and restore the initial snapshot."""
         self._post_json("/test/reset", {})
 
+    # ── /test/blocklist ────────────────────────────────────────────────────
+
+    def register_blocklist(self, id: str, hosts: list[str]) -> None:
+        """Register a blocklist so GET /api/blocklists/<id> returns its hosts.
+
+        The content persists across reset() calls so the scenario only needs
+        to call this once (e.g. in the test body before serve_snapshot). The
+        agent's blocklists.lua fetches this URL and caches the host list on
+        disk keyed by (id, version); the version in the snapshot controls
+        cache busting, not this call.
+
+        Pass an empty `hosts` list to register an empty blocklist (different
+        from omitting the id — an empty list returns HTTP 200 with no hosts
+        so the agent creates an empty bl_ set rather than logging a 404 error).
+        """
+        body = self._post_json("/test/blocklist", {"id": id, "hosts": hosts})
+        log.info(
+            "fake: registered blocklist id=%r with %d hosts",
+            id, body.get("host_count", 0),
+        )
+
     # ── /test/events ───────────────────────────────────────────────────────
 
     def events(
