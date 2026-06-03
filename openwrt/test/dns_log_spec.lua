@@ -265,6 +265,118 @@ describe("cache.ingest_line + lookup", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- 2b. CNAME-alias attribution (#1344)
+--
+-- Some clients (notably Apple devices) resolve a branded host, then re-query
+-- the FINAL CNAME target *directly* as a separate query. On that direct query
+-- the qname on the wire IS the CDN target (e.g. `prod.khan.map.fastly.net`),
+-- so qid correlation — which works fine — still attributes the flow to the
+-- CDN target. That target does not suffix-match the app's `extraAllowed`
+-- entry (`kastatic.org` / `khanacademy.org`), so the flow is mislabelled and,
+-- during a whole-MAC block, mis-classified as blocked.
+--
+-- The branded chain WAS observed earlier (the client did resolve the branded
+-- host), so the cache can learn `<cdn target> → <branded chain head>` and
+-- attribute the later direct-target query back to the branded ancestor.
+--
+-- These cases use the real prod dnsmasq 2.91 `--log-queries=extra` line shapes
+-- captured on router.lan (issue #1344): a shared qid across the chain, the
+-- intervening `forwarded`/`nftset` lines (ignored by the parsers), and a
+-- separate direct query for the CNAME target.
+-- ---------------------------------------------------------------------------
+
+describe("CNAME-alias attribution (#1344)", function()
+  local function fake_clock()
+    local t = 1000000
+    return {
+      now  = function() return t end,
+      advance = function(secs) t = t + secs end,
+    }
+  end
+
+  it("attributes a directly-queried CNAME target back to the branded chain head", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+    -- 1) Branded resolution observed first (real captured chain, qid 38053).
+    c.ingest_line("38053 127.0.0.1/36172 query[A] cdn.kastatic.org from 127.0.0.1")
+    c.ingest_line("38053 127.0.0.1/36172 forwarded cdn.kastatic.org to 2001:558:feed::1")
+    c.ingest_line("38053 127.0.0.1/36172 reply cdn.kastatic.org is <CNAME>")
+    c.ingest_line("38053 127.0.0.1/36172 reply fastly.kastatic.org is <CNAME>")
+    c.ingest_line("38053 127.0.0.1/36172 reply prod.khan.map.fastly.net is 199.232.65.42")
+
+    -- The branded chain itself attributes to the queried brand (works today).
+    assert.equal("cdn.kastatic.org", c.lookup("199.232.65.42"))
+
+    -- 2) The device later re-queries the CNAME target DIRECTLY, landing on a
+    --    different Fastly anycast IP (real: 151.101.65.42 to 192.168.10.159).
+    clk.advance(5)
+    c.ingest_line("40000 192.168.10.159/61484 query[A] prod.khan.map.fastly.net from 192.168.10.159")
+    c.ingest_line("40000 192.168.10.159/61484 reply prod.khan.map.fastly.net is 151.101.65.42")
+
+    -- The direct-target flow must be attributed to the branded ancestor, NOT
+    -- the CDN target — otherwise it can't suffix-match `kastatic.org`.
+    assert.equal("cdn.kastatic.org", c.lookup("151.101.65.42"))
+  end)
+
+  it("recovers the brand for www.khanacademy.org → prod.khan.map.fastly.net", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+    c.ingest_line("20800 192.168.10.159/49808 query[A] www.khanacademy.org from 192.168.10.159")
+    c.ingest_line("20800 192.168.10.159/49808 reply www.khanacademy.org is <CNAME>")
+    c.ingest_line("20800 192.168.10.159/49808 reply prod.khan.map.fastly.net is 151.101.1.42")
+
+    clk.advance(3)
+    c.ingest_line("20817 192.168.10.159/61484 query[A] prod.khan.map.fastly.net from 192.168.10.159")
+    c.ingest_line("20817 192.168.10.159/61484 reply prod.khan.map.fastly.net is 151.101.129.42")
+
+    assert.equal("www.khanacademy.org", c.lookup("151.101.129.42"))
+  end)
+
+  it("resolves a directly-queried INTERMEDIATE CNAME hop back to the head too", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+    -- Brand chains through an intermediate to a final target.
+    c.ingest_line("100 192.168.10.159/1000 query[A] cdn.kastatic.org from 192.168.10.159")
+    c.ingest_line("100 192.168.10.159/1000 reply cdn.kastatic.org is <CNAME>")
+    c.ingest_line("100 192.168.10.159/1000 reply fastly.kastatic.org is <CNAME>")
+    c.ingest_line("100 192.168.10.159/1000 reply prod.khan.map.fastly.net is 1.2.3.4")
+
+    -- Device re-queries the INTERMEDIATE hop directly.
+    clk.advance(2)
+    c.ingest_line("101 192.168.10.159/1001 query[A] fastly.kastatic.org from 192.168.10.159")
+    c.ingest_line("101 192.168.10.159/1001 reply fastly.kastatic.org is <CNAME>")
+    c.ingest_line("101 192.168.10.159/1001 reply prod.khan.map.fastly.net is 5.6.7.8")
+
+    assert.equal("cdn.kastatic.org", c.lookup("5.6.7.8"))
+  end)
+
+  it("falls back to the target name when the brand chain was never observed (safe degradation)", function()
+    -- No prior branded chain — the very first direct query for a CDN target
+    -- can only be attributed to the target itself. Never WORSE than today.
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+    c.ingest_line("9 192.168.10.159/1 query[A] prod.khan.map.fastly.net from 192.168.10.159")
+    c.ingest_line("9 192.168.10.159/1 reply prod.khan.map.fastly.net is 199.232.65.42")
+
+    assert.equal("prod.khan.map.fastly.net", c.lookup("199.232.65.42"))
+  end)
+
+  it("does not rewrite a normal (non-CNAME) qname", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+    c.ingest_line("1 192.168.1.42/54321 query[A] example.com from 192.168.1.42")
+    c.ingest_line("1 192.168.1.42/54321 reply example.com is 93.184.216.34")
+
+    assert.equal("example.com", c.lookup("93.184.216.34"))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- 3. TTL + size eviction
 -- ---------------------------------------------------------------------------
 
