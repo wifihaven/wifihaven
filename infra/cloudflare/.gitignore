@@ -1,6 +1,7 @@
-# State files: contain provider-specific data and may include sensitive
-# values (per resource). Local state only for now — TODO(#613-followup)
-# to move to a remote backend.
+# State files: now stored remotely on HCP Terraform (the `cloud {}` block in
+# main.tf). Any *.tfstate left locally is a stale/transient artifact (e.g. the
+# pre-migration local backend) and must never be committed — it can hold
+# per-resource sensitive values (#1357, formerly #613-followup).
 *.tfstate
 *.tfstate.*
 

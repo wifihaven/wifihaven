@@ -1,0 +1,100 @@
+name: Master Cloudflare CD
+
+# Cloudflare DNS/Pages deployment pipeline — reconciles the wifihaven.net zone
+# and the Cloudflare Pages projects to the in-repo infra/cloudflare Terraform.
+#
+# Split out as its own pipeline (mirrors master-grafana.yml, #1283): the
+# Cloudflare apply has nothing to do with the API/SPA release cadence, so it
+# only fires when infra/cloudflare/** or this workflow changes, and never
+# blocks — or is blocked by — an API/SPA release.
+#
+# Flow (one job):
+#   deploy-cloudflare — terraform apply of infra/cloudflare against the live
+#     wifihaven.net zone + Cloudflare Pages. State + locking live on HCP
+#     Terraform (the `cloud {}` block in main.tf); the apply itself runs here on
+#     the runner (HCP workspace in *local* execution mode), exactly like the
+#     Grafana pipeline.
+#
+# Why this needs remote state (#1357): infra/cloudflare used a LOCAL, gitignored
+# state file. A CI checkout has no such file, so a naive apply would see an
+# empty state and try to recreate all ~10 already-existing resources and fail.
+# The HCP remote backend gives CI the canonical state + a lock.
+#
+# The apply is idempotent: with the migrated state, a re-run with no repo edits
+# reports "No changes". PR review + the ci.yml cloudflare-terraform lint job
+# (fmt + validate) are the pre-merge gate; this pipeline is the post-merge
+# apply. The one-time state migration + secret/token-scope setup are
+# operator-gated — see infra/cloudflare/README.md.
+#
+# Secrets/scope: the Cloudflare token here needs BOTH `Account / Cloudflare
+# Pages / Edit` (Pages projects/domains) AND `Zone / DNS / Edit` scoped to
+# wifihaven.net (the CNAME/TXT records). The existing CLOUDFLARE_API_TOKEN was
+# created for the Pages wrangler deploys and may only carry the Pages scope, so
+# the operator must either widen it or set a separate CLOUDFLARE_DNS_API_TOKEN
+# (preferred here when present). See the README.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/cloudflare/**'
+      - '.github/workflows/master-cloudflare.yml'
+  workflow_dispatch:
+
+# Scoped to this pipeline's own group. Unlike master-grafana.yml we do NOT
+# cancel in-progress runs: killing `terraform apply` mid-run could orphan the
+# HCP state lock and block the next apply. Queueing lets the in-flight apply
+# finish, then the next push reconciles to the latest repo state.
+concurrency:
+  group: master-cloudflare-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-cloudflare:
+    name: Deploy Cloudflare (Terraform apply)
+    # Gate to main: the path filter lets feature-branch pushes create a run,
+    # but on a non-main ref no job is eligible and GitHub records a spurious
+    # 0-job failure. Skipping (not failing) keeps that neutral. (mirrors
+    # master-grafana.yml's guard, #1136)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Cloudflare + HCP secrets are configured
+        id: gate
+        env:
+          TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
+          CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$TF_API_TOKEN" ] && [ -n "$CLOUDFLARE_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TF_API_TOKEN and/or a Cloudflare token not set — skipping Cloudflare apply. See infra/cloudflare/README.md for the one-time backend setup."
+          fi
+
+      - name: Set up Terraform
+        if: steps.gate.outputs.configured == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.3'
+
+      - name: Terraform init + apply
+        if: steps.gate.outputs.configured == 'true'
+        working-directory: infra/cloudflare
+        env:
+          # HCP Terraform: remote state + locking (workspace in local exec mode).
+          TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+          TF_CLOUD_ORGANIZATION: wifihaven
+          TF_WORKSPACE: cloudflare
+          # Cloudflare provider auth — needs Pages/Edit + Zone:DNS/Edit on
+          # wifihaven.net. Prefer a dedicated DNS-scoped token; fall back to the
+          # Pages deploy token only if it has been widened to cover DNS.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false

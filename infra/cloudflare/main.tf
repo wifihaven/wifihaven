@@ -11,14 +11,32 @@
 #   - The Cloudflare API token (operator creates in the dash; secret stored
 #     in GitHub repo + 1Password).
 #
-# State: local backend. The state file holds resource IDs but no secrets
+# State: remote backend on HCP Terraform (the `cloud {}` block below), free
+# tier, with native state locking. The state holds resource IDs but no secrets
 # (the API token comes from CLOUDFLARE_API_TOKEN env, not a tfvars file).
-# Commit terraform.tfstate to a private store or move to a remote backend
-# before sharing infra ops with another operator. TODO(#613-followup):
-# move to a remote backend.
+# Applies are CI-driven on merge to main via
+# .github/workflows/master-cloudflare.yml; see README.md for the one-time
+# backend setup + local-state migration runbook (#1357, formerly the
+# #613-followup remote-state TODO).
 
 terraform {
   required_version = ">= 1.6"
+
+  # Remote state on HCP Terraform (Terraform Cloud), free tier. Native state
+  # locking means CI applies can't race or clobber the operator's state, and a
+  # fresh CI checkout reads the canonical state instead of seeing an empty
+  # local one and trying to recreate the ~10 live resources (#1357; closes the
+  # old #613-followup local-state marker).
+  #
+  # Org + workspace come from TF_CLOUD_ORGANIZATION / TF_WORKSPACE env vars
+  # (set in .github/workflows/master-cloudflare.yml and documented in
+  # README.md), so this block stays account- and creds-agnostic. Auth is the
+  # TF_TOKEN_app_terraform_io env var. The workspace runs in *local* execution
+  # mode: HCP only stores state + provides locking, while `terraform apply`
+  # runs on the GitHub runner (mirrors the infra/grafana pipeline) with the
+  # Cloudflare token from GitHub secrets.
+  cloud {}
+
   required_providers {
     cloudflare = {
       source  = "cloudflare/cloudflare"
@@ -146,10 +164,10 @@ resource "cloudflare_record" "api_staging" {
 # non-block-page body, and is already used as the harness's reference
 # "internet-reachable" origin in scripts/e2e/lib/wait.py).
 #
-# Prerequisite: `terraform apply` against the wifihaven.net zone must run
-# (operator-applied; see PR #1351 description) before the e2e gate can resolve
-# this chain from the router VM. CI validates fmt + validate only; it does NOT
-# apply. See .github/workflows/ci.yml cloudflare-terraform job.
+# These records are applied by the CI pipeline (master-cloudflare.yml) on merge
+# to main — no manual `terraform apply` is needed going forward (#1357). The
+# ci.yml cloudflare-terraform job still validates fmt + validate on every PR
+# but does NOT apply.
 
 resource "cloudflare_record" "e2e_brand" {
   zone_id = var.zone_id
