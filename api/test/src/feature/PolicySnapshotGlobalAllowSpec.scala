@@ -134,6 +134,21 @@ object PolicySnapshotGlobalAllowSpec
         assertTrue(expected.subsetOf(rules.extraAllowed.map(_.value).toSet))
       }
     },
+    test("every profile's extraAllowed includes the #1337 akamai/apple CDN infra hosts") {
+      // #1337: two transitive-dep CDN hosts the operator hit being dropped under a
+      // whole-MAC block. They live in the curated infraAllowHosts constant, so they
+      // must surface in every profile's extraAllowed (copied per-profile, allow beats
+      // the @blocked_macs drop via #421 ea_ enforcement).
+      val newHosts = Set("a1744.dscw154.akamai.net", "netcts.cdn-apple.com")
+      for {
+        _    <- cleanDb
+        svc  <- makePs
+        snap <- svc.snapshot
+      } yield assertTrue(
+        snap.profiles.nonEmpty,
+        snap.profiles.values.forall(p => newHosts.subsetOf(p.rules.extraAllowed.map(_.value).toSet)),
+      )
+    },
     test(
       "global host in extraBlocked still appears in extraAllowed (allow-beats-block at router)",
     ) {
