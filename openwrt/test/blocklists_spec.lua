@@ -85,6 +85,39 @@ describe("blocklists.fetch_and_cache", function()
     assert.equal(0, #result.errors)
   end)
 
+  -- #1334 regression: in production the agent passes its own `http_get`
+  -- (wifihaven-agent), whose signature is `http_get(url, headers) -> status,
+  -- body, resp_headers` — status FIRST. The snapshot also ships a *relative*
+  -- blocklist url (`/api/blocklists/<id>`), which must be resolved against the
+  -- router's configured api_url before it reaches curl. Both were previously
+  -- mismatched here (mock returned body-first; url was absolute), so the bug —
+  -- every category fetch silently failing and the bl_ ipset staying empty —
+  -- was invisible to the suite while category enforcement was a no-op on prod.
+  it("uses the agent's real http_get signature (status, body) and resolves relative urls via base_url", function()
+    local fs   = make_fs()
+    local seen_url
+    -- Mirrors wifihaven-agent's http_get: returns (status, body, headers).
+    local function prod_http_get(url, _headers)
+      seen_url = url
+      return 200, "doubleclick.net\ngoogleadservices.com\n", {}
+    end
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(
+      s, prod_http_get, fs, "/etc/wifihaven/blocklists", "http://api.example:8080")
+
+    -- Relative url was joined to the configured api base.
+    assert.equal("http://api.example:8080/api/blocklists/ads", seen_url)
+    assert.equal(0, #result.errors)
+    local hosts = result.hosts_by_id["ads"]
+    assert.not_nil(hosts, "ads hosts must be cached (otherwise bl_ ipset stays empty)")
+    local found = {}
+    for _, h in ipairs(hosts) do found[h] = true end
+    assert.truthy(found["doubleclick.net"])
+    assert.truthy(found["googleadservices.com"])
+    assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
+  end)
+
   it("does NOT re-fetch when (id, version) file already exists in cache", function()
     local fs      = make_fs()
     local fetches = 0
