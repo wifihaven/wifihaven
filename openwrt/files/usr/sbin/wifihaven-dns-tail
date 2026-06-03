@@ -22,6 +22,7 @@ local debug_opt   = uci_get("debug", "0")
 local source_path = "/tmp/wifihaven-dnsmasq.log"
 local cache_path  = paths.dns_cache
 local tmp_path    = cache_path .. ".tmp"
+local bl_index_path = paths.bl_member_index  -- #1348
 local leases_path = "/tmp/dhcp.leases"
 local nft_table   = "inet wifihaven"
 -- How often to refresh the bio-set membership cache (which MACs have a
@@ -129,13 +130,28 @@ local function refresh_nft_sets()
   return s
 end
 
-local ip_to_mac     = refresh_ip_to_mac()
-local nft_sets      = refresh_nft_sets()
+-- #1348: category-blocklist (bl_) member → set index. policy.apply writes
+-- `<host>\t<bl_set>\t<bl6_set>` rows to paths.bl_member_index after each apply
+-- (in lockstep with the dnsmasq nftset= directives that declare the same
+-- membership). Reload it on the same cadence as refresh_nft_sets — it changes
+-- only on a policy apply, which is slow relative to log-line throughput.
+local function refresh_bl_member_index()
+  local f = io.open(bl_index_path, "r")
+  if not f then return {} end
+  local text = f:read("*a")
+  f:close()
+  return dns_log.parse_blocklist_member_index(text)
+end
+
+local ip_to_mac       = refresh_ip_to_mac()
+local nft_sets        = refresh_nft_sets()
+local bl_member_index = refresh_bl_member_index()
 local last_lease_refresh = os.time()
 local last_bio_refresh   = os.time()
 local bio_adds_total     = 0
 local eb_adds_total      = 0
 local ea_adds_total      = 0
+local bl_adds_total      = 0
 
 local function maybe_populate_bio(line, now)
   local r = dns_log.parse_resolved_reply(line)
@@ -195,6 +211,28 @@ local function maybe_populate_ea(line)
   })
 end
 
+-- #1348: per-blocklist (bl_) set populator. bl_<id>/bl6_<id> are populated at
+-- DNS resolve time by dnsmasq's nftset=/<member>/...#bl_<id> directive, which
+-- fires only for queries whose name suffix-matches a member host. A client that
+-- re-queries a member's CNAME target directly lands on a CDN-anycast IP dnsmasq
+-- never added, so the category drop misses (silent filter bypass). Mirror the
+-- #515 eb_ fix: resolve the answered name through the CNAME-alias map
+-- (cache.resolve_head) and, when the recovered brand is a blocklist member, add
+-- the IP to that member's bl_ set ourselves. The dns_log.populate_bl core takes
+-- an injected add_fn (unit-tested in dns_log_spec); we wire the shared
+-- dns_sets.nft_add_element. Inline (not batched) for the same first-SYN-race
+-- reason as #505/#515 — the drop rule fires on the first packet.
+local function maybe_populate_bl(line)
+  local r = dns_log.parse_resolved_reply(line)
+  if not r or not r.name then return end
+  dns_log.populate_bl(r, bl_member_index, cache.resolve_head, function(set, ip)
+    dns_sets.nft_add_element(nft_table, set, ip)
+    bl_adds_total = bl_adds_total + 1
+    log.debug("dns-tail: bl add %s { %s } name=%s head-via-alias",
+              set, ip, r.name)
+  end)
+end
+
 log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s), %d ea mac(s)",
          (function() local n = 0; for _ in pairs(ip_to_mac) do n = n + 1 end; return n end)(),
          (function() local n = 0; for _ in pairs(nft_sets.bio) do n = n + 1 end; return n end)(),
@@ -239,6 +277,11 @@ while true do
   -- flow's first packet, a whole-MAC block drops an explicitly-allowed app.
   maybe_populate_ea(line)
 
+  -- #1348: same lockstep argument — close the category-blocklist bypass for
+  -- directly-queried CNAME targets by adding the resolved IP to the member's
+  -- bl_ set when the answered name attributes (via the alias map) to a member.
+  maybe_populate_bl(line)
+
   if since_flush >= flush_every or (now - last_tick) >= 30 then
     cache.tick(now)
     atomic_write(cache_path, cache.dump_text())
@@ -257,6 +300,7 @@ while true do
   end
   if (now - last_bio_refresh) >= bio_refresh_seconds then
     nft_sets = refresh_nft_sets()
+    bl_member_index = refresh_bl_member_index()  -- #1348
     last_bio_refresh = now
   end
 
@@ -264,9 +308,9 @@ while true do
   -- dropping the pipe, regex never matching) are diagnosable from logread
   -- alone without on-VM access (#480).
   if (now - last_stats_log) >= 60 then
-    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d",
+    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d bl_adds=%d",
              lines_ingested, lines_since_stat, now - last_stats_log,
-             cache.size(), bio_adds_total, eb_adds_total, ea_adds_total)
+             cache.size(), bio_adds_total, eb_adds_total, ea_adds_total, bl_adds_total)
     last_stats_log   = now
     lines_since_stat = 0
   end

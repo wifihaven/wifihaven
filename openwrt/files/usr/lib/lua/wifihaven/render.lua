@@ -364,6 +364,38 @@ function M.dnsmasq(snapshot)
 end
 
 -- ---------------------------------------------------------------------------
+-- render.blocklist_member_index(snapshot) → string  (#1348)
+-- ---------------------------------------------------------------------------
+-- A host → bl_ set mapping for the wifihaven-dns-tail bl_ populator.
+--
+-- bl_<id>/bl6_<id> sets are populated at DNS resolve time by the dnsmasq
+-- `nftset=/<member>/...#bl_<id>` directives emitted above, which only fire for
+-- queries that suffix-match a member host. A device that re-queries a member's
+-- CNAME target directly lands on a CDN-anycast IP dnsmasq never added, so the
+-- category drop misses (silent filter bypass). dns-tail closes the gap the same
+-- way it does for eb_ (#515): it resolves each answered name through the #1344
+-- CNAME-alias map and, when the recovered brand is a blocklist member, adds the
+-- IP to that member's bl_ set. dns-tail can see which bl_ sets EXIST but not
+-- their MEMBERSHIP, so this exports it.
+--
+-- Derived from the same `snapshot._blocklist_hosts` that drives the `nftset=`
+-- directives, so the set names line up exactly with what render.nft declares.
+-- One row per (member host, blocklist id): "<host>\t<bl_set>\t<bl6_set>".
+function M.blocklist_member_index(snapshot)
+  local bl_hosts = snapshot and snapshot._blocklist_hosts or {}
+  local bl_ids   = sorted_keys(snapshot and snapshot.blocklists or {})
+  local lines = {}
+  for _, id in ipairs(bl_ids) do
+    local set4 = bl_set_name(id)
+    local set6 = bl6_set_name(id)
+    for _, host in ipairs(bl_hosts[id] or {}) do
+      lines[#lines + 1] = string.format("%s\t%s\t%s", host, set4, set6)
+    end
+  end
+  return table.concat(lines, "\n") .. (#lines > 0 and "\n" or "")
+end
+
+-- ---------------------------------------------------------------------------
 -- render.nft(snapshot, opts) → string
 -- ---------------------------------------------------------------------------
 -- opts (optional table):

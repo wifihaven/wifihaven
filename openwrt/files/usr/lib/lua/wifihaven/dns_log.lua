@@ -329,8 +329,9 @@ function M.new(opts)
   -- `name` unchanged when it is not a known alias (#1344). Exposed publicly so
   -- the wifihaven-dns-tail sidecar can reuse the SAME learned alias memory to
   -- recover the brand for a directly-queried CDN target before suffix-matching
-  -- it against the kernel ea_/eb_ sets (#1346). Internally `resolve_head` is
-  -- already used by ingest_line; this is a thin public passthrough.
+  -- it against the kernel ea_/eb_ sets (#1346) and the category bl_ sets
+  -- (#1348). Internally `resolve_head` is already used by ingest_line; this is
+  -- a thin public passthrough.
   function self.resolve_head(name)
     return resolve_head(name)
   end
@@ -349,6 +350,78 @@ function M.new(opts)
   end
 
   return self
+end
+
+-- ---------------------------------------------------------------------------
+-- #1348: category-blocklist (bl_) dns-tail populator support.
+--
+-- bl_<id> / bl6_<id> category drop-sets are declared per blocklist id and
+-- populated at DNS resolve time by dnsmasq's `nftset=/<member>/...#bl_<id>`
+-- directive — which fires only for queries whose name suffix-matches a member
+-- host. When a client re-queries a member's CNAME target DIRECTLY it lands on a
+-- CDN-anycast IP dnsmasq never added to bl_<id>, so the category drop misses
+-- and blocked content becomes reachable (a silent filter bypass). dns-tail
+-- closes that gap exactly as it does for eb_ (#515): on each `reply <name> is
+-- <ip>` it resolves <name> through the CNAME-alias map (resolve_head) and, if
+-- the recovered brand is a blocklist member, adds the IP to that member's bl_
+-- set. dns-tail knows which bl_ sets EXIST (from `nft list table`) but not
+-- their MEMBERSHIP, so render.lua writes a host → set index it consumes here.
+--
+-- parse_blocklist_member_index(text) → { [host] = { {v4=set4, v6=set6}, … } }
+-- Inverse of render.blocklist_member_index. Each line is
+-- "<host>\t<bl_set>\t<bl6_set>"; a host present in multiple blocklists yields
+-- multiple rows (one {v4,v6} pair each).
+function M.parse_blocklist_member_index(text)
+  local out = {}
+  if type(text) ~= "string" or text == "" then return out end
+  for line in text:gmatch("[^\n]+") do
+    local host, set4, set6 = line:match("^(%S+)\t(%S+)\t(%S+)$")
+    if host then
+      local rows = out[host]
+      if not rows then rows = {}; out[host] = rows end
+      rows[#rows + 1] = { v4 = set4, v6 = set6 }
+    end
+  end
+  return out
+end
+
+-- populate_bl(reply, member_index, resolve_head_fn, add_fn) → matched?
+--
+--   reply           — a parse_resolved_reply result { name, ip, family }.
+--   member_index    — a parse_blocklist_member_index output.
+--   resolve_head_fn — cache.resolve_head (attributes a directly-queried CDN
+--                     target back to the branded chain head). nil-safe: when
+--                     absent the answered name is used verbatim.
+--   add_fn          — injected `add_fn(set_name, ip)` (dns-tail passes the real
+--                     nft add-element; tests pass a collector).
+--
+-- Resolves reply.name → branded head, then walks the head's label suffixes
+-- against the member index (mirroring dnsmasq's `/member/` subdomain match: a
+-- member matches itself and every subdomain). For every matching member it
+-- calls add_fn with the family-appropriate bl_/bl6_ set name, so an IP only
+-- reachable via a directly-queried CNAME target still lands in the category
+-- drop-set. A host in multiple blocklists adds to each. Returns true iff at
+-- least one member matched (testability).
+function M.populate_bl(reply, member_index, resolve_head_fn, add_fn)
+  if type(reply) ~= "table" or not reply.name or not reply.ip then return false end
+  if type(member_index) ~= "table" or type(add_fn) ~= "function" then return false end
+  local key  = (reply.family == "v6") and "v6" or "v4"
+  local name = resolve_head_fn and resolve_head_fn(reply.name) or reply.name
+  local matched = false
+  while name and name ~= "" do
+    local rows = member_index[name]
+    if rows then
+      for _, r in ipairs(rows) do
+        local set = r[key]
+        if set then add_fn(set, reply.ip) end
+      end
+      matched = true
+    end
+    local dot = name:find("%.")
+    if not dot then break end
+    name = name:sub(dot + 1)
+  end
+  return matched
 end
 
 -- Parses the output of an instance's `dump_text()` and returns a plain

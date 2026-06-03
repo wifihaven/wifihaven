@@ -649,9 +649,12 @@ describe("populate_bl (#1348)", function()
   it("uses the v6 set name for an AAAA answer", function()
     local clk = fake_clock()
     local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
-    c.ingest_line("11 192.168.1.50/101 query[AAAA] tiktok.com from 192.168.1.50")
+    -- The alias edge cdn.akamai.net → tiktok.com is learned from the branded
+    -- A-record chain (the cache's alias map is fed by v4 reply lines, since
+    -- conntrack flows are v4); it's then reused for the AAAA direct re-query.
+    c.ingest_line("11 192.168.1.50/101 query[A] tiktok.com from 192.168.1.50")
     c.ingest_line("11 192.168.1.50/101 reply tiktok.com is <CNAME>")
-    c.ingest_line("11 192.168.1.50/101 reply cdn.akamai.net is 2606:2800::1")
+    c.ingest_line("11 192.168.1.50/101 reply cdn.akamai.net is 1.2.3.4")
 
     local idx = dns_log.parse_blocklist_member_index(
       "tiktok.com\tbl_social\tbl6_social\n")
