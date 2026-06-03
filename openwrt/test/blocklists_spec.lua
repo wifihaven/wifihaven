@@ -58,12 +58,12 @@ describe("blocklists.fetch_and_cache", function()
   it("fetches body and writes to <cache_dir>/<id>-<version>.txt atomically", function()
     local fs       = make_fs()
     local fetches  = 0
-    local function http_get(url, _etag)
+    local function http_get(url, _headers)
       fetches = fetches + 1
       if url:find("test_ads", 1, true) then
-        return "doubleclick.net\ngoogleadservices.com\n", 200, '"v1"'
+        return 200, "doubleclick.net\ngoogleadservices.com\n", {}
       end
-      return nil, 404, nil
+      return 404, nil, {}
     end
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
@@ -121,7 +121,7 @@ describe("blocklists.fetch_and_cache", function()
   it("does NOT re-fetch when (id, version) file already exists in cache", function()
     local fs      = make_fs()
     local fetches = 0
-    local function http_get(_url, _etag) fetches = fetches + 1; return "host.example\n", 200, '"v1"' end
+    local function http_get(_url, _headers) fetches = fetches + 1; return 200, "host.example\n", {} end
 
     -- Pre-seed the cache file.
     local cache_dir = "/etc/wifihaven/blocklists"
@@ -136,7 +136,7 @@ describe("blocklists.fetch_and_cache", function()
   it("re-fetches when version changes (old file still in cache_dir)", function()
     local fs      = make_fs()
     local fetches = 0
-    local function http_get(_url, _etag) fetches = fetches + 1; return "newhost.example\n", 200, '"v2"' end
+    local function http_get(_url, _headers) fetches = fetches + 1; return 200, "newhost.example\n", {} end
 
     local cache_dir = "/etc/wifihaven/blocklists"
     -- Old version file in cache.
@@ -156,8 +156,8 @@ describe("blocklists.fetch_and_cache", function()
 
   it("HTTP non-200 response: returns error, does not write cache file", function()
     local fs = make_fs()
-    local function http_get(_url, _etag)
-      return "server error", 500, nil
+    local function http_get(_url, _headers)
+      return 500, "server error", {}
     end
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
@@ -169,8 +169,8 @@ describe("blocklists.fetch_and_cache", function()
 
   it("skips comment lines and blank lines in the body", function()
     local fs = make_fs()
-    local function http_get(_url, _etag)
-      return "# version: abc123\nads.example.com\n\ndoubleclick.net\n", 200, '"v1"'
+    local function http_get(_url, _headers)
+      return 200, "# version: abc123\nads.example.com\n\ndoubleclick.net\n", {}
     end
 
     local s = snap({ test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" } })
