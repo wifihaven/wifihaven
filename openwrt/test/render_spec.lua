@@ -1198,6 +1198,50 @@ end)
 -- packet is dropped iff *any* matches. A host in extraBlocked still drops
 -- even though its IP also lands in resolved_<mac>.
 
+-- ---------------------------------------------------------------------------
+-- render.blocklist_member_index (#1348)
+--
+-- bl_<id>/bl6_<id> sets are populated at DNS resolve time by dnsmasq's
+-- nftset=/<member>/...#bl_<id> directive, which misses a directly-queried CNAME
+-- target landing on a fresh CDN-anycast IP (silent filter bypass). dns-tail
+-- closes that gap, but it only knows which bl_ sets EXIST — not their
+-- MEMBERSHIP. This index exports host → bl_set so the dns-tail populator can
+-- match a member resolved through the #1344 CNAME-alias map. It is derived from
+-- the same snapshot._blocklist_hosts that drives the nftset= directives, so the
+-- set names line up exactly.
+-- ---------------------------------------------------------------------------
+
+describe("render.blocklist_member_index (#1348)", function()
+  it("emits <host>\\t<bl_set>\\t<bl6_set> for each member of each blocklist", function()
+    local s = {
+      blocklists = {
+        test_ads = { version = "v1", url = "/api/blocklists/test_ads" },
+      },
+      _blocklist_hosts = {
+        test_ads = { "adserver.example.com", "doubleclick.net" },
+      },
+    }
+    local idx = render.blocklist_member_index(s)
+    assert.truthy(idx:find("adserver.example.com\tbl_test_ads\tbl6_test_ads", 1, true))
+    assert.truthy(idx:find("doubleclick.net\tbl_test_ads\tbl6_test_ads", 1, true))
+  end)
+
+  it("sanitizes the id into the set name the same way render.nft declares it", function()
+    local s = {
+      blocklists       = { ["test.cat-1"] = { version = "v1", url = "/x" } },
+      _blocklist_hosts = { ["test.cat-1"] = { "badhost.com" } },
+    }
+    local idx = render.blocklist_member_index(s)
+    -- bl_sanitize replaces ., :, -, whitespace with _.
+    assert.truthy(idx:find("badhost.com\tbl_test_cat_1\tbl6_test_cat_1", 1, true))
+  end)
+
+  it("returns an empty string when there are no blocklist members", function()
+    assert.equal("", render.blocklist_member_index({ blocklists = {} }))
+    assert.equal("", render.blocklist_member_index({}))
+  end)
+end)
+
 describe("render blockIpOnly enforcement (#353)", function()
 
   local function snap_bio()
