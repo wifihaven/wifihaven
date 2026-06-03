@@ -47,6 +47,7 @@ jobs:
       fake-api: ${{ steps.filter.outputs.fake-api || steps.force.outputs.all }}
       workflows: ${{ steps.filter.outputs.workflows || steps.force.outputs.all }}
       grafana-tf: ${{ steps.filter.outputs.grafana-tf || steps.force.outputs.all }}
+      cloudflare-tf: ${{ steps.filter.outputs.cloudflare-tf || steps.force.outputs.all }}
       deploy-webhook: ${{ steps.filter.outputs.deploy-webhook || steps.force.outputs.all }}
     steps:
       - name: Force full matrix for CD / manual triggers
@@ -146,6 +147,9 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'infra/grafana/**'
               - 'deploy/grafana/dashboards/**'
+            cloudflare-tf:
+              - '.github/workflows/ci.yml'
+              - 'infra/cloudflare/**'
             # #1245: standalone Render→Grafana deploy-annotation receiver.
             # stdlib-only, so its own pytest job rather than the opnsense one.
             deploy-webhook:
@@ -631,6 +635,40 @@ jobs:
             python3 -m json.tool "$f" > /dev/null
           done
 
+  # ── infra/cloudflare Terraform: fmt + validate ──────────────────────────
+  # Cheap config-quality gate for the Cloudflare DNS/Pages Terraform in
+  # infra/cloudflare/. Catches fmt drift and invalid HCL before an operator
+  # runs `terraform apply` against the wifihaven.net zone.
+  #
+  # NOTE: this job does NOT run `terraform apply`. Cloudflare API credentials
+  # (CLOUDFLARE_API_TOKEN) are never needed here and are NOT in CI secrets.
+  # All DNS record changes (including the e2e test fixture records added in
+  # #1351) require a manual `terraform apply` by the operator.
+  cloudflare-terraform:
+    name: Cloudflare Terraform Lint
+    needs: changes
+    if: needs.changes.outputs.cloudflare-tf == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.3'
+
+      - name: terraform fmt
+        working-directory: infra/cloudflare
+        run: terraform fmt -check -diff
+
+      - name: terraform init + validate
+        working-directory: infra/cloudflare
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
   # ── GitHub Actions workflow lint ─────────────────────────────────────────
   # actionlint statically checks every workflow under .github/workflows/ for
   # syntax errors, bad expressions, unknown runner labels, and (via the
@@ -713,6 +751,7 @@ jobs:
       - fake-api-tests
       - render-blueprint
       - grafana-terraform
+      - cloudflare-terraform
       - actionlint
       - frontend
     runs-on: ubuntu-latest
