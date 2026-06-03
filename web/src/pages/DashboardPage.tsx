@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useDashboardNow } from '@/api/queries'
+import { useDashboardNow, useRecentBlocked } from '@/api/queries'
 import type {
   DashboardNowDevice,
   DashboardNowProfile,
@@ -32,6 +33,8 @@ export function DashboardPage() {
       <NewDevicesHint />
 
       <AccessRequestsBanner />
+
+      <RecentlyBlockedSection />
 
       <NowSection />
 
@@ -91,6 +94,69 @@ export function DashboardPage() {
       </section>
     </div>
   )
+}
+
+// ── "Most recently blocked" — live diagnostic feed, polls every 10s ──────────
+//
+// #1338: newest-first, un-aggregated list of the latest connection-layer drops,
+// the recency complement to "Top Blocked". When a site/app suddenly stops
+// working the operator wants to see *what just got dropped* (the gstatic /
+// ocsp / akamai dependency, the over-broad blocklist hit) without digging into
+// the Connection Events page. A row is a real traffic-layer drop — DNS always
+// resolves (memory/blocking_is_traffic_layer_not_dns.md). Reuses the dashboard's
+// React Query polling + JWT/household scoping via useRecentBlocked.
+
+export function RecentlyBlockedSection() {
+  const { data = null } = useRecentBlocked()
+
+  return (
+    <section data-testid="recently-blocked-section" className="bg-white rounded-2xl border border-brand-border overflow-hidden">
+      <div className="px-5 py-4 border-b border-brand-border flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
+          Most Recently Blocked
+        </h2>
+        <Link to="/usage/events" className="text-xs text-brand-accent-dark hover:underline shrink-0">
+          View all →
+        </Link>
+      </div>
+      {data === null
+        ? <p className="px-5 py-4 text-brand-text-muted text-sm">Loading recent blocks…</p>
+        : data.length === 0
+          ? <div className="px-5 py-4"><EmptyState variant="inline" title="Nothing blocked recently" /></div>
+          : (
+            <ul className="divide-y divide-brand-border">
+              {data.map(row => <RecentlyBlockedRow key={row.id} row={row} />)}
+            </ul>
+          )
+      }
+    </section>
+  )
+}
+
+function RecentlyBlockedRow({ row }: { row: QueryLog }) {
+  const who = row.deviceName ?? row.mac ?? 'unknown device'
+  return (
+    <li data-testid={`recently-blocked-${row.id}`} className="px-5 py-2.5 flex items-center gap-3">
+      <span className="text-xs text-brand-text-muted shrink-0 w-16 tabular-nums">
+        {formatRelativeTime(row.ts)}
+      </span>
+      <span className="font-mono text-sm text-brand-ink truncate flex-1 min-w-0">
+        <HostCell host={row.host} />
+      </span>
+      <span className="text-xs text-brand-text-muted truncate hidden sm:block max-w-[40%]">
+        {who}{row.profileName ? ` · ${row.profileName}` : ''}
+      </span>
+      <span className="text-xs text-red-700 shrink-0">{blockReasonText(row.reason)}</span>
+    </li>
+  )
+}
+
+// Relative "Xs/Xm/Xh ago" from an ISO timestamp. Mirrors formatLastSeen, which
+// works in elapsed-seconds; here we derive the elapsed from now() at render time
+// (React Query re-renders on each 10s poll, so the label stays roughly live).
+function formatRelativeTime(tsIso: string): string {
+  const elapsedMs = Date.now() - new Date(tsIso).getTime()
+  return formatLastSeen(Math.max(0, elapsedMs / 1000))
 }
 
 // ── "Now" section — live snapshot, polls every 10s ───────────────────────────
@@ -251,4 +317,4 @@ function PageLoader() {
   )
 }
 
-export { LogTable, PageLoader }
+export { LogTable, PageLoader, formatRelativeTime }
