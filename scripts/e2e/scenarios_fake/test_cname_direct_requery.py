@@ -1,26 +1,30 @@
-"""Suite G — directly-queried CNAME targets: ea_/eb_ kernel set population (#1351).
+"""Suite G — directly-queried CNAME targets: ea_/eb_/bl_ kernel set population (#1351).
 
-Guards the dns-tail ea_/eb_ populator introduced in #1346/#1349 against
-whole-system regression. The Lua busted unit tests (openwrt/test/dns_tail_sets_spec.lua)
-cover the module in isolation; THIS suite proves the full pipeline on a real router VM:
+Guards the dns-tail ea_/eb_ populator introduced in #1346/#1349 and the bl_
+populator introduced in #1348/#1350 against whole-system regression. The Lua
+busted unit tests (openwrt/test/dns_tail_sets_spec.lua) cover the modules in
+isolation; THIS suite proves the full pipeline on a real router VM:
 
     client → dnsmasq (CNAME chain resolution + log-queries=extra)
            → dns-tail sidecar (CNAME alias memory + nft add element)
-           → nftables ea_/eb_ sets
+           → nftables ea_/eb_/bl_ sets
            → nftables forward rules (drop or carve-out)
 
-The failure mode captured by #1346/#1349:
+The failure mode captured by #1346/#1349 (ea_/eb_) and #1348/#1350 (bl_):
   (1) Client first resolves the branded host (e.g. `e2e-brand.wifihaven.net`).
       dnsmasq logs the full CNAME chain; dns-tail learns the alias map
       `e2e-edge.wifihaven.net → e2e-brand.wifihaven.net`.
   (2) Client then re-queries the leaf CNAME target DIRECTLY
       (`dig e2e-edge.wifihaven.net`). dnsmasq's `nftset=` callback only fires
       for names that suffix-match the configured domain — it does NOT fire for
-      the raw CDN leaf. Pre-#1349 dns-tail also missed this: `maybe_populate_eb`
-      keyed only on `r.name` (= CDN leaf), which never label-matched `eb_<brand>`.
-  (3) The directly-queried IP was therefore ABSENT from the kernel ea_/eb_ set,
-      so a whole-MAC block did not carve out the flow (ea_ miss → false block)
-      and an extraBlocked host was silently reachable (eb_ miss → filter bypass).
+      the raw CDN leaf.
+  (3) Pre-#1349 dns-tail also missed ea_/eb_ population for the direct re-query.
+      Pre-#1350 dns-tail also missed bl_ population for the direct re-query.
+  (4) The directly-queried IP was therefore ABSENT from the kernel ea_/eb_/bl_
+      sets, so a whole-MAC block did not carve out the flow (ea_ miss → false
+      block), extraBlocked hosts were silently reachable (eb_ miss → filter
+      bypass), and category-blocked content was reachable (bl_ miss → filter
+      bypass — the highest severity case, since it bypasses a broad blocklist).
 
 DNS chain (wifihaven.net zone — real Cloudflare records, managed by infra/cloudflare/main.tf):
 
@@ -32,7 +36,7 @@ Records are DNS-only (no Cloudflare proxy) so the chain resolves as authored.
 The leaf A points to 93.184.216.34 (IANA's example.com IP) — a real HTTP server
 that returns a response the harness can distinguish from the block page. The
 DNAT for port 80 intercepts before the real origin is reached in the blocked
-case, so the origin's actual content is irrelevant for the eb_ test.
+case, so the origin's actual content is irrelevant for the eb_/bl_ tests.
 
 TERRAFORM PREREQUISITE: `terraform apply` in infra/cloudflare/ must have been
 run (operator-applied, CLOUDFLARE_API_TOKEN required) before this suite can
@@ -47,8 +51,9 @@ Cases:
        its IPs in ea_ and HTTP to the leaf succeeds (carve-out fires).
   G3 — attribution: after direct re-query, connection_event reports the BRANDED
        host (e2e-brand.wifihaven.net), not the CDN/leaf target.
-  G4 — bl_ category blocklist slot (TODO(#1348): xfail until bl_ dns-tail
-       populator is implemented).
+  G4 — bl_ category blocklist: direct re-query of the leaf puts its IPs in the
+       bl_ category drop-set and HTTP/80 to the leaf hits the block page.
+       Guards the dns-tail bl_ populator from #1348/#1350.
 
 Assertions are TRAFFIC-LEVEL (connection-layer, as required by docs/architecture.md
 Truth-1 and CLAUDE.md): DNS always resolves; blocking is an nftables property.
@@ -59,10 +64,12 @@ from __future__ import annotations
 import pytest
 
 from ._observers import (
+    bl_set_name,
     dig_ipv4_answers,
     ea_set_name,
     eb_set_name,
     mac_in_blocked_set,
+    wait_bl_set_populated,
     wait_block_page,
     wait_ea_set_populated,
     wait_eb_set_populated,
@@ -356,35 +363,122 @@ def test_attribution_reports_branded_host_after_direct_requery(router, client, f
     )
 
 
-# ── G4 — bl_ (category blocklist) — xfail pending #1348 ─────────────────────
+# ── G4 — bl_ (category blocklist) — dns-tail populator from #1348/#1350 ──────
+
+# Blocklist id used for G4. Any ASCII-safe string is fine; we use a dedicated
+# id so the bl_ set name is predictable and the test doesn't cross-pollinate
+# other scenarios. The name intentionally contains hyphens to exercise
+# bl_sanitize (render.lua replaces `-` → `_`).
+_BL_ID = "e2e-cname-bl"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "TODO(#1348): bl_ category-blocklist bypass via directly-queried CNAME "
-        "targets is not yet fixed. The bl_ populator (blocklists.lua) is driven "
-        "by agent-side resolution, not by client DNS answers, so the #1346/#1349 "
-        "dns-tail alias-map fix is not a drop-in here. This slot will flip from "
-        "xfail to a real assertion once #1348 ships a dns-tail bl_ populator."
-    ),
-    strict=False,
-)
-def test_bl_direct_requery_blocked_xfail(router, client, fake_api):
-    """G4 (xfail — #1348): category-blocklist (bl_) enforcement for
-    directly-queried CNAME targets.
+def test_bl_direct_requery_blocked(router, client, fake_api):
+    """G4: direct re-query of the CNAME leaf populates the bl_ category
+    drop-set and HTTP/80 to that IP hits the block page.
 
-    The bl_/bl6_ sets are populated by the agent's periodic blocklists.lua
-    resolution, not by client DNS answers. When a device re-queries a blocklist
-    member's CNAME target directly, the resolved IP may not be in the bl_ set
-    (CDN-anycast IP variance). Fixing this requires a dns-tail bl_ populator
-    that maps client-observed CNAME-target answers back to blocklist membership
-    via the #1344 alias map — tracked in #1348.
+    Regression guard for #1348/#1350 (dns-tail bl_ populator). The
+    pre-#1350 failure mode:
+      - blocklists.lua adds BRAND_HOST's agent-resolved IPs to bl_<id>
+        on the periodic 30 s cadence.
+      - A device re-queries LEAF_HOST directly. Dnsmasq's `nftset=/<member>/…`
+        callback does NOT fire (the wire qname is the CDN leaf, not the member).
+        Pre-#1350 dns-tail also skipped bl_ population for the direct re-query.
+      - The directly-queried IP is absent from bl_<id> → category block is
+        silently bypassed.
 
-    This slot exists so the scenario file is complete and will flip to a real
-    assertion when #1348 ships, without requiring a new PR at that time.
+    Post-#1350 dns-tail runs maybe_populate_bl on each `reply <name> is <ip>`:
+    it resolves LEAF_HOST through the CNAME alias map → BRAND_HOST, finds that
+    BRAND_HOST is a member of bl_<id>, and calls `nft add element bl_<id> {ip}`
+    inline — the same lockstep approach as eb_ (#515/#1346).
+
+    Harness design:
+      - A fake-api-served blocklist is registered at /api/blocklists/<id>
+        containing BRAND_HOST. The snapshot's `blocklists` dict points to
+        that URL. blocklists.lua fetches and caches it; render.lua emits both
+        the `nftset=/<member>/…` dnsmasq directive and the bl-member-index file
+        that dns-tail loads every 30 s.
+      - NO extraBlocked entry for LEAF_HOST. The point is that bl_ alone must
+        catch the directly-queried leaf IP via the dns-tail populator.
+      - Steps follow G1 (eb_ case): (1) resolve brand → alias map built,
+        (2) direct re-query of leaf → maybe_populate_bl fires, (3) HTTP/80
+        to the leaf must hit the block page (DNAT intercepted before real origin).
+
+    Primary assertion (traffic-level, per docs/architecture.md Truth-1):
+      HTTP/80 to LEAF_HOST returns the block-page body.
+    Secondary (diagnostic):
+      wait_bl_set_populated confirms bl_<id> has the leaf IP on the router.
     """
-    # When #1348 ships: set up a snapshot with a blocklist that includes
-    # BRAND_HOST (or a host whose CNAME chain is BRAND_HOST→...→LEAF_HOST),
-    # resolve the branded host (step 1), re-query the leaf directly (step 2),
-    # and assert HTTP to LEAF_HOST hits the block page. For now: xfail-by-pass.
-    pytest.xfail("bl_ direct-requery populator not yet implemented (#1348)")
+    # Register blocklist content in the fake before serving the snapshot.
+    # blocklists.lua fetches /api/blocklists/<id>; the fake serves it from its
+    # in-memory store. The version in the snapshot controls cache-busting on the
+    # agent (a new version string forces a fresh fetch even if the file is already
+    # on disk). We use a stable version string here — the agent will fetch once
+    # and cache; subsequent policy cycles see a 304 for the snapshot but the
+    # blocklist cache file is already present.
+    fake_api.register_blocklist(_BL_ID, [BRAND_HOST])
+
+    snap = (
+        SnapshotBuilder()
+        .add_profile(
+            id=KIDS_PID,
+            name="e2e-cname-bl",
+            blocklist_ids=[_BL_ID],
+        )
+        .add_device(mac=client.mac, name="e2e-cname-bl-dev", profile_id=KIDS_PID)
+        .add_blocklist(id=_BL_ID, version="2026.06.01")
+        .build(etag='"sha256:cname-bl-v1"')
+    )
+    etag = fake_api.serve_snapshot(snap)
+    fake_api.wait_for_etag_served(etag=etag, timeout_s=240)
+
+    # Step 1: resolve the branded host so dns-tail builds the alias map
+    # (edge→brand). Without this first resolution the alias map is empty and
+    # maybe_populate_bl falls back to the raw replied name (LEAF_HOST), which
+    # is not a member of the blocklist.
+    chain_ips = _wait_for_chain_resolution(client)
+    assert chain_ips, (
+        f"dig {BRAND_HOST} returned no IPv4 answers — check that "
+        f"terraform apply has been run for infra/cloudflare/ (#1351)"
+    )
+
+    # Truth-1: DNS for the branded host returns real IPs, not NXDOMAIN.
+    assert any(chain_ips), (
+        f"expected real IPv4 from chain resolution, got {chain_ips!r}"
+    )
+
+    # Step 2: re-query the leaf CNAME target directly (simulates Apple device).
+    # dns-tail observes the `reply e2e-edge.wifihaven.net is 93.184.216.34`
+    # log line, resolves the name → BRAND_HOST via the alias map, finds it in
+    # the bl-member-index, and calls `nft add element bl_<id> {ip}`.
+    leaf_ips = _requery_leaf_directly(client)
+    assert leaf_ips, (
+        f"direct dig {LEAF_HOST} returned no IPv4 — leaf A record missing or "
+        f"not yet propagated (terraform apply required)"
+    )
+    assert LEAF_IP in leaf_ips, (
+        f"expected {LEAF_IP} in direct-requery answers for {LEAF_HOST}, "
+        f"got {leaf_ips!r}"
+    )
+
+    # Primary assertion: HTTP/80 to the leaf hits the block page. The bl_
+    # category drop + DNAT fires because the leaf IP is now in bl_<id>;
+    # the connection never reaches 93.184.216.34.
+    probe = wait_block_page(client, host=LEAF_HOST, timeout_s=120)
+    assert probe.http_code == 200, (
+        f"expected block page (HTTP 200) for {LEAF_HOST}, got {probe.http_code!r} — "
+        f"bl_ category drop may be missing the directly-queried leaf IP"
+    )
+
+    # Secondary (diagnostic): assert bl_<id> set membership. This narrows the
+    # failure to the dns-tail bl_ populator when the traffic probe catches a
+    # regression even though the set is empty.
+    bl_members = wait_bl_set_populated(_BL_ID, timeout_s=60)
+    assert bl_members, (
+        f"nft set {bl_set_name(_BL_ID)} is empty — dns-tail bl_ populator "
+        f"(#1348/#1350) did not add the directly-queried leaf IP to the "
+        f"category drop-set"
+    )
+    assert any(LEAF_IP in m for m in bl_members), (
+        f"leaf IP {LEAF_IP} not found in {bl_set_name(_BL_ID)} members: "
+        f"{bl_members!r} — direct-requery IP was not attributed to blocklist member"
+    )
