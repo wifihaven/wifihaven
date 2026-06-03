@@ -3,3 +3,7 @@ zone_id    = "<paste from Cloudflare dash → wifihaven.net → right sidebar �
 
 api_prod_cname_target    = "<from Render → wifihaven-api-prod    → Settings → Custom Domains>"
 api_staging_cname_target = "<from Render → wifihaven-api-staging → Settings → Custom Domains>"
+
+# e2e test fixture leaf IP — default is 93.184.216.34 (IANA example.com).
+# Override only if you need a different origin for direct-requery CNAME tests (#1351).
+# e2e_edge_ip = "93.184.216.34"

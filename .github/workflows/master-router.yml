@@ -49,6 +49,12 @@ on:
       - '.github/workflows/e2e-vm-fake.yml'
       - '.github/workflows/e2e-vm-gate3a.yml'
       - '.github/workflows/ci.yml'
+      # e2e scenario files: a new or changed fake-mode scenario that gates the
+      # router image should re-run the full pipeline, not just CI tests.
+      - 'scripts/e2e/scenarios_fake/**'
+      - 'scripts/e2e/lib/**'
+      - 'scripts/e2e/fake-api/**'
+      - 'scripts/e2e/pytest.ini'
   workflow_dispatch:
 
 # Workflow-level concurrency scoped to THIS pipeline's group name — router

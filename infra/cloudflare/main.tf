@@ -133,3 +133,50 @@ resource "cloudflare_record" "api_staging" {
   ttl     = 1
   comment = "Render wifihaven-api-staging (#613)"
 }
+
+# ── e2e CNAME chain — controllable test fixture for #1351 ──────────────────
+#
+# A three-hop chain used by scripts/e2e/scenarios_fake/test_cname_direct_requery.py
+# to prove the dns-tail ea_/eb_ populator handles directly-queried CNAME targets
+# (#1346/#1349) end-to-end on a real router VM.
+#
+# Records are DNS-only (proxied=false) so the chain resolves as authored and
+# the leaf A record is never hidden behind Cloudflare's edge. The leaf IP is
+# 93.184.216.34 (IANA's example.com — stable, responds to HTTP/80 with a
+# non-block-page body, and is already used as the harness's reference
+# "internet-reachable" origin in scripts/e2e/lib/wait.py).
+#
+# Prerequisite: `terraform apply` against the wifihaven.net zone must run
+# (operator-applied; see PR #1351 description) before the e2e gate can resolve
+# this chain from the router VM. CI validates fmt + validate only; it does NOT
+# apply. See .github/workflows/ci.yml cloudflare-terraform job.
+
+resource "cloudflare_record" "e2e_brand" {
+  zone_id = var.zone_id
+  name    = "e2e-brand"
+  type    = "CNAME"
+  content = "e2e-mid.wifihaven.net"
+  proxied = false
+  ttl     = 300
+  comment = "e2e test fixture: branded host for direct-requery CNAME test (#1351)"
+}
+
+resource "cloudflare_record" "e2e_mid" {
+  zone_id = var.zone_id
+  name    = "e2e-mid"
+  type    = "CNAME"
+  content = "e2e-edge.wifihaven.net"
+  proxied = false
+  ttl     = 300
+  comment = "e2e test fixture: mid-hop for direct-requery CNAME test (#1351)"
+}
+
+resource "cloudflare_record" "e2e_edge" {
+  zone_id = var.zone_id
+  name    = "e2e-edge"
+  type    = "A"
+  content = var.e2e_edge_ip
+  proxied = false
+  ttl     = 300
+  comment = "e2e test fixture: leaf A record for direct-requery CNAME test (#1351)"
+}

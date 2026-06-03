@@ -108,3 +108,73 @@ def wait_event_for_mac(fake_api, mac: str, *, allowed: bool, reason: str,
         probe, timeout_s=timeout_s, interval_s=2,
         description=f"fake event allowed={allowed} reason={reason!r} for {mac}",
     )
+
+
+def _san(s: str) -> str:
+    """render.lua::sanitize(): `[.:]` → `_`."""
+    return s.replace(".", "_").replace(":", "_")
+
+
+def ea_set_name(mac: str, host: str) -> str:
+    """Return the nft set name for an ea_ allow-set.
+
+    render.lua names these `ea_<sanmac>_<sanhost>` where sanmac and sanhost
+    are the sanitized (dots/colons→underscores) forms. The mac is the full
+    colon-separated form as seen in the snapshot.
+
+    Example: mac=aa:bb:cc:11:22:33, host=khanacademy.org
+             → ea_aa_bb_cc_11_22_33_khanacademy_org
+    """
+    return "ea_" + _san(mac) + "_" + _san(host)
+
+
+def wait_ea_set_populated(mac: str, host: str, *, timeout_s: float = 90) -> list[str]:
+    """Wait until the nft ea_ allow-set for (mac, host) has at least one element.
+
+    This is the router-state side of the ea_ assertion — it confirms the
+    dns-tail sidecar populated the kernel carve-out for a directly-queried
+    CNAME target. The primary assertion is still traffic-level (wait_http_succeeds
+    / wait_block_page), but the set membership check surfaces the specific
+    sub-component that failed when the traffic probe catches a regression.
+    """
+    name = ea_set_name(mac, host)
+
+    def probe():
+        elems = router_nft_set(name)
+        return elems if elems else None
+
+    return wait_until(
+        probe, timeout_s=timeout_s, interval_s=3,
+        description=f"nft set {name} to gain at least one element",
+    )
+
+
+def wait_event_with_host_attribution(
+    fake_api,
+    mac: str,
+    *,
+    branded_host: str,
+    timeout_s: float = 120,
+) -> dict:
+    """Wait until the fake has a connection_event whose host.value contains
+    the branded hostname (not the raw CDN/leaf target).
+
+    Used to assert #1344/#1345 attribution: after a direct re-query of a
+    CNAME target, the event posted to /api/router/events must record the
+    branded ancestor, not the CDN hostname.
+    """
+    def probe():
+        for ev in fake_api.events_for_mac(mac):
+            host_field = ev.get("host") or {}
+            hval = host_field.get("value") or ""
+            if branded_host.lower() in hval.lower():
+                return ev
+        return None
+
+    return wait_until(
+        probe, timeout_s=timeout_s, interval_s=3,
+        description=(
+            f"connection_event for {mac} with host attribution containing "
+            f"{branded_host!r}"
+        ),
+    )
