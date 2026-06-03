@@ -16,11 +16,15 @@ name: Build router release artifacts
 #   - downloaded verbatim by publish-openwrt-release.yml after approval — no
 #     rebuild, no re-derivation (publish can no longer fail on a compile).
 #
-# Coordinated-version invariant (#499 / #1134): the version is derived ONCE
-# in the `Derive version` step and threaded verbatim into the baked agent
-# VERSION file (#771), every package version, the VM images, and — via the
-# `version` workflow output — the release name and the v<X.Y.Z> tag. All
-# four MUST match; this job is the single point where that version is chosen.
+# Coordinated-version invariant (#499 / #1134 / #1343): the ROUTER release
+# version is derived ONCE in the `Derive version` step and threaded verbatim
+# into the baked agent VERSION file (#771), every package version, the VM
+# images, and — via the `version` workflow output — the release name and the
+# v<X.Y.Z> tag. All four MUST match; this job is the single point where that
+# version is chosen. (#1343: this version is router-only. The API/UI carries
+# no v<X.Y.Z> — it rolls by sha-<short> + :latest. PATCH is now a per-release
+# counter = count of existing v<MAJOR>.<MINOR>.* tags on origin, computed here
+# pre-gate; the tag is pushed post-approval in publish-openwrt-release.yml.)
 #
 # Triggers:
 #   - workflow_call — invoked by master-router.yml ahead of the gates. The
@@ -58,9 +62,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # #499: derive-version.sh counts commits since VERSION last changed;
-          # a shallow clone returns 0 and produces a bogus patch number. Always
-          # fetch full history so the single derivation is correct.
+          # #499/#1343: derive-version.sh derives PATCH from the v<base>.* tags
+          # on origin. It queries origin directly via `git ls-remote`, but
+          # keeps a local-tags offline fallback — so fetch full history AND
+          # tags here to keep that fallback correct and to cut the annotated
+          # release tag downstream.
           fetch-depth: 0
 
       # Surface inputs.publish_release as a step output so the Derive version
@@ -77,11 +83,14 @@ jobs:
 
       - name: Derive version
         id: ver
-        # #499/#1134: single source of truth is the repo-root VERSION file
-        # (MAJOR.MINOR) plus the commit count since that file last changed
-        # (PATCH). This is the ONLY place the release version is computed —
-        # everything downstream (packages, VM images, release tag) consumes
-        # this output verbatim.
+        # #499/#1134/#1343: single source of truth is the repo-root VERSION
+        # file (MAJOR.MINOR) plus the per-release counter (PATCH = count of
+        # existing v<MAJOR>.<MINOR>.* tags on origin). This is the ONLY place
+        # the release version is computed — everything downstream (packages, VM
+        # images, release tag) consumes this output verbatim. The number is
+        # computed here PRE-gate; publish-openwrt-release.yml pushes the tag
+        # POST-approval and fails loudly if it already exists (#1343 collision
+        # guard).
         #
         # Branch on the publish flag, NOT github.event_name: a reusable
         # workflow called via `workflow_call` inherits the CALLER's triggering

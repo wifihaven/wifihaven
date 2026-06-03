@@ -35,17 +35,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # #499: scripts/ci/derive-version.sh counts commits since the
-          # VERSION file last changed — shallow clones return 0 and produce
-          # bogus patch numbers. Always fetch full history here.
+          # #499/#1343: derive-version.sh derives PATCH from the v<base>.* tags
+          # on origin (queried via `git ls-remote`, with a local-tags offline
+          # fallback). Fetch full history + tags so that fallback is correct.
           fetch-depth: 0
 
       - name: Derive version
         id: ver
-        # #499: single source of truth is the repo-root VERSION file
-        # (MAJOR.MINOR) plus the commit count since that file last changed
-        # (PATCH). workflow_dispatch runs append -dev.<sha> so ad-hoc builds
-        # can't collide with a real tagged release.
+        # #499/#1343: single source of truth is the repo-root VERSION file
+        # (MAJOR.MINOR) plus the per-release counter (PATCH = count of existing
+        # v<MAJOR>.<MINOR>.* tags on origin). This is a build-only validation
+        # run (never publishes), so the derived number is just baked into a
+        # throwaway artifact. workflow_dispatch runs append -dev.<sha> so
+        # ad-hoc builds can't collide with a real tagged release.
         run: |
           set -eu
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then

@@ -178,26 +178,22 @@ jobs:
       short_sha: ${{ steps.ver.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          # #499: derive-version.sh counts commits since VERSION last
-          # changed; shallow clones break that count.
-          fetch-depth: 0
 
-      - name: Derive WifiHaven version (#499)
+      # #1343: the API/UI no longer carries a v<X.Y.Z> version — it deploys by
+      # sha-tagged images (sha-<short>) + :latest, and /api/version reports the
+      # SHA (#1140). v<X.Y.Z> is now a router-only release number. This step
+      # therefore only derives the short SHA for the image tag + the #1140
+      # health-poll; no derive-version.sh call, and no fetch-depth:0 (that was
+      # solely for the old commit-count derivation).
+      - name: Derive short SHA (#1140)
         id: ver
         run: |
           set -eu
-          short=$(echo "${GITHUB_SHA}" | cut -c1-7)
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version=$(./scripts/ci/derive-version.sh --dev "$short")
-          else
-            version=$(./scripts/ci/derive-version.sh)
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
           # #1140: short SHA is baked into the image and asserted by the
           # deploy-staging health-poll to prove THIS build is serving.
+          short=$(echo "${GITHUB_SHA}" | cut -c1-7)
           echo "short_sha=$short" >> "$GITHUB_OUTPUT"
-          echo "Derived version: $version (sha-$short)"
+          echo "Building sha-$short"
 
       - name: Set up QEMU (for linux/arm64 emulation)
         uses: docker/setup-qemu-action@v3
@@ -221,12 +217,12 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # NOTE: `latest` is deliberately omitted — it's published by the
           # deploy-production retag job after staging smoke.
-          # #499: v<X.Y.Z> is added so the API image is reachable at the
-          # same semver tag as the OpenWRT release.
+          # #1343: no v<X.Y.Z> tag — the API/UI carries no semver. Images are
+          # addressed by sha-<short> (immutable, for rollback) + the moving
+          # `staging`/`latest` tags only. v<X.Y.Z> is router-only.
           tags: |
             type=raw,value=staging
             type=sha,prefix=sha-,format=short
-            type=raw,value=v${{ steps.ver.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
