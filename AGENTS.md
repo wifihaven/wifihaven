@@ -212,6 +212,44 @@ The router never re-evaluates any of this. It receives the resolved
 (DNS resolution itself is never blocked by WifiHaven. dnsmasq forwards
 upstream as normal; the enforcement plane is nftables on the resolved IPs.)
 
+## Project board — every new issue gets an Epic
+
+Open issues are tracked on the **WifiHaven GitHub Project** (org-level Project
+**#1**, <https://github.com/orgs/wifihaven/projects/1>). It is managed in the
+GitHub UI; the conventions (Epic taxonomy, Status meanings, umbrella =
+sub-issue-parent) live in [`docs/project-board.md`](docs/project-board.md).
+
+New repo issues are **auto-added** to the board (Status defaults to `Todo`) by the
+project's built-in *Auto-add to project* workflow, so they land on the board even
+when no agent is in the loop. The `Epic` is **not** set automatically — set it on
+triage.
+
+**When you file or triage a new issue, make sure it has the right `Epic`.**
+Don't leave a new issue sitting in the `Other` epic when a real thread fits (and
+if it somehow isn't on the board, add it). Steps:
+
+1. Add it if missing: `gh project item-add 1 --owner wifihaven --url <issue-url>`.
+2. Set `Epic` to the matching thread from the taxonomy in
+   `docs/project-board.md` (Observability/Metrics, Global Policy & Default-Deny,
+   Dashboard & UX, Blocklists & Enforcement, CI/CD & Ops, Rollups & Data, Mobile
+   App, Launch & Marketing, E2E Test Coverage, Schedules, or Other) — judge from
+   the title, labels, and body.
+3. Set `Status`: `In Progress` if it carries the `in-progress` label, `Blocked`
+   if `blocked` / `blocked-on-#NNN`, otherwise `Todo`.
+
+**Starting a large new thread? Create a new `Epic` option for it** instead of
+forcing it into `Other`. Only do this for a thread big enough to deserve its own
+swimlane — a new umbrella, or a body of work that will span several issues; a
+one-off still goes in `Other`. Add the option in the Project UI (Epic field →
+add option) or via GraphQL `updateProjectV2Field` (pass the full option list,
+each `{name,color,description}`), then record the new epic in
+`docs/project-board.md` so the taxonomy stays the source of truth.
+
+Field IDs and option IDs are discoverable with
+`gh project field-list 1 --owner wifihaven --format json`; set a field with
+`gh project item-edit --id <itemId> --project-id <projectId> --field-id <fid>
+--single-select-option-id <oid>`.
+
 ## Tech stack decisions
 
 | Choice | Reason |
