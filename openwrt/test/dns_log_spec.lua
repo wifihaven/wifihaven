@@ -531,3 +531,183 @@ describe("dump_text + load_table", function()
     assert.same({}, dns_log.load_table("garbage\nnot a real entry\n", 3600, 0))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- 2c. resolve_head public accessor (#1346/#1348)
+--
+-- The CNAME-alias resolution (#1344) was previously an internal closure used
+-- only by ingest_line. The dns-tail eb_/bl_ populators need to attribute a
+-- directly-queried CDN target back to the branded chain head BEFORE matching
+-- against set membership, so the live cache exposes it as a method (sharing the
+-- learned alias edges — no second map).
+-- ---------------------------------------------------------------------------
+
+describe("resolve_head accessor (#1346/#1348)", function()
+  local function fake_clock()
+    local t = 1000000
+    return { now = function() return t end, advance = function(s) t = t + s end }
+  end
+
+  it("returns the branded chain head for a learned CDN alias", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    c.ingest_line("1 192.168.1.10/100 query[A] cdn.kastatic.org from 192.168.1.10")
+    c.ingest_line("1 192.168.1.10/100 reply cdn.kastatic.org is <CNAME>")
+    c.ingest_line("1 192.168.1.10/100 reply prod.khan.map.fastly.net is 199.232.65.42")
+
+    assert.equal("cdn.kastatic.org", c.resolve_head("prod.khan.map.fastly.net"))
+  end)
+
+  it("returns the name unchanged when it is not a known alias", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    assert.equal("example.com", c.resolve_head("example.com"))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 2d. Category-blocklist member index + bl_ populator (#1348)
+--
+-- bl_<id> / bl6_<id> category drop-sets are declared per blocklist id and
+-- populated at DNS resolve time by dnsmasq's `nftset=/<member>/...#bl_<id>`
+-- directive — which fires only for queries whose name suffix-matches a member
+-- host. When a client re-queries a member's CNAME target DIRECTLY it lands on a
+-- CDN-anycast IP dnsmasq never added to bl_<id>, so the category drop misses
+-- and blocked content becomes reachable (a silent filter bypass, #1348).
+--
+-- dns-tail closes that gap the same way it does for eb_ (#515/#1346): on each
+-- `reply <name> is <ip>` it resolves <name> through the #1344 CNAME-alias map
+-- and, if the recovered brand is a blocklist member, adds the IP to that
+-- member's bl_ set. dns-tail knows which bl_ sets EXIST but not their
+-- MEMBERSHIP — `parse_blocklist_member_index` supplies host → bl_set so the
+-- populator can match, and `populate_bl` performs the alias-resolve + walk.
+-- ---------------------------------------------------------------------------
+
+describe("parse_blocklist_member_index (#1348)", function()
+  it("parses host → {v4,v6} set rows, grouping multiple ids per host", function()
+    local text = table.concat({
+      "tiktok.com\tbl_social\tbl6_social",
+      "tiktok.com\tbl_china\tbl6_china",
+      "youtube.com\tbl_video\tbl6_video",
+    }, "\n") .. "\n"
+    local idx = dns_log.parse_blocklist_member_index(text)
+
+    assert.equal(2, #idx["tiktok.com"])
+    assert.equal("bl_social", idx["tiktok.com"][1].v4)
+    assert.equal("bl6_social", idx["tiktok.com"][1].v6)
+    assert.equal("bl_china",  idx["tiktok.com"][2].v4)
+    assert.equal("bl_video",  idx["youtube.com"][1].v4)
+  end)
+
+  it("returns an empty table for nil / empty / malformed input", function()
+    assert.same({}, dns_log.parse_blocklist_member_index(nil))
+    assert.same({}, dns_log.parse_blocklist_member_index(""))
+    assert.same({}, dns_log.parse_blocklist_member_index("garbage no tabs here\n"))
+  end)
+end)
+
+describe("populate_bl (#1348)", function()
+  local function fake_clock()
+    local t = 1000000
+    return { now = function() return t end, advance = function(s) t = t + s end }
+  end
+
+  -- Collector standing in for dns-tail's injected nft_add_element.
+  local function collector()
+    local adds = {}
+    return adds, function(set, ip) adds[#adds + 1] = { set = set, ip = ip } end
+  end
+
+  it("adds a directly-queried CNAME target's IP to the member's bl_ set", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+    -- 1) The branded member tiktok.com was resolved earlier; the agent-side
+    --    population added IP A (1.2.3.4) to bl_social via dnsmasq. The chain
+    --    head → CDN target alias edge is learned here.
+    c.ingest_line("10 192.168.1.50/100 query[A] tiktok.com from 192.168.1.50")
+    c.ingest_line("10 192.168.1.50/100 reply tiktok.com is <CNAME>")
+    c.ingest_line("10 192.168.1.50/100 reply e35058.api12.akamaiedge.net is 1.2.3.4")
+
+    local idx = dns_log.parse_blocklist_member_index(
+      "tiktok.com\tbl_social\tbl6_social\n")
+
+    -- 2) The device re-queries the CDN target DIRECTLY and lands on a DIFFERENT
+    --    Akamai anycast IP B (5.6.7.8) that bl_social never got — the bypass.
+    clk.advance(5)
+    local reply = { name = "e35058.api12.akamaiedge.net", ip = "5.6.7.8", family = "v4" }
+
+    local adds, add_fn = collector()
+    dns_log.populate_bl(reply, idx, c.resolve_head, add_fn)
+
+    -- B must be added to the correct bl_<id> via the alias map + member index.
+    assert.equal(1, #adds)
+    assert.equal("bl_social", adds[1].set)
+    assert.equal("5.6.7.8",   adds[1].ip)
+  end)
+
+  it("uses the v6 set name for an AAAA answer", function()
+    local clk = fake_clock()
+    local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+    -- The alias edge cdn.akamai.net → tiktok.com is learned from the branded
+    -- A-record chain (the cache's alias map is fed by v4 reply lines, since
+    -- conntrack flows are v4); it's then reused for the AAAA direct re-query.
+    c.ingest_line("11 192.168.1.50/101 query[A] tiktok.com from 192.168.1.50")
+    c.ingest_line("11 192.168.1.50/101 reply tiktok.com is <CNAME>")
+    c.ingest_line("11 192.168.1.50/101 reply cdn.akamai.net is 1.2.3.4")
+
+    local idx = dns_log.parse_blocklist_member_index(
+      "tiktok.com\tbl_social\tbl6_social\n")
+    local reply = { name = "cdn.akamai.net", ip = "2606:2800::2", family = "v6" }
+
+    local adds, add_fn = collector()
+    dns_log.populate_bl(reply, idx, c.resolve_head, add_fn)
+
+    assert.equal(1, #adds)
+    assert.equal("bl6_social", adds[1].set)
+  end)
+
+  it("matches a member via dnsmasq subdomain semantics (suffix walk)", function()
+    local c = dns_log.new({ ttl_seconds = 3600 })
+    local idx = dns_log.parse_blocklist_member_index("tiktok.com\tbl_social\tbl6_social\n")
+    -- A subdomain the alias map never saw; resolve_head returns it unchanged,
+    -- but it still suffix-matches the member tiktok.com.
+    local reply = { name = "www.tiktok.com", ip = "9.9.9.9", family = "v4" }
+
+    local adds, add_fn = collector()
+    dns_log.populate_bl(reply, idx, c.resolve_head, add_fn)
+
+    assert.equal(1, #adds)
+    assert.equal("bl_social", adds[1].set)
+  end)
+
+  it("adds to every blocklist a member belongs to", function()
+    local c = dns_log.new({ ttl_seconds = 3600 })
+    local idx = dns_log.parse_blocklist_member_index(table.concat({
+      "tiktok.com\tbl_social\tbl6_social",
+      "tiktok.com\tbl_china\tbl6_china",
+    }, "\n") .. "\n")
+    local reply = { name = "tiktok.com", ip = "1.1.1.1", family = "v4" }
+
+    local adds, add_fn = collector()
+    dns_log.populate_bl(reply, idx, c.resolve_head, add_fn)
+
+    assert.equal(2, #adds)
+    local sets = { [adds[1].set] = true, [adds[2].set] = true }
+    assert.is_true(sets["bl_social"])
+    assert.is_true(sets["bl_china"])
+  end)
+
+  it("does nothing when the resolved head is not a blocklist member (safe)", function()
+    local c = dns_log.new({ ttl_seconds = 3600 })
+    local idx = dns_log.parse_blocklist_member_index("tiktok.com\tbl_social\tbl6_social\n")
+    -- No prior brand chain observed for this target → resolve_head returns it
+    -- unchanged, and it matches no member. Never adds spuriously.
+    local reply = { name = "unrelated.example.net", ip = "8.8.8.8", family = "v4" }
+
+    local adds, add_fn = collector()
+    dns_log.populate_bl(reply, idx, c.resolve_head, add_fn)
+
+    assert.equal(0, #adds)
+  end)
+end)

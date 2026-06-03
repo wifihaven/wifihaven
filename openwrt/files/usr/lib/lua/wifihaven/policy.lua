@@ -42,6 +42,7 @@
 local M = {}
 
 local render = require("wifihaven.render")
+local paths  = require("wifihaven.paths")
 
 -- log is injectable for tests; default uses the real logger wrapper.
 local function default_log()
@@ -260,6 +261,18 @@ function M.apply(snapshot, write_fn, reload_fn, log, opts)
     log.err("policy.apply: write nft file failed: %s", tostring(err2))
     report("write_failed", false)
     return false
+  end
+
+  -- #1348: blocklist member → bl_ set index for the dns-tail bl_ populator.
+  -- Written in lockstep with the dnsmasq.conf above (whose nftset= directives
+  -- declare the same membership) so a directly-queried CNAME target landing on
+  -- a fresh CDN-anycast IP still populates the category drop-set. A write
+  -- failure here is non-fatal: it only loses the directly-queried-target
+  -- coverage until the next apply, not core enforcement, so we log and proceed.
+  local bl_index = render.blocklist_member_index(snapshot)
+  local okbl, errbl = write_fn(paths.bl_member_index, bl_index)
+  if not okbl then
+    log.warn("policy.apply: write bl member index failed: %s", tostring(errbl))
   end
 
   if dnsmasq_changed then

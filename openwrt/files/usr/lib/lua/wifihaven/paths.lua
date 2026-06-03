@@ -13,4 +13,9 @@ M.block_page_hosts    = "/var/run/wifihaven/blocked_hosts"
 -- ip → hostname cache (#259): wifihaven-dns-tail writes, wifihaven-agent reads.
 M.dns_cache = "/tmp/wifihaven-dns-cache.txt"
 
+-- blocklist member → bl_ set index (#1348): policy.apply writes after each
+-- snapshot apply (in lockstep with /tmp/dnsmasq.d/wifihaven.conf), the
+-- wifihaven-dns-tail bl_ populator reads it on its set-refresh cadence.
+M.bl_member_index = "/tmp/wifihaven-bl-members.txt"
+
 return M
