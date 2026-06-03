@@ -106,17 +106,35 @@ jobs:
       # so the tag never exists before the release it names. We cut the
       # annotated tag before the versioned release upload so it carries a real
       # tagger + message (softprops would otherwise create a lightweight tag).
-      # The existence check is kept as a safety net against retries; under
-      # normal operation no other pipeline pushes this tag.
-      - name: Cut annotated v<X.Y.Z> tag (#499)
+      #
+      # COLLISION GUARD (#1343): the version number is computed PRE-gate in
+      # build-release-artifacts.yml (it's baked into the .ipk/.apk + VM image)
+      # and this tag is pushed POST-approval. The number is now a per-release
+      # counter = "count of existing v<MAJOR>.<MINOR>.* tags on origin", so two
+      # concurrent publishes that both pass the gate could compute the SAME
+      # number off the same pre-gate tag set. Router CD serializes via its
+      # concurrency group + manual approval, so this is rare — but if it does
+      # happen we must FAIL LOUDLY rather than silently skip: skipping would
+      # leave the second run to attach THIS build's artifacts to the v<X.Y.Z>
+      # release that already names the FIRST build's bits, publishing under a
+      # wrong/duplicate number. So an existing tag is a hard error. (The cost
+      # is that a manual re-run after the tag was already pushed must delete
+      # the bad tag/release first — an acceptable, operator-visible trade vs.
+      # silently shipping a mislabelled release.)
+      - name: Cut annotated v<X.Y.Z> tag (#499, #1343)
         env:
           VERSION: ${{ inputs.version }}
         run: |
           set -eu
           tag="v${VERSION}"
           if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
-            echo "Tag ${tag} already exists on origin — skipping."
-            exit 0
+            echo "ERROR: tag ${tag} already exists on origin (#1343)." >&2
+            echo "The per-release version counter collided — most likely a" >&2
+            echo "concurrent publish already claimed this number. Refusing to" >&2
+            echo "publish these artifacts under a duplicate v<X.Y.Z>. Re-run" >&2
+            echo "Master Router CD to derive the next number, or delete the" >&2
+            echo "stale tag/release if this is a known bad partial publish." >&2
+            exit 1
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

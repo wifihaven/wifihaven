@@ -37,9 +37,12 @@ test suite is green. No separate publish workflow exists.
 |-------|-------------|
 | Push to `main` (after green e2e) | `latest`, `sha-<7-char-commit>` |
 
-Semver tags (`1.2.3`, `1.2`, `1`) are not applied automatically — cut a
-release by pushing a `v*` git tag, which can be done after the `main` push
-has already published `latest`.
+**The API image carries no `v<X.Y.Z>` semver (#1343).** It is addressed only
+by the immutable `sha-<short>` tag and the moving `staging`/`latest` tags;
+`/api/version` reports the build's git SHA (#1140). The `v<X.Y.Z>` scheme is
+**router-only** — a per-release counter owned by Router CD (see §2 and
+`scripts/ci/derive-version.sh`). There is no coordinated API↔router version
+number; the two deploy independently.
 
 The `sha-` tag is immutable and safe to reference for rollbacks. `latest` is
 what the prod compose stack pulls on auto-update.
