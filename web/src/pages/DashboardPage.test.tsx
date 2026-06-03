@@ -44,12 +44,14 @@ const recent: QueryLog = {
 }
 
 // #1338: a recent connection-layer drop, returned by /api/logs?blocked=true.
+// ts must be inside the panel's 15-min recency window, so derive it from now.
+const recentBlockedTs = () => new Date(Date.now() - 12_000).toISOString() // 12s ago
 const blockedRow: QueryLog = {
   id: 99, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
   host: { type: 'fqdn', value: 'connectivitycheck.gstatic.com' }, qtype: 1,
   blocked: true, reason: { kind: 'category', slug: 'ads' },
-  location: 'home', ts: '2026-05-07T10:15:30Z',
+  location: 'home', ts: recentBlockedTs(),
 }
 
 const emptyNow: DashboardNow = { asOf: '2026-05-13T10:00:00Z', profiles: [] }
@@ -162,8 +164,21 @@ describe('RecentlyBlockedSection (#1338)', () => {
     expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
     expect(screen.getByText(/Kid's iPad · Kids/)).toBeInTheDocument()
     expect(screen.getByText('category: ads')).toBeInTheDocument()
-    // Reuses the blocked=true read, capped to 20 (RECENT_BLOCKED_LIMIT).
-    expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20 })
+    // Reuses the blocked=true read, capped to 20 (RECENT_BLOCKED_LIMIT), 1h fetch
+    // window (trimmed to 15 min client-side).
+    expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20, hours: 1 })
+  })
+
+  it('drops blocks older than the 15-min recency window (#1338)', async () => {
+    // A real-but-stale block (e.g. ~11h ago, the beacons.gcp.gvt2.com case) must
+    // not masquerade as "recently blocked".
+    mockQuery().mockResolvedValue({
+      rows: [{ ...blockedRow, ts: new Date(Date.now() - 11 * 3600_000).toISOString() }],
+      nextCursor: null,
+    })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+    expect(screen.queryByText('connectivitycheck.gstatic.com')).not.toBeInTheDocument()
   })
 
   it('links to the full Connection Events page', async () => {

@@ -19,6 +19,11 @@ const MIN = 60_000
 // un-aggregated recent drops. Capped small; the full history lives on the
 // Connection Events page.
 export const RECENT_BLOCKED_LIMIT = 20
+// "Recent" = the trailing 15 minutes: the panel answers "what just got dropped",
+// not "what was dropped today" (the 24h aggregate is "Top Blocked"). /api/logs
+// only takes integer `hours`, so we fetch a 1h window for headroom and trim to
+// the 15-min window client-side.
+export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
 
 // Per-endpoint stale times (#803).
 const STALE = {
@@ -114,9 +119,11 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
 }
 
 // #1338: live feed of the most recent connection-layer drops (blocked-only,
-// newest-first). Reuses the existing /api/logs read with blocked=true; the
-// route already orders ts DESC and honours the limit, and applies the same
-// JWT/household scoping every other dashboard read uses. Polls on the same
+// newest-first, trailing 15 min). Reuses the existing /api/logs read with
+// blocked=true; the route already orders ts DESC and honours the limit, and
+// applies the same JWT/household scoping every other dashboard read uses. We
+// fetch a 1h window (integer-hours param) and trim to RECENT_BLOCKED_WINDOW_MS
+// client-side so a stale block doesn't masquerade as recent. Polls on the same
 // 10s cadence as the "now" snapshot so a just-now block surfaces immediately.
 // NB a row here is a real traffic-layer drop, not a DNS event (DNS always
 // resolves) — see memory/blocking_is_traffic_layer_not_dns.md.
@@ -124,7 +131,11 @@ export function useRecentBlocked(opts?: QueryOpts<QueryLog[]>) {
   return useQuery({
     queryKey: qk.recentBlocked(),
     queryFn: () =>
-      api.logs.query({ blocked: true, limit: RECENT_BLOCKED_LIMIT }).then(p => p.rows),
+      api.logs.query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1 }).then(p => p.rows),
+    select: (rows: QueryLog[]) => {
+      const cutoff = Date.now() - RECENT_BLOCKED_WINDOW_MS
+      return rows.filter(r => new Date(r.ts).getTime() >= cutoff)
+    },
     staleTime: STALE.recentBlocked,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,

@@ -98,9 +98,9 @@ export function DashboardPage() {
 
 // ── "Most recently blocked" — live diagnostic feed, polls every 10s ──────────
 //
-// #1338: newest-first, un-aggregated list of the latest connection-layer drops,
-// the recency complement to "Top Blocked". When a site/app suddenly stops
-// working the operator wants to see *what just got dropped* (the gstatic /
+// #1338: newest-first, un-aggregated list of the connection-layer drops in the
+// trailing 15 minutes, the recency complement to "Top Blocked". When a site/app
+// suddenly stops working the operator wants to see *what just got dropped* (the gstatic /
 // ocsp / akamai dependency, the over-broad blocklist hit) without digging into
 // the Connection Events page. A row is a real traffic-layer drop — DNS always
 // resolves (memory/blocking_is_traffic_layer_not_dns.md). Reuses the dashboard's
