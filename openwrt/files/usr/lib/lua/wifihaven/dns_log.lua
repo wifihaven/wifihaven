@@ -141,6 +141,9 @@ function M.new(opts)
   local ttl           = opts.ttl_seconds or 3600
   local max_entries   = opts.max_entries or 10000
   local max_pending   = opts.max_pending or 1024
+  -- CNAME-alias map bound. Distinct CDN target names observed across chains;
+  -- shares the entry-cache order of magnitude (#1344).
+  local max_aliases   = opts.max_aliases or 10000
   local now_fn        = opts.now_fn      or os.time
 
   -- ip → { hostname, ts, seq }
@@ -149,6 +152,14 @@ function M.new(opts)
   -- qid → { qname, ts, seq }
   local pending       = {}
   local pending_count = 0
+  -- CNAME target name → { head, ts, seq } (#1344).
+  -- Learned from observed CNAME chains: every non-head owner name in a chain
+  -- maps to that chain's head (the queried name). Lets us attribute a flow
+  -- back to the branded host even when the client re-queries the final CNAME
+  -- target directly (Apple devices do this), where the qname on the wire is
+  -- the CDN target itself.
+  local aliases       = {}
+  local alias_count   = 0
   -- monotonically increasing sequence number for LRU-by-insertion eviction
   local seq           = 0
 
@@ -203,6 +214,54 @@ function M.new(opts)
     pending[qid] = { qname = qname, ts = now, seq = next_seq() }
   end
 
+  local function evict_oldest_alias()
+    local oldest_name, oldest_seq
+    for name, a in pairs(aliases) do
+      if not oldest_seq or a.seq < oldest_seq then
+        oldest_name, oldest_seq = name, a.seq
+      end
+    end
+    if oldest_name then
+      aliases[oldest_name] = nil
+      alias_count = alias_count - 1
+    end
+  end
+
+  -- resolve_head(name) → the branded chain head `name` is a CNAME alias of, or
+  -- `name` itself when it is not a known alias. Bounded multi-hop with a cycle
+  -- guard so a re-queried intermediate hop (whose own alias was learned from a
+  -- longer chain) still resolves to the ultimate head (#1344). Expired alias
+  -- edges are ignored (and lazily dropped) so a stale CDN→brand mapping can't
+  -- pin an IP to the wrong brand forever.
+  local function resolve_head(name)
+    local now  = now_fn()
+    local seen = {}
+    for _ = 1, 8 do
+      local a = aliases[name]
+      if not a then break end
+      if (now - a.ts) > ttl then
+        aliases[name] = nil
+        alias_count = alias_count - 1
+        break
+      end
+      if seen[name] then break end
+      seen[name] = true
+      name = a.head
+    end
+    return name
+  end
+
+  local function remember_alias(target, head, now)
+    if target == head then return end
+    if aliases[target] == nil then
+      if alias_count >= max_aliases then
+        evict_oldest_alias()
+      end
+      alias_count = alias_count + 1
+    end
+    aliases[target] = { head = head, ts = now, seq = next_seq() }
+  end
+
   local self = {}
 
   function self.ingest_line(line)
@@ -215,9 +274,19 @@ function M.new(opts)
     local r = M.parse_reply_line(line)
     if not r then return end
     local p = pending[r.qid]
-    local original = p and p.qname or r.name
+    -- The chain head is the queried name (pending qname); fall back to the
+    -- reply owner when we never saw the query line. Resolve it through the
+    -- alias map so a re-queried CNAME target attributes back to the branded
+    -- host the target was first observed under (#1344).
+    local head = resolve_head(p and p.qname or r.name)
+    -- Record the CNAME-alias edge: this reply's owner name (r.name) is a name
+    -- reachable within `head`'s chain, so a later DIRECT query for r.name can
+    -- be attributed back to `head`. Skip the head's own line (target == head).
+    if r.name ~= head then
+      remember_alias(r.name, head, now)
+    end
     if r.ip then
-      store(r.ip, original, now)
+      store(r.ip, head, now)
     end
   end
 
@@ -244,6 +313,12 @@ function M.new(opts)
       if (now - p.ts) > ttl then
         pending[qid] = nil
         pending_count = pending_count - 1
+      end
+    end
+    for name, a in pairs(aliases) do
+      if (now - a.ts) > ttl then
+        aliases[name] = nil
+        alias_count = alias_count - 1
       end
     end
   end

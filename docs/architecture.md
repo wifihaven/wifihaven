@@ -723,6 +723,21 @@ so a flow to `142.250.x.x` shortly after `query[A] youtube.com` is logged as
 `youtube.com`, not `youtube-ui.l.google.com` (the last CNAME hop) and not
 the IP literal.
 
+Some clients (notably Apple devices) don't stop at one query: after resolving
+the branded host they **re-query the final CNAME target directly** as a
+separate lookup. On that second query the qname on the wire *is* the CDN
+target (e.g. `query[A] prod.khan.map.fastly.net`), so the query-id correlation
+— which is working correctly — still attributes the flow to the CDN target,
+which then fails to suffix-match the app's branded `extraAllowed` entry
+(`kastatic.org`) and is mislabelled / mis-classified as blocked. To recover the
+brand, `dns_log` remembers a bounded **CNAME-target → chain-head** map built
+from the chains it already parses (every non-head owner name in a chain maps to
+that chain's queried head). A later direct query for a known target is then
+attributed back to the branded ancestor the target was first observed under.
+This is best-effort: the very first direct-target query seen before any branded
+chain falls back to the target name (never worse than the IP-literal default),
+and stale alias edges expire on the same TTL as cache entries (#1344).
+
 The per-domain `--ipset=` mechanism is still used for the `site_limits`
 enforcement chains (nftables matches `ip daddr @profileN_<domain>`), but it
 is no longer load-bearing for hostname attribution in the query log — that

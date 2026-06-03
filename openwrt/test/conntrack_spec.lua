@@ -3,6 +3,7 @@
 -- Requires: busted (luarocks install busted)
 
 local conntrack = require("conntrack")
+local dns_log   = require("dns_log")
 
 -- ---------------------------------------------------------------------------
 -- 1. ipset attribution: dest_ip → hostname
@@ -324,6 +325,60 @@ describe("handle_flow", function()
     assert.equal("connection_attempt", b.events[2]["type"])
     assert.equal(MAC,                  b.events[2].mac)
     assert.is_true(ctx.reported_macs[MAC])
+  end)
+
+  -- #1344: end-to-end — a real dns_log cache fed the real prod CNAME-chain log
+  -- shapes must let a directly-queried CDN target flow carve out of a whole-MAC
+  -- block via the app's branded extraAllowed entry. This wires the actual
+  -- attribution fix through handle_flow, not a stubbed lookup.
+  it("#1344: directly-queried CNAME-target flow carves out of a blocked MAC via the brand", function()
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    -- Branded chain observed (cdn.kastatic.org → … → prod.khan.map.fastly.net).
+    cache.ingest_line("38053 192.168.1.42/36172 query[A] cdn.kastatic.org from 192.168.1.42")
+    cache.ingest_line("38053 192.168.1.42/36172 reply cdn.kastatic.org is <CNAME>")
+    cache.ingest_line("38053 192.168.1.42/36172 reply fastly.kastatic.org is <CNAME>")
+    cache.ingest_line("38053 192.168.1.42/36172 reply prod.khan.map.fastly.net is 9.9.9.9")
+    -- Device then re-queries the CNAME target directly → lands on DST_IP.
+    cache.ingest_line("40000 192.168.1.42/61484 query[A] prod.khan.map.fastly.net from 192.168.1.42")
+    cache.ingest_line("40000 192.168.1.42/61484 reply prod.khan.map.fastly.net is " .. DST_IP)
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },          -- whole-MAC block (downtime schedule)
+      blocked_reason  = { [MAC] = "schedule" },
+      lookup_hostname = cache.lookup,              -- the REAL attribution path
+      ea_hosts_by_mac = { [MAC] = { ["kastatic.org"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal("connection_attempt", ev["type"])
+    -- Recovered brand cdn.kastatic.org suffix-matches kastatic.org → carve-out.
+    -- build_event normalises an allowed event's nil reason to "allow".
+    assert.equal(true,    ev.allowed)
+    assert.equal("allow", ev.reason)
+  end)
+
+  -- Contrast: without the observed branded chain the same direct-target flow
+  -- can only attribute to the CDN target, which does NOT suffix-match the brand,
+  -- so it is (mis-)classified as blocked — the pre-fix behaviour the operator hit.
+  it("#1344: direct CNAME-target flow with no observed brand chain stays blocked", function()
+    local cache = dns_log.new({ ttl_seconds = 3600 })
+    cache.ingest_line("40000 192.168.1.42/61484 query[A] prod.khan.map.fastly.net from 192.168.1.42")
+    cache.ingest_line("40000 192.168.1.42/61484 reply prod.khan.map.fastly.net is " .. DST_IP)
+
+    local b = collecting_batcher()
+    local ctx = ctx_with({
+      reported_macs   = { [MAC] = true },
+      blocked_macs    = { [MAC] = true },
+      blocked_reason  = { [MAC] = "schedule" },
+      lookup_hostname = cache.lookup,
+      ea_hosts_by_mac = { [MAC] = { ["kastatic.org"] = true } },
+    })
+    conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
+    local ev = b.events[#b.events]
+    assert.equal(false,      ev.allowed)
+    assert.equal("schedule", ev.reason)
   end)
 
   it("does not re-emit first_seen_mac on subsequent flows from the same MAC", function()
