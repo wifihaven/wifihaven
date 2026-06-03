@@ -19,7 +19,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
-import { DashboardPage, NowSection } from './DashboardPage'
+import { DashboardPage, NowSection, RecentlyBlockedSection } from './DashboardPage'
 import { withQuery } from '@/test/queryWrapper'
 
 const stats: DashboardStats = {
@@ -40,6 +40,15 @@ const recent: QueryLog = {
   id: 1, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
   profileId: 1, profileName: 'Kids',
   host: { type: 'fqdn', value: 'example.com' }, qtype: 1, blocked: false, reason: { kind: 'allow' },
+  location: 'home', ts: '2026-05-07T10:15:30Z',
+}
+
+// #1338: a recent connection-layer drop, returned by /api/logs?blocked=true.
+const blockedRow: QueryLog = {
+  id: 99, mac: 'aa:bb:cc:dd:ee:01', deviceName: "Kid's iPad",
+  profileId: 1, profileName: 'Kids',
+  host: { type: 'fqdn', value: 'connectivitycheck.gstatic.com' }, qtype: 1,
+  blocked: true, reason: { kind: 'category', slug: 'ads' },
   location: 'home', ts: '2026-05-07T10:15:30Z',
 }
 
@@ -82,7 +91,16 @@ const mockAlerts = () => api.alerts.list as unknown as ReturnType<typeof vi.fn>
 beforeEach(() => {
   vi.resetAllMocks()
   mockStats().mockResolvedValue(stats)
-  mockQuery().mockResolvedValue({ rows: [recent], nextCursor: null })
+  // #1338: the "Most recently blocked" panel and the "Recent Queries" table
+  // both hit api.logs.query; split the canned response by the blocked filter so
+  // each surface renders its own (distinct) fixture.
+  mockQuery().mockImplementation((params?: { blocked?: boolean }) =>
+    Promise.resolve(
+      params?.blocked
+        ? { rows: [blockedRow], nextCursor: null }
+        : { rows: [recent], nextCursor: null },
+    ),
+  )
   mockNow().mockResolvedValue(emptyNow)
   mockAlerts().mockResolvedValue([])
 })
@@ -126,6 +144,56 @@ describe('DashboardPage', () => {
     const statsCard  = screen.getByText('Queries today')
     const comparison = nowHeading.compareDocumentPosition(statsCard)
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('renders the Most Recently Blocked panel above the Now section (#1338)', async () => {
+    render(withQuery(<MemoryRouter><DashboardPage /></MemoryRouter>))
+    const blocked = await screen.findByTestId('recently-blocked-section')
+    const now     = screen.getByTestId('now-section')
+    const cmp     = blocked.compareDocumentPosition(now)
+    expect(cmp & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
+  })
+})
+
+describe('RecentlyBlockedSection (#1338)', () => {
+  it('renders blocked rows: host, device + profile, and reason', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByText('connectivitycheck.gstatic.com')).toBeInTheDocument()
+    expect(screen.getByText(/Kid's iPad · Kids/)).toBeInTheDocument()
+    expect(screen.getByText('category: ads')).toBeInTheDocument()
+    // Reuses the blocked=true read, capped to 20 (RECENT_BLOCKED_LIMIT).
+    expect(api.logs.query).toHaveBeenCalledWith({ blocked: true, limit: 20 })
+  })
+
+  it('links to the full Connection Events page', async () => {
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    await screen.findByText('connectivitycheck.gstatic.com')
+    expect(screen.getByText(/View all/).closest('a')).toHaveAttribute('href', '/usage/events')
+  })
+
+  it('shows an empty state when nothing is blocked', async () => {
+    mockQuery().mockResolvedValue({ rows: [], nextCursor: null })
+    render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+    expect(await screen.findByText(/Nothing blocked recently/)).toBeInTheDocument()
+  })
+
+  it('polls and updates the list on refetch', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      mockQuery()
+        .mockResolvedValueOnce({ rows: [blockedRow], nextCursor: null })
+        .mockResolvedValue({
+          rows: [{ ...blockedRow, id: 100, host: { type: 'fqdn', value: 'ocsp.apple.com' } }],
+          nextCursor: null,
+        })
+      render(withQuery(<MemoryRouter><RecentlyBlockedSection /></MemoryRouter>))
+      await screen.findByText('connectivitycheck.gstatic.com')
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+      await waitFor(() => expect(screen.getByText('ocsp.apple.com')).toBeInTheDocument())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
