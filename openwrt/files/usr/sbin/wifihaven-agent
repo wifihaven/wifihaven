@@ -519,7 +519,7 @@ conntrack.watch({
         -- bl_result.errors once the status enum is designed alongside the
         -- broader blocklist-application work (#705).
         local bl_result = blocklists.fetch_and_cache(
-          snap, http_get, nil, "/etc/wifihaven/blocklists")
+          snap, http_get, nil, "/etc/wifihaven/blocklists", api_url)
         if #bl_result.errors > 0 then
           for _, e in ipairs(bl_result.errors) do
             log.warn("blocklist fetch: %s", tostring(e))

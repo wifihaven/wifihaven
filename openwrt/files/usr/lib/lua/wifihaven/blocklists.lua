@@ -5,7 +5,7 @@
 -- Writes are atomic: body goes to <path>.tmp then renamed to <path>.
 --
 -- Public API:
---   M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir)
+--   M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
 --     → { hosts_by_id = {[id]={hosts}}, errors = {...} }
 --   M.load_cached(snapshot, fs, cache_dir)
 --     → { [id] = {hosts} }
@@ -35,10 +35,17 @@ local function cache_path(cache_dir, id, version)
 end
 
 -- Fetch and cache all blocklists in the snapshot.
--- http_get_fn(url, etag) -> body_or_nil, http_status, new_etag
+-- http_get_fn(url, headers) -> http_status, body, resp_headers
+--   This is the same signature wifihaven-agent's http_get and policy.fetch
+--   use — status FIRST. (#1334: an earlier body-first assumption here meant
+--   the status check always tripped, so every category fetch "failed" and the
+--   bl_ ipset stayed empty, turning category enforcement into a silent no-op.)
+-- base_url: optional api base (e.g. "http://router:8080"). The snapshot ships
+--   relative blocklist urls ("/api/blocklists/<id>"); when base_url is given
+--   and the url is root-relative, they're joined so curl gets an absolute URL.
 -- fs: optional table with {read, write, rename, remove, list}; defaults to real I/O.
 -- Returns: { hosts_by_id = {[id]={hosts}}, errors = {...} }
-function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir)
+function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
   local result = { hosts_by_id = {}, errors = {} }
 
@@ -81,13 +88,19 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir)
     local url     = bl.url
     local path    = cache_path(cache_dir, id, version)
 
+    -- Resolve a root-relative url ("/api/blocklists/<id>") against the
+    -- configured api base (#1334). Absolute urls (scheme://…) pass through.
+    if base_url and type(url) == "string" and url:sub(1, 1) == "/" then
+      url = base_url .. url
+    end
+
     -- Check if (id, version) is already cached.
     local existing = read_fn(path)
     if existing then
       result.hosts_by_id[id] = parse_body(existing)
     else
-      -- Fetch from API.
-      local body, status, _etag = http_get_fn(url, nil)
+      -- Fetch from API. Signature matches the agent's http_get: status first.
+      local status, body = http_get_fn(url, nil)
       if type(status) ~= "number" or status ~= 200 then
         result.errors[#result.errors + 1] =
           string.format("blocklists: fetch failed for %s (status=%s)", tostring(id), tostring(status))

@@ -108,16 +108,20 @@ enforce — it is not a mirror of the server's policy model.
 See [`docs/architecture.md`](docs/architecture.md) for the full snapshot
 shape, wire JSON examples, and the enforcement model.
 
-> **Implementation deviations as of May 2026.** Some code does not yet match
-> the model above; these are tracked follow-ups, not the canonical design:
-> `extraBlocked` is currently enforced via dnsmasq NXDOMAIN
-> (`address=/host/#`) and is global rather than per-MAC; category blocklists
-> are not yet applied on the router at all; `blockIpOnly` does not exist
-> yet; the snapshot still carries per-profile `schedules`, `dailyMinutes`,
-> `timeUsedToday`, `siteLimits`, `failureMode`, and `blockedCategories`
-> that should collapse into `blocked` / `extraBlocked` / `blocklistIds`
-> server-side. Treat the model above as the target. If you are working
-> in this area, link the relevant follow-up issue.
+> **Implementation status as of June 2026.** The model above is what the
+> code does. `extraBlocked` enforces via per-`(MAC, host)` nftables drops on
+> the resolved IPs (`eb_`/`eb6_` sets), not a DNS sinkhole. Category
+> blocklists enforce via per-`(MAC, blocklistId)` nftables drops on the
+> `bl_`/`bl6_` sets, which the agent populates by fetching each blocklist URL
+> and resolving its members at DNS time (`blocklists.lua` →
+> `render.lua`). `blockIpOnly` is implemented (per-MAC `resolved_` sets). The
+> snapshot ships the collapsed per-MAC `BlockRules` shape only — `blocked`,
+> `blockReason`, `extraBlocked`, `extraAllowed`, `blocklistIds`,
+> `blockIpOnly` — plus per-profile `failureMode`; schedules, daily minutes,
+> time-used, and site limits are all evaluated server-side and never reach
+> the wire. (The category-enforcement path was a silent no-op on prod until
+> [#1334](https://github.com/wifihaven/wifihaven/issues/1334) fixed the
+> agent's blocklist-fetch call.)
 
 ## What this project is
 

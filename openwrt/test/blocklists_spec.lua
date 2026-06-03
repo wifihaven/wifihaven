@@ -58,12 +58,12 @@ describe("blocklists.fetch_and_cache", function()
   it("fetches body and writes to <cache_dir>/<id>-<version>.txt atomically", function()
     local fs       = make_fs()
     local fetches  = 0
-    local function http_get(url, _etag)
+    local function http_get(url, _headers)
       fetches = fetches + 1
       if url:find("test_ads", 1, true) then
-        return "doubleclick.net\ngoogleadservices.com\n", 200, '"v1"'
+        return 200, "doubleclick.net\ngoogleadservices.com\n", {}
       end
-      return nil, 404, nil
+      return 404, nil, {}
     end
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
@@ -85,10 +85,43 @@ describe("blocklists.fetch_and_cache", function()
     assert.equal(0, #result.errors)
   end)
 
+  -- #1334 regression: in production the agent passes its own `http_get`
+  -- (wifihaven-agent), whose signature is `http_get(url, headers) -> status,
+  -- body, resp_headers` — status FIRST. The snapshot also ships a *relative*
+  -- blocklist url (`/api/blocklists/<id>`), which must be resolved against the
+  -- router's configured api_url before it reaches curl. Both were previously
+  -- mismatched here (mock returned body-first; url was absolute), so the bug —
+  -- every category fetch silently failing and the bl_ ipset staying empty —
+  -- was invisible to the suite while category enforcement was a no-op on prod.
+  it("uses the agent's real http_get signature (status, body) and resolves relative urls via base_url", function()
+    local fs   = make_fs()
+    local seen_url
+    -- Mirrors wifihaven-agent's http_get: returns (status, body, headers).
+    local function prod_http_get(url, _headers)
+      seen_url = url
+      return 200, "doubleclick.net\ngoogleadservices.com\n", {}
+    end
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(
+      s, prod_http_get, fs, "/etc/wifihaven/blocklists", "http://api.example:8080")
+
+    -- Relative url was joined to the configured api base.
+    assert.equal("http://api.example:8080/api/blocklists/ads", seen_url)
+    assert.equal(0, #result.errors)
+    local hosts = result.hosts_by_id["ads"]
+    assert.not_nil(hosts, "ads hosts must be cached (otherwise bl_ ipset stays empty)")
+    local found = {}
+    for _, h in ipairs(hosts) do found[h] = true end
+    assert.truthy(found["doubleclick.net"])
+    assert.truthy(found["googleadservices.com"])
+    assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
+  end)
+
   it("does NOT re-fetch when (id, version) file already exists in cache", function()
     local fs      = make_fs()
     local fetches = 0
-    local function http_get(_url, _etag) fetches = fetches + 1; return "host.example\n", 200, '"v1"' end
+    local function http_get(_url, _headers) fetches = fetches + 1; return 200, "host.example\n", {} end
 
     -- Pre-seed the cache file.
     local cache_dir = "/etc/wifihaven/blocklists"
@@ -103,7 +136,7 @@ describe("blocklists.fetch_and_cache", function()
   it("re-fetches when version changes (old file still in cache_dir)", function()
     local fs      = make_fs()
     local fetches = 0
-    local function http_get(_url, _etag) fetches = fetches + 1; return "newhost.example\n", 200, '"v2"' end
+    local function http_get(_url, _headers) fetches = fetches + 1; return 200, "newhost.example\n", {} end
 
     local cache_dir = "/etc/wifihaven/blocklists"
     -- Old version file in cache.
@@ -123,8 +156,8 @@ describe("blocklists.fetch_and_cache", function()
 
   it("HTTP non-200 response: returns error, does not write cache file", function()
     local fs = make_fs()
-    local function http_get(_url, _etag)
-      return "server error", 500, nil
+    local function http_get(_url, _headers)
+      return 500, "server error", {}
     end
 
     local s = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
@@ -136,8 +169,8 @@ describe("blocklists.fetch_and_cache", function()
 
   it("skips comment lines and blank lines in the body", function()
     local fs = make_fs()
-    local function http_get(_url, _etag)
-      return "# version: abc123\nads.example.com\n\ndoubleclick.net\n", 200, '"v1"'
+    local function http_get(_url, _headers)
+      return 200, "# version: abc123\nads.example.com\n\ndoubleclick.net\n", {}
     end
 
     local s = snap({ test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" } })
