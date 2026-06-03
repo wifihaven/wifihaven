@@ -10,14 +10,25 @@ import { api } from '@/api/client'
 import type {
   Alert, DashboardNow, Device, HouseholdSettings, ProfileDetail, ProfileTimeStatus,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
-  UsageSeriesResponse,
+  QueryLog, UsageSeriesResponse,
 } from '@/types/api'
 
 const MIN = 60_000
 
+// #1338: "Most recently blocked" dashboard panel — newest-first, blocked-only,
+// un-aggregated recent drops. Capped small; the full history lives on the
+// Connection Events page.
+export const RECENT_BLOCKED_LIMIT = 20
+// "Recent" = the trailing 15 minutes: the panel answers "what just got dropped",
+// not "what was dropped today" (the 24h aggregate is "Top Blocked"). /api/logs
+// only takes integer `hours`, so we fetch a 1h window for headroom and trim to
+// the 15-min window client-side.
+export const RECENT_BLOCKED_WINDOW_MS = 15 * 60_000
+
 // Per-endpoint stale times (#803).
 const STALE = {
   dashboardNow: 5_000,
+  recentBlocked: 5_000,
   timeStatusToday: 30_000,
   timeStatusPast: 5 * MIN,
   timeStatusWeek: 5 * MIN,
@@ -30,6 +41,7 @@ export const qk = {
   devices: () => ['devices'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
+  recentBlocked: () => ['dashboard', 'recent-blocked'] as const,
   timeStatusToday: () => ['time', 'status', 'today'] as const,
   timeStatusDate: (date: string) => ['time', 'status', 'date', date] as const,
   timeStatusWeek: (to?: string, bucketOffsetMin?: number) =>
@@ -100,6 +112,31 @@ export function useDashboardNow(opts?: QueryOpts<DashboardNow>) {
     queryKey: qk.dashboardNow(),
     queryFn: () => api.dashboard.now(),
     staleTime: STALE.dashboardNow,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+    ...opts,
+  })
+}
+
+// #1338: live feed of the most recent connection-layer drops (blocked-only,
+// newest-first, trailing 15 min). Reuses the existing /api/logs read with
+// blocked=true; the route already orders ts DESC and honours the limit, and
+// applies the same JWT/household scoping every other dashboard read uses. We
+// fetch a 1h window (integer-hours param) and trim to RECENT_BLOCKED_WINDOW_MS
+// client-side so a stale block doesn't masquerade as recent. Polls on the same
+// 10s cadence as the "now" snapshot so a just-now block surfaces immediately.
+// NB a row here is a real traffic-layer drop, not a DNS event (DNS always
+// resolves) — see memory/blocking_is_traffic_layer_not_dns.md.
+export function useRecentBlocked(opts?: QueryOpts<QueryLog[]>) {
+  return useQuery({
+    queryKey: qk.recentBlocked(),
+    queryFn: () =>
+      api.logs.query({ blocked: true, limit: RECENT_BLOCKED_LIMIT, hours: 1 }).then(p => p.rows),
+    select: (rows: QueryLog[]) => {
+      const cutoff = Date.now() - RECENT_BLOCKED_WINDOW_MS
+      return rows.filter(r => new Date(r.ts).getTime() >= cutoff)
+    },
+    staleTime: STALE.recentBlocked,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,
     ...opts,

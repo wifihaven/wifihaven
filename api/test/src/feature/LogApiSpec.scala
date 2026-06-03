@@ -180,6 +180,52 @@ object LogApiSpec
         assertTrue(logs.head.host.value == "blocked.com") &&
         assertTrue(logs.head.blocked)
     },
+    test(
+      "GET /api/logs?blocked=true&limit=N returns blocked-only events, newest-first, within the limit (#1338 recently-blocked panel)",
+    ) {
+      // Contract the dashboard "Most recently blocked" panel relies on: the
+      // blocked filter + ts-DESC ordering + limit together yield the latest
+      // connection-layer drops only (allowed events excluded), capped.
+      val base = Instant.now().minusSeconds(600)
+      for {
+        _        <- cleanDb
+        routerId <- seedRouter()
+        connRepo <- ZIO.service[ConnectionEventRepo]
+        upRepo   <- ZIO.service[UserProfileRepo]
+        auth     <- makeAuth
+        token    <- auth.login("admin", "changeme").map(_.token.value)
+        ce = (mac: String, host: String, allowed: Boolean, ts: Instant) =>
+          ConnectionEventInsert(
+            routerId,
+            Some(MacAddress.unsafe(mac)),
+            HostId.Fqdn(Hostname.unsafe(host)),
+            None,
+            allowed,
+            BlockReason.fromWire(if (allowed) "allowed" else "category:adult"),
+            ts,
+          )
+        _ <- connRepo.insertBatch(
+          List(
+            ce("aa:bb:cc:dd:ee:01", "allowed-newest.com", true, base.plusSeconds(500)),
+            ce("aa:bb:cc:dd:ee:02", "blocked-newest.com", false, base.plusSeconds(400)),
+            ce("aa:bb:cc:dd:ee:03", "blocked-middle.com", false, base.plusSeconds(300)),
+            ce("aa:bb:cc:dd:ee:04", "blocked-oldest.com", false, base.plusSeconds(100)),
+          ),
+        )
+        routes = LogRoutes.routes(auth, connRepo, upRepo)
+        resp <- getJson(routes, "/api/logs?blocked=true&limit=2", token)
+        body <- resp.body.asString
+        page <- ZIO.fromEither(body.fromJson[QueryLogPage])
+        logs = page.rows
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // limit honoured
+        assertTrue(logs.length == 2) &&
+        // blocked-only — allowed-newest.com excluded despite being the newest event overall
+        assertTrue(logs.forall(_.blocked)) &&
+        assertTrue(!logs.exists(_.host.value == "allowed-newest.com")) &&
+        // newest-first — the two most recent blocked rows, in descending order
+        assertTrue(logs.map(_.host.value) == List("blocked-newest.com", "blocked-middle.com"))
+    },
     test("GET /api/logs?location= filters by router name") {
       for {
         _          <- cleanDb
