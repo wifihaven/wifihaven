@@ -96,7 +96,6 @@ def bl_set_name(bl_id: str) -> str:
 
     Example: id="e2e-cname-bl" → "bl_e2e_cname_bl"
     """
-    import re
     sanitized = re.sub(r"[.\:\-\s]", "_", bl_id)
     return "bl_" + sanitized
 
