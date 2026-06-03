@@ -134,12 +134,14 @@ object PolicySnapshotGlobalAllowSpec
         assertTrue(expected.subsetOf(rules.extraAllowed.map(_.value).toSet))
       }
     },
-    test("every profile's extraAllowed includes the #1337 akamai/apple CDN infra hosts") {
-      // #1337: two transitive-dep CDN hosts the operator hit being dropped under a
-      // whole-MAC block. They live in the curated infraAllowHosts constant, so they
-      // must surface in every profile's extraAllowed (copied per-profile, allow beats
-      // the @blocked_macs drop via #421 ea_ enforcement).
-      val newHosts = Set("a1744.dscw154.akamai.net", "netcts.cdn-apple.com")
+    test("every profile's extraAllowed includes the #1337 Apple connectivity-test host") {
+      // #1337: Apple's network-connectivity-test CDN is a device-level infra dep that
+      // was dropped under a whole-MAC block. It lives in the curated infraAllowHosts
+      // constant, so it must surface in every profile's extraAllowed (copied
+      // per-profile, allow beats the @blocked_macs drop via #421 ea_ enforcement).
+      // App-specific CDN edge hostnames were deliberately NOT added (they rotate);
+      // app assets are covered via the app's branded domains instead.
+      val newHosts = Set("netcts.cdn-apple.com")
       for {
         _    <- cleanDb
         svc  <- makePs

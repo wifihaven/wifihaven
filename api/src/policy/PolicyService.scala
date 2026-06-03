@@ -475,13 +475,19 @@ object PolicyService {
     "ocsp.pki.goog",                 // Google Trust Services OCSP
     "ocsp.digicert.com",             // DigiCert OCSP (common CA for app backends)
     "clientservices.googleapis.com", // Google client-services bootstrap
-    // #1337: transitive CDN deps the operator saw dropped under a whole-MAC block,
-    // breaking otherwise-allowed apps. Added as exact hosts, NOT a *.akamai.net
-    // wildcard: dnsmasq nftset=/akamai.net/ would match suffixes (the mechanism is
-    // clean), but a blanket Akamai allow punches through the block for services
-    // served entirely from Akamai edge hostnames with no separate origin we block —
-    // ad/tracking CDNs in particular ride Akamai. Keep it to vetted exact hosts (#1337).
-    "a1744.dscw154.akamai.net",      // Akamai edge shard (Apple/app asset delivery)
+    // #1337: Apple's network-connectivity-test CDN — a device-level infra probe,
+    // owned by Apple and stable. Added as an exact host.
+    //
+    // We deliberately did NOT add CDN edge hostnames for specific apps (the
+    // operator originally hit `a1744.dscw154.akamai.net` for Math Academy and
+    // `prod.khan.map.fastly.net` for Khan): those are CDN *mapping* artifacts that
+    // rotate (Khan's `cdn.kastatic.org` is on Fastly now, not Akamai), so pinning
+    // one rots silently. Per-app CDN assets are covered the stable way — by the
+    // app's own branded domains in extraAllowed (e.g. `mathacademy.com`,
+    // `kastatic.org`), whose resolved IPs (including via CNAME to a CDN) belong in
+    // the per-(MAC, host) ea_ set. That carve-out only works once the ea_ set is
+    // actually populated from resolved IPs, which is a separate router-side gap
+    // tracked in its own issue — not something more infra-allow entries can fix.
     "netcts.cdn-apple.com",          // Apple network connectivity-test CDN
   ).map(Hostname.unsafe)
 
