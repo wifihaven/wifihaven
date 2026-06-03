@@ -75,8 +75,13 @@ GraphQL `addSubIssue` mutation).
 
 ## Maintaining the board
 
-- **New issues:** add them to the board and set `Epic` + `Status` in the UI.
-  (A built-in Projects auto-add workflow can pull every new open issue in
-  automatically; set `Status` → `Todo` and pick the `Epic` on triage.)
+- **New issues:** every new repo issue is **auto-added** to the board by the
+  built-in *Auto-add to project* workflow (Status defaults to `Todo`). The `Epic`
+  is not set automatically — pick it on triage.
 - **Recategorize:** change the item's `Epic` field.
 - **Status:** keep it aligned with the `in-progress` / `blocked` labels.
+- **New epic:** when a genuinely large new thread starts that no existing epic
+  covers, add a new option to the `Epic` field (Epic field → add option) rather
+  than overloading `Other` — then add a row to the taxonomy table above. Reserve
+  this for threads worth their own swimlane (an umbrella / multi-issue body of
+  work); one-offs stay in `Other`.
