@@ -475,6 +475,14 @@ object PolicyService {
     "ocsp.pki.goog",                 // Google Trust Services OCSP
     "ocsp.digicert.com",             // DigiCert OCSP (common CA for app backends)
     "clientservices.googleapis.com", // Google client-services bootstrap
+    // #1337: transitive CDN deps the operator saw dropped under a whole-MAC block,
+    // breaking otherwise-allowed apps. Added as exact hosts, NOT a *.akamai.net
+    // wildcard: dnsmasq nftset=/akamai.net/ would match suffixes (the mechanism is
+    // clean), but a blanket Akamai allow punches through the block for services
+    // served entirely from Akamai edge hostnames with no separate origin we block —
+    // ad/tracking CDNs in particular ride Akamai. Keep it to vetted exact hosts (#1337).
+    "a1744.dscw154.akamai.net",      // Akamai edge shard (Apple/app asset delivery)
+    "netcts.cdn-apple.com",          // Apple network connectivity-test CDN
   ).map(Hostname.unsafe)
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
