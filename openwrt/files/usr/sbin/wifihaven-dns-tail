@@ -8,6 +8,7 @@
 
 local uci       = require("uci")
 local dns_log   = require("wifihaven.dns_log")
+local dns_sets  = require("wifihaven.dns_tail_sets")
 local conntrack = require("wifihaven.conntrack")
 local log       = require("wifihaven.log")
 local paths     = require("wifihaven.paths")
@@ -91,12 +92,11 @@ end
 -- policy ingestion path.
 -- ---------------------------------------------------------------------------
 
--- Replace dots and colons with underscores (mirrors render.sanitize so the
--- MAC → set-name mapping is consistent — name them in concert if you change
--- the rule in render.lua).
-local function sanitize_mac(mac)
-  return (mac:gsub("[%.%:]", "_"))
-end
+-- sanitize / safe_addr / nft_add_element / set classification + the eb_/ea_
+-- populators live in wifihaven.dns_tail_sets so the suffix-walk + #1344 alias
+-- recovery is unit-testable with an injected exec function. Alias the helpers
+-- we still call directly here.
+local sanitize = dns_sets.sanitize
 
 local function refresh_ip_to_mac()
   local leases = conntrack.parse_dhcp_leases(leases_path)
@@ -109,115 +109,97 @@ local function refresh_ip_to_mac()
   return out
 end
 
--- Returns three sets keyed by sanitized name:
---   bio  — { [sanmac]   = true } MACs with a resolved_<sanmac> set (#505).
---   eb4  — { [sanhost]  = true } hosts with an eb_<sanhost>  set (#515).
---   eb6  — { [sanhost]  = true } hosts with an eb6_<sanhost> set (#515).
--- All three live in the same `inet wifihaven` table and refresh on the same
--- cadence, so a single `nft list table` popen pays for all of them.
+-- Discover the declared sets in the live nft table. Returns the membership
+-- tables dns_tail_sets expects:
+--   bio  — { [sanmac]          = true } MACs with a resolved_<sanmac> set (#505).
+--   eb4  — { [sanhost]         = true } hosts with an eb_<sanhost>  set (#515).
+--   eb6  — { [sanhost]         = true } hosts with an eb6_<sanhost> set (#515).
+--   ea4  — { [sanmac]={[sanhost]=true} } per-(MAC,host) ea_ allow sets (#1346).
+--   ea6  — { [sanmac]={[sanhost]=true} } the v6 sibling.
+-- All live in the same `inet wifihaven` table and refresh on the same cadence,
+-- so a single `nft list table` popen pays for all of them.
 local function refresh_nft_sets()
-  local bio, eb4, eb6 = {}, {}, {}
+  local s = { bio = {}, eb4 = {}, eb6 = {}, ea4 = {}, ea6 = {} }
   local h = io.popen("nft -a list table " .. nft_table .. " 2>/dev/null", "r")
-  if not h then return bio, eb4, eb6 end
+  if not h then return s end
   for line in h:lines() do
-    local sanmac = line:match("set%s+resolved_([%w_]+)%s*{")
-    if sanmac then bio[sanmac] = true end
-    local sanhost4 = line:match("set%s+eb_([%w_]+)%s*{")
-    if sanhost4 then eb4[sanhost4] = true end
-    local sanhost6 = line:match("set%s+eb6_([%w_]+)%s*{")
-    if sanhost6 then eb6[sanhost6] = true end
+    dns_sets.classify_set_line(line, s)
   end
   h:close()
-  return bio, eb4, eb6
-end
-
--- Shell-quoting: the answer IP comes from dnsmasq's log line (we already
--- ran is_ipv4 / is_ipv6 on it), so it can only be hex/digits/dots/colons —
--- but pass it through a strict allow-list anyway to be paranoid about any
--- future call site reusing this helper.
-local function safe_addr(ip)
-  if type(ip) ~= "string" then return nil end
-  if ip:find("[^%x%.:]") then return nil end
-  return ip
-end
-
-local function nft_add_element(set_name, ip)
-  local safe = safe_addr(ip)
-  if not safe then return end
-  -- Discard nft's output; we expect ENOENT if the set was removed between
-  -- our cache refresh and the nft call (admin disabled blockIpOnly), and
-  -- "element exists" if the same IP was added moments ago (legitimate
-  -- duplicate). Neither is actionable here.
-  os.execute(string.format(
-    "nft add element %s %s { %s } >/dev/null 2>&1",
-    nft_table, set_name, safe))
+  return s
 end
 
 local ip_to_mac     = refresh_ip_to_mac()
-local bio_sanmacs, eb_sanhosts, eb6_sanhosts = refresh_nft_sets()
+local nft_sets      = refresh_nft_sets()
 local last_lease_refresh = os.time()
 local last_bio_refresh   = os.time()
 local bio_adds_total     = 0
 local eb_adds_total      = 0
+local ea_adds_total      = 0
 
 local function maybe_populate_bio(line, now)
   local r = dns_log.parse_resolved_reply(line)
   if not r then return end
   local mac = ip_to_mac[r.client_ip]
   if not mac then return end
-  local sanmac = sanitize_mac(mac)
-  if not bio_sanmacs[sanmac] then return end
+  local sanmac = sanitize(mac)
+  if not nft_sets.bio[sanmac] then return end
   local set_name = (r.family == "v6" and "resolved6_" or "resolved_") .. sanmac
-  nft_add_element(set_name, r.ip)
+  dns_sets.nft_add_element(nft_table, set_name, r.ip)
   bio_adds_total = bio_adds_total + 1
   log.debug("dns-tail: bio add %s { %s } client=%s mac=%s",
             set_name, r.ip, r.client_ip, mac)
 end
 
--- #515: per-host extraBlocked set populator.
+-- #515 + #1346: per-host extraBlocked populator.
 --
 -- render.lua emits an `nftset=/host/4#...#eb_<sanhost>,6#...#eb6_<sanhost>`
 -- for every effective extraBlocked host, but in the deployed dnsmasq build
--- those sets stay empty under e2e (test_extra_blocked × 2 timed out waiting
--- for eb_example_com to gain its first element). Mirror the #505 fix shape:
--- tail the same query log we already read for hostname attribution, and run
--- `nft add element` ourselves when we see a `reply <host> is <ip>` that
--- matches a declared eb_<sanhost> / eb6_<sanhost> set.
---
--- Subdomain semantics: dnsmasq's `nftset=/example.com/...` matches
--- example.com AND every subdomain. Mirror that by walking labels — for
--- `www.example.com` we test `www_example_com`, then `example_com`, then
--- `com`. First hit wins; the v4 and v6 set memberships are checked
--- independently so a host with only AAAA records still populates eb6_.
-local function sanitize_host(h)
-  return (h:gsub("[%.%:]", "_"))
-end
-
+-- those sets stay empty under e2e (#515). We mirror the #505 fix: run
+-- `nft add element` ourselves when a `reply <host> is <ip>` matches a declared
+-- eb_<sanhost> / eb6_<sanhost> set. #1346 also recovers the branded chain head
+-- from the dns_log alias map (cache.resolve_head), so a DIRECTLY-queried CDN
+-- target whose branded ancestor suffix-matches a declared eb_ set still
+-- populates that set instead of silently bypassing the block.
 local function maybe_populate_eb(line)
   local r = dns_log.parse_resolved_reply(line)
-  if not r or not r.name then return end
-  local sets   = (r.family == "v6") and eb6_sanhosts or eb_sanhosts
-  local prefix = (r.family == "v6") and "eb6_"       or "eb_"
-  local n = r.name
-  while n and n ~= "" do
-    local sanhost = sanitize_host(n)
-    if sets[sanhost] then
-      nft_add_element(prefix .. sanhost, r.ip)
-      eb_adds_total = eb_adds_total + 1
-      log.debug("dns-tail: eb add %s%s { %s } name=%s",
-                prefix, sanhost, r.ip, r.name)
-      return
-    end
-    local dot = n:find("%.")
-    if not dot then return end
-    n = n:sub(dot + 1)
-  end
+  if not r then return end
+  eb_adds_total = eb_adds_total + dns_sets.maybe_populate_eb(r, {
+    eb4 = nft_sets.eb4, eb6 = nft_sets.eb6,
+    nft_table    = nft_table,
+    resolve_head = cache.resolve_head,
+    log = function(set_name)
+      log.debug("dns-tail: eb add %s { %s } name=%s", set_name, r.ip, r.name)
+    end,
+  })
 end
 
-log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s)",
+-- #1346: per-(MAC, host) extraAllowed carve-out populator. There was NO
+-- dns-tail populator for ea_ before this — the kernel allow set was filled
+-- only by dnsmasq's `nftset=/host/...#ea_<mac>_<host>` directive, which misses
+-- the directly-queried CDN target (the target doesn't suffix-match the brand).
+-- Mirror the eb_ path but key the declared sets by MAC: map client_ip → MAC,
+-- recover the branded head, and add the IP to that MAC's matching ea_ set.
+local function maybe_populate_ea(line)
+  local r = dns_log.parse_resolved_reply(line)
+  if not r then return end
+  ea_adds_total = ea_adds_total + dns_sets.maybe_populate_ea(r, {
+    ea4 = nft_sets.ea4, ea6 = nft_sets.ea6,
+    ip_to_mac    = ip_to_mac,
+    nft_table    = nft_table,
+    resolve_head = cache.resolve_head,
+    log = function(set_name, _r, mac)
+      log.debug("dns-tail: ea add %s { %s } client=%s mac=%s name=%s",
+                set_name, r.ip, r.client_ip, mac, r.name)
+    end,
+  })
+end
+
+log.info("dns-tail: populator init — %d lease(s), %d bio set(s), %d eb set(s), %d ea mac(s)",
          (function() local n = 0; for _ in pairs(ip_to_mac) do n = n + 1 end; return n end)(),
-         (function() local n = 0; for _ in pairs(bio_sanmacs) do n = n + 1 end; return n end)(),
-         (function() local n = 0; for _ in pairs(eb_sanhosts) do n = n + 1 end; return n end)())
+         (function() local n = 0; for _ in pairs(nft_sets.bio) do n = n + 1 end; return n end)(),
+         (function() local n = 0; for _ in pairs(nft_sets.eb4) do n = n + 1 end; return n end)(),
+         (function() local n = 0; for _ in pairs(nft_sets.ea4) do n = n + 1 end; return n end)())
 
 local since_flush      = 0
 local last_tick        = os.time()
@@ -252,6 +234,11 @@ while true do
   -- through.
   maybe_populate_eb(line)
 
+  -- #1346: per-(MAC, host) extraAllowed carve-out, same first-SYN-race
+  -- argument — if the resolved IP isn't in the ea_<mac>_<host> set before the
+  -- flow's first packet, a whole-MAC block drops an explicitly-allowed app.
+  maybe_populate_ea(line)
+
   if since_flush >= flush_every or (now - last_tick) >= 30 then
     cache.tick(now)
     atomic_write(cache_path, cache.dump_text())
@@ -269,7 +256,7 @@ while true do
     last_lease_refresh = now
   end
   if (now - last_bio_refresh) >= bio_refresh_seconds then
-    bio_sanmacs, eb_sanhosts, eb6_sanhosts = refresh_nft_sets()
+    nft_sets = refresh_nft_sets()
     last_bio_refresh = now
   end
 
@@ -277,9 +264,9 @@ while true do
   -- dropping the pipe, regex never matching) are diagnosable from logread
   -- alone without on-VM access (#480).
   if (now - last_stats_log) >= 60 then
-    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d",
+    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d",
              lines_ingested, lines_since_stat, now - last_stats_log,
-             cache.size(), bio_adds_total, eb_adds_total)
+             cache.size(), bio_adds_total, eb_adds_total, ea_adds_total)
     last_stats_log   = now
     lines_since_stat = 0
   end

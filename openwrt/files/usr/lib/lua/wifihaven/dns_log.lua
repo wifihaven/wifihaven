@@ -325,6 +325,16 @@ function M.new(opts)
 
   function self.size() return entry_count end
 
+  -- resolve_head(name) → the branded chain head `name` is a CNAME alias of, or
+  -- `name` unchanged when it is not a known alias (#1344). Exposed publicly so
+  -- the wifihaven-dns-tail sidecar can reuse the SAME learned alias memory to
+  -- recover the brand for a directly-queried CDN target before suffix-matching
+  -- it against the kernel ea_/eb_ sets (#1346). Internally `resolve_head` is
+  -- already used by ingest_line; this is a thin public passthrough.
+  function self.resolve_head(name)
+    return resolve_head(name)
+  end
+
   -- Serialise the live cache to a single newline-delimited string.
   -- Format: "<ip>\t<hostname>\t<ts>\n" per non-expired entry.
   function self.dump_text()

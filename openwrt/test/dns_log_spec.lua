@@ -374,6 +374,33 @@ describe("CNAME-alias attribution (#1344)", function()
 
     assert.equal("example.com", c.lookup("93.184.216.34"))
   end)
+
+  -- #1346: the kernel ea_/eb_ set populators in wifihaven-dns-tail need to
+  -- recover the branded chain head for a directly-queried CDN target so they
+  -- can suffix-match it against a declared ea_/eb_ set. #1345 learns the
+  -- target → head map but kept resolve_head local; expose it publicly so the
+  -- sidecar can reuse the same memory.
+  describe("self.resolve_head (public alias resolution, #1346)", function()
+    it("returns the branded head for a learned CNAME target", function()
+      local clk = fake_clock()
+      local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+
+      c.ingest_line("38053 127.0.0.1/36172 query[A] cdn.kastatic.org from 127.0.0.1")
+      c.ingest_line("38053 127.0.0.1/36172 reply cdn.kastatic.org is <CNAME>")
+      c.ingest_line("38053 127.0.0.1/36172 reply fastly.kastatic.org is <CNAME>")
+      c.ingest_line("38053 127.0.0.1/36172 reply prod.khan.map.fastly.net is 199.232.65.42")
+
+      assert.is_function(c.resolve_head)
+      assert.equal("cdn.kastatic.org", c.resolve_head("prod.khan.map.fastly.net"))
+      assert.equal("cdn.kastatic.org", c.resolve_head("fastly.kastatic.org"))
+    end)
+
+    it("returns the name unchanged when it is not a known alias", function()
+      local clk = fake_clock()
+      local c = dns_log.new({ ttl_seconds = 3600, now_fn = clk.now })
+      assert.equal("unknown.example", c.resolve_head("unknown.example"))
+    end)
+  end)
 end)
 
 -- ---------------------------------------------------------------------------
