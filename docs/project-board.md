@@ -50,6 +50,7 @@ belongs to. Set it on the item in the board UI.
 | `E2E Test Coverage` | VM/e2e gate coverage, fake-router/fake-API scenarios, test backfill, install-script tests. |
 | `Schedules` | Named/reusable schedules, schedule-driven blocklists, schedule enforcement verification. |
 | `Alerting & Paging` | Alert rules, contact points / notification policy, on-call routing, paging strategy, and the declarative alerting Terraform. Turning failure-mode metrics into pages, not just graphable series. Design thread #1381 (split out of #1368 / #1373). |
+| `Cost & Infra Spend` | Cutting recurring infra cost — Render plan sizing (API + Postgres), retention/footprint work that unlocks a downsize, vendor sanity checks. Orchestrator #1386. |
 | `Other` | Cross-cutting refactors, docs, type-safety, wire-versioning, notifications, and anything that doesn't fit a thread above. |
 
 ## Umbrellas are native sub-issue parents
