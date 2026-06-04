@@ -142,7 +142,11 @@ wh_bridge_reserved() {
   local f="${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation"
   [[ -f "${f}" ]] || return 1
   local pid
-  pid="$(awk -F= '$1=="pid"{print $2; exit}' "${f}" 2>/dev/null)"
+  # `|| true`: the marker can vanish between the `-f` test above and this awk
+  # (a sibling run clears its own reservation mid-scan); awk then exits non-zero
+  # and, under `set -e`, would abort this assignment. Treat a vanished marker as
+  # "not reserved" (fall through to the rm/return 1 below).
+  pid="$(awk -F= '$1=="pid"{print $2; exit}' "${f}" 2>/dev/null || true)"
   if [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
     return 0
   fi
@@ -162,10 +166,19 @@ wh_bridge_reserved() {
 # legitimate run.
 
 # Wall-clock lifetime (whole seconds) of a pid, empty if not running.
+#
+# MUST NOT return non-zero: callers use `age="$(wh_proc_age_secs "${pid}")"`
+# under `set -euo pipefail`, so any non-zero rc — from a non-numeric pid, OR
+# (the #1369 TOCTOU) from the pid exiting between the pgrep and our `ps`, which
+# makes `ps` rc=1 and `pipefail` propagate it — aborts the caller at the
+# assignment, BEFORE its `[[ "${age}" =~ ^[0-9]+$ ]] || continue` guard can
+# skip the vanished pid. Always return 0 with (possibly empty) output and let
+# the guard do its job.
 wh_proc_age_secs() {
-  local pid="$1"
-  [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-  ps -o etimes= -p "${pid}" 2>/dev/null | tr -d '[:space:]'
+  local pid="$1" out
+  [[ "${pid}" =~ ^[0-9]+$ ]] || return 0
+  out="$(ps -o etimes= -p "${pid}" 2>/dev/null)" || out=""
+  printf '%s' "${out}" | tr -d '[:space:]'
 }
 
 # Longest wall-clock lifetime a *CI* VM can legitimately reach. The VM gates
@@ -322,10 +335,16 @@ wh_pick_lan_bridge() {
   local br
   while IFS= read -r br; do
     local attached
-    attached=$(ls "${WH_SYS_CLASS_NET}/${br}/brif" 2>/dev/null | wc -l)
+    # `|| true`: if `brif` vanishes mid-scan (a sibling tearing down its bridge),
+    # `ls` exits non-zero and `pipefail` makes the whole pipeline non-zero even
+    # though `wc -l` already emitted "0" — which, under `set -e`, would abort
+    # this assignment. `wc` has already written the count, so swallowing the rc
+    # leaves `attached` correct (empty/0 ⇒ treated as free).
+    attached=$(ls "${WH_SYS_CLASS_NET}/${br}/brif" 2>/dev/null | wc -l || true)
     local res="none"
     if [[ -f "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" ]]; then
-      res="$(awk -F= '$1=="pid"{print $2; exit}' "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" 2>/dev/null)"
+      # `|| true`: same vanish-after-test TOCTOU as wh_bridge_reserved's awk.
+      res="$(awk -F= '$1=="pid"{print $2; exit}' "${WH_BRIDGE_RESERVATION_DIR}/${br}.reservation" 2>/dev/null || true)"
     fi
     log "pick-debug ${br}: attached=${attached} reservation_pid=${res}"
     if (( attached == 0 )) && ! wh_bridge_reserved "${br}"; then
