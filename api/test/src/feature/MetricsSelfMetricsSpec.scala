@@ -4,7 +4,7 @@ import wifihaven.api.JwtConfig
 import wifihaven.api.MetricsConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
-import wifihaven.api.metrics.{HttpMetrics, MetricsRuntime}
+import wifihaven.api.metrics.{DbMetrics, HttpMetrics, MetricsRuntime}
 import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
@@ -162,6 +162,27 @@ object MetricsSelfMetricsSpec
         assertTrue(!httpLines.exists(_.contains("ip="))) &&
         assertTrue(!httpLines.exists(_.contains("domain="))) &&
         assertTrue(!httpLines.exists(_.contains("path=")))
+    } @@ TestAspect.withLiveClock,
+    test(
+      "DbMetrics.timed records db_queries_total{op,status} — ok on success, error on failure — so the per-op DB success-rate panel has data",
+    ) {
+      for {
+        _    <- DbMetrics.timed("test.dbOk")(ZIO.succeed(1))
+        // A failing query must still be counted, tagged status=error (not swallowed).
+        _    <- DbMetrics.timed("test.dbErr")(ZIO.fail(new RuntimeException("boom"))).either
+        _    <- ZIO.sleep(700.millis)
+        body <- scrape.catchAll(resp => resp.body.asString.orDie)
+        lines = seriesLines(body, "db_queries_total")
+      } yield assertTrue(
+        lines.exists(l => l.contains("""op="test.dbOk"""") && l.contains("""status="ok"""")),
+      ) &&
+        assertTrue(
+          lines.exists(l => l.contains("""op="test.dbErr"""") && l.contains("""status="error"""")),
+        ) &&
+        // The error op must NOT have logged an ok sample (the failure is attributed correctly).
+        assertTrue(
+          !lines.exists(l => l.contains("""op="test.dbErr"""") && l.contains("""status="ok"""")),
+        )
     } @@ TestAspect.withLiveClock,
   ) @@ TestAspect.sequential
 }

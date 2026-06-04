@@ -690,11 +690,13 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
         .transact(xa),
     )
   def findById(id: ProfileId)                       =
-    sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles WHERE id=$id"
-      .query[R]
-      .map(toP)
-      .option
-      .transact(xa)
+    DbMetrics.timed("profile.findById")(
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode FROM profiles WHERE id=$id"
+        .query[R]
+        .map(toP)
+        .option
+        .transact(xa),
+    )
   def create(name: String, cats: List[BlocklistId]) =
     sql"INSERT INTO profiles(name,blocked_categories) VALUES($name,${cats.map(_.value).toArray}) RETURNING id"
       .query[ProfileId]
@@ -726,11 +728,13 @@ class ScheduleRepoLive(xa: Transactor[Task]) extends ScheduleRepo {
       .to[List]
       .transact(xa)
   def listForProfile(pid: ProfileId) =
-    sql"SELECT id,profile_id,name,days,start_local,end_local,tz FROM schedules WHERE profile_id=$pid ORDER BY id"
-      .query[R]
-      .map(toS)
-      .to[List]
-      .transact(xa)
+    DbMetrics.timed("schedule.listForProfile")(
+      sql"SELECT id,profile_id,name,days,start_local,end_local,tz FROM schedules WHERE profile_id=$pid ORDER BY id"
+        .query[R]
+        .map(toS)
+        .to[List]
+        .transact(xa),
+    )
   def replaceForProfile(pid: ProfileId, ss: List[ScheduleRequest]) = {
     val del = sql"DELETE FROM schedules WHERE profile_id=$pid".update.run
     val ins = ss.map(s =>
@@ -745,18 +749,20 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
   import wifihaven.shared.UnmanagedMacPolicy
 
   def get: Task[HouseholdSettings] =
-    sql"""SELECT daily_reset_time, daily_reset_tz,
+    DbMetrics.timed("householdSettings.get")(
+      sql"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
                  heartbeat_host_patterns,
                  unmanaged_mac_policy::text
             FROM household_settings WHERE id=1"""
-      .query[(LocalTime, ZoneId, Boolean, Int, List[String], String)]
-      .unique
-      .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson) =>
-        val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
-        HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm)
-      }
-      .transact(xa)
+        .query[(LocalTime, ZoneId, Boolean, Int, List[String], String)]
+        .unique
+        .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson) =>
+          val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
+          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm)
+        }
+        .transact(xa),
+    )
 
   def update(s: HouseholdSettings): Task[Unit] = {
     val ummJson    = s.unmanagedMacPolicy.toJson
@@ -789,11 +795,13 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
   def findForProfile(pid: ProfileId)    =
-    sql"SELECT id,profile_id,daily_minutes FROM time_limits WHERE profile_id=$pid"
-      .query[(TimeLimitId, ProfileId, Int)]
-      .map(TimeLimit.apply)
-      .option
-      .transact(xa)
+    DbMetrics.timed("timeLimit.findForProfile")(
+      sql"SELECT id,profile_id,daily_minutes FROM time_limits WHERE profile_id=$pid"
+        .query[(TimeLimitId, ProfileId, Int)]
+        .map(TimeLimit.apply)
+        .option
+        .transact(xa),
+    )
   def upsert(pid: ProfileId, mins: Int) =
     sql"INSERT INTO time_limits(profile_id,daily_minutes) VALUES($pid,$mins) ON CONFLICT(profile_id) DO UPDATE SET daily_minutes=EXCLUDED.daily_minutes".update.run
       .transact(xa)
@@ -814,16 +822,18 @@ class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
     SiteTimeLimit(SiteTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
 
   def listForProfile(pid: ProfileId) =
-    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
+    DbMetrics.timed("siteTimeLimit.listForProfile")(
+      sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
            WHERE apa.profile_id = $pid AND apa.mode = 'time_limited'
            ORDER BY apa.id, ah.host"""
-      .query[R]
-      .map(toS)
-      .to[List]
-      .transact(xa)
+        .query[R]
+        .map(toS)
+        .to[List]
+        .transact(xa),
+    )
 
   def listAll =
     sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
@@ -858,21 +868,23 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
         .transact(xa),
     )
   def findByMac(mac: MacAddress)                                                       =
-    sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
-      .query[
-        (
-            DeviceId,
-            MacAddress,
-            String,
-            Option[ProfileId],
-            Option[String],
-            Option[IpAddress],
-            Option[String],
-        ),
-      ]
-      .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
-      .option
-      .transact(xa)
+    DbMetrics.timed("device.findByMac")(
+      sql"SELECT d.id,d.mac,d.name,d.profile_id,p.name,d.last_seen_ip,d.last_seen_at::TEXT FROM devices d LEFT JOIN profiles p ON p.id=d.profile_id WHERE d.mac=$mac"
+        .query[
+          (
+              DeviceId,
+              MacAddress,
+              String,
+              Option[ProfileId],
+              Option[String],
+              Option[IpAddress],
+              Option[String],
+          ),
+        ]
+        .map(r => Device(r._1, r._2, r._3, r._4, r._5, r._6, r._7))
+        .option
+        .transact(xa),
+    )
   def upsert(mac: MacAddress, name: String, pid: Option[ProfileId], ip: String) =
     // #708: pid=None writes NULL (device unassigned). Devices without a profile
     // are a supported state — same shape auto-discovery produces.
@@ -885,23 +897,29 @@ class DeviceRepoLive(xa: Transactor[Task]) extends DeviceRepo {
       .transact(xa)
       .unit
   def touchLastSeen(mac: MacAddress, ip: Option[IpAddress], at: Instant)               =
-    sql"UPDATE devices SET last_seen_ip=COALESCE($ip,last_seen_ip),last_seen_at=$at WHERE mac=$mac".update.run
-      .transact(xa)
+    DbMetrics.timed("device.touchLastSeen")(
+      sql"UPDATE devices SET last_seen_ip=COALESCE($ip,last_seen_ip),last_seen_at=$at WHERE mac=$mac".update.run
+        .transact(xa),
+    )
   def upsertUnknown(mac: MacAddress, name: String, ip: Option[IpAddress], at: Instant) =
-    sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
+    DbMetrics.timed("device.upsertUnknown")(
+      sql"""INSERT INTO devices(mac,name,profile_id,last_seen_ip,last_seen_at)
           VALUES($mac,$name,NULL,$ip,$at)
           ON CONFLICT(mac) DO UPDATE
           SET last_seen_ip=COALESCE(EXCLUDED.last_seen_ip,devices.last_seen_ip),
               last_seen_at=EXCLUDED.last_seen_at
           RETURNING id"""
-      .query[DeviceId]
-      .unique
-      .transact(xa)
+        .query[DeviceId]
+        .unique
+        .transact(xa),
+    )
   def renameIfAutoGenerated(mac: MacAddress, newName: String)                          = {
     val autoNamePattern = "^device-[0-9a-fA-F]+$"
-    sql"""UPDATE devices SET name=$newName
+    DbMetrics.timed("device.renameIfAutoGenerated")(
+      sql"""UPDATE devices SET name=$newName
           WHERE mac=$mac AND (name='unknown' OR name ~ $autoNamePattern)""".update.run
-      .transact(xa)
+        .transact(xa),
+    )
   }
   def updateProfile(mac: MacAddress, pid: ProfileId)                                   =
     sql"UPDATE devices SET profile_id=$pid WHERE mac=$mac".update.run.transact(xa).unit
@@ -971,11 +989,13 @@ class AlertRepoLive(xa: Transactor[Task]) extends AlertRepo {
     // because the same mac may legitimately have multiple access_request
     // rows over time. WHERE NOT EXISTS keeps this race-free under the
     // SERIALIZABLE-equivalent semantics of a single statement insert.
-    sql"""INSERT INTO alerts (kind, status, mac, created_at)
+    DbMetrics.timed("alert.raiseNewDevice")(
+      sql"""INSERT INTO alerts (kind, status, mac, created_at)
           SELECT 'new_device', 'pending', $mac, $firstSeenAt
           WHERE NOT EXISTS (
             SELECT 1 FROM alerts WHERE mac = $mac AND kind = 'new_device'
-          )""".update.run.transact(xa).unit
+          )""".update.run.transact(xa).unit,
+    )
 
   def createAccessRequest(
       mac: MacAddress,
@@ -1050,22 +1070,26 @@ class BlocklistRepoLive(xa: Transactor[Task]) extends BlocklistRepo {
   ).updateMany(ds).transact(xa)
   def clearCategory(cat: BlocklistId)         =
     sql"DELETE FROM blocklist_domains WHERE category=${cat.value}".update.run.transact(xa).unit
-  def listCategories  = sql"SELECT DISTINCT category FROM blocklist_domains ORDER BY category"
-    .query[BlocklistId]
-    .to[List]
-    .transact(xa)
-  def countByCategory =
+  def listCategories                          = DbMetrics.timed("blocklist.listCategories")(
+    sql"SELECT DISTINCT category FROM blocklist_domains ORDER BY category"
+      .query[BlocklistId]
+      .to[List]
+      .transact(xa),
+  )
+  def countByCategory                         =
     sql"SELECT category,COUNT(*)::INT FROM blocklist_domains GROUP BY category ORDER BY category"
       .query[(BlocklistId, Int)]
       .to[List]
       .transact(xa)
-  def loadCategory(cat: BlocklistId) =
-    sql"SELECT domain FROM blocklist_domains WHERE category=${cat.value}"
-      .query[Hostname]
-      .to[List]
-      .transact(xa)
-      .map(_.toSet)
-  def loadAll                        = sql"SELECT category,domain FROM blocklist_domains"
+  def loadCategory(cat: BlocklistId)          =
+    DbMetrics.timed("blocklist.loadCategory")(
+      sql"SELECT domain FROM blocklist_domains WHERE category=${cat.value}"
+        .query[Hostname]
+        .to[List]
+        .transact(xa)
+        .map(_.toSet),
+    )
+  def loadAll                                 = sql"SELECT category,domain FROM blocklist_domains"
     .query[(BlocklistId, Hostname)]
     .to[List]
     .transact(xa)
@@ -1130,7 +1154,8 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
       bytesOut: Long,
       proportionalSeconds: Long = 0L,
   ): Task[Unit] =
-    sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
+    DbMetrics.timed("timeUsage.incrementSecondsAndBytes")(
+      sql"""INSERT INTO time_usage(device_mac,host_type,host_value,date,seconds_used,proportional_seconds,bytes_in,bytes_out,last_seen_at)
           VALUES($mac,${host.kind},${host.value},$d,$seconds,$proportionalSeconds,$bytesIn,$bytesOut,NOW())
           ON CONFLICT(device_mac,host_type,host_value,date) DO UPDATE
           SET seconds_used=time_usage.seconds_used+EXCLUDED.seconds_used,
@@ -1138,8 +1163,9 @@ class TimeUsageRepoLive(xa: Transactor[Task]) extends TimeUsageRepo {
               bytes_in=time_usage.bytes_in+EXCLUDED.bytes_in,
               bytes_out=time_usage.bytes_out+EXCLUDED.bytes_out,
               last_seen_at=NOW()""".update.run
-      .transact(xa)
-      .unit
+        .transact(xa)
+        .unit,
+    )
   def getProportionalSeconds(mac: MacAddress, host: HostId, d: LocalDate): Task[Long]           =
     sql"SELECT COALESCE(proportional_seconds,0) FROM time_usage WHERE device_mac=$mac AND host_type=${host.kind} AND host_value=${host.value} AND date=$d"
       .query[Long]
@@ -1310,11 +1336,13 @@ class TimeExtensionRepoLive(xa: Transactor[Task]) extends TimeExtensionRepo {
       .to[List]
       .transact(xa)
   def snapshotAllByProfile(d: LocalDate)                                                         =
-    sql"SELECT profile_id,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND profile_id IS NOT NULL GROUP BY profile_id"
-      .query[(ProfileId, Int)]
-      .to[List]
-      .transact(xa)
-      .map(_.toMap)
+    DbMetrics.timed("timeExtension.snapshotAllByProfile")(
+      sql"SELECT profile_id,SUM(extra_minutes)::INT FROM time_extensions WHERE date=$d AND profile_id IS NOT NULL GROUP BY profile_id"
+        .query[(ProfileId, Int)]
+        .to[List]
+        .transact(xa)
+        .map(_.toMap),
+    )
 }
 
 class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
@@ -1378,13 +1406,15 @@ class RouterRepoLive(xa: Transactor[Task]) extends RouterRepo {
       .transact(xa)
       .unit
   def touch(id: RouterId, etag: Option[ETag], agentVersion: Option[String]) =
-    sql"""UPDATE routers
+    DbMetrics.timed("router.touch")(
+      sql"""UPDATE routers
           SET last_seen_at=NOW(),
               last_etag=COALESCE($etag,last_etag),
               agent_version=COALESCE($agentVersion,agent_version)
           WHERE id=$id""".update.run
-      .transact(xa)
-      .unit
+        .transact(xa)
+        .unit,
+    )
   def countSeenSince(cutoff: Instant)                                       =
     DbMetrics.timed("router.countSeenSince")(
       sql"SELECT count(*) FROM routers WHERE last_seen_at >= $cutoff"
@@ -1567,13 +1597,15 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
                  AND (tr.active_seconds > 0 OR tr.bytes_in > 0 OR tr.bytes_out > 0)
                  AND """ ++ Fragments.in(fr"tr.mac", nel) ++
             since.fold(fr"")(s => fr"AND tr.period_start >= $s")
-        q.query[Row]
-          .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
-            val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
-            wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
-          }
-          .to[List]
-          .transact(xa)
+        DbMetrics.timed("traffic.listPresenceRows")(
+          q.query[Row]
+            .map { case (m, d, ps, host, secs, bin, bout, pStart, pEnd) =>
+              val periodSeconds = math.max(0L, pEnd.getEpochSecond - pStart.getEpochSecond).toInt
+              wifihaven.api.presence.PresenceRow(m, d, ps, host, secs, bin + bout, periodSeconds)
+            }
+            .to[List]
+            .transact(xa),
+        )
     }
   }
 
@@ -1628,13 +1660,15 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
     val limitFr    = limit.fold(fr"")(n => fr"LIMIT $n")
     val select     = baseSelect ++ macFilter ++ byCursor ++
       fr"ORDER BY tr.period_start DESC, tr.mac ASC, COALESCE(CASE WHEN tr.host_type IN ('ipv4','ipv6') THEN ce.resolved_host_value END, tr.host_value) ASC " ++ limitFr
-    select
-      .query[Row]
-      .map { case (m, h, ps, pe, secs, bi, bo) =>
-        wifihaven.api.usage.TrafficUsageDbRow(m, h, ps, pe, secs, bi, bo)
-      }
-      .to[List]
-      .transact(xa)
+    DbMetrics.timed("traffic.listRawInRange")(
+      select
+        .query[Row]
+        .map { case (m, h, ps, pe, secs, bi, bo) =>
+          wifihaven.api.usage.TrafficUsageDbRow(m, h, ps, pe, secs, bi, bo)
+        }
+        .to[List]
+        .transact(xa),
+    )
   }
 
   def earliestPeriodStart =
@@ -1791,13 +1825,15 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
   // #1176/#1179: dual-write `reason_text` (pre-V40 TEXT wire format) alongside
   // `reason` (post-V40 JSONB). See BlockEventRepoLive for the why.
   def insertBatch(events: List[ConnectionEventInsert]) =
-    Update[(ConnectionEventInsert, String)](
-      "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id,resolved_host_value,reason_text) " +
-        "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid()),?,?) " +
-        // #806: unique key widened to (event_id, ts) for ts-range partitioning;
-        // a replay carries the same router-supplied ts so dedup is unchanged.
-        "ON CONFLICT (event_id, ts) DO NOTHING",
-    ).updateMany(events.map(e => (e, BlockReason.asWire(e.reason)))).transact(xa)
+    DbMetrics.timed("connectionEvent.insertBatch")(
+      Update[(ConnectionEventInsert, String)](
+        "INSERT INTO connection_events(router_id,mac,host_type,host_value,dest_ip,allowed,reason,ts,event_id,resolved_host_value,reason_text) " +
+          "VALUES(?,?,?,?,?,?,?,?,COALESCE(?, gen_random_uuid()),?,?) " +
+          // #806: unique key widened to (event_id, ts) for ts-range partitioning;
+          // a replay carries the same router-supplied ts so dedup is unchanged.
+          "ON CONFLICT (event_id, ts) DO NOTHING",
+      ).updateMany(events.map(e => (e, BlockReason.asWire(e.reason)))).transact(xa),
+    )
 
   // #720: read paths coalesce a populated resolved_host_value into the host
   // tuple so callers see ('fqdn', resolved) instead of ('ipv4', literal-ip).
@@ -1837,16 +1873,18 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       .transact(xa)
 
   def findRecentFqdnFor(routerId: RouterId, destIp: IpAddress, since: Instant) =
-    sql"""SELECT host_value FROM connection_events
+    DbMetrics.timed("connectionEvent.findRecentFqdnFor")(
+      sql"""SELECT host_value FROM connection_events
           WHERE router_id = $routerId
             AND dest_ip   = $destIp
             AND host_type = 'fqdn'
             AND ts >= $since
           ORDER BY ts DESC
           LIMIT 1"""
-      .query[Hostname]
-      .option
-      .transact(xa)
+        .query[Hostname]
+        .option
+        .transact(xa),
+    )
 
   def backfillResolvedFor(
       routerId: RouterId,
@@ -1854,13 +1892,15 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
       fqdn: Hostname,
       since: Instant,
   ) =
-    sql"""UPDATE connection_events
+    DbMetrics.timed("connectionEvent.backfillResolvedFor")(
+      sql"""UPDATE connection_events
           SET resolved_host_value = ${fqdn.value}
           WHERE router_id = $routerId
             AND dest_ip   = $destIp
             AND host_type IN ('ipv4','ipv6')
             AND resolved_host_value IS NULL
-            AND ts >= $since""".update.run.transact(xa)
+            AND ts >= $since""".update.run.transact(xa),
+    )
 
   // ── Dashboard / log API ──────────────────────────────────────────────────
 
@@ -2606,11 +2646,13 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
   private def toApp(r: R) = App(r._1, r._2, r._3, r._4, r._5, r._6, r._7)
 
   def listAll =
-    sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps ORDER BY id"
-      .query[R]
-      .map(toApp)
-      .to[List]
-      .transact(xa)
+    DbMetrics.timed("app.listAll")(
+      sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps ORDER BY id"
+        .query[R]
+        .map(toApp)
+        .to[List]
+        .transact(xa),
+    )
 
   def findById(id: AppId) =
     sql"SELECT id,name,slug,template_id,icon,icon_type,created_at FROM apps WHERE id=$id"
@@ -2672,10 +2714,12 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
   }
 
   def getHosts(appId: AppId) =
-    sql"SELECT host FROM app_hosts WHERE app_id=$appId ORDER BY host"
-      .query[Hostname]
-      .to[List]
-      .transact(xa)
+    DbMetrics.timed("app.getHosts")(
+      sql"SELECT host FROM app_hosts WHERE app_id=$appId ORDER BY host"
+        .query[Hostname]
+        .to[List]
+        .transact(xa),
+    )
 
   def currentHostsVersion =
     sql"SELECT version FROM app_hosts_version".query[Long].unique.transact(xa)
@@ -2725,12 +2769,14 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
       .transact(xa)
 
   def listAssignmentsForProfile(profileId: ProfileId) =
-    sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
+    DbMetrics.timed("app.listAssignmentsForProfile")(
+      sql"""SELECT id,app_id,profile_id,mode,daily_minutes,exempt_from_daily
           FROM app_policy_assignments WHERE profile_id=$profileId ORDER BY id"""
-      .query[AR]
-      .map(toAssignment)
-      .to[List]
-      .transact(xa)
+        .query[AR]
+        .map(toAssignment)
+        .to[List]
+        .transact(xa),
+    )
 }
 
 object Repos {
