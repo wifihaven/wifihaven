@@ -249,6 +249,20 @@ jobs:
     needs: [build-image]
     runs-on: ubuntu-latest
     steps:
+      # #1390: composite action lives in-repo; checkout so `uses: ./...`
+      # resolves. End-of-job annotation steps use `if: always()` so a failed
+      # deploy still leaves a "failed" marker on the Grafana timeline.
+      - uses: actions/checkout@v6
+
+      - name: Annotate deploy started (Grafana)
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: staging
+          sha: ${{ needs.build-image.outputs.short_sha }}
+          lifecycle: started
+
       - name: Trigger Render staging deploy hook
         env:
           RENDER_DEPLOY_HOOK_STAGING: ${{ secrets.RENDER_DEPLOY_HOOK_STAGING }}
@@ -285,6 +299,26 @@ jobs:
           done
           echo "Timed out waiting for staging to serve sha=${EXPECTED_SHA}." >&2
           exit 1
+
+      - name: Annotate deploy live (Grafana)
+        if: success()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: staging
+          sha: ${{ needs.build-image.outputs.short_sha }}
+          lifecycle: live
+
+      - name: Annotate deploy failed (Grafana)
+        if: failure()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: staging
+          sha: ${{ needs.build-image.outputs.short_sha }}
+          lifecycle: failed
 
   # ── 4b. Deploy SPA to Cloudflare Pages (staging) ──────────────────────────
   # Runs in parallel with deploy-staging — SPA build doesn't depend on the
@@ -522,6 +556,27 @@ jobs:
     needs: [approve-production, retag-latest]
     runs-on: ubuntu-latest
     steps:
+      # #1390: checkout for the composite annotation action. Derive the short
+      # sha locally rather than threading build-image's output through
+      # retag-latest + approve-production — `github.sha` is the same commit
+      # that built this image.
+      - uses: actions/checkout@v6
+
+      - name: Derive short SHA
+        id: ver
+        run: |
+          set -eu
+          echo "short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate deploy started (Grafana)
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: prod
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: started
+
       - name: Trigger Render prod deploy hook
         env:
           RENDER_DEPLOY_HOOK_PROD: ${{ secrets.RENDER_DEPLOY_HOOK_PROD }}
@@ -543,6 +598,26 @@ jobs:
           done
           echo "Timed out waiting for production /api/health." >&2
           exit 1
+
+      - name: Annotate deploy live (Grafana)
+        if: success()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: prod
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: live
+
+      - name: Annotate deploy failed (Grafana)
+        if: failure()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: prod
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: failed
 
   # 6d. Deploy SPA to Cloudflare Pages (prod). Independent of the API
   # promotion (Render and Cloudflare are separate planes), gated only on
