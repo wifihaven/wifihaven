@@ -453,10 +453,11 @@ the profile's general schedule. This is a `PolicyService`-only feature with
 **no wire or router change**: at snapshot-compute time the window is evaluated
 (reusing `scheduleActiveAt`, household-local zone via the injected `Clock`) and
 collapsed into the *existing* fields — `allowed_during` while active → the app's
-hosts in `extraAllowed` (which beats every whole-MAC block per #421, including
-TimeLimit), `blocked_during` while active → `extraBlocked`. The agent never
-learns that per-app schedules exist; it still sees only the per-MAC
-`BlockRules`. Freshness rides the same pull-based path as profile schedules —
+hosts in `extraAllowed` (which beats Schedule/Paused/Manual whole-MAC blocks per
+#421; whether it also beats the *daily time limit* is a server-side choice keyed
+on the app's `exemptFromDaily` flag, not a router behaviour), `blocked_during`
+while active → `extraBlocked`. The agent never learns that per-app schedules
+exist; it still sees only the per-MAC `BlockRules`. Freshness rides the same pull-based path as profile schedules —
 the next poll after a window edge recomputes against the current instant
 (worst-case one poll interval). A precomputed boundary scheduler is needed only
 if the future server-push channel above is built. Full design:

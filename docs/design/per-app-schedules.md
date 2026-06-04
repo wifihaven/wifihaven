@@ -47,11 +47,12 @@ existing buckets — per-app schedules are just another input to that
 server-side collapse.
 
 > **Confirmed: every case is expressible in the current fields.** There is no
-> case in this feature that forces a wire change. The one semantic that is
-> *not* expressible without a wire change — "reachable during downtime **but
-> still** subject to the daily time-limit cap" — is resolved below (§5) by
-> deciding it the way the wire already implies, not by adding a field. See that
-> section for the justification.
+> case in this feature that forces a wire change — including the subtle one,
+> "reachable during downtime **but still** subject to the daily time-limit cap."
+> That case *is* expressible, because the server decides whether to emit the
+> `extraAllowed` carve at all: it withholds the carve for a non-exempt app whose
+> daily cap is exhausted, so the cap still bites without the router ever knowing
+> why. See §5 (rows 9a–9c) for the full decision.
 
 ## 3. Data model
 
@@ -193,9 +194,9 @@ app.
 
 ```
 effectiveDisposition(assignment, windows, now):
-  if any allowed_during window active at now  -> Allowed      // carve-out
+  if any allowed_during window active at now  -> AllowedDuring  // carve-out CANDIDATE (see gate)
   else if any blocked_during window active     -> Blocked
-  else                                         -> base mode    // Allowed / Blocked / TimeLimited
+  else                                         -> base mode      // Allowed / Blocked / TimeLimited
 ```
 
 - **`allowed_during` wins over `blocked_during`** when an app has overlapping
@@ -207,10 +208,35 @@ effectiveDisposition(assignment, windows, now):
 - The base mode still applies whenever no window is active — outside every
   window, the app behaves exactly as it does today.
 
-After resolution, the existing bucketing is unchanged:
-`Allowed → appAllowedHosts (→ extraAllowed)`,
+**The `AllowedDuring` carve is gated by the daily-cap / exempt check (§5).**
+Placing the app's hosts in `extraAllowed` beats *every* whole-MAC block at the
+router (#421), so whether the app survives the daily time limit is decided
+*here*, server-side, by whether we carve at all — not by the router:
+
+```
+carveIntoExtraAllowed(assignment) =
+  effectiveDisposition == AllowedDuring
+  AND NOT (dailyCapExhausted(state) AND NOT assignment.exemptFromDaily)
+
+dailyCapExhausted(state) =
+  state.dailyLimitMinutes.exists(lim => state.usedMinutes >= lim + state.extensionMinutes)
+  // equivalently state.remainingMinutes.contains(0)
+```
+
+`dailyCapExhausted` is computed **directly from `ProfileDayState`**, independent
+of the collapsed `blockReason` — important because when schedule downtime and
+cap exhaustion coincide, `blockReason` reports `Schedule` (higher precedence)
+yet the budget is still exhausted. The window must still beat the *schedule*
+block while *yielding* to the *budget* block for a non-exempt app, so the carve
+gate keys off the raw cap condition, not the reason.
+
+After this gate, the existing bucketing is unchanged:
+`AllowedDuring (carved) / base Allowed → appAllowedHosts (→ extraAllowed)`,
 `Blocked → appBlockedHosts (→ extraBlocked)`,
 `TimeLimited → site-limit path (unchanged, #764)`.
+An `AllowedDuring` candidate that fails the gate is *not* added to either
+bucket — it simply remains subject to the profile's whole-MAC block (it is
+blocked because the cap is exhausted, which is the intent).
 
 Cross-app host collisions continue to resolve allow-wins at the router exactly
 as #763 documents — that behaviour is untouched.
@@ -219,18 +245,27 @@ as #763 documents — that behaviour is untouched.
 
 The per-host fallback (`PolicyService.decide`, ~L216) independently re-derives
 `appAllowed` / `appBlocked` from the assignments. It must apply the same
-per-app effective-disposition resolution so the fallback agrees with the
-snapshot. (Its precedence comment — "paused > schedule > allowed-app >
-blocked-app > …" — already places allowed-app above blocked-app, consistent
-with §4.1.)
+per-app effective-disposition resolution **and the same cap gate** so the
+fallback agrees with the snapshot. Note its current precedence chain — "paused >
+schedule > allowed-app > blocked-app > site_time_limit > time_limit > category"
+— places allowed-app *above* time_limit unconditionally; that must change so a
+*non-exempt* `allowed_during` app falls **below** time_limit (cap bites), while
+an *exempt* one stays above it. Concretely: an active `allowed_during` window
+short-circuits to Allow only when `exemptFromDaily` OR the cap is not yet
+exhausted; otherwise it does not, and the time_limit branch decides. This is the
+per-host mirror of the §4.1 `carveIntoExtraAllowed` gate.
 
 ### 4.3 Interaction with the #1105 exempt-app carve-out
 
 The existing `appExemptAllowedHosts` path (time_limited apps with
 `exemptFromDaily=true` and remaining budget → `extraAllowed`) is orthogonal and
-unchanged. An `allowed_during` window is a *stronger, time-boxed* form of the
-same idea (full carve-out regardless of budget, but only while W is active).
-Both feed `extraAllowed`; the union is harmless.
+unchanged. An `allowed_during` window reuses the **same `exemptFromDaily` flag**
+to decide cap-immunity (§4.1 gate, §5): the window governs the *schedule* axis
+(which apps are reachable during a downtime window), while `exemptFromDaily`
+governs the *budget* axis (whether the daily cap binds the app). They are
+deliberately the same knob #1105 already exposes — the window does not invent a
+second, implicit form of cap-immunity. Both paths feed `extraAllowed`; the
+union is harmless.
 
 ## 5. Precedence / interaction table
 
@@ -239,47 +274,56 @@ block" = `blocked=true` (one of Paused / profile-Schedule / TimeLimit / Manual
 — all collapse to `@blocked_macs` at the router). Outcome is what the router
 enforces after #421 allow-beats-block.
 
-| # | Profile whole-MAC block? | App base mode | App window @ now | App host bucket | **Router outcome for the app** |
-|---|---|---|---|---|---|
-| 1 | Schedule downtime active | any | `allowed_during` active | `extraAllowed` | **Reachable** (carve-out beats downtime) — the headline case |
-| 2 | none | any | `allowed_during` active | `extraAllowed` | Reachable (no-op carve-out; already allowed) |
-| 3 | none | Allowed | `blocked_during` active | `extraBlocked` | **Blocked** (window overrides base Allowed, §4.1) |
-| 4 | none | Blocked | `blocked_during` active | `extraBlocked` | Blocked (consistent) |
-| 5 | Schedule downtime active | any | `blocked_during` active | `extraBlocked` | Blocked (already blocked; window redundant but valid) |
-| 6 | none | Allowed | no active window | `extraAllowed` | Reachable (base mode) |
-| 7 | none | Blocked | no active window | `extraBlocked` | Blocked (base mode) |
-| 8 | Schedule downtime active | Allowed | no active window | `extraAllowed` | Reachable — note base `Allowed` *already* carves out of downtime today |
-| 9 | **TimeLimit reached** | any | `allowed_during` active | `extraAllowed` | **Reachable** — see decision below |
-| 10 | Manual block | any | `allowed_during` active | `extraAllowed` | Reachable (Manual is a whole-MAC block; carve-out beats it) |
-| 11 | Paused | any | `allowed_during` active | `extraAllowed` | Reachable (Paused is a whole-MAC block; carve-out beats it) |
+"Exempt?" is the assignment's `exemptFromDaily` flag. The `AllowedDuring`
+carve gate (§4.1) is `windowActive AND NOT (dailyCapExhausted AND NOT exempt)`.
 
-### Decision: "allowed during W" beats the daily time limit (row 9)
+| # | Profile whole-MAC block? | App base mode | App window @ now | Exempt? | App host bucket | **Router outcome for the app** |
+|---|---|---|---|---|---|---|
+| 1 | Schedule downtime active | any | `allowed_during` active | n/a | `extraAllowed` | **Reachable** (carve-out beats downtime) — the headline case |
+| 2 | none | any | `allowed_during` active | n/a | `extraAllowed` | Reachable (no-op carve-out; already allowed) |
+| 3 | none | Allowed | `blocked_during` active | n/a | `extraBlocked` | **Blocked** (window overrides base Allowed, §4.1) |
+| 4 | none | Blocked | `blocked_during` active | n/a | `extraBlocked` | Blocked (consistent) |
+| 5 | Schedule downtime active | any | `blocked_during` active | n/a | `extraBlocked` | Blocked (already blocked; window redundant but valid) |
+| 6 | none | Allowed | no active window | n/a | `extraAllowed` | Reachable (base mode) |
+| 7 | none | Blocked | no active window | n/a | `extraBlocked` | Blocked (base mode) |
+| 8 | Schedule downtime active | Allowed | no active window | n/a | `extraAllowed` | Reachable — note base `Allowed` *already* carves out of downtime today |
+| 9a | **TimeLimit reached** | any | `allowed_during` active | **yes** | `extraAllowed` | **Reachable** — exempt app survives the cap (see decision) |
+| 9b | **TimeLimit reached** | any | `allowed_during` active | **no** | *(not carved)* | **Blocked** — non-exempt app: the daily cap still bites (see decision) |
+| 9c | Schedule downtime **and** TimeLimit reached | any | `allowed_during` active | no | *(not carved)* | **Blocked** — cap binds even though `blockReason` reports `Schedule`; gate keys off raw cap, not reason (§4.1) |
+| 10 | Manual block | any | `allowed_during` active | n/a | `extraAllowed` | Reachable (Manual is a whole-MAC block, not a budget; carve-out beats it) |
+| 11 | Paused | any | `allowed_during` active | n/a | `extraAllowed` | Reachable (Paused is a whole-MAC block, not a budget; carve-out beats it) |
 
-**An app with an active `allowed_during` window stays reachable even when the
-profile has hit its daily time limit.**
+### Decision: "allowed during W" yields to the daily time limit unless the app is exempt (rows 9a–9c)
+
+**An app with an active `allowed_during` window stays reachable past the
+profile's daily time limit *only if* its assignment is `exemptFromDaily`. A
+non-exempt app, once the daily cap is exhausted, is blocked — window or no
+window.**
 
 Justification:
 
-1. **It is what the wire forces.** TimeLimit, like Schedule and Manual,
-   collapses to `blocked=true` → `@blocked_macs`. `extraAllowed` beats
-   `@blocked_macs` unconditionally (#421); the router has no way to make a
-   carve-out beat *Schedule*-block but yield to *TimeLimit*-block, because it
-   never sees the reason (`blockReason` is block-page copy only, never read for
-   enforcement). Distinguishing them would require a new wire field — which is
-   off the table (§2, and the wire-versioning gate #376).
-2. **It is the defensible default.** Designating an app "always reachable
-   during this window" is precisely an *exception* statement; the apps you'd
-   put on an `allowed_during` window (educational, communication-with-parents)
-   are the same class #1105 already exempts from the daily cap via
-   `exemptFromDaily`. Uniform "carve-out beats all whole-MAC blocks" matches
-   that established contract and avoids a surprising "your always-allowed app
-   went dark at the cap" failure mode.
-3. **The escape hatch is a different mode.** An operator who wants an app
-   reachable during downtime *but still* charged against / gated by the daily
-   cap should not use `allowed_during`; they should use a **`time_limited`**
-   app (its own budget, naturally transitions allow→block as budget exhausts,
-   #1105). That intent is already expressible without per-app schedules, so the
-   `allowed_during` semantics need not try to cover it.
+1. **It is a server-side choice, not a wire constraint.** Yes, `extraAllowed`
+   beats `@blocked_macs` unconditionally at the router (#421) regardless of the
+   block reason. But *whether the host is in `extraAllowed`* is decided by
+   `PolicyService`, which has `ProfileDayState` (used / limit / extensions) and
+   the assignment's `exemptFromDaily`. So the server simply withholds the carve
+   when the cap is exhausted and the app is not exempt. No new wire field, no
+   router change — the cap can still bite. (My earlier framing of this as
+   "wire-forced" was wrong: the router can't tell reasons apart, but the server
+   never has to put the host on the wire in the first place.)
+2. **It keeps two axes separate.** A window is a *schedule* layer — which apps
+   are reachable during a downtime window. The daily time limit is a *budget*
+   layer — total screen time. "Educational app reachable during bedtime" should
+   not silently also mean "reachable after you've burned your whole daily
+   allowance." Conflating them would let any `allowed_during` window become an
+   accidental, unlimited cap bypass.
+3. **It reuses the existing knob.** `exemptFromDaily` already means exactly
+   "this app isn't bound by the daily budget" (#1105, for time_limited apps).
+   An `allowed_during` window that needs cap-immunity sets the same flag; one
+   that should respect the cap leaves it `false`. No second, implicit form of
+   cap-immunity is invented. (Manual / Paused / Schedule blocks are *not*
+   budgets, so the window beats them irrespective of `exemptFromDaily` — rows 1,
+   10, 11.)
 
 This is the **one place** the issue asked to resolve explicitly, and it is
 resolved *within* the existing fields — not as a wire-change exception.
@@ -365,10 +409,14 @@ In the app/profile assignment editor, each app's assignment row gains a
   preference. The request shape extends `UpsertAppAssignmentRequest` additively
   with `schedules: List[AppScheduleWindow]` (default `Nil`, so existing clients
   keep working).
-- The editor should surface the §5 semantic plainly — e.g. a hint on
-  `allowed_during` that "this app stays reachable during this window even during
-  bedtime **and even if the daily time limit is reached**" — so the row-9
-  decision is not a surprise.
+- The editor should surface the §5 semantic plainly. A hint on `allowed_during`
+  should read like "this app stays reachable during this window even during
+  bedtime" — and, because cap-immunity is governed by the assignment's
+  `exemptFromDaily` flag (rows 9a–9c), the editor should show that flag
+  alongside the window with copy such as "still counts against / is blocked by
+  the daily time limit when off" vs "exempt from the daily time limit." This
+  makes the exempt-vs-non-exempt distinction explicit at config time so the
+  cap-bites-non-exempt behaviour is not a surprise.
 
 This is specified for a web sub-issue to pick up; it is not built here.
 
@@ -397,13 +445,18 @@ split.
 3. **Schedule-boundary unit tests.** Pure tests over the effective-disposition
    resolver + `scheduleActiveAt` reuse: exact on/off edges, overnight wrap, DOW
    membership, DST transition, `allowed_during`-beats-`blocked_during` tiebreak,
-   inline vs named-schedule resolution. Use `Clock.TestClock` fixtures; never
+   the cap gate (`carveIntoExtraAllowed` true for exempt-over-cap, false for
+   non-exempt-over-cap, true for either when under cap), and inline vs
+   named-schedule resolution. Use `Clock.TestClock` fixtures; never
    `java.time` directly.
 4. **Feature tests.** End-to-end snapshot assertions proving the app's hosts
    land in `extraAllowed` during an `allowed_during` window while the profile is
-   in scheduled downtime / over the daily cap (rows 1 and 9), and in
-   `extraBlocked` during a `blocked_during` window (row 3). Drive time with
-   `TestClock`; assert the ETag flips across a window edge.
+   in scheduled downtime (row 1); that an **exempt** app *is* carved out when the
+   profile is over its daily cap (row 9a) while a **non-exempt** one is *not*
+   (row 9b) — the cap-gate split; the coincident schedule+cap case for a
+   non-exempt app (row 9c); and `extraBlocked` during a `blocked_during` window
+   (row 3). Drive time with `TestClock`; assert the ETag flips across a window
+   edge.
 5. **Web UI.** The §7 assignment-editor Schedules section with autosave;
    inline editor now, named-schedule picker gated on #1069.
 6. **(Optional, compose-with) Named-schedule FK.** Once #1069 lands, add the
