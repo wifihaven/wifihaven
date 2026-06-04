@@ -47,6 +47,7 @@ object MetricGuard {
     "http_requests_total"                       -> Set("route", "method", "status"),
     "http_request_duration_seconds"             -> Set("route", "method"),
     "db_query_duration_seconds"                 -> Set("op"),
+    "db_queries_total"                          -> Set("op", "status"),
     "auth_failures_total"                       -> Set("reason"),
     "agent_connected_routers"                   -> Set.empty[String],
     "traffic_reports_filtered_zero_bytes_total" -> Set.empty[String],
@@ -140,7 +141,11 @@ object AppMetrics {
 
   // ── DB query timing (#1204) ──────────────────────────────────────────────────
   // Emitted from DbMetrics.timed around the Doobie transact of hot repo methods.
-  // `op` is a hand-named constant per method, never the SQL text.
+  // `op` is a hand-named constant per method, never the SQL text. Two series per
+  // op: the duration histogram (rate via _count, latency via the buckets) and a
+  // db_queries_total{op,status} counter that splits ok vs error so the dashboard
+  // can show a per-op success rate — a slow query and a *failing* query are
+  // different incidents and an operator needs to tell them apart.
 
   /** Sub-millisecond → multi-second DB latency. */
   val DbDurationBoundaries: MetricKeyType.Histogram.Boundaries =
@@ -148,13 +153,14 @@ object AppMetrics {
       Chunk(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
     )
 
-  def recordDbQuery(op: String, durationSeconds: Double): UIO[Unit] =
+  def recordDbQuery(op: String, durationSeconds: Double, status: String): UIO[Unit] =
     MetricGuard.histogram(
       "db_query_duration_seconds",
       Map("op" -> op),
       math.max(0.0, durationSeconds),
       DbDurationBoundaries,
-    )
+    ) *>
+      MetricGuard.counter("db_queries_total", Map("op" -> op, "status" -> status))
 
   // ── Auth failures (#1204) ────────────────────────────────────────────────────
   // `reason` ∈ {bad_password, expired_token, bad_router_token, forbidden_role}.
@@ -290,16 +296,23 @@ object DbPoolMetrics {
 }
 
 /**
- * #1204: time the Doobie transact of a repo method into `db_query_duration_seconds{op}`. `op` is a
- * hand-named constant supplied at the call site — never derived from the SQL — so the label space
- * stays a small, known enum. Records on every exit (success or failure) so a slow failing query is
- * still visible.
+ * #1204: time the Doobie transact of a repo method into `db_query_duration_seconds{op}` and count
+ * it in `db_queries_total{op,status}`. `op` is a hand-named constant supplied at the call site —
+ * never derived from the SQL — so the label space stays a small, known enum. Records on every exit
+ * so a slow failing query is still visible; `status` is `ok` on success and `error` otherwise (a
+ * failure or interruption), which is what drives the per-op success-rate panel.
  */
 object DbMetrics {
   def timed[A](op: String)(query: Task[A]): Task[A] =
     Clock.nanoTime.flatMap { start =>
-      query.onExit { _ =>
-        Clock.nanoTime.flatMap(end => AppMetrics.recordDbQuery(op, (end - start) / 1e9d))
+      query.onExit { exit =>
+        Clock.nanoTime.flatMap(end =>
+          AppMetrics.recordDbQuery(
+            op,
+            (end - start) / 1e9d,
+            if exit.isSuccess then "ok" else "error",
+          ),
+        )
       }
     }
 }
