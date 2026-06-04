@@ -43,7 +43,11 @@ end
 -- base_url: optional api base (e.g. "http://router:8080"). The snapshot ships
 --   relative blocklist urls ("/api/blocklists/<id>"); when base_url is given
 --   and the url is root-relative, they're joined so curl gets an absolute URL.
--- fs: optional table with {read, write, rename, remove, list}; defaults to real I/O.
+-- fs: optional table with {read, write, rename, remove, list, mkdir};
+--   defaults to real I/O. `mkdir(path)` must behave like `mkdir -p` — it is
+--   called once for cache_dir before any write, so a fresh image where
+--   /etc/wifihaven/blocklists/ doesn't exist yet doesn't ENOENT on the
+--   tmp-file open (#1363).
 -- Returns: { hosts_by_id = {[id]={hosts}}, errors = {...} }
 function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
@@ -55,11 +59,12 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
   end
 
   -- Default filesystem ops (real I/O) when fs not injected.
-  local read_fn, write_fn, rename_fn
+  local read_fn, write_fn, rename_fn, mkdir_fn
   if fs then
     read_fn  = fs.read
     write_fn = fs.write
     rename_fn = fs.rename
+    mkdir_fn = fs.mkdir
   else
     read_fn  = function(path)
       local f, err = io.open(path, "r")
@@ -79,6 +84,23 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
       local ok, err = os.rename(from, to)
       if not ok then return nil, err end
       return true, nil
+    end
+    mkdir_fn = function(path)
+      -- mkdir -p; quoting the path so spaces / shell metachars don't break.
+      local ok = os.execute(string.format("mkdir -p %q", path))
+      if ok == true or ok == 0 then return true, nil end
+      return nil, "mkdir -p failed for " .. tostring(path)
+    end
+  end
+
+  -- Ensure the cache dir exists before the first atomic-tmp write (#1363).
+  -- On a fresh image /etc/wifihaven/blocklists/ doesn't exist yet, which
+  -- previously caused every fetch to ENOENT and the bl_ ipset to stay empty.
+  if mkdir_fn then
+    local mok, merr = mkdir_fn(cache_dir)
+    if not mok then
+      result.errors[#result.errors + 1] =
+        string.format("blocklists: mkdir failed for %s: %s", tostring(cache_dir), tostring(merr))
     end
   end
 
