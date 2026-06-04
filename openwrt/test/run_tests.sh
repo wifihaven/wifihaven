@@ -22,6 +22,8 @@ LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/s
          test/version_spec.lua \
          test/update_spec.lua \
          test/metrics_spec.lua \
+         test/dns_log_spec.lua \
+         test/nft_drops_spec.lua \
          "$@"
 
 echo ""

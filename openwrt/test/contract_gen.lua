@@ -300,6 +300,19 @@ local function build_metrics_batch()
   metrics.inc_counter(reg, "snapshot_poll_total", { result = "200" }, 140)
   metrics.inc_counter(reg, "snapshot_poll_total", { result = "304" }, 9300)
   metrics.inc_counter(reg, "snapshot_poll_total", { result = "error" }, 6)
+  -- #1302 dns_queries_total{result}: dns-tail-sourced, folded by the agent.
+  metrics.inc_counter(reg, "dns_queries_total", { result = "resolved" }, 41200)
+  metrics.inc_counter(reg, "dns_queries_total", { result = "nxdomain" }, 318)
+  metrics.inc_counter(reg, "dns_queries_total", { result = "servfail" }, 7)
+  -- #1301 blocklist_fetch_failures_total{status}: bounded status enum.
+  metrics.inc_counter(reg, "blocklist_fetch_failures_total", { status = "5xx" }, 4)
+  metrics.inc_counter(reg, "blocklist_fetch_failures_total", { status = "error" }, 1)
+  -- #1325 enforcement_drops_total{reason}: nftables forward-drop counters,
+  -- reason ∈ {whole_mac, host_block, category_block, ip_only}.
+  metrics.inc_counter(reg, "enforcement_drops_total", { reason = "whole_mac" }, 1820)
+  metrics.inc_counter(reg, "enforcement_drops_total", { reason = "host_block" }, 540)
+  metrics.inc_counter(reg, "enforcement_drops_total", { reason = "category_block" }, 12990)
+  metrics.inc_counter(reg, "enforcement_drops_total", { reason = "ip_only" }, 63)
 
   -- Gauges — instantaneous; agent_version is an info gauge (value 1).
   metrics.set_gauge(reg, "agent_uptime_seconds", {}, 18060)

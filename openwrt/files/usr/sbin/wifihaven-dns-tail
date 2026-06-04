@@ -21,7 +21,9 @@ end
 local debug_opt   = uci_get("debug", "0")
 local source_path = "/tmp/wifihaven-dnsmasq.log"
 local cache_path  = paths.dns_cache
-local tmp_path    = cache_path .. ".tmp"
+-- #1302: cumulative per-result DNS query tally, written for the agent to fold
+-- into dns_queries_total{result}. Flushed in lockstep with the hostname cache.
+local dns_metrics_path = paths.dns_metrics
 local bl_index_path = paths.bl_member_index  -- #1348
 local leases_path = "/tmp/dhcp.leases"
 local nft_table   = "inet wifihaven"
@@ -57,18 +59,21 @@ if not handle then
   os.exit(1)
 end
 
+-- Atomic write via a per-path .tmp sibling (each path gets its own tmp so the
+-- hostname cache and the #1302 query-result tally don't clobber each other).
 local function atomic_write(path, content)
-  local f, err = io.open(tmp_path, "w")
+  local tmp = path .. ".tmp"
+  local f, err = io.open(tmp, "w")
   if not f then
-    log.err("dns-tail: open %s failed: %s", tmp_path, tostring(err))
+    log.err("dns-tail: open %s failed: %s", tmp, tostring(err))
     return false
   end
   f:write(content)
   f:close()
-  local ok = os.rename(tmp_path, path)
+  local ok = os.rename(tmp, path)
   if not ok then
-    log.err("dns-tail: rename %s -> %s failed", tmp_path, path)
-    os.remove(tmp_path)
+    log.err("dns-tail: rename %s -> %s failed", tmp, path)
+    os.remove(tmp)
     return false
   end
   return true
@@ -244,6 +249,10 @@ local last_tick        = os.time()
 local last_stats_log   = os.time()
 local lines_ingested   = 0
 local lines_since_stat = 0
+-- #1302: cumulative per-result DNS query tally since sidecar start. The agent
+-- folds the deltas (metrics.fold_external) so a sidecar restart re-bases from 0
+-- without double-counting.
+local dns_results      = {}
 
 while true do
   local line = handle:read("*l")
@@ -255,6 +264,14 @@ while true do
   since_flush      = since_flush + 1
   lines_ingested   = lines_ingested + 1
   lines_since_stat = lines_since_stat + 1
+
+  -- #1302: classify this line's DNS outcome (resolved / nxdomain / servfail /
+  -- refused / nodata) and bump the cumulative tally. nil for query lines and
+  -- non-terminal CNAME hops.
+  local dns_result = dns_log.classify_query_result(line)
+  if dns_result then
+    dns_results[dns_result] = (dns_results[dns_result] or 0) + 1
+  end
 
   local now = os.time()
 
@@ -285,6 +302,9 @@ while true do
   if since_flush >= flush_every or (now - last_tick) >= 30 then
     cache.tick(now)
     atomic_write(cache_path, cache.dump_text())
+    -- #1302: publish the cumulative query-result tally alongside the cache so
+    -- the agent's next metrics tick can fold the deltas.
+    atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
     log.debug("dns-tail: flushed cache size=%d", cache.size())
     since_flush = 0
     last_tick   = now

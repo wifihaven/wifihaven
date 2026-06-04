@@ -20,6 +20,8 @@
 -- Public API:
 --   metrics.new({ router_id, agent_version, started_at, buckets? }) → reg
 --   metrics.inc_counter(reg, name, labels, by?)         -- by defaults to 1
+--   metrics.fold_external(reg, name, label_key, current_by_label, baseline)
+--                                                        -- delta-fold an external cumulative source
 --   metrics.set_gauge(reg, name, labels, value)
 --   metrics.observe(reg, name, labels, value)           -- histogram observation
 --   metrics.build_batch(reg, sampled_at) → batch table  -- §3.2 shape
@@ -98,6 +100,44 @@ function M.inc_counter(reg, name, labels, by)
     reg.counters[key] = c
   end
   c.value = c.value + by
+end
+
+-- Fold an EXTERNAL cumulative counter source into the registry (#1302, #1325).
+--
+-- Some counters are not incremented at a call site inside this process: they
+-- live in the kernel (nftables drop-rule counters, #1325) or in a sibling
+-- process (the dns-tail sidecar's per-result query tally, #1302). On the
+-- metrics tick the agent SAMPLES the external source and folds the growth
+-- since the previous sample into the in-process registry, so the pushed batch
+-- still carries one cumulative `name{label_key=value}` series per value.
+--
+--   current_by_label : { [label_value] = current_cumulative }  (this sample)
+--   baseline         : { [label_value] = last_sampled_value }  (mutated in place)
+--
+-- For each value we inc the registry by the POSITIVE delta since the last
+-- sample. A `current < baseline` means the external source reset (the kernel
+-- ruleset was re-rendered and its anonymous counters restarted at 0, or the
+-- sidecar restarted) — we fold the full current value rather than a negative
+-- delta, mirroring the API server's own re-base-on-reset rule
+-- (RouterMetricsService). The agent's own registry counter is itself never
+-- reset, so the pushed total keeps climbing monotonically.
+--
+-- Caller keeps one `baseline` table per external series and reuses it across
+-- ticks. To avoid losing growth across a KNOWN reset (e.g. an nft re-render),
+-- the caller should fold once more right BEFORE triggering the reset so the
+-- about-to-be-discarded counts are captured first.
+function M.fold_external(reg, name, label_key, current_by_label, baseline)
+  baseline = baseline or {}
+  for value, cur in pairs(current_by_label or {}) do
+    local prev  = baseline[value] or 0
+    local delta = cur - prev
+    if delta < 0 then delta = cur end -- external source reset → re-base from 0
+    if delta > 0 then
+      M.inc_counter(reg, name, { [label_key] = value }, delta)
+    end
+    baseline[value] = cur
+  end
+  return baseline
 end
 
 function M.set_gauge(reg, name, labels, value)

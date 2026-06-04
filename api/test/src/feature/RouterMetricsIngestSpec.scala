@@ -191,6 +191,57 @@ object RouterMetricsIngestSpec
         ) &&
         assertTrue(scraped.contains("policy_apply_duration_seconds"))
     },
+    test("agent counter series (#1301/#1302/#1325) re-expose under router_id") {
+      // The agent-sourced counters added after #1206: dns_queries_total{result},
+      // blocklist_fetch_failures_total{status}, enforcement_drops_total{reason}.
+      // All three are on the MetricGuard allowlist with their bounded enum
+      // label, so the generic fold must re-expose them under router_id (the
+      // #1365 re-export path) rather than rejecting them.
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make
+        (rid, tok) <- newRouter("r-agent-counters")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        body   = batchJson(
+          rid,
+          "2026-05-30T09:00:00Z",
+          counters = List(
+            MetricCounter("dns_queries_total", Map("result" -> "resolved"), 41200),
+            MetricCounter("dns_queries_total", Map("result" -> "nxdomain"), 318),
+            MetricCounter("blocklist_fetch_failures_total", Map("status" -> "5xx"), 4),
+            MetricCounter("enforcement_drops_total", Map("reason" -> "whole_mac"), 1820),
+            MetricCounter("enforcement_drops_total", Map("reason" -> "category_block"), 12990),
+          ),
+        )
+        resp <- post(routes, tok, body)
+        _       <- ZIO.sleep(700.millis)
+        scraped <- scrape.catchAll(r => r.body.asString.orDie)
+      } yield {
+        val ridStr = rid.value.toString
+        assertTrue(resp.status == Status.Ok) &&
+        assertTrue(
+          seriesValue(scraped, "dns_queries_total", s"""router_id="$ridStr"""", "resolved")
+            .contains(41200.0),
+        ) &&
+        assertTrue(
+          seriesValue(scraped, "blocklist_fetch_failures_total", s"""router_id="$ridStr"""", "5xx")
+            .contains(4.0),
+        ) &&
+        assertTrue(
+          seriesValue(scraped, "enforcement_drops_total", s"""router_id="$ridStr"""", "whole_mac")
+            .contains(1820.0),
+        ) &&
+        assertTrue(
+          seriesValue(
+            scraped,
+            "enforcement_drops_total",
+            s"""router_id="$ridStr"""",
+            "category_block",
+          ).contains(12990.0),
+        )
+      }
+    },
     test("missing token → 401; routerId mismatch → 403") {
       for {
         _          <- cleanDb
