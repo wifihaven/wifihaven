@@ -110,6 +110,10 @@ jobs:
               # contract — run the bidirectional job when it moves.
               - 'openwrt/files/usr/lib/lua/wifihaven/metrics.lua'
               - 'openwrt/test/shim/**'
+              # #1367: the real luci.jsonc encoder build + its fidelity spec —
+              # the contract job builds and verifies against this module.
+              - 'openwrt/test/build-luci-jsonc.sh'
+              - 'openwrt/test/jsonc_shim_spec.lua'
               - 'api/**'
               - 'shared/**'
               - 'build.mill'
@@ -492,25 +496,52 @@ jobs:
           sudo mv /tmp/mill /usr/local/bin/mill
           mill --version
 
-      - name: Install Lua + busted + lua-cjson
+      - name: Install Lua + busted + lua-cjson + json-c
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks
+          # libjson-c-dev is needed to build the real luci-lib-jsonc module below.
+          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks libjson-c-dev
           sudo luarocks install busted
           sudo luarocks install lua-cjson
 
-      - name: Run API → router contract spec (lua consumer)
+      # Build the REAL luci-lib-jsonc (luci.jsonc) C module the agent uses in
+      # production, so the contract fixtures are generated and verified by the
+      # exact encoder the router runs — not the lua-cjson shim (#1367). The shim
+      # is verified-byte-equivalent and remains the local-dev default; this step
+      # is what guarantees no shim-vs-real divergence can slip past CI.
+      - name: Build real luci-lib-jsonc encoder
+        run: |
+          bash openwrt/test/build-luci-jsonc.sh "$RUNNER_TEMP/luci-jsonc"
+          echo "WIFIHAVEN_LUCI_JSONC_CPATH=$RUNNER_TEMP/luci-jsonc/?.so" >> "$GITHUB_ENV"
+
+      # The real module must satisfy the same luci.jsonc behavior the fixtures
+      # assume (empty table → [], whole double → N, fractional → full %.17g,
+      # /→\/). Running the fidelity spec against the REAL module (shim dropped
+      # from LUA_PATH) proves that, and catches an upstream/json-c formatting
+      # change before it silently rewrites a fixture.
+      - name: Verify luci.jsonc fidelity contract (real module)
         working-directory: openwrt
         run: |
-          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+          LUA_CPATH="$WIFIHAVEN_LUCI_JSONC_CPATH;;" \
+          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;$(lua -e 'print(package.path)')" \
+            busted test/jsonc_shim_spec.lua
+
+      - name: Run API → router contract spec (lua consumer, real luci.jsonc)
+        working-directory: openwrt
+        run: |
+          LUA_CPATH="$WIFIHAVEN_LUCI_JSONC_CPATH;;" \
+          LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;$(lua -e 'print(package.path)')" \
             busted test/contract_spec.lua
 
       - name: Run router → API contract spec (Scala consumer)
         run: mill shared.test.testOnly wifihaven.shared.contract.ContractGoldenSpec
 
       # Drift guard: re-run the generators and fail if the committed fixtures
-      # differ. Catches a contributor who edited a producer (router lua POST
-      # builder or Scala codec) without re-running regen-contract-fixtures.sh.
+      # differ. The lua generator uses the REAL luci.jsonc (via
+      # WIFIHAVEN_LUCI_JSONC_CPATH, set above), so this also catches any
+      # shim-vs-real-module divergence. Catches a contributor who edited a
+      # producer (router lua POST builder or Scala codec) without re-running
+      # regen-contract-fixtures.sh.
       - name: Verify fixtures are in sync with producers
         run: |
           bash scripts/regen-contract-fixtures.sh

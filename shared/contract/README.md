@@ -53,6 +53,26 @@ That runs both generators:
 Inspect the diff and update the *consumer* side in the same PR. Never
 regenerate without reading the diff — that defeats the contract.
 
+### Which `luci.jsonc` serializes the router→API fixtures (#1367)
+
+The agent serializes its POST bodies with `luci.jsonc.stringify` — the OpenWrt
+C module `luci-lib-jsonc`. That module isn't on luarocks, so:
+
+* **Locally**, `regen-contract-fixtures.sh` uses the shim
+  `openwrt/test/shim/luci/jsonc.lua`, which is hand-rolled to **faithfully
+  emulate** the real module (empty table → `[]`, whole double → `N`, fractional
+  → full `%.17g`, `/` → `\/`). No C toolchain needed to regenerate.
+* **In CI** (the `Contract Tests` job), `openwrt/test/build-luci-jsonc.sh`
+  compiles the **real** `luci-lib-jsonc` (pinned to the openwrt-23.05 source by
+  commit SHA + sha256, matching the deployed router) and the lua generator runs
+  against it via `WIFIHAVEN_LUCI_JSONC_CPATH`. So the committed bytes are
+  verified against the exact encoder the router runs.
+
+Because CI regenerates with the real module and diffs, any drift between the
+shim and the real module surfaces as a failing drift check — the shim can't go
+stale silently. `openwrt/test/jsonc_shim_spec.lua` pins the shared fidelity
+contract and runs against both.
+
 ## One documented exception: `register_router_request.json`
 
 The actual producer for `POST /api/router/register` is the shell `printf`
@@ -96,9 +116,15 @@ other.
   `metrics.build_batch` (the same function the agent's 60 s push timer calls)
   from a registry populated with one representative series per §5.1 emitted
   metric (cumulative counters, the uptime + version info gauges, both duration
-  histograms). Numeric fields render in their decoder-canonical `Double` form
-  (whole numbers as `N.0`) because every value in `RouterMetricsBatch` is typed
-  `Double`; `agentStartedAt` is pinned (the server's restart sentinel).
+  histograms). The bytes are the **genuine wire shape** the router emits via
+  `luci.jsonc`: a label-less series OMITS `labels` (real luci.jsonc renders an
+  empty Lua table as `[]`, which the `Map[String,String]` decoder rejects — the
+  #1365 bug), whole-number `Double` fields render as `N` (not `N.0`), and
+  fractional ones at full `%.17g` precision (`0.82` → `0.81999999999999995`).
+  Because zio-json re-encodes those differently (empty `Map` → `{}`, `Double` →
+  shortest form), `ContractGoldenSpec` compares this fixture at the **value**
+  level rather than byte level — see `assertValueRoundTrip` (#1367).
+  `agentStartedAt` is pinned (the server's restart sentinel).
 * `register_router_request.json` — `/api/router/register` POST. Mirrors
   `openwrt/install.sh`'s printf format string (see exception above).
 

@@ -33,6 +33,20 @@ WIFIHAVEN_REGEN_CONTRACT=1 \
 echo "→ router-to-api (lua agent generator)"
 (
   cd openwrt
-  LUA_PATH="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua;./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
-    lua test/contract_gen.lua
+  base_path="./files/usr/lib/lua/?.lua;./files/usr/lib/lua/wifihaven/?.lua"
+  if [ -n "${WIFIHAVEN_LUCI_JSONC_CPATH:-}" ]; then
+    # CI: serialize via the REAL luci-lib-jsonc C module (#1367). Keep the shim
+    # OFF LUA_PATH so `require("luci.jsonc")` falls through to the .so on
+    # LUA_CPATH — the agent's actual production encoder, not the lua-cjson shim.
+    echo "  (using real luci.jsonc: $WIFIHAVEN_LUCI_JSONC_CPATH)"
+    LUA_CPATH="${WIFIHAVEN_LUCI_JSONC_CPATH};;" \
+    LUA_PATH="${base_path};$(lua -e 'print(package.path)')" \
+      lua test/contract_gen.lua
+  else
+    # Local default: the verified-byte-equivalent shim (test/shim/luci/jsonc.lua),
+    # so contributors don't need a C toolchain to regenerate. CI re-verifies the
+    # bytes against the real module, so shim drift can't slip through.
+    LUA_PATH="${base_path};./test/shim/?.lua;./test/shim/?/init.lua;$(lua -e 'print(package.path)')" \
+      lua test/contract_gen.lua
+  fi
 )

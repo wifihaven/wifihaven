@@ -18,9 +18,14 @@
 -- visible PR diff (added/removed field).
 --
 -- Determinism: luci.jsonc / lua-cjson don't guarantee object key order or
--- stable indentation, so we go through a tiny canonical pretty-printer
--- (sorted keys, 2-space indent, ": " separator) to match the style of the
--- Scala-generated api-to-router fixtures and keep diffs noise-free.
+-- stable indentation, so we go through a tiny pretty-printer wrapper (sorted
+-- keys, 2-space indent, " : " separator) to match the style of the
+-- Scala-generated api-to-router fixtures and keep diffs noise-free. Crucially,
+-- the wrapper only owns whitespace and key order — every VALUE (numbers,
+-- strings, empty collections) is rendered by luci.jsonc.stringify itself
+-- (#1367), so the committed bytes are exactly what the router emits. There are
+-- no value fix-ups: an empty table renders as `[]` and a whole-number Double as
+-- `N`, just like the real C module.
 --
 -- Invocation:
 --   busted -o TAP test/contract_gen.lua          (run as a no-op spec)
@@ -33,86 +38,64 @@ local conntrack = require("wifihaven.conntrack")
 local usage     = require("wifihaven.usage")
 local metrics   = require("wifihaven.metrics")
 
--- ── Canonical pretty JSON encoder ─────────────────────────────────────────
--- Stable enough that the CI drift guard's `git diff --exit-code` is
--- meaningful: same inputs → same bytes, every time.
+-- ── Canonical pretty JSON wrapper ─────────────────────────────────────────
+-- VALUE semantics (numbers, strings, booleans, empty collections) come from the
+-- production encoder via luci.jsonc.stringify — the test shim faithfully
+-- emulates the OpenWrt C module (test/shim/luci/jsonc.lua, #1367). This wrapper
+-- ONLY owns whitespace and key order: 2-space indentation plus a deterministic
+-- key order (builder-supplied __order, else sorted) so the committed fixtures
+-- stay byte-stable and diff cleanly under the CI drift guard. It deliberately
+-- does NOT decide how a number or an empty table renders — those must reflect
+-- exactly what the router puts on the wire, which is why earlier hand fix-ups
+-- (an EMPTY_OBJECT `{}` sentinel and a `jnum` N.0 forcer) were removed: they
+-- masked real luci.jsonc behavior (empty → `[]`, whole double → `N`) and let
+-- the #1365 empty-`labels` bug ship green.
 
-local function is_array(t)
-  -- Treat empty Lua tables as arrays (matches the api-to-router pretty
-  -- output, and routerEvent payloads are always arrays at the top level).
-  local n = 0
-  for k, _ in pairs(t) do
-    if type(k) ~= "number" then return false end
-    n = n + 1
+-- Data keys of a table, ignoring the __order meta key we stamp on objects.
+local function data_keys(t)
+  local keys = {}
+  for k in pairs(t) do
+    if k ~= "__order" then keys[#keys + 1] = k end
   end
-  for i = 1, n do
-    if t[i] == nil then return false end
-  end
-  return true, n
+  return keys
 end
 
 local encode
-
--- Sentinel for an *empty JSON object* (`{}`), distinct from an empty array
--- (`[ ]`). is_array() can't tell an empty map from an empty list, and the
--- default treats empty tables as arrays. The metrics builder uses this for
--- empty `labels` maps so the fixture matches what production luci.jsonc
--- emits (`{}`) and what the zio-json `Map[String,String]` decoder accepts.
-local EMPTY_OBJECT = setmetatable({}, {})
-
-local function encode_string(s)
-  -- Defer to cjson via luci.jsonc.stringify for proper escaping.
-  return jsonc.stringify(s)
-end
-
-local function encode_scalar(v)
-  local t = type(v)
-  if v == nil or v == jsonc.null then return "null" end
-  if t == "boolean" then return v and "true" or "false" end
-  if t == "number" then
-    -- Integers without trailing ".0" to match Scala's zio-json output.
-    if v == math.floor(v) and math.abs(v) < 1e15 then
-      return string.format("%d", v)
-    end
-    return tostring(v)
-  end
-  if t == "string" then return encode_string(v) end
-  error("cannot encode scalar of type " .. t)
-end
-
 encode = function(v, indent)
   indent = indent or ""
   local next_indent = indent .. "  "
-  local t = type(v)
-  if t ~= "table" then return encode_scalar(v) end
+  if type(v) ~= "table" then
+    -- Scalar: value rendering is the production encoder's, not ours.
+    return jsonc.stringify(v)
+  end
 
-  -- Explicit empty-object sentinel (distinct from empty array).
-  if v == EMPTY_OBJECT then return "{ }" end
-  -- Raw pre-formatted number token (see jnum) — emit verbatim. Lets the
-  -- metrics fixture render Double-typed fields in their decoder-canonical
-  -- form (whole numbers as `N.0`) so the ContractGoldenSpec round-trip,
-  -- which re-encodes through zio-json `Double`, matches byte-for-byte.
-  if v.__raw ~= nil then return v.__raw end
+  local keys = data_keys(v)
+  if #keys == 0 then
+    -- Empty collection: let the real encoder pick the shape (luci → `[]`).
+    return jsonc.stringify({})
+  end
 
-  local arr, n = is_array(v)
-  if arr then
-    if n == 0 then return "[ ]" end
+  local numeric = true
+  for _, k in ipairs(keys) do
+    if type(k) ~= "number" then
+      numeric = false
+      break
+    end
+  end
+  if numeric then
     local parts = {}
-    for i = 1, n do
+    for i = 1, #keys do
       parts[i] = next_indent .. encode(v[i], next_indent)
     end
     return "[\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "]"
   end
 
-  local keys = {}
-  for k, _ in pairs(v) do keys[#keys + 1] = k end
-  if #keys == 0 then return "{ }" end
-  -- Preserve insertion order via a builder-supplied __order list when present,
-  -- otherwise sort alphabetically. Keys absent from __order are appended in
-  -- sorted order — this matters so a producer that adds a new field still
-  -- emits it (otherwise the drift wouldn't show up as a fixture diff).
+  -- Object. Preserve a builder-supplied __order list when present, otherwise
+  -- sort alphabetically. Keys absent from __order are appended in sorted order —
+  -- this matters so a producer that adds a new field still emits it (otherwise
+  -- the drift wouldn't show up as a fixture diff).
   if v.__order then
-    local seen = { __order = true }
+    local seen = {}
     local ordered = {}
     for _, k in ipairs(v.__order) do
       if v[k] ~= nil and not seen[k] then
@@ -132,31 +115,13 @@ encode = function(v, indent)
   end
   local parts = {}
   for _, k in ipairs(keys) do
-    if k ~= "__order" then
-      parts[#parts + 1] = next_indent .. encode_string(tostring(k)) .. " : " .. encode(v[k], next_indent)
-    end
+    parts[#parts + 1] = next_indent .. jsonc.stringify(tostring(k)) .. " : " .. encode(v[k], next_indent)
   end
   return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "}"
 end
 
 local function canonical_pretty(v)
   return encode(v) .. "\n"
-end
-
--- Render a number in the decoder-canonical form zio-json emits for a Scala
--- `Double` field: whole numbers as `N.0` (e.g. 1 → "1.0", 880 → "880.0"),
--- fractional numbers in their minimal %.14g form (0.82 → "0.82"). All numeric
--- fields in RouterMetricsBatch are typed `Double`, so the metrics fixture must
--- emit them this way for the ContractGoldenSpec round-trip (decode → re-encode
--- through zio-json) to match byte-for-byte. Returns a __raw token (see encode).
-local function jnum(n)
-  local s
-  if n == math.floor(n) and math.abs(n) < 1e15 then
-    s = string.format("%.1f", n)
-  else
-    s = string.format("%.14g", n)
-  end
-  return { __raw = s }
 end
 
 -- ── Helpers to stamp ordering on production-built event tables ────────────
@@ -350,36 +315,23 @@ local function build_metrics_batch()
 
   local batch = metrics.build_batch(reg, "2026-05-30T14:01:00Z")
 
-  -- A label-less series is OMITTED of its `labels` field by build_batch
-  -- (#1365): real luci.jsonc on the router serializes an empty Lua table as a
-  -- JSON array (`[]`), which the API's `Map[String,String]` decoder rejects, so
-  -- the agent never emits an empty `labels` at all. The contract fixture pins
-  -- the *canonical decode-stable* form instead — the explicit empty object
-  -- `{}` the decoder normalizes a missing `labels` to and re-emits — so
-  -- ContractGoldenSpec's decode→re-encode round-trip stays a meaningful
-  -- "no silent defaulting" guard. (The genuine prod-wire guard that build_batch
-  -- never emits an empty Lua table lives in openwrt/test/metrics_spec.lua.)
-  local function fix_labels(s)
-    if not s.labels or next(s.labels) == nil then s.labels = EMPTY_OBJECT end
-  end
-
+  -- No value fix-ups. build_batch OMITS `labels` entirely for a label-less
+  -- series (#1365) — real luci.jsonc serializes an empty Lua table as a JSON
+  -- array (`[]`), which the API's `Map[String,String]` decoder rejects — and
+  -- the faithful encoder renders whole-number Doubles as `N` (not `N.0`). The
+  -- fixture therefore carries the true wire bytes; the ContractGoldenSpec
+  -- metrics case compares decoded VALUES (not re-encoded bytes) so that
+  -- omitted-empty-labels and luci's full-precision Double formatting don't
+  -- read as a false "defaulted field". We only stamp key order here.
   for _, c in ipairs(batch.counters or {}) do
-    fix_labels(c)
-    c.value = jnum(c.value)
     stamp(c, SERIES_ORDER)
   end
   for _, g in ipairs(batch.gauges or {}) do
-    fix_labels(g)
-    g.value = jnum(g.value)
     stamp(g, SERIES_ORDER)
   end
   for _, h in ipairs(batch.histograms or {}) do
-    fix_labels(h)
-    h.sum = jnum(h.sum)
-    h.count = jnum(h.count)
     stamp(h, HISTOGRAM_ORDER)
     for _, b in ipairs(h.buckets or {}) do
-      b.count = jnum(b.count)
       stamp(b, BUCKET_ORDER)
     end
   end
