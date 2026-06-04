@@ -333,6 +333,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Derive short SHA
+        id: ver
+        run: echo "short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate SPA deploy started (Grafana)
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: staging
+          surface: pages
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: started
+
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -367,6 +381,28 @@ jobs:
           # Cloudflare Pages deployments API rejects multi-byte UTF-8
           # (e.g. `§`) with code 8000111 despite advertising UTF-8.
           command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"
+
+      - name: Annotate SPA deploy live (Grafana)
+        if: success()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: staging
+          surface: pages
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: live
+
+      - name: Annotate SPA deploy failed (Grafana)
+        if: failure()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: staging
+          surface: pages
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: failed
 
   # ── 5. Smoke-test staging ─────────────────────────────────────────────────
   # Fast (<2 min) end-user-facing checks against the deployed staging URL.
@@ -631,6 +667,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Derive short SHA
+        id: ver
+        run: echo "short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate SPA deploy started (Grafana)
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: prod
+          surface: pages
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: started
+
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -658,3 +708,25 @@ jobs:
           workingDirectory: web
           # See staging step for why --commit-message is forced ASCII.
           command: pages deploy --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.sha }}"
+
+      - name: Annotate SPA deploy live (Grafana)
+        if: success()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: prod
+          surface: pages
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: live
+
+      - name: Annotate SPA deploy failed (Grafana)
+        if: failure()
+        uses: ./.github/actions/grafana-annotation
+        with:
+          grafana-url: ${{ secrets.GRAFANA_CLOUD_URL }}
+          grafana-token: ${{ secrets.GRAFANA_CLOUD_ANNOTATION_TOKEN }}
+          env: prod
+          surface: pages
+          sha: ${{ steps.ver.outputs.short_sha }}
+          lifecycle: failed

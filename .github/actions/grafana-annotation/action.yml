@@ -17,6 +17,13 @@ inputs:
   env:
     description: Deployment environment tag (staging|prod).
     required: true
+  surface:
+    description: >
+      Deploy surface — e.g. `render` for the API on Render, `pages` for the
+      SPA on Cloudflare Pages. Tagged onto the annotation so an operator can
+      filter "Render API only" vs "SPA only" vs everything.
+    required: false
+    default: render
   sha:
     description: Short git sha being deployed.
     required: true
@@ -36,6 +43,7 @@ runs:
         GRAFANA_URL: ${{ inputs.grafana-url }}
         GRAFANA_TOKEN: ${{ inputs.grafana-token }}
         ENV: ${{ inputs.env }}
+        SURFACE: ${{ inputs.surface }}
         SHA: ${{ inputs.sha }}
         LIFECYCLE: ${{ inputs.lifecycle }}
       run: |
@@ -44,8 +52,9 @@ runs:
           echo "GRAFANA_URL or GRAFANA_TOKEN not configured — skipping annotation." >&2
           exit 0
         fi
-        body=$(printf '{"text":"deploy %s %s %s","tags":["deploy","render","%s","%s"]}' \
-                 "${SHA}" "${ENV}" "${LIFECYCLE}" "${ENV}" "${LIFECYCLE}")
+        body=$(printf '{"text":"deploy %s %s %s %s","tags":["deploy","%s","%s","%s"]}' \
+                 "${SHA}" "${ENV}" "${SURFACE}" "${LIFECYCLE}" \
+                 "${SURFACE}" "${ENV}" "${LIFECYCLE}")
         curl --silent --show-error --max-time 15 \
           -X POST "${GRAFANA_URL%/}/api/annotations" \
           -H "Authorization: Bearer ${GRAFANA_TOKEN}" \
