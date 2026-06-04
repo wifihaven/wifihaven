@@ -215,40 +215,46 @@ upstream as normal; the enforcement plane is nftables on the resolved IPs.)
 ## Project board — every new issue gets an Epic
 
 Open issues are tracked on the **WifiHaven GitHub Project** (org-level Project
-**#1**, <https://github.com/orgs/wifihaven/projects/1>). It is managed in the
-GitHub UI; the conventions (Epic taxonomy, Status meanings, umbrella =
-sub-issue-parent) live in [`docs/project-board.md`](docs/project-board.md).
+**#1**, <https://github.com/orgs/wifihaven/projects/1>) — there is exactly **one**
+board. The board is reconciled from the repo by
+[`scripts/project-board-sync.sh`](scripts/project-board-sync.sh); the issue→epic
+map lives in [`scripts/project-epics.tsv`](scripts/project-epics.tsv) and the
+conventions (Epic taxonomy, Status meanings, umbrella = sub-issue-parent) live in
+[`docs/project-board.md`](docs/project-board.md). **The script + TSV are the
+source of truth — prefer editing them over hand-clicking the UI**, which is what
+let two sessions race and corrupt the board.
 
 New repo issues are **auto-added** to the board (Status defaults to `Todo`) by the
 project's built-in *Auto-add to project* workflow, so they land on the board even
 when no agent is in the loop. The `Epic` is **not** set automatically — set it on
 triage.
 
-**When you file or triage a new issue, make sure it has the right `Epic`.**
-Don't leave a new issue sitting in the `Other` epic when a real thread fits (and
-if it somehow isn't on the board, add it). Steps:
+**When you file or triage a new issue, make sure it has the right `Epic`.** There
+is no `Other` catch-all — every open issue gets a real thread. Steps:
 
-1. Add it if missing: `gh project item-add 1 --owner wifihaven --url <issue-url>`.
-2. Set `Epic` to the matching thread from the taxonomy in
-   `docs/project-board.md` (Observability/Metrics, Global Policy & Default-Deny,
-   Dashboard & UX, Blocklists & Enforcement, CI/CD & Ops, Rollups & Data, Mobile
-   App, Launch & Marketing, E2E Test Coverage, Schedules, or Other) — judge from
-   the title, labels, and body.
-3. Set `Status`: `In Progress` if it carries the `in-progress` label, `Blocked`
-   if `blocked` / `blocked-on-#NNN`, otherwise `Todo`.
+1. Add an `issue<TAB>epic` row to `scripts/project-epics.tsv`, choosing the
+   matching thread from the taxonomy in `docs/project-board.md` (the 18 epics:
+   Observability & Metrics, Global Policy & Default-Deny, Dashboard & UX,
+   Blocklists & Enforcement, DNS-Bypass & Attribution, CI/CD & Ops, E2E Test
+   Coverage, Router Agent & Release, Block Page, Usage & Screen-Time, Database &
+   Data Lifecycle, API Contract & Type Safety, Notifications & Alerting, Security
+   & Access Control, Schedules, Mobile App, Launch Branding & Naming, Cost
+   Reduction) — judge from the title, labels, and body.
+2. Run `scripts/project-board-sync.sh` (or `DRY_RUN=1 …` to preview). It adds any
+   missing item, prunes closed items, and sets every Epic + Status idempotently.
+   Status is derived from labels: `in-progress` → `In Progress`; `blocked` /
+   `blocked-on-#NNN` → `Blocked`; otherwise `Todo`.
 
-**Starting a large new thread? Create a new `Epic` option for it** instead of
-forcing it into `Other`. Only do this for a thread big enough to deserve its own
-swimlane — a new umbrella, or a body of work that will span several issues; a
-one-off still goes in `Other`. Add the option in the Project UI (Epic field →
-add option) or via GraphQL `updateProjectV2Field` (pass the full option list,
-each `{name,color,description}`), then record the new epic in
-`docs/project-board.md` so the taxonomy stays the source of truth.
+**Starting a large new thread? Add a new `Epic` option for it.** Only do this for
+a thread big enough to deserve its own swimlane — a new umbrella, or a body of
+work that will span several issues. Add it to `CANONICAL_EPICS` in
+`scripts/project-board-sync.sh` **and** the taxonomy table in
+`docs/project-board.md`, then re-run the script (it reshapes the Epic options and
+re-asserts every assignment from the TSV).
 
 Field IDs and option IDs are discoverable with
-`gh project field-list 1 --owner wifihaven --format json`; set a field with
-`gh project item-edit --id <itemId> --project-id <projectId> --field-id <fid>
---single-select-option-id <oid>`.
+`gh project field-list 1 --owner wifihaven --format json`; the sync script
+resolves them at runtime so they never need hardcoding.
 
 ## Tech stack decisions
 
