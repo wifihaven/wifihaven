@@ -53,6 +53,26 @@ That runs both generators:
 Inspect the diff and update the *consumer* side in the same PR. Never
 regenerate without reading the diff — that defeats the contract.
 
+### Which `luci.jsonc` serializes the router→API fixtures (#1367)
+
+The agent serializes its POST bodies with `luci.jsonc.stringify` — the OpenWrt
+C module `luci-lib-jsonc`. That module isn't on luarocks, so:
+
+* **Locally**, `regen-contract-fixtures.sh` uses the shim
+  `openwrt/test/shim/luci/jsonc.lua`, which is hand-rolled to **faithfully
+  emulate** the real module (empty table → `[]`, whole double → `N`, fractional
+  → full `%.17g`, `/` → `\/`). No C toolchain needed to regenerate.
+* **In CI** (the `Contract Tests` job), `openwrt/test/build-luci-jsonc.sh`
+  compiles the **real** `luci-lib-jsonc` (pinned to the openwrt-23.05 source by
+  commit SHA + sha256, matching the deployed router) and the lua generator runs
+  against it via `WIFIHAVEN_LUCI_JSONC_CPATH`. So the committed bytes are
+  verified against the exact encoder the router runs.
+
+Because CI regenerates with the real module and diffs, any drift between the
+shim and the real module surfaces as a failing drift check — the shim can't go
+stale silently. `openwrt/test/jsonc_shim_spec.lua` pins the shared fidelity
+contract and runs against both.
+
 ## One documented exception: `register_router_request.json`
 
 The actual producer for `POST /api/router/register` is the shell `printf`

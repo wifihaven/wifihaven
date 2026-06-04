@@ -14,7 +14,10 @@
 --
 -- The expectations below are the luci.jsonc behaviors captured directly from
 -- the real module on an OpenWrt target (`lua -e 'print(require("luci.jsonc")
--- .stringify(<x>))'`). They are the contract the shim must meet.
+-- .stringify(<x>))'`). They are the contract the shim must meet — and CI runs
+-- this same spec against the REAL module (built by test/build-luci-jsonc.sh),
+-- so it doubles as a guard that an upstream/json-c change hasn't moved the
+-- behavior our fixtures depend on.
 local jsonc = require("luci.jsonc")
 
 describe("luci.jsonc shim fidelity (#1367)", function()
