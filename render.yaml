@@ -30,14 +30,22 @@ services:
   - type: web
     runtime: image
     name: wifihaven-api-staging
-    # #1268: was `free` (512 MB / 0.1 CPU, spins down). The free tier's slow
-    # deploy cutover + 0.1-CPU starvation made the new instance miss CD's
-    # 15-min "serve the new sha" window even though the JVM itself started
-    # clean (no OOM in the deploy logs — see #1268). `starter` keeps the same
-    # 512 MB (proven sufficient with the heap below) but removes spin-down and
-    # gives 0.5 CPU. Bump to `standard` (2 GB / 1 CPU, like prod) only if OOM
-    # actually appears in the logs.
-    plan: starter
+    # #1389 / #1386: back to `free` (512 MB / 0.1 CPU, spins down idle) to
+    # save ~$7/mo. The original bump in #1268 was driven by missing CD's
+    # 15-min "serve the new sha" window on 0.1 CPU — the JVM itself started
+    # clean (no OOM in the deploy logs), but the cold-start was right at the
+    # ceiling. The CD wait in master-api-ui.yml's deploy-staging job is now
+    # 30 min (up from 15) so the slower free-tier cold-start has clear room;
+    # historical `starter` deploys here finish in ~100-170s, and JVM time
+    # scales ~5x with CPU, so ~500-900s on free is the expected envelope.
+    # Free spin-down (~15 min idle) doesn't bite CD — smoke-staging,
+    # api-smoke-staging, and gate-3b-api-staging all hit the service
+    # immediately after deploy, so it's still warm. Interactive debugging
+    # absorbs a one-time ~30-60s wake-up. RAM cap is unchanged (free and
+    # starter are both 512 MB), so the -Xmx384m heap envelope carries over.
+    # Bump back to `starter` if free's cold-start drifts beyond the 30-min
+    # window, or to `standard` if OOM actually appears in the logs.
+    plan: free
     region: oregon
     numInstances: 1
     healthCheckPath: /api/health
@@ -79,10 +87,11 @@ services:
       # ample and stays well clear of Render's reserved connections.
       - key: WIFIHAVEN_DB_POOL_SIZE
         value: "8"
-      # #590 / #1268: `starter` is 512 MB (same as the old free tier). Leave
-      # headroom for OS + JIT + native heap; this -Xmx384m envelope started
-      # clean with no OOM on free, so it carries over unchanged. Raise the heap
-      # (and move to `plan: standard`, 2 GB) only if OOM appears in logs.
+      # #590 / #1268 / #1389: free tier is 512 MB. Leave headroom for OS +
+      # JIT + native heap; this -Xmx384m envelope started clean on free
+      # before #1268 and stays unchanged across the free → starter → free
+      # round-trip. Raise the heap (and move to `plan: standard`, 2 GB) only
+      # if OOM appears in logs.
       - key: JVM_HEAP_OPTS
         value: "-Xms256m -Xmx384m"
       # Staging runs DEBUG so issues are visible in the Render log stream.
