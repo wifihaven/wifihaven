@@ -188,15 +188,26 @@ jobs:
           WH_ROUTER_IMAGE_PATH: ${{ steps.image.outputs.path }}
         run: scripts/e2e-vm.sh --mode=fake
 
+      # #1370: surface the router/client serial consoles on failure. This step
+      # runs before "Tear down VMs" below, and router-down.sh leaves .run/ in
+      # place, so the logs are present at upload time. Name console.log
+      # explicitly (the diagnostic that was missing for the #1369 reaper race)
+      # alongside the broad .run/** sweep, and use if-no-files-found: warn so an
+      # empty .run/ — a pre-qemu pick-time abort never wrote a serial log — is
+      # logged rather than silently ignored. Control sockets moved to
+      # ${XDG_RUNTIME_DIR}/wh-vm (#1219); serial logs stay under
+      # .run/**/console.log.
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-vm-fake-failure-${{ matrix.pkg_format }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            scripts/vm/.run/**/console.log
+            scripts/vm/.run/**/*.log
             scripts/vm/.run/**
             !scripts/vm/.run/**/*.qcow2
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Tear down VMs

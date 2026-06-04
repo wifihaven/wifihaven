@@ -36,6 +36,35 @@ _release_reservation_on_fail() {
 }
 trap _release_reservation_on_fail EXIT
 
+# Observability (#1370): under `set -e`, an abort prints nothing and the EXIT
+# trap above is silent, so a router-up failure surfaces in CI as `rc=1` with
+# completely empty stdout/stderr. That blinded the #1369 reaper-race diagnosis
+# (a `set -e` abort inside a command substitution during the bridge pick) — it
+# took an SSH + `bash -x` repro to root-cause. Print the failing line + command
+# and a tail of the router serial console to stderr on any non-zero exit before
+# the VM is confirmed up.
+#
+# Strictly diagnostic: errtrace fires the ERR trap inside functions too, but
+# the trap touches no exit code and is registered separately from the EXIT
+# trap, so the #1225 reservation-release behavior is unchanged. The serial tail
+# is guarded so the trap itself can never fail the script.
+set -o errtrace
+_router_diag_on_err() {
+  local rc=$? line="${BASH_LINENO[0]:-?}"
+  [[ "${_router_booted}" == "1" ]] && return 0
+  {
+    echo "router-up.sh: FAILED (rc=${rc}) at line ${line}: ${BASH_COMMAND}"
+    if [[ -n "${WH_ROUTER_SERIAL_LOG:-}" && -f "${WH_ROUTER_SERIAL_LOG}" ]]; then
+      echo "router-up.sh: --- last 40 lines of ${WH_ROUTER_SERIAL_LOG} ---"
+      tail -n 40 "${WH_ROUTER_SERIAL_LOG}" 2>/dev/null || true
+      echo "router-up.sh: --- end serial console ---"
+    else
+      echo "router-up.sh: (no router serial console at ${WH_ROUTER_SERIAL_LOG:-<unset>} yet — failed before qemu wrote it)"
+    fi
+  } >&2
+}
+trap _router_diag_on_err ERR
+
 "${HERE}/lan-bridge-up.sh"
 
 ensure_openwrt_image

@@ -77,7 +77,18 @@ def router_up(*, image_path: str | None = None, wait_ssh_timeout: float = 180) -
         env["WH_ROUTER_IMAGE_PATH"] = image_path
     env.setdefault("WH_ROUTER_HTTP_PORT", str(ROUTER_HTTP_PORT))
     env.setdefault("WH_ROUTER_SSH_PORT", str(ROUTER_SSH_PORT))
-    res = run([_vm_script("router-up.sh")], env=env, timeout=300)
+    # #1370: don't let sh.Result.check() raise the bare `rc=1` / empty-stderr
+    # error — a router-up failure (e.g. the #1369 pick-time reaper race) carries
+    # its real cause in the serial console, which router-up.sh's ERR trap also
+    # tails to stderr. Append both so the pytest failure is self-explanatory.
+    res = run([_vm_script("router-up.sh")], env=env, timeout=300, check=False)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"router-up.sh failed (rc={res.returncode}).\n"
+            f"--- router serial console (tail) ---\n{router_serial_log()}\n"
+            f"--- router-up.sh stderr ---\n{res.stderr or '(empty)'}\n"
+            f"--- router-up.sh stdout ---\n{res.stdout or '(empty)'}"
+        )
     _wait_for_router_ssh(timeout_s=wait_ssh_timeout)
     return res
 
@@ -124,7 +135,12 @@ def _wait_for_router_ssh(*, timeout_s: float = 240, interval_s: float = 3.0) -> 
             except _subprocess.TimeoutExpired:
                 last_err = "ssh probe timed out"
         _time.sleep(interval_s)
-    raise TimeoutError(f"router SSH never came up after {timeout_s}s (last: {last_err})")
+    # #1370: a hung boot returns rc=0 from router-up.sh (it daemonizes once qemu
+    # launches) but never answers SSH, so the serial console is the only clue.
+    raise TimeoutError(
+        f"router SSH never came up after {timeout_s}s (last: {last_err})\n"
+        f"--- router serial console (tail) ---\n{router_serial_log()}"
+    )
 
 
 def router_down() -> Result:
