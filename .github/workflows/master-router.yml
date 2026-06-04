@@ -55,6 +55,15 @@ on:
       - 'scripts/e2e/lib/**'
       - 'scripts/e2e/fake-api/**'
       - 'scripts/e2e/pytest.ini'
+      # The VM harness itself: gate-2 (e2e-vm-fake) and gate-3a boot the
+      # router image via these scripts (router-up.sh, lib.sh's bridge pool +
+      # orphan reaper, etc.). A bug here can red the gates without touching a
+      # single agent byte — exactly #1369, where lib.sh's reaper aborted
+      # router-up.sh under concurrency. router-image-build.yml already PR-gates
+      # on scripts/vm/**; the CD gates that actually exercise the harness must
+      # re-run on it too. (Publish still waits at the manual production gate,
+      # so a harness-only change can't auto-ship a new openwrt-latest.)
+      - 'scripts/vm/**'
   workflow_dispatch:
 
 # Workflow-level concurrency scoped to THIS pipeline's group name — router
