@@ -1,0 +1,63 @@
+name: Grafana Cloud deploy annotation
+description: >
+  POST a deploy-lifecycle annotation to Grafana Cloud so each Render deploy
+  shows up as a vertical marker across every dashboard. Replaces the
+  standalone `wifihaven-deploy-webhook` Render service (#1390): the workflow
+  already drives the Render deploy hook and knows the git sha + outcome, so
+  the webhook hop was redundant. Failure to annotate must NEVER fail the
+  caller — observability is non-critical (cf. #1208 / #1245).
+
+inputs:
+  grafana-url:
+    description: Grafana stack base URL (e.g. https://<stack>.grafana.net).
+    required: true
+  grafana-token:
+    description: Grafana Cloud API token with annotations:write.
+    required: true
+  env:
+    description: Deployment environment tag (staging|prod).
+    required: true
+  surface:
+    description: >
+      Deploy surface — e.g. `render` for the API on Render, `pages` for the
+      SPA on Cloudflare Pages. Tagged onto the annotation so an operator can
+      filter "Render API only" vs "SPA only" vs everything.
+    required: false
+    default: render
+  sha:
+    description: Short git sha being deployed.
+    required: true
+  lifecycle:
+    description: Lifecycle stage — one of started, live, failed.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: POST Grafana annotation
+      shell: bash
+      # `|| true` keeps annotation failures from tainting the job — a missing
+      # secret or a Grafana outage must not block a deploy. Errors surface in
+      # the workflow log for the operator.
+      env:
+        GRAFANA_URL: ${{ inputs.grafana-url }}
+        GRAFANA_TOKEN: ${{ inputs.grafana-token }}
+        ENV: ${{ inputs.env }}
+        SURFACE: ${{ inputs.surface }}
+        SHA: ${{ inputs.sha }}
+        LIFECYCLE: ${{ inputs.lifecycle }}
+      run: |
+        set -u
+        if [ -z "${GRAFANA_URL}" ] || [ -z "${GRAFANA_TOKEN}" ]; then
+          echo "GRAFANA_URL or GRAFANA_TOKEN not configured — skipping annotation." >&2
+          exit 0
+        fi
+        body=$(printf '{"text":"deploy %s %s %s %s","tags":["deploy","%s","%s","%s"]}' \
+                 "${SHA}" "${ENV}" "${SURFACE}" "${LIFECYCLE}" \
+                 "${SURFACE}" "${ENV}" "${LIFECYCLE}")
+        curl --silent --show-error --max-time 15 \
+          -X POST "${GRAFANA_URL%/}/api/annotations" \
+          -H "Authorization: Bearer ${GRAFANA_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "${body}" \
+          || echo "Grafana annotation POST failed — ignoring (non-critical)." >&2

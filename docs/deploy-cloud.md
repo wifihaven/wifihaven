@@ -273,7 +273,60 @@ Same as `docs/render-readonly-role.md`, but for `wifihaven-pg-prod`:
 
 ---
 
-## 11. Deferred items
+## 11. Observability — Grafana Cloud stack
+
+The cloud metrics + dashboard stack lives at **`https://wifihaven.grafana.net`**
+(Grafana Cloud free tier). It receives:
+
+- **Application metrics** — pushed by `wifihaven-alloy` (Render worker,
+  `deploy/alloy/config.alloy`) which scrapes the internal `/metrics` on
+  each API and `remote_write`s to Grafana Cloud Prometheus. See
+  [`docs/design/metrics-observability.md`](design/metrics-observability.md)
+  §6.2.
+- **Render infrastructure metrics** — managed-Postgres CPU/RAM/conns +
+  per-service CPU/RAM, streamed natively via Render → Grafana Cloud OTLP
+  (no collector). Design doc §6.3.
+- **Deploy annotations** — POSTed directly from
+  `.github/workflows/master-api-ui.yml` via the
+  [`.github/actions/grafana-annotation`](../.github/actions/grafana-annotation)
+  composite action. Tagged
+  `[deploy, <surface>, <env>, <lifecycle>]` where surface is `render`
+  (API on Render) or `pages` (SPA on Cloudflare Pages); env is
+  `staging` or `prod`; lifecycle is `started` / `live` / `failed`. The
+  standalone `wifihaven-deploy-webhook` Render service was retired in
+  #1390 — saves ~$7/mo at the `starter` worker floor.
+
+### Repo secrets (GitHub Actions)
+
+| Secret | Value |
+| --- | --- |
+| `GRAFANA_CLOUD_URL` | `https://wifihaven.grafana.net` |
+| `GRAFANA_CLOUD_ANNOTATION_TOKEN` | Grafana Cloud API token, `annotations:write` scope |
+
+Create the token under **Administration → Service accounts** (or
+**Users → Access tokens**) in the stack UI. Set both with:
+
+```sh
+gh secret set GRAFANA_CLOUD_URL --repo wifihaven/wifihaven \
+  --body 'https://wifihaven.grafana.net'
+gh secret set GRAFANA_CLOUD_ANNOTATION_TOKEN --repo wifihaven/wifihaven
+# paste token, Ctrl-D
+```
+
+### Render-side secrets (Alloy)
+
+The Alloy collector uses three Render-managed (`sync: false`) secrets
+declared in `render.yaml` and set in the Render dashboard:
+`GRAFANA_CLOUD_PROM_URL`, `GRAFANA_CLOUD_PROM_USER`,
+`GRAFANA_CLOUD_PROM_PASSWORD`. The PROM_URL is the Grafana Cloud
+Prometheus `remote_write` endpoint (distinct from the stack URL above —
+read it from **Connections → Prometheus** in the stack UI), PROM_USER
+is the numeric instance id, PROM_PASSWORD is a Grafana Cloud API token
+with `metrics-push` scope.
+
+---
+
+## 12. Deferred items
 
 - **CI deploy hook for API** (#588): API redeploys still trigger from the
   Render dashboard (or Render's git connection) until #588 lands. After

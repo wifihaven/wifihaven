@@ -393,6 +393,11 @@ overlay. All config is declarative in-repo, consistent with the project's
 
 ### 6.2 Cloud / Render — Grafana Alloy → Grafana Cloud
 
+> The concrete stack is **`https://wifihaven.grafana.net`** (free tier).
+> Operator runbook + secret wiring lives in
+> [`docs/deploy-cloud.md`](../deploy-cloud.md) §11.
+
+
 Render image-runtime services can't host a co-located persistent
 Prometheus cleanly, and `/metrics` must **not** be exposed on the public
 custom domain. The cloud answer is a hosted backend reached by a small

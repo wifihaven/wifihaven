@@ -282,55 +282,17 @@ services:
       - key: GRAFANA_CLOUD_PROM_PASSWORD
         sync: false
 
-  # ── Deploy-event annotations: Render webhooks → Grafana Cloud ────────────────
-  # #1245: turns each Render deploy lifecycle webhook (started / live / failed)
-  # into a Grafana annotation so deploys show as vertical markers across every
-  # dashboard. This is the fix for the 2026-05-31 "which deploy pegged DB CPU?"
-  # archaeology — Render's metrics stream (#1244) carries metrics but not deploy
-  # events, so the marker has to come from the webhook.
-  #
-  # Standalone by design, NOT a route on the API: the API owns parental-control
-  # policy, and a Grafana-Cloud client there would be dead weight for the
-  # self-hosted install. stdlib-only Python baked into a thin image
-  # (deploy/deploy-webhook/Dockerfile), same pattern as wifihaven-alloy above.
-  #
-  # type:web — unlike Alloy this has an inbound role (Render POSTs the webhook),
-  # so it binds a port and exposes /healthz. One receiver serves both API
-  # services; it derives the env tag from the payload's serviceName. Not a
-  # dependency of either API service and they don't depend on it — an annotation
-  # outage never affects API availability or blocks a deploy.
-  #
-  # autoDeploy:no keeps promotion explicit, consistent with the other services.
-  #
-  # Wiring (operator, one-time, in the Render dashboard): create a webhook on
-  # each API service pointing at this service's /webhook URL; copy the generated
-  # signing secret into WEBHOOK_SECRET below. See deploy/deploy-webhook/README.md.
-  - type: web
-    runtime: docker
-    name: wifihaven-deploy-webhook
-    plan: starter
-    region: oregon
-    numInstances: 1
-    healthCheckPath: /healthz
-    autoDeploy: no
-    dockerfilePath: ./deploy/deploy-webhook/Dockerfile
-    dockerContext: ./deploy/deploy-webhook
-    envVars:
-      # Render webhook signing secret (Standard-Webhooks; whsec_… or plain).
-      # Render-managed — set in the dashboard from the webhook's signing secret.
-      - key: WEBHOOK_SECRET
-        sync: false
-      # Grafana Cloud stack base URL (https://<stack>.grafana.net) + an API
-      # token with annotations:write. Render-managed secrets.
-      - key: GRAFANA_URL
-        sync: false
-      - key: GRAFANA_TOKEN
-        sync: false
-      # Optional: the thin webhook payload omits the git sha, so the receiver
-      # resolves it via the Render API when this token is set; otherwise the
-      # annotation falls back to the service name. Render-managed secret.
-      - key: RENDER_API_TOKEN
-        sync: false
+  # ── Deploy-event annotations moved to GitHub Actions (#1390) ─────────────────
+  # The standalone `wifihaven-deploy-webhook` Render service was retired here.
+  # GitHub Actions already drives every Render deploy (via the staging/prod
+  # deploy hooks, see master-api-ui.yml) and knows the git sha + deploy
+  # outcome, so it POSTs Grafana annotations directly — the Render-side
+  # webhook receiver was a redundant hop. Annotation wiring lives at
+  # `.github/workflows/master-api-ui.yml` via
+  # `.github/actions/grafana-annotation`. Saves ~$7/mo (the previous service
+  # was pinned to Render's `starter` worker floor). Operator follow-up:
+  # delete the Render webhook + dashboard secrets on the API services after
+  # apply.
 
 databases:
   # ── Staging Postgres ───────────────────────────────────────────────────────

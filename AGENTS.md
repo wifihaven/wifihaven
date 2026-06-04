@@ -635,6 +635,17 @@ Rules of thumb:
   cardinality.
 - A new metric then **ships with its dashboard panel** — see the next rule.
 
+## Grafana Cloud stack
+
+The cloud metrics + dashboard stack lives at
+**`https://wifihaven.grafana.net`** (free tier). It hosts app metrics
+(pushed by `wifihaven-alloy`), Render infra metrics (native OTLP), and
+deploy annotations (POSTed by `.github/workflows/master-api-ui.yml` via
+`.github/actions/grafana-annotation`). Repo secrets driving the
+annotation POSTs are `GRAFANA_CLOUD_URL` +
+`GRAFANA_CLOUD_ANNOTATION_TOKEN`. Operator runbook in
+[`docs/deploy-cloud.md`](docs/deploy-cloud.md) §11.
+
 ## A new metric ships with its dashboard {#metrics-need-a-dashboard}
 
 **A PR that adds or changes an emitted metric series must also add or update
