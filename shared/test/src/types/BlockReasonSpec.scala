@@ -24,9 +24,28 @@ object BlockReasonSpec extends ZIOSpecDefault {
           MacBlockReason.TimeLimit,
           MacBlockReason.Manual,
           MacBlockReason.Unmanaged,
+          MacBlockReason.DefaultDeny,
         ).foldLeft(assertTrue(true)) { (acc, r) =>
           acc && assertTrue(r.toJson.fromJson[MacBlockReason].contains(r))
         }
+      },
+      // #1316 / #1308: DefaultDeny is the new per-profile default-deny baseline
+      // reason. It must serialize distinctly from every existing case.
+      test("DefaultDeny encodes as its own capitalized string") {
+        val r: MacBlockReason = MacBlockReason.DefaultDeny
+        assertTrue(r.toJson == "\"DefaultDeny\"") &&
+        assertTrue("\"DefaultDeny\"".fromJson[MacBlockReason].contains(r))
+      },
+      test("DefaultDeny is distinct from every other MacBlockReason wire form") {
+        val others = List[MacBlockReason](
+          MacBlockReason.Paused,
+          MacBlockReason.Schedule,
+          MacBlockReason.TimeLimit,
+          MacBlockReason.Manual,
+          MacBlockReason.Unmanaged,
+        )
+        val dd     = (MacBlockReason.DefaultDeny: MacBlockReason).toJson
+        assertTrue(others.forall(o => o.toJson != dd))
       },
       test("rejects unknown reason") {
         assertTrue("\"Whatever\"".fromJson[MacBlockReason].isLeft)
@@ -56,6 +75,11 @@ object BlockReasonSpec extends ZIOSpecDefault {
         assertTrue(r.toJson == "{\"kind\":\"paused\"}") &&
         assertTrue(r.toJson.fromJson[BlockReason].contains(MacBlockReason.Paused))
       },
+      test("DefaultDeny encodes in kind-tagged BlockReason form") {
+        val r: BlockReason = MacBlockReason.DefaultDeny
+        assertTrue(r.toJson == "{\"kind\":\"defaultDeny\"}") &&
+        assertTrue(r.toJson.fromJson[BlockReason].contains(MacBlockReason.DefaultDeny))
+      },
       test("decoder rejects unknown kind") {
         assertTrue("{\"kind\":\"frobnicate\"}".fromJson[BlockReason].isLeft)
       },
@@ -75,6 +99,15 @@ object BlockReasonSpec extends ZIOSpecDefault {
         assertTrue(BlockReason.fromWire("Schedule") == MacBlockReason.Schedule) &&
         assertTrue(BlockReason.fromWire("TimeLimit") == MacBlockReason.TimeLimit) &&
         assertTrue(BlockReason.fromWire("Manual") == MacBlockReason.Manual)
+      },
+      test("DefaultDeny parses from both wire forms and round-trips asWire") {
+        assertTrue(BlockReason.fromWire("default_deny") == MacBlockReason.DefaultDeny) &&
+        assertTrue(BlockReason.fromWire("DefaultDeny") == MacBlockReason.DefaultDeny) &&
+        assertTrue(BlockReason.asWire(MacBlockReason.DefaultDeny) == "default_deny") &&
+        assertTrue(
+          BlockReason.fromWire(BlockReason.asWire(MacBlockReason.DefaultDeny)) ==
+            MacBlockReason.DefaultDeny,
+        )
       },
       test("category:<slug>") {
         assertTrue(BlockReason.fromWire("category:ads") == BlockReason.Category(ads))
