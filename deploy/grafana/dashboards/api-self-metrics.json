@@ -91,8 +91,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "HTTP error ratio by route (4xx client / 5xx server)",
-      "description": "Per-route fraction of requests returning 4xx vs 5xx: sum by (route) (rate(http_requests_total{status=~\"4..|5..\"}[5m])) / sum by (route) (rate(http_requests_total[5m])). Split because the two mean different things: a 5xx is an API fault, a 4xx is a client/agent fault (auth rejection OR a malformed request the server refused — e.g. #1382, where /api/router/metrics returned 400 on every push from pre-#1365 agents). This single per-endpoint view covers every route, so a router-ingest 400 shows up here as a 4xx on /api/router/metrics — no route-specific panel needed. (3xx, e.g. the 304 ETag path on /api/router/policy, is healthy and excluded.)",
+      "title": "HTTP success rate by route (4xx / 5xx breakout)",
+      "description": "Per-route SUCCESS rate (higher = healthier): sum by (route) (rate(http_requests_total{status=~\"2..|3..\"}[5m])) / sum by (route) (rate(http_requests_total[5m])) — 2xx and 3xx (e.g. the 304 ETag path on /api/router/policy) count as success. The 4xx and 5xx series are the breakout of what's eating into it, kept separate because they mean different things: a 5xx is an API fault, a 4xx is a client/agent fault (auth rejection OR a malformed request the server refused — e.g. #1382, where /api/router/metrics returned 400 on every push from pre-#1365 agents). One per-endpoint view covers every route, so a router-ingest 400 shows here as a dip in that route's success line plus a 4xx line — no route-specific panel needed.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 3,
@@ -101,27 +101,20 @@
           "color": { "mode": "palette-classic" },
           "unit": "percentunit",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 },
-              { "color": "red", "value": 0.05 }
-            ]
-          }
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1 }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (route) (rate(http_requests_total{status=~\"5..\", env=\"$env\"}[5m])) / sum by (route) (rate(http_requests_total{env=\"$env\"}[5m]))",
-          "legendFormat": "{{route}} 5xx",
+          "expr": "sum by (route) (rate(http_requests_total{status=~\"2..|3..\", env=\"$env\"}[5m])) / sum by (route) (rate(http_requests_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{route}} success",
           "refId": "A"
         },
         {
@@ -129,6 +122,12 @@
           "expr": "sum by (route) (rate(http_requests_total{status=~\"4..\", env=\"$env\"}[5m])) / sum by (route) (rate(http_requests_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{route}} 4xx",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (route) (rate(http_requests_total{status=~\"5..\", env=\"$env\"}[5m])) / sum by (route) (rate(http_requests_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{route}} 5xx",
+          "refId": "C"
         }
       ]
     },
@@ -250,36 +249,37 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "DB query error ratio by op",
-      "description": "Per-op fraction of queries that FAILED: sum by (op) (rate(db_queries_total{status=\"error\"}[5m])) / sum by (op) (rate(db_queries_total[5m])). The success-rate companion to the rate/latency panels left of it — duration alone can't tell a healthy query from one that's erroring (constraint violation, deadlock, pool-exhaustion timeout). db_queries_total{op,status} is emitted by DbMetrics.timed on every transact, status ∈ {ok,error}. A non-zero line here means that repo method is throwing; cross-check the latency panel to tell a slow query from a failing one.",
+      "title": "DB query success rate by op",
+      "description": "Per-op SUCCESS rate (higher = healthier): sum by (op) (rate(db_queries_total{status=\"ok\"}[5m])) / sum by (op) (rate(db_queries_total[5m])). The success-rate companion to the rate/latency panels left of it — duration alone can't tell a healthy query from one that's erroring (constraint violation, deadlock, pool-exhaustion timeout). db_queries_total{op,status} is emitted by DbMetrics.timed on every transact, status ∈ {ok,error}. A line dipping below 1 means that repo method is throwing; cross-check the latency panel to tell a slow query from a failing one.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "id": 14,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": { "mode": "thresholds" },
           "unit": "percentunit",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 },
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1 },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 },
-              { "color": "red", "value": 0.05 }
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.95 },
+              { "color": "green", "value": 0.99 }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min"] },
+        "tooltip": { "mode": "multi", "sort": "asc" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (op) (rate(db_queries_total{status=\"error\", env=\"$env\"}[5m])) / sum by (op) (rate(db_queries_total{env=\"$env\"}[5m]))",
+          "expr": "sum by (op) (rate(db_queries_total{status=\"ok\", env=\"$env\"}[5m])) / sum by (op) (rate(db_queries_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{op}}",
           "refId": "A"
         }
@@ -288,7 +288,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Auth failures by reason (401/403 — NOT bad request)",
-      "description": "sum by (reason) (rate(auth_failures_total[5m])). reason ∈ {bad_password, expired_token, bad_router_token, forbidden_role}. This counts ONLY authn/authz rejections (401/403). A malformed/un-decodable request body is a 400 bad-request and is NOT counted here — it appears as a 4xx on the offending route in 'HTTP error ratio by route' (top-left), never as bad_router_token (e.g. #1382: /api/router/metrics 400s from pre-#1365 agents). A bad_router_token spike means a fleet agent lost its token; a bad_password spike may be credential-stuffing.",
+      "description": "sum by (reason) (rate(auth_failures_total[5m])). reason ∈ {bad_password, expired_token, bad_router_token, forbidden_role}. This counts ONLY authn/authz rejections (401/403). A malformed/un-decodable request body is a 400 bad-request and is NOT counted here — it appears as a 4xx on the offending route in 'HTTP success rate by route' (top-left), never as bad_router_token (e.g. #1382: /api/router/metrics 400s from pre-#1365 agents). A bad_router_token spike means a fleet agent lost its token; a bad_password spike may be credential-stuffing.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
       "id": 8,
