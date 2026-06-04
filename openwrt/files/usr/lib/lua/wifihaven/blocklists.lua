@@ -43,7 +43,9 @@ end
 -- base_url: optional api base (e.g. "http://router:8080"). The snapshot ships
 --   relative blocklist urls ("/api/blocklists/<id>"); when base_url is given
 --   and the url is root-relative, they're joined so curl gets an absolute URL.
--- fs: optional table with {read, write, rename, remove, list}; defaults to real I/O.
+-- fs: optional table with {read, write, rename, remove, list, mkdir};
+--   defaults to real I/O. `mkdir` is called once on `cache_dir` before the
+--   first write so a fresh image doesn't ENOENT the atomic tmp-write (#1363).
 -- auth_token: optional router bearer token. The API's GET /api/blocklists/<id>
 --   route is router-authenticated (RouterRoutes.scala: routerAuth.authenticate),
 --   exactly like GET /api/router/policy — so the fetch MUST send
@@ -69,11 +71,12 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
     or nil
 
   -- Default filesystem ops (real I/O) when fs not injected.
-  local read_fn, write_fn, rename_fn
+  local read_fn, write_fn, rename_fn, mkdir_fn
   if fs then
     read_fn  = fs.read
     write_fn = fs.write
     rename_fn = fs.rename
+    mkdir_fn = fs.mkdir
   else
     read_fn  = function(path)
       local f, err = io.open(path, "r")
@@ -94,7 +97,23 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
       if not ok then return nil, err end
       return true, nil
     end
+    -- Best-effort `mkdir -p`. Idempotent; failures surface as the
+    -- subsequent write_fn ENOENT, which is the existing error path.
+    mkdir_fn = function(path)
+      os.execute(string.format("mkdir -p %q", path))
+      return true
+    end
   end
+
+  -- Ensure the cache directory exists before any write. Without this the
+  -- first successful fetch on a fresh image (e.g. the qemu e2e router VM,
+  -- where /etc/wifihaven/blocklists/ is not pre-created) ENOENT-fails the
+  -- atomic tmp-write step, the bl_member_index stays empty, dns-tail's
+  -- bl_ populator has no member to match on, and category enforcement is
+  -- silently a no-op. The 401 fix lifted the symptom one layer up
+  -- (#1360); without this `mkdir -p`, Suite G G4 (test_bl_direct_requery_blocked)
+  -- still red-gates. See #1363.
+  mkdir_fn(cache_dir)
 
   local bls = snapshot and snapshot.blocklists or {}
   for id, bl in pairs(bls) do

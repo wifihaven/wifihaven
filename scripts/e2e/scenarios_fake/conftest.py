@@ -183,6 +183,42 @@ def router_session(fake_server, fake_api) -> EnrolledRouter:
     if SKIP_VMS:
         pytest.skip("E2E_VM_SKIP_VMS=1 set; skipping VM-dependent scenarios")
     router_up(image_path=ROUTER_IMAGE_PATH)
+
+    # Pin the router VM's dnsmasq upstream resolvers to public DNS
+    # (1.1.1.1 + 8.8.8.8) and `noresolv=1` to ignore the WAN-DHCP-supplied
+    # resolver list. Without this, dnsmasq forwards via the QEMU SLIRP DNS
+    # proxy, which in turn forwards via the **host**'s /etc/resolv.conf —
+    # on the self-hosted KVM runner that points at the user's LAN router
+    # (a wifihaven router), which does NOT resolve the
+    # e2e-{brand,mid,edge}.wifihaven.net chain that the Suite G (#1351)
+    # CNAME direct-requery tests require. The records are deployed in the
+    # public wifihaven.net zone (#1357/#1358 master-cloudflare CD) — going
+    # straight to 1.1.1.1 / 8.8.8.8 sees them. Scoped to the e2e VM image,
+    # not production. See #1360.
+    #
+    # Also whitelist `wifihaven.net` from dnsmasq's `--stop-dns-rebind`
+    # protection. OpenWRT ships `rebind_protection=1` by default, which
+    # rejects upstream answers whose addresses fall in dnsmasq's "private"
+    # set (RFC1918, loopback, link-local, **plus the RFC 5737
+    # documentation ranges** including TEST-NET-1 192.0.2.0/24). The
+    # Suite G (#1351) leaf A record is 192.0.2.10 (chosen by #1360 for its
+    # never-routed/never-reassigned guarantee) — so without a domain
+    # carve-out, dnsmasq logs `possible DNS-rebind attack detected:
+    # e2e-edge.wifihaven.net` and discards the answer, the leaf never
+    # resolves on the router VM, and every G1..G4 test times out at the
+    # `dig` precondition. `rebind_domain=wifihaven.net` is the
+    # narrowly-scoped fix.
+    router_ssh(
+        "uci -q delete dhcp.@dnsmasq[0].server; "
+        "uci add_list dhcp.@dnsmasq[0].server='1.1.1.1'; "
+        "uci add_list dhcp.@dnsmasq[0].server='8.8.8.8'; "
+        "uci set dhcp.@dnsmasq[0].noresolv='1'; "
+        "uci add_list dhcp.@dnsmasq[0].rebind_domain='wifihaven.net'; "
+        "uci commit dhcp; "
+        "/etc/init.d/dnsmasq restart",
+        timeout=30,
+    )
+
     enrolled = enroll_router_against_fake(
         register_url=f"{fake_server.base_url_host}/api/router/register",
         api_url_for_router=fake_server.base_url_router,

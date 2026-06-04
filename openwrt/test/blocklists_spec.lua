@@ -152,6 +152,36 @@ describe("blocklists.fetch_and_cache", function()
     assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
   end)
 
+  -- #1363 regression: the cache directory may not exist on a fresh image
+  -- (e.g. the qemu e2e router VM, where /etc/wifihaven/blocklists/ is not
+  -- pre-created). Without an upfront mkdir, the first successful fetch
+  -- ENOENT-fails the atomic tmp-write, the bl_member_index stays empty,
+  -- dns-tail's bl_ populator has no member to match on, and category
+  -- enforcement silently no-ops. The 401 fix (#1360) lifted the symptom
+  -- one layer up but did not address this; Suite G G4
+  -- (test_bl_direct_requery_blocked) still red-gated until #1363 added
+  -- the mkdir here.
+  it("calls fs.mkdir(cache_dir) before the first write (#1363)", function()
+    local fs           = make_fs()
+    local mkdir_calls  = {}
+    fs.mkdir = function(path)
+      mkdir_calls[#mkdir_calls + 1] = path
+      return true
+    end
+    local function http_get(_url, _headers)
+      return 200, "example.com\n", {}
+    end
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(
+      s, http_get, fs, "/etc/wifihaven/blocklists", "http://api.example:8080")
+
+    assert.equal(1, #mkdir_calls, "mkdir must be called exactly once before writes")
+    assert.equal("/etc/wifihaven/blocklists", mkdir_calls[1])
+    assert.equal(0, #result.errors, "write must succeed once mkdir has been called")
+    assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
+  end)
+
   it("401s and records an error when no auth_token is passed to an authed route (#1360)", function()
     local fs = make_fs()
     local function authed_http_get(_url, headers)
