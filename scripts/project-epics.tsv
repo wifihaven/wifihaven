@@ -1,0 +1,220 @@
+# issue	epic
+# Epic must match a Project #2 "Epic" single-select option name exactly.
+# Status is derived live from the issue's labels (in-progress -> In Progress, else Todo);
+# it is intentionally NOT stored here so the board re-syncs correctly as labels change.
+1386	Cost Reduction
+1382	Observability & Metrics
+1381	Observability & Metrics
+1380	Schedules
+1379	Schedules
+1378	Schedules
+1368	Observability & Metrics
+1362	E2E Test Coverage
+1341	Dashboard & UX
+1336	Blocklists & Enforcement
+1330	CI/CD & Ops
+1325	Observability & Metrics
+1323	Dashboard & UX
+1322	Global Policy & Default-Deny
+1321	Global Policy & Default-Deny
+1320	Global Policy & Default-Deny
+1319	Global Policy & Default-Deny
+1318	Global Policy & Default-Deny
+1317	Global Policy & Default-Deny
+1316	Global Policy & Default-Deny
+1315	Global Policy & Default-Deny
+1305	E2E Test Coverage
+1304	E2E Test Coverage
+1302	Observability & Metrics
+1301	Observability & Metrics
+1281	Observability & Metrics
+1280	Observability & Metrics
+1258	Cost Reduction
+1240	Observability & Metrics
+1217	Router Agent & Release
+1216	Router Agent & Release
+1210	Observability & Metrics
+1208	Observability & Metrics
+1200	CI/CD & Ops
+1194	CI/CD & Ops
+1187	Database & Data Lifecycle
+1180	Router Agent & Release
+1174	Block Page
+1171	Launch Branding & Naming
+1148	Dashboard & UX
+1126	E2E Test Coverage
+1117	E2E Test Coverage
+1116	E2E Test Coverage
+1110	E2E Test Coverage
+1098	Dashboard & UX
+1089	Usage & Screen-Time
+1084	Usage & Screen-Time
+1080	Usage & Screen-Time
+1078	Usage & Screen-Time
+1069	Schedules
+1067	Blocklists & Enforcement
+1066	Dashboard & UX
+1065	Dashboard & UX
+1064	Dashboard & UX
+1062	Dashboard & UX
+1047	Blocklists & Enforcement
+1033	Router Agent & Release
+1029	CI/CD & Ops
+1023	Router Agent & Release
+1013	Database & Data Lifecycle
+1012	CI/CD & Ops
+1011	CI/CD & Ops
+995	Dashboard & UX
+987	Mobile App
+986	Mobile App
+985	Mobile App
+984	Mobile App
+983	Mobile App
+982	Mobile App
+981	Mobile App
+971	Blocklists & Enforcement
+958	Blocklists & Enforcement
+951	Dashboard & UX
+937	Global Policy & Default-Deny
+930	E2E Test Coverage
+923	E2E Test Coverage
+921	E2E Test Coverage
+915	CI/CD & Ops
+906	CI/CD & Ops
+892	Dashboard & UX
+889	CI/CD & Ops
+888	API Contract & Type Safety
+884	Notifications & Alerting
+877	CI/CD & Ops
+874	Notifications & Alerting
+862	Dashboard & UX
+860	Dashboard & UX
+859	Dashboard & UX
+856	Dashboard & UX
+849	Dashboard & UX
+844	Dashboard & UX
+842	Usage & Screen-Time
+834	CI/CD & Ops
+830	Dashboard & UX
+829	Dashboard & UX
+827	Dashboard & UX
+825	Dashboard & UX
+823	Dashboard & UX
+822	Dashboard & UX
+821	Dashboard & UX
+820	Dashboard & UX
+819	Dashboard & UX
+812	Database & Data Lifecycle
+810	Database & Data Lifecycle
+808	Database & Data Lifecycle
+798	Database & Data Lifecycle
+790	Usage & Screen-Time
+774	Router Agent & Release
+773	Router Agent & Release
+772	Router Agent & Release
+759	E2E Test Coverage
+753	Router Agent & Release
+747	Dashboard & UX
+730	Usage & Screen-Time
+726	Usage & Screen-Time
+709	Blocklists & Enforcement
+705	Blocklists & Enforcement
+703	DNS-Bypass & Attribution
+701	Block Page
+699	Router Agent & Release
+696	CI/CD & Ops
+695	CI/CD & Ops
+693	E2E Test Coverage
+679	Block Page
+675	CI/CD & Ops
+670	CI/CD & Ops
+657	CI/CD & Ops
+652	CI/CD & Ops
+645	Dashboard & UX
+638	API Contract & Type Safety
+637	CI/CD & Ops
+633	CI/CD & Ops
+625	CI/CD & Ops
+623	API Contract & Type Safety
+622	Security & Access Control
+604	CI/CD & Ops
+602	API Contract & Type Safety
+601	API Contract & Type Safety
+597	API Contract & Type Safety
+581	API Contract & Type Safety
+578	Block Page
+574	DNS-Bypass & Attribution
+573	DNS-Bypass & Attribution
+572	DNS-Bypass & Attribution
+561	Router Agent & Release
+560	Launch Branding & Naming
+532	E2E Test Coverage
+471	Observability & Metrics
+459	Dashboard & UX
+425	Dashboard & UX
+423	API Contract & Type Safety
+399	API Contract & Type Safety
+398	API Contract & Type Safety
+396	API Contract & Type Safety
+390	Router Agent & Release
+389	API Contract & Type Safety
+388	API Contract & Type Safety
+387	Router Agent & Release
+384	DNS-Bypass & Attribution
+383	Block Page
+379	API Contract & Type Safety
+376	API Contract & Type Safety
+374	Notifications & Alerting
+369	Security & Access Control
+363	Router Agent & Release
+348	Router Agent & Release
+345	E2E Test Coverage
+344	Dashboard & UX
+337	E2E Test Coverage
+335	Block Page
+332	Dashboard & UX
+317	Router Agent & Release
+304	Blocklists & Enforcement
+300	Usage & Screen-Time
+299	Dashboard & UX
+296	DNS-Bypass & Attribution
+274	Security & Access Control
+273	Dashboard & UX
+270	Router Agent & Release
+267	Dashboard & UX
+257	CI/CD & Ops
+251	CI/CD & Ops
+241	E2E Test Coverage
+240	E2E Test Coverage
+238	E2E Test Coverage
+198	Router Agent & Release
+172	CI/CD & Ops
+158	CI/CD & Ops
+154	E2E Test Coverage
+151	E2E Test Coverage
+140	E2E Test Coverage
+138	CI/CD & Ops
+137	API Contract & Type Safety
+136	Database & Data Lifecycle
+129	CI/CD & Ops
+124	Router Agent & Release
+122	API Contract & Type Safety
+121	API Contract & Type Safety
+113	Router Agent & Release
+112	Router Agent & Release
+111	Router Agent & Release
+89	Router Agent & Release
+81	CI/CD & Ops
+57	E2E Test Coverage
+37	Dashboard & UX
+33	CI/CD & Ops
+22	CI/CD & Ops
+19	Usage & Screen-Time
+18	Dashboard & UX
+17	Dashboard & UX
+16	Usage & Screen-Time
+1392	Cost Reduction
+1391	Cost Reduction
+1390	Cost Reduction
+1389	Cost Reduction
+1388	Cost Reduction
