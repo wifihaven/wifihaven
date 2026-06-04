@@ -179,8 +179,16 @@ services:
       # 24 has even more room, and the 1 GB of RAM absorbs 24 backends without
       # the startup-stall pressure that 40+ caused at 256 MB. Confirm against
       # `SHOW max_connections;` post-resize if ever pushing the pool higher.
+      #
+      # #1258 (2026-06-04): downsized prod Postgres back to basic-256mb after
+      # the #1254 rollup index landed and the 4-day post-index window confirmed
+      # the CPU peg was the missing index, not the tier. Pool dropped back to 8
+      # in lockstep ("raise/lower together"), so rolling-deploy peak is 2×8 =
+      # 16 backends + rollup/seed fibers — well under basic-256mb's verified
+      # max_connections=103 and under the 256 MB RAM ceiling now that the
+      # rollup lateral no longer materializes a per-MAC scan.
       - key: WIFIHAVEN_DB_POOL_SIZE
-        value: "12"
+        value: "8"
       # #786 / #785: bumped to `plan: standard` (2 GB / 1 CPU, $25/mo) after
       # prod started flapping under household load on free's 512 MB cap.
       # Heap sized to leave ~600 MB for OS + JIT + native; revisit if OOM
@@ -341,11 +349,24 @@ databases:
   # (measured 0.07–0.10 over 2026-05-31 21:25–21:33 UTC, single instance, no
   # deploy overlap) from steady router-ingest + dashboard + autovacuum, and
   # RAM sat at ~85% (183–220 MB / 256 MB) — also the connection-overlap
-  # pressure behind the deploy startup stalls (#1228/#1248). The 0.1-vCPU peg
-  # is a tier limit, not a workload spike, so rollup-cadence work (#1230/#1231)
-  # cannot create headroom the tier physically lacks. basic-1gb gives 5× CPU
-  # and 4× RAM, clearing both. Pool raised to 12 in tandem — see web_service.
+  # pressure behind the deploy startup stalls (#1228/#1248).
+  #
+  # #1258 (2026-06-04): downsized back to basic-256mb. The CPU peg in #1251
+  # was NOT a tier ceiling — root cause was the missing rollup-attribution
+  # index on connection_events(mac, dest_ip, ts), fixed by #1254/#1256 on
+  # 2026-05-31. With the index in place, prod DB CPU on basic-1gb settled
+  # at a steady ~0.02 vCPU (Render infra metrics, 4 days × ~96 hourly
+  # samples, 2026-05-31 23:00Z → 2026-06-04 21:00Z): min 0.010, p95 0.027,
+  # max 0.043 (excluding the post-upsize warmup hour at 0.27). That is
+  # ~5× under basic-256mb's 0.1-vCPU ceiling — comfortable for autovacuum
+  # + rollup ticks + 7 successful rolling deploys observed in the window.
+  # Pool dropped 12 → 8 in lockstep with the tier (see web_service comment),
+  # so deploy-overlap connection peak is 2×8 + a few rollup/seed fibers,
+  # well under verified max_connections=103. #1248 (bind-port-before-init)
+  # and #1255 (transient-DB resilience) both shipped 2026-05-31, so a brief
+  # restart from a future plan change is a non-event. Saves ~$19/mo
+  # (#1258 / #1386 cost-savings orchestrator).
   - name: wifihaven-pg-prod
-    plan: basic-1gb
+    plan: basic-256mb
     postgresMajorVersion: 16
     region: oregon
