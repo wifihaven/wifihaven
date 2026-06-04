@@ -432,6 +432,24 @@ stay in the database.
 - **Auditable in the UI.** A read-only audit view of who changed the global
   allow list and why (see SPA follow-up).
 
+### 7.1 Schema as built (#1317)
+
+The DB foundation ships in migration `V48__global_policy.sql` (schema-only PR
+per the migration-isolation rule). Nothing reads it yet — the PolicyService
+assembly is #1318 — so this migration is functionally inert on its own. All
+objects are small lookup / settings surfaces (not the unbounded-growth event
+tables), so it is metadata-only and safe on the Flyway startup path.
+
+| Object | Wire field it feeds | Notes |
+|--------|---------------------|-------|
+| `global_allow (id, host, reason, added_by, added_at, removed_by, removed_at)` | `global.extraAllowed` | Append/soft-delete; active set is `removed_at IS NULL`, served by a partial-unique index on `host`. |
+| `global_blocks (…same shape…)` | `global.extraBlocked` | Same audit/soft-delete shape; un-blockable except by `global_allow`. |
+| `global_blocklists (blocklist_id PK → blocklists.id, added_by, added_at)` | `global.blocklistIds` | Household-scoped category set; `ON DELETE CASCADE` from `blocklists`. |
+| `household_settings.global_blocked` | `global.blocked` | Network lockdown kill switch; default `false`. |
+| `household_settings.global_block_reason` | `global.blockReason` | Block-page copy when `global_blocked`. |
+| `household_settings.global_block_ip_only` | `global.blockIpOnly` | Network-wide strict-IP; default `false`. |
+| `profiles.default_deny` | (per-MAC `blocked`) | Collapses to `blocked = true` + `DefaultDeny`; default `false`. |
+
 ## 8. Follow-up implementation issues
 
 Filed against this design. Dependency order is shown; the migration PR (item 2)
