@@ -185,6 +185,65 @@ describe("blocklists.fetch_and_cache", function()
     assert.equal(2, #hosts)
   end)
 
+  -- #1363 regression: on a fresh image the cache_dir
+  -- (/etc/wifihaven/blocklists) does not exist yet, so the atomic-tmp open
+  -- fails with ENOENT and every category fetch records a "write failed: No
+  -- such file or directory" error. The bl_ ipset stays empty and category
+  -- enforcement is a silent no-op. fetch_and_cache must mkdir -p the cache
+  -- dir up front (via the injected fs.mkdir hook, defaulting to a real
+  -- mkdir on prod) before the first write.
+  it("creates the cache dir before writing when it does not exist (#1363)", function()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    -- fs whose write_fn errors with ENOENT until mkdir is called for the
+    -- parent dir. Mirrors the real busted_temp / POSIX behaviour.
+    local files = {}
+    local dirs  = {}
+    local mkdir_calls = {}
+    local fs = {
+      _files = files,
+      _dirs  = dirs,
+      mkdir = function(path)
+        mkdir_calls[#mkdir_calls + 1] = path
+        dirs[path] = true
+        return true, nil
+      end,
+      write = function(path, content)
+        local parent = path:match("^(.*)/[^/]+$")
+        if parent and not dirs[parent] then
+          return nil, path .. ": No such file or directory"
+        end
+        files[path] = content
+        return true, nil
+      end,
+      read = function(path) return files[path] end,
+      rename = function(from, to)
+        if files[from] then
+          files[to] = files[from]
+          files[from] = nil
+          return true, nil
+        end
+        return nil, "no such file: " .. tostring(from)
+      end,
+    }
+
+    local function http_get(_url, _headers)
+      return 200, "ads.example.com\n", {}
+    end
+
+    local s = snap({ test_ads = { version = "v1", url = "http://api/api/blocklists/test_ads" } })
+    local result = blocklists.fetch_and_cache(s, http_get, fs, cache_dir)
+
+    assert.truthy(#mkdir_calls > 0, "fetch_and_cache must mkdir the cache dir")
+    assert.equal(cache_dir, mkdir_calls[1])
+    -- No "No such file or directory" errors after the mkdir.
+    for _, e in ipairs(result.errors) do
+      assert.is_nil(e:match("No such file or directory"),
+        "unexpected ENOENT error after mkdir: " .. e)
+    end
+    assert.not_nil(files[cache_dir .. "/test_ads-v1.txt"],
+      "cache file must exist after fetch_and_cache succeeds")
+  end)
+
   it("returns error when http_get_fn is nil", function()
     local fs = make_fs()
     local s  = snap({ test_ads = { version = "abc123", url = "http://api/api/blocklists/test_ads" } })
