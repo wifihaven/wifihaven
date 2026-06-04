@@ -9,137 +9,134 @@
       "labels" : {
         "reason" : "boot"
       },
-      "value" : 1.0
+      "value" : 1
     },
     {
       "name" : "dnsmasq_restarts_total",
       "labels" : {
         "reason" : "policy_change"
       },
-      "value" : 12.0
+      "value" : 12
     },
     {
       "name" : "policy_apply_total",
       "labels" : {
         "result" : "nft_failed"
       },
-      "value" : 3.0
+      "value" : 3
     },
     {
       "name" : "policy_apply_total",
       "labels" : {
         "result" : "ok"
       },
-      "value" : 880.0
+      "value" : 880
     },
     {
       "name" : "snapshot_poll_total",
       "labels" : {
         "result" : "200"
       },
-      "value" : 140.0
+      "value" : 140
     },
     {
       "name" : "snapshot_poll_total",
       "labels" : {
         "result" : "304"
       },
-      "value" : 9300.0
+      "value" : 9300
     },
     {
       "name" : "snapshot_poll_total",
       "labels" : {
         "result" : "error"
       },
-      "value" : 6.0
+      "value" : 6
     }
   ],
   "gauges" : [
     {
       "name" : "agent_uptime_seconds",
-      "labels" : { },
-      "value" : 18060.0
+      "value" : 18060
     },
     {
       "name" : "agent_version",
       "labels" : {
         "version" : "0.3.1"
       },
-      "value" : 1.0
+      "value" : 1
     }
   ],
   "histograms" : [
     {
       "name" : "policy_apply_duration_seconds",
-      "labels" : { },
       "buckets" : [
         {
           "le" : "0.01",
-          "count" : 0.0
+          "count" : 0
         },
         {
           "le" : "0.05",
-          "count" : 1.0
+          "count" : 1
         },
         {
           "le" : "0.1",
-          "count" : 1.0
+          "count" : 1
         },
         {
           "le" : "0.5",
-          "count" : 2.0
+          "count" : 2
         },
         {
           "le" : "1",
-          "count" : 3.0
+          "count" : 3
         },
         {
           "le" : "5",
-          "count" : 3.0
+          "count" : 3
         },
         {
           "le" : "+Inf",
-          "count" : 3.0
+          "count" : 3
         }
       ],
-      "sum" : 0.82,
-      "count" : 3.0
+      "sum" : 0.81999999999999995,
+      "count" : 3
     },
     {
       "name" : "snapshot_poll_duration_seconds",
-      "labels" : { },
       "buckets" : [
         {
           "le" : "0.01",
-          "count" : 1.0
+          "count" : 1
         },
         {
           "le" : "0.05",
-          "count" : 2.0
+          "count" : 2
         },
         {
           "le" : "0.1",
-          "count" : 2.0
+          "count" : 2
         },
         {
           "le" : "0.5",
-          "count" : 3.0
+          "count" : 3
         },
         {
           "le" : "1",
-          "count" : 3.0
+          "count" : 3
         },
         {
           "le" : "5",
-          "count" : 3.0
+          "count" : 3
         },
         {
           "le" : "+Inf",
-          "count" : 3.0
+          "count" : 3
         }
       ],
-      "sum" : 0.328,
-      "count" : 3.0
+      "sum" : 0.32800000000000001,
+      "count" : 3
     }
   ]
 }

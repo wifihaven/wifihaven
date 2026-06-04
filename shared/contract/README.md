@@ -96,9 +96,15 @@ other.
   `metrics.build_batch` (the same function the agent's 60 s push timer calls)
   from a registry populated with one representative series per §5.1 emitted
   metric (cumulative counters, the uptime + version info gauges, both duration
-  histograms). Numeric fields render in their decoder-canonical `Double` form
-  (whole numbers as `N.0`) because every value in `RouterMetricsBatch` is typed
-  `Double`; `agentStartedAt` is pinned (the server's restart sentinel).
+  histograms). The bytes are the **genuine wire shape** the router emits via
+  `luci.jsonc`: a label-less series OMITS `labels` (real luci.jsonc renders an
+  empty Lua table as `[]`, which the `Map[String,String]` decoder rejects — the
+  #1365 bug), whole-number `Double` fields render as `N` (not `N.0`), and
+  fractional ones at full `%.17g` precision (`0.82` → `0.81999999999999995`).
+  Because zio-json re-encodes those differently (empty `Map` → `{}`, `Double` →
+  shortest form), `ContractGoldenSpec` compares this fixture at the **value**
+  level rather than byte level — see `assertValueRoundTrip` (#1367).
+  `agentStartedAt` is pinned (the server's restart sentinel).
 * `register_router_request.json` — `/api/router/register` POST. Mirrors
   `openwrt/install.sh`'s printf format string (see exception above).
 
