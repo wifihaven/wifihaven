@@ -1,6 +1,17 @@
 {
   "etag" : "\"sha256:abc123def4567890\"",
   "generatedAt" : "2026-05-17T14:00:00Z",
+  "global" : {
+    "blocked" : false,
+    "extraBlocked" : [],
+    "extraAllowed" : [
+      "connectivitycheck.gstatic.com",
+      "captive.apple.com",
+      "wifihaven.local"
+    ],
+    "blocklistIds" : [],
+    "blockIpOnly" : false
+  },
   "devices" : {
     "aa:bb:cc:11:22:33" : {
       "profileId" : 3,
