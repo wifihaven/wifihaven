@@ -91,8 +91,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "HTTP error ratio (4xx / 5xx)",
-      "description": "Fraction of requests returning 4xx and 5xx. A 5xx spike is the API-fault signal; 4xx tracks auth/validation rejections.",
+      "title": "HTTP error ratio by route (4xx client / 5xx server)",
+      "description": "Per-route fraction of requests returning 4xx vs 5xx: sum by (route) (rate(http_requests_total{status=~\"4..|5..\"}[5m])) / sum by (route) (rate(http_requests_total[5m])). Split because the two mean different things: a 5xx is an API fault, a 4xx is a client/agent fault (auth rejection OR a malformed request the server refused — e.g. #1382, where /api/router/metrics returned 400 on every push from pre-#1365 agents). This single per-endpoint view covers every route, so a router-ingest 400 shows up here as a 4xx on /api/router/metrics — no route-specific panel needed. (3xx, e.g. the 304 ETag path on /api/router/policy, is healthy and excluded.)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 3,
@@ -114,20 +114,20 @@
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(http_requests_total{status=~\"5..\", env=\"$env\"}[5m])) / sum(rate(http_requests_total{env=\"$env\"}[5m]))",
-          "legendFormat": "5xx",
+          "expr": "sum by (route) (rate(http_requests_total{status=~\"5..\", env=\"$env\"}[5m])) / sum by (route) (rate(http_requests_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{route}} 5xx",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(http_requests_total{status=~\"4..\", env=\"$env\"}[5m])) / sum(rate(http_requests_total{env=\"$env\"}[5m]))",
-          "legendFormat": "4xx",
+          "expr": "sum by (route) (rate(http_requests_total{status=~\"4..\", env=\"$env\"}[5m])) / sum by (route) (rate(http_requests_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{route}} 4xx",
           "refId": "B"
         }
       ]
@@ -250,8 +250,8 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "title": "Auth failures by reason",
-      "description": "sum by (reason) (rate(auth_failures_total[5m])). reason ∈ {bad_password, expired_token, bad_router_token, forbidden_role}. A bad_router_token spike means a fleet agent lost its token; a bad_password spike may be credential-stuffing.",
+      "title": "Auth failures by reason (401/403 — NOT bad request)",
+      "description": "sum by (reason) (rate(auth_failures_total[5m])). reason ∈ {bad_password, expired_token, bad_router_token, forbidden_role}. This counts ONLY authn/authz rejections (401/403). A malformed/un-decodable request body is a 400 bad-request and is NOT counted here — it appears as a 4xx on the offending route in 'HTTP error ratio by route' (top-left), never as bad_router_token (e.g. #1382: /api/router/metrics 400s from pre-#1365 agents). A bad_router_token spike means a fleet agent lost its token; a bad_password spike may be credential-stuffing.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "id": 8,
@@ -411,7 +411,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (status) (rate(router_metrics_batches_total[5m]))",
+          "expr": "sum by (status) (rate(router_metrics_batches_total{env=\"$env\"}[5m]))",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
