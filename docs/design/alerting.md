@@ -321,34 +321,38 @@ it (per the "alert only on emitted series" rule).
 
 | Desired alert | Missing/unready series | Blocked on |
 | --- | --- | --- |
-| Deploy failure (pairs with #1245 annotations) | No alertable series. `deploy-webhook` writes **Grafana annotations only** — by design it "does not scaffold any notification/alerting transport." Annotations are not PromQL-alertable. | New issue: have `deploy-webhook` *also* emit a Prometheus counter (e.g. `render_deploy_total{lifecycle}`) scraped by Alloy, then alert `increase(...{lifecycle="failed"}[10m]) > 0`. Or use Grafana Cloud's native Render-integration deploy events if/when available. |
+| Deploy failure (pairs with #1245 annotations) | No alertable series. `deploy-webhook` writes **Grafana annotations only** — by design it "does not scaffold any notification/alerting transport." Annotations are not PromQL-alertable. | [#1405](https://github.com/wifihaven/wifihaven/issues/1405): have `deploy-webhook` *also* emit a Prometheus counter (e.g. `render_deploy_total{lifecycle}`) scraped by Alloy, then alert `increase(...{lifecycle="failed"}[10m]) > 0`. Or use Grafana Cloud's native Render-integration deploy events if/when available. |
 | Blocklist fetch failures (W5) | `blocklist_fetch_failures_total` router-pushed but unreliable in prod | [#1382](https://github.com/wifihaven/wifihaven/issues/1382) + agent counters [#1301](https://github.com/wifihaven/wifihaven/issues/1301)/[#1302](https://github.com/wifihaven/wifihaven/issues/1302)/[#1325](https://github.com/wifihaven/wifihaven/issues/1325) |
 | Agent restart / uptime regression | `agent_uptime_seconds`, `dnsmasq_restarts_total` router-pushed, unreliable in prod | same as above — fleet roll-forward + #1382 |
 | Per-router liveness (which router dropped, not just "fleet → 0") | Would need a per-`router_id` series; `agent_connected_routers` is a single aggregate gauge | acceptable for now (household = ~1 router); revisit if the fleet grows |
 
-## 9. Implementation sub-issues to file
+## 9. Implementation sub-issues
 
-To be filed under the **Alerting & Paging** epic, one per coherent chunk. **Do
-not file from this PR** — listed here as the rollout plan.
+Filed under the **Alerting & Paging** epic, one per coherent chunk:
 
-1. **`infra/grafana` → HCP Terraform remote backend** *(prerequisite; blocks
+1. **[#1406](https://github.com/wifihaven/wifihaven/issues/1406) —
+   `infra/grafana` → HCP Terraform remote backend** *(prerequisite; blocks
    2–4)*. Mirror [#1357](https://github.com/wifihaven/wifihaven/issues/1357):
    add the `cloud {}` block (org `wifihaven`, a `grafana` workspace, Local
    execution), wire `master-grafana.yml`'s `init` to it, confirm the existing
    dashboards reconcile cleanly under managed state. Validation: a second
    `apply` is a no-op (no duplicate-dashboard churn).
-2. **Contact points + notification policy** ([§4](#4-routing--contact-points)).
+2. **[#1402](https://github.com/wifihaven/wifihaven/issues/1402) — Contact
+   points + notification policy** ([§4](#4-routing--contact-points)).
    `grafana_contact_point` ×3 (`wifihaven-critical`, `wifihaven-warning`,
    `wifihaven-staging`, all email; address via `operator_email` TF var) +
    the singleton `grafana_notification_policy` tree with the severity/env
    routing and grouping/throttle settings. Validation: a hand-fired test alert
    reaches the operator's inbox.
-3. **First critical rule set** ([§7.1](#71-critical--page-now)) as one or two
+3. **[#1403](https://github.com/wifihaven/wifihaven/issues/1403) — First
+   critical rule set** ([§7.1](#71-critical--page-now)) as one or two
    `grafana_rule_group`s: C1–C7. Each ships with its threshold + `for` + guard
    as specified. Validation per [§10](#10-validation).
-4. **First warning rule set** ([§7.2](#72-warning--notify-look-today)): W1–W4
+4. **[#1404](https://github.com/wifihaven/wifihaven/issues/1404) — First
+   warning rule set** ([§7.2](#72-warning--notify-look-today)): W1–W4
    (+ W5 disabled, bound to its readiness issue).
-5. **Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
+5. **[#1405](https://github.com/wifihaven/wifihaven/issues/1405) —
+   Deploy-failure signal** ([§8](#8-gaps--metrics-not-yet-emitted)): extend
    `deploy-webhook` to emit `render_deploy_total{lifecycle}` (or adopt native
    Render deploy events) + the alert. Separate because it needs new
    instrumentation, not just a rule.
