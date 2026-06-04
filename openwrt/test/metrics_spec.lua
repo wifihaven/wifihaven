@@ -103,6 +103,57 @@ describe("metrics counters", function()
   end)
 end)
 
+-- ── metrics.fold_external — delta-fold an external cumulative source (#1302/#1325) ──
+describe("metrics.fold_external", function()
+  it("folds the positive delta since the last sample into the registry", function()
+    local reg = new_reg()
+    local base = {}
+    metrics.fold_external(reg, "dns_queries_total", "result", { resolved = 100 }, base)
+    local c1 = find_series(metrics.build_batch(reg, "t").counters,
+                           "dns_queries_total", "result", "resolved")
+    assert.equal(100, c1.value)
+    -- Next sample is cumulative-larger; only the delta is folded, registry climbs.
+    metrics.fold_external(reg, "dns_queries_total", "result", { resolved = 130 }, base)
+    local c2 = find_series(metrics.build_batch(reg, "t").counters,
+                           "dns_queries_total", "result", "resolved")
+    assert.equal(130, c2.value)
+  end)
+
+  it("re-bases from zero when the external source resets (current < baseline)", function()
+    local reg = new_reg()
+    local base = {}
+    metrics.fold_external(reg, "enforcement_drops_total", "reason", { whole_mac = 500 }, base)
+    -- Source reset (nft re-render): the next sample is smaller. Treat the whole
+    -- current value as the delta rather than decrementing the registry counter.
+    metrics.fold_external(reg, "enforcement_drops_total", "reason", { whole_mac = 20 }, base)
+    local c = find_series(metrics.build_batch(reg, "t").counters,
+                          "enforcement_drops_total", "reason", "whole_mac")
+    assert.equal(520, c.value)
+  end)
+
+  it("keeps a separate baseline per label value", function()
+    local reg = new_reg()
+    local base = {}
+    metrics.fold_external(reg, "enforcement_drops_total", "reason",
+                          { whole_mac = 10, host_block = 4 }, base)
+    metrics.fold_external(reg, "enforcement_drops_total", "reason",
+                          { whole_mac = 15, host_block = 4 }, base)
+    local batch = metrics.build_batch(reg, "t")
+    assert.equal(15, find_series(batch.counters, "enforcement_drops_total",
+                                 "reason", "whole_mac").value)
+    -- host_block didn't grow → no double count.
+    assert.equal(4, find_series(batch.counters, "enforcement_drops_total",
+                                "reason", "host_block").value)
+  end)
+
+  it("is a no-op for an empty sample (absent external source)", function()
+    local reg = new_reg()
+    local base = {}
+    metrics.fold_external(reg, "dns_queries_total", "result", {}, base)
+    assert.is_nil(metrics.build_batch(reg, "t").counters)
+  end)
+end)
+
 describe("metrics gauges", function()
   it("hold the last value set (instantaneous)", function()
     local reg = new_reg()

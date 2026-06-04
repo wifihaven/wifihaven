@@ -16,6 +16,26 @@ local M = {}
 
 local DEFAULT_CACHE_DIR = "/etc/wifihaven/blocklists"
 
+-- classify_fetch_status(status) → bounded status enum (#1301).
+--
+-- The blocklist fetch surfaces as the `status` label of
+-- blocklist_fetch_failures_total. It MUST stay a small bounded enum (§4
+-- cardinality firewall), so a numeric HTTP status collapses to its class
+-- (`4xx` / `5xx` / …) rather than the exact code, and a non-HTTP outcome maps
+-- to a fixed token. #705: the old failure path logged `status=nil` for a
+-- transport failure (curl returned no numeric status); that empty status is now
+-- captured explicitly as "error" so the metric has a real label instead of a
+-- missing one.
+local function classify_fetch_status(status)
+  if type(status) == "number" then
+    local class = math.floor(status / 100)
+    if class >= 1 and class <= 5 then return tostring(class) .. "xx" end
+    return "error"
+  end
+  return "error"
+end
+M.classify_fetch_status = classify_fetch_status
+
 -- Parse a blocklist body: strip comment lines (^#) and blank lines.
 -- Returns a list of hostnames.
 local function parse_body(body)
@@ -56,13 +76,24 @@ end
 --   same failure class as the #1334 arg-order bug, distinct cause). When nil
 --   (e.g. legacy callers / unit tests against an unauthenticated stub) no
 --   Authorization header is sent.
--- Returns: { hosts_by_id = {[id]={hosts}}, errors = {...} }
+-- Returns: { hosts_by_id = {[id]={hosts}}, errors = {...}, failures = {...} }
+--   errors:   human-readable strings for logread.
+--   failures: structured { id?, status } records the agent folds into
+--             blocklist_fetch_failures_total{status} (#1301). `status` is the
+--             bounded enum from classify_fetch_status / a fixed local-IO token.
 function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
-  local result = { hosts_by_id = {}, errors = {} }
+  local result = { hosts_by_id = {}, errors = {}, failures = {} }
+
+  -- Record both a human string and a structured {id, status} failure so the
+  -- agent can emit the bounded-cardinality metric without re-parsing strings.
+  local function fail(id, status, msg)
+    result.errors[#result.errors + 1] = msg
+    result.failures[#result.failures + 1] = { id = id, status = status }
+  end
 
   if type(http_get_fn) ~= "function" then
-    result.errors[#result.errors + 1] = "http_get_fn is nil or not a function"
+    fail(nil, "error", "http_get_fn is nil or not a function")
     return result
   end
 
@@ -114,8 +145,8 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
   if mkdir_fn then
     local mok, merr = mkdir_fn(cache_dir)
     if not mok then
-      result.errors[#result.errors + 1] =
-        string.format("blocklists: mkdir failed for %s: %s", tostring(cache_dir), tostring(merr))
+      fail(nil, "mkdir_failed",
+        string.format("blocklists: mkdir failed for %s: %s", tostring(cache_dir), tostring(merr)))
     end
   end
 
@@ -140,20 +171,20 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
       -- Send the router bearer token — the route is router-authenticated (#1360).
       local status, body = http_get_fn(url, auth_headers)
       if type(status) ~= "number" or status ~= 200 then
-        result.errors[#result.errors + 1] =
-          string.format("blocklists: fetch failed for %s (status=%s)", tostring(id), tostring(status))
+        fail(id, classify_fetch_status(status),
+          string.format("blocklists: fetch failed for %s (status=%s)", tostring(id), tostring(status)))
       else
         -- Atomic write: tmp → final.
         local tmp_path = path .. ".tmp"
         local ok, err  = write_fn(tmp_path, body or "")
         if not ok then
-          result.errors[#result.errors + 1] =
-            string.format("blocklists: write failed for %s: %s", tostring(id), tostring(err))
+          fail(id, "write_failed",
+            string.format("blocklists: write failed for %s: %s", tostring(id), tostring(err)))
         else
           local rok, rerr = rename_fn(tmp_path, path)
           if not rok then
-            result.errors[#result.errors + 1] =
-              string.format("blocklists: rename failed for %s: %s", tostring(id), tostring(rerr))
+            fail(id, "write_failed",
+              string.format("blocklists: rename failed for %s: %s", tostring(id), tostring(rerr)))
           else
             result.hosts_by_id[id] = parse_body(body or "")
           end

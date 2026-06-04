@@ -21,6 +21,7 @@ local conntrack  = require("wifihaven.conntrack")
 local nflog      = require("wifihaven.nflog")
 local render     = require("wifihaven.render")
 local dns_log    = require("wifihaven.dns_log")
+local nft_drops  = require("wifihaven.nft_drops")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
 local paths      = require("wifihaven.paths")
@@ -101,6 +102,48 @@ end
 -- snapshot_poll_total{result} enum (200 / 304 / error) and increments it.
 local function record_poll(result)
   metrics.inc_counter(mreg, "snapshot_poll_total", { result = result })
+end
+
+-- #1301: emit blocklist_fetch_failures_total{status} from a fetch_and_cache
+-- result. `status` is the bounded enum blocklists.classify_fetch_status /
+-- the local-IO tokens produce (4xx/5xx/error/mkdir_failed/write_failed), so the
+-- §4 cardinality firewall is respected. Failures without a structured status
+-- (shouldn't happen) fall back to "error".
+local function record_blocklist_failures(bl_result)
+  for _, f in ipairs(bl_result.failures or {}) do
+    metrics.inc_counter(mreg, "blocklist_fetch_failures_total",
+                        { status = f.status or "error" })
+  end
+end
+
+-- #1325: enforcement-plane forward-drop counters. The nftables drop rules in
+-- the wifihaven_block chain carry anonymous `counter`s that reset to 0 on every
+-- re-render (`delete table` + recreate). We keep a per-reason baseline and fold
+-- the growth since the last sample into enforcement_drops_total{reason} via
+-- metrics.fold_external, which re-bases on the reset. To avoid losing the
+-- counts a re-render is about to discard, fold_enforcement_drops() is called
+-- once right BEFORE every policy.apply (capturing the about-to-reset totals)
+-- and again on the metrics tick.
+local enforcement_baseline = {}
+local function fold_enforcement_drops()
+  local by_reason = nft_drops.read()
+  metrics.fold_external(mreg, "enforcement_drops_total", "reason",
+                        by_reason, enforcement_baseline)
+end
+
+-- #1302: DNS query-result counters. The dns-tail sidecar writes a cumulative
+-- per-result tally to paths.dns_metrics; sample + fold the deltas into
+-- dns_queries_total{result}. A sidecar restart re-bases the tally from 0, which
+-- fold_external treats as a reset.
+local dns_results_baseline = {}
+local function fold_dns_queries()
+  local f = io.open(paths.dns_metrics, "r")
+  if not f then return end
+  local text = f:read("*a") or ""
+  f:close()
+  local by_result = dns_log.parse_query_results(text)
+  metrics.fold_external(mreg, "dns_queries_total", "result",
+                        by_result, dns_results_baseline)
 end
 
 -- activity_sample_int should evenly divide usage_report_interval, or the last
@@ -515,15 +558,15 @@ conntrack.watch({
       if snap then
         record_poll("200")
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
-        -- TODO(#1301): emit blocklist_fetch_failures_total{status} here from
-        -- bl_result.errors once the status enum is designed alongside the
-        -- broader blocklist-application work (#705).
         -- #1360: the blocklist route is router-authenticated, so pass the
         -- router token — without it the fetch 401s and category (bl_)
         -- enforcement silently no-ops (the directly-queried-CNAME bl_ bypass
         -- in e2e G4 plus every real category block).
         local bl_result = blocklists.fetch_and_cache(
           snap, http_get, nil, "/etc/wifihaven/blocklists", api_url, router_token)
+        -- #1301: emit blocklist_fetch_failures_total{status} for each failure
+        -- (bounded status enum) so an operator can rate-alert on fetch failures.
+        record_blocklist_failures(bl_result)
         if #bl_result.errors > 0 then
           for _, e in ipairs(bl_result.errors) do
             log.warn("blocklist fetch: %s", tostring(e))
@@ -535,6 +578,9 @@ conntrack.watch({
         -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
         -- just need to clear the flag below.
+        -- #1325: capture the enforcement-drop counters this apply is about to
+        -- reset (the ruleset is fully rebuilt) before they're discarded.
+        fold_enforcement_drops()
         local at0 = clock.monotonic_seconds()
         local applied = policy.apply(snap, write_file, run_cmd, log,
                                      { on_apply = record_apply("policy_change") })
@@ -581,6 +627,8 @@ conntrack.watch({
           -- all (cold boot during outage): the #308 boot skeleton stays in
           -- effect and there's nothing useful we can render.
           fo_opts.on_apply = record_apply("policy_change")
+          -- #1325: same pre-reset capture as the main apply above.
+          fold_enforcement_drops()
           local ft0 = clock.monotonic_seconds()
           local fo_applied = policy.apply(last_snapshot, write_file, run_cmd, log, fo_opts)
           metrics.observe(mreg, "policy_apply_duration_seconds", {},
@@ -677,6 +725,11 @@ conntrack.watch({
       -- go backward.
       metrics.set_gauge(mreg, "agent_uptime_seconds", {},
                         mono - agent_started_mono)
+      -- #1325/#1302: fold the external cumulative sources (nftables drop
+      -- counters; the dns-tail query-result tally) into the registry just
+      -- before the push so the batch carries their latest deltas.
+      fold_enforcement_drops()
+      fold_dns_queries()
       local sampled_at = os.date("!%Y-%m-%dT%H:%M:%SZ", wall)
       metrics.post(api_url, router_token, mreg, sampled_at, http_post, log)
     end

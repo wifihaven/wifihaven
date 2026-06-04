@@ -711,3 +711,68 @@ describe("populate_bl (#1348)", function()
     assert.equal(0, #adds)
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- classify_query_result + query-result tally serialization (#1302)
+-- ---------------------------------------------------------------------------
+
+describe("classify_query_result (#1302)", function()
+  local PFX = "Nov 12 10:00:01 dnsmasq[1234]: "
+
+  it("classifies an A-record reply as resolved", function()
+    assert.equal("resolved",
+      dns_log.classify_query_result(PFX .. "7 192.168.1.42/54321 reply youtube.com is 142.250.72.206"))
+  end)
+
+  it("classifies a cached answer as resolved (terminal outcome)", function()
+    assert.equal("resolved",
+      dns_log.classify_query_result(PFX .. "7 192.168.1.42/54321 cached youtube.com is 142.250.72.206"))
+  end)
+
+  it("classifies an AAAA answer as resolved", function()
+    assert.equal("resolved",
+      dns_log.classify_query_result(PFX .. "7 192.168.1.42/53 reply example.com is 2606:2800:220:1:248:1893:25c8:1946"))
+  end)
+
+  it("classifies NXDOMAIN / SERVFAIL / REFUSED / NODATA", function()
+    assert.equal("nxdomain",
+      dns_log.classify_query_result(PFX .. "8 192.168.1.42/53 reply nope.invalid is NXDOMAIN"))
+    assert.equal("servfail",
+      dns_log.classify_query_result(PFX .. "9 192.168.1.42/53 reply broken.test is SERVFAIL"))
+    assert.equal("refused",
+      dns_log.classify_query_result(PFX .. "10 192.168.1.42/53 reply blocked.test is REFUSED"))
+    assert.equal("nodata",
+      dns_log.classify_query_result(PFX .. "11 192.168.1.42/53 reply x.test is NODATA-IPv4"))
+  end)
+
+  it("does NOT count a non-terminal CNAME hop", function()
+    assert.is_nil(
+      dns_log.classify_query_result(PFX .. "7 192.168.1.42/53 reply www.example.com is <CNAME>"))
+  end)
+
+  it("returns nil for a query line and unrecognised lines", function()
+    assert.is_nil(
+      dns_log.classify_query_result(PFX .. "7 192.168.1.42/54321 query[A] youtube.com from 192.168.1.42"))
+    assert.is_nil(dns_log.classify_query_result("garbage"))
+    assert.is_nil(dns_log.classify_query_result(nil))
+  end)
+end)
+
+describe("format_query_results / parse_query_results (#1302)", function()
+  it("round-trips a tally through the IPC file format", function()
+    local tally = { resolved = 41200, nxdomain = 318, servfail = 7 }
+    local text  = dns_log.format_query_results(tally)
+    assert.same(tally, dns_log.parse_query_results(text))
+  end)
+
+  it("emits a stable (sorted) order so the file is byte-stable across flushes", function()
+    local a = dns_log.format_query_results({ resolved = 1, nxdomain = 2 })
+    local b = dns_log.format_query_results({ nxdomain = 2, resolved = 1 })
+    assert.equal(a, b)
+  end)
+
+  it("parses an empty / absent file as an empty tally", function()
+    assert.same({}, dns_log.parse_query_results(""))
+    assert.same({}, dns_log.parse_query_results(nil))
+  end)
+end)

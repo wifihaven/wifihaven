@@ -384,3 +384,55 @@ describe("blocklists.gc", function()
   end)
 
 end)
+
+-- ── structured failures + bounded status enum (#1301) ───────────────────────
+
+describe("blocklists.classify_fetch_status (#1301)", function()
+  it("collapses HTTP statuses to their class", function()
+    assert.equal("4xx", blocklists.classify_fetch_status(404))
+    assert.equal("4xx", blocklists.classify_fetch_status(401))
+    assert.equal("5xx", blocklists.classify_fetch_status(503))
+    assert.equal("3xx", blocklists.classify_fetch_status(302))
+  end)
+
+  it("maps a missing/non-numeric status (transport failure) to error", function()
+    -- #705: the old path logged status=nil; capture it as a real label instead.
+    assert.equal("error", blocklists.classify_fetch_status(nil))
+    assert.equal("error", blocklists.classify_fetch_status("boom"))
+  end)
+end)
+
+describe("blocklists.fetch_and_cache structured failures (#1301)", function()
+  it("records a fetch failure with the HTTP status class", function()
+    local function http_get(_url, _headers) return 503, nil, {} end
+    local s = snap({ ads = { version = "v1", url = "http://api/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(s, http_get, make_fs(), "/etc/wifihaven/blocklists")
+    assert.equal(1, #result.failures)
+    assert.equal("ads", result.failures[1].id)
+    assert.equal("5xx", result.failures[1].status)
+  end)
+
+  it("records a transport failure (nil status) as error", function()
+    local function http_get(_url, _headers) return nil, nil, nil end
+    local s = snap({ ads = { version = "v1", url = "http://api/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(s, http_get, make_fs(), "/etc/wifihaven/blocklists")
+    assert.equal(1, #result.failures)
+    assert.equal("error", result.failures[1].status)
+  end)
+
+  it("records a write failure as write_failed", function()
+    local fs = make_fs()
+    fs.write = function(_p, _c) return nil, "ENOSPC" end
+    local function http_get(_url, _headers) return 200, "doubleclick.net\n", {} end
+    local s = snap({ ads = { version = "v1", url = "http://api/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(s, http_get, fs, "/etc/wifihaven/blocklists")
+    assert.equal("write_failed", result.failures[1].status)
+  end)
+
+  it("emits no failure when every fetch succeeds", function()
+    local function http_get(_url, _headers) return 200, "doubleclick.net\n", {} end
+    local s = snap({ ads = { version = "v1", url = "http://api/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(s, http_get, make_fs(), "/etc/wifihaven/blocklists")
+    assert.equal(0, #result.failures)
+  end)
+end)

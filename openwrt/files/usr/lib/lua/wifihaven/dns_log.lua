@@ -19,11 +19,14 @@
 --   instance.tick(now)             -- evict expired entries (cheap; safe to call often)
 --   instance.size() → integer       -- testable
 --
--- TODO(#1302): classify and count DNS query outcomes here
--- (dns_queries_total{result} — resolved / nxdomain / servfail) and feed them
--- into the agent's in-process metrics registry so they ship in the 60 s
--- RouterMetricsBatch push (#1206). Deferred from #1206 to keep that PR focused
--- on the apply/poll/restart telemetry.
+-- #1302: classify DNS query outcomes for the dns_queries_total{result} counter.
+-- classify_query_result(line) below maps a dnsmasq reply/cached line to a
+-- bounded result enum. The dns-tail sidecar tallies these cumulatively and
+-- writes them to paths.dns_metrics; the main agent samples that file on its
+-- metrics tick and folds the deltas into the in-process registry
+-- (metrics.fold_external) so they ship in the 60 s RouterMetricsBatch push
+-- (#1206) — the sidecar runs as a separate procd instance and has no registry
+-- of its own, so the tmpfs file is the IPC, mirroring the ip→host cache (#259).
 
 local M = {}
 
@@ -94,6 +97,39 @@ end
 M._is_ipv6 = is_ipv6
 M._is_ipv4 = is_ipv4
 
+-- classify_query_result(line) → bounded result enum string | nil   (#1302)
+--
+-- Maps a dnsmasq `reply <name> is <value>` / `cached <name> is <value>` line to
+-- the bounded `dns_queries_total{result}` enum. Both `reply` (upstream answer)
+-- and `cached` (answered from dnsmasq's own cache) lines are terminal outcomes
+-- worth counting. The result enum is intentionally small and bounded:
+--
+--   resolved  — an A/AAAA answer (`is <ipv4>` / `is <ipv6>`)
+--   nxdomain  — `is NXDOMAIN`
+--   servfail  — `is SERVFAIL`
+--   refused   — `is REFUSED`
+--   nodata    — `is NODATA` / `is NODATA-IPv4` / `is NODATA-IPv6`
+--
+-- Non-terminal CNAME hops (`is <CNAME>`) return nil so a single resolution
+-- isn't counted once per chain link. This is a per-answer-record tally, not a
+-- per-query one: a multi-record answer emits one `reply` line per record, so
+-- `resolved` slightly over-counts vs. distinct queries. That's acceptable — the
+-- metric exists for query *volume* and the resolved:failure *ratio* an operator
+-- alerts on (#1302), not exact per-query accounting. Query (not reply) lines,
+-- and any line we don't recognise, return nil.
+function M.classify_query_result(line)
+  if type(line) ~= "string" or line == "" then return nil end
+  local verb, value = line:match("%d+%s+%S+/%d+%s+(%a+)%s+%S+%s+is%s+(%S+)")
+  if not verb or (verb ~= "reply" and verb ~= "cached") then return nil end
+  if value == "<CNAME>" then return nil end -- non-terminal hop
+  if is_ipv4(value) or is_ipv6(value) then return "resolved" end
+  if value == "NXDOMAIN" then return "nxdomain" end
+  if value == "SERVFAIL" then return "servfail" end
+  if value == "REFUSED" then return "refused" end
+  if value == "NODATA" or value:match("^NODATA%-") then return "nodata" end
+  return nil
+end
+
 -- parse_resolved_reply(line) → { client_ip, name, ip, family } | nil
 --
 -- Extracts the dnsmasq client IP (the device that issued the query — the
@@ -130,6 +166,35 @@ function M.parse_resolved_reply(line)
   end
   -- <CNAME>, NXDOMAIN, NODATA-IPvX → not a usable answer.
   return nil
+end
+
+-- format_query_results(tbl) → string   (#1302)
+-- Serialise a { [result] = count } tally to newline-delimited "<result>\t<n>"
+-- rows in a stable (sorted) order so the file is byte-stable across flushes.
+-- This is the wire between the dns-tail sidecar (writer) and the agent (reader).
+function M.format_query_results(tbl)
+  local keys = {}
+  for k in pairs(tbl or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+  local lines = {}
+  for _, k in ipairs(keys) do
+    lines[#lines + 1] = string.format("%s\t%d", k, tbl[k])
+  end
+  return table.concat(lines, "\n") .. (#lines > 0 and "\n" or "")
+end
+
+-- parse_query_results(text) → { [result] = count }   (#1302)
+-- Inverse of format_query_results. Tolerant of an absent/empty file (→ {}).
+function M.parse_query_results(text)
+  local out = {}
+  if type(text) ~= "string" or text == "" then return out end
+  for line in text:gmatch("[^\n]+") do
+    local result, count = line:match("^(%S+)\t(%d+)$")
+    if result and count then
+      out[result] = tonumber(count)
+    end
+  end
+  return out
 end
 
 -- ---------------------------------------------------------------------------
