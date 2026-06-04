@@ -518,8 +518,12 @@ conntrack.watch({
         -- TODO(#1301): emit blocklist_fetch_failures_total{status} here from
         -- bl_result.errors once the status enum is designed alongside the
         -- broader blocklist-application work (#705).
+        -- #1360: the blocklist route is router-authenticated, so pass the
+        -- router token — without it the fetch 401s and category (bl_)
+        -- enforcement silently no-ops (the directly-queried-CNAME bl_ bypass
+        -- in e2e G4 plus every real category block).
         local bl_result = blocklists.fetch_and_cache(
-          snap, http_get, nil, "/etc/wifihaven/blocklists", api_url)
+          snap, http_get, nil, "/etc/wifihaven/blocklists", api_url, router_token)
         if #bl_result.errors > 0 then
           for _, e in ipairs(bl_result.errors) do
             log.warn("blocklist fetch: %s", tostring(e))
