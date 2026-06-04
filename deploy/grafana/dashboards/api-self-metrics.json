@@ -24,7 +24,7 @@
       "title": "HTTP request rate by status",
       "description": "sum by (status) (rate(http_requests_total[5m])) — requests/sec across all routes, split by HTTP status. From HttpMetrics.instrument.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
       "id": 1,
       "fieldConfig": {
         "defaults": {
@@ -53,7 +53,7 @@
       "title": "HTTP request latency (p50 / p95 / p99)",
       "description": "histogram_quantile over http_request_duration_seconds_bucket across all routes. Buckets span 5ms → 5s (HttpDurationBoundaries).",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
       "id": 2,
       "fieldConfig": {
         "defaults": {
@@ -94,7 +94,7 @@
       "title": "HTTP success rate by route (4xx / 5xx breakout)",
       "description": "Per-route SUCCESS rate (higher = healthier): sum by (route) (rate(http_requests_total{status=~\"2..|3..\"}[5m])) / sum by (route) (rate(http_requests_total[5m])) — 2xx and 3xx (e.g. the 304 ETag path on /api/router/policy) count as success. The 4xx and 5xx series are the breakout of what's eating into it, kept separate because they mean different things: a 5xx is an API fault, a 4xx is a client/agent fault (auth rejection OR a malformed request the server refused — e.g. #1382, where /api/router/metrics returned 400 on every push from pre-#1365 agents). One per-endpoint view covers every route, so a router-ingest 400 shows here as a dip in that route's success line plus a 4xx line — no route-specific panel needed.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
       "id": 3,
       "fieldConfig": {
         "defaults": {
@@ -136,7 +136,7 @@
       "title": "HTTP p95 latency by route",
       "description": "histogram_quantile(0.95, ...) of http_request_duration_seconds_bucket per templated route. `route` is the path template (e.g. /api/devices/:mac), so cardinality is bounded by the route table.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
       "id": 4,
       "fieldConfig": {
         "defaults": {
@@ -165,7 +165,7 @@
       "title": "Top routes by request rate",
       "description": "topk(10, sum by (route, method) (rate(http_requests_total[5m]))) — busiest templated routes.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
       "id": 5,
       "fieldConfig": {
         "defaults": {
@@ -194,7 +194,7 @@
       "title": "DB query rate by op",
       "description": "sum by (op) (rate(db_query_duration_seconds_count[5m])) — queries/sec per instrumented repo method. `op` is a hand-named constant (e.g. device.listAll), never SQL text.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
       "id": 6,
       "fieldConfig": {
         "defaults": {
@@ -223,7 +223,7 @@
       "title": "DB query p95 latency by op",
       "description": "histogram_quantile(0.95, ...) of db_query_duration_seconds_bucket per op — the leading indicator of a missing-index regression (the 2026-05-31 #809 incident) per the query-EXPLAIN rule.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
       "id": 7,
       "fieldConfig": {
         "defaults": {
@@ -252,7 +252,7 @@
       "title": "DB query success rate by op",
       "description": "Per-op SUCCESS rate (higher = healthier): sum by (op) (rate(db_queries_total{status=\"ok\"}[5m])) / sum by (op) (rate(db_queries_total[5m])). The success-rate companion to the rate/latency panels left of it — duration alone can't tell a healthy query from one that's erroring (constraint violation, deadlock, pool-exhaustion timeout). db_queries_total{op,status} is emitted by DbMetrics.timed on every transact, status ∈ {ok,error}. A line dipping below 1 means that repo method is throwing; cross-check the latency panel to tell a slow query from a failing one.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
       "id": 14,
       "fieldConfig": {
         "defaults": {
@@ -290,7 +290,7 @@
       "title": "Auth failures by reason (401/403 — NOT bad request)",
       "description": "sum by (reason) (rate(auth_failures_total[5m])). reason ∈ {bad_password, expired_token, bad_router_token, forbidden_role}. This counts ONLY authn/authz rejections (401/403). A malformed/un-decodable request body is a 400 bad-request and is NOT counted here — it appears as a 4xx on the offending route in 'HTTP success rate by route' (top-left), never as bad_router_token (e.g. #1382: /api/router/metrics 400s from pre-#1365 agents). A bad_router_token spike means a fleet agent lost its token; a bad_password spike may be credential-stuffing.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
       "id": 8,
       "fieldConfig": {
         "defaults": {
@@ -319,7 +319,7 @@
       "title": "Connected routers",
       "description": "agent_connected_routers — routers whose last_seen_at is within the 10-minute window (RouterPresenceMetrics). The single 'is the fleet alive?' gauge.",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 40 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
       "id": 9,
       "fieldConfig": {
         "defaults": {
@@ -358,7 +358,7 @@
       "title": "Zero-byte traffic rows filtered (#864)",
       "description": "rate(traffic_reports_filtered_zero_bytes_total[5m]) — usage rows dropped at ingest for zero bytes AND zero active seconds. A sustained non-zero rate means the #858 agent regression (emitting empty rows) has returned.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
       "id": 10,
       "fieldConfig": {
         "defaults": {
@@ -394,7 +394,7 @@
       "title": "Metrics rejected (cardinality firewall)",
       "description": "sum by (reason) (rate(metrics_rejected_total[5m])) — emissions blocked by the §4.1 MetricGuard allowlist. reason ∈ {unknown_name, forbidden_label}. Should be flat zero in steady state; a non-zero rate flags a code path attempting an unallowlisted/high-cardinality series.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
       "id": 11,
       "fieldConfig": {
         "defaults": {
@@ -430,7 +430,7 @@
       "title": "Router metrics batch ingest rate (#1205)",
       "description": "sum by (status) (rate(router_metrics_batches_total[5m])) — POST /api/router/metrics outcomes. status ∈ {ok, malformed, router_mismatch}. `ok` tracks the live router fleet push rate; a rising malformed/router_mismatch rate flags a misbehaving or misconfigured agent. Fleet-aggregate panels for the router-sourced agent metrics live on the 'Router fleet (agent metrics)' dashboard (#1206); per-(router_id) drill-down is deferred to #1279.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 48 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
       "id": 12,
       "fieldConfig": {
         "defaults": {
@@ -459,7 +459,7 @@
       "title": "Router metrics ingest success ratio (#1368)",
       "description": "(sum(rate(router_metrics_batches_total{status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total[10m])) — fraction of POST /api/router/metrics batches accepted. At-a-glance health: green ≥ 0.95, red below. The `or vector(0)` is load-bearing (#1383): when status=\"ok\" has NO series at all — a 100%-malformed outage, the #1365 case — sum(rate(...{status=\"ok\"})) is an empty vector and empty/value = empty, so without the coercion the panel would render \"No data\" instead of red, masking the exact outage it exists to surface. With it, ok-absent-but-traffic-present → 0 → red; only a truly idle window (no batches at all → vector(0)/empty) shows No data, so a quiet env does not false-alarm. NOTE: this panel is passive — actually paging on this condition is the alerting-strategy thread (#1381).",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 48 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
       "id": 13,
       "fieldConfig": {
         "defaults": {
