@@ -416,6 +416,47 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Router metrics ingest success ratio (#1368)",
+      "description": "sum(rate(router_metrics_batches_total{status=\"ok\"}[10m])) / sum(rate(router_metrics_batches_total[10m])) — fraction of POST /api/router/metrics batches accepted. At-a-glance health: green ≥ 0.95, red below. This catches the #1365 blind spot where `ok` is simply absent (ratio 0/total): the raw by-status rate panel to the left renders a total outage as a lone `malformed` line that looks like low traffic, whereas this turns red. 0/0 (no batches at all in the window) renders as No data — not red — so a quiet environment does not false-alarm. NOTE: this panel is passive — actually paging on this condition is the alerting-strategy thread (#1381).",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
+      "id": 13,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(router_metrics_batches_total{env=\"$env\",status=\"ok\"}[10m])) / sum(rate(router_metrics_batches_total{env=\"$env\"}[10m]))",
+          "legendFormat": "success ratio",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
