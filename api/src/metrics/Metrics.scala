@@ -37,6 +37,31 @@ object MetricGuard {
     )
 
   /**
+   * #1210 — the small, known label-key vocabulary. Every key in any [[Allowed]] entry MUST be
+   * listed here, and nothing here may also be a [[ForbiddenKeys]] (both invariants are enforced by
+   * `MetricCardinalityGuardSpec`). This is the standing cardinality gate: introducing *any* new
+   * label key forces a deliberate edit to this set, which is the review checkpoint #1210 makes
+   * permanent. Each key is bounded and known at code-write time (§4.2): `route` (~40 templated
+   * paths), `method` (~5), `status` (HTTP codes / bounded ingest enum), `op` (~30 hand-named DB
+   * ops), `reason`/`result` (fixed per-metric enums), `version` (slow-moving agent versions),
+   * `rollup_job` (handful of rollup job names), and `router_id` / `installation_id` (bounded
+   * fleet/install dimensions).
+   */
+  val KnownLabelKeys: Set[String] =
+    Set(
+      "route",
+      "method",
+      "status",
+      "op",
+      "reason",
+      "result",
+      "version",
+      "rollup_job",
+      "router_id",
+      "installation_id",
+    )
+
+  /**
    * §5.1/§5.2 — metric name → its permitted label keys. The only (name, keys) pairs that may be
    * emitted. `router_id` (and `installation_id`, once that concept lands) are bounded fleet-size
    * dimensions the server attaches to every router-pushed series (§4.2) — they are deliberately NOT
@@ -63,6 +88,17 @@ object MetricGuard {
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
+    // #1243 rollup health — `rollup_job` is a handful of hand-named jobs (traffic_hourly,
+    // traffic_daily, time_used_daily), `status` ∈ {ok, error}. Bounded; routed through the guard.
+    "wifihaven_rollup_runs_total"               -> Set("rollup_job", "status"),
+    "wifihaven_rollup_duration_seconds"         -> Set("rollup_job"),
+    "wifihaven_rollup_rows_upserted"            -> Set("rollup_job"),
+    // #1243/#1221 HikariCP pool gauges — no labels.
+    "wifihaven_db_pool_active_connections"      -> Set.empty[String],
+    "wifihaven_db_pool_idle_connections"        -> Set.empty[String],
+    "wifihaven_db_pool_total_connections"       -> Set.empty[String],
+    "wifihaven_db_pool_threads_awaiting_connection" -> Set.empty[String],
+    "wifihaven_db_pool_max_size"                    -> Set.empty[String],
   )
 
   private val rejected = Metric.counter("metrics_rejected_total")
@@ -210,40 +246,43 @@ object AppMetrics {
   // ── Rollup health (#1243) ──────────────────────────────────────────────────
   // Emitted from RollupRepoLive.recordRun — the single completion point both the
   // hourly/daily byte-rollup fibers and the time_used_daily fiber funnel through.
-
-  private val rollupRuns = Metric.counter("wifihaven_rollup_runs_total")
+  // Routed through MetricGuard (#1210) so the cardinality firewall covers these
+  // series too, not just the HTTP/router-pushed ones.
 
   // Sub-second to multi-minute coverage: a prod rollup over a growth table can
   // run for minutes (#1197), so the boundaries span 0.05s → ~200s.
-  private val rollupDuration = Metric.histogram(
-    "wifihaven_rollup_duration_seconds",
-    MetricKeyType.Histogram.Boundaries.exponential(0.05, 2.0, 13),
-  )
-
-  private val rollupRows = Metric.gauge("wifihaven_rollup_rows_upserted")
+  val RollupDurationBoundaries: MetricKeyType.Histogram.Boundaries =
+    MetricKeyType.Histogram.Boundaries.exponential(0.05, 2.0, 13)
 
   /** Record a completed rollup run. `status` is "ok" or "error". */
   def recordRollup(job: String, status: String, durationSeconds: Double, rows: Int): UIO[Unit] =
-    rollupRuns.tagged("rollup_job", job).tagged("status", status).update(1L) *>
-      rollupDuration.tagged("rollup_job", job).update(math.max(0.0, durationSeconds)) *>
-      rollupRows.tagged("rollup_job", job).update(rows.toDouble)
+    MetricGuard.counter(
+      "wifihaven_rollup_runs_total",
+      Map("rollup_job" -> job, "status" -> status),
+    ) *>
+      MetricGuard.histogram(
+        "wifihaven_rollup_duration_seconds",
+        Map("rollup_job" -> job),
+        math.max(0.0, durationSeconds),
+        RollupDurationBoundaries,
+      ) *>
+      MetricGuard.gauge("wifihaven_rollup_rows_upserted", Map("rollup_job" -> job), rows.toDouble)
 
   // ── DB connection pool (#1243, #1221) ───────────────────────────────────────
   // Set from the polling fiber in DbPoolMetrics. threads_awaiting was the
-  // leading indicator of the 2026-05-31 pool-exhaustion crash loop.
-
-  private val dbActive  = Metric.gauge("wifihaven_db_pool_active_connections")
-  private val dbIdle    = Metric.gauge("wifihaven_db_pool_idle_connections")
-  private val dbTotal   = Metric.gauge("wifihaven_db_pool_total_connections")
-  private val dbWaiting = Metric.gauge("wifihaven_db_pool_threads_awaiting_connection")
-  private val dbMax     = Metric.gauge("wifihaven_db_pool_max_size")
+  // leading indicator of the 2026-05-31 pool-exhaustion crash loop. Routed
+  // through MetricGuard (#1210) — unlabelled, but the firewall still gates the name.
 
   def setDbPool(stats: DbPoolStats): UIO[Unit] =
-    dbActive.update(stats.active.toDouble) *>
-      dbIdle.update(stats.idle.toDouble) *>
-      dbTotal.update(stats.total.toDouble) *>
-      dbWaiting.update(stats.threadsAwaiting.toDouble) *>
-      dbMax.update(stats.maxSize.toDouble)
+    MetricGuard.gauge("wifihaven_db_pool_active_connections", Map.empty, stats.active.toDouble) *>
+      MetricGuard.gauge("wifihaven_db_pool_idle_connections", Map.empty, stats.idle.toDouble) *>
+      MetricGuard.gauge("wifihaven_db_pool_total_connections", Map.empty, stats.total.toDouble) *>
+      MetricGuard.gauge(
+        "wifihaven_db_pool_threads_awaiting_connection",
+        Map.empty,
+        stats.threadsAwaiting.toDouble,
+      ) *>
+      MetricGuard.gauge("wifihaven_db_pool_max_size", Map.empty, stats.maxSize.toDouble)
 }
 
 /** Point-in-time HikariCP pool snapshot. */

@@ -588,6 +588,13 @@ the declarative-config preference).
 - Sanity-check actual active-series count in a staging scrape against the
   §7 estimate before pointing prod at it.
 
+> **Done (#1210).** This checklist is signed off in §11, which records the
+> audit of every emitted series, the firewall-coverage gap that was found
+> and fixed (rollup/db-pool series now routed through `MetricGuard`), the
+> retention decision, and the standing `MetricCardinalityGuardSpec` that
+> keeps the gate enforced. The only item left to the operator is the live
+> staging series-count reading (§11.2) before the first prod scrape.
+
 ---
 
 ## 10. Implementation sub-issues
@@ -637,3 +644,144 @@ feature-test stack; for the Lua agent, `busted` unit tests with injected
 
 The §10 numbering above predates these issues being filed; the filed
 issue set is #1204–#1210 (items 1–7) plus #1244/#1245 (items 8–9).
+
+---
+
+## 11. Cardinality audit & standing gate (#1210)
+
+This section records the **first-prod-scrape review** required by §9, and
+the **automated guard** that makes the gate permanent rather than a
+one-time review. It audits what the code **emits**, not the §5 design
+catalog (the two had already drifted — see the rollup/db-pool note below).
+
+### 11.1 Audited series (every emitted series, as of #1210)
+
+Source of truth: a grep of `api/src` for `Metric.*` / `MetricGuard.*` /
+`AppMetrics.*` call sites and of `openwrt/files/usr/sbin/wifihaven-agent`
+for the agent's `metrics.inc_counter/set_gauge/observe` emissions. **All
+application series are now routed through `MetricGuard`** (the §4.1
+firewall); `MetricGuard.Allowed` is the canonical name→label-keys map.
+
+`router_id` multiplies a router-sourced series by the fleet size **R**
+(~50 assumed in §7.2); `installation_id` is reserved in the allowlist but
+not yet attached by the ingest path, so it is a ×1 factor today. Histogram
+series expand to `(#buckets + 2)` Prometheus series (`_bucket{le}` per
+boundary incl. `+Inf`, plus `_sum` and `_count`).
+
+**API self-metrics** (no `router_id`):
+
+| Series | Type | Label keys | Worst-case bound |
+|--------|------|-----------|------------------|
+| `http_requests_total` | counter | `route`,`method`,`status` | ~40 routes × ~5 methods × ~15 statuses (only realized combos exist) |
+| `http_request_duration_seconds` | histogram | `route`,`method` | ~40 × 5 × (10+2) |
+| `db_query_duration_seconds` | histogram | `op` | ~30 ops × (11+2) |
+| `auth_failures_total` | counter | `reason` | 4 (`bad_password`,`expired_token`,`bad_router_token`,`forbidden_role`) |
+| `agent_connected_routers` | gauge | — | 1 |
+| `traffic_reports_filtered_zero_bytes_total` | counter | — | 1 |
+| `router_metrics_batches_total` | counter | `status` | 3 (`ok`,`malformed`,`router_mismatch`) |
+| `metrics_rejected_total` | counter | `reason` | 2 (`unknown_name`,`forbidden_label`) |
+| `wifihaven_rollup_runs_total` | counter | `rollup_job`,`status` | ~3 jobs × 2 statuses |
+| `wifihaven_rollup_duration_seconds` | histogram | `rollup_job` | ~3 × (13+2) |
+| `wifihaven_rollup_rows_upserted` | gauge | `rollup_job` | ~3 |
+| `wifihaven_db_pool_{active,idle,total,threads_awaiting,max_size}` | gauge | — | 5 |
+| JVM / ZIO runtime | gauges/counters | (collector-defined) | bounded, process-level |
+
+**Router-sourced** (re-exposed server-side via `RouterMetricsService`,
+each × **R** routers):
+
+| Series | Type | Label keys (+`router_id`,`installation_id`) | Per-router bound |
+|--------|------|---------|------------------|
+| `dnsmasq_restarts_total` | counter | `reason` | 3 (`policy_change`,`boot`,`manual`) |
+| `policy_apply_total` | counter | `result` | 4 (`ok`,`write_failed`,`nft_failed`,`smoke_warn`) |
+| `policy_apply_duration_seconds` | histogram | — | (6+2) |
+| `snapshot_poll_total` | counter | `result` | 3 (`200`,`304`,`error`) |
+| `snapshot_poll_duration_seconds` | histogram | — | (6+2) |
+| `agent_uptime_seconds` | gauge | — | 1 |
+| `agent_version` | gauge | `version` | small (slow-moving) |
+| `dns_queries_total` *(allowlisted, not yet emitted — #1301/#1302)* | counter | `result` | 4 |
+| `blocklist_fetch_failures_total` *(allowlisted, not yet emitted — #1301)* | counter | `status` | bounded HTTP codes |
+
+An external `env` label (`prod`/`staging`) is attached at **scrape time**
+by Grafana Alloy (`deploy/alloy/config.alloy`), not in code — a ×2 factor
+on every cloud series. The self-hosted Prometheus scrape adds no extra
+label.
+
+**Findings & fixes (all resolved in this PR):**
+
+1. **No forbidden label leaked.** No emitted series carries
+   `mac`/`domain`/`device_id`/`ip`/`hostname`/`user_id`/`profile_id`. The
+   HTTP `route` label is the *templated* path (`/api/devices/:mac`), never
+   a concrete id — locked by `MetricsSelfMetricsSpec`.
+2. **Firewall coverage gap closed.** The `wifihaven_rollup_*` and
+   `wifihaven_db_pool_*` series (added in #1243, after the §5 catalog was
+   written) were emitted via bare `Metric.*` calls that **bypassed**
+   `MetricGuard`. They are now routed through the guard and added to
+   `MetricGuard.Allowed`, so the firewall covers **every** application
+   series. (JVM/ZIO collector metrics are intentionally not gated — they
+   are bounded, library-defined process metrics.)
+3. **`op` / `reason` / `result` are bounded enums** — confirmed
+   hand-named at the call sites, never derived from SQL text or free input.
+
+### 11.2 Active-series estimate vs. the §7.2 budget
+
+The audited set adds ~70 series beyond the §5 catalog (rollup ≈ 54,
+db-pool 5, `router_metrics_batches_total` 3, `metrics_rejected_total` 2,
+plus the ×2 `env` factor on the cloud path). This stays **comfortably
+within an order of magnitude of the §7.2 ~3,500–4,000 estimate**: the
+dominant term is still `http_*` × route/method/status realized combos and
+the per-router fan-out, both unchanged.
+
+**Live staging confirmation (operator step before flipping prod, #1208):**
+`/metrics` is not publicly reachable (scraped only over the internal
+network / by Alloy), so the literal active-series count is confirmed in
+the staging Grafana Cloud stack, not from this repo:
+
+```promql
+count({__name__=~".+", env="staging"})
+```
+
+Record the number on #1210 and confirm it is within an order of magnitude
+of the estimate above before pointing prod at `/metrics`. A reading far
+above ~10k means a high-cardinality label slipped the guard via a path
+this audit didn't cover (e.g. a future router-pushed label) — stop and
+investigate before the prod scrape.
+
+### 11.3 Retention
+
+| Environment | Backend | Retention | Where set |
+|-------------|---------|-----------|-----------|
+| Self-hosted | local Prometheus | **90 d** | `--storage.tsdb.retention.time=90d` in `deploy/docker-compose.metrics.yml` (declarative) |
+| Staging / prod cloud | Grafana Cloud free tier | **plan-driven (~14 d)** | not code-configurable; set by the Grafana Cloud plan |
+
+- **Self-hosted disk:** ~46 MB/day at the §7.2 sizing → ~4–5 GB over 90 d.
+  Provision the `promdata` volume with **~10 GB** headroom on the host.
+  (Docker named volumes have no fixed cap; this is a host-capacity note,
+  not a compose setting.)
+- **Cloud retention is plan-driven, not declarative.** The free tier's
+  ~14 d window is sufficient for operational regression-spotting; the only
+  in-repo knobs are the Alloy scrape interval (`30s`) and `remote_write`
+  target in `deploy/alloy/config.alloy`. Longer history is a paid-tier or
+  self-hosted-remote-write decision, out of scope here (§7.2).
+- Consistent with the repo's rollup/retention philosophy: long-horizon and
+  per-entity questions are answered from the rolled-up DB tables, **not**
+  from Prometheus — metrics are bounded-cardinality operational signals
+  with a short-to-medium horizon.
+
+### 11.4 The standing gate
+
+`MetricCardinalityGuardSpec` (`api/test/src/feature/`) makes this review
+permanent. It fails the build if:
+
+- a bare `Metric.*` series in `api/src` is not in `MetricGuard.Allowed`
+  (i.e. a new series bypasses the firewall),
+- an OpenWRT-agent-emitted metric name is not allowlisted,
+- any allowlisted series carries a label key outside
+  `MetricGuard.KnownLabelKeys` — the small, known vocabulary; **adding any
+  new label key forces a deliberate edit there, which is the review
+  checkpoint**,
+- `KnownLabelKeys` ever overlaps `ForbiddenKeys`,
+
+and it proves the firewall actually rejects + counts a deliberately
+forbidden label and an unknown name (`metrics_rejected_total`). New work
+that adds a counter (e.g. #1301/#1302/#1325) must keep this spec green —
+its labels have to pass the gate.
