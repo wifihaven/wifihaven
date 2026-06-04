@@ -268,10 +268,14 @@ jobs:
           # rollover the OLD container keeps answering 200 on /api/health, so
           # a green health-poll does NOT prove the new image is live (the
           # #1138 false positive). Asserting the served SHA closes that blind
-          # spot. Render's rollout typically takes 30-90s; allow 15 minutes.
+          # spot. Render's rollout typically takes 30-90s on starter+;
+          # #1389 dropped staging back to `plan: free` (0.1 CPU), where JVM
+          # cold-start is ~5x slower (expected ~500-900s). Allow 30 minutes
+          # to clear that envelope with margin while still flagging a stuck
+          # deploy.
           set -u
           echo "Expecting served sha=${EXPECTED_SHA}"
-          deadline=$(( $(date +%s) + 900 ))
+          deadline=$(( $(date +%s) + 1800 ))
           while (( $(date +%s) < deadline )); do
             served=$(curl --fail --silent --max-time 15 \
                        "${STAGING_API_URL}/api/version" \
