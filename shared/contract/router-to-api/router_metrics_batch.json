@@ -5,6 +5,41 @@
   "sampledAt" : "2026-05-30T14:01:00Z",
   "counters" : [
     {
+      "name" : "blocklist_fetch_failures_total",
+      "labels" : {
+        "status" : "5xx"
+      },
+      "value" : 4
+    },
+    {
+      "name" : "blocklist_fetch_failures_total",
+      "labels" : {
+        "status" : "error"
+      },
+      "value" : 1
+    },
+    {
+      "name" : "dns_queries_total",
+      "labels" : {
+        "result" : "nxdomain"
+      },
+      "value" : 318
+    },
+    {
+      "name" : "dns_queries_total",
+      "labels" : {
+        "result" : "resolved"
+      },
+      "value" : 41200
+    },
+    {
+      "name" : "dns_queries_total",
+      "labels" : {
+        "result" : "servfail"
+      },
+      "value" : 7
+    },
+    {
       "name" : "dnsmasq_restarts_total",
       "labels" : {
         "reason" : "boot"
@@ -17,6 +52,34 @@
         "reason" : "policy_change"
       },
       "value" : 12
+    },
+    {
+      "name" : "enforcement_drops_total",
+      "labels" : {
+        "reason" : "category_block"
+      },
+      "value" : 12990
+    },
+    {
+      "name" : "enforcement_drops_total",
+      "labels" : {
+        "reason" : "host_block"
+      },
+      "value" : 540
+    },
+    {
+      "name" : "enforcement_drops_total",
+      "labels" : {
+        "reason" : "ip_only"
+      },
+      "value" : 63
+    },
+    {
+      "name" : "enforcement_drops_total",
+      "labels" : {
+        "reason" : "whole_mac"
+      },
+      "value" : 1820
     },
     {
       "name" : "policy_apply_total",

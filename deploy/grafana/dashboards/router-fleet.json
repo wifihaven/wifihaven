@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven router-fleet agent metrics (#1206): the cumulative counters/gauges/histograms each OpenWRT agent pushes to POST /api/router/metrics every 60s and the API folds into its exposition (RouterMetricsService, #1205). Panels target series actually emitted via that path — dnsmasq_restarts_total, policy_apply_total/_duration_seconds, snapshot_poll_total/_duration_seconds, agent_uptime_seconds, agent_version. The server attaches router_id; panels slice only by the bounded enum labels (reason/result/version) per the §4 cardinality firewall. See docs/design/metrics-observability.md §5.1.",
+  "description": "WifiHaven router-fleet agent metrics (#1206): the cumulative counters/gauges/histograms each OpenWRT agent pushes to POST /api/router/metrics every 60s and the API folds into its exposition (RouterMetricsService, #1205). Panels target series actually emitted via that path — dnsmasq_restarts_total, policy_apply_total/_duration_seconds, snapshot_poll_total/_duration_seconds, agent_uptime_seconds, agent_version, dns_queries_total (#1302), blocklist_fetch_failures_total (#1301), enforcement_drops_total (#1325). The server attaches router_id; panels slice only by the bounded enum labels (reason/result/status/version) per the §4 cardinality firewall. See docs/design/metrics-observability.md §5.1.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -242,6 +242,93 @@
           "expr": "min(agent_uptime_seconds{env=\"$env\"})",
           "legendFormat": "min uptime",
           "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "DNS query rate by result",
+      "description": "sum by (result) (rate(dns_queries_total[5m])) — result ∈ {resolved, nxdomain, servfail, refused, nodata}. Classified by the dns-tail sidecar from dnsmasq's query log and folded into the agent's metrics push (#1302). DNS is never the enforcement plane — this is volume + the resolved:failure ratio, not a block signal. A spike in servfail/refused means upstream resolution trouble.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 8,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (result) (rate(dns_queries_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Blocklist fetch failures by status",
+      "description": "sum by (status) (rate(blocklist_fetch_failures_total[5m])) — status ∈ {2xx..5xx, error, mkdir_failed, write_failed}. The agent fetches each category blocklist by URL from the API on every 200 policy poll; a rising rate (especially 4xx/5xx) means category enforcement is degrading because the bl_ ipsets can't be refreshed (#1301).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "id": 9,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (rate(blocklist_fetch_failures_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Enforcement forward-drops by reason",
+      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — packets dropped at the nftables forward chain (the actual enforcement plane), reason ∈ {whole_mac, host_block, category_block, ip_only}. Sourced from the per-rule nft counters the agent folds on each tick (#1325). This is how much traffic is really being blocked and why — the prerequisite signal for the enforcement dashboard (#1280).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "id": 10,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "pps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(enforcement_drops_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
         }
       ]
     }
