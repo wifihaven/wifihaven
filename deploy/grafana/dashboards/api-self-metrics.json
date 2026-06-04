@@ -420,7 +420,7 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Router metrics ingest success ratio (#1368)",
-      "description": "sum(rate(router_metrics_batches_total{status=\"ok\"}[10m])) / sum(rate(router_metrics_batches_total[10m])) — fraction of POST /api/router/metrics batches accepted. At-a-glance health: green ≥ 0.95, red below. This catches the #1365 blind spot where `ok` is simply absent (ratio 0/total): the raw by-status rate panel to the left renders a total outage as a lone `malformed` line that looks like low traffic, whereas this turns red. 0/0 (no batches at all in the window) renders as No data — not red — so a quiet environment does not false-alarm. NOTE: this panel is passive — actually paging on this condition is the alerting-strategy thread (#1381).",
+      "description": "(sum(rate(router_metrics_batches_total{status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total[10m])) — fraction of POST /api/router/metrics batches accepted. At-a-glance health: green ≥ 0.95, red below. The `or vector(0)` is load-bearing (#1383): when status=\"ok\" has NO series at all — a 100%-malformed outage, the #1365 case — sum(rate(...{status=\"ok\"})) is an empty vector and empty/value = empty, so without the coercion the panel would render \"No data\" instead of red, masking the exact outage it exists to surface. With it, ok-absent-but-traffic-present → 0 → red; only a truly idle window (no batches at all → vector(0)/empty) shows No data, so a quiet env does not false-alarm. NOTE: this panel is passive — actually paging on this condition is the alerting-strategy thread (#1381).",
       "type": "stat",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
       "id": 13,
@@ -452,7 +452,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(router_metrics_batches_total{env=\"$env\",status=\"ok\"}[10m])) / sum(rate(router_metrics_batches_total{env=\"$env\"}[10m]))",
+          "expr": "(sum(rate(router_metrics_batches_total{env=\"$env\",status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total{env=\"$env\"}[10m]))",
           "legendFormat": "success ratio",
           "refId": "A"
         }
