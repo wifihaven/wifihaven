@@ -44,8 +44,10 @@ end
 --   relative blocklist urls ("/api/blocklists/<id>"); when base_url is given
 --   and the url is root-relative, they're joined so curl gets an absolute URL.
 -- fs: optional table with {read, write, rename, remove, list, mkdir};
---   defaults to real I/O. `mkdir` is called once on `cache_dir` before the
---   first write so a fresh image doesn't ENOENT the atomic tmp-write (#1363).
+--   defaults to real I/O. `mkdir(path)` must behave like `mkdir -p` — it is
+--   called once for cache_dir before any write, so a fresh image where
+--   /etc/wifihaven/blocklists/ doesn't exist yet doesn't ENOENT on the
+--   tmp-file open (#1363).
 -- auth_token: optional router bearer token. The API's GET /api/blocklists/<id>
 --   route is router-authenticated (RouterRoutes.scala: routerAuth.authenticate),
 --   exactly like GET /api/router/policy — so the fetch MUST send
@@ -97,23 +99,25 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
       if not ok then return nil, err end
       return true, nil
     end
-    -- Best-effort `mkdir -p`. Idempotent; failures surface as the
-    -- subsequent write_fn ENOENT, which is the existing error path.
     mkdir_fn = function(path)
-      os.execute(string.format("mkdir -p %q", path))
-      return true
+      -- mkdir -p; quoting the path so spaces / shell metachars don't break.
+      local ok = os.execute(string.format("mkdir -p %q", path))
+      if ok == true or ok == 0 then return true, nil end
+      return nil, "mkdir -p failed for " .. tostring(path)
     end
   end
 
-  -- Ensure the cache directory exists before any write. Without this the
-  -- first successful fetch on a fresh image (e.g. the qemu e2e router VM,
-  -- where /etc/wifihaven/blocklists/ is not pre-created) ENOENT-fails the
-  -- atomic tmp-write step, the bl_member_index stays empty, dns-tail's
-  -- bl_ populator has no member to match on, and category enforcement is
-  -- silently a no-op. The 401 fix lifted the symptom one layer up
-  -- (#1360); without this `mkdir -p`, Suite G G4 (test_bl_direct_requery_blocked)
-  -- still red-gates. See #1363.
-  mkdir_fn(cache_dir)
+  -- Ensure the cache dir exists before the first atomic-tmp write (#1363).
+  -- On a fresh image /etc/wifihaven/blocklists/ doesn't exist yet, which
+  -- previously caused every fetch to ENOENT and the bl_ ipset to stay empty
+  -- — masked before #1360 by the upstream 401, now critical for Suite G G4.
+  if mkdir_fn then
+    local mok, merr = mkdir_fn(cache_dir)
+    if not mok then
+      result.errors[#result.errors + 1] =
+        string.format("blocklists: mkdir failed for %s: %s", tostring(cache_dir), tostring(merr))
+    end
+  end
 
   local bls = snapshot and snapshot.blocklists or {}
   for id, bl in pairs(bls) do
