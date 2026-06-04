@@ -151,6 +151,39 @@ describe("metrics histograms", function()
   end)
 end)
 
+-- ── #1365: label-less series must OMIT `labels`, never emit an empty table ──
+--
+-- Real luci.jsonc on the router serializes an empty Lua table as a JSON array
+-- (`[]`), not an object (`{}`). A series carrying `labels = {}` therefore went
+-- on the wire as `"labels":[]`, which the API's `Map[String,String]` decoder
+-- rejects — failing the ENTIRE batch (every prod batch was counted in
+-- router_metrics_batches_total{status="malformed"} and never re-exposed, so
+-- the router-fleet dashboard stayed empty). build_batch must omit `labels`
+-- entirely for a label-less series so the decoder defaults it to an empty map.
+-- (The lua-cjson test shim hid this: cjson encodes an empty table as `{}`.)
+describe("metrics build_batch — empty labels (#1365)", function()
+  it("omits `labels` for a label-less gauge (never emits an empty table)", function()
+    local reg = new_reg()
+    metrics.set_gauge(reg, "agent_uptime_seconds", {}, 18060)
+    local g = find_series(metrics.build_batch(reg, "t").gauges, "agent_uptime_seconds")
+    assert.is_nil(g.labels)
+  end)
+
+  it("omits `labels` for a label-less histogram", function()
+    local reg = new_reg()
+    metrics.observe(reg, "policy_apply_duration_seconds", {}, 0.02)
+    local h = find_series(metrics.build_batch(reg, "t").histograms, "policy_apply_duration_seconds")
+    assert.is_nil(h.labels)
+  end)
+
+  it("still carries `labels` for a series WITH a bounded enum label", function()
+    local reg = new_reg()
+    metrics.inc_counter(reg, "snapshot_poll_total", { result = "304" }, 9300)
+    local c = find_series(metrics.build_batch(reg, "t").counters, "snapshot_poll_total")
+    assert.same({ result = "304" }, c.labels)
+  end)
+end)
+
 describe("metrics.post — retain on failure (self-heal)", function()
   it("never resets the registry on a failed POST; next batch is the full total", function()
     local reg = new_reg()

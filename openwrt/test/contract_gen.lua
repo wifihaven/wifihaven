@@ -350,11 +350,17 @@ local function build_metrics_batch()
 
   local batch = metrics.build_batch(reg, "2026-05-30T14:01:00Z")
 
-  -- An empty `labels` map must serialize as a JSON object (`{}`), the way
-  -- production luci.jsonc emits it and the way the zio-json
-  -- `Map[String,String]` decoder accepts it — not as an empty array.
+  -- A label-less series is OMITTED of its `labels` field by build_batch
+  -- (#1365): real luci.jsonc on the router serializes an empty Lua table as a
+  -- JSON array (`[]`), which the API's `Map[String,String]` decoder rejects, so
+  -- the agent never emits an empty `labels` at all. The contract fixture pins
+  -- the *canonical decode-stable* form instead — the explicit empty object
+  -- `{}` the decoder normalizes a missing `labels` to and re-emits — so
+  -- ContractGoldenSpec's decode→re-encode round-trip stays a meaningful
+  -- "no silent defaulting" guard. (The genuine prod-wire guard that build_batch
+  -- never emits an empty Lua table lives in openwrt/test/metrics_spec.lua.)
   local function fix_labels(s)
-    if s.labels and next(s.labels) == nil then s.labels = EMPTY_OBJECT end
+    if not s.labels or next(s.labels) == nil then s.labels = EMPTY_OBJECT end
   end
 
   for _, c in ipairs(batch.counters or {}) do
