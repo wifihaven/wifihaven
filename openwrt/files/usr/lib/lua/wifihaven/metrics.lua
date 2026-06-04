@@ -133,11 +133,26 @@ local function ordered_list(map)
   return out
 end
 
+-- Whether a labels table has any entries. An empty table is the dangerous
+-- case: real luci.jsonc on the router serializes an empty Lua table as a JSON
+-- *array* (`[]`), not an object (`{}`), so emitting `labels = {}` produces
+-- `"labels":[]` on the wire — which the API's `Map[String,String]` decoder
+-- rejects, failing the WHOLE batch (router_metrics_batches_total{status=
+-- "malformed"}). We therefore OMIT `labels` entirely for a label-less series
+-- and let the API decoder fall back to its `Map.empty` default (#1365). The
+-- lua-cjson test shim masked this: cjson encodes an empty table as `{}`, so
+-- the failure only ever appeared against real luci.jsonc in production.
+local function attach_labels(series, labels)
+  if labels and next(labels) ~= nil then series.labels = labels end
+  return series
+end
+
 -- Build the §3.2 push body from the registry. Pure serializer of current
 -- registry state + the caller-supplied sampledAt — no clock reads, so the
 -- contract generator can drive it deterministically. Empty series lists are
--- omitted entirely (rather than emitted as `{}`), since luci.jsonc encodes an
--- empty Lua table as a JSON object and the API decoder expects arrays.
+-- omitted entirely (the decoder defaults them to empty), and so is an empty
+-- `labels` map (see attach_labels above) — never emit an empty Lua table,
+-- since luci.jsonc renders it as `[]` and the decoder then rejects the batch.
 function M.build_batch(reg, sampled_at)
   local batch = {
     routerId       = reg.router_id,
@@ -148,13 +163,13 @@ function M.build_batch(reg, sampled_at)
 
   local counters = {}
   for _, c in ipairs(ordered_list(reg.counters)) do
-    counters[#counters + 1] = { name = c.name, labels = c.labels, value = c.value }
+    counters[#counters + 1] = attach_labels({ name = c.name, value = c.value }, c.labels)
   end
   if #counters > 0 then batch.counters = counters end
 
   local gauges = {}
   for _, g in ipairs(ordered_list(reg.gauges)) do
-    gauges[#gauges + 1] = { name = g.name, labels = g.labels, value = g.value }
+    gauges[#gauges + 1] = attach_labels({ name = g.name, value = g.value }, g.labels)
   end
   if #gauges > 0 then batch.gauges = gauges end
 
@@ -166,13 +181,12 @@ function M.build_batch(reg, sampled_at)
     end
     -- +Inf overflow == total observation count.
     buckets[#buckets + 1] = { le = "+Inf", count = h.count }
-    histograms[#histograms + 1] = {
+    histograms[#histograms + 1] = attach_labels({
       name    = h.name,
-      labels  = h.labels,
       buckets = buckets,
       sum     = h.sum,
       count   = h.count,
-    }
+    }, h.labels)
   end
   if #histograms > 0 then batch.histograms = histograms end
 

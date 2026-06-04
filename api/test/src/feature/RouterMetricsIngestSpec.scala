@@ -150,6 +150,47 @@ object RouterMetricsIngestSpec
         assertTrue(scraped.contains("policy_apply_duration_seconds"))
       }
     },
+    test("batch that OMITS `labels` on a label-less series ingests + re-exposes (#1365)") {
+      // Real luci.jsonc on the router serializes an empty Lua table as a JSON
+      // array (`[]`), so the agent omits `labels` entirely for a label-less
+      // series rather than emitting `"labels":[]` (which this decoder would
+      // reject, failing the whole batch — every prod batch landed in
+      // router_metrics_batches_total{status="malformed"} and nothing reached
+      // /metrics, leaving the router-fleet dashboard empty). The API must
+      // therefore accept a series with NO `labels` key and default it to the
+      // empty map. This hand-written body mirrors the exact prod wire shape;
+      // the codec-built bodies elsewhere always emit `"labels":{}` and so never
+      // exercised the omitted form.
+      for {
+        _          <- cleanDb
+        routerRepo <- ZIO.service[RouterRepo]
+        svc        <- RouterMetricsService.make
+        (rid, tok) <- newRouter("r-omit")
+        routes = RouterMetricsRoutes.routes(new RouterAuthLive(routerRepo), svc)
+        ridStr = rid.value.toString
+        body   =
+          s"""{
+             |  "routerId": "$ridStr",
+             |  "agentVersion": "0.3.1",
+             |  "agentStartedAt": "2026-05-30T09:00:00Z",
+             |  "sampledAt": "2026-05-30T14:01:00Z",
+             |  "gauges": [ { "name": "agent_uptime_seconds", "value": 18060.0 } ],
+             |  "histograms": [ {
+             |    "name": "policy_apply_duration_seconds",
+             |    "buckets": [ { "le": "0.05", "count": 3.0 }, { "le": "+Inf", "count": 6.0 } ],
+             |    "sum": 0.4, "count": 6.0
+             |  } ]
+             |}""".stripMargin
+        resp    <- post(routes, tok, body)
+        _       <- ZIO.sleep(700.millis)
+        scraped <- scrape.catchAll(r => r.body.asString.orDie)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(
+          seriesValue(scraped, "agent_uptime_seconds", s"""router_id="$ridStr"""")
+            .contains(18060.0),
+        ) &&
+        assertTrue(scraped.contains("policy_apply_duration_seconds"))
+    },
     test("missing token → 401; routerId mismatch → 403") {
       for {
         _          <- cleanDb
