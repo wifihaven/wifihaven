@@ -4,6 +4,9 @@ zone_id    = "<paste from Cloudflare dash → wifihaven.net → right sidebar �
 api_prod_cname_target    = "<from Render → wifihaven-api-prod    → Settings → Custom Domains>"
 api_staging_cname_target = "<from Render → wifihaven-api-staging → Settings → Custom Domains>"
 
-# e2e test fixture leaf IP — default is 93.184.216.34 (IANA example.com).
-# Override only if you need a different origin for direct-requery CNAME tests (#1351).
-# e2e_edge_ip = "93.184.216.34"
+# e2e test fixture leaf IP — default is 192.0.2.10 (RFC 5737 TEST-NET-1, a
+# reserved-for-documentation address that is never globally routed/reassigned,
+# #1360). The direct-requery CNAME block-path tests DNAT port 80 before routing,
+# so the leaf need not be reachable; allow-path tests xfail when it isn't.
+# Override only if you wire up a reachable harness-served origin (#1360 follow-up).
+# e2e_edge_ip = "192.0.2.10"

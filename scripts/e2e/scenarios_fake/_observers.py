@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 
 from lib.traffic import dns_query, http_get
-from lib.vm import router_nft_set
+from lib.vm import router_nft_set, router_ssh
 from lib.wait import wait_until
 
 
@@ -38,6 +38,40 @@ def wait_mac_in_blocked_set(mac: str, *, present: bool, timeout_s: float = 180) 
         description=(
             f"{mac} {'present in' if present else 'absent from'} {BLOCKED_MACS_SET}"
         ),
+    )
+
+
+def mac_drop_rule_present(mac: str) -> bool:
+    """True iff the agent has rendered a per-MAC whole-MAC drop rule for `mac`.
+
+    The correct "this MAC is blocked right now" observable for a MAC whose
+    effective rules have ``blocked = true`` — and the only correct one when the
+    MAC also has a non-empty ``extraAllowed`` list. Per #421, render.lua pulls a
+    blocked-with-extraAllowed MAC OUT of the ``@blocked_macs`` set into per-MAC
+    forward-chain rules that carry the ``ip daddr != @ea_<mac>_<host>`` carve-out
+    (the set cannot hold an ``ip daddr`` predicate). So such a MAC is
+    deliberately ABSENT from ``blocked_macs`` while still fully blocked — asserting
+    set membership there would never succeed (the #1360 G2 false-failure).
+
+    We look for a forward-chain drop rule scoped to this MAC. render.lua tags
+    every drop with ``comment "wh_drop:<mac>:<reason>"`` (#1122), so a match on
+    ``wh_drop:<mac>`` confirms the agent applied a blocked policy for it
+    regardless of whether the drop went via @blocked_macs or the per-MAC ea path.
+    """
+    res = router_ssh(
+        "nft list table inet wifihaven 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    out = (res.stdout or "").lower()
+    return f"wh_drop:{norm_mac(mac)}" in out
+
+
+def wait_mac_drop_rule_present(mac: str, *, timeout_s: float = 180) -> None:
+    wait_until(
+        lambda: True if mac_drop_rule_present(mac) else None,
+        timeout_s=timeout_s,
+        interval_s=2,
+        description=f"per-MAC forward-chain drop rule (wh_drop:{norm_mac(mac)}) present",
     )
 
 

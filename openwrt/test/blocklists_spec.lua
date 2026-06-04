@@ -118,6 +118,60 @@ describe("blocklists.fetch_and_cache", function()
     assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
   end)
 
+  -- #1360 regression: the API's GET /api/blocklists/<id> route is
+  -- router-authenticated (RouterRoutes.scala: routerAuth.authenticate), exactly
+  -- like GET /api/router/policy. The agent must send `Authorization: Bearer
+  -- <router_token>` on the blocklist fetch — without it the server replies 401,
+  -- the bl_ ipset stays empty, and category enforcement is a silent no-op (the
+  -- same *symptom* as the #1334 arg-order bug, a distinct *cause*). Gate-2
+  -- Suite G G4 (test_bl_direct_requery_blocked) reproduced this end-to-end:
+  -- "blocklist fetch: fetch failed for e2e-cname-bl (status=401)".
+  it("sends Authorization: Bearer <token> when an auth_token is given (#1360)", function()
+    local fs = make_fs()
+    local seen_headers
+    -- Mimic the real router endpoint: 401 unless a bearer token is present.
+    local function authed_http_get(_url, headers)
+      seen_headers = headers
+      local auth = headers and headers["Authorization"]
+      if auth ~= "Bearer rtok-123" then
+        return 401, "Missing router token", {}
+      end
+      return 200, "doubleclick.net\n", {}
+    end
+
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(
+      s, authed_http_get, fs, "/etc/wifihaven/blocklists",
+      "http://api.example:8080", "rtok-123")
+
+    assert.not_nil(seen_headers, "fetch must pass a headers table")
+    assert.equal("Bearer rtok-123", seen_headers["Authorization"])
+    assert.equal(0, #result.errors, "authenticated fetch must succeed")
+    assert.not_nil(result.hosts_by_id["ads"],
+      "ads hosts must be cached (otherwise bl_ ipset stays empty)")
+    assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
+  end)
+
+  it("401s and records an error when no auth_token is passed to an authed route (#1360)", function()
+    local fs = make_fs()
+    local function authed_http_get(_url, headers)
+      local auth = headers and headers["Authorization"]
+      if auth ~= "Bearer rtok-123" then
+        return 401, "Missing router token", {}
+      end
+      return 200, "doubleclick.net\n", {}
+    end
+
+    -- No auth_token argument → no Authorization header → server 401s.
+    local s = snap({ ads = { version = "v1", url = "/api/blocklists/ads" } })
+    local result = blocklists.fetch_and_cache(
+      s, authed_http_get, fs, "/etc/wifihaven/blocklists", "http://api.example:8080")
+
+    assert.truthy(#result.errors > 0, "missing token must surface a fetch error")
+    assert.is_nil(result.hosts_by_id["ads"])
+    assert.is_nil(fs._files["/etc/wifihaven/blocklists/ads-v1.txt"])
+  end)
+
   it("does NOT re-fetch when (id, version) file already exists in cache", function()
     local fs      = make_fs()
     local fetches = 0

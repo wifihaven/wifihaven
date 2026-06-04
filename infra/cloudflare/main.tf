@@ -159,14 +159,20 @@ resource "cloudflare_record" "api_staging" {
 # (#1346/#1349) end-to-end on a real router VM.
 #
 # Records are DNS-only (proxied=false) so the chain resolves as authored and
-# the leaf A record is never hidden behind Cloudflare's edge. The leaf IP is
-# 93.184.216.34 (IANA's example.com — stable, responds to HTTP/80 with a
-# non-block-page body, and is already used as the harness's reference
-# "internet-reachable" origin in scripts/e2e/lib/wait.py).
+# the leaf A record is never hidden behind Cloudflare's edge. The leaf IP
+# defaults to 192.0.2.10 (var.e2e_edge_ip) — RFC 5737 TEST-NET-1, reserved-for-
+# documentation and GUARANTEED never globally routed or reassigned (#1360). The
+# previous value 93.184.216.34 (legacy IANA example.com) was decommissioned
+# ~2025 and its HTTP/80 went dead, silently red-gating router releases. The
+# leaf is intentionally unroutable: the block-path e2e tests (G1 eb_, G4 bl_)
+# DNAT port 80 at prerouting before the dest is routed, so reachability is
+# irrelevant to them; the allow-path tests (G2/G3) xfail when the leaf is
+# unreachable rather than depending on a live third-party origin (see
+# scripts/e2e/scenarios_fake/test_cname_direct_requery.py).
 #
 # These records are applied by the CI pipeline (master-cloudflare.yml) on merge
-# to main — no manual `terraform apply` is needed going forward (#1357). The
-# ci.yml cloudflare-terraform job still validates fmt + validate on every PR
+# to main — no manual `terraform apply` is needed going forward (#1357/#1358).
+# The ci.yml cloudflare-terraform job still validates fmt + validate on every PR
 # but does NOT apply.
 
 resource "cloudflare_record" "e2e_brand" {

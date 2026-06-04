@@ -48,8 +48,16 @@ end
 --   called once for cache_dir before any write, so a fresh image where
 --   /etc/wifihaven/blocklists/ doesn't exist yet doesn't ENOENT on the
 --   tmp-file open (#1363).
+-- auth_token: optional router bearer token. The API's GET /api/blocklists/<id>
+--   route is router-authenticated (RouterRoutes.scala: routerAuth.authenticate),
+--   exactly like GET /api/router/policy — so the fetch MUST send
+--   `Authorization: Bearer <token>` or the server replies 401 and the bl_ ipset
+--   stays empty, turning category enforcement into a silent no-op (#1360; the
+--   same failure class as the #1334 arg-order bug, distinct cause). When nil
+--   (e.g. legacy callers / unit tests against an unauthenticated stub) no
+--   Authorization header is sent.
 -- Returns: { hosts_by_id = {[id]={hosts}}, errors = {...} }
-function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
+function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
   local result = { hosts_by_id = {}, errors = {} }
 
@@ -57,6 +65,12 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
     result.errors[#result.errors + 1] = "http_get_fn is nil or not a function"
     return result
   end
+
+  -- The blocklist route is router-authenticated; build the same bearer header
+  -- policy.fetch sends. nil token → no header (unauthenticated callers/tests).
+  local auth_headers = auth_token
+    and { ["Authorization"] = "Bearer " .. auth_token }
+    or nil
 
   -- Default filesystem ops (real I/O) when fs not injected.
   local read_fn, write_fn, rename_fn, mkdir_fn
@@ -95,7 +109,8 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
 
   -- Ensure the cache dir exists before the first atomic-tmp write (#1363).
   -- On a fresh image /etc/wifihaven/blocklists/ doesn't exist yet, which
-  -- previously caused every fetch to ENOENT and the bl_ ipset to stay empty.
+  -- previously caused every fetch to ENOENT and the bl_ ipset to stay empty
+  -- — masked before #1360 by the upstream 401, now critical for Suite G G4.
   if mkdir_fn then
     local mok, merr = mkdir_fn(cache_dir)
     if not mok then
@@ -122,7 +137,8 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url)
       result.hosts_by_id[id] = parse_body(existing)
     else
       -- Fetch from API. Signature matches the agent's http_get: status first.
-      local status, body = http_get_fn(url, nil)
+      -- Send the router bearer token — the route is router-authenticated (#1360).
+      local status, body = http_get_fn(url, auth_headers)
       if type(status) ~= "number" or status ~= 200 then
         result.errors[#result.errors + 1] =
           string.format("blocklists: fetch failed for %s (status=%s)", tostring(id), tostring(status))
