@@ -2,12 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
+import { useBlocklists, useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type {
-  AppDetail, AppMode, AppPolicyAssignment, BlocklistSummary,
+  AppDetail, AppMode, AppPolicyAssignment,
   CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, PauseMode, ProfileDetail,
   ProfileTimeSummary,
   ScheduleRequest, UpsertProfileRequest, User,
@@ -958,21 +958,17 @@ function CategoriesSubsection({
   updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
   onProfileChanged: () => void | Promise<unknown>
 }) {
-  const [lists, setLists] = useState<BlocklistSummary[]>([])
-  const [loading, setLoading] = useState(true)
+  // Catalog comes from the shared react-query cache (GET /api/blocklists), so
+  // all profile cards reuse one fetch rather than each firing its own.
+  const blocklistsQuery = useBlocklists()
+  const lists = blocklistsQuery.data ?? []
+  const loading = blocklistsQuery.isPending
+  const loadError = blocklistsQuery.isError
+    ? (blocklistsQuery.error instanceof Error ? blocklistsQuery.error.message : 'failed to load categories')
+    : null
   const [savingId, setSavingId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    api.blocklists.list()
-      .then(rs => { if (!cancelled) setLists(rs) })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'failed to load categories')
-      })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [])
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const error = saveError ?? loadError
 
   const selected = pd.profile.blockedCategories
 
@@ -989,7 +985,7 @@ function CategoriesSubsection({
   async function toggle(id: string) {
     if (savingId) return
     setSavingId(id)
-    setError(null)
+    setSaveError(null)
     try {
       const has = selected.includes(id)
       const next = has ? selected.filter(c => c !== id) : [...selected, id]
@@ -998,7 +994,7 @@ function CategoriesSubsection({
       await updateProfile(body)
       await onProfileChanged()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update')
+      setSaveError(e instanceof Error ? e.message : 'Failed to update')
     } finally {
       setSavingId(null)
     }
