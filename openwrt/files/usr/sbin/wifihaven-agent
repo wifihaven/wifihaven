@@ -25,6 +25,7 @@ local nft_drops  = require("wifihaven.nft_drops")
 local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
 local paths      = require("wifihaven.paths")
+local block_page = require("wifihaven.block_page")
 local selfheal   = require("wifihaven.selfheal")
 local version    = require("wifihaven.version")
 
@@ -36,6 +37,14 @@ local function uci_get(opt, default)
 end
 
 local api_url       = uci_get("api_url",              "http://192.168.1.1:8080")
+-- #1174: block-page redirect base. The SPA that serves /blocked is, in the
+-- cloud deploy, on a different host (wifihaven.net / post-#1171
+-- app.wifihaven.net) than the API the router polls (api.wifihaven.net), so the
+-- block page must redirect to this host, NOT api_url. Defaults to api_url so
+-- self-hosted installs (SPA bundled into the API image, same host) and any
+-- router that never sets it keep today's behavior exactly. This is router-side
+-- deployment config (UCI), not policy, so it is not on the API↔router wire.
+local block_page_url = block_page.resolve_base(uci_get("block_page_url", ""), api_url)
 local router_token  = uci_get("router_token",         "")
 local router_id     = uci_get("router_id",            "")
 local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")
@@ -71,8 +80,8 @@ log.init({ debug = debug_opt })
 -- nil on a checkout / older install — header is then simply omitted.
 local agent_version = version.read()
 local policy_opts   = { agent_version = agent_version }
-log.info("wifihaven-agent: starting api_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds metrics_int=%ds activity_sample_int=%ds agent_version=%s",
-         api_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, metrics_int, activity_sample_int, tostring(agent_version))
+log.info("wifihaven-agent: starting api_url=%s block_page_url=%s router_id=%s debug=%s policy_int=%ds usage_int=%ds metrics_int=%ds activity_sample_int=%ds agent_version=%s",
+         api_url, block_page_url, router_id, tostring(log.debug_enabled()), policy_int, usage_int, metrics_int, activity_sample_int, tostring(agent_version))
 
 -- ── Metrics registry (#1206) ─────────────────────────────────────────────────
 -- In-process cumulative counters since process start. NEVER reset on the
@@ -348,6 +357,11 @@ os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifi
 -- blocked clients, and /var/run/wifihaven/blocked_reasons (written below by
 -- render.write_blocked_reasons after every snapshot apply) to look up the
 -- per-MAC reason for the current device.
+--
+-- #1174: the value written here is the resolved block-page base
+-- (block_page_url), which is api_url for self-hosted installs but the public
+-- SPA host (wifihaven.net) in the cloud deploy. The IPC file name is left as
+-- api_url for back-compat with an already-installed handler.lua.
 
 local BLOCK_PAGE_API_URL_PATH  = paths.block_page_api_url
 local BLOCK_PAGE_REASONS_PATH  = paths.block_page_reasons
@@ -355,7 +369,7 @@ local BLOCK_PAGE_HOSTS_PATH    = paths.block_page_hosts  -- #594
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
-  if f then f:write(api_url); f:close() end
+  if f then f:write(block_page_url); f:close() end
 end
 
 -- Persist the per-MAC block reasons for the block-page handler. Called after

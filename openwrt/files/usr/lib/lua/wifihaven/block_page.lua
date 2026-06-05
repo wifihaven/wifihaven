@@ -81,12 +81,26 @@ end
 M.html_escape = html_escape
 M.url_encode  = url_encode
 
--- Build the destination URL on the API server. Reason and mac are passed
--- through as-is; the API's React BlockedPage matches against the wire-format
+-- Resolve the block-page redirect base. The block-page (SPA /blocked route)
+-- host is deployment config, distinct from the API URL the router polls: in
+-- the cloud deploy the SPA lives on a different host (wifihaven.net /
+-- post-#1171 app.wifihaven.net) than the API (api.wifihaven.net), so the
+-- redirect must target the SPA host, not api_url. Falls back to api_url when
+-- the block-page URL is unset — the self-hosted / back-compat case, where the
+-- SPA is bundled into the API image and served on the same host. (#1174)
+function M.resolve_base(block_page_url, api_url)
+  if block_page_url and block_page_url ~= "" then return block_page_url end
+  return api_url
+end
+
+-- Build the destination URL on the block-page host. Reason and mac are passed
+-- through as-is; the SPA's React BlockedPage matches against the wire-format
 -- MacBlockReason strings ("Paused", "Schedule", "TimeLimit", "Manual").
-function M.build_dest_url(api_url, host, mac, reason)
-  if not api_url or api_url == "" then return nil end
-  return api_url .. "/blocked"
+-- `base_url` is the resolved block-page host (see resolve_base), not
+-- necessarily the API URL. (#1174)
+function M.build_dest_url(base_url, host, mac, reason)
+  if not base_url or base_url == "" then return nil end
+  return base_url .. "/blocked"
       .. "?host="   .. url_encode(host)
       .. "&reason=" .. url_encode(reason or "")
       .. "&mac="    .. url_encode(mac or "")
@@ -114,11 +128,12 @@ function M.inline_copy_for(reason)
   return INLINE_COPY[reason] or "This site is blocked."
 end
 
--- Render the HTML body for the block page. If api_url is set, returns a tiny
+-- Render the HTML body for the block page. If base_url is set, returns a tiny
 -- redirect document (meta refresh + JS for compatibility). Otherwise returns a
--- self-contained page with inline copy keyed on `reason`.
-function M.render_html(api_url, host, mac, reason)
-  local dest = M.build_dest_url(api_url, host, mac, reason)
+-- self-contained page with inline copy keyed on `reason`. `base_url` is the
+-- resolved block-page host (see resolve_base), not necessarily the API URL.
+function M.render_html(base_url, host, mac, reason)
+  local dest = M.build_dest_url(base_url, host, mac, reason)
   local copy = M.inline_copy_for(reason)
   local site_line = (host and host ~= "")
     and ("Site: " .. html_escape(host)) or ""

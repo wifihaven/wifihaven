@@ -2,6 +2,16 @@ config wifihaven 'wifihaven'
 	# Base URL of the wifihaven API server (HTTP, no trailing slash)
 	option api_url 'http://192.168.1.1:8080'
 
+	# Base URL of the public SPA that serves the /blocked page (no trailing
+	# slash). The block page redirects blocked clients here. Leave unset to
+	# fall back to api_url — correct for self-hosted installs, where the SPA is
+	# bundled into the API image and served on the same host. In the cloud
+	# deploy the SPA is on a SEPARATE host (Cloudflare Pages), so set this to
+	# the public SPA host, e.g. 'https://wifihaven.net' (post-#1171 cutover:
+	# 'https://app.wifihaven.net'). This is router-side config, not on the
+	# API↔router wire. (#1174)
+	# option block_page_url 'https://wifihaven.net'
+
 	# Long-lived router bearer token obtained during enrollment
 	option router_token ''
 
