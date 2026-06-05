@@ -7,7 +7,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type {
-  AppDetail, AppMode, AppPolicyAssignment,
+  AppDetail, AppMode, AppPolicyAssignment, BlocklistSummary,
   CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, PauseMode, ProfileDetail,
   ProfileTimeSummary,
   ScheduleRequest, UpsertProfileRequest, User,
@@ -768,15 +768,27 @@ function ProfileShellRow({
           {isAdmin && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
-          {pd.profile.blockedCategories.length > 0 && (
-            <div>
-              <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
-              <div className="flex flex-wrap gap-2">
-                {pd.profile.blockedCategories.map(c => (
-                  <span key={c} className="text-xs bg-red-500/10 text-red-700 px-2 py-1 rounded-lg font-mono">{c}</span>
-                ))}
+          {/* #1473 — blocked categories are edited inline here (admins),
+              replacing the read-only chips. Toggling a category autosaves
+              blockedCategories via the same full-profile PUT the Blocklists
+              matrix uses. Non-admins keep the read-only chips below. */}
+          {isAdmin ? (
+            <CategoriesSubsection
+              pd={pd}
+              updateProfile={updateProfile}
+              onProfileChanged={onProfileChanged}
+            />
+          ) : (
+            pd.profile.blockedCategories.length > 0 && (
+              <div>
+                <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
+                <div className="flex flex-wrap gap-2">
+                  {pd.profile.blockedCategories.map(c => (
+                    <span key={c} className="text-xs bg-red-500/10 text-red-700 px-2 py-1 rounded-lg font-mono">{c}</span>
+                  ))}
+                </div>
               </div>
-            </div>
+            )
           )}
 
           {/* #976: apps subsection — inline app-policy editor. Post-#764 the
@@ -934,6 +946,114 @@ function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
 // block-all baseline (only its allowed apps/hosts + the household global
 // allowlist stay reachable). Persists via the existing full-profile PUT —
 // formToRequest carries defaultDeny — so it composes with every other field.
+// #1473 — inline blocked-categories editor. Fetches the blocklist catalog
+// (the same `GET /api/blocklists` the Blocklists matrix page uses) and renders
+// a checklist; toggling a category writes blockedCategories via the
+// full-profile PUT. Admin-only — the catalog endpoint requires admin, and this
+// is the editing surface (non-admins fall back to the read-only chips).
+function CategoriesSubsection({
+  pd, updateProfile, onProfileChanged,
+}: {
+  pd: ProfileDetail
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onProfileChanged: () => void | Promise<unknown>
+}) {
+  const [lists, setLists] = useState<BlocklistSummary[]>([])
+  const [loading, setLoading] = useState(true)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.blocklists.list()
+      .then(rs => { if (!cancelled) setLists(rs) })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'failed to load categories')
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const selected = pd.profile.blockedCategories
+
+  // Bundled first (alphabetical), then operator/test lists — matches the
+  // Blocklists matrix ordering so the two surfaces read consistently.
+  const sorted = useMemo(
+    () => [...lists].sort((a, b) => {
+      if (a.bundled !== b.bundled) return a.bundled ? -1 : 1
+      return a.id.localeCompare(b.id)
+    }),
+    [lists],
+  )
+
+  async function toggle(id: string) {
+    if (savingId) return
+    setSavingId(id)
+    setError(null)
+    try {
+      const has = selected.includes(id)
+      const next = has ? selected.filter(c => c !== id) : [...selected, id]
+      const body = formToRequest(detailToForm(pd))
+      body.blockedCategories = next
+      await updateProfile(body)
+      await onProfileChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  return (
+    <div data-testid={`profile-categories-subsection-${pd.profile.id}`}>
+      <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
+      {loading ? (
+        <p className="text-xs text-brand-text-muted">Loading categories…</p>
+      ) : sorted.length === 0 ? (
+        <p className="text-xs text-brand-text-muted">
+          No blocklist categories available.{' '}
+          <Link to="/blocklists" className="text-brand-accent hover:underline">Manage blocklists</Link>
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {sorted.map(b => {
+            const on = selected.includes(b.id)
+            const saving = savingId === b.id
+            return (
+              <label
+                key={b.id}
+                data-testid={`profile-category-${pd.profile.id}-${b.id}`}
+                title={b.description ?? undefined}
+                className={`inline-flex items-center text-xs px-3 py-1.5 rounded-lg border cursor-pointer transition-colors ${
+                  on
+                    ? 'bg-red-500/20 text-red-700 border-red-500/40'
+                    : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
+                } ${saving ? 'opacity-50 cursor-wait' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  disabled={saving}
+                  onChange={() => toggle(b.id)}
+                  data-testid={`profile-category-toggle-${pd.profile.id}-${b.id}`}
+                  aria-label={b.name}
+                  className="sr-only"
+                />
+                <span>{on ? '✓ ' : ''}{b.name}</span>
+              </label>
+            )
+          })}
+        </div>
+      )}
+      {error && (
+        <p className="text-xs text-red-700 mt-1" data-testid={`profile-categories-error-${pd.profile.id}`}>
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function DefaultDenySubsection({
   pd, updateProfile, onProfileChanged,
 }: {
