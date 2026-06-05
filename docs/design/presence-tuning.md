@@ -27,12 +27,17 @@ Stop computing presence per fixed bucket. Instead **sessionize activity**:
    continuous, exactly as a kid working a problem locally between requests is
    continuously present. Recommended **`N = 120 s`** (sensitivity 180 s), set at
    the knee of the measured think-gap distribution.
-2. **Aggregate by interval-union per profile, not by summing.** A profile is one
-   human; two apps (or two devices) active in the same minute are **one** minute
-   of presence. The daily cap is the **union** of all session intervals across
-   the profile's apps and devices; per-app time-on-site is that one app's
-   session-span. Summing per-app minutes is wrong (double-counts) **and**
-   unstable across reporting rates.
+2. **Aggregate by interval-union — at two scopes.** Both outputs come from the
+   same sessions:
+   - **Per-app presence** (app-specific — Math Academy time, YouTube time):
+     union of *that app's* sessions across the profile's devices. A first-class
+     output, and what a future per-app limit reads.
+   - **Daily total / cap:** union of *all* sessions across all apps and devices —
+     two apps active in the same minute count once.
+
+   The total is **not** the sum of the per-app numbers (overlap double-counts).
+   "Don't sum per-app" is about deriving the *total*, not about skipping per-app
+   presence — we keep that.
 
 **Why this shape, not "full-bucket credit":** crediting a whole bucket is
 bucket-size-dependent — it over-counts at 5-minute reporting and under-counts at
@@ -246,8 +251,16 @@ is flat ~117–125 min across R = 10…300).
 
 **Conclusions that shape the model (§4):**
 
-- Presence must be **sessionized on activity timestamps and aggregated by
-  profile interval-union**, never "credit a bucket" and never "sum per-app."
+- Presence must be **sessionized on activity timestamps**, never "credit a
+  bucket." Both outputs we want come from the same sessions, via an
+  interval-**union** at different scopes:
+  - **Per-app presence** (the app-specific number — Math Academy time, YouTube
+    time): union of *that app's* sessions across the profile's devices. This is
+    a first-class output.
+  - **Daily total / cap:** union of *all* sessions across all apps and devices.
+  - The total is **not** the sum of the per-app numbers — overlapping apps would
+    double-count (total ≤ Σ per-app). "Never sum per-app" means *don't derive
+    the total that way*; it does **not** mean we skip per-app presence.
 - The idle window must satisfy **N ≥ R** (recommend **N ≥ 2 × R** for margin).
   At today's R = 60 s, N = 120 s is safe; if reporting moves to 5 minutes, a
   120 s gap would silently zero out presence unless timing is anchored on
@@ -301,22 +314,29 @@ buckets are available, each non-heartbeat row contributes its `[period_start,
 period_end]` interval as the activity — correct in the limit, but with a
 trailing-edge uncertainty of one report interval (§2d).
 
-### 4.2 Aggregation 1 — daily cap = **profile interval-union**
+Both aggregations are interval-**unions** of the same sessions, differing only in
+scope. The union is what makes them rate-stable (§2d table (i)).
 
-The daily cap (and any "total screen time") is the **union** of every session
-interval across all of the profile's apps **and** devices — measured as covered
-wall-clock, so two apps (or two devices) active in the same minute count once.
-This replaces the current "group by `period_start`, take max, sum buckets" dedup
-(`totalSecondsByMac` / `dedupedTotalSeconds`) with a true interval union, and is
-the most rate-stable aggregate (§2d table (i), union column). **Never sum
-per-app session minutes for the cap** — that double-counts and is unstable.
+### 4.2 Per-app presence (app-specific) — union of that app's sessions
 
-### 4.3 Aggregation 2 — per-app time-on-site = **that app's session span**
+The app-specific number we want ("how long on Math Academy", "how long on
+YouTube") is the **union of that one app's session intervals across the profile's
+devices** — union, not raw span-sum, so the same app open on two devices at once
+is one minute, not two. This is a **first-class output** and the successor to
+`proportionalMins` / `proportionalHostSeconds`. Heartbeat filtering must apply
+here too (today the per-host surfaces don't filter — fold that in). Per-app
+presence is what a future per-app time limit (#127/#301/#64) reads.
 
-Per-app screen-time ("how long on Math Academy") is the sum of *that one app's*
-session spans — the successor to `proportionalMins` / `proportionalHostSeconds`.
-Same primitive, no union across apps. Heartbeat filtering should apply here too
-(today the per-host surfaces don't filter — fold that in).
+### 4.3 Daily total / cap — union across **all** apps and devices
+
+The cap (and "total screen time") is the **union of every session interval across
+all of the profile's apps and devices** — so two different apps active in the same
+minute count once. This replaces the current "group by `period_start`, take max,
+sum buckets" dedup (`totalSecondsByMac` / `dedupedTotalSeconds`).
+
+**The total is not the sum of the per-app numbers** (overlap ⇒ total ≤ Σ per-app).
+Compute it as its own union over the full session set; surface per-app presence
+alongside it, not as its addends.
 
 ### 4.4 The two invariants the implementation must hold
 
@@ -382,11 +402,13 @@ new semantics.
    one minute = one minute (union); **(d) editing a presence knob invalidates
    `time_used_daily` and the next rollup reflects the new value.**
 
-3. **API rollup: per-app time-on-site via session span + heartbeat filtering on
-   per-host surfaces.** Re-express `proportionalHostSeconds` as per-app session
-   spans; apply the heartbeat filter to per-host/per-site surfaces (today they
-   don't). Test the `N < R` collapse guard and the keepalive-bridge composition
-   from §4.4.
+3. **API rollup: per-app presence (app-specific) + heartbeat-filter the per-host
+   surfaces.** Re-express `proportionalHostSeconds` as the **union of that app's
+   sessions across the profile's devices** (not a raw span-sum — the same app on
+   two devices at once is one minute); apply the heartbeat filter to
+   per-host/per-site surfaces (today they don't). Tests pin: a sparse per-app
+   session reads its full span; same-app-on-two-devices overlap counts once; the
+   `N < R` collapse guard and the keepalive-bridge composition from §4.4.
 
 4. **Anchor session timing on `connection_events` (rate-independence).** Join
    per-request timestamps (timing) with `traffic_reports` (bytes / heartbeat
