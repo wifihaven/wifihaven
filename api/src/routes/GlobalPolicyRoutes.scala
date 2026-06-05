@@ -1,0 +1,140 @@
+package wifihaven.api.routes
+
+import wifihaven.api.auth.*
+import wifihaven.api.db.*
+import wifihaven.shared.*
+import wifihaven.shared.types.*
+import zio.*
+import zio.http.*
+import zio.json.*
+
+// #1320 / #1308: admin-facing CRUD + audit surface for the household-global
+// policy that PolicyService (#1318) collapses into `PolicySnapshot.global`.
+//
+// `global.extraAllowed` is a SECURITY-SENSITIVE bypass surface — a host here is
+// reachable from EVERY device regardless of any block (it is the top of the
+// precedence ladder, design §5.2). So reads expose the full audit trail
+// (`reason` / `added_by` / `removed_by`, resolved to usernames) and writes
+// require admin. The router never sees any of this — only the flat hostname /
+// category lists assembled by the GlobalPolicyRepo (design §7).
+//
+// These routes are covered by the HTTP middleware's route-templated duration /
+// status series, so per the "new functionality ships with metrics" rule they
+// need no bespoke metric of their own.
+object GlobalPolicyRoutes {
+  def routes(
+      auth: AuthService,
+      repo: GlobalPolicyRepo,
+      userRepo: UserRepo,
+  ): Routes[Any, Response] = {
+
+    // Resolve the acting admin's username (JWT `sub`) to the user id stored in
+    // the `added_by` / `removed_by` audit columns. A missing row (e.g. token
+    // for a since-deleted user) records `None` rather than failing the write.
+    def actingUserId(claims: JwtClaims): IO[Response, Option[Long]] =
+      userRepo
+        .findByUsername(claims.sub)
+        .mapError(ErrorMapper.dbErrorToResponse)
+        .map(_.map(_.id.value))
+
+    def view: IO[Response, GlobalPolicyView] =
+      for {
+        rules  <- repo.get.mapError(ErrorMapper.dbErrorToResponse)
+        allow  <- repo.allowAudit.mapError(ErrorMapper.dbErrorToResponse)
+        blocks <- repo.blockAudit.mapError(ErrorMapper.dbErrorToResponse)
+      } yield GlobalPolicyView(
+        allow = allow,
+        blocks = blocks,
+        blocklistIds = rules.blocklistIds,
+        blocked = rules.blocked,
+        blockReason = rules.blockReason,
+        blockIpOnly = rules.blockIpOnly,
+      )
+
+    def parseBody[A: JsonDecoder](req: Request): IO[Response, A] =
+      for {
+        body <- req.body.asString.orElseFail(Response.badRequest(""))
+        a    <- ZIO.fromEither(body.fromJson[A]).mapError(Response.badRequest(_))
+      } yield a
+
+    Routes(
+      // Full management view: active + soft-deleted history for the allow/block
+      // sets plus the flat global flags. Read access only — any authenticated
+      // user may view, mirroring the household-settings GET.
+      Method.GET / "api" / "global" / "policy" ->
+        handler { (req: Request) =>
+          for {
+            _ <- requireAuth(req, auth)
+            v <- view
+          } yield Response.json(v.toJson)
+        },
+
+      // ── always-reachable allow set ────────────────────────────────────────
+      Method.POST / "api" / "global" / "allow"                    ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAdmin(req, auth)
+            r      <- parseBody[AddGlobalHostRequest](req)
+            uid    <- actingUserId(claims)
+            _      <- repo.addAllow(r.host, r.reason, uid).mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+      Method.DELETE / "api" / "global" / "allow" / string("host") ->
+        handler { (host: String, req: Request) =>
+          for {
+            claims <- requireAdmin(req, auth)
+            uid    <- actingUserId(claims)
+            _      <- repo
+              .removeAllow(Hostname.unsafe(host), uid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+
+      // ── network-wide block set ────────────────────────────────────────────
+      Method.POST / "api" / "global" / "blocks"                    ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAdmin(req, auth)
+            r      <- parseBody[AddGlobalHostRequest](req)
+            uid    <- actingUserId(claims)
+            _      <- repo.addBlock(r.host, r.reason, uid).mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+      Method.DELETE / "api" / "global" / "blocks" / string("host") ->
+        handler { (host: String, req: Request) =>
+          for {
+            claims <- requireAdmin(req, auth)
+            uid    <- actingUserId(claims)
+            _      <- repo
+              .removeBlock(Hostname.unsafe(host), uid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+
+      // ── household-global category set (replace wholesale) ─────────────────
+      Method.PUT / "api" / "global" / "blocklists" ->
+        handler { (req: Request) =>
+          for {
+            claims <- requireAdmin(req, auth)
+            r      <- parseBody[SetGlobalBlocklistsRequest](req)
+            uid    <- actingUserId(claims)
+            _      <- repo
+              .setBlocklists(r.blocklistIds, uid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+
+      // ── flat global flags (network lockdown + strict-IP floor) ────────────
+      Method.PUT / "api" / "global" / "flags" ->
+        handler { (req: Request) =>
+          for {
+            _ <- requireAdmin(req, auth)
+            r <- parseBody[SetGlobalFlagsRequest](req)
+            _ <- repo
+              .setFlags(r.blocked, r.blockReason, r.blockIpOnly)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+    )
+  }
+}

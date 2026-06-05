@@ -256,6 +256,9 @@ object ProfileRoutes {
                   // #1418: omitted pauseMode defaults to Soft (matches the DB
                   // column default and preserves today's pause semantics).
                   upr.pauseMode.getOrElse(PauseMode.Soft),
+                  // #1320: omitted defaultDeny defaults to false on create
+                  // (matches the DB column default).
+                  upr.defaultDeny.getOrElse(false),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -298,6 +301,8 @@ object ProfileRoutes {
                     upr.crossDeviceOverlapMode.getOrElse(p.crossDeviceOverlapMode),
                   // #1418: same preserve-on-omit semantics for the pause mode.
                   pauseMode = upr.pauseMode.getOrElse(p.pauseMode),
+                  // #1320: same preserve-on-omit semantics for default-deny.
+                  defaultDeny = upr.defaultDeny.getOrElse(p.defaultDeny),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
