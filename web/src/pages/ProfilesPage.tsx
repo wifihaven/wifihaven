@@ -2,15 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useBlocklists, useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
+import { useBlocklists, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
+import { SchedulePicker } from '@/components/SchedulePicker'
 import type {
-  AppDetail, AppMode, AppPolicyAssignment,
+  AppDetail, AppMode, AppPolicyAssignment, AppScheduleMode, AppScheduleRule,
   CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, PauseMode, ProfileDetail,
   ProfileTimeSummary,
-  ScheduleRequest, UpsertProfileRequest, User,
+  ScheduleRequest, UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
@@ -1886,12 +1887,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   // that run `profileMutated()` on success, mirroring `grantMutation`.
   const invalidators = useInvalidators()
   const setPolicyMutation = useMutation({
-    mutationFn: (vars: { mode: AppMode; dailyMinutes: number | null; exemptFromDaily?: boolean }) =>
-      api.apps.setPolicy(app.app.id, profileId, {
-        mode: vars.mode,
-        dailyMinutes: vars.dailyMinutes,
-        ...(vars.exemptFromDaily !== undefined ? { exemptFromDaily: vars.exemptFromDaily } : {}),
-      }),
+    mutationFn: (req: UpsertAppAssignmentRequest) => api.apps.setPolicy(app.app.id, profileId, req),
     onSuccess: () => invalidators.profileMutated(),
   })
   const deletePolicyMutation = useMutation({
@@ -1907,6 +1903,12 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  // #1380 — attached schedule rules, seeded from the persisted assignment and
+  // re-seeded when it changes from outside (mirrors minutesDraft below).
+  const [scheduleRules, setScheduleRules] = useState<AppScheduleRule[]>(
+    () => current?.scheduleRules ?? [],
+  )
+  const rulesSig = JSON.stringify(current?.scheduleRules ?? [])
   // Re-seed the input when the persisted policy changes from outside
   // (e.g. another tab, or after our own setPolicy round-trip lands).
   // Without this the input keeps stale values once `current` updates.
@@ -1916,12 +1918,31 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
       ? String(current.dailyMinutes) : ''
     setMinutesDraft(next)
   }, [current?.mode, current?.dailyMinutes])
+  useEffect(() => {
+    if (busy) return
+    setScheduleRules(current?.scheduleRules ?? [])
+  }, [rulesSig])
 
-  async function apply(mode: AppMode, dailyMinutes: number | null, exemptFromDaily?: boolean) {
+  // PUT replaces the whole assignment, so every write must carry the current
+  // schedule rules (additive `scheduleRules`, omitted when empty so the no-rule
+  // payload shape — and the existing assertions on it — stay unchanged).
+  async function apply(
+    mode: AppMode,
+    dailyMinutes: number | null,
+    exemptFromDaily?: boolean,
+    rules?: AppScheduleRule[],
+  ) {
+    const effectiveRules = rules ?? scheduleRules
+    const req: UpsertAppAssignmentRequest = {
+      mode,
+      dailyMinutes,
+      ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
+      ...(effectiveRules.length > 0 ? { scheduleRules: effectiveRules } : {}),
+    }
     setBusy(true)
     setLocalError(null)
     try {
-      await setPolicyMutation.mutateAsync({ mode, dailyMinutes, exemptFromDaily })
+      await setPolicyMutation.mutateAsync(req)
       await onChanged()
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : 'Failed to update')
@@ -1952,6 +1973,29 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   const mode = current?.mode ?? null
   const isTimeLimited = mode === 'time_limited'
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+
+  // #1380 — schedule-rule add/remove and the exempt-from-daily toggle persist
+  // the whole assignment immediately (autosave, no Save button). Re-applying
+  // the current mode/minutes keeps everything but the changed dimension intact.
+  async function addRule(scheduleId: number, ruleMode: AppScheduleMode) {
+    if (mode == null) return
+    if (scheduleRules.some(r => r.scheduleId === scheduleId && r.mode === ruleMode)) return
+    const next = [...scheduleRules, { scheduleId, mode: ruleMode }]
+    setScheduleRules(next)
+    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
+  }
+
+  async function removeRule(scheduleId: number, ruleMode: AppScheduleMode) {
+    if (mode == null) return
+    const next = scheduleRules.filter(r => !(r.scheduleId === scheduleId && r.mode === ruleMode))
+    setScheduleRules(next)
+    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
+  }
+
+  async function setScheduleExempt(nextExempt: boolean) {
+    if (mode == null) return
+    await apply(mode, current?.dailyMinutes ?? null, nextExempt)
+  }
 
   // Operator feedback: the old UX made you type minutes AND click a
   // separate "Time-limit" button, then showed the duration twice. Now
@@ -2110,9 +2154,176 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
           </span>
         </label>
       )}
+      {mode != null && (
+        <ScheduleRuleEditor
+          appId={app.app.id}
+          rules={scheduleRules}
+          exemptFromDaily={current?.exemptFromDaily ?? true}
+          showExemptToggle={mode !== 'time_limited'}
+          busy={busy}
+          onAdd={addRule}
+          onRemove={removeRule}
+          onSetExempt={setScheduleExempt}
+        />
+      )}
       {localError && (
         <p className="text-xs text-red-700" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
       )}
+    </div>
+  )
+}
+
+// #1380 — per-app schedule rules on an app's profile assignment. Each rule
+// attaches a #1069 household named schedule (via the shared SchedulePicker)
+// with a mode:
+//   • Allowed during — the app stays reachable while the schedule's window is
+//     active, even during profile downtime (a carve-out). Still subject to the
+//     daily time limit unless the assignment is exempt (rows 9a–9c).
+//   • Blocked during — the app is dropped while the window is active, even when
+//     the profile is otherwise unrestricted.
+// No bespoke time editor here — the named schedule owns its day/time windows
+// (the picker's "Custom" flow authors a reusable one). Add/remove autosaves the
+// assignment (no Save button), consistent with the block/allow toggles above.
+const SCHEDULE_MODE_LABEL: Record<AppScheduleMode, string> = {
+  allowed_during: 'Allowed during',
+  blocked_during: 'Blocked during',
+}
+
+function ScheduleRuleEditor({
+  appId, rules, exemptFromDaily, showExemptToggle, busy,
+  onAdd, onRemove, onSetExempt,
+}: {
+  appId: number
+  rules: AppScheduleRule[]
+  exemptFromDaily: boolean
+  // Hidden for time_limited apps, whose own "Counts toward daily limit" row
+  // already governs the same exemptFromDaily flag (avoid two controls).
+  showExemptToggle: boolean
+  busy: boolean
+  onAdd: (scheduleId: number, mode: AppScheduleMode) => void | Promise<void>
+  onRemove: (scheduleId: number, mode: AppScheduleMode) => void | Promise<void>
+  onSetExempt: (next: boolean) => void | Promise<void>
+}) {
+  const [pickMode, setPickMode] = useState<AppScheduleMode>('allowed_during')
+  const [pickScheduleId, setPickScheduleId] = useState<number | null>(null)
+  const { data: namedSchedules = [] } = useNamedSchedules()
+
+  const scheduleNameById = useMemo(() => {
+    const m = new Map<number, string>()
+    namedSchedules.forEach(s => m.set(s.id, s.name))
+    return m
+  }, [namedSchedules])
+
+  const hasAllowedRule = rules.some(r => r.mode === 'allowed_during')
+
+  function add() {
+    if (pickScheduleId == null) return
+    void onAdd(pickScheduleId, pickMode)
+    setPickScheduleId(null)
+  }
+
+  const modeBtn = 'text-xs px-2.5 py-1 rounded-lg border border-transparent transition-colors disabled:opacity-50'
+  const modeOn = 'bg-brand-accent/20 text-brand-accent'
+  const modeOff = 'bg-brand-alt text-brand-text'
+
+  return (
+    <div
+      data-testid={`app-row-${appId}-schedules`}
+      className="border-t border-brand-border pt-2 space-y-2"
+    >
+      <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
+        Schedules
+      </p>
+
+      {rules.length === 0 && (
+        <p className="text-xs text-brand-text-muted italic">
+          No schedule rules. Attach a named schedule to make this app reachable
+          or blocked only during a window.
+        </p>
+      )}
+
+      {rules.map(r => (
+        <div
+          key={`${r.scheduleId}-${r.mode}`}
+          data-testid={`app-row-${appId}-schedule-rule-${r.scheduleId}-${r.mode}`}
+          className="flex items-start gap-2 bg-brand-surface border border-brand-border-strong rounded-lg px-2.5 py-1.5"
+        >
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-brand-ink">
+              <span
+                className={`font-medium ${r.mode === 'allowed_during' ? 'text-brand-accent' : 'text-red-700'}`}
+              >
+                {SCHEDULE_MODE_LABEL[r.mode]}
+              </span>
+              {' '}
+              <span className="font-medium">{scheduleNameById.get(r.scheduleId) ?? `schedule ${r.scheduleId}`}</span>
+            </p>
+            <p className="text-[11px] text-brand-text-muted">
+              {r.mode === 'allowed_during'
+                ? 'Reachable while this window is active — even during profile downtime.'
+                : 'Blocked while this window is active — even when the profile is otherwise allowed.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid={`app-row-${appId}-schedule-rule-${r.scheduleId}-${r.mode}-remove`}
+            aria-label={`Remove ${SCHEDULE_MODE_LABEL[r.mode]} ${scheduleNameById.get(r.scheduleId) ?? 'schedule'} rule`}
+            disabled={busy}
+            onClick={() => onRemove(r.scheduleId, r.mode)}
+            className="text-brand-text-muted hover:text-red-700 transition-colors leading-none text-sm disabled:opacity-50"
+          >×</button>
+        </div>
+      ))}
+
+      {/* #1380 — exempt-from-daily surfaced alongside an allowed-during rule so
+          the cap-bites-non-exempt behaviour (rows 9a–9c) isn't a surprise. */}
+      {hasAllowedRule && showExemptToggle && (
+        <label
+          data-testid={`app-row-${appId}-schedule-exempt`}
+          className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none"
+        >
+          <input
+            type="checkbox"
+            checked={exemptFromDaily}
+            disabled={busy}
+            onChange={e => onSetExempt(e.target.checked)}
+            className="w-3.5 h-3.5 mt-0.5 accent-amber-500"
+          />
+          <span>
+            {exemptFromDaily
+              ? 'Exempt from the daily time limit — reachable in-window even past the cap.'
+              : 'Still blocked by the daily time limit — the cap applies even in-window.'}
+          </span>
+        </label>
+      )}
+
+      <div className="space-y-2">
+        <div className="inline-flex rounded-lg bg-brand-alt p-0.5">
+          {(['allowed_during', 'blocked_during'] as const).map(m => (
+            <button
+              key={m}
+              type="button"
+              data-testid={`app-row-${appId}-schedule-mode-${m}`}
+              disabled={busy}
+              onClick={() => setPickMode(m)}
+              className={`${modeBtn} ${pickMode === m ? modeOn : modeOff}`}
+            >{SCHEDULE_MODE_LABEL[m]}</button>
+          ))}
+        </div>
+        <SchedulePicker
+          value={pickScheduleId}
+          onChange={setPickScheduleId}
+          disabled={busy}
+          testId={`app-row-${appId}-schedule-picker`}
+        />
+        <button
+          type="button"
+          data-testid={`app-row-${appId}-schedule-add`}
+          disabled={busy || pickScheduleId == null}
+          onClick={add}
+          className="text-xs px-2.5 py-1 rounded-lg bg-brand-accent/10 text-brand-accent font-medium hover:bg-brand-accent/20 disabled:opacity-50"
+        >Add rule</button>
+      </div>
     </div>
   )
 }

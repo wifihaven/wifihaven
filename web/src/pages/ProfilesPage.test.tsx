@@ -36,6 +36,12 @@ vi.mock('@/api/client', () => ({
       setPolicy: vi.fn(),
       deletePolicy: vi.fn(),
     },
+    // #1380 — the per-app schedule-rule editor embeds the #1069 SchedulePicker,
+    // which reads/writes the household named-schedule catalog.
+    schedules: {
+      list: vi.fn(),
+      create: vi.fn(),
+    },
     time: {
       summaryAll: vi.fn(),
       grantExtension: vi.fn(),
@@ -162,6 +168,8 @@ beforeEach(() => {
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.schedules.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26', apps: [],
   })
@@ -1181,6 +1189,102 @@ describe('ProfilesPage — apps section (#767)', () => {
     await expand(1, user)
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     expect(await screen.findByTestId('profile-1-apps-section-manage-link')).toHaveAttribute('href', '/apps')
+  })
+})
+
+// #1380 — per-app schedule rules in the assignment editor. Each rule attaches
+// a #1069 named schedule (via the shared SchedulePicker) with a mode
+// (allowed-during / blocked-during); the rule set rides the assignment's
+// UpsertAppAssignmentRequest as additive `scheduleRules`. Autosave: add/remove
+// persists immediately (no Save button).
+describe('ProfilesPage — per-app schedule rules (#1380)', () => {
+  const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
+  const schoolHours = { id: 11, name: 'School hours', description: null, windows: [] }
+
+  function ytWithRules(scheduleRules: { scheduleId: number; mode: 'allowed_during' | 'blocked_during' }[]) {
+    return {
+      app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+      hosts: ['youtube.com'],
+      assignments: [
+        { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true, scheduleRules },
+      ],
+    }
+  }
+
+  async function openAppsSection(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-50')
+  }
+
+  it('renders attached schedule rules with their schedule name and mode', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const rule = await screen.findByTestId('app-row-50-schedule-rule-10-allowed_during')
+    expect(within(rule).getByText('Bedtime')).toBeInTheDocument()
+    expect(rule.textContent).toMatch(/Allowed during/i)
+  })
+
+  it('attaching a named schedule as allowed-during calls setPolicy with the rule', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    await user.selectOptions(screen.getByTestId('app-row-50-schedule-picker-select'), '10')
+    await user.click(screen.getByTestId('app-row-50-schedule-mode-allowed_during'))
+    await user.click(screen.getByTestId('app-row-50-schedule-add'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' }],
+      }),
+    )
+  })
+
+  it('attaching a named schedule as blocked-during calls setPolicy with the rule', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    await user.selectOptions(screen.getByTestId('app-row-50-schedule-picker-select'), '11')
+    await user.click(screen.getByTestId('app-row-50-schedule-mode-blocked_during'))
+    await user.click(screen.getByTestId('app-row-50-schedule-add'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        scheduleRules: [{ scheduleId: 11, mode: 'blocked_during' }],
+      }),
+    )
+  })
+
+  it('removing a rule persists the assignment without it', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    await user.click(await screen.findByTestId('app-row-50-schedule-rule-10-allowed_during-remove'))
+    await waitFor(() =>
+      // empty rule set → scheduleRules omitted from the additive payload;
+      // the assignment's exemptFromDaily flag is preserved across the replace.
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null, exemptFromDaily: true }),
+    )
+  })
+
+  it('an allowed-during rule surfaces the exempt-from-daily cap copy', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const exempt = await screen.findByTestId('app-row-50-schedule-exempt')
+    expect(exempt.textContent).toMatch(/daily (time )?limit/i)
   })
 })
 

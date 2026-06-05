@@ -797,6 +797,24 @@ export interface App {
   createdAt: string
 }
 
+// #1380 / #1376 — per-app schedule rules. Each rule attaches a #1069 named
+// schedule (by id) to an app's profile assignment with a mode:
+//   allowed_during — the app stays reachable while the schedule's window is
+//     active, even during profile downtime (a carve-out that beats whole-MAC
+//     blocks per #421). Subject to the daily time limit unless exemptFromDaily.
+//   blocked_during — the app is dropped while the window is active, even when
+//     the profile is otherwise unrestricted.
+// API-internal: PolicyService collapses active rules into the existing per-MAC
+// extraAllowed / extraBlocked snapshot fields — no wire/router change (design
+// doc docs/design/per-app-schedules.md §2–§5). Mirrors the API's ScheduleMode
+// wire strings.
+export type AppScheduleMode = 'allowed_during' | 'blocked_during'
+
+export interface AppScheduleRule {
+  scheduleId: number
+  mode: AppScheduleMode
+}
+
 export interface AppPolicyAssignment {
   id: number
   appId: number
@@ -804,6 +822,9 @@ export interface AppPolicyAssignment {
   mode: AppMode
   dailyMinutes: number | null
   exemptFromDaily: boolean
+  // #1380 — attached per-app schedule rules. Optional/back-compat: omitted by
+  // an API that predates #1379 (defaults to no rules).
+  scheduleRules?: AppScheduleRule[]
 }
 
 export interface AppDetail {
@@ -854,6 +875,9 @@ export interface UpsertAppAssignmentRequest {
   mode: AppMode
   dailyMinutes?: number | null
   exemptFromDaily?: boolean
+  // #1380 — additive (default Nil server-side). The full desired rule set for
+  // this assignment (replace semantics, like SetProfileSchedulesRequest's ids).
+  scheduleRules?: AppScheduleRule[]
 }
 
 // #958: BlocklistSummary as returned by GET /api/blocklists.
