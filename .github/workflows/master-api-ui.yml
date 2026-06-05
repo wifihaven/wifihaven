@@ -18,11 +18,12 @@ name: Master API/UI CD
 #     → api-smoke-staging            (Gate 1 — admin + router API contract smoke against staging)
 #     → gate-3b-api-staging          (Gate 3b — last-published qemu router + freshly-deployed
 #                                     staging API; #655)
-#     → approve-production           (manual-approval gate — GitHub `production`
-#                                     environment; required reviewer must click
-#                                     "Approve and deploy" before the deploy-production
-#                                     jobs run; see #498)
-#     → deploy-production            (parallel jobs; all gated on approve-production):
+#     → deploy-production            (parallel jobs; gated directly on the staging
+#                                     gates above — smoke-staging + api-smoke-staging +
+#                                     gate-3b-api-staging. No human-approval pause: the
+#                                     manual `production`-environment gate was removed in
+#                                     #1461; staging smoke + #695 prod smoke/auto-rollback
+#                                     + #1194 deploy-safety guardrails are the safety net):
 #                                       • retag-latest       — promote sha-<commit> → :latest
 #                                                              via `docker buildx imagetools create`
 #                                       • deploy-prod-render — curl prod deploy hook + health poll
@@ -34,9 +35,10 @@ name: Master API/UI CD
 # infra/grafana/** — see the `paths:` exclusions below.
 #
 # OpenWRT release lives on master-router.yml. shared/** wire-schema changes
-# fire BOTH pipelines until #597 (capability negotiation) lands — the
-# `production` environment serializes approval prompts so tandem releases
-# stay coordinated.
+# fire BOTH pipelines until #597 (capability negotiation) lands. Each pipeline
+# now deploys automatically once its own staging gates are green (the manual
+# `production`-environment approval that used to serialize the two was removed
+# in #1461).
 #
 # TODO(#597): the wire-schema bump (capability negotiation framework) gets
 # coordinated across both pipelines once #597's mechanism lands.
@@ -156,8 +158,8 @@ jobs:
         run: scripts/smoke-prod.sh
 
   # VM e2e on the API/UI side is Gate 3b (gate-3b-api-staging, below),
-  # which gates approve-production. The old monolithic e2e-vm.yml that
-  # gated nothing was retired in #656.
+  # which gates the deploy-production jobs. The old monolithic e2e-vm.yml
+  # that gated nothing was retired in #656.
 
   # ── 3. Build the API image (sha-<commit> + `staging` tags only) ──────────
   # `:latest` is NOT pushed here. Promotion to `:latest` happens in the
@@ -484,14 +486,14 @@ jobs:
   # pause → Paused, schedule → Schedule, HostId variants, etag round-trip,
   # legacy `hostname` rejection) plus 401 / 4xx negatives per endpoint.
   # Blocks API publish (retag-latest, deploy-prod-render) and the SPA prod
-  # deploy by sitting on `approve-production`'s `needs:`.
+  # deploy by sitting directly on their `needs:`.
   api-smoke-staging:
     name: Gate 1 — API contract smoke (staging)
     if: github.ref == 'refs/heads/main'
     # Runs in parallel with smoke-staging — both `needs: [deploy-staging]`,
-    # both feed approve-production. smoke-staging covers the SPA bundle +
-    # CORS plane; this job covers the admin + router API plane. Either
-    # going red still blocks prod via approve-production's `needs:`.
+    # both gate the deploy-production jobs. smoke-staging covers the SPA
+    # bundle + CORS plane; this job covers the admin + router API plane.
+    # Either going red still blocks prod via the deploy jobs' `needs:`.
     needs: [deploy-staging]
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -514,18 +516,16 @@ jobs:
         run: scripts/e2e-router.sh
 
   # ════════════════════════════════════════════════════════════════════════
-  # ── DEPLOY-PRODUCTION ── (manual-approval gate + parallel jobs) ─────────
+  # ── DEPLOY-PRODUCTION ── (parallel jobs; no human gate) ─────────────────
   # ════════════════════════════════════════════════════════════════════════
-  # An `approve-production` sentinel job carries `environment: production` so
-  # GitHub pauses the run for manual approval before any consumer-facing
-  # surface is touched. All three deploy-production jobs `needs:
-  # [approve-production]`, so a single approval gates them atomically;
-  # denial blocks every one of them.
-  #
-  # The router pipeline (master-router.yml) has its own approve-production
-  # job pointing at the same `production` environment, so GitHub serializes
-  # approval prompts across the two pipelines when shared/** changes fire
-  # both sides.
+  # The manual `approve-production` sentinel (GitHub `production` environment,
+  # required-reviewer click) was removed in #1461: it was rubber-stamped every
+  # release, adding latency and stale-prod-image risk without real safety. The
+  # deploy-production jobs now gate directly on the staging gates that actually
+  # matter — smoke-staging, api-smoke-staging, and gate-3b-api-staging — so a
+  # bad build is still blocked by a red staging smoke; it just no longer waits
+  # for a human click. The automated safety net is #695 (post-deploy prod smoke
+  # + auto-rollback) and #1194 (deploy-safety guardrails).
 
   # ── 5c. Gate 3b — last-published router vs freshly-deployed staging ────
   # Boots the *last published* qemu OpenWRT router image (from the
@@ -542,27 +542,17 @@ jobs:
     uses: ./.github/workflows/e2e-vm-gate3b.yml
     secrets: inherit
 
-  approve-production:
-    name: Manual approval (production gate)
-    if: github.ref == 'refs/heads/main'
-    needs: [smoke-staging, api-smoke-staging, gate-3b-api-staging]
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://api.wifihaven.net
-    steps:
-      - name: Approved
-        run: echo "Production deploy approved — releasing API image + SPA."
-
   # 6a. Retag sha-<commit> → :latest. No rebuild — `imagetools create`
   # operates on the registry-side manifest. The sha image has already been
   # gated by ci + staging smoke, so this is a pure pointer move.
   # Chose `docker buildx imagetools create` over `regctl` to avoid pulling
   # in another tool; buildx is already set up on github-hosted runners.
+  # #1461: gates directly on the staging gates (smoke-staging, api-smoke-
+  # staging, gate-3b-api-staging) now that the manual approval job is gone.
   retag-latest:
     name: Promote sha → :latest (deploy-production)
     if: github.ref == 'refs/heads/main'
-    needs: [approve-production]
+    needs: [smoke-staging, api-smoke-staging, gate-3b-api-staging]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -593,13 +583,14 @@ jobs:
   deploy-prod-render:
     name: Deploy production (Render)
     if: github.ref == 'refs/heads/main'
-    needs: [approve-production, retag-latest]
+    # retag-latest transitively depends on all three staging gates, so naming
+    # it here is sufficient to keep prod behind a green staging smoke (#1461).
+    needs: [retag-latest]
     runs-on: ubuntu-latest
     steps:
       # #1390: checkout for the composite annotation action. Derive the short
       # sha locally rather than threading build-image's output through
-      # retag-latest + approve-production — `github.sha` is the same commit
-      # that built this image.
+      # retag-latest — `github.sha` is the same commit that built this image.
       - uses: actions/checkout@v6
 
       - name: Derive short SHA
@@ -666,7 +657,7 @@ jobs:
   deploy-spa-prod:
     name: Deploy SPA to Cloudflare Pages (prod) (deploy-production)
     if: github.ref == 'refs/heads/main'
-    needs: [approve-production]
+    needs: [smoke-staging, api-smoke-staging, gate-3b-api-staging]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
