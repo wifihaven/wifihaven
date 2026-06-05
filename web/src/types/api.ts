@@ -42,6 +42,34 @@ export interface Schedule {
   tz: string          // IANA timezone, e.g. "America/Los_Angeles"
 }
 
+// #1069 — household-scoped reusable named schedule. One named schedule owns
+// one or more windows; anything time-bound (profiles today, per-app rules
+// #1380, blocklists #1067 next) references it by id. This is the SPA mirror of
+// the API's `NamedSchedule` — it never reaches the router wire; PolicyService
+// folds the active windows into the per-MAC BlockRules at snapshot time.
+export interface ScheduleWindow {
+  days: string[]      // lowercase 3-letter tokens: "mon".."sun"
+  startLocal: string  // "HH:mm" wall-clock time in `tz`
+  endLocal: string    // "HH:mm" wall-clock time in `tz`
+  tz: string          // IANA timezone, e.g. "America/Los_Angeles"
+}
+
+export interface NamedSchedule {
+  id: number
+  name: string
+  description: string | null
+  windows: ScheduleWindow[]
+}
+
+// Create/update bodies for the /api/schedules CRUD. `windows` is the full
+// desired set (replace semantics) — matches the API's
+// Create/UpdateNamedScheduleRequest.
+export interface NamedScheduleRequest {
+  name: string
+  description?: string | null
+  windows: ScheduleWindow[]
+}
+
 // #714 — server-side heartbeat filter for device/profile screen-time totals.
 // Rows classified as heartbeats are excluded from rollups; the filter is
 // household-wide.
@@ -86,6 +114,10 @@ export interface ProfileDetail {
   profile: Profile
   schedules: Schedule[]
   timeLimit: TimeLimit | null
+  // #1069 — ids of the household named schedules attached to this profile as
+  // block schedules (downtime while active). Empty until the operator attaches
+  // one. Optional for back-compat with older API responses that omit it.
+  scheduleIds?: number[]
 }
 
 export interface Device {

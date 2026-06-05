@@ -6,6 +6,7 @@ import type {
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest, PatchAppRequest,
+  NamedSchedule, NamedScheduleRequest,
   RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
@@ -393,6 +394,20 @@ export const api = {
   // ── Dashboard "now" ────────────────────────────────────────────────────
   dashboard: {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
+  },
+
+  // ── Named schedules (#1069) ────────────────────────────────────────────
+  // Household-scoped reusable time-window primitive. Admin-only writes; the
+  // PATCH carries the full schedule shape (replace semantics) so the edit form
+  // can autosave (#423/#995). Referenced rows cascade-delete their references
+  // server-side, so the SPA warns before deleting a referenced schedule.
+  schedules: {
+    list: () => req<NamedSchedule[]>('GET', '/schedules'),
+    create: (data: NamedScheduleRequest) =>
+      req<NamedSchedule>('POST', '/schedules', data),
+    update: (id: number, data: NamedScheduleRequest) =>
+      req<NamedSchedule>('PATCH', `/schedules/${id}`, data),
+    delete: (id: number) => req<void>('DELETE', `/schedules/${id}`),
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────
