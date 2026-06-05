@@ -48,6 +48,21 @@ local usage_int     = tonumber(uci_get("usage_report_interval",   "60"))
 -- 60 s by default (matches usage_report_interval cadence but is a separate
 -- knob; the server re-bases off agentStartedAt so a missed push self-heals).
 local metrics_int   = tonumber(uci_get("metrics_report_interval", "60"))
+-- #1412: blocklist (category ipset) cache refresh runs on its OWN timer,
+-- decoupled from the ~5 s policy poll. fetch_and_cache is a no-op read when the
+-- (id, version) file is already cached, so the cadence only does real work when
+-- a list's content version changed; the agent re-applies the ruleset only when
+-- the loaded host set actually differs (blocklists.hosts_differ). Default 1 h.
+local blocklist_int = tonumber(uci_get("blocklist_refresh_interval", "3600"))
+-- #1412 OOM guard: a single category list larger than this many BYTES is cached
+-- but NOT parsed/rendered. The prod agent OOM-killed (~700 MB RSS / 1 GB router)
+-- loading the StevenBlack "extended" lists (ads-extended ~1.6 MB / 83k hosts,
+-- adult-extended ~1.3 MB / 76k hosts) into memory and rendering ~160k `nftset=`
+-- directives — which killed ALL category enforcement, including the tiny curated
+-- lists. 256 KiB (~12k hosts) keeps every curated list (ads/malware/adult/…) and
+-- skips only the oversized aggregate lists, which are tracked for a real
+-- large-list strategy in the design issue referenced from #1412.
+local blocklist_max_bytes = tonumber(uci_get("blocklist_max_list_bytes", "262144"))
 local activity_sample_int = tonumber(uci_get("activity_sample_int", "10"))
 local debug_opt     = uci_get("debug",                            "0")
 
@@ -296,6 +311,33 @@ local function rename_file(from, to)
   return true
 end
 
+-- #1412: fetch + cache + load the category blocklists for `snap`, emit the
+-- failure metric, log any errors, and return the loaded host map. Called from
+-- BOTH the startup apply and the on_tick blocklist timer so the bl_ ipsets are
+-- populated regardless of the 200/304 status of the policy poll. The prod no-op
+-- was that this ran only in the policy-poll 200 branch and never at startup, so
+-- a household with a stable snapshot left every bl_ set empty and category
+-- enforcement silently did nothing. The returned map is attached to
+-- snap._blocklist_hosts, which render reads to emit the nftset= populators.
+-- Defined after http_get (its upvalue) so the closure captures it.
+local BLOCKLIST_CACHE_DIR = "/etc/wifihaven/blocklists"
+local function refresh_blocklists(snap)
+  local res = blocklists.refresh(
+    snap, http_get, nil, BLOCKLIST_CACHE_DIR, api_url, router_token, blocklist_max_bytes)
+  record_blocklist_failures(res)
+  for _, e in ipairs(res.errors or {}) do
+    log.warn("blocklist fetch: %s", tostring(e))
+  end
+  -- #1412: surface lists skipped by the byte cap so an oversized list that is
+  -- silently not enforced is visible to an operator (the bl_ set stays empty
+  -- for these ids by design until the large-list strategy lands).
+  if res.skipped and #res.skipped > 0 then
+    log.warn("blocklist render cap: skipped %d oversized list(s) (>%d bytes): %s",
+             #res.skipped, blocklist_max_bytes, table.concat(res.skipped, ", "))
+  end
+  return res.hosts
+end
+
 -- ── Ensure output directories exist ───────────────────────────────────────────
 
 os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven")
@@ -346,6 +388,7 @@ local in_failover_render  = false
 local last_policy_run     = 0
 local last_usage_run      = 0
 local last_metrics_run    = 0
+local last_blocklist_run  = 0  -- #1412: category blocklist refresh cadence
 local last_activity_sample = 0
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
@@ -393,6 +436,12 @@ do
                   clock.monotonic_seconds() - pt0)
   if snap then
     record_poll("200")
+    -- #1412: fetch + cache the category blocklists and attach them BEFORE the
+    -- initial apply, so the boot ruleset already carries the bl_ nftset=
+    -- populators. Previously startup applied with no _blocklist_hosts, so a
+    -- freshly booted / re-enrolled router ran with empty bl_ sets until (and
+    -- unless) a later snapshot change happened to trigger a fetch.
+    snap._blocklist_hosts = refresh_blocklists(snap)
     local at0 = clock.monotonic_seconds()
     local applied = policy.apply(snap, write_file, run_cmd, log,
                                  { on_apply = record_apply("boot") })
@@ -419,6 +468,7 @@ do
   last_policy_run        = mono
   last_usage_run         = mono
   last_metrics_run       = mono
+  last_blocklist_run     = mono
   last_activity_sample   = mono
 end
 
@@ -558,22 +608,14 @@ conntrack.watch({
       if snap then
         record_poll("200")
         -- 200: fetch + cache blocklists, attach hosts to snapshot for render.
-        -- #1360: the blocklist route is router-authenticated, so pass the
-        -- router token — without it the fetch 401s and category (bl_)
-        -- enforcement silently no-ops (the directly-queried-CNAME bl_ bypass
-        -- in e2e G4 plus every real category block).
-        local bl_result = blocklists.fetch_and_cache(
-          snap, http_get, nil, "/etc/wifihaven/blocklists", api_url, router_token)
-        -- #1301: emit blocklist_fetch_failures_total{status} for each failure
-        -- (bounded status enum) so an operator can rate-alert on fetch failures.
-        record_blocklist_failures(bl_result)
-        if #bl_result.errors > 0 then
-          for _, e in ipairs(bl_result.errors) do
-            log.warn("blocklist fetch: %s", tostring(e))
-          end
-        end
-        blocklists.gc(snap, nil, "/etc/wifihaven/blocklists")
-        snap._blocklist_hosts = blocklists.load_cached(snap, nil, "/etc/wifihaven/blocklists")
+        -- #1360: the blocklist route is router-authenticated, so refresh_blocklists
+        -- passes the router token — without it the fetch 401s and category (bl_)
+        -- enforcement silently no-ops. #1412: the same refresh runs at startup
+        -- and on the periodic blocklist timer, so a stable (304-only) snapshot no
+        -- longer leaves the sets empty; emitting blocklist_fetch_failures_total
+        -- (#1301) is folded into refresh_blocklists.
+        snap._blocklist_hosts = refresh_blocklists(snap)
+        last_blocklist_run = mono  -- this poll already refreshed; reset cadence
 
         -- Apply with no failover opts. If we were in failover, this
         -- apply already emits a clean ruleset (no failover chain), so we
@@ -655,6 +697,37 @@ conntrack.watch({
           new_in_failover = in_failover_render
         end
         in_failover_render = new_in_failover
+      end
+    end
+
+    -- Blocklist refresh timer (#1412). Category ipset population must NOT be
+    -- coupled to a snapshot change: the policy poll returns 304 in steady state,
+    -- so the only way the old code (re)fetched a blocklist was an admin policy
+    -- edit. A household with a stable snapshot therefore never (re)populated the
+    -- bl_ sets, and any transient first-fetch failure (a 401 during
+    -- re-enrollment, a network blip) left category enforcement a silent no-op
+    -- indefinitely. Here we refresh on an independent cadence against the last
+    -- good snapshot. fetch_and_cache is a cheap no-op read when the (id,version)
+    -- file is already cached, so this only does real work when a list's content
+    -- version changed; we re-apply (which reloads dnsmasq for the new nftset=
+    -- directives) only when the loaded host set actually differs.
+    if last_snapshot and not in_failover_render
+       and (mono - last_blocklist_run) >= blocklist_int then
+      last_blocklist_run = mono
+      local new_hosts = refresh_blocklists(last_snapshot)
+      if blocklists.hosts_differ(last_snapshot._blocklist_hosts, new_hosts) then
+        last_snapshot._blocklist_hosts = new_hosts
+        fold_enforcement_drops()
+        local bt0 = clock.monotonic_seconds()
+        local applied = policy.apply(last_snapshot, write_file, run_cmd, log,
+                                     { on_apply = record_apply("policy_change") })
+        metrics.observe(mreg, "policy_apply_duration_seconds", {},
+                        clock.monotonic_seconds() - bt0)
+        if applied then
+          render.update_shared(last_snapshot, nft_sets, blocked_macs, blocked_reason,
+                               eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
+          log.info("blocklist timer: category lists changed, re-applied ruleset")
+        end
       end
     end
 

@@ -81,9 +81,22 @@ end
 --   failures: structured { id?, status } records the agent folds into
 --             blocklist_fetch_failures_total{status} (#1301). `status` is the
 --             bounded enum from classify_fetch_status / a fixed local-IO token.
-function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
+-- max_bytes (optional): #1412 OOM guard. A cached/fetched body larger than this
+-- is still WRITTEN to cache (so gc + version-busting keep working) but is NOT
+-- parsed into a host table — parsing an 80k-line list builds a Lua table large
+-- enough to OOM a 1 GB router when several such lists are assigned. nil = no cap
+-- (legacy callers / tests). The cap is checked by byte size BEFORE parse_body so
+-- the big table is never allocated.
+function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
   local result = { hosts_by_id = {}, errors = {}, failures = {} }
+
+  -- Parse a body into hosts unless it exceeds the byte cap (then return empty
+  -- without building the table). See max_bytes above (#1412).
+  local function parse_bounded(text)
+    if max_bytes and text and #text > max_bytes then return {} end
+    return parse_body(text or "")
+  end
 
   -- Record both a human string and a structured {id, status} failure so the
   -- agent can emit the bounded-cardinality metric without re-parsing strings.
@@ -165,7 +178,7 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
     -- Check if (id, version) is already cached.
     local existing = read_fn(path)
     if existing then
-      result.hosts_by_id[id] = parse_body(existing)
+      result.hosts_by_id[id] = parse_bounded(existing)
     else
       -- Fetch from API. Signature matches the agent's http_get: status first.
       -- Send the router bearer token — the route is router-authenticated (#1360).
@@ -186,7 +199,7 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
             fail(id, "write_failed",
               string.format("blocklists: rename failed for %s: %s", tostring(id), tostring(rerr)))
           else
-            result.hosts_by_id[id] = parse_body(body or "")
+            result.hosts_by_id[id] = parse_bounded(body or "")
           end
         end
       end
@@ -197,10 +210,16 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
 end
 
 -- Load all currently-cached blocklists from disk.
--- Returns { [id] = {hosts} } for ids whose (id, version) file exists.
-function M.load_cached(snapshot, fs, cache_dir)
+-- Returns `result, skipped`:
+--   result  = { [id] = {hosts} } for ids whose (id, version) file exists.
+--   skipped = { id, ... } ids whose cache file exceeded max_bytes and was left
+--             unparsed (result[id] = {}). The caller logs these so an oversized
+--             list that is silently not enforced is observable.
+-- max_bytes (optional): #1412 OOM guard — see fetch_and_cache. nil = no cap.
+function M.load_cached(snapshot, fs, cache_dir, max_bytes)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
-  local result = {}
+  local result  = {}
+  local skipped = {}
 
   local read_fn
   if fs then
@@ -219,14 +238,89 @@ function M.load_cached(snapshot, fs, cache_dir)
   for id, bl in pairs(bls) do
     local path    = cache_path(cache_dir, id, bl.version)
     local content = read_fn(path)
-    if content then
+    if content and max_bytes and #content > max_bytes then
+      -- Oversized: do NOT parse (would build a huge table — the #1412 OOM).
+      result[id]               = {}
+      skipped[#skipped + 1]    = id
+    elseif content then
       result[id] = parse_body(content)
     else
       result[id] = {}
     end
   end
 
-  return result
+  return result, skipped
+end
+
+-- refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
+--   One-call fetch_and_cache → gc → load_cached. Returns:
+--     { hosts = {[id]={host,...}}, failures = {...}, errors = {...} }
+--
+-- This is the entry point the agent calls BOTH at startup and on the periodic
+-- blocklist timer, so the per-blocklist cache (and therefore the bl_ ipset
+-- nftset= directives render emits from snapshot._blocklist_hosts) is populated
+-- independent of whether the policy poll returned 200 or 304.
+--
+-- #1412: previously the agent only fetched/cached blocklists inside the
+-- policy-poll HTTP-200 branch, and not at startup at all. A household whose
+-- snapshot is stable (the steady state — every poll is a 304) therefore never
+-- populated the cache: render emitted zero `nftset=/<member>/...#bl_<id>`
+-- directives, the bl_ sets stayed empty, and an assigned list member (e.g.
+-- taboola.com ∈ 'ads') was reachable despite correct policy. Surfacing the
+-- failures back to the caller lets the agent emit blocklist_fetch_failures_total
+-- and simply retry on the next cadence rather than no-op until the next snapshot
+-- change (which on a stable household may be hours/days away).
+function M.refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
+  local fc             = M.fetch_and_cache(
+    snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
+  M.gc(snapshot, fs, cache_dir)
+  local hosts, skipped = M.load_cached(snapshot, fs, cache_dir, max_bytes)
+  return { hosts = hosts, failures = fc.failures, errors = fc.errors, skipped = skipped }
+end
+
+-- hosts_differ(a, b) → boolean
+--   Order-insensitive comparison of two {[id]={host,...}} maps. Nil is treated
+--   as the empty map. Returns true iff the set of ids differs, or any id's host
+--   membership differs.
+--
+-- The agent calls this after a periodic refresh to decide whether the cached
+-- host set actually changed before re-applying. A blocklist host change alters
+-- the dnsmasq fragment (the nftset= directives) and so forces a dnsmasq reload;
+-- gating the re-apply on a real change keeps a steady state from churning
+-- dnsmasq every cadence while still catching the empty→populated cold-start
+-- transition (#1412).
+function M.hosts_differ(a, b)
+  a = a or {}
+  b = b or {}
+
+  local function host_set(list)
+    local set, n = {}, 0
+    for _, h in ipairs(list or {}) do
+      if not set[h] then
+        set[h] = true
+        n = n + 1
+      end
+    end
+    return set, n
+  end
+
+  -- Every id in `a` must exist in `b` with identical host membership.
+  -- Iterating both directions catches ids present in only one side.
+  local function subset_match(x, y)
+    for id, xlist in pairs(x) do
+      local xset, xn = host_set(xlist)
+      local yset, yn = host_set(y[id])
+      if xn ~= yn then return false end
+      for h in pairs(xset) do
+        if not yset[h] then return false end
+      end
+    end
+    return true
+  end
+
+  if not subset_match(a, b) then return true end
+  if not subset_match(b, a) then return true end
+  return false
 end
 
 -- Remove cache files that are not referenced by the current snapshot.
