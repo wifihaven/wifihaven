@@ -757,14 +757,35 @@ end)
 
 describe("render.nft syntax validation", function()
 
-  local function nft_available()
-    local ok = os.execute("command -v nft >/dev/null 2>&1")
-    return ok == 0 or ok == true
+  -- `nft -c` is not a pure parse: even in check mode it opens a netlink
+  -- socket to validate against the live kernel, so it needs CAP_NET_ADMIN.
+  -- A bare "is the binary on PATH?" guard therefore passes on an
+  -- unprivileged host (e.g. the non-root `runner` user on GitHub Actions)
+  -- where every `nft -c` then fails with EPERM — turning this into a false
+  -- red. Probe with a trivial valid ruleset so we only assert when `nft -c`
+  -- can actually check; otherwise skip, exactly as we do when nft is absent.
+  -- os.execute returns a numeric status on lua5.1 and (boolean, "exit", code)
+  -- on lua5.2+ — normalise both to a success boolean.
+  local function shell_ok(cmd)
+    local a = os.execute(cmd)
+    return a == 0 or a == true
+  end
+
+  local function nft_checkable()
+    if not shell_ok("command -v nft >/dev/null 2>&1") then
+      return false, "nft binary not available on this host"
+    end
+    if not shell_ok(
+      "printf 'table inet wh_probe_check {}\\n' | nft -c -f - >/dev/null 2>&1") then
+      return false, "nft present but `nft -c` is not usable here (needs CAP_NET_ADMIN)"
+    end
+    return true
   end
 
   it("rendered output loads cleanly via `nft -c -f -` when a profile is blocked", function()
-    if not nft_available() then
-      pending("nft binary not available on this host")
+    local ok, why = nft_checkable()
+    if not ok then
+      pending(why)
       return
     end
     local s = snap_one()
