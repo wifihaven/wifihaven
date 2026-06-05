@@ -194,7 +194,7 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(after.windows.head.days == List("mon", "tue", "wed")) &&
         assertTrue(after.windows.head.startLocal == LocalTime.of(21, 30))
     },
-    test("DELETE removes it and clears a referencing profile's schedule_id") {
+    test("DELETE removes it and cascades away a referencing profile's attachment") {
       for {
         _      <- cleanDb
         token  <- adminToken
@@ -208,25 +208,25 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         sched  <- ZIO.fromEither(cBody.fromJson[NamedSchedule])
         link   <- put(
           prRs,
-          s"/api/profiles/${pid.value}/schedule",
-          SetProfileScheduleRequest(Some(sched.id)).toJson,
+          s"/api/profiles/${pid.value}/schedules",
+          SetProfileSchedulesRequest(List(sched.id)).toJson,
           token,
         )
-        linked <- pr.findById(pid)
+        linked <- nsr.blockScheduleIdsForProfile(pid)
         del    <- rs.runZIO(
           Request
             .delete(url(s"/api/schedules/${sched.id.value}"))
             .addHeader(Header.Authorization.Bearer(token)),
         )
-        after  <- pr.findById(pid)
+        after  <- nsr.blockScheduleIdsForProfile(pid)
         remain <- nsr.listAll
       } yield assertTrue(link.status == Status.Ok) &&
-        assertTrue(linked.flatMap(_.scheduleId).contains(sched.id)) &&
+        assertTrue(linked == List(sched.id)) &&
         assertTrue(del.status == Status.Ok) &&
-        assertTrue(after.flatMap(_.scheduleId).isEmpty) &&
+        assertTrue(after.isEmpty) &&
         assertTrue(remain.isEmpty)
     },
-    test("PUT /profiles/{id}/schedule 404s for an unknown schedule id") {
+    test("PUT /profiles/{id}/schedules 404s for an unknown schedule id") {
       for {
         _     <- cleanDb
         token <- adminToken
@@ -235,11 +235,48 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         pid   <- pr.create("Kids", Nil)
         resp  <- put(
           prRs,
-          s"/api/profiles/${pid.value}/schedule",
-          SetProfileScheduleRequest(Some(NamedScheduleId(9999))).toJson,
+          s"/api/profiles/${pid.value}/schedules",
+          SetProfileSchedulesRequest(List(NamedScheduleId(9999))).toJson,
           token,
         )
       } yield assertTrue(resp.status == Status.NotFound)
+    },
+    test("a profile can reference MANY schedules; GET detail returns them; re-PUT replaces") {
+      for {
+        _     <- cleanDb
+        token <- adminToken
+        rs    <- scheduleRoutes
+        prRs  <- profileRoutes
+        pr    <- ZIO.service[ProfileRepo]
+        pid   <- pr.create("Kids", Nil)
+        a     <- post(rs, "/api/schedules", CreateNamedScheduleRequest("Bedtime").toJson, token)
+          .flatMap(_.body.asString)
+          .flatMap(b => ZIO.fromEither(b.fromJson[NamedSchedule]))
+        b    <- post(rs, "/api/schedules", CreateNamedScheduleRequest("School hours").toJson, token)
+          .flatMap(_.body.asString)
+          .flatMap(b => ZIO.fromEither(b.fromJson[NamedSchedule]))
+        both <- put(
+          prRs,
+          s"/api/profiles/${pid.value}/schedules",
+          SetProfileSchedulesRequest(List(a.id, b.id)).toJson,
+          token,
+        )
+        detail <- get(prRs, s"/api/profiles/${pid.value}", token)
+          .flatMap(_.body.asString)
+          .flatMap(s => ZIO.fromEither(s.fromJson[ProfileDetail]))
+        // re-PUT with just one → replaces (not appends)
+        _      <- put(
+          prRs,
+          s"/api/profiles/${pid.value}/schedules",
+          SetProfileSchedulesRequest(List(b.id)).toJson,
+          token,
+        )
+        after  <- get(prRs, s"/api/profiles/${pid.value}", token)
+          .flatMap(_.body.asString)
+          .flatMap(s => ZIO.fromEither(s.fromJson[ProfileDetail]))
+      } yield assertTrue(both.status == Status.Ok) &&
+        assertTrue(detail.scheduleIds.toSet == Set(a.id, b.id)) &&
+        assertTrue(after.scheduleIds == List(b.id))
     },
   ) @@ TestAspect.sequential
 }

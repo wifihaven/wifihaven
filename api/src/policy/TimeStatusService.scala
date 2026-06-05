@@ -115,7 +115,27 @@ class TimeStatusServiceLive(
     // Defaulting to the noop lets the many call sites in TimeApiSpec / snapshot specs keep their
     // 7-arg constructions — they exercise the all-live path either way.
     rollupRepo: TimeUsedRollupRepo = NoopTimeUsedRollupRepo,
+    // #1069: a profile's attached block-mode named-schedule windows are unioned into the legacy
+    // `schedules` for the blocked-flag decision. Defaults to the noop so existing direct
+    // constructions keep their arity.
+    namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
 ) extends TimeStatusService {
+
+  // #1069: a profile's effective downtime schedules = its legacy per-profile `schedules` rows
+  // unioned with the windows of every named schedule attached to it as a block schedule (via
+  // `profile_schedule_rules`, mode=blocked_during). Named windows become synthetic DbSchedules so
+  // the existing `scheduleActiveAt` math applies unchanged (it reads only days/start/end/tz —
+  // id/profileId/name are irrelevant).
+  private def syntheticWindows(pid: ProfileId, ws: List[ScheduleWindow]): List[DbSchedule] =
+    ws.map(w =>
+      DbSchedule(ScheduleId(0L), pid, "named-schedule", w.days, w.startLocal, w.endLocal, w.tz),
+    )
+
+  private def schedulesFor(pid: ProfileId): Task[List[DbSchedule]] =
+    for {
+      v1    <- scheduleRepo.listForProfile(pid)
+      named <- namedScheduleRepo.windowsForProfile(pid)
+    } yield v1 ++ syntheticWindows(pid, named)
 
   def todaysState(
       now: Instant,
@@ -149,7 +169,7 @@ class TimeStatusServiceLive(
       case None    => ZIO.succeed(None)
       case Some(p) =>
         for {
-          schedules <- scheduleRepo.listForProfile(profileId)
+          schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           stls      <- siteTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
@@ -190,12 +210,15 @@ class TimeStatusServiceLive(
       profiles <- profileRepo.listAll
       devices  <- deviceRepo.listAll
       schedsP  <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
+      namedP   <- namedScheduleRepo.windowsForAllProfiles
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
       exts     <- extRepo.snapshotAllByProfile(date)
     } yield {
-      val schedMap = schedsP.toMap
+      val schedMap = schedsP.toMap.map { case (pid, v1) =>
+        pid -> (v1 ++ syntheticWindows(pid, namedP.getOrElse(pid, Nil)))
+      }
       val tlMap    = tlsP.toMap
       val stlMap   = stlsP.toMap
       val devsByP  =
@@ -234,7 +257,7 @@ class TimeStatusServiceLive(
       case None    => ZIO.succeed(None)
       case Some(p) =>
         for {
-          schedules <- scheduleRepo.listForProfile(profileId)
+          schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
           stls      <- siteTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
@@ -289,12 +312,15 @@ class TimeStatusServiceLive(
     for {
       devices <- deviceRepo.listAll
       schedsP <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
+      namedP  <- namedScheduleRepo.windowsForAllProfiles
       tlsP    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlsP   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       tail    <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
       exts    <- extRepo.snapshotAllByProfile(date)
     } yield {
-      val schedMap = schedsP.toMap
+      val schedMap = schedsP.toMap.map { case (pid, v1) =>
+        pid -> (v1 ++ syntheticWindows(pid, namedP.getOrElse(pid, Nil)))
+      }
       val tlMap    = tlsP.toMap
       val stlMap   = stlsP.toMap
       val devsByP  =
@@ -336,7 +362,7 @@ object TimeStatusService {
 
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo,
+      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -349,7 +375,8 @@ object TimeStatusService {
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
         ru: TimeUsedRollupRepo,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru)
+        nsr: NamedScheduleRepo,
+    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, nsr)
   }
 
   /**

@@ -36,22 +36,23 @@ object ScheduleSeederSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       out <- ScheduleSeeder.seedAndMigrate(nsr, sr, pr, UTC)
     } yield out
 
-  private def kidsProfile =
-    ZIO.serviceWithZIO[ProfileRepo](_.listAll).map(_.find(_.name == "Kids").get)
+  private def kidsProfileId =
+    ZIO.serviceWithZIO[ProfileRepo](_.listAll).map(_.find(_.name == "Kids").get.id)
 
   def spec = suite("ScheduleSeeder (#1069)")(
-    test("migrates the V1-seeded Kids/Bedtime legacy schedule into a linked named schedule") {
+    test("migrates the V1-seeded Kids/Bedtime legacy schedule into a linked block schedule") {
       for {
-        _       <- cleanDb
-        nsr     <- ZIO.service[NamedScheduleRepo]
-        before  <- kidsProfile
-        summary <- seedNow
-        after   <- kidsProfile
-        named   <- after.scheduleId.fold(ZIO.succeed(Option.empty[NamedSchedule]))(nsr.findById)
-      } yield assertTrue(before.scheduleId.isEmpty) &&
+        _        <- cleanDb
+        nsr      <- ZIO.service[NamedScheduleRepo]
+        kid      <- kidsProfileId
+        before   <- nsr.blockScheduleIdsForProfile(kid)
+        summary  <- seedNow
+        attached <- nsr.blockScheduleIdsForProfile(kid)
+        named    <- attached.headOption.fold(ZIO.succeed(Option.empty[NamedSchedule]))(nsr.findById)
+      } yield assertTrue(before.isEmpty) &&
         // only Kids has a legacy schedule in the V1 seed → exactly one profile migrated
         assertTrue(summary.migrated == 1) &&
-        assertTrue(after.scheduleId.isDefined) &&
+        assertTrue(attached.length == 1) &&
         assertTrue(named.exists(_.windows.length == 1)) &&
         assertTrue(named.exists(_.windows.head.days.contains("mon")))
     },

@@ -107,6 +107,9 @@ object MetricGuard {
     "wifihaven_rollup_runs_total"               -> Set("rollup_job", "status"),
     "wifihaven_rollup_duration_seconds"         -> Set("rollup_job"),
     "wifihaven_rollup_rows_upserted"            -> Set("rollup_job"),
+    // #1069 named-schedule CRUD — `op` ∈ {create, update, delete}, a fixed enum. Lets an operator
+    // see schedule edits land (and rate-alert on a runaway delete loop) without grepping logs.
+    "wifihaven_schedule_mutations_total"        -> Set("op"),
     // #1243/#1221 HikariCP pool gauges — no labels.
     "wifihaven_db_pool_active_connections"      -> Set.empty[String],
     "wifihaven_db_pool_idle_connections"        -> Set.empty[String],
@@ -216,6 +219,10 @@ object AppMetrics {
 
   def recordAuthFailure(reason: String): UIO[Unit] =
     MetricGuard.counter("auth_failures_total", Map("reason" -> reason))
+
+  // #1069 — a named-schedule create / update / delete landed. `op` is a fixed enum.
+  def scheduleMutation(op: String): UIO[Unit] =
+    MetricGuard.counter("wifihaven_schedule_mutations_total", Map("op" -> op))
 
   // ── #864: traffic_reports rows dropped as zero-bytes-zero-seconds ────────────
   // Replaces the per-request warn-log + TODO marker. A rising rate means the

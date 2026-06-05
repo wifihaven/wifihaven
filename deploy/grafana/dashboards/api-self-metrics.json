@@ -529,6 +529,35 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Named-schedule mutations (#1069)",
+      "description": "Rate of named-schedule create/update/delete via /api/schedules, by op.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 12, "y": 40 },
+      "id": 16,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (op) (rate(wifihaven_schedule_mutations_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -572,6 +601,6 @@
   "timezone": "",
   "title": "WifiHaven — API self-metrics",
   "uid": "wifihaven-api-self-metrics",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

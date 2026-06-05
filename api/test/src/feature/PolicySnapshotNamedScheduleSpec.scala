@@ -76,8 +76,7 @@ object PolicySnapshotNamedScheduleSpec
       ar,
       tss,
       clk,
-      Nil,
-      nsr,
+      namedScheduleRepo = nsr,
     ): PolicyService
 
   // A profile with NO legacy schedules, linked to a named schedule with a bedtime window.
@@ -99,7 +98,7 @@ object PolicySnapshotNamedScheduleSpec
           ),
         ),
       )
-      _   <- pr.setSchedule(pid, Some(sid))
+      _   <- nsr.setProfileBlockSchedules(pid, List(sid))
       _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", pid)
     } yield (pid, sid)
 
