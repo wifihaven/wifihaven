@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@/api/client', () => ({
@@ -69,29 +69,33 @@ describe('AdminPage — daily reset autosave (#1002)', () => {
   })
 
   it('editing the reset time fires a debounced PATCH {dailyResetTime}', async () => {
-    // Let the initial async `api.household.get()` load fully settle under real
-    // timers BEFORE switching to fake timers. Enabling fake timers up front
-    // makes `findByTestId`'s internal waitFor resolve while a load-driven React
-    // update is still pending, and the next `fireEvent.change` is clobbered by
-    // that unflushed resync — so the controlled input never reaches '06:00' and
-    // the debounce never fires (#1354). Fake timers are only needed for the
-    // deterministic debounce window, so we scope them to it.
+    // Real timers + waitFor, matching the non-flaky tz/enabled/policy sibling
+    // tests below — no fake-timer juggling. The previous fake-timer version
+    // flaked (#1439); the real culprit was a render race, not the clock:
+    // `findByTestId` resolves the moment the card's input commits, which under
+    // CI load can be BEFORE the card's mount passive effects run. One of those
+    // is the value-resync `useEffect(() => setTime(value.dailyResetTime))`. If
+    // it fires AFTER our `fireEvent.change`, it reverts the input from '06:00'
+    // back to '00:00' and the debounce never commits — PATCH is never sent.
+    // `await act` below drains those pending mount effects so they can't
+    // clobber the change.
     render(<AdminPage />)
     const time = await screen.findByTestId('household-reset-time') as HTMLInputElement
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      // Set the value atomically: typing a `<input type="time">` char-by-char
-      // under fake timers lets the 700ms debounce fire on a transient partial
-      // value (e.g. '00:59') before the full '06:00' lands. fireEvent.change
-      // gives the debounce a single, final value to latch.
-      fireEvent.change(time, { target: { value: '06:00' } })
-      expect(api.household.patch).not.toHaveBeenCalled()
-      await vi.advanceTimersByTimeAsync(700)
+    // Drain the card's pending mount effects (the value-resync) before
+    // interacting, so they run now (a no-op) rather than after our change.
+    await act(async () => {})
 
-      expect(api.household.patch).toHaveBeenCalledWith({ dailyResetTime: '06:00' })
-    } finally {
-      vi.useRealTimers()
-    }
+    // Set the value atomically: typing a `<input type="time">` char-by-char
+    // lets the debounce fire on a transient partial value (e.g. '00:59') before
+    // the full '06:00' lands. fireEvent.change gives the debounce one final
+    // value to latch.
+    fireEvent.change(time, { target: { value: '06:00' } })
+    // The 500ms debounce hasn't elapsed yet, so no save synchronously.
+    expect(api.household.patch).not.toHaveBeenCalled()
+
+    await waitFor(() =>
+      expect(api.household.patch).toHaveBeenCalledWith({ dailyResetTime: '06:00' }),
+    )
   })
 
   it('changing the timezone fires PATCH {dailyResetTz}', async () => {
@@ -111,25 +115,21 @@ describe('AdminPage — daily reset autosave (#1002)', () => {
     (api.household.patch as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('boom from server'),
     )
-    // Settle the initial load under real timers before enabling fake timers —
-    // see the reset-time test for why (#1354).
+    // Real timers + waitFor + an `act` drain of the card's mount effects — see
+    // the reset-time test for why the fake-timer version flaked (#1439).
+    const user = userEvent.setup()
     render(<AdminPage />)
     const time = await screen.findByTestId('household-reset-time') as HTMLInputElement
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      fireEvent.change(time, { target: { value: '06:00' } })
-      await vi.advanceTimersByTimeAsync(700)
+    await act(async () => {})
 
-      const status = screen.getByTestId('household-save-status')
-      await waitFor(() => expect(status).toHaveAttribute('data-status', 'error'))
-      expect((screen.getByTestId('household-reset-time') as HTMLInputElement).value).toBe('06:00')
+    fireEvent.change(time, { target: { value: '06:00' } })
 
-      await user.click(screen.getByTestId('household-save-status-retry'))
-      await waitFor(() => expect(api.household.patch).toHaveBeenCalledTimes(2))
-    } finally {
-      vi.useRealTimers()
-    }
+    const status = screen.getByTestId('household-save-status')
+    await waitFor(() => expect(status).toHaveAttribute('data-status', 'error'))
+    expect((screen.getByTestId('household-reset-time') as HTMLInputElement).value).toBe('06:00')
+
+    await user.click(screen.getByTestId('household-save-status-retry'))
+    await waitFor(() => expect(api.household.patch).toHaveBeenCalledTimes(2))
   })
 })
 
@@ -156,21 +156,20 @@ describe('AdminPage — heartbeat filter autosave (#1002)', () => {
   })
 
   it('editing the bytes threshold fires PATCH {heartbeatFilter:{bytesThreshold}}', async () => {
-    // Settle the initial load under real timers before enabling fake timers —
-    // see the reset-time test for why (#1354).
+    // Real timers + waitFor + an `act` drain of the card's mount effects — see
+    // the reset-time test for why the fake-timer version flaked (#1439).
     render(<AdminPage />)
     const bytes = await screen.findByTestId('heartbeat-filter-bytes') as HTMLInputElement
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      fireEvent.change(bytes, { target: { value: '8192' } })
-      await vi.advanceTimersByTimeAsync(700)
+    await act(async () => {})
 
+    fireEvent.change(bytes, { target: { value: '8192' } })
+    expect(api.household.patch).not.toHaveBeenCalled()
+
+    await waitFor(() =>
       expect(api.household.patch).toHaveBeenCalledWith({
         heartbeatFilter: { bytesThreshold: 8192 },
-      })
-    } finally {
-      vi.useRealTimers()
-    }
+      }),
+    )
   })
 })
 
