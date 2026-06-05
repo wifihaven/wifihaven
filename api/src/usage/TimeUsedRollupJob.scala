@@ -29,8 +29,9 @@ import java.time.{Duration, Instant}
  * per-profile screen-time figures (#1099); past-day reads are cold.
  *
  * Invalidation is wholesale via `TimeUsedRollupRepo.deleteAll` (called from
- * `HouseholdSettingsRepoLive.update` — covers the heartbeat filter, daily reset time, and tz). The
- * next tick refills.
+ * `HouseholdSettingsRepoLive.update` — covers the heartbeat filter, daily reset time, tz, and the
+ * #1464 presence session-stitch knob `presence_continuation_seconds`). The next tick refills with
+ * the new semantics.
  *
  * Multi-instance note: only one fiber should be writing each row at a time, but UPSERT keyed on
  * `(profile_id, date)` with a monotonically-advancing `rolled_through` makes redundant writes

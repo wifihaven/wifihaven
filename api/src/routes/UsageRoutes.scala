@@ -129,6 +129,7 @@ object UsageRoutes {
               trafficRepo,
               appRepo,
               settings.heartbeatFilter,
+              settings.presenceContinuationSeconds,
             )
           } yield Response.json(resp.toJson)
         },
@@ -328,6 +329,7 @@ object UsageRoutes {
       trafficRepo: TrafficReportRepo,
       appRepo: AppRepo,
       filter: HeartbeatFilter,
+      continuationSeconds: Int,
   ): IO[Response, ProfileUsageByApp] =
     for {
       profile <- profileRepo
@@ -365,10 +367,12 @@ object UsageRoutes {
       // #1465: per-host presence is now the session-stitch span (heartbeat-filtered),
       // combined across the profile's devices by its `crossDeviceOverlapMode`.
       val propByHost    =
-        wifihaven.api.presence.Presence.proportionalHostSeconds(presence, overlap, filter)
+        wifihaven.api.presence.Presence
+          .proportionalHostSeconds(presence, overlap, filter, continuationSeconds)
       val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence, filter)
       val propMinByHost =
-        wifihaven.api.presence.Presence.proportionalHostMinutes(presence, overlap, filter)
+        wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, overlap, filter, continuationSeconds)
 
       val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
       val hostsByApp =

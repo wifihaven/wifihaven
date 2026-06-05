@@ -347,7 +347,12 @@ class PolicyServiceLive(
                         val exemptPats =
                           stlims.filter(_.exemptFromDaily).map(_.domainPattern)
                         val perMacTot  =
-                          Presence.totalMinutesByMac(pPres, exemptPats, settings.heartbeatFilter)
+                          Presence.totalMinutesByMac(
+                            pPres,
+                            exemptPats,
+                            settings.heartbeatFilter,
+                            settings.presenceContinuationSeconds,
+                          )
                         // #751: same branch as snapshot — keeps decide()
                         // consistent with the snapshot's cap evaluation.
                         val totalMins  = p.crossDeviceOverlapMode match {
@@ -358,6 +363,7 @@ class PolicyServiceLive(
                               pPres,
                               exemptPats,
                               settings.heartbeatFilter,
+                              settings.presenceContinuationSeconds,
                             )
                         }
                         timeLimitBlockFromDb(

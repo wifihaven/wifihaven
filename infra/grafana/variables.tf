@@ -21,3 +21,9 @@ variable "folder_uid" {
   default     = ""
   description = "Optional uid of a pre-existing Grafana folder to place the dashboards in. Leave empty to use the stack's General folder. We do not manage the folder as a resource so the apply stays stateless-idempotent in CD (see main.tf)."
 }
+
+variable "prometheus_datasource_uid" {
+  type        = string
+  default     = "grafanacloud-prom"
+  description = "UID of the Prometheus datasource the alert rules query. Unlike the dashboards (which use a templated $${datasource} resolved at view time), Grafana managed alert rules must reference a concrete datasource UID. Defaults to grafanacloud-prom, the UID of the built-in Grafana Cloud hosted Prometheus. Override (TF_VAR_prometheus_datasource_uid) only for a self-hosted stack whose datasource UID differs. Not a secret. See docs/design/alerting.md §3."
+}

@@ -433,13 +433,14 @@ new semantics.
    under `Sum` and counts once under `Dedup`; the `N < R` collapse guard and the
    keepalive-bridge composition from §4.4.
    **Shipped — #1465.** `Presence.proportionalHostSeconds` is now the
-   session-stitch per-app span (`stitchSessions` primitive), combined across
-   devices by `crossDeviceOverlapMode`; the heartbeat filter now applies to
-   `hostMinutes`, `patternMinutesByMac` and the per-app surfaces (it replaces
-   byte-share as the keepalive-stripping mechanism). The idle gap reads
-   `Presence.DefaultContinuationSeconds` (120 s) until #2/#1464 threads the
-   configured `household_settings.presence_continuation_seconds` and introduces
-   the canonical primitive — reconcile the two at merge.
+   session-stitch per-app span, combined across devices by
+   `crossDeviceOverlapMode`; the heartbeat filter now applies to `hostMinutes`,
+   `patternMinutesByMac` and the per-app surfaces (it replaces byte-share as the
+   keepalive-stripping mechanism). Built on the shared #1464 session primitive
+   (`spanOf` / `stitch` / `unionSeconds`) and its `effectiveGap` `N ≥ 2 × R`
+   collapse guard, and reads the configured
+   `household_settings.presence_continuation_seconds` at the daily call sites
+   (the weekly/informational views stay on the 120 s default).
 
 4. **Anchor session timing on `connection_events` (rate-independence).** Join
    per-request timestamps (timing) with `traffic_reports` (bytes / heartbeat

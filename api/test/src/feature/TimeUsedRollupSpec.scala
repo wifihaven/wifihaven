@@ -224,6 +224,42 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         post <- ru.getDayMap(today)
       } yield assertTrue(pre.contains(kid)) && assertTrue(!post.contains(kid))
     },
+    test(
+      "#1464 (d) presence-continuation change invalidates the rollup and the refill reflects it",
+    ) {
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ru  <- ZIO.service[TimeUsedRollupRepo]
+        trr <- ZIO.service[TrafficReportRepo]
+        stl <- ZIO.service[SiteTimeLimitRepo]
+        _   <- setTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:50", "kid", kid)
+        rid <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        // Two 5-min sessions 900s apart (gap = 20·60 − 300 = 900s). At the default N=120 (clamped
+        // up to the 2×R=600 collapse guard for these 300s buckets) the gap is NOT bridged → two
+        // 5-min sessions = 600s. Raising N to 900 bridges the think-gap into one [0, 1500] session
+        // → 1500s. The knob change must DELETE the cached row so the next tick refills with the new
+        // semantics.
+        _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:50", "mathacademy.com", today, 5, 0)
+        _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:50", "mathacademy.com", today, 5, 20)
+        now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
+        _           <- TimeUsedRollupJob.oneTickForTest(ru, pr, dr, stl, trr, hsr, now)
+        before      <- ru.getDayForProfile(kid, today)
+        cur         <- hsr.get
+        _           <- hsr.update(cur.copy(presenceContinuationSeconds = 900))
+        invalidated <- ru.getDayForProfile(kid, today)
+        _           <- TimeUsedRollupJob.oneTickForTest(ru, pr, dr, stl, trr, hsr, now)
+        after       <- ru.getDayForProfile(kid, today)
+      } yield assertTrue(before.exists(_.usedSeconds == 600L)) &&
+        assertTrue(invalidated.isEmpty) &&
+        assertTrue(after.exists(_.usedSeconds == 1500L))
+    },
     test("daily-reset-tz change invalidates the rollup") {
       for {
         _   <- cleanDb

@@ -906,26 +906,28 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       sql"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
                  heartbeat_host_patterns,
-                 unmanaged_mac_policy::text
+                 unmanaged_mac_policy::text,
+                 presence_continuation_seconds
             FROM household_settings WHERE id=1"""
-        .query[(LocalTime, ZoneId, Boolean, Int, List[String], String)]
+        .query[(LocalTime, ZoneId, Boolean, Int, List[String], String, Int)]
         .unique
-        .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson) =>
+        .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson, presenceCont) =>
           val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
-          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm)
+          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm, presenceCont)
         }
         .transact(xa),
     )
 
   def update(s: HouseholdSettings): Task[Unit] = {
     val ummJson    = s.unmanagedMacPolicy.toJson
-    // #1160: invalidate the time-used rollup atomically with the settings
-    // update. Any change to the daily-reset boundary (tz / reset hour) or the
-    // heartbeat filter changes the active-minute definition for every cached
-    // day; deleting the cache forces the next rollup tick to refill from
-    // first principles. The DELETE is wholesale because all three fields gate
-    // the same aggregation — fine-grained invalidation would only add risk of
-    // missing a code path that mutates the filter.
+    // #1160 / #1464: invalidate the time-used rollup atomically with the
+    // settings update. Any change to the daily-reset boundary (tz / reset hour),
+    // the heartbeat filter, or the presence session-stitch knob
+    // (`presence_continuation_seconds`) changes the active-minute definition for
+    // every cached day; deleting the cache forces the next rollup tick to refill
+    // from first principles. The DELETE is wholesale because all of these fields
+    // gate the same aggregation — fine-grained invalidation would only add risk
+    // of missing a code path that mutates one of them.
     val upd        =
       sql"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
@@ -934,6 +936,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
                   heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
                   unmanaged_mac_policy=${ummJson}::jsonb,
+                  presence_continuation_seconds=${s.presenceContinuationSeconds},
                   updated_at=NOW()
             WHERE id=1""".update.run
     val invalidate = sql"DELETE FROM time_used_daily".update.run

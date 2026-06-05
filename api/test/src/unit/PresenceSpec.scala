@@ -124,14 +124,138 @@ object PresenceSpec extends ZIOSpecDefault {
           Presence.totalMinutesByMac(rows, List("*.youtube.com")) == Map.empty[MacAddress, Int],
         )
       },
-      test("uses max active_seconds in the bucket as duration") {
-        // The agent emits the same bucket duration on every row, but if multiple ticks land in
-        // the same period (shouldn't happen in practice) we trust the largest value.
+      test("#1464 session span ignores active_seconds — full period span is the evidence") {
+        // The session model credits each non-heartbeat row its full [period_start, period_end]
+        // span (300s here), NOT the sampled active_seconds. So a row that sampled only 60s of its
+        // 300s window still contributes the whole window — this is the within-minute undercount
+        // fix (docs/design/presence-tuning.md §4.1).
         val rows = List(
-          row(mac1, 0, "a.com", 60),
-          row(mac1, 0, "b.com", 300),
+          row(mac1, 0, "a.com", secs = 60),
+          row(mac1, 0, "b.com", secs = 300),
         )
         assertTrue(Presence.totalMinutesByMac(rows, Nil) == Map(mac1 -> 5))
+      },
+      test("#1464 (a) a continuous sparse session reads its full span, not the sampled floor") {
+        // Five contiguous 60s windows, each sampling only the 10s activity floor — a kid working
+        // a problem locally between requests. Old bucket model: Σ max(activeSeconds) = 50s → 0 min.
+        // Session model: the five windows stitch into one [0, 300] session → 5 min.
+        val rows = (0 until 5).toList.map { i =>
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(i * 60L),
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 10,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          )
+        }
+        assertTrue(Presence.totalSecondsByMac(rows, Nil) == Map(mac1 -> 300L)) &&
+        assertTrue(Presence.totalMinutesByMac(rows, Nil) == Map(mac1 -> 5))
+      },
+      test("#1464 (b) re-bucketing the same day at R=10s vs R=300s yields the same minutes") {
+        // §2d rate-independence: 300s of continuous activity, expressed once as 30 fine (10s)
+        // windows and once as a single coarse (300s) window. Both must read 300s = 5 min — bucket
+        // size is only the resolution of the evidence, never a term in the formula.
+        val fine   = (0 until 30).toList.map { i =>
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(i * 10L),
+            HostId.Fqdn(Hostname.unsafe("khanacademy.org")),
+            activeSeconds = 10,
+            bytes = 200_000L,
+            periodSeconds = 10,
+          )
+        }
+        val coarse = List(
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("khanacademy.org")),
+            activeSeconds = 10,
+            bytes = 200_000L,
+            periodSeconds = 300,
+          ),
+        )
+        assertTrue(
+          Presence.totalSecondsByMac(fine, Nil) == Presence.totalSecondsByMac(coarse, Nil),
+        ) &&
+        assertTrue(Presence.totalMinutesByMac(fine, Nil) == Map(mac1 -> 5))
+      },
+      test(
+        "#1464 (c) two concurrent apps in one minute count as one minute (within-device union)",
+      ) {
+        // Same 60s window, two different apps. One human on one screen: the device's per-app
+        // sessions union, so the minute counts once — not twice.
+        val rows = List(
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("youtube.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+        )
+        assertTrue(Presence.totalSecondsByMac(rows, Nil) == Map(mac1 -> 60L))
+      },
+      test("#1464 collapse guard: N below 2×R is raised so contiguous windows still merge") {
+        // A misconfigured N (10s) below 2×R (R=60s) would, unguarded, stop contiguous windows from
+        // merging and zero out presence (§2d (ii)). The effectiveGap clamp to 2×R keeps the two
+        // contiguous windows stitched into one 120s session.
+        val rows = (0 until 2).toList.map { i =>
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(i * 60L),
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          )
+        }
+        assertTrue(
+          Presence.totalSecondsByMac(rows, Nil, continuationSeconds = 10) == Map(mac1 -> 120L),
+        )
+      },
+      test("#1464 a real idle gap beyond N is NOT bridged (sessions stay separate)") {
+        // Two 60s windows 600s apart (gap = 540s > N=120). They must remain two 60s sessions →
+        // 120s total, not one bridged 660s span.
+        val rows = List(
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(600L),
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+        )
+        assertTrue(
+          Presence.totalSecondsByMac(rows, Nil, continuationSeconds = 120) == Map(mac1 -> 120L),
+        )
       },
     ),
     suite("patternMinutesByMac")(
@@ -393,18 +517,29 @@ object PresenceSpec extends ZIOSpecDefault {
           Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Dedup) == Map(yt -> 300L),
         )
       },
-      test("N < R collapses to zero; N ≥ R recovers the full span (§2d(ii) guard)") {
-        // Point-anchored windows (period_seconds=0) spaced R=300s apart. With the
-        // idle gap N=120 < R nothing merges — every window is a zero-span session
-        // and presence collapses to 0. With N=300 ≥ R they stitch into one
-        // [0, 600s) session. This is why the model must keep N ≥ R (§4.4 inv. 1):
-        // the code reads the gap from period_start, never assuming a fixed rate.
-        val rows = List(0L, 300L, 600L).map(o => appRow(mac1, o, "youtube.com", periodSeconds = 0))
+      test("N < R collapse guard: a misconfigured N is clamped to 2×R (§4.4 inv. 1)") {
+        // Two youtube windows of R=60s, 60s apart (gap = 120−60 = 60). A misconfigured
+        // N=10s would, unguarded, leave them as two 60s sessions; the shared #1464
+        // effectiveGap clamp raises N to 2×R=120s ≥ 60, so the per-app surface bridges
+        // them into one [0,180s) session — same rate-independence guard the daily cap
+        // uses. R is read from period_seconds, never assumed to be 60s.
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 120L, "youtube.com", periodSeconds = 60),
+        )
         assertTrue(
-          Presence.proportionalHostSeconds(rows, continuationSeconds = 120L) == Map(yt -> 0L),
-        ) &&
+          Presence.proportionalHostSeconds(rows, continuationSeconds = 10) == Map(yt -> 180L),
+        )
+      },
+      test("a real idle gap beyond the guarded N is not bridged") {
+        // Two 60s windows 600s apart: gap 540 > effectiveGap(120). They stay two
+        // 60s sessions → 120s, not one bridged 660s span.
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 600L, "youtube.com", periodSeconds = 60),
+        )
         assertTrue(
-          Presence.proportionalHostSeconds(rows, continuationSeconds = 300L) == Map(yt -> 600L),
+          Presence.proportionalHostSeconds(rows, continuationSeconds = 120) == Map(yt -> 120L),
         )
       },
       test("keepalive-only window between two real sessions is bridged (§4.4 inv. 2)") {

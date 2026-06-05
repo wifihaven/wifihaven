@@ -61,6 +61,11 @@ class SnapshotBuilder:
         self._profiles: dict[str, dict[str, Any]] = {}
         self._devices: dict[str, dict[str, Any]] = {}
         self._blocklists: dict[str, dict[str, Any]] = {}
+        # The fleet-wide `global` BlockRules (#1316/#1318). None until
+        # `set_global()` is called, so snapshots that don't exercise the global
+        # layer omit the key entirely and render byte-identically to pre-#1319
+        # (render.lua treats an absent `global` as BlockRules.allowAll).
+        self._global: dict[str, Any] | None = None
 
     def add_profile(
         self,
@@ -124,6 +129,45 @@ class SnapshotBuilder:
         self._devices[mac] = entry
         return self
 
+    def set_global(
+        self,
+        *,
+        blocked: bool = False,
+        block_reason: str | None = None,
+        extra_blocked: list[str] | None = None,
+        extra_allowed: list[str] | None = None,
+        blocklist_ids: list[str] | None = None,
+        block_ip_only: bool = False,
+    ) -> "SnapshotBuilder":
+        """Populate the snapshot's fleet-wide `global` BlockRules (#1318/#1319).
+
+        Applied to *every* MAC by the agent alongside that MAC's resolved
+        per-MAC rules, with the precedence ladder from
+        `docs/design/global-policy-layer.md` §5.2:
+
+          - `extra_allowed` → `@global_allow` — carves out **every** drop
+            (per-MAC or global), all MACs. Top of the ladder.
+          - `extra_blocked` / `blocklist_ids` → `@global_block` — blocks
+            fleet-wide; a per-profile `extraAllowed` may **not** un-block them,
+            only `global.extraAllowed` can.
+          - `blocked` → whole-network lockdown; only `global.extraAllowed`
+            survives it.
+
+        Unlike `add_profile(blocked=True)` this does **not** require a
+        `block_reason`: a global lockdown's reason is cosmetic (block-page copy
+        only) and has no `MacBlockReason` enum case. Pass one if a test asserts
+        on the rendered block-page text.
+        """
+        self._global = profile_rules(
+            blocked=blocked,
+            block_reason=block_reason,
+            extra_blocked=extra_blocked,
+            extra_allowed=extra_allowed,
+            blocklist_ids=blocklist_ids,
+            block_ip_only=block_ip_only,
+        )
+        return self
+
     def add_blocklist(
         self,
         *,
@@ -149,13 +193,19 @@ class SnapshotBuilder:
                     f"device {mac} references unknown profileId={pid}; "
                     f"declared profiles: {sorted(self._profiles)}"
                 )
-        return {
+        snap: dict[str, Any] = {
             "etag": etag,
             "generatedAt": self._generated_at,
             "devices": dict(self._devices),
             "profiles": dict(self._profiles),
             "blocklists": dict(self._blocklists),
         }
+        # Emit `global` only when explicitly set, so the default top-level key
+        # set stays {etag, generatedAt, devices, profiles, blocklists} for the
+        # scenarios (and test_snapshot_builder) that don't touch it.
+        if self._global is not None:
+            snap["global"] = dict(self._global)
+        return snap
 
 
 # ── Convenience helpers kept for the #683 canary (test_pause) ───────────────
