@@ -758,6 +758,20 @@ function ProfileShellRow({
               own. Read-only; lives above the edit subsections. */}
           <ProfileTimelineChart profileId={pd.profile.id} />
 
+          {/* #1320 — per-profile default-deny baseline. Block-all; only the
+              profile's allowed apps/hosts + the household global allowlist are
+              reachable. The inverse of allow-by-default + blocklists. #1472 —
+              hoisted to the top of the expanded view: default-deny is the
+              profile's most fundamental posture, so it reads first, before
+              devices / categories / apps. */}
+          {isAdmin && (
+            <DefaultDenySubsection
+              pd={pd}
+              updateProfile={updateProfile}
+              onProfileChanged={onProfileChanged}
+            />
+          )}
+
           {/* #973: inline devices subsection. Name is edited inline in the
               card header above (no redundant collapsible). Devices autosave
               per-row via PATCH /devices. Post-#978 the Edit-modal escape
@@ -789,17 +803,6 @@ function ProfileShellRow({
               onAppsChanged={onAppsChanged}
               onProfileChanged={onProfileChanged}
               updateProfile={updateProfile}
-            />
-          )}
-
-          {/* #1320 — per-profile default-deny baseline. Block-all; only the
-              profile's allowed apps/hosts + the household global allowlist are
-              reachable. The inverse of allow-by-default + blocklists. */}
-          {isAdmin && (
-            <DefaultDenySubsection
-              pd={pd}
-              updateProfile={updateProfile}
-              onProfileChanged={onProfileChanged}
             />
           )}
 
