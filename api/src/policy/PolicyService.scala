@@ -489,6 +489,16 @@ object PolicyService {
     // actually populated from resolved IPs, which is a separate router-side gap
     // tracked in its own issue — not something more infra-allow entries can fix.
     "netcts.cdn-apple.com",          // Apple network connectivity-test CDN
+    // #1411: Google's gvt2.com connectivity-check / infra endpoint — a
+    // device-level transitive dep (connectivity probe, Play/app asset bootstrap)
+    // that the whole-MAC drop kills, making otherwise-allowed Google apps appear
+    // blocked. Pure Google infra, not a site users reach directly → low bypass
+    // risk. Added as an exact host: the ea_ ipset is populated from resolved
+    // hostnames and suffix/wildcard ipset population isn't wired (the #1337 open
+    // question), so rotating download shards (`*.gvt2.com`, e.g.
+    // `r1---sn-xxxx.gvt2.com`) are deliberately out of scope here — pinning them
+    // would rot, same call as the akamai CDN-edge decision above.
+    "www.gvt2.com",                  // Google connectivity-check / infra endpoint
   ).map(Hostname.unsafe)
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
