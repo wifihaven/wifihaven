@@ -8,7 +8,8 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  Alert, DashboardNow, Device, GlobalPolicyView, HouseholdSettings, ProfileDetail, ProfileTimeStatus,
+  Alert, BlocklistSummary, DashboardNow, Device, GlobalPolicyView, HouseholdSettings, ProfileDetail,
+  ProfileTimeStatus,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   QueryLog, UsageSeriesResponse,
 } from '@/types/api'
@@ -90,6 +91,18 @@ export function useDevices(opts?: QueryOpts<Device[]>) {
     queryKey: qk.devices(),
     queryFn: () => api.devices.list(),
     staleTime: STALE.devices,
+    ...opts,
+  })
+}
+
+// #1473 — the blocklist catalog (GET /api/blocklists), shared by the
+// Blocklists matrix page and the inline blocked-categories editor on the
+// profile card. Cached so N profile cards don't each fire their own fetch.
+export function useBlocklists(opts?: QueryOpts<BlocklistSummary[]>) {
+  return useQuery({
+    queryKey: ['blocklists'] as const,
+    queryFn: () => api.blocklists.list(),
+    staleTime: 5 * MIN,
     ...opts,
   })
 }

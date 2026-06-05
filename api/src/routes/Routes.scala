@@ -598,14 +598,24 @@ object TimeRoutes {
               val macSet  = devices.map(_.mac).toSet
               val pRows   = presence.filter(r => macSet.contains(r.mac))
               val perMac  = wifihaven.api.presence.Presence
-                .totalMinutesByMac(pRows, Nil, settings.heartbeatFilter)
+                .totalMinutesByMac(
+                  pRows,
+                  Nil,
+                  settings.heartbeatFilter,
+                  settings.presenceContinuationSeconds,
+                )
               // #751: same Sum/Dedup branch as the daily summary.
               val total   = p.crossDeviceOverlapMode match {
                 case CrossDeviceOverlapMode.Sum   =>
                   devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
                 case CrossDeviceOverlapMode.Dedup =>
                   wifihaven.api.presence.Presence
-                    .dedupedTotalMinutes(pRows, Nil, settings.heartbeatFilter)
+                    .dedupedTotalMinutes(
+                      pRows,
+                      Nil,
+                      settings.heartbeatFilter,
+                      settings.presenceContinuationSeconds,
+                    )
               }
               ProfileTimeSummaryWeek(
                 p.id,
@@ -909,7 +919,12 @@ object TimeRoutes {
       perMacTotal     = {
         val exemptPats = state.perSite.filter(_.exemptFromDaily).map(_.domainPattern)
         wifihaven.api.presence.Presence
-          .totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
+          .totalMinutesByMac(
+            presence,
+            exemptPats,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+          )
       }
       siteUsage       = state.perSite.map { s =>
         SiteUsage(
@@ -1158,7 +1173,12 @@ object TimeRoutes {
       )
       exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).map(_.domainPattern))
       totalUsed  = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
+        .totalMinutesByMac(
+          presence,
+          exemptPats,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
         .getOrElse(device.mac, 0)
       perPat     = wifihaven.api.presence.Presence
         .patternMinutesByMac(
@@ -1526,6 +1546,7 @@ object HouseholdSettingsRoutes {
                   upd.dailyResetTz,
                   upd.heartbeatFilter,
                   upd.unmanagedMacPolicy,
+                  upd.presenceContinuationSeconds,
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -1575,11 +1596,15 @@ object HouseholdSettingsRoutes {
               case Some(_)           =>
                 ZIO.fail(Response.badRequest("unmanagedMacPolicy must be a JSON object"))
             }
+            // #1464: presence_continuation_seconds is an API/config-side rollup
+            // knob with no SPA surface, so PATCH preserves the stored value
+            // rather than exposing it as a patchable field.
             merged = HouseholdSettings(
               dailyResetTime = timePatch.applyTo(existing.dailyResetTime),
               dailyResetTz = tzPatch.applyTo(existing.dailyResetTz),
               heartbeatFilter = mergedFilter,
               unmanagedMacPolicy = mergedUmm,
+              presenceContinuationSeconds = existing.presenceContinuationSeconds,
             )
             _            <- repo.update(merged).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok

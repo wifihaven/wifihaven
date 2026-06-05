@@ -1102,17 +1102,24 @@ describe("render blocklist enforcement (#352)", function()
       1, true))
   end)
 
-  it("emits one nftset= line per (host, id) when the same host appears in two blocklists", function()
+  it("merges both bl_ specs into ONE nftset= directive when the same host appears in two blocklists (#1460)", function()
+    -- Post-#1460 contract: every nft set targeting a given host lands in ONE
+    -- comma-joined `nftset=/<host>/...` directive. dnsmasq honours only the
+    -- first matching `nftset=/<host>/...` directive per domain and silently
+    -- drops the rest, which is the H3 enforcement-gap bug: an ea_ directive
+    -- emitted before a global_block directive for the same host leaves
+    -- @global_block empty. Two bl_ sets covering the same host are the
+    -- closest pre-existing analogue.
     local s = snap_bl()
     s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
     s._blocklist_hosts["test_social"] = { "doubleclick.net", "facebook.com" }
     local conf = render.dnsmasq(s)
+    local _, dir_count = conf:gsub("nftset=/doubleclick%.net/", "")
+    assert.equals(1, dir_count)
     assert.truthy(conf:find(
-      "nftset=/doubleclick.net/4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads",
-      1, true))
+      "4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads", 1, true))
     assert.truthy(conf:find(
-      "nftset=/doubleclick.net/4#inet#wifihaven#bl_test_social,6#inet#wifihaven#bl6_test_social",
-      1, true))
+      "4#inet#wifihaven#bl_test_social,6#inet#wifihaven#bl6_test_social", 1, true))
   end)
 
   it("emits no nftset= lines when _blocklist_hosts is absent or empty", function()
@@ -2078,9 +2085,12 @@ describe("render.dnsmasq global section (#1319)", function()
     s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
     s._blocklist_hosts = { ads = { "ad.doubleclick.net" } }
     local conf = render.dnsmasq(s)
+    -- The member host gets the global_block specs (alongside any bl_ specs
+    -- if a profile/global also names the "ads" category — dnsmasq fires
+    -- every spec in the merged directive, see #1460).
+    assert.truthy(conf:find("nftset=/ad.doubleclick.net/", 1, true))
     assert.truthy(conf:find(
-      "nftset=/ad.doubleclick.net/4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6",
-      1, true))
+      "4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6", 1, true))
   end)
 
   it("emits no global nftset= lines when the global section is empty", function()
@@ -2091,6 +2101,36 @@ describe("render.dnsmasq global section (#1319)", function()
 
   it("is byte-identical to a snapshot with no global key when global is empty", function()
     assert.equals(render.dnsmasq(snap_one()), render.dnsmasq(snap_global()))
+  end)
+
+  -- ── #1460 H3 regression: the merge invariant ────────────────────────────
+  --
+  -- dnsmasq honours only ONE matching `nftset=/<host>/...` directive per
+  -- domain and silently drops the rest. When a host appears in BOTH a
+  -- per-profile extraAllowed (ea_) and global.extraBlocked (@global_block),
+  -- emitting two separate directives leaves @global_block empty and the
+  -- fleet-wide block never fires — the exact gap H3 in
+  -- scripts/e2e/scenarios_fake/test_global_policy.py reproduces on a real
+  -- router. render.dnsmasq must merge every spec for a given host into one
+  -- directive so all sets fire on every reply.
+  it("merges ea_ and global_block specs for the same host into ONE directive (#1460 H3)", function()
+    local s = snap_global()
+    -- Set up the H3 shape: profile allows example.org, global blocks it.
+    s.profiles["3"].rules.extraAllowed = { "example.org" }
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.global.extraBlocked = { "example.org" }
+    local conf = render.dnsmasq(s)
+    -- Exactly one nftset= directive for example.org.
+    local _, count = conf:gsub("nftset=/example%.org/", "")
+    assert.equals(1, count)
+    -- That single directive carries BOTH the ea_ and global_block specs.
+    assert.truthy(conf:find(
+      "4#inet#wifihaven#ea_aa_bb_cc_11_22_33_example_org", 1, true))
+    assert.truthy(conf:find(
+      "6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_example_org", 1, true))
+    assert.truthy(conf:find("4#inet#wifihaven#global_block", 1, true))
+    assert.truthy(conf:find("6#inet#wifihaven#global_block6", 1, true))
   end)
 end)
 

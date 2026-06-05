@@ -648,13 +648,24 @@ case class HouseholdSettings(
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
     unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
+    // #1464: idle gap `N` (seconds) for the presence session-stitch model. Per
+    // (device, app), activity merges into one session as long as the wall-clock
+    // gap to the next activity is ≤ N; a larger gap ends the session and its
+    // presence is the [first, last]-activity span. Default 120 (migration V52);
+    // the rollup raises it to the 2×R collapse guard at compute time.
+    presenceContinuationSeconds: Int = HouseholdSettings.DefaultPresenceContinuationSeconds,
 ) derives JsonCodec
+
+object HouseholdSettings {
+  val DefaultPresenceContinuationSeconds: Int = 120
+}
 
 case class UpdateHouseholdSettingsRequest(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
     unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
+    presenceContinuationSeconds: Int = HouseholdSettings.DefaultPresenceContinuationSeconds,
 ) derives JsonCodec
 
 /**

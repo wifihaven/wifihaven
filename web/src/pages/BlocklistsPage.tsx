@@ -1,27 +1,28 @@
 // #958: SPA management page for bundled blocklists. Lists every category
 // (bundled + operator/test) with display metadata, host count, and a
-// per-profile toggle matrix. The "View hosts" disclosure paginates the
-// host list since some bundled lists run into the thousands.
+// "View hosts" disclosure that paginates the host list since some bundled
+// lists run into the thousands.
+//
+// #1473: per-profile assignment used to live here as a blocklist×profile
+// toggle matrix. That moved to the profile card (the inline
+// blocked-categories editor), which is the first-class editing surface now —
+// you configure a profile's policy on the profile page. This page is the
+// read-only catalog: what categories exist and what's in them.
 //
 // Admin-only — gated at the router (RequireAdmin). The underlying API
 // (`GET /api/blocklists`) also requires admin.
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/client'
-import { useProfiles, useInvalidators } from '@/api/queries'
-import type { BlocklistSummary, ProfileDetail, ScheduleRequest, UpsertProfileRequest } from '@/types/api'
+import type { BlocklistSummary } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 
 const HOSTS_PER_PAGE = 50
 
 export function BlocklistsPage() {
-  const profilesQuery = useProfiles()
-  const profiles = profilesQuery.data ?? []
-  const invalidators = useInvalidators()
   const [lists, setLists] = useState<BlocklistSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [savingCell, setSavingCell] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [hostsCache, setHostsCache] = useState<Record<string, string[]>>({})
   const [hostsPage, setHostsPage] = useState<Record<string, number>>({})
@@ -41,39 +42,6 @@ export function BlocklistsPage() {
   useEffect(() => {
     load()
   }, [])
-
-  async function toggle(blocklistId: string, profile: ProfileDetail) {
-    const cellKey = `${blocklistId}:${profile.profile.id}`
-    setSavingCell(cellKey)
-    setError(null)
-    try {
-      const has = profile.profile.blockedCategories.includes(blocklistId)
-      const nextCats = has
-        ? profile.profile.blockedCategories.filter(c => c !== blocklistId)
-        : [...profile.profile.blockedCategories, blocklistId]
-      const body: UpsertProfileRequest = {
-        name: profile.profile.name,
-        blockedCategories: nextCats,
-        paused: profile.profile.paused,
-        schedules: profile.schedules.map<ScheduleRequest>(s => ({
-          name: s.name,
-          days: s.days,
-          startLocal: s.startLocal,
-          endLocal: s.endLocal,
-          tz: s.tz,
-        })),
-        timeLimit: profile.timeLimit?.dailyMinutes ?? null,
-        failureMode: profile.profile.failureMode,
-        crossDeviceOverlapMode: profile.profile.crossDeviceOverlapMode,
-      }
-      await api.profiles.update(profile.profile.id, body)
-      invalidators.profiles()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'failed to update profile')
-    } finally {
-      setSavingCell(null)
-    }
-  }
 
   async function toggleHosts(id: string) {
     if (expanded === id) {
@@ -100,16 +68,17 @@ export function BlocklistsPage() {
     })
   }, [lists])
 
-  if (loading || profilesQuery.isPending) return <PageLoader />
+  if (loading) return <PageLoader />
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-bold text-brand-ink">Blocklists</h1>
         <p className="text-sm text-brand-text-muted mt-1">
-          Curated host categories. Toggle per profile — devices in that profile will be blocked
-          from every host in the list. Bundled lists ship with the API release; the host content
-          is refreshed on every API restart.
+          Curated host categories. Assign a category to a profile from the profile’s card on the
+          Profiles page — devices in that profile will be blocked from every host in the list.
+          Bundled lists ship with the API release; the host content is refreshed on every API
+          restart.
         </p>
       </div>
 
@@ -157,37 +126,6 @@ export function BlocklistsPage() {
                   {expanded === b.id ? 'Hide hosts' : 'View hosts'}
                 </button>
               </div>
-
-              {profiles.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-brand-border">
-                  <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-                    Enabled for
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {profiles.map(p => {
-                      const cellKey = `${b.id}:${p.profile.id}`
-                      const on = p.profile.blockedCategories.includes(b.id)
-                      const saving = savingCell === cellKey
-                      return (
-                        <button
-                          key={p.profile.id}
-                          type="button"
-                          disabled={saving}
-                          onClick={() => toggle(b.id, p)}
-                          data-testid={`toggle-${b.id}-${p.profile.id}`}
-                          className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                            on
-                              ? 'bg-red-500/20 text-red-700 border-red-500/40'
-                              : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
-                          } ${saving ? 'opacity-50 cursor-wait' : ''}`}
-                        >
-                          {on ? '✓ ' : ''}{p.profile.name}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
 
               {expanded === b.id && (
                 <div className="mt-3 pt-3 border-t border-brand-border">

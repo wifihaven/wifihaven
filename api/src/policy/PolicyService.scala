@@ -325,14 +325,24 @@ class PolicyServiceLive(
                 val exemptPats   =
                   stlims.filter(_.exemptFromDaily).map(_.domainPattern)
                 val perMacTot    =
-                  Presence.totalMinutesByMac(pPres, exemptPats, settings.heartbeatFilter)
+                  Presence.totalMinutesByMac(
+                    pPres,
+                    exemptPats,
+                    settings.heartbeatFilter,
+                    settings.presenceContinuationSeconds,
+                  )
                 // #751: same branch as snapshot — keeps decide() consistent with the snapshot's
                 // cap evaluation.
                 val totalMins    = p.crossDeviceOverlapMode match {
                   case CrossDeviceOverlapMode.Sum   =>
                     devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
                   case CrossDeviceOverlapMode.Dedup =>
-                    Presence.dedupedTotalMinutes(pPres, exemptPats, settings.heartbeatFilter)
+                    Presence.dedupedTotalMinutes(
+                      pPres,
+                      exemptPats,
+                      settings.heartbeatFilter,
+                      settings.presenceContinuationSeconds,
+                    )
                 }
                 // #1379: the daily-cap-exhausted condition the AllowedDuring carve gate keys off —
                 // the per-host mirror of `PolicyService.dailyCapExhausted(state)` in the snapshot.

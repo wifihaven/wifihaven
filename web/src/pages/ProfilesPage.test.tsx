@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
+import type { BlocklistSummary, Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
@@ -15,9 +15,12 @@ vi.mock('@/api/client', () => ({
       setUsers: vi.fn(),
       usageByApp: vi.fn(),
     },
-    // #978 — the old ProfileEditor modal listed blocklist categories from
-    // /blocklists; the inline app-policy subsection owns that surface now,
-    // so ProfilesPage no longer calls api.blocklists.list.
+    // #1473 — the inline blocked-categories editor on the profile card
+    // fetches the blocklist catalog from /blocklists (same fetch the
+    // Blocklists matrix page uses) and PATCHes blockedCategories.
+    blocklists: {
+      list: vi.fn(),
+    },
     devices: {
       list: vi.fn(),
       patch: vi.fn(),
@@ -127,6 +130,15 @@ const adultsSummary: ProfileTimeSummary = {
   dailyLimitMins: null, usedMins: 0, extensionMins: 0, remainingMins: null,
 }
 
+// #1473 — blocklist catalog returned by GET /api/blocklists, consumed by the
+// inline blocked-categories editor on the profile card.
+const blocklistCatalog: BlocklistSummary[] = [
+  { id: 'adult', name: 'Adult content', description: 'Adult sites', bundled: true, source: null, hostCount: 100, lastBuiltAt: null },
+  { id: 'gambling', name: 'Gambling', description: null, bundled: true, source: null, hostCount: 50, lastBuiltAt: null },
+  { id: 'social', name: 'Social media', description: null, bundled: true, source: null, hostCount: 30, lastBuiltAt: null },
+  { id: 'malware', name: 'Malware', description: null, bundled: false, source: 'operator', hostCount: 10, lastBuiltAt: null },
+]
+
 const aliceUser: User = { id: 10, username: 'alice', role: 'child', profileIds: [1] }
 const bobUser:   User = { id: 11, username: 'bob',   role: 'adult', profileIds: [2] }
 const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: [1, 2] }
@@ -146,6 +158,7 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
   })
+  ;(api.blocklists.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(blocklistCatalog)
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -370,6 +383,8 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
   // collapsed summary row (alongside the +Time button). The card no longer
   // needs to be expanded to reach either action.
   // #406: pause is still an explicit PUT with the full profile + paused=!current.
+  // #1471: clicking Pause on an active profile no longer fires immediately —
+  // it surfaces a soft/hard choice; the chosen mode rides the same PUT.
   it('Pause button is rendered in the collapsed row and fires update without expanding', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -378,10 +393,13 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
     expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
     const pauseBtn = within(kidsCard).getByTestId('profile-row-pause-1')
     await user.click(pauseBtn)
+    // the click opens the soft/hard picker; nothing is saved yet
+    expect(api.profiles.update).not.toHaveBeenCalled()
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-soft-1'))
     await waitFor(() =>
       expect(api.profiles.update).toHaveBeenCalledWith(
         1,
-        expect.objectContaining({ paused: true, name: 'Kids' }),
+        expect.objectContaining({ paused: true, pauseMode: 'soft', name: 'Kids' }),
       ),
     )
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
@@ -436,6 +454,75 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
     const deleteButtons = within(kidsCard).getAllByRole('button', { name: /^Delete$/ })
     expect(deleteButtons).toHaveLength(1)
     expect(deleteButtons[0]).toBe(within(kidsCard).getByTestId('profile-row-delete-1'))
+  })
+})
+
+// #1471 — soft vs hard pause is chosen at the moment of pausing, via a small
+// picker on the row Pause action, NOT as a persistent radio buried in the
+// Time-limits subsection. The chosen mode rides the same PUT that sets paused.
+describe('ProfilesPage — pause-mode chosen at pause-time (#1471)', () => {
+  it('clicking Pause surfaces a soft/hard choice rather than saving immediately', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-1'))
+    expect(within(kidsCard).getByTestId('profile-row-pause-soft-1')).toBeInTheDocument()
+    expect(within(kidsCard).getByTestId('profile-row-pause-hard-1')).toBeInTheDocument()
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+
+  it('choosing Hard pause PUTs paused=true with pauseMode=hard', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-1'))
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-hard-1'))
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ paused: true, pauseMode: 'hard', name: 'Kids' }),
+      ),
+    )
+  })
+
+  it('choosing Soft pause PUTs paused=true with pauseMode=soft', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-1'))
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-soft-1'))
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ paused: true, pauseMode: 'soft', name: 'Kids' }),
+      ),
+    )
+  })
+
+  it('Resume stays a single click (no picker) for a paused profile', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await user.click(within(adultsCard).getByTestId('profile-row-pause-2'))
+    // no picker for resume
+    expect(within(adultsCard).queryByTestId('profile-row-pause-soft-2')).not.toBeInTheDocument()
+    expect(within(adultsCard).queryByTestId('profile-row-pause-hard-2')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({ paused: false, name: 'Adults' }),
+      ),
+    )
+  })
+
+  it('the standalone persistent Pause-mode radios are gone from the Time-limits subsection', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    expect(within(kidsCard).queryByTestId('profile-pause-mode-soft-1')).not.toBeInTheDocument()
+    expect(within(kidsCard).queryByTestId('profile-pause-mode-hard-1')).not.toBeInTheDocument()
   })
 })
 
@@ -1466,6 +1553,94 @@ describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#
     await user.click(await screen.findByTestId('app-row-60-clear'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+})
+
+// #1473 — blocked categories are now editable inline on the profile card.
+// The read-only chips are replaced (for admins) with a checklist of the
+// blocklist catalog; toggling a category autosaves blockedCategories via the
+// same full-profile PUT the Blocklists matrix uses.
+describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
+  it('renders the catalog with the profile’s current categories pre-selected', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    // Kids has ['adult', 'gambling'] selected; 'social' / 'malware' are off.
+    const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
+    expect(adult).toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-gambling')).toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-social')).not.toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-malware')).not.toBeChecked()
+    // Catalog comes from the shared /blocklists fetch.
+    expect(api.blocklists.list).toHaveBeenCalled()
+  })
+
+  it('toggling an unselected category ADDS it to blockedCategories via the full PUT', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const social = await within(kidsCard).findByTestId('profile-category-toggle-1-social')
+    await user.click(social)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect([...body.blockedCategories].sort()).toEqual(['adult', 'gambling', 'social'])
+    // other fields carried through unchanged
+    expect(body.name).toBe('Kids')
+    expect(body.timeLimit).toBe(120)
+    expect(body.failureMode).toBe('block-all')
+  })
+
+  it('toggling a selected category REMOVES it from blockedCategories', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
+    await user.click(adult)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect(body.blockedCategories).toEqual(['gambling'])
+  })
+
+  it('reflects the new selection after the profile refetches', async () => {
+    const listFn = api.profiles.list as unknown as ReturnType<typeof vi.fn>
+    listFn.mockResolvedValueOnce([kidsProfile, adultsProfile])
+    listFn.mockResolvedValue([
+      { ...kidsProfile, profile: { ...kidsProfile.profile, blockedCategories: ['adult', 'gambling', 'social'] } },
+      adultsProfile,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(await within(kidsCard).findByTestId('profile-category-toggle-1-social'))
+
+    await waitFor(() =>
+      expect(within(kidsCard).getByTestId('profile-category-toggle-1-social')).toBeChecked(),
+    )
+  })
+
+  it('non-admins see read-only chips, not the editable checklist', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(within(kidsCard).queryByTestId('profile-category-toggle-1-adult')).not.toBeInTheDocument()
+    // The pre-#1473 read-only chips remain the non-admin fallback.
+    expect(within(kidsCard).getByText('adult')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('gambling')).toBeInTheDocument()
   })
 })
 

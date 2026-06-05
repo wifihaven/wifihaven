@@ -42,7 +42,7 @@ def wait_mac_in_blocked_set(mac: str, *, present: bool, timeout_s: float = 180) 
 
 
 def mac_drop_rule_present(mac: str) -> bool:
-    """True iff the agent has rendered a per-MAC whole-MAC drop rule for `mac`.
+    """True iff the agent has rendered a **whole-MAC** drop rule for `mac`.
 
     The correct "this MAC is blocked right now" observable for a MAC whose
     effective rules have ``blocked = true`` — and the only correct one when the
@@ -53,17 +53,25 @@ def mac_drop_rule_present(mac: str) -> bool:
     deliberately ABSENT from ``blocked_macs`` while still fully blocked — asserting
     set membership there would never succeed (the #1360 G2 false-failure).
 
-    We look for a forward-chain drop rule scoped to this MAC. render.lua tags
-    every drop with ``comment "wh_drop:<mac>:<reason>"`` (#1122), so a match on
-    ``wh_drop:<mac>`` confirms the agent applied a blocked policy for it
-    regardless of whether the drop went via @blocked_macs or the per-MAC ea path.
+    We look for a forward-chain drop rule scoped to this MAC whose reason is a
+    ``MacBlockReason`` (Paused / Schedule / TimeLimit / Manual / generic
+    ``blocked``). render.lua tags every drop with ``comment "wh_drop:<mac>:<reason>"``
+    (#1122); destination-scoped reasons like ``host``, ``category:<id>``,
+    ``global_block`` (#1319/#1460), and ``ip_only`` ALSO use the
+    ``wh_drop:<mac>:`` prefix but they drop only a specific daddr subset, not
+    the whole MAC. Filter on the reason suffix so the check stays a true
+    whole-MAC observable.
     """
     res = router_ssh(
         "nft list table inet wifihaven 2>/dev/null || true",
         check=False, timeout=10,
     )
     out = (res.stdout or "").lower()
-    return f"wh_drop:{norm_mac(mac)}" in out
+    prefix = f"wh_drop:{norm_mac(mac)}:"
+    # MacBlockReason cases — see shared/.../BlockReason.scala. Lowercased to
+    # match the lowercased nft dump above.
+    whole_mac_reasons = ("paused", "schedule", "timelimit", "manual", "blocked")
+    return any((prefix + r) in out for r in whole_mac_reasons)
 
 
 def wait_mac_drop_rule_present(mac: str, *, timeout_s: float = 180) -> None:
@@ -168,6 +176,54 @@ def wait_bl_set_populated(bl_id: str, *, timeout_s: float = 90) -> list[str]:
         probe, timeout_s=timeout_s, interval_s=3,
         description=f"nft set {name} to gain at least one element",
     )
+
+
+# ── #1319 global policy sets (@global_allow / @global_block) ─────────────────
+#
+# Fleet-wide ipsets render.lua declares when the snapshot carries a populated
+# `global` section. Unlike the per-(MAC, host) `ea_<mac>_<host>` sets, these
+# are NOT keyed by MAC — one `global_allow` / `global_block` set applies to
+# every MAC. Populated at DNS resolve time by dnsmasq `nftset=` callbacks, same
+# as eb_/bl_. See render.lua GLOBAL_ALLOW4 / GLOBAL_BLOCK4.
+
+GLOBAL_ALLOW_SET = "global_allow"
+GLOBAL_BLOCK_SET = "global_block"
+
+
+def _wait_set_populated(name: str, *, timeout_s: float = 90) -> list[str]:
+    def probe():
+        elems = router_nft_set(name)
+        return elems if elems else None
+    return wait_until(
+        probe, timeout_s=timeout_s, interval_s=3,
+        description=f"nft set {name} to gain at least one element",
+    )
+
+
+def wait_global_allow_populated(*, timeout_s: float = 90) -> list[str]:
+    """Wait until the fleet-wide @global_allow v4 set has >=1 resolved IP."""
+    return _wait_set_populated(GLOBAL_ALLOW_SET, timeout_s=timeout_s)
+
+
+def wait_global_block_populated(*, timeout_s: float = 90) -> list[str]:
+    """Wait until the fleet-wide @global_block v4 set has >=1 resolved IP."""
+    return _wait_set_populated(GLOBAL_BLOCK_SET, timeout_s=timeout_s)
+
+
+def ea_set_exists_for_mac(mac: str) -> bool:
+    """True iff any per-(MAC, host) ea_<mac>_<host> allow-set has been rendered.
+
+    Used to prove the global allow carve-out is genuinely *global* (a single
+    @global_allow set), not silently degraded into per-MAC ea_ sets. render.lua
+    names ea_ sets `ea_<sanmac>_<sanhost>`; a `nft list table` scan for the
+    `ea_<sanmac>_` prefix tells us whether the MAC got a per-MAC allow path.
+    """
+    prefix = "ea_" + _san(mac) + "_"
+    res = router_ssh(
+        "nft list table inet wifihaven 2>/dev/null || true",
+        check=False, timeout=10,
+    )
+    return prefix.lower() in (res.stdout or "").lower()
 
 
 def wait_event_for_mac(fake_api, mac: str, *, allowed: bool, reason: str,
