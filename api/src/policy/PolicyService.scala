@@ -215,8 +215,15 @@ class PolicyServiceLive(
   /**
    * Per-host fallback decision. Reads DB rows directly rather than going through the snapshot,
    * since the snapshot's collapsed BlockRules no longer carries the raw schedule / site-limit /
-   * category state needed to make a per-host decision. Precedence: paused > schedule > allowed-app
+   * category state needed to make a per-host decision. Precedence: allowed-app > paused > schedule
    * > blocked-app > site_time_limit > time_limit > category > allow.
+   *
+   * #1413/#421: allowed-app (extraAllowed) is checked FIRST so it beats every whole-MAC block path
+   * — including Paused and Schedule — exactly as the snapshot/router `@blocked_macs` carve-out does
+   * (`ip daddr != @ea_<m>_<a>`). Keeping this endpoint's verdict consistent with what nftables
+   * actually enforces is the whole point of the invariant; otherwise an explicitly-allowed app
+   * would be reported (and, on agents that consult this endpoint, enforced) as blocked while
+   * paused.
    */
   def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
     for {
@@ -263,17 +270,21 @@ class PolicyServiceLive(
                 ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
               case Some(p) =>
                 val h = hostname.toLowerCase.stripSuffix(".")
-                if p.paused then
+                // #1413/#421: extraAllowed beats EVERY whole-MAC block — incl.
+                // Paused/Schedule — so check the allowed-app list first, before
+                // the pause/schedule short-circuits. This matches the snapshot/
+                // router `ip daddr != @ea_<m>_<a>` carve-out.
+                if matchesAny(h, appAllowed) then
+                  ZIO.succeed(
+                    RouterDecisionResponse(ConnectionDecision.Allow, "extra_allowed", None),
+                  )
+                else if p.paused then
                   ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, "paused", None))
                 else
                   scheduleBlock(scheds, now) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
-                      if matchesAny(h, appAllowed) then
-                        ZIO.succeed(
-                          RouterDecisionResponse(ConnectionDecision.Allow, "extra_allowed", None),
-                        )
-                      else if matchesAny(h, appBlocked) then
+                      if matchesAny(h, appBlocked) then
                         ZIO.succeed(
                           RouterDecisionResponse(ConnectionDecision.Block, "extra_blocked", None),
                         )
