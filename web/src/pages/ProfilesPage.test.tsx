@@ -86,6 +86,7 @@ const kidsProfile: ProfileDetail = {
     failureMode: 'block-all',
     crossDeviceOverlapMode: 'sum',
     pauseMode: 'soft',
+    defaultDeny: false,
   },
   schedules: [
     { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
@@ -102,6 +103,7 @@ const adultsProfile: ProfileDetail = {
     failureMode: 'last-known-good',
     crossDeviceOverlapMode: 'sum',
     pauseMode: 'soft',
+    defaultDeny: false,
   },
   schedules: [],
   timeLimit: null,
@@ -1393,5 +1395,31 @@ describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#
     await user.click(await screen.findByTestId('app-row-60-clear'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('ProfilesPage — per-profile default-deny toggle (#1320)', () => {
+  it('toggling default-deny persists via the full-profile PUT, preserving other fields', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    // off by default for the Kids fixture
+    const toggle = await screen.findByTestId('profile-default-deny-toggle-1')
+    expect(toggle).not.toBeChecked()
+
+    await user.click(toggle)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect(body.defaultDeny).toBe(true)
+    // other fields carried through the PUT unchanged
+    expect(body.name).toBe('Kids')
+    expect(body.blockedCategories).toEqual(['adult', 'gambling'])
+    expect(body.failureMode).toBe('block-all')
+    expect(body.timeLimit).toBe(120)
   })
 })

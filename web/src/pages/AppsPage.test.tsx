@@ -34,6 +34,7 @@ function makeProfile(id: number, name: string): ProfileDetail {
       failureMode: 'last-known-good',
       crossDeviceOverlapMode: 'sum',
       pauseMode: 'soft',
+      defaultDeny: false,
     },
     schedules: [],
     timeLimit: null,

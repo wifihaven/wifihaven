@@ -585,6 +585,12 @@ case class UpsertProfileRequest(
     crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
     // #1418: omitted → preserve existing value (default 'soft' on create).
     pauseMode: Option[PauseMode] = None,
+    // #1320 / #1308: per-profile default-deny baseline (block-all; only
+    // extraAllowed + global.extraAllowed reachable). Omitted → preserve
+    // existing value (default false on create). Additive optional field, so an
+    // older client that never sends it leaves the profile's default-deny
+    // setting untouched.
+    defaultDeny: Option[Boolean] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(
@@ -1388,6 +1394,55 @@ case class DevicePolicy(
     profileId: Option[ProfileId],
     name: String,
     rules: Option[BlockRules],
+) derives JsonCodec
+
+// ── Global policy management (#1320 / #1308) ──────────────────────────────
+// Admin-facing read/write surface for the household-global allow/block sets
+// that PolicyService (#1318) collapses into `PolicySnapshot.global`. The wire
+// snapshot carries only the flat hostname / category lists the router needs;
+// the *why* and *who* — the security-sensitive audit trail for the
+// always-reachable bypass list (design §7) — live in the DB and are surfaced
+// ONLY through these management types, never to the router.
+
+// One row of the `global_allow` / `global_blocks` audit history. `removedAt ==
+// None` ⇒ the entry is active and feeds `PolicySnapshot.global`; `Some` ⇒ it
+// was soft-deleted and is retained for audit only. `addedBy`/`removedBy` are
+// resolved to usernames server-side (the DB stores user ids).
+case class GlobalPolicyAuditEntry(
+    host: Hostname,
+    reason: Option[String],
+    addedBy: Option[String],
+    addedAt: String,
+    removedBy: Option[String],
+    removedAt: Option[String],
+) derives JsonCodec
+
+// Full management view of the global section. `allow`/`blocks` include
+// soft-deleted history so the audit trail is visible; the active set feeding
+// `PolicySnapshot.global` is exactly the rows with `removedAt == None`.
+case class GlobalPolicyView(
+    allow: List[GlobalPolicyAuditEntry],
+    blocks: List[GlobalPolicyAuditEntry],
+    blocklistIds: List[BlocklistId],
+    blocked: Boolean,
+    blockReason: Option[MacBlockReason],
+    blockIpOnly: Boolean,
+) derives JsonCodec
+
+// Append a host to the global allow or block set, with an optional audit
+// `reason`. Re-adding a previously-removed host is fine (the soft-deleted row
+// keeps its `removedAt`; a fresh active row is inserted).
+case class AddGlobalHostRequest(host: Hostname, reason: Option[String] = None) derives JsonCodec
+
+// Replace the household-global category set (`global.blocklistIds`) wholesale.
+case class SetGlobalBlocklistsRequest(blocklistIds: List[BlocklistId]) derives JsonCodec
+
+// Set the flat global flags: the network-lockdown kill switch (`blocked` +
+// block-page `blockReason`) and the network-wide strict-IP floor.
+case class SetGlobalFlagsRequest(
+    blocked: Boolean,
+    blockReason: Option[MacBlockReason] = None,
+    blockIpOnly: Boolean,
 ) derives JsonCodec
 
 case class ProfilePolicy(

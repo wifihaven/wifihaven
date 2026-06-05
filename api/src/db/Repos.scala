@@ -364,6 +364,20 @@ trait GlobalPolicyRepo {
 
   /** Set the flat global flags (network lockdown + strict-IP floor). */
   def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit]
+
+  /**
+   * Full audit history (active + soft-deleted) of the always-reachable allow set, newest first.
+   * Unlike [[get]], this surfaces the `reason` / `added_by` / `removed_by` columns (resolved to
+   * usernames) so the #1320 SPA can render the security-sensitive bypass-list audit trail. The
+   * active set (rows with `removedAt == None`) is exactly what [[get]] puts on the wire.
+   */
+  def allowAudit: Task[List[GlobalPolicyAuditEntry]]
+
+  /** Full audit history (active + soft-deleted) of the network-wide block set, newest first. */
+  def blockAudit: Task[List[GlobalPolicyAuditEntry]]
+
+  /** Replace the household-global category set (`global.blocklistIds`) wholesale. */
+  def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit]
 }
 
 /**
@@ -382,6 +396,9 @@ object NoopGlobalPolicyRepo extends GlobalPolicyRepo {
   def addBlocklist(id: BlocklistId, addedBy: Option[Long]): Task[Unit]                    = ZIO.unit
   def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit] =
     ZIO.unit
+  def allowAudit: Task[List[GlobalPolicyAuditEntry]]                           = ZIO.succeed(Nil)
+  def blockAudit: Task[List[GlobalPolicyAuditEntry]]                           = ZIO.succeed(Nil)
+  def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit] = ZIO.unit
 }
 
 trait TimeUsageRepo {
@@ -1006,6 +1023,40 @@ class GlobalPolicyRepoLive(xa: Transactor[Task]) extends GlobalPolicyRepo {
                 global_block_reason=${reason.map(MacBlockReason.asString)},
                 global_block_ip_only=$blockIpOnly
           WHERE id=1""".update.run.transact(xa).unit
+
+  private def audit(table: doobie.Fragment): Task[List[GlobalPolicyAuditEntry]] =
+    (fr"""SELECT g.host, g.reason, ua.username, g.added_at::TEXT, ur.username, g.removed_at::TEXT
+          FROM""" ++ table ++ fr"""g
+          LEFT JOIN users ua ON ua.id = g.added_by
+          LEFT JOIN users ur ON ur.id = g.removed_by
+          ORDER BY g.added_at DESC, g.id DESC""")
+      .query[(String, Option[String], Option[String], String, Option[String], Option[String])]
+      .to[List]
+      .map(_.map { case (host, reason, addedBy, addedAt, removedBy, removedAt) =>
+        GlobalPolicyAuditEntry(
+          Hostname.unsafe(host),
+          reason,
+          addedBy,
+          addedAt,
+          removedBy,
+          removedAt,
+        )
+      })
+      .transact(xa)
+
+  def allowAudit: Task[List[GlobalPolicyAuditEntry]] =
+    DbMetrics.timed("globalPolicy.allowAudit")(audit(fr"global_allow"))
+
+  def blockAudit: Task[List[GlobalPolicyAuditEntry]] =
+    DbMetrics.timed("globalPolicy.blockAudit")(audit(fr"global_blocks"))
+
+  def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit] = {
+    val del = sql"DELETE FROM global_blocklists".update.run
+    val ins = ids.map(id => sql"""INSERT INTO global_blocklists (blocklist_id, added_by)
+                                  VALUES (${id.value}, $addedBy)
+                                  ON CONFLICT (blocklist_id) DO NOTHING""".update.run)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa).unit
+  }
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {

@@ -2,6 +2,7 @@ import { apiHealth } from '@/api/apiHealth'
 import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
+  GlobalPolicyView, AddGlobalHostRequest, SetGlobalBlocklistsRequest, SetGlobalFlagsRequest,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest, PatchAppRequest,
@@ -175,6 +176,26 @@ export const api = {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
     patch: (data: Record<string, unknown>) =>
       req<void>('PATCH', '/household/settings', data),
+  },
+
+  // ── Global policy (#1320 / #1308) ──────────────────────────────────────
+  // Admin-only writes; GET is the management + audit view. `global.extraAllowed`
+  // is a security-sensitive bypass surface, so every mutation is auditable
+  // server-side (reason + acting user). Hosts are sent raw in the DELETE path —
+  // zio-http does not decode percent-encoded chars in path segments, and a
+  // hostname's dots/labels are valid path chars.
+  global: {
+    get: () => req<GlobalPolicyView>('GET', '/global/policy'),
+    addAllow: (data: AddGlobalHostRequest) =>
+      req<void>('POST', '/global/allow', data),
+    removeAllow: (host: string) => req<void>('DELETE', `/global/allow/${host}`),
+    addBlock: (data: AddGlobalHostRequest) =>
+      req<void>('POST', '/global/blocks', data),
+    removeBlock: (host: string) => req<void>('DELETE', `/global/blocks/${host}`),
+    setBlocklists: (blocklistIds: string[]) =>
+      req<void>('PUT', '/global/blocklists', { blocklistIds } as SetGlobalBlocklistsRequest),
+    setFlags: (data: SetGlobalFlagsRequest) =>
+      req<void>('PUT', '/global/flags', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────

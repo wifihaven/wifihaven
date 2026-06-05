@@ -29,6 +29,7 @@ interface FormState {
   schedules: ScheduleRequest[]
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
+  defaultDeny: boolean
 }
 
 function detailToForm(pd: ProfileDetail): FormState {
@@ -42,6 +43,7 @@ function detailToForm(pd: ProfileDetail): FormState {
     })),
     failureMode: pd.profile.failureMode,
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+    defaultDeny: pd.profile.defaultDeny,
   }
 }
 
@@ -55,6 +57,7 @@ function formToRequest(f: FormState): UpsertProfileRequest {
     schedules: f.schedules,
     failureMode: f.failureMode,
     crossDeviceOverlapMode: f.crossDeviceOverlapMode,
+    defaultDeny: f.defaultDeny,
   }
 }
 
@@ -789,6 +792,17 @@ function ProfileShellRow({
             />
           )}
 
+          {/* #1320 — per-profile default-deny baseline. Block-all; only the
+              profile's allowed apps/hosts + the household global allowlist are
+              reachable. The inverse of allow-by-default + blocklists. */}
+          {isAdmin && (
+            <DefaultDenySubsection
+              pd={pd}
+              updateProfile={updateProfile}
+              onProfileChanged={onProfileChanged}
+            />
+          )}
+
           {/* #975 — inline time-limit + cross-device overlap subsection.
               Replaces the modal's daily-cap + schedules + overlap blocks for
               this profile. */}
@@ -914,6 +928,70 @@ function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
     for (let j = 0; j < x.days.length; j++) if (x.days[j] !== y.days[j]) return false
   }
   return true
+}
+
+// #1320 — per-profile default-deny toggle. Flips the whole profile to a
+// block-all baseline (only its allowed apps/hosts + the household global
+// allowlist stay reachable). Persists via the existing full-profile PUT —
+// formToRequest carries defaultDeny — so it composes with every other field.
+function DefaultDenySubsection({
+  pd, updateProfile, onProfileChanged,
+}: {
+  pd: ProfileDetail
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onProfileChanged: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const on = pd.profile.defaultDeny
+
+  async function toggle() {
+    if (saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      const body = formToRequest(detailToForm(pd))
+      body.defaultDeny = !on
+      await updateProfile(body)
+      onProfileChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div data-testid={`profile-default-deny-${pd.profile.id}`}>
+      <div className="flex items-start justify-between gap-4 bg-brand-alt/40 rounded-xl px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-brand-ink">Default-deny</p>
+          <p className="text-xs text-brand-text-muted mt-0.5">
+            {on
+              ? 'Everything is blocked except this profile’s allowed apps/hosts and the household global allowlist.'
+              : 'Allow by default; only blocked categories and blocked hosts are dropped. Turn on to block everything not explicitly allowed.'}
+          </p>
+        </div>
+        <label className="inline-flex items-center cursor-pointer shrink-0">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={saving}
+            onChange={toggle}
+            data-testid={`profile-default-deny-toggle-${pd.profile.id}`}
+            aria-label="Default-deny"
+            className="sr-only peer"
+          />
+          <span className="w-11 h-6 bg-brand-border rounded-full peer-checked:bg-red-600 relative transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5" />
+        </label>
+      </div>
+      {error && (
+        <p className="text-xs text-red-700 mt-1" data-testid={`profile-default-deny-error-${pd.profile.id}`}>
+          {error}
+        </p>
+      )}
+    </div>
+  )
 }
 
 function TimeSubsection({
