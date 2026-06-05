@@ -380,10 +380,12 @@ fix and is blocked on the agent freeze.
 Add to `household_settings` (a **small** table — no growth-table migration risk):
 
 - `presence_continuation_seconds` — default **120**; validated `≥ 2 × R`.
-- `presence_model` — `session` (recommended default) | `legacy` (the current
-  `max(activeSeconds)` path, kept for one deprecation window).
 
-`time_used_daily` must be invalidated (`DELETE`) on any change to these, exactly
+The session model is **global and unconditional** — there is no per-household
+toggle back to the legacy `max(activeSeconds)` path, so there is no
+`presence_model` column. The session computation simply replaces the old one.
+
+`time_used_daily` must be invalidated (`DELETE`) on any change to this, exactly
 as it already is for the heartbeat settings, so the next rollup refills with the
 new semantics.
 
@@ -394,9 +396,12 @@ new semantics.
 > (cf. #790)**. Note the **migration-isolation two-PR rule**: any schema change
 > lands in its own migration-only PR before the code that adopts it.
 
-1. **DB: `household_settings` presence-tuning columns (schema-only PR).** Add
-   `presence_continuation_seconds` (default 120) and `presence_model` (default
-   `session`). Migration + docs only. Small table → no prod-volume concern.
+1. **DB: `household_settings` presence-tuning column (schema-only PR).** Add
+   `presence_continuation_seconds` (default 120). Migration + docs only. Small
+   table → no prod-volume concern. The session model is global and
+   unconditional, so there is **no** `presence_model` toggle column.
+   **Shipped — #1463, migration `V52__presence_tuning_settings.sql`.** The
+   column is inert until the adopting code lands (#1464 / #1465).
 
 2. **API rollup: session-stitch primitive + interval-union daily cap.** Replace
    `bucketSeconds = max(activeSeconds)` and the `period_start`-grid dedup in
@@ -405,10 +410,11 @@ new semantics.
    devices by the profile's existing `crossDeviceOverlapMode` (`Sum` = add
    per-device totals → `totalSecondsByMac`+sum today; `Dedup` = union across
    devices → `dedupedTotalSeconds` today — preserve both). Read window bounds
-   from `period_start`/`period_end`; **enforce `N ≥ 2 × R`**. Keep the
-   `legacy` path behind `presence_model`. **Wire the new knobs into the
+   from `period_start`/`period_end`; **enforce `N ≥ 2 × R`**. The session model
+   replaces the legacy path outright — there is no `presence_model` toggle.
+   **Wire the new knob into the
    `time_used_daily` invalidation hook** — changing `presence_continuation_seconds`
-   or `presence_model` must `DELETE` the affected cached rollups exactly as a
+   must `DELETE` the affected cached rollups exactly as a
    heartbeat-setting change already does (the cache is keyed on the old
    semantics; without this, stale minutes survive a knob change until the row
    ages out). Tests pin: (a) a continuous sparse session reads its full span,
@@ -439,8 +445,8 @@ new semantics.
    each `N`, and the re-bucketing invariance check) over a week of prod data, as
    the go/no-go gate on the defaults.
 
-6. **e2e default-pinning gate (extends #930).** Pin `presence_model = session`
-   and `presence_continuation_seconds = 120` end-to-end so a future PR — or a
+6. **e2e default-pinning gate (extends #930).** Pin
+   `presence_continuation_seconds = 120` end-to-end so a future PR — or a
    change to `usage_report_interval` — can't shift the visible numbers silently.
 
 7. **(Complementary, not blocking) router-side foreground-host heuristic
