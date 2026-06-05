@@ -199,9 +199,28 @@ object TestLayers {
     Clock.TestClock.make(dt)
 
   /** Seed helpers */
-  def seedKidsProfile(profileRepo: ProfileRepo, scheduleRepo: ScheduleRepo): Task[ProfileId] =
+
+  // The legacy 21:00–07:00 daily "Bedtime" window this fixture has always attached to Kids.
+  private val kidsBedtimeWindow =
+    wifihaven.shared.ScheduleWindow(
+      List("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
+      java.time.LocalTime.of(21, 0),
+      java.time.LocalTime.of(7, 0),
+      java.time.ZoneId.of("UTC"),
+    )
+
+  // #1482: enforcement now reads schedule downtime exclusively from the named-schedule model
+  // (`named_schedules` / `profile_schedule_rules`), so the Kids fixture attaches its Bedtime window
+  // there. The legacy `schedules` row is still written (it backs the legacy profile-CRUD/display
+  // surface until that table is dropped), mirroring the post-boot-migration production shape where
+  // both representations coexist. Requires a `NamedScheduleRepo` in the environment — every test
+  // runs under `TestDatabase.layer`, which provides it, so call sites are unchanged.
+  def seedKidsProfile(
+      profileRepo: ProfileRepo,
+      scheduleRepo: ScheduleRepo,
+  ): ZIO[NamedScheduleRepo, Throwable, ProfileId] =
     for {
-      id <- profileRepo.create(
+      id  <- profileRepo.create(
         "Kids",
         List(
           BlocklistId.unsafe("adult"),
@@ -209,18 +228,23 @@ object TestLayers {
           BlocklistId.unsafe("social_media"),
         ),
       )
-      _  <- scheduleRepo.replaceForProfile(
+      _   <- scheduleRepo.replaceForProfile(
         id,
         List(
           wifihaven.shared.ScheduleRequest(
             "Bedtime",
-            List("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
-            java.time.LocalTime.of(21, 0),
-            java.time.LocalTime.of(7, 0),
-            java.time.ZoneId.of("UTC"),
+            kidsBedtimeWindow.days,
+            kidsBedtimeWindow.startLocal,
+            kidsBedtimeWindow.endLocal,
+            kidsBedtimeWindow.tz,
           ),
         ),
       )
+      nsr <- ZIO.service[NamedScheduleRepo]
+      // Name is suffixed with the profile id so repeated seeds in one test don't collide on the
+      // UNIQUE(name) constraint.
+      sid <- nsr.create(s"Bedtime#${id.value}", Some("Kids bedtime"), List(kidsBedtimeWindow))
+      _   <- nsr.setProfileBlockSchedules(id, List(sid))
     } yield id
 
   def seedAdultsProfile(profileRepo: ProfileRepo): Task[ProfileId] =

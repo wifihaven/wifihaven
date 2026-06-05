@@ -362,6 +362,7 @@ object Main extends ZIOAppDefault {
             profileRepo,
             appRepo,
             rollupRepo2,
+            hsRepo,
             clock,
           ) ++
           DashboardNowRoutes.routes(

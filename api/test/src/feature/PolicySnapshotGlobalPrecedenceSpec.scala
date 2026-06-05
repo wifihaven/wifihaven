@@ -10,7 +10,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.test.*
 
-import java.time.{LocalDate, LocalDateTime, ZoneOffset}
+import java.time.{LocalDate, LocalDateTime, LocalTime, ZoneId, ZoneOffset}
 
 /**
  * #1322 (test coverage for the #1308 global-policy layer + per-profile default-deny): pins the
@@ -54,6 +54,7 @@ object PolicySnapshotGlobalPrecedenceSpec
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
       gpr    <- ZIO.service[GlobalPolicyRepo]
+      nsr    <- ZIO.service[NamedScheduleRepo]
       ref    <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
@@ -70,6 +71,7 @@ object PolicySnapshotGlobalPrecedenceSpec
       clk,
       Nil,
       gpr,
+      nsr,
     ): PolicyService
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
@@ -120,9 +122,9 @@ object PolicySnapshotGlobalPrecedenceSpec
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
         ps0 <- pr.listAll
         kids = ps0.find(_.name == "Kids").get
+        _    <- attachKidsBedtime(kids.id)
         _    <- pr.update(kids.copy(defaultDeny = true))
         svc  <- makePsAt(TestClock.bedtime)
         snap <- svc.snapshot
@@ -167,6 +169,7 @@ object PolicySnapshotGlobalPrecedenceSpec
         ar  <- ZIO.service[AppRepo]
         ps0 <- pr.listAll
         kids = ps0.find(_.name == "Kids").get
+        _    <- attachKidsBedtime(kids.id)
         _    <- TestLayers.seedAppAssignment(ar, kids.id, "pbskids.org", AppMode.Allowed)
         _    <- pr.update(kids.copy(defaultDeny = true))
         svc  <- makePsAt(TestClock.bedtime) // inside the bedtime schedule window
@@ -193,8 +196,8 @@ object PolicySnapshotGlobalPrecedenceSpec
       )
     },
     test("global.extraAllowed is present regardless of why a MAC is blocked (schedule)") {
-      assertGlobalAllowIndependentOfBlock { (_, _) =>
-        ZIO.unit // the seeded Kids profile already has a bedtime schedule
+      assertGlobalAllowIndependentOfBlock { (_, kids) =>
+        attachKidsBedtime(kids.id) // attach the bedtime window as a block-mode named schedule
       }(TestClock.bedtime, MacBlockReason.Schedule)
     },
     test("global.extraAllowed is present regardless of why a MAC is blocked (default-deny)") {
@@ -258,8 +261,29 @@ object PolicySnapshotGlobalPrecedenceSpec
    * global allow host is present in `snap.global.extraAllowed` (i.e. the global section did not
    * change because of the per-MAC block).
    */
+  // #1482: enforcement reads schedule downtime only from the named-schedule model, so the V1-seeded
+  // Kids profile's bedtime must be attached as a block-mode named schedule (the legacy `schedules`
+  // row V1 seeds is no longer an enforcement source). Mirrors the 21:00–07:00 window V1 seeds.
+  private def attachKidsBedtime(kid: ProfileId): ZIO[NamedScheduleRepo, Throwable, Unit] =
+    ZIO.serviceWithZIO[NamedScheduleRepo] { nsr =>
+      nsr
+        .create(
+          "Bedtime",
+          Some("overnight"),
+          List(
+            ScheduleWindow(
+              List("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
+              LocalTime.of(21, 0),
+              LocalTime.of(7, 0),
+              ZoneId.of("UTC"),
+            ),
+          ),
+        )
+        .flatMap(sid => nsr.setProfileBlockSchedules(kid, List(sid)))
+    }
+
   private def assertGlobalAllowIndependentOfBlock(
-      block: (ProfileRepo, Profile) => Task[Unit],
+      block: (ProfileRepo, Profile) => ZIO[NamedScheduleRepo, Throwable, Unit],
   )(at: LocalDateTime, expectedReason: MacBlockReason) =
     for {
       _   <- cleanDb

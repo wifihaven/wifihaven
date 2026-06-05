@@ -1005,12 +1005,14 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(yt.remainingMins == 0) &&   // clamped to 0
           assertTrue(kids.usedMins == 0)         // site usage NOT counted in total
       },
-      test("hostUsage exposes byte-share proportionalMins alongside bucket-presence (#715)") {
+      test("hostUsage: heartbeat filter strips keepalive pollers from per-host surfaces (#1465)") {
         // Reproduce the prod shape from #715: device sat at ~60 used minutes
         // but a per-FQDN bucket-presence breakdown lists 10 polling hosts at
-        // 50–80m each because each was touched in every 5-min bucket. With the
-        // byte-share weight, ~all of the attributed minutes go to the host
-        // that actually moved bytes — the screen-time UI shows that number.
+        // 50–80m each because each was touched in every 5-min bucket. The
+        // per-host/per-site surfaces now apply the same heartbeat filter the
+        // daily total uses (#1465), so the sub-threshold pollers drop out
+        // entirely and `proportionalMins` becomes the host's session span (the
+        // default household settings enable the filter at 10 240 bytes).
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -1099,15 +1101,17 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           ytRow    = kids.hostUsage.find(_.host.value == heavy).get
           pollRows = kids.hostUsage.filter(_.host.value.startsWith("poll-"))
         } yield
-        // Daily cap math unchanged: 12 bucket-deduped × 5 min = 60 mins.
+        // Daily cap math unchanged: 12 bucket-deduped × 5 min = 60 mins (the
+        // mixed bucket still counts because youtube moves real bytes).
         assertTrue(kids.usedMins == 60) &&
-          // Bucket-presence still shows every host at the full 60 minutes.
+          // Bucket-presence shows youtube at the full 60 minutes...
           assertTrue(ytRow.usedMins == 60) &&
-          // Proportional: youtube dominates, pollers are ~0.
-          assertTrue(ytRow.proportionalMins == 59) &&
-          assertTrue(pollRows.forall(_.usedMins == 60)) &&
-          assertTrue(pollRows.forall(_.proportionalMins == 0)) &&
-          // Top of the list sorts by proportional, so youtube is first.
+          // ...and `proportionalMins` is now its session span: 12 contiguous
+          // 5-min windows stitch into one 60-min session.
+          assertTrue(ytRow.proportionalMins == 60) &&
+          // The sub-threshold pollers are filtered out of the per-host surface
+          // entirely — that is the #1465 fix (formerly they showed at 60 mins).
+          assertTrue(pollRows.isEmpty) &&
           assertTrue(kids.hostUsage.head.host.value == heavy)
       },
       test("hostUsage breakdown sums across all profile devices, sorted desc (#262)") {

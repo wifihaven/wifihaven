@@ -25,6 +25,7 @@ object UsageRoutes {
       profileRepo: ProfileRepo,
       appRepo: AppRepo,
       rollupRepo: RollupRepo,
+      hsRepo: HouseholdSettingsRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
@@ -109,16 +110,17 @@ object UsageRoutes {
             today  <- clock.today
             fromS = req.url.queryParam("from").getOrElse(today.toString)
             toS   = req.url.queryParam("to").getOrElse(fromS)
-            from <- ZIO
+            from     <- ZIO
               .attempt(LocalDate.parse(fromS))
               .orElseFail(Response.badRequest(s"invalid from: $fromS"))
-            to   <- ZIO
+            to       <- ZIO
               .attempt(LocalDate.parse(toS))
               .orElseFail(Response.badRequest(s"invalid to: $toS"))
-            _    <- ZIO
+            _        <- ZIO
               .fail(Response.badRequest("from must be <= to"))
               .when(from.isAfter(to))
-            resp <- buildUsageByApp(
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            resp     <- buildUsageByApp(
               pid,
               from,
               to,
@@ -126,6 +128,8 @@ object UsageRoutes {
               deviceRepo,
               trafficRepo,
               appRepo,
+              settings.heartbeatFilter,
+              settings.presenceContinuationSeconds,
             )
           } yield Response.json(resp.toJson)
         },
@@ -324,6 +328,8 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       appRepo: AppRepo,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
   ): IO[Response, ProfileUsageByApp] =
     for {
       profile <- profileRepo
@@ -357,23 +363,31 @@ object UsageRoutes {
         h => h.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))
       }
 
-      val propByHost    = wifihaven.api.presence.Presence.proportionalHostSeconds(presence)
-      val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence)
+      val overlap       = profile.crossDeviceOverlapMode
+      // #1465: per-host presence is now the session-stitch span (heartbeat-filtered),
+      // combined across the profile's devices by its `crossDeviceOverlapMode`.
+      val propByHost    =
+        wifihaven.api.presence.Presence
+          .proportionalHostSeconds(presence, overlap, filter, continuationSeconds)
+      val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence, filter)
       val propMinByHost =
-        wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, overlap, filter, continuationSeconds)
 
       val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
       val hostsByApp =
         scala.collection.mutable.Map.empty[Option[AppId], List[HostUsage]]
-      for ((h, secs)   <- propByHost) {
+      for ((h, secs) <- propByHost) {
         val key = appOfHost(h)
-        appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs.round))
+        appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs))
         val hu  = HostUsage(h, seenByHost.getOrElse(h, 0), propMinByHost.getOrElse(h, 0))
         hostsByApp.updateWith(key)(prev => Some(hu :: prev.getOrElse(Nil)))
       }
-      // Per-app bucket-dedup for presence-seconds.
+      // Per-app bucket-dedup for presence-seconds (heartbeat rows stripped, #1465).
       val appPresence = scala.collection.mutable.Map.empty[Option[AppId], Long]
-      for ((_, bucket) <- presence.groupBy(r => (r.mac, r.periodStart))) {
+      val activeRows =
+        presence.filterNot(r => wifihaven.api.presence.Presence.isHeartbeat(r, filter))
+      for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
         val secs = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
         val keys = bucket.iterator.map(r => appOfHost(r.host)).toSet
         for (a <- keys)
