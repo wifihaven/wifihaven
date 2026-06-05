@@ -2132,6 +2132,83 @@ describe("render.dnsmasq global section (#1319)", function()
     assert.truthy(conf:find("4#inet#wifihaven#global_block", 1, true))
     assert.truthy(conf:find("6#inet#wifihaven#global_block6", 1, true))
   end)
+
+  -- ── #1489 regression: over-long merged nftset line crashes dnsmasq ───────
+  --
+  -- dnsmasq honours only ONE nftset directive per host (domain_find_sets
+  -- returns a single longest-suffix match), so render.dnsmasq merges every set
+  -- for a host into one comma-joined directive (#1460). dnsmasq also reads
+  -- config lines into a fixed MAXDNAME(1025)-byte buffer with NO line
+  -- continuation: a directive longer than 1024 bytes is truncated and its
+  -- remainder is parsed as a bogus option, so dnsmasq refuses to start and
+  -- :53 returns "connection refused" — exactly the Gate 3a staging-smoke
+  -- failure in #1489 (regression from #1483's merge).
+  --
+  -- The per-(MAC,host) ea_ populator is the ONLY per-host spec that scales
+  -- with device count. The #1307 infra-allow copy puts the same host into
+  -- every profile's extraAllowed, so one ea_ spec per device lands on a
+  -- single merged line. When that host is also in global.extraAllowed those
+  -- ea_ specs are pure redundancy — @global_allow already carves the host out
+  -- of every drop for every MAC (render.nft ga_suffix) — so render.dnsmasq
+  -- must not emit them.
+  it("omits redundant per-(MAC,host) ea_ populators for a global.extraAllowed host (#1489)", function()
+    local s = snap_global()
+    s.profiles["3"].rules.extraAllowed = { "infra.wifihaven.net" }
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.global.extraAllowed = { "infra.wifihaven.net" }
+    local conf = render.dnsmasq(s)
+    -- Enforcement is preserved: the host still drives the fleet-wide allow set.
+    assert.truthy(conf:find(
+      "nftset=/infra.wifihaven.net/4#inet#wifihaven#global_allow,6#inet#wifihaven#global_allow6",
+      1, true))
+    -- ...but the redundant per-(MAC,host) ea_ spec is gone.
+    assert.is_nil(conf:find("ea_aa_bb_cc_11_22_33_infra_wifihaven_net", 1, true))
+    assert.is_nil(conf:find("ea6_aa_bb_cc_11_22_33_infra_wifihaven_net", 1, true))
+  end)
+
+  it("still emits per-(MAC,host) ea_ populators for a host NOT in global.extraAllowed", function()
+    -- A normal per-device allow (not in the global layer) keeps its ea_ set —
+    -- only the redundant global-allow copies are skipped.
+    local s = snap_global()
+    s.profiles["3"].rules.extraAllowed = { "khanacademy.org" }
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.global.extraAllowed = { "infra.wifihaven.net" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_khanacademy_org,6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_khanacademy_org",
+      1, true))
+  end)
+
+  it("keeps every merged nftset directive within dnsmasq's 1024-byte line limit (#1489)", function()
+    -- Many devices each carry the same global-allowed infra host in their
+    -- effective extraAllowed (the #1307 per-profile copy). Pre-#1489 this
+    -- produced one ea_ spec per device on a single merged line, overflowing
+    -- dnsmasq's config-line buffer and stopping it from starting.
+    local s = snap_global()
+    s.devices = {}
+    s.profiles = {}
+    for i = 1, 24 do
+      local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
+      s.devices[mac] = { profileId = i }
+      s.profiles[tostring(i)] = {
+        name = "p" .. i,
+        failureMode = "last-known-good",
+        rules = {
+          blocked = false, extraBlocked = {}, blocklistIds = {},
+          extraAllowed = { "infra.wifihaven.net" },
+        },
+      }
+    end
+    s.global.extraAllowed = { "infra.wifihaven.net" }
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "nftset line exceeds dnsmasq's 1024-byte config-line limit (%d bytes): %s…",
+        #line, line:sub(1, 72)))
+    end
+  end)
 end)
 
 describe("render.nft global composition (#1319)", function()
