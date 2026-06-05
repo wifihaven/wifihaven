@@ -522,25 +522,30 @@ describe('ProfilesPage — create (inline name-only, #978)', () => {
 // gone — per-host policy lives in apps, exercised by the apps subsection.
 
 describe('ProfilesPage — inline time-limit subsection (#975)', () => {
-  it('collapsed-by-default subsection shows daily-limit + schedule summary', async () => {
+  it('collapsed-by-default subsection shows daily-limit + overlap, no schedules (#1474)', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
 
     const sub = within(kidsCard).getByTestId('profile-time-subsection-1')
-    // Collapsed: editor body is hidden, but the summary readout matches what the
-    // expanded card used to show pre-#975 ("Daily limit: 120 min" + "Bedtime …").
+    // Collapsed: editor body is hidden. The summary readout shows the daily cap
+    // and the cross-device overlap mode — schedules moved to their own expander
+    // (#1474), so no "Bedtime …" line here.
     expect(within(sub).getByText(/Daily limit:/)).toBeInTheDocument()
     expect(within(sub).getByText('120 min')).toBeInTheDocument()
-    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
-    expect(within(sub).getByText(/21:00 → 07:00/)).toBeInTheDocument()
+    expect(within(sub).getByText(/Cross-device overlap:/)).toBeInTheDocument()
+    expect(within(sub).queryByText('Bedtime')).not.toBeInTheDocument()
+    expect(within(sub).queryByText(/21:00 → 07:00/)).not.toBeInTheDocument()
     // Editable inputs only appear after expand.
     expect(within(sub).queryByTestId('profile-time-limit-1')).not.toBeInTheDocument()
 
     await user.click(within(sub).getByTestId('profile-time-toggle-1'))
     expect(within(sub).getByTestId('profile-time-limit-1')).toHaveValue(120)
     expect(within(sub).getByTestId('profile-time-overlap-sum-1')).toBeChecked()
+    // The schedule editor is no longer inside the time subsection (#1474).
+    expect(within(sub).queryByTestId('profile-schedule-add-1')).not.toBeInTheDocument()
+    expect(within(sub).queryByTestId('profile-schedule-row-1-0')).not.toBeInTheDocument()
   })
 
   // Real timers + waitFor throughout (no fake-timer juggling). These debounced
@@ -633,7 +638,73 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
     const input = within(kidsCard).getByTestId('profile-time-limit-1')
     expect(input).toBeDisabled()
     expect(within(kidsCard).getByTestId('profile-time-overlap-sum-1')).toBeDisabled()
-    expect(within(kidsCard).queryByTestId('profile-time-add-schedule-1')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — inline schedules subsection (#1474)', () => {
+  it('collapsed-by-default subsection summarizes configured windows', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
+    // Collapsed: editor hidden, summary lists the configured window(s) — the
+    // schedule lines that used to live under "Time limits" (#1474).
+    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
+    expect(within(sub).getByText(/21:00 → 07:00/)).toBeInTheDocument()
+    expect(within(sub).queryByTestId('profile-schedule-row-1-0')).not.toBeInTheDocument()
+
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
+    expect(within(sub).getByTestId('profile-schedule-row-1-0')).toBeInTheDocument()
+    expect(within(sub).getByTestId('profile-schedule-start-1-0')).toHaveValue('21:00')
+    expect(within(sub).getByTestId('profile-schedule-end-1-0')).toHaveValue('07:00')
+  })
+
+  it('empty schedules summary reads "No schedules"', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await expand(2, user)
+    const sub = within(adultsCard).getByTestId('profile-schedule-subsection-2')
+    expect(within(sub).getByText(/No schedules/i)).toBeInTheDocument()
+  })
+
+  it('adding a schedule autosaves via a single PUT carrying schedules', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await expand(2, user)
+    const sub = within(adultsCard).getByTestId('profile-schedule-subsection-2')
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-2'))
+    await act(async () => {})
+
+    await user.click(within(sub).getByTestId('profile-schedule-add-2'))
+
+    // Poll for the debounced PUT — schedules ride the full-profile PUT.
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenLastCalledWith(
+        2,
+        expect.objectContaining({
+          schedules: expect.arrayContaining([
+            expect.objectContaining({ name: 'Bedtime', startLocal: '21:00', endLocal: '07:00' }),
+          ]),
+        }),
+      ),
+    )
+  })
+
+  it('non-admins see read-only schedules — no add button', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
+    expect(within(sub).queryByTestId('profile-schedule-add-1')).not.toBeInTheDocument()
+    // The schedule name input is rendered read-only (disabled).
+    expect(within(sub).getByTestId('profile-schedule-start-1-0')).toBeDisabled()
   })
 })
 
