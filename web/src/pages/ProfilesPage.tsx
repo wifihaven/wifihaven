@@ -329,12 +329,16 @@ export function ProfilesPage() {
     onSuccess: () => Promise.all([invalidators.profiles(), refetchAux()]),
   })
 
-  async function togglePause(pd: ProfileDetail) {
+  async function togglePause(pd: ProfileDetail, mode?: PauseMode) {
     // #406: setting `paused` explicitly via the full-profile PUT is
     // idempotent under concurrent clicks. #423 tracks adding PATCH so we
     // don't have to send the whole profile.
+    // #1471: when pausing, the admin picks soft vs hard at click-time; the
+    // chosen mode rides this same PUT. Resume omits it (preserve existing).
     const body = formToRequest(detailToForm(pd))
-    body.paused = !pd.profile.paused
+    const nextPaused = !pd.profile.paused
+    body.paused = nextPaused
+    if (nextPaused && mode) body.pauseMode = mode
     await updateMutation.mutateAsync({ id: pd.profile.id, body })
   }
 
@@ -477,7 +481,7 @@ export function ProfilesPage() {
             defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
-            onTogglePause={() => togglePause(pd)}
+            onTogglePause={(mode) => togglePause(pd, mode)}
             onGrantTime={() => setExtProfileId(pd.profile.id)}
             onAppsChanged={reloadApps}
             onProfileChanged={() => invalidators.profileMutated()}
@@ -577,7 +581,7 @@ function ProfileShellRow({
   defaultTz: string
   onToggle: () => void
   onDelete: () => void
-  onTogglePause: () => void
+  onTogglePause: (mode?: PauseMode) => void
   onGrantTime: () => void
   onAppsChanged: () => void | Promise<void>
   onProfileChanged: () => void | Promise<unknown>
@@ -623,6 +627,27 @@ function ProfileShellRow({
     },
     { key: pd.profile.id },
   )
+
+  // #1471 — soft/hard pause is chosen at click-time via a small picker on the
+  // Pause action (resume stays a single click). Close it on outside-click or
+  // Escape so it behaves like a normal popover menu.
+  const [pausePickerOpen, setPausePickerOpen] = useState(false)
+  const pausePickerRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!pausePickerOpen) return
+    const onDocClick = (e: MouseEvent) => {
+      if (pausePickerRef.current && !pausePickerRef.current.contains(e.target as Node)) {
+        setPausePickerOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPausePickerOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [pausePickerOpen])
 
   return (
     <div
@@ -721,20 +746,61 @@ function ProfileShellRow({
               busywork. Icon-only Pause (chip already says Paused/Active);
               Delete is muted + far right so it's hard to mis-click. */}
           {isAdmin && (
-            <button
-              type="button"
-              onClick={onTogglePause}
-              data-testid={`profile-row-pause-${pd.profile.id}`}
-              aria-label={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
-              title={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
-              className={`text-xs px-2 py-1.5 rounded-lg border transition-colors ${
-                pd.profile.paused
-                  ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
-                  : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
-              }`}
-            >
-              {pd.profile.paused ? '▶' : '⏸'}
-            </button>
+            <div className="relative" ref={pausePickerRef}>
+              <button
+                type="button"
+                // #1471 — Resume is a single click; Pause opens the soft/hard
+                // picker so the mode is chosen at the moment of pausing.
+                onClick={() => {
+                  if (pd.profile.paused) onTogglePause()
+                  else setPausePickerOpen(o => !o)
+                }}
+                data-testid={`profile-row-pause-${pd.profile.id}`}
+                aria-label={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
+                aria-haspopup={pd.profile.paused ? undefined : 'menu'}
+                aria-expanded={pd.profile.paused ? undefined : pausePickerOpen}
+                title={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
+                className={`text-xs px-2 py-1.5 rounded-lg border transition-colors ${
+                  pd.profile.paused
+                    ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
+                    : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
+                }`}
+              >
+                {pd.profile.paused ? '▶' : '⏸'}
+              </button>
+              {!pd.profile.paused && pausePickerOpen && (
+                <div
+                  role="menu"
+                  data-testid={`profile-row-pause-menu-${pd.profile.id}`}
+                  className="absolute right-0 top-full mt-1 z-20 w-56 bg-white rounded-xl border border-brand-border-strong shadow-lg p-1"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setPausePickerOpen(false); onTogglePause('soft') }}
+                    data-testid={`profile-row-pause-soft-${pd.profile.id}`}
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-brand-alt transition-colors"
+                  >
+                    <span className="block text-sm font-medium text-brand-ink">Soft pause</span>
+                    <span className="block text-xs text-brand-text-muted">
+                      Block the internet but keep allowed apps + the block page reachable.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setPausePickerOpen(false); onTogglePause('hard') }}
+                    data-testid={`profile-row-pause-hard-${pd.profile.id}`}
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-brand-alt transition-colors"
+                  >
+                    <span className="block text-sm font-medium text-brand-ink">Hard pause</span>
+                    <span className="block text-xs text-brand-text-muted">
+                      Cut everything; only the block page stays reachable.
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           )}
           {isAdmin && (
             <button
@@ -908,21 +974,18 @@ function ProfileShellRow({
 interface TimeFormState {
   timeLimit: string
   crossDeviceOverlapMode: CrossDeviceOverlapMode
-  pauseMode: PauseMode
 }
 
 function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
   return {
     timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
-    pauseMode: pd.profile.pauseMode,
   }
 }
 
 function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
   if (a.timeLimit !== b.timeLimit) return false
   if (a.crossDeviceOverlapMode !== b.crossDeviceOverlapMode) return false
-  if (a.pauseMode !== b.pauseMode) return false
   return true
 }
 
@@ -1073,7 +1136,8 @@ function TimeSubsection({
       // Schedules round-trip unchanged from pd (formToRequest already carried
       // them); this subsection no longer edits them (#1474).
       body.crossDeviceOverlapMode = next.crossDeviceOverlapMode
-      body.pauseMode = next.pauseMode
+      // #1471: pauseMode is no longer edited here; omit it from the time-form
+      // PUT so the existing value is preserved (the pause action owns it now).
       await api.profiles.update(pd.profile.id, body)
       baselineRef.current = next
       setStatus('saved')
@@ -1211,51 +1275,9 @@ function TimeSubsection({
             </div>
           </div>
 
-          {/* #1418 pause-mode radios: soft (default) keeps allowlisted apps +
-              the block page reachable through a pause; hard is a true off-switch. */}
-          <div>
-            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-              Pause mode
-            </label>
-            <div className="space-y-2">
-              <label className="flex items-start gap-3 text-sm text-brand-text cursor-pointer">
-                <input
-                  type="radio"
-                  name={`pause-mode-${pd.profile.id}`}
-                  data-testid={`profile-pause-mode-soft-${pd.profile.id}`}
-                  disabled={!isAdmin}
-                  checked={form.pauseMode === 'soft'}
-                  onChange={() => update({ pauseMode: 'soft' })}
-                  className="mt-1 w-4 h-4 accent-brand-accent"
-                />
-                <span>
-                  <span className="font-medium text-brand-ink">Soft pause</span>
-                  <span className="text-brand-text-muted"> (default)</span>
-                  <span className="block text-xs text-brand-text mt-0.5">
-                    block the internet but keep explicitly-allowed apps reachable (e.g. a homework app), plus the block page. Best for "dinner time, but homework still works."
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 text-sm text-brand-text cursor-pointer">
-                <input
-                  type="radio"
-                  name={`pause-mode-${pd.profile.id}`}
-                  data-testid={`profile-pause-mode-hard-${pd.profile.id}`}
-                  disabled={!isAdmin}
-                  checked={form.pauseMode === 'hard'}
-                  onChange={() => update({ pauseMode: 'hard' })}
-                  className="mt-1 w-4 h-4 accent-brand-accent"
-                />
-                <span>
-                  <span className="font-medium text-brand-ink">Hard pause</span>
-                  <span className="text-brand-text-muted"> (true off-switch)</span>
-                  <span className="block text-xs text-brand-text mt-0.5">
-                    cut everything, including allowed apps. Only the block page stays reachable. For discipline, a lost device, or an emergency. Applies the next time you pause this profile.
-                  </span>
-                </span>
-              </label>
-            </div>
-          </div>
+          {/* #1471 — the persistent soft/hard "Pause mode" radios were removed
+              here. The choice is now made at the moment of pausing, via the
+              picker on the row Pause action (see ProfileShellRow). */}
         </div>
       )}
     </div>
