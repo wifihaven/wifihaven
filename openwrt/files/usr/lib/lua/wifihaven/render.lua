@@ -22,11 +22,21 @@
 -- Then:
 --
 --   drop(m, d) ⇔
---         ( m ∈ blocked_macs ∧ ¬ea_hit(m, d) )
---      ∨  ( ∃ h ∈ extraBlocked(m). d ∈ @eb_h ∧ ¬ea_hit(m, d) )
---      ∨  ( ∃ id ∈ blocklistIds(m). d ∈ @bl_id ∧ ¬ea_hit(m, d) )
+--         ( m ∈ blocked_macs ∧ ¬ea_hit(m, d) ∧ ¬ga_hit(d) )
+--      ∨  ( ∃ h ∈ extraBlocked(m). d ∈ @eb_h ∧ ¬ea_hit(m, d) ∧ ¬ga_hit(d) )
+--      ∨  ( ∃ id ∈ blocklistIds(m). d ∈ @bl_id ∧ ¬ea_hit(m, d) ∧ ¬ga_hit(d) )
+--      ∨  ( d ∈ @global_block ∧ ¬ga_hit(d) )         (#1319 global block, all MACs)
+--      ∨  ( G.blocked ∧ ¬ga_hit(d) )                 (#1319 global lockdown)
 --      ∨  blockIpOnly(m) ∧ d ∉ @resolved_<m>       (or @resolved6_<m> for v6)
 --      ∨  m ∈ @failover_drop                       (block-all failover only)
+--
+-- where ga_hit(d) ⇔ d ∈ @global_allow (or @global_allow6) and @global_block =
+-- global.extraBlocked ∪ members(global.blocklistIds). G is the snapshot's flat
+-- `global` BlockRules (#1316). The asymmetry is load-bearing: a per-MAC ea_hit
+-- suppresses only the per-MAC drops, but @global_allow (ga_hit) suppresses
+-- EVERY drop incl. the global ones; a global block is suppressed ONLY by
+-- @global_allow. See the "#1319 global policy composition" helpers below and
+-- docs/design/global-policy-layer.md §5.2.
 --
 -- allow := ¬drop. extraAllowed beats every "blocked" path (#421):
 -- the @blocked_macs / eb_ / bl_ drop rules each carry one `ip daddr != @ea_<m>_<a>`
@@ -251,6 +261,91 @@ end
 M.block_ip_only_macs = block_ip_only_macs
 
 -- ---------------------------------------------------------------------------
+-- #1319: global policy composition.
+-- ---------------------------------------------------------------------------
+-- The snapshot carries one fleet-wide `global` BlockRules (#1316), applied
+-- FLAT to every MAC alongside that MAC's resolved per-MAC BlockRules. It is
+-- NOT a third merge tier — the router holds one extra BlockRules and layers
+-- it with fixed precedence (docs/design/global-policy-layer.md §5.2):
+--
+--   ga(d)       ⇔ d ∈ G.extraAllowed                  (@global_allow)
+--   gblock(d)   ⇔ G.blocked ∨ d ∈ G.extraBlocked ∨ d ∈ ⋃ipset(G.blocklistIds)
+--   rblock(m,d) ⇔ R.blocked ∨ d ∈ R.extraBlocked ∨ d ∈ ⋃ipset(R.blocklistIds)
+--   drop(m,d)   ⇔ ¬ga(d) ∧ ( gblock(d) ∨ (¬ra(m,d) ∧ rblock(m,d)) )
+--                 ∨ (G.blockIpOnly ∨ R.blockIpOnly) ∧ d ∉ resolved_<m>
+--
+-- Asymmetry: per-MAC extraAllowed (ra) suppresses only per-MAC drops; ONLY
+-- @global_allow suppresses a global block / lockdown. @global_allow in turn
+-- carves out EVERY drop (per-MAC or global). On nft this is two fleet-wide
+-- ipsets — @global_allow (v4) / @global_allow6 and @global_block (v4) /
+-- @global_block6 — populated from resolved IPs by dnsmasq `nftset=` callbacks,
+-- exactly like the per-host eb_/bl_ sets. blockIpOnly is intentionally NOT
+-- carved by ga (allowed hosts are resolved into resolved_<m> naturally), same
+-- as the per-MAC ea sets.
+local GLOBAL_ALLOW4 = "global_allow"
+local GLOBAL_ALLOW6 = "global_allow6"
+local GLOBAL_BLOCK4 = "global_block"
+local GLOBAL_BLOCK6 = "global_block6"
+
+-- Return the global BlockRules table, or nil if the snapshot carries no global
+-- section (older snapshots / tests). nil is treated as BlockRules.allowAll — no
+-- global allow, no global block, no lockdown, no strict-IP.
+local function global_rules(snapshot)
+  local g = snapshot and snapshot.global
+  if type(g) == "table" then return g end
+  return nil
+end
+M.global_rules = global_rules
+
+-- Sorted, de-duplicated list of global.extraAllowed hosts (the @global_allow
+-- membership). Empty when there is no global section or no global allows.
+local function global_allow_hosts(snapshot)
+  local g = global_rules(snapshot)
+  if not g or type(g.extraAllowed) ~= "table" then return {} end
+  local seen, hosts = {}, {}
+  for _, h in ipairs(g.extraAllowed) do
+    if not seen[h] then seen[h] = true; hosts[#hosts + 1] = h end
+  end
+  table.sort(hosts)
+  return hosts
+end
+M.global_allow_hosts = global_allow_hosts
+
+-- Sorted, de-duplicated list of hosts forming the @global_block set:
+-- global.extraBlocked ∪ the member hosts of every id in global.blocklistIds
+-- (expanded from snapshot._blocklist_hosts, the same source that drives the
+-- per-category bl_ sets). Empty when there is nothing globally blocked by host.
+local function global_block_hosts(snapshot)
+  local g = global_rules(snapshot)
+  if not g then return {} end
+  local seen = {}
+  if type(g.extraBlocked) == "table" then
+    for _, h in ipairs(g.extraBlocked) do seen[h] = true end
+  end
+  if type(g.blocklistIds) == "table" then
+    local bl = (snapshot and snapshot._blocklist_hosts) or {}
+    for _, id in ipairs(g.blocklistIds) do
+      for _, h in ipairs(bl[id] or {}) do seen[h] = true end
+    end
+  end
+  local hosts = {}
+  for h in pairs(seen) do hosts[#hosts + 1] = h end
+  table.sort(hosts)
+  return hosts
+end
+M.global_block_hosts = global_block_hosts
+
+local function global_blocked(snapshot)
+  local g = global_rules(snapshot)
+  return (g and g.blocked) and true or false
+end
+
+local function global_block_ip_only(snapshot)
+  local g = global_rules(snapshot)
+  return (g and g.blockIpOnly) and true or false
+end
+
+-- ---------------------------------------------------------------------------
 -- render.dnsmasq(snapshot) → string
 -- ---------------------------------------------------------------------------
 function M.dnsmasq(snapshot)
@@ -356,6 +451,28 @@ function M.dnsmasq(snapshot)
           "nftset=/%s/4#inet#wifihaven#%s,6#inet#wifihaven#%s",
           host, set4, set6))
       end
+    end
+    emit("")
+  end
+
+  -- #1319: global policy nftsets. global.extraAllowed → @global_allow /
+  -- @global_allow6 (fleet-wide carve-out, suppresses every drop); global
+  -- blocks (extraBlocked ∪ blocklistIds members) → @global_block /
+  -- @global_block6. Populated at DNS resolve time exactly like eb_/bl_; DNS
+  -- still resolves normally (Truth 1 — blocking is the connection layer).
+  local ga_hosts = global_allow_hosts(snapshot)
+  local gb_hosts = global_block_hosts(snapshot)
+  if #ga_hosts > 0 or #gb_hosts > 0 then
+    emit("# global policy nftsets → resolved at DNS time (#1319)")
+    for _, host in ipairs(ga_hosts) do
+      emit(string.format(
+        "nftset=/%s/4#inet#wifihaven#%s,6#inet#wifihaven#%s",
+        host, GLOBAL_ALLOW4, GLOBAL_ALLOW6))
+    end
+    for _, host in ipairs(gb_hosts) do
+      emit(string.format(
+        "nftset=/%s/4#inet#wifihaven#%s,6#inet#wifihaven#%s",
+        host, GLOBAL_BLOCK4, GLOBAL_BLOCK6))
     end
     emit("")
   end
@@ -481,6 +598,37 @@ function M.nft(snapshot, opts)
     end
   end
 
+  -- #1319: global composition state. The global BlockRules applies to every
+  -- MAC the router knows. `managed_macs` is every device MAC (sorted) minus
+  -- any suppressed by allow-all failover — global enforcement, like the
+  -- per-MAC paths, is lifted for an allow-all profile's devices during an
+  -- API outage. `has_global_allow` gates the @global_allow carve-out suffix;
+  -- `gb_hosts`/`g_blocked`/`g_block_ip_only` gate the global drops.
+  local ga_hosts_list = global_allow_hosts(snapshot)
+  local has_global_allow = #ga_hosts_list > 0
+  local gb_hosts = global_block_hosts(snapshot)
+  local has_global_block = #gb_hosts > 0
+  local g_blocked = global_blocked(snapshot)
+  local g_block_ip_only = global_block_ip_only(snapshot)
+  local g_block_reason = (global_rules(snapshot) and global_rules(snapshot).blockReason)
+                         or "blocked"
+  local managed_macs = {}
+  for mac, _ in sorted_devices(snapshot.devices) do
+    if not allowall_macs[mac] then managed_macs[#managed_macs + 1] = mac end
+  end
+
+  -- ga_suffix(family) → the fleet-wide @global_allow carve-out clause appended
+  -- to EVERY hostname/MAC drop and DNAT (per-MAC or global). Returns "" when
+  -- there is no global allow list, so output is byte-identical to pre-#1319
+  -- for snapshots without a global section. NOT applied to blockIpOnly drops
+  -- (an allowed host lands in resolved_<m> at DNS time, so it passes the
+  -- IP-only test naturally — same composition as the per-MAC ea sets).
+  local function ga_suffix(family)
+    if not has_global_allow then return "" end
+    if family == "ip6" then return " ip6 daddr != @" .. GLOBAL_ALLOW6 end
+    return " ip daddr != @" .. GLOBAL_ALLOW4
+  end
+
   -- Per-profile MAC sets. Emit in numeric-id order for stable output.
   for pidStr, _ in sorted_profiles(snapshot.profiles) do
     local pid = tonumber(pidStr)
@@ -555,10 +703,14 @@ function M.nft(snapshot, opts)
   local ea_by_mac_early = effective_extra_allowed_by_mac(snapshot)
   local blocked_macs_list   = {}   -- in @blocked_macs set (drop unconditionally)
   local blocked_ea_macs     = {}   -- blocked AND has extraAllowed → per-MAC rules
+  -- #1319: when a global allow list is present, every blocked-MAC drop must
+  -- carry the family-specific `!= @global_allow` carve-out, so even MACs with
+  -- no per-MAC extraAllowed move to the per-family rule path (the family-
+  -- agnostic @blocked_macs drop can't carry an `ip daddr` predicate).
   for mac, dev in sorted_devices(snapshot.devices) do
     local r = effective_rules(dev, snapshot.profiles)
     if r and r.blocked and not allowall_macs[mac] then
-      if ea_by_mac_early[mac] then
+      if ea_by_mac_early[mac] or has_global_allow then
         blocked_ea_macs[#blocked_ea_macs + 1] = mac
       else
         blocked_macs_list[#blocked_macs_list + 1] = mac
@@ -573,6 +725,40 @@ function M.nft(snapshot, opts)
   end
   ind("}")
   emit("")
+
+  -- #1319: fleet-wide global allow / block sets. Declared only when the
+  -- global section actually carries entries, so a snapshot with no global
+  -- policy renders byte-identically to pre-#1319. Populated at DNS resolve
+  -- time by dnsmasq nftset= (rendered in M.dnsmasq); dynamic + 1h timeout so
+  -- resolved entries age out, same as eb_/bl_.
+  if has_global_allow then
+    ind(string.format("set %s {", GLOBAL_ALLOW4))
+    ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+    ind(string.format("set %s {", GLOBAL_ALLOW6))
+    ind2("type ipv6_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+  end
+  if has_global_block then
+    ind(string.format("set %s {", GLOBAL_BLOCK4))
+    ind2("type ipv4_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+    ind(string.format("set %s {", GLOBAL_BLOCK6))
+    ind2("type ipv6_addr")
+    ind2("flags dynamic,timeout")
+    ind2("timeout 1h")
+    ind("}")
+    emit("")
+  end
 
   -- #351/#392: per-host v4 + v6 sets for extraBlocked. Each set is populated
   -- at DNS resolve time by dnsmasq nftset= (rendered by dnsmasq() above):
@@ -680,7 +866,17 @@ function M.nft(snapshot, opts)
   -- below. Sets are declared even for allowall-suppressed MACs (the dnsmasq
   -- populator still runs harmlessly; sets are cheap), but the drop/DNAT
   -- rules are suppressed under allow-all failover, mirroring eb_/bl_.
-  local bio_all = block_ip_only_macs(snapshot)
+  -- #1319: global.blockIpOnly is a network-wide strict-IP floor — it unions
+  -- with the per-MAC blockIpOnly set so EVERY device MAC gets a resolved_<m>
+  -- drop. (G.blockIpOnly ∨ R.blockIpOnly per the §5.2 predicate.)
+  local bio_seen = {}
+  for _, mac in ipairs(block_ip_only_macs(snapshot)) do bio_seen[mac] = true end
+  if g_block_ip_only then
+    for mac, _ in pairs(snapshot.devices or {}) do bio_seen[mac] = true end
+  end
+  local bio_all = {}
+  for mac in pairs(bio_seen) do bio_all[#bio_all + 1] = mac end
+  table.sort(bio_all)
   local bio_macs = {}
   for _, mac in ipairs(bio_all) do
     if not allowall_macs[mac] then
@@ -758,12 +954,15 @@ function M.nft(snapshot, opts)
     ind2(string.format("ether saddr %s%s", mac,
                        drop_suffix(mac, blocked_reason_by_mac[mac] or "blocked")))
   end
+  -- #1319: each per-MAC blocked rule also carries the `!= @global_allow`
+  -- carve-out (ga_suffix), so a globally-allowed host stays reachable for a
+  -- blocked MAC. ea_suffix (per-MAC allow) comes first, then ga_suffix.
   for _, mac in ipairs(blocked_ea_macs) do
     local reason = blocked_reason_by_mac[mac] or "blocked"
-    ind2(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip"),
-                       drop_suffix(mac, reason)))
-    ind2(string.format("ether saddr %s%s%s", mac, ea_suffix(mac, "ip6"),
-                       drop_suffix(mac, reason)))
+    ind2(string.format("ether saddr %s%s%s%s", mac, ea_suffix(mac, "ip"),
+                       ga_suffix("ip"), drop_suffix(mac, reason)))
+    ind2(string.format("ether saddr %s%s%s%s", mac, ea_suffix(mac, "ip6"),
+                       ga_suffix("ip6"), drop_suffix(mac, reason)))
   end
   -- v4 drops first, then v6 (#392). One ipset directive populates both sets
   -- at DNS time; here we gate on whichever family the destination matched.
@@ -771,25 +970,27 @@ function M.nft(snapshot, opts)
   -- clauses (one per a ∈ extraAllowed(m)) so an allowed host's resolved
   -- IPs suppress the drop. ea_suffix("") for MACs with no extraAllowed,
   -- so behaviour for those is unchanged.
+  -- #1319: ga_suffix appended after the per-MAC ea exception, so an allowed
+  -- host (per-MAC or global) suppresses the per-host / per-category drop.
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s%s%s",
+    ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
                        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                       drop_suffix(p.mac, "host")))
+                       ga_suffix("ip"), drop_suffix(p.mac, "host")))
   end
   for _, p in ipairs(eb_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s",
+    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s%s",
                        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                       drop_suffix(p.mac, "host")))
+                       ga_suffix("ip6"), drop_suffix(p.mac, "host")))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip daddr @%s%s%s",
+    ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
                        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"),
-                       drop_suffix(p.mac, "category:" .. tostring(p.id))))
+                       ga_suffix("ip"), drop_suffix(p.mac, "category:" .. tostring(p.id))))
   end
   for _, p in ipairs(bl_pairs) do
-    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s",
+    ind2(string.format("ether saddr %s ip6 daddr @%s%s%s%s",
                        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"),
-                       drop_suffix(p.mac, "category:" .. tostring(p.id))))
+                       ga_suffix("ip6"), drop_suffix(p.mac, "category:" .. tostring(p.id))))
   end
   -- #353: blockIpOnly drop. Predicate `ip daddr != @resolved_<mac>` matches
   -- any v4 destination the device did not DNS-resolve via our resolver in
@@ -803,6 +1004,46 @@ function M.nft(snapshot, opts)
     ind2(string.format("ether saddr %s ip6 daddr != @%s%s",
                        mac, resolved6_set_name(mac), drop_suffix(mac, "ip_only")))
   end
+  -- #1319: global block (hosts ∪ categories) → drop for every managed MAC on
+  -- @global_block, carved out ONLY by @global_allow (a per-MAC extraAllowed
+  -- does NOT save — "a profile may not un-block a global block"). One v4 +
+  -- one v6 rule per managed MAC.
+  if has_global_block then
+    for _, mac in ipairs(managed_macs) do
+      ind2(string.format("ether saddr %s ip daddr @%s%s%s",
+                         mac, GLOBAL_BLOCK4, ga_suffix("ip"),
+                         drop_suffix(mac, "global_block")))
+    end
+    for _, mac in ipairs(managed_macs) do
+      ind2(string.format("ether saddr %s ip6 daddr @%s%s%s",
+                         mac, GLOBAL_BLOCK6, ga_suffix("ip6"),
+                         drop_suffix(mac, "global_block")))
+    end
+  end
+  -- #1319: global lockdown (global.blocked) → whole-network kill switch. Drop
+  -- all forwarded traffic for every managed MAC except @global_allow. Keyed on
+  -- ether saddr so return traffic for allowed flows is unaffected. Emitted for
+  -- every managed MAC (even already-blocked ones) because this carry only the
+  -- ga carve-out, not the per-MAC ea exception that the per-MAC blocked rule
+  -- carries.
+  if g_blocked then
+    if has_global_allow then
+      -- Per-family so each can carry its family-specific @global_allow carve-out.
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format("ether saddr %s%s%s",
+                           mac, ga_suffix("ip"), drop_suffix(mac, g_block_reason)))
+      end
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format("ether saddr %s%s%s",
+                           mac, ga_suffix("ip6"), drop_suffix(mac, g_block_reason)))
+      end
+    else
+      -- No global allow → one family-agnostic unconditional drop per MAC.
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format("ether saddr %s%s", mac, drop_suffix(mac, g_block_reason)))
+      end
+    end
+  end
   ind("}")
   emit("")
 
@@ -810,27 +1051,46 @@ function M.nft(snapshot, opts)
   -- the local uhttpd block page so users see *why* a connection failed.
   -- Four triggers: MAC-wide block, per-(MAC, host) extraBlocked, per-(MAC,
   -- blocklistId), and per-MAC blockIpOnly (un-resolved daddr).
-  if #blocked_macs_list > 0 or #blocked_ea_macs > 0 or #eb_pairs > 0 or #bl_pairs > 0 or #bio_macs > 0 then
+  if #blocked_macs_list > 0 or #blocked_ea_macs > 0 or #eb_pairs > 0 or #bl_pairs > 0 or #bio_macs > 0
+      or has_global_block or g_blocked then
     ind("chain wifihaven_block_nat {")
     ind2("type nat hook prerouting priority dstnat; policy accept;")
     if #blocked_macs_list > 0 then
       ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
     end
     -- #421: blocked + extraAllowed → per-MAC v4 DNAT with ea exception.
+    -- #1319: ga_suffix adds the @global_allow carve-out so an allowed host is
+    -- never redirected to the block page.
     for _, mac in ipairs(blocked_ea_macs) do
       ind2(string.format(
-        "ether saddr %s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-        mac, ea_suffix(mac, "ip")))
+        "ether saddr %s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        mac, ea_suffix(mac, "ip"), ga_suffix("ip")))
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
-        "ether saddr %s ip daddr @%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip")))
+        "ether saddr %s ip daddr @%s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
     end
     for _, p in ipairs(bl_pairs) do
       ind2(string.format(
-        "ether saddr %s ip daddr @%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip")))
+        "ether saddr %s ip daddr @%s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
+    end
+    -- #1319: global block / lockdown v4 DNAT → block page. Carved out only by
+    -- @global_allow (per-MAC ea does not save a global block).
+    if has_global_block then
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format(
+          "ether saddr %s ip daddr @%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+          mac, GLOBAL_BLOCK4, ga_suffix("ip")))
+      end
+    end
+    if g_blocked then
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format(
+          "ether saddr %s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+          mac, ga_suffix("ip")))
+      end
     end
     -- #353: blockIpOnly v4 DNAT. Same predicate as the forward-chain drop;
     -- the DNAT fires *before* the drop (prerouting < forward), so the
@@ -851,18 +1111,36 @@ function M.nft(snapshot, opts)
     -- v6 line above).
     for _, mac in ipairs(blocked_ea_macs) do
       ind2(string.format(
-        "ether saddr %s ip6 daddr != ::1%s tcp dport 80 dnat ip6 to ::1:8081",
-        mac, ea_suffix(mac, "ip6")))
+        "ether saddr %s ip6 daddr != ::1%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        mac, ea_suffix(mac, "ip6"), ga_suffix("ip6")))
     end
     for _, p in ipairs(eb_pairs) do
       ind2(string.format(
-        "ether saddr %s ip6 daddr @%s%s tcp dport 80 dnat ip6 to ::1:8081",
-        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6")))
+        "ether saddr %s ip6 daddr @%s%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
     end
     for _, p in ipairs(bl_pairs) do
       ind2(string.format(
-        "ether saddr %s ip6 daddr @%s%s tcp dport 80 dnat ip6 to ::1:8081",
-        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6")))
+        "ether saddr %s ip6 daddr @%s%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
+    end
+    -- #1319: global block / lockdown v6 DNAT → block page. The @global_block6
+    -- match can't include ::1 (the listener never resolves into a block set),
+    -- so the block-host form needs no self-DNAT guard; the lockdown form is
+    -- unconditional, so it carries `ip6 daddr != ::1`.
+    if has_global_block then
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format(
+          "ether saddr %s ip6 daddr @%s%s tcp dport 80 dnat ip6 to ::1:8081",
+          mac, GLOBAL_BLOCK6, ga_suffix("ip6")))
+      end
+    end
+    if g_blocked then
+      for _, mac in ipairs(managed_macs) do
+        ind2(string.format(
+          "ether saddr %s ip6 daddr != ::1%s tcp dport 80 dnat ip6 to ::1:8081",
+          mac, ga_suffix("ip6")))
+      end
     end
     -- #353 + #411: blockIpOnly v6 DNAT. `ip6 daddr != ::1` guards against
     -- self-redirect (the uhttpd listener at ::1 is "not in resolved set"
