@@ -338,7 +338,8 @@ class PolicyServiceLive(
                       else {
                         val pPres      = pres.filter(r => macs.contains(r.mac))
                         val patterns   = stlims.map(_.domainPattern)
-                        val perPat     = Presence.patternMinutesByMac(pPres, patterns)
+                        val perPat     =
+                          Presence.patternMinutesByMac(pPres, patterns, settings.heartbeatFilter)
                         val byDomain   = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
                           val mins = devs.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
                           if mins == 0 then acc else acc.updated(pat, mins)

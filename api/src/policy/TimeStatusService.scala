@@ -399,8 +399,8 @@ object TimeStatusService {
       now: Instant,
       settings: HouseholdSettings,
   ): ProfileDayState = {
-    val patterns         = siteLimits.map(_.domainPattern)
-    val perPat           = Presence.patternMinutesByMac(presence, patterns)
+    val patterns = siteLimits.map(_.domainPattern)
+    val perPat   = Presence.patternMinutesByMac(presence, patterns, settings.heartbeatFilter)
     val totalSecondsUsed = usedSecondsForProfile(profile, devices, siteLimits, presence, settings)
     val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
 

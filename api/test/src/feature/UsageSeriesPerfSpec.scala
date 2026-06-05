@@ -88,6 +88,7 @@ object UsageSeriesPerfSpec
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[RollupRepo]
+      hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -99,6 +100,7 @@ object UsageSeriesPerfSpec
         profileRepo,
         appRepo,
         rollupRepo,
+        hsRepo,
         clock,
       ),
       auth,

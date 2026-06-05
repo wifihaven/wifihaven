@@ -929,8 +929,14 @@ object TimeRoutes {
       // with zero presence are dropped so the top-10 list isn't padded by
       // hosts that exist only because the bucket touched them at all.
       hostUsage       = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
-        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        val presenceMins =
+          wifihaven.api.presence.Presence.hostMinutes(presence, settings.heartbeatFilter)
+        val proportional = wifihaven.api.presence.Presence
+          .proportionalHostMinutes(
+            presence,
+            profile.crossDeviceOverlapMode,
+            settings.heartbeatFilter,
+          )
         presenceMins.iterator
           .filter(_._2 > 0)
           .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
@@ -991,8 +997,9 @@ object TimeRoutes {
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
       hostUsage       = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
-        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence, heartbeatFilter)
+        val proportional = wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, profile.crossDeviceOverlapMode, heartbeatFilter)
         presenceMins.iterator
           .filter(_._2 > 0)
           .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
@@ -1043,8 +1050,10 @@ object TimeRoutes {
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
       totalUsed = perMac.getOrElse(device.mac, 0)
       hostUsage = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
-        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence, heartbeatFilter)
+        // Per-device path: only one mac in play, so Sum/Dedup are equivalent.
+        val proportional = wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, CrossDeviceOverlapMode.Sum, heartbeatFilter)
         presenceMins.iterator
           .filter(_._2 > 0)
           .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
@@ -1164,6 +1173,7 @@ object TimeRoutes {
         .patternMinutesByMac(
           presence,
           stateOpt.toList.flatMap(_.perSite.map(_.domainPattern)),
+          settings.heartbeatFilter,
         )
       siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
         val used = perPat.getOrElse((device.mac, s.domainPattern), 0)
