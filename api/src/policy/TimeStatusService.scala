@@ -449,10 +449,20 @@ object TimeStatusService {
     val exemptPats = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
-        val perMac = Presence.totalSecondsByMac(presence, exemptPats, settings.heartbeatFilter)
+        val perMac = Presence.totalSecondsByMac(
+          presence,
+          exemptPats,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
         devices.iterator.map(d => perMac.getOrElse(d.mac, 0L)).sum
       case CrossDeviceOverlapMode.Dedup =>
-        Presence.dedupedTotalSeconds(presence, exemptPats, settings.heartbeatFilter)
+        Presence.dedupedTotalSeconds(
+          presence,
+          exemptPats,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
     }
   }
 
