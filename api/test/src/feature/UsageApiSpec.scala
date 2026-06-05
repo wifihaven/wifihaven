@@ -83,6 +83,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
+      hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -94,6 +95,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         profileRepo,
         appRepo,
         rollupRepo,
+        hsRepo,
         clock,
       ),
       auth,
@@ -1483,6 +1485,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           _           <- appRepo.setHosts(muId, List(Hostname.unsafe("spotify.com")))
           // 1 bucket on youtube.com (5m), 1 bucket on spotify.com (5m),
           // 1 bucket on google.com (not in any app — falls into Other).
+          // Real-traffic byte volume so the default heartbeat filter (10KB floor,
+          // now applied to per-app surfaces too — #1465) keeps these rows.
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
           _  <- trafficRepo.insertBatch(
             List(
@@ -1495,8 +1499,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1000L,
-                1000L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1507,8 +1511,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(300),
                 start.plusSeconds(600),
                 300,
-                200L,
-                200L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1519,8 +1523,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(600),
                 start.plusSeconds(900),
                 300,
-                100L,
-                100L,
+                500_000L,
+                500_000L,
               ),
             ),
           )
@@ -1586,8 +1590,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1000L,
-                1000L,
+                500_000L,
+                500_000L,
               ),
             ),
           )
@@ -1642,8 +1646,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1000L,
-                1000L,
+                500_000L,
+                500_000L,
               ),
             ),
           )
@@ -1686,7 +1690,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
           _           <- appRepo.setHosts(muId, List(Hostname.unsafe("spotify.com")))
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
-          // YouTube: 2 buckets (10m). Music: 1 bucket (5m).
+          // YouTube: 2 buckets (10m). Music: 1 bucket (5m). Real-traffic bytes so
+          // the default heartbeat filter (now on per-app surfaces, #1465) keeps them.
           _  <- trafficRepo.insertBatch(
             List(
               TrafficReportInsert(
@@ -1698,8 +1703,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1L,
-                1L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1710,8 +1715,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(300),
                 start.plusSeconds(600),
                 300,
-                1L,
-                1L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1722,8 +1727,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(600),
                 start.plusSeconds(900),
                 300,
-                1L,
-                1L,
+                500_000L,
+                500_000L,
               ),
             ),
           )

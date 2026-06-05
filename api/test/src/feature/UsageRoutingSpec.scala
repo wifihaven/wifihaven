@@ -55,6 +55,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[RollupRepo]
+      hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
       clock           <- ZIO.service[Clock]
       auth            <- buildAuth
     } yield (
@@ -66,6 +67,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         profileRepo,
         appRepo,
         rollupRepo,
+        hsRepo,
         clock,
       ),
       auth,
