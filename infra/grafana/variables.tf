@@ -10,6 +10,12 @@ variable "grafana_auth" {
   description = "Grafana service-account token with dashboard write scope. Create in Grafana Cloud → Administration → Service accounts. In CD this is the GRAFANA_AUTH secret; never committed."
 }
 
+variable "operator_email" {
+  type        = string
+  sensitive   = true
+  description = "Email address that all alert contact points deliver to (the single household operator). Same handling as grafana_auth: never committed — supplied via terraform.tfvars / TF_VAR_operator_email locally, and the GRAFANA_OPERATOR_EMAIL secret (fed as TF_VAR_operator_email) in CD. See docs/design/alerting.md §4."
+}
+
 variable "folder_uid" {
   type        = string
   default     = ""
