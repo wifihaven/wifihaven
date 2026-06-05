@@ -371,10 +371,16 @@ new semantics.
    `totalSecondsByMac` / `dedupedTotalSeconds` with: per-(device,app) session
    stitching on the idle gap, then profile-level interval union. Read window
    bounds from `period_start`/`period_end`; **enforce `N ≥ 2 × R`**. Keep the
-   `legacy` path behind `presence_model`. Tests pin: (a) a continuous sparse
-   session reads its full span, not the sampled floor; (b) the same logical day
-   re-bucketed at R = 10 s vs 300 s yields the same minutes (the §2d invariant);
-   (c) two concurrent apps in one minute = one minute (union).
+   `legacy` path behind `presence_model`. **Wire the new knobs into the
+   `time_used_daily` invalidation hook** — changing `presence_continuation_seconds`
+   or `presence_model` must `DELETE` the affected cached rollups exactly as a
+   heartbeat-setting change already does (the cache is keyed on the old
+   semantics; without this, stale minutes survive a knob change until the row
+   ages out). Tests pin: (a) a continuous sparse session reads its full span,
+   not the sampled floor; (b) the same logical day re-bucketed at R = 10 s vs
+   300 s yields the same minutes (the §2d invariant); (c) two concurrent apps in
+   one minute = one minute (union); **(d) editing a presence knob invalidates
+   `time_used_daily` and the next rollup reflects the new value.**
 
 3. **API rollup: per-app time-on-site via session span + heartbeat filtering on
    per-host surfaces.** Re-express `proportionalHostSeconds` as per-app session
