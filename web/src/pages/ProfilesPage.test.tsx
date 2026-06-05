@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
+import type { BlocklistSummary, Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
@@ -15,9 +15,12 @@ vi.mock('@/api/client', () => ({
       setUsers: vi.fn(),
       usageByApp: vi.fn(),
     },
-    // #978 — the old ProfileEditor modal listed blocklist categories from
-    // /blocklists; the inline app-policy subsection owns that surface now,
-    // so ProfilesPage no longer calls api.blocklists.list.
+    // #1473 — the inline blocked-categories editor on the profile card
+    // fetches the blocklist catalog from /blocklists (same fetch the
+    // Blocklists matrix page uses) and PATCHes blockedCategories.
+    blocklists: {
+      list: vi.fn(),
+    },
     devices: {
       list: vi.fn(),
       patch: vi.fn(),
@@ -127,6 +130,15 @@ const adultsSummary: ProfileTimeSummary = {
   dailyLimitMins: null, usedMins: 0, extensionMins: 0, remainingMins: null,
 }
 
+// #1473 — blocklist catalog returned by GET /api/blocklists, consumed by the
+// inline blocked-categories editor on the profile card.
+const blocklistCatalog: BlocklistSummary[] = [
+  { id: 'adult', name: 'Adult content', description: 'Adult sites', bundled: true, source: null, hostCount: 100, lastBuiltAt: null },
+  { id: 'gambling', name: 'Gambling', description: null, bundled: true, source: null, hostCount: 50, lastBuiltAt: null },
+  { id: 'social', name: 'Social media', description: null, bundled: true, source: null, hostCount: 30, lastBuiltAt: null },
+  { id: 'malware', name: 'Malware', description: null, bundled: false, source: 'operator', hostCount: 10, lastBuiltAt: null },
+]
+
 const aliceUser: User = { id: 10, username: 'alice', role: 'child', profileIds: [1] }
 const bobUser:   User = { id: 11, username: 'bob',   role: 'adult', profileIds: [2] }
 const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: [1, 2] }
@@ -146,6 +158,7 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
   })
+  ;(api.blocklists.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(blocklistCatalog)
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
@@ -1395,6 +1408,94 @@ describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#
     await user.click(await screen.findByTestId('app-row-60-clear'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+})
+
+// #1473 — blocked categories are now editable inline on the profile card.
+// The read-only chips are replaced (for admins) with a checklist of the
+// blocklist catalog; toggling a category autosaves blockedCategories via the
+// same full-profile PUT the Blocklists matrix uses.
+describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
+  it('renders the catalog with the profile’s current categories pre-selected', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    // Kids has ['adult', 'gambling'] selected; 'social' / 'malware' are off.
+    const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
+    expect(adult).toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-gambling')).toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-social')).not.toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-malware')).not.toBeChecked()
+    // Catalog comes from the shared /blocklists fetch.
+    expect(api.blocklists.list).toHaveBeenCalled()
+  })
+
+  it('toggling an unselected category ADDS it to blockedCategories via the full PUT', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const social = await within(kidsCard).findByTestId('profile-category-toggle-1-social')
+    await user.click(social)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect([...body.blockedCategories].sort()).toEqual(['adult', 'gambling', 'social'])
+    // other fields carried through unchanged
+    expect(body.name).toBe('Kids')
+    expect(body.timeLimit).toBe(120)
+    expect(body.failureMode).toBe('block-all')
+  })
+
+  it('toggling a selected category REMOVES it from blockedCategories', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
+    await user.click(adult)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect(body.blockedCategories).toEqual(['gambling'])
+  })
+
+  it('reflects the new selection after the profile refetches', async () => {
+    const listFn = api.profiles.list as unknown as ReturnType<typeof vi.fn>
+    listFn.mockResolvedValueOnce([kidsProfile, adultsProfile])
+    listFn.mockResolvedValue([
+      { ...kidsProfile, profile: { ...kidsProfile.profile, blockedCategories: ['adult', 'gambling', 'social'] } },
+      adultsProfile,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(await within(kidsCard).findByTestId('profile-category-toggle-1-social'))
+
+    await waitFor(() =>
+      expect(within(kidsCard).getByTestId('profile-category-toggle-1-social')).toBeChecked(),
+    )
+  })
+
+  it('non-admins see read-only chips, not the editable checklist', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(within(kidsCard).queryByTestId('profile-category-toggle-1-adult')).not.toBeInTheDocument()
+    // The pre-#1473 read-only chips remain the non-admin fallback.
+    expect(within(kidsCard).getByText('adult')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('gambling')).toBeInTheDocument()
   })
 })
 
