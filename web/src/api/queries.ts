@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type {
-  Alert, BlocklistSummary, DashboardNow, Device, GlobalPolicyView, HouseholdSettings, ProfileDetail,
+  Alert, BlocklistSummary, DashboardNow, Device, GlobalPolicyView, HouseholdSettings, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   QueryLog, UsageSeriesResponse,
@@ -42,6 +42,7 @@ export const qk = {
   devices: () => ['devices'] as const,
   globalPolicy: () => ['global', 'policy'] as const,
   alerts: (includeAll: boolean) => ['alerts', includeAll] as const,
+  schedules: () => ['schedules'] as const,
   dashboardNow: () => ['dashboard', 'now'] as const,
   recentBlocked: () => ['dashboard', 'recent-blocked'] as const,
   timeStatusToday: () => ['time', 'status', 'today'] as const,
@@ -102,6 +103,19 @@ export function useBlocklists(opts?: QueryOpts<BlocklistSummary[]>) {
   return useQuery({
     queryKey: ['blocklists'] as const,
     queryFn: () => api.blocklists.list(),
+    staleTime: 5 * MIN,
+    ...opts,
+  })
+}
+
+// #1069 — household named schedules (GET /api/schedules), shared by the
+// Schedules management page and the reusable SchedulePicker dropdown embedded
+// in profile / per-app / blocklist edit forms. Cached so the N pickers on a
+// page don't each fetch. Low-churn admin data; pages invalidate on edit.
+export function useNamedSchedules(opts?: QueryOpts<NamedSchedule[]>) {
+  return useQuery({
+    queryKey: qk.schedules(),
+    queryFn: () => api.schedules.list(),
     staleTime: 5 * MIN,
     ...opts,
   })
@@ -290,6 +304,13 @@ export function useInvalidators() {
     profiles: () => qc.invalidateQueries({ queryKey: qk.profiles() }),
     devices: () => qc.invalidateQueries({ queryKey: qk.devices() }),
     globalPolicy: () => qc.invalidateQueries({ queryKey: qk.globalPolicy() }),
+    // #1069 — schedule edits change profile/app/blocklist downtime, so also
+    // refresh anything whose rendering derives from an active window.
+    schedules: () => Promise.all([
+      qc.invalidateQueries({ queryKey: qk.schedules() }),
+      qc.invalidateQueries({ queryKey: qk.profiles() }),
+      qc.invalidateQueries({ queryKey: ['time', 'status'] }),
+    ]),
     alerts: () => qc.invalidateQueries({ queryKey: ['alerts'] }),
     dashboardNow: () => qc.invalidateQueries({ queryKey: qk.dashboardNow() }),
     timeStatus: () => qc.invalidateQueries({ queryKey: ['time', 'status'] }),

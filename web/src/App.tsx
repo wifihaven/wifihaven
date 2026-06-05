@@ -19,6 +19,7 @@ import { GlobalPolicyPage } from '@/pages/GlobalPolicyPage'
 import { BlockedPage } from '@/pages/BlockedPage'
 import { AppsPage } from '@/pages/AppsPage'
 import { BlocklistsPage } from '@/pages/BlocklistsPage'
+import { SchedulesPage } from '@/pages/SchedulesPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -60,6 +61,7 @@ function AppRoutes() {
         <Route path="usage/events"   element={<RequirePwChanged><LogsPage /></RequirePwChanged>} />
         <Route path="apps"        element={<RequirePwChanged><RequireAdmin><AppsPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="blocklists"  element={<RequirePwChanged><RequireAdmin><BlocklistsPage /></RequireAdmin></RequirePwChanged>} />
+        <Route path="schedules"   element={<RequirePwChanged><RequireAdmin><SchedulesPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="users"     element={<RequirePwChanged><RequireAdmin><UsersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="routers"   element={<RequirePwChanged><RequireAdmin><RoutersPage /></RequireAdmin></RequirePwChanged>} />
         <Route path="global-policy" element={<RequirePwChanged><RequireAdmin><GlobalPolicyPage /></RequireAdmin></RequirePwChanged>} />
