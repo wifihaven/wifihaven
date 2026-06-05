@@ -1554,6 +1554,63 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(ot.appName == "Other") &&
           assertTrue(ot.hosts.map(_.host.value).contains("google.com"))
       },
+      test("#1433: an app with usage but no time limit still returns its time-used") {
+        // The profile/app page surfaces today's time-used for every app, not
+        // just time-limited ones. An app assigned with mode=allowed (no daily
+        // cap) that saw traffic must come back with its proportional seconds so
+        // the row can render "Xm today" without a cap.
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          // Allowed, NOT time-limited: no daily cap configured for this app.
+          _           <- appRepo.upsertAssignment(ytId, kidsId, AppMode.Allowed, None, true)
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                1000L,
+                1000L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+          yt = out.apps.find(_.appName == "YouTube").get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          assertTrue(out.apps.exists(_.appName == "YouTube")) &&
+          assertTrue(yt.proportionalSeconds == 300L) &&
+          assertTrue(yt.presenceSeconds == 300L)
+      },
       test("#1161: traffic on FQDN subdomain attributes to apex-form app_hosts entry") {
         // App is registered with apex `khanacademy.org`, but the device actually
         // contacts `m.khanacademy.org`. Pre-fix the row falls into the synthetic
