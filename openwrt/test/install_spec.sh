@@ -310,10 +310,10 @@ grep -q '\-\-trigger "/etc/crontabs"' "$APK" \
 # crontab line + cron restart) so reinstall ends in the same state as a
 # fresh install.
 awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
-  | grep -q "0 4 \* \* \* /usr/sbin/wifihaven-update" \
-  && check "#898 trigger script writes canonical wifihaven-update crontab line" ok \
-  || check "#898 trigger script writes canonical wifihaven-update crontab line" \
-           "trigger heredoc missing the canonical '0 4 * * * /usr/sbin/wifihaven-update' line"
+  | grep -q "0 \* \* \* \* /usr/sbin/wifihaven-update --jitter" \
+  && check "#898/#1414 trigger script writes canonical hourly wifihaven-update crontab line" ok \
+  || check "#898/#1414 trigger script writes canonical hourly wifihaven-update crontab line" \
+           "trigger heredoc missing the canonical '0 * * * * /usr/sbin/wifihaven-update --jitter' line"
 
 awk '/cat > "\$WORK\/trigger"/,/^TRIGGER$/' "$APK" \
   | grep -q "/etc/init.d/cron restart" \
