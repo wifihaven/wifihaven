@@ -119,6 +119,36 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           assertTrue(scheds.head.startLocal == java.time.LocalTime.of(22, 0)) &&
           assertTrue(tl.exists(_.dailyMinutes == 180))
       },
+      // #1494: enforcement now reads schedules from named_schedules /
+      // profile_schedule_rules (#1482/#1490). The profile upsert must therefore
+      // STOP writing the dead V1 `schedules` table — an inline `schedules`
+      // array on the request body is ignored, never persisted.
+      test("profile upsert does not write the legacy schedules table (#1494)") {
+        for {
+          _              <- cleanDb
+          profileRepo    <- ZIO.service[ProfileRepo]
+          schedRepo      <- ZIO.service[ScheduleRepo]
+          (auth, routes) <- mkRoutes
+          token          <- auth.login("admin", "changeme").map(_.token.value)
+          // Raw JSON deliberately carries a legacy inline `schedules` array; a
+          // newer body would omit the field entirely. Either way nothing may
+          // land in the legacy table.
+          body =
+            """{"name":"NoLegacy","blockedCategories":[],"paused":false,""" +
+              """"schedules":[{"name":"Bedtime","days":["mon"],"startLocal":"21:00","endLocal":"07:00","tz":"UTC"}],""" +
+              """"timeLimit":null}"""
+          req  = Request
+            .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json))
+          resp     <- routes.runZIO(req)
+          profiles <- profileRepo.listAll
+          created  <- ZIO
+            .fromOption(profiles.find(_.name == "NoLegacy"))
+            .orElseFail(new Exception("Profile not found"))
+          scheds   <- schedRepo.listForProfile(created.id)
+        } yield assertTrue(resp.status == Status.Ok) && assertTrue(scheds.isEmpty)
+      },
       test("failureMode defaults to LastKnownGood when omitted from create request (#385)") {
         for {
           _              <- cleanDb
