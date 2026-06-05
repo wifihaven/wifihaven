@@ -1,0 +1,347 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "WifiHaven enforcement plane (#1280): the nftables forward-drop activity on the gateway router — the ACTUAL block plane (DNS always resolves; blocking is connection-layer, never a DNS sinkhole). Every panel targets the single emitted series enforcement_drops_total{reason} (#1325): the agent reads the per-rule nft `counter` packets in the wifihaven_block chain (nft_drops.lua), classifies each by its wh_drop:<mac>:<reason> comment into a bounded reason enum — whole_mac / host_block / category_block / ip_only — and folds the per-tick growth into its 60s metrics push (metrics.fold_external). RouterMetricsService re-exports it on /metrics with the server-attached router_id (+ installation_id); Alloy adds env at scrape time. The counter is dropped PACKETS, so rate() is packets/sec. Slices only by the bounded reason / router_id labels per the §4 cardinality firewall — never per-mac / per-host / per-ip / per-blocklist-id. See docs/architecture.md (enforcement model) and docs/design/metrics-observability.md §5.1.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Fleet forward-drop rate (total)",
+      "description": "sum(rate(enforcement_drops_total[5m])) — packets/sec dropped at the nftables forward chain across the selected routers. The headline 'how much is being blocked right now' number. Steady non-zero is normal (category/host enforcement); a sudden jump or drop-to-zero is the signal to investigate alongside the by-reason breakdown.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "pps",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "drops/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Forward-drops (last 24h)",
+      "description": "sum(increase(enforcement_drops_total[24h])) — total packets dropped at the forward chain over the trailing day across the selected routers. Cumulative enforcement volume, complementary to the instantaneous rate.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(enforcement_drops_total{env=\"$env\", router_id=~\"$router\"}[24h]))",
+          "legendFormat": "drops (24h)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Drop share by reason (5m rate)",
+      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — proportion of forward-drops attributable to each bounded reason. whole_mac = a whole-MAC @blocked_macs drop (paused / schedule / time-limit / manual, the resolved MacBlockReason); host_block = per-(MAC, host) eb_ drop; category_block = per-(MAC, blocklistId) bl_ drop; ip_only = blockIpOnly unresolved-destination drop. A category_block share collapsing to zero while categories are assigned is the #1334 silent-no-op signature.",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "pps",
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "mode": "single", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Forward-drop rate by reason (fleet)",
+      "description": "sum by (reason) (rate(enforcement_drops_total[5m])) — stacked packets/sec dropped at the forward chain, broken down by the four bounded drop reasons. This is the core enforcement view: how much traffic is really being blocked and why. reason ∈ {whole_mac, host_block, category_block, ip_only}.",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "pps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Per-router forward-drop rate",
+      "description": "sum by (router_id) (rate(enforcement_drops_total[5m])) — packets/sec dropped, one series per router (router_id is the server-attached bounded fleet dimension). Surfaces a single router carrying all the enforcement load, or one that has gone silent. Use the Router picker to focus.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "pps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (router_id) (rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\"}[5m]))",
+          "legendFormat": "{{router_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Category-block drop rate (#1334)",
+      "description": "sum(rate(enforcement_drops_total{reason=\"category_block\"}[5m])) — packets/sec dropped by the per-(MAC, blocklistId) bl_ ipset rules, the category-enforcement plane. This path was a silent no-op on prod until #1334 fixed the agent's blocklist-fetch call: if categories are assigned to any profile/device but this stays flat at zero, category enforcement is broken again (cross-check blocklist_fetch_failures_total on the router-fleet dashboard).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "pps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\", reason=\"category_block\"}[5m]))",
+          "legendFormat": "category_block drops/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Whole-MAC vs per-flow drop rate",
+      "description": "Whole-MAC = sum(rate(enforcement_drops_total{reason=\"whole_mac\"}[5m])) — the big-hammer @blocked_macs drop (paused / schedule / time-limit / manual). Per-flow = sum(rate(enforcement_drops_total{reason=~\"host_block|category_block|ip_only\"}[5m])) — selective per-(MAC,host) / per-category / unresolved-IP drops. Splits 'a device is fully cut off' from 'specific destinations are being filtered', which are different operator stories.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "id": 7,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "pps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\", reason=\"whole_mac\"}[5m]))",
+          "legendFormat": "whole_mac",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(enforcement_drops_total{env=\"$env\", router_id=~\"$router\", reason=~\"host_block|category_block|ip_only\"}[5m]))",
+          "legendFormat": "per-flow",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Drop volume by reason (last 24h)",
+      "description": "sum by (reason) (increase(enforcement_drops_total[24h])) — total packets dropped per reason over the trailing day, as bars. The cumulative complement to the by-reason rate panel: which reason accounted for the most blocked traffic today.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "id": 8,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (increase(enforcement_drops_total{env=\"$env\", router_id=~\"$router\"}[24h]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["wifihaven", "router", "enforcement"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "grafanacloud-wifihaven-prom", "value": "grafanacloud-prom" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": { "selected": true, "text": "prod", "value": "prod" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "env",
+        "options": [
+          { "selected": true, "text": "prod", "value": "prod" },
+          { "selected": false, "text": "staging", "value": "staging" }
+        ],
+        "query": "prod,staging",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "allValue": ".*",
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(enforcement_drops_total{env=\"$env\"}, router_id)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Router",
+        "multi": true,
+        "name": "router",
+        "options": [],
+        "query": {
+          "query": "label_values(enforcement_drops_total{env=\"$env\"}, router_id)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "WifiHaven — Enforcement (forward-drops)",
+  "uid": "wifihaven-enforcement",
+  "version": 1,
+  "weekStart": ""
+}
