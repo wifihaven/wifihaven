@@ -75,12 +75,15 @@ jobs:
           GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
           GRAFANA_AUTH: ${{ secrets.GRAFANA_AUTH }}
           TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
+          # operator_email has no default — the alerting resources (#1403) can't
+          # apply without it, so gate on it too rather than red-failing the apply.
+          GRAFANA_OPERATOR_EMAIL: ${{ secrets.GRAFANA_OPERATOR_EMAIL }}
         run: |
-          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ] && [ -n "$TF_API_TOKEN" ]; then
+          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ] && [ -n "$TF_API_TOKEN" ] && [ -n "$GRAFANA_OPERATOR_EMAIL" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GRAFANA_URL / GRAFANA_AUTH / TF_API_TOKEN not all set — skipping dashboard deploy. See infra/grafana/README.md for the one-time backend setup."
+            echo "::notice::GRAFANA_URL / GRAFANA_AUTH / TF_API_TOKEN / GRAFANA_OPERATOR_EMAIL not all set — skipping dashboard deploy. See infra/grafana/README.md for the one-time backend setup."
           fi
 
       - name: Set up Terraform
@@ -100,6 +103,9 @@ jobs:
           # Grafana provider auth — supplied to the apply running on the runner.
           TF_VAR_grafana_url: ${{ secrets.GRAFANA_URL }}
           TF_VAR_grafana_auth: ${{ secrets.GRAFANA_AUTH }}
+          # Alert contact-point destination (#1403). Never committed; the
+          # operator's email is a GitHub secret fed as a TF var.
+          TF_VAR_operator_email: ${{ secrets.GRAFANA_OPERATOR_EMAIL }}
         run: |
           # The HCP workspace (TF_WORKSPACE=grafana) must already exist — it is a
           # one-time, operator-gated setup step, NOT created by this pipeline (see

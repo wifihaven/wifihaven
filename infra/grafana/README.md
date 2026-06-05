@@ -123,13 +123,14 @@ Deploys run from the `master-grafana.yml` pipeline on push to `main` (see
 [In the CD pipeline](#in-the-cd-pipeline) above). Its `paths:` filter is
 scoped to `deploy/grafana/**` and `infra/grafana/**`, so a dashboard or
 Terraform change triggers the pipeline — and nothing else does.
-Authentication comes from three GitHub Actions secrets set out-of-band (never
+Authentication comes from four GitHub Actions secrets set out-of-band (never
 committed):
 
 ```sh
-gh secret set GRAFANA_URL  -R wifihaven/wifihaven --body 'https://wifihaven.grafana.net'
-gh secret set GRAFANA_AUTH -R wifihaven/wifihaven --body '<service-account token>'
-gh secret set TF_API_TOKEN -R wifihaven/wifihaven --body '<HCP user/team token>'
+gh secret set GRAFANA_URL            -R wifihaven/wifihaven --body 'https://wifihaven.grafana.net'
+gh secret set GRAFANA_AUTH           -R wifihaven/wifihaven --body '<service-account token>'
+gh secret set TF_API_TOKEN           -R wifihaven/wifihaven --body '<HCP user/team token>'
+gh secret set GRAFANA_OPERATOR_EMAIL -R wifihaven/wifihaven --body '<operator email>'
 ```
 
 | Secret | Purpose |
@@ -137,8 +138,9 @@ gh secret set TF_API_TOKEN -R wifihaven/wifihaven --body '<HCP user/team token>'
 | `GRAFANA_URL` | Base URL of the Grafana Cloud stack. |
 | `GRAFANA_AUTH` | Grafana service-account token with dashboard (and alert) write scope. |
 | `TF_API_TOKEN` | HCP Terraform state-backend auth (`app.terraform.io` → Account settings → Tokens). |
+| `GRAFANA_OPERATOR_EMAIL` | Address every alert contact point delivers to (#1403). Fed as `TF_VAR_operator_email`; never committed. |
 
-Until all three are set, the deploy job is a no-op gate. The PR acceptance bar
+Until all four are set, the deploy job is a no-op gate. The PR acceptance bar
 is `terraform fmt`/`validate`-clean config plus `actionlint`-clean workflows,
 not a live deploy.
 
@@ -187,6 +189,7 @@ the structural reason there is no duplicate-dashboard churn.
    export TF_WORKSPACE=grafana
    export TF_VAR_grafana_url=https://wifihaven.grafana.net
    export TF_VAR_grafana_auth=<service-account token>
+   export TF_VAR_operator_email=<operator email>   # alert contact-point destination (#1403)
    ```
 
 3. **Init against the cloud backend and confirm you're on it.** Per
@@ -239,6 +242,7 @@ export TF_WORKSPACE=grafana
 
 export TF_VAR_grafana_url=https://wifihaven.grafana.net
 export TF_VAR_grafana_auth=<service-account token>
+export TF_VAR_operator_email=<operator email>   # alert contact-point destination (#1403)
 # optional: export TF_VAR_folder_uid=<pre-created folder uid>
 
 terraform init
