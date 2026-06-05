@@ -359,10 +359,52 @@ case class UpdateAppRequest(
 
 case class SetAppHostsRequest(hosts: List[String]) derives JsonCodec
 
+// #1379: per-app schedule rules. Each rule attaches a #1069 named schedule
+// (NamedScheduleId, V50 `named_schedules`) to an app's (app, profile) assignment
+// with a mode:
+//   - AllowedDuring — while any window of the schedule is active, the app's hosts
+//     are carved into `extraAllowed`, beating the profile's whole-MAC block (#421)
+//     — the headline "reachable during bedtime" case.
+//   - BlockedDuring — while active, the app's hosts go to `extraBlocked`, even when
+//     the profile is otherwise unrestricted.
+// API-internal only: this is NEVER a `PolicySnapshot` field. PolicyService folds
+// the active windows into the existing per-MAC `extraAllowed` / `extraBlocked`
+// (docs/design/per-app-schedules.md §2, §4) — no wire/router change.
+enum AppScheduleMode { case AllowedDuring, BlockedDuring }
+
+object AppScheduleMode {
+  def asString(m: AppScheduleMode): String      = m match {
+    case AllowedDuring => "allowed_during"
+    case BlockedDuring => "blocked_during"
+  }
+  def parse(s: String): Option[AppScheduleMode] = s match {
+    case "allowed_during" => Some(AllowedDuring)
+    case "blocked_during" => Some(BlockedDuring)
+    case _                => None
+  }
+  given JsonCodec[AppScheduleMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown app schedule mode: $s"),
+    asString,
+  )
+}
+
+// A single (assignment, named-schedule, mode) rule row (`app_policy_schedule_rules`,
+// V51). `id` / `assignmentId` are server-assigned and default to placeholders so the
+// request shape below only needs `{scheduleId, mode}` on input.
+case class AppScheduleRule(
+    scheduleId: NamedScheduleId,
+    mode: AppScheduleMode,
+    id: AppScheduleRuleId = AppScheduleRuleId(0L),
+    assignmentId: AppPolicyAssignmentId = AppPolicyAssignmentId(0L),
+) derives JsonCodec
+
 case class UpsertAppAssignmentRequest(
     mode: AppMode,
     dailyMinutes: Option[Int] = None,
     exemptFromDaily: Option[Boolean] = None,
+    // #1379: additive — the full desired set of per-app schedule rules (replace
+    // semantics, like SetAppHostsRequest.hosts). Existing clients omit it (`Nil`).
+    scheduleRules: List[AppScheduleRule] = Nil,
 ) derives JsonCodec
 
 case class AppDetail(

@@ -196,24 +196,24 @@ object AppRoutes {
           val aid = AppId(id)
           val pid = ProfileId(profileIdRaw)
           for {
-            claims <- requireWriter(req, auth)
-            _      <- requireProfileAccess(claims, pid, userProfileRepo)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            ar     <- ZIO
+            claims   <- requireWriter(req, auth)
+            _        <- requireProfileAccess(claims, pid, userProfileRepo)
+            body     <- req.body.asString.orElseFail(Response.badRequest(""))
+            ar       <- ZIO
               .fromEither(body.fromJson[UpsertAppAssignmentRequest])
               .mapError(e => Response.badRequest(e))
-            _      <- ZIO
+            _        <- ZIO
               .fromEither(validateAssignment(ar.mode, ar.dailyMinutes))
               .mapError(e => Response.badRequest(e))
-            _      <- appRepo
+            _        <- appRepo
               .findById(aid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("App not found")))
-            _      <- profileRepo
+            _        <- profileRepo
               .findById(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-            _      <- appRepo
+            assignId <- appRepo
               .upsertAssignment(
                 aid,
                 pid,
@@ -221,6 +221,11 @@ object AppRoutes {
                 ar.dailyMinutes,
                 ar.exemptFromDaily.getOrElse(true),
               )
+              .mapError(ErrorMapper.dbErrorToResponse)
+            // #1379: replace this assignment's per-app schedule rules with the
+            // requested set (additive field; existing clients send `Nil`).
+            _        <- appRepo
+              .setScheduleRules(assignId, ar.scheduleRules.map(r => (r.scheduleId, r.mode)))
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
