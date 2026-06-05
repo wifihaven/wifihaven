@@ -14,16 +14,22 @@
 # `${datasource}` variable at view time — so a per-environment dashboard copy
 # is unnecessary.
 #
-# Stateless by design. The CD jobs run on ephemeral runners with no
-# persisted state, so every apply starts from an empty state. That is safe
-# here because each grafana_dashboard is upserted by its stable `uid`
-# (overwrite = true) — applying against an empty state updates the existing
-# dashboard rather than erroring on a duplicate. We deliberately do NOT
-# manage a grafana_folder resource: a folder create would either 409 on a
-# fixed uid or accumulate duplicate folders across stateless runs. Instead a
-# pre-existing folder can be targeted via the optional `folder_uid` variable
-# (the operator creates it once per stack, like the stack itself); when unset
-# the dashboards land in the stack's General folder.
+# State: remote backend on HCP Terraform (the `cloud {}` block below), free
+# tier, with native state locking. The dashboards themselves are upsert-by-uid
+# idempotent and would survive empty state, but the alerting work this unblocks
+# (contact points, the singleton notification policy, rule groups — #1403/#1404/
+# #1405) is *stateful*: a create against fresh-every-run empty state either 409s
+# on a fixed identifier or accumulates duplicates, and the root notification
+# policy has no upsert-by-uid. So Terraform must own its prior state. Migrating
+# to the remote backend now (#1406) is the hard prerequisite for that chain;
+# the dashboards keep reconciling unchanged. State holds resource IDs but no
+# secrets (the Grafana token comes from the grafana_auth var / GRAFANA_AUTH
+# secret, not the state). Mirrors the infra/cloudflare backend (#1357); see
+# README.md for the one-time backend setup + local-state migration runbook.
+#
+# A pre-existing folder can still be targeted via the optional `folder_uid`
+# variable (the operator creates it once per stack, like the stack itself);
+# when unset the dashboards land in the stack's General folder.
 #
 # Does NOT manage:
 #   - The Grafana Cloud stack / instance itself (created once via the Grafana
@@ -37,6 +43,22 @@
 
 terraform {
   required_version = ">= 1.6"
+
+  # Remote state on HCP Terraform (Terraform Cloud), free tier. Native state
+  # locking means CI applies can't race or clobber each other, and a fresh CI
+  # checkout reads the canonical state instead of starting empty — which is what
+  # lets the stateful alerting resources (#1403/#1404/#1405) be idempotent
+  # rather than 409ing or duplicating on every run (#1406).
+  #
+  # Org + workspace come from TF_CLOUD_ORGANIZATION / TF_WORKSPACE env vars
+  # (set in .github/workflows/master-grafana.yml and documented in README.md),
+  # so this block stays account- and creds-agnostic. Auth is the
+  # TF_TOKEN_app_terraform_io env var. The workspace runs in *local* execution
+  # mode: HCP only stores state + provides locking, while `terraform apply` runs
+  # on the GitHub runner with the Grafana token from the GRAFANA_AUTH secret —
+  # mirrors the infra/cloudflare pipeline (#1357).
+  cloud {}
+
   required_providers {
     grafana = {
       source  = "grafana/grafana"
