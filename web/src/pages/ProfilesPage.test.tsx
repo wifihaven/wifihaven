@@ -1422,4 +1422,23 @@ describe('ProfilesPage — per-profile default-deny toggle (#1320)', () => {
     expect(body.failureMode).toBe('block-all')
     expect(body.timeLimit).toBe(120)
   })
+
+  // #1472 — default-deny is the profile's most fundamental posture, so it
+  // renders FIRST in the expanded card, before the devices and apps subsections.
+  it('renders the default-deny subsection before the devices and apps subsections', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const defaultDeny = await screen.findByTestId('profile-default-deny-1')
+    const devices     = screen.getByTestId('profile-devices-subsection-1')
+    const apps        = screen.getByTestId('profile-apps-subsection-1')
+
+    // default-deny precedes both devices and apps in DOM order
+    expect(defaultDeny.compareDocumentPosition(devices))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(defaultDeny.compareDocumentPosition(apps))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
 })
