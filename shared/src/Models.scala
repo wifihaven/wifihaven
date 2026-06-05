@@ -125,6 +125,32 @@ object CrossDeviceOverlapMode {
   )
 }
 
+// #1418: pause has two modes. `Soft` is today's behavior — a paused profile
+// drops all forwarded traffic except its `extraAllowed` hosts (an allowed app +
+// the #1307 infra allowlist survive, per #421/#1413). `Hard` is a true
+// off-switch: when paused, even those allowlisted/global hosts go dark. Carried
+// per-profile; collapsed server-side into the functional snapshot (empty
+// `extraAllowed`) — never a wire field of its own.
+enum PauseMode {
+  case Soft, Hard
+}
+
+object PauseMode {
+  def asString(m: PauseMode): String      = m match {
+    case Soft => "soft"
+    case Hard => "hard"
+  }
+  def parse(s: String): Option[PauseMode] = s.toLowerCase match {
+    case "soft" => Some(Soft)
+    case "hard" => Some(Hard)
+    case _      => None
+  }
+  given JsonCodec[PauseMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown pauseMode: $s"),
+    asString,
+  )
+}
+
 case class Profile(
     id: ProfileId,
     name: String,
@@ -133,6 +159,9 @@ case class Profile(
     failureMode: FailureMode = FailureMode.LastKnownGood,
     blockIpOnly: Boolean = false,
     crossDeviceOverlapMode: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+    // #1418: soft (default) honors extraAllowed through a pause; hard cuts even
+    // allowlisted/global hosts. Only consulted when the profile is paused.
+    pauseMode: PauseMode = PauseMode.Soft,
 ) derives JsonCodec
 
 case class Schedule(
@@ -479,6 +508,8 @@ case class UpsertProfileRequest(
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,
     crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
+    // #1418: omitted → preserve existing value (default 'soft' on create).
+    pauseMode: Option[PauseMode] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(
