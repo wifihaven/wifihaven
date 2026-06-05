@@ -15,21 +15,47 @@ kid was fully engaged. Measured against real prod data, presence reads roughly
 **3.3× low** for the kid devices, and the dominant loss is *within the minute*,
 not across minutes.
 
-**Recommended tuning (two knobs, both server-side in the API rollup):**
+**Recommended model (one primitive, server-side in the API rollup):**
 
-1. **Full-bucket credit.** A 60 s bucket containing real (non-heartbeat)
-   activity counts as a present *minute* — credit the bucket's wall-clock span
-   (`period_end − period_start`), not `max(activeSeconds)`. This is the bulk of
-   the fix (~3.3×).
-2. **Cross-bucket continuation window `N = 120 s`.** Bridge a think-gap that
-   spans an entirely traffic-free bucket: consecutive non-heartbeat buckets
-   whose inter-bucket gap ≤ N count as one continuous present interval. Adds a
-   conservative ~5% on top of (1) and recovers genuine ~1-minute think gaps
-   without merging real breaks.
+Stop computing presence per fixed bucket. Instead **sessionize activity**:
 
-Both knobs are **anchored on non-heartbeat rows only**, so they compose with the
-existing heartbeat filter: a keepalive-only minute neither starts nor extends a
-present interval.
+1. **Session-stitch on activity, split on a wall-clock idle gap `N`.** Per
+   (device, app), order the non-heartbeat activity and merge it into a session
+   as long as the gap to the next activity is ≤ `N`. A gap > `N` ends the
+   session ("no activity for N ⇒ done"). A session's presence is the span from
+   its **first to last activity** — every activity in between counts as
+   continuous, exactly as a kid working a problem locally between requests is
+   continuously present. Recommended **`N = 120 s`** (sensitivity 180 s), set at
+   the knee of the measured think-gap distribution.
+2. **Aggregate by interval-union per profile, not by summing.** A profile is one
+   human; two apps (or two devices) active in the same minute are **one** minute
+   of presence. The daily cap is the **union** of all session intervals across
+   the profile's apps and devices; per-app time-on-site is that one app's
+   session-span. Summing per-app minutes is wrong (double-counts) **and**
+   unstable across reporting rates.
+
+**Why this shape, not "full-bucket credit":** crediting a whole bucket is
+bucket-size-dependent — it over-counts at 5-minute reporting and under-counts at
+10-second reporting. The session/union model is defined in wall-clock seconds on
+activity timestamps, so **bucket size and sample/report rate are only the
+*resolution of the evidence*, never a term in the formula** — provided two
+constraints hold (validated in §2d):
+
+- **`N` must be ≥ the report interval `R`.** If `N < R`, contiguous buckets stop
+  merging and presence collapses to ~0. With per-request timestamps (§4.4) `R`
+  is effectively sub-second and this is automatic; with bucket intervals it
+  pins a hard rule: **N ≥ 2 × `usage_report_interval`**.
+- **Anchor timing on the finest evidence available** (per-request
+  `connection_events`), so the trailing edge of a session isn't inflated by the
+  bucket width.
+
+Everything is **anchored on non-heartbeat activity only**, so it composes with
+the existing heartbeat filter: a keepalive-only minute neither starts nor
+extends a session.
+
+Measured against real prod data, today's computation reads **~3.3× low** for the
+kid devices, and the dominant loss is *within the reporting window*, not across
+windows.
 
 ---
 
@@ -120,8 +146,10 @@ For each kid device-day (the two kid iPads / Mac, all hosts, heartbeat filter
 applied with prod defaults: 10 KB floor + 16-pattern allowlist), comparing:
 
 - **cur** — current shipped presence: `Σ max(activeSeconds)` per bucket.
-- **full** — full-bucket credit: each non-heartbeat bucket → its 60 s span.
-- **brN** — full-bucket credit **plus** cross-bucket continuation window N.
+- **full** — credit each non-heartbeat reporting window its full span (here the
+  prod `R = 60 s`). This is the session model evaluated *at the current report
+  interval*; §2d shows why it must be expressed as sessions, not bucket spans.
+- **brN** — session-stitched with idle gap `N` (merge buckets whose gap ≤ N).
 
 Minutes:
 
@@ -175,89 +203,157 @@ or span a traffic-free minute. The **> 180 s** tail (60 events) is genuine
 breaks. **N = 120 s covers the think-gap body while leaving the real-break tail
 unbridged.**
 
+### 2d. Bucket-/rate-independence — the formula must not depend on the report rate
+
+The router's `usage_report_interval` (R) and `activity_sample_int` may change
+(today 60 s / 10 s; a future build might use 5-minute reports or tighter
+sampling). Presence must be **invariant** to that. To test it, I took the native
+per-request timestamps from `connection_events` (Kid Mac, 2026-06-02, FQDN
+heartbeats removed) and re-derived presence two ways while simulating coarser
+reporting — collapsing the same requests into buckets of width R and re-running
+the identical stitch.
+
+**(i) Summing per-app session minutes is NOT invariant — it explodes with R:**
+
+| evidence resolution | Σ per-app min | profile-union min |
+|---------------------|--------------:|------------------:|
+| native (per-request)|          353  |            **71** |
+| report R = 10 s     |          579  |              99  |
+| report R = 60 s     |        1 415  |             165  |
+| report R = 300 s    |        4 545  |             300  |
+| report R = 600 s    |        8 340  |             440  |
+
+Per-app summing multiplies the per-window trailing-edge inflation across every
+host (515 hosts that day), so it is unusable. The **profile interval-union** is
+far more stable and is the correct daily-cap aggregate, but note it still drifts
+up with R because each coarse bucket inflates its session's trailing edge by up
+to R. **The invariant target is the native per-request union (~71 min).**
+
+**(ii) The idle gap N must be ≥ the report interval R, or presence collapses.**
+Stitching point-anchored buckets (Kid Mac union minutes, by N × R):
+
+| N \ R | 10 s | 60 s | 120 s | 300 s |
+|------:|-----:|-----:|------:|------:|
+| 60 s  |  55  |  64  |  **0**|  **0**|
+| 120 s |  77  |  85  |  92   |  **0**|
+| 180 s |  90  | 101  |  92   |  **0**|
+| 300 s | 117  | 119  | 122   |  125  |
+
+When `N < R`, contiguous reporting windows are farther apart than the gap
+threshold, nothing merges, every window becomes a zero-span session, and
+presence falls to **0**. When `N ≥ R` the number stabilizes (the `N = 300` row
+is flat ~117–125 min across R = 10…300).
+
+**Conclusions that shape the model (§4):**
+
+- Presence must be **sessionized on activity timestamps and aggregated by
+  profile interval-union**, never "credit a bucket" and never "sum per-app."
+- The idle window must satisfy **N ≥ R** (recommend **N ≥ 2 × R** for margin).
+  At today's R = 60 s, N = 120 s is safe; if reporting moves to 5 minutes, a
+  120 s gap would silently zero out presence unless timing is anchored on
+  per-request events.
+- For true rate-independence, **anchor session timing on `connection_events`
+  (per-request, R-independent)** and keep `traffic_reports` for the byte-based
+  heartbeat classification. That removes R from the formula entirely.
+
 ## 3. Tunable parameters and current values
 
 | parameter | where | current | role |
 |-----------|-------|--------:|------|
-| `usage_report_interval` (bucket size) | router UCI | **60 s** | minute resolution of presence |
-| `activity_sample_int` | router UCI | **10 s** | sub-bucket sample granularity; floor of `activeSeconds` |
-| `bucketSeconds` definition | API `Presence.scala:52` | `max(activeSeconds)` | **the undercount driver** |
-| idle / continuation window | — | **none** | does not exist today |
+| `usage_report_interval` (bucket size / report interval R) | router UCI | **60 s** | resolution of the evidence — **must not** be a term in the presence formula |
+| `activity_sample_int` | router UCI | **10 s** | sub-window sample granularity; floor of `activeSeconds` |
+| `bucketSeconds` definition | API `Presence.scala:52` | `max(activeSeconds)` | **the undercount driver** — to be replaced by session-stitch |
+| presence aggregation | API `Presence.scala` | group by `period_start`, `max`, sum buckets | bucket-grid dedup — to be replaced by interval-union |
+| idle / continuation window `N` | — | **none** | does not exist today; recommend **120 s**, constraint **N ≥ 2·R** |
 | `heartbeat_bytes_threshold` | `household_settings` | **10 240** | strips keepalive bytes |
 | `heartbeat_host_patterns` | `household_settings` | 16 patterns (V24) | strips keepalive FQDNs |
 | `heartbeat_filter_enabled` | `household_settings` | **true** | master switch |
 
-## 4. Recommended tuning
+## 4. Recommended model
 
-### 4.1 Full-bucket credit (primary)
+One primitive — **session-stitch** — with two aggregations. All of it server-side
+in the API rollup (`Presence.scala`).
 
-Redefine the bucket's presence contribution from `max(activeSeconds)` to the
-bucket's **wall-clock span** when the bucket contains at least one non-heartbeat,
-non-exempt host:
+### 4.1 The session-stitch primitive (idle gap `N`)
+
+Per `(device, app)`, take the **non-heartbeat** activity in timestamp order and
+fold it into sessions:
 
 ```
-bucketSeconds(bucket) = period_end − period_start    # ≈ 60 s
+sort activity by time
+start session at first activity
+for each next activity:
+    if (next.time − session.lastActivity) ≤ N:  extend session   # still engaged
+    else:                                        close session; start new one
+session presence interval = [first activity, last activity]
 ```
 
-Rationale: presence is a **minute-resolution** quantity. If the device exchanged
-real interactive traffic (above the heartbeat floor) with a real host during a
-60 s window, that minute counts. This is the same standard already implicit in
-the bucket size; we simply stop the 10 s sampler from discarding 5/6 of it.
+"No activity for `N` ⇒ done"; otherwise everything between first and last
+activity counts as continuous. **`N = 120 s`** (sensitivity 180 s), chosen at the
+knee of the §2c think-gap distribution — it spans a full traffic-free reporting
+window plus margin while the > 180 s real breaks (the 23- and 53-minute gaps in
+the raw Math Academy session) stay separate.
 
-### 4.2 Cross-bucket continuation window `N = 120 s` (secondary)
+**Activity granularity (this is what makes it rate-independent):** anchor on
+per-request `connection_events` timestamps where available, so the session
+boundaries don't depend on `usage_report_interval`. When only `traffic_reports`
+buckets are available, each non-heartbeat row contributes its `[period_start,
+period_end]` interval as the activity — correct in the limit, but with a
+trailing-edge uncertainty of one report interval (§2d).
 
-Within `totalSecondsByMac` / `dedupedTotalSeconds` (and the per-host
-`proportionalHostSeconds`), after dropping heartbeat rows, sort the surviving
-buckets by `period_start` and **merge any two consecutive buckets whose gap
-(`next.period_start − cur.period_end`) ≤ N into one present interval**; sum the
-merged spans. This bridges a think-gap that produced a traffic-free minute.
+### 4.2 Aggregation 1 — daily cap = **profile interval-union**
 
-`N = 120 s` is chosen at the knee of the §2c think-gap distribution: it spans one
-fully-empty 60 s bucket plus margin for a slow problem, while the > 180 s real
-breaks (the 23-minute and 53-minute gaps seen in the raw Math Academy session)
-stay separate.
+The daily cap (and any "total screen time") is the **union** of every session
+interval across all of the profile's apps **and** devices — measured as covered
+wall-clock, so two apps (or two devices) active in the same minute count once.
+This replaces the current "group by `period_start`, take max, sum buckets" dedup
+(`totalSecondsByMac` / `dedupedTotalSeconds`) with a true interval union, and is
+the most rate-stable aggregate (§2d table (i), union column). **Never sum
+per-app session minutes for the cap** — that double-counts and is unstable.
 
-### 4.3 Composition with the heartbeat filter (must-hold invariant)
+### 4.3 Aggregation 2 — per-app time-on-site = **that app's session span**
 
-Both knobs operate on the **post-heartbeat-filter** row set. Concretely:
+Per-app screen-time ("how long on Math Academy") is the sum of *that one app's*
+session spans — the successor to `proportionalMins` / `proportionalHostSeconds`.
+Same primitive, no union across apps. Heartbeat filtering should apply here too
+(today the per-host surfaces don't filter — fold that in).
 
-- A bucket whose only hosts are heartbeats (keepalive bytes < 10 KB or allowlist
-  FQDNs) is **not** a present minute and **cannot** anchor or extend a session.
-- The continuation window bridges *across* such buckets only when a
-  **non-heartbeat** bucket sits on each side within N — it never resurrects a
-  keepalive-only minute as presence.
+### 4.4 The two invariants the implementation must hold
 
-This is the safety property that keeps the fix from re-inflating exactly what
-the heartbeat filter was built to strip (#714/#789). The eventual change must
-include a test asserting: *keepalive-only minute between two real minutes is
-bridged (counts as present via continuation) but a keepalive-only run longer
-than N is not* — i.e. the filter still governs what counts as an anchor.
+1. **Rate-independence: `N ≥ R` (recommend `N ≥ 2·R`).** §2d (ii) shows that
+   when `N < R` presence collapses to **0**. The code must read `period_start` /
+   `period_end` from the data (never assume 60 s), and a config check should
+   reject `presence_continuation_seconds < 2 × usage_report_interval`. Anchoring
+   on per-request events (§4.1) removes `R` from the formula and makes this
+   automatic.
+2. **Heartbeat composition.** Sessions are built from **non-heartbeat** activity
+   only. A keepalive-only window (bytes < 10 KB or an allowlist FQDN) cannot
+   start or extend a session; the idle window bridges *across* such a window only
+   when a non-heartbeat session sits within `N` on each side. This keeps the fix
+   from re-inflating exactly what the heartbeat filter strips (#714/#789).
+   Required test: keepalive-only window between two real sessions is bridged;
+   a keepalive-only run longer than `N` is not.
 
-### 4.4 Why server-side (API rollup), not router-side
+### 4.5 Why server-side, not router-side
 
-The fix belongs in `Presence.scala`, **not** `usage.lua`, because:
+Sessionization and union are rollup concerns: the heartbeat filter is
+server-side and the router resets its tracker every report interval, so it can
+neither see the post-filter set nor bridge across windows. A router-side
+"fill-forward" would re-inflate keepalives. #842 (router-side foreground-host
+heuristic) still helps *sharpen per-host byte-share* but is independent of this
+fix and is blocked on the agent freeze.
 
-- The heartbeat filter is server-side; full-bucket credit and continuation must
-  be anchored on the post-filter set, which the router cannot see. A router-side
-  "fill-forward active_samples" change would re-inflate keepalives and compose
-  badly with the filter.
-- Cross-bucket continuation is inherently a rollup concern — the router resets
-  its tracker every 60 s and cannot bridge across buckets.
-- #842 (router-side foreground-host heuristic) remains worthwhile to *sharpen
-  per-host byte-share* for `proportionalMins`, but it is **not required** for the
-  undercount fix and is currently blocked on the agent freeze.
+### 4.6 Make the knobs configurable + invalidate the rollup cache
 
-### 4.5 Make the knobs configurable + invalidate the rollup cache
+Add to `household_settings` (a **small** table — no growth-table migration risk):
 
-Add to `household_settings` (a **small** table — no growth-table migration risk
-per the prod-data-volume rule):
-
-- `presence_credit_mode` — `full` (recommended default) | `sampled` (legacy).
-- `presence_continuation_seconds` — default **120**.
+- `presence_continuation_seconds` — default **120**; validated `≥ 2 × R`.
+- `presence_model` — `session` (recommended default) | `legacy` (the current
+  `max(activeSeconds)` path, kept for one deprecation window).
 
 `time_used_daily` must be invalidated (`DELETE`) on any change to these, exactly
-as it already is for the heartbeat settings, so the next 15-minute rollup refills
-with the new semantics.
+as it already is for the heartbeat settings, so the next rollup refills with the
+new semantics.
 
 ## 5. Implementation sub-issues to file
 
@@ -267,40 +363,48 @@ with the new semantics.
 > lands in its own migration-only PR before the code that adopts it.
 
 1. **DB: `household_settings` presence-tuning columns (schema-only PR).** Add
-   `presence_credit_mode` (default `full`) and `presence_continuation_seconds`
-   (default 120). Migration + docs only, per the migration-isolation rule. Small
-   table → no prod-volume concern.
+   `presence_continuation_seconds` (default 120) and `presence_model` (default
+   `session`). Migration + docs only. Small table → no prod-volume concern.
 
-2. **API rollup: full-bucket presence credit.** Change `Presence.bucketSeconds`
-   to credit the bucket wall-clock span under `presence_credit_mode = full`;
-   keep `sampled` as the legacy path. Apply to `totalSecondsByMac`,
-   `dedupedTotalSeconds`, and the per-host `proportionalHostSeconds`. Invalidate
-   `time_used_daily` on settings change. **Default-pinning test** asserting a
-   single-touch 60 s bucket credits 60 s, not 10 s.
+2. **API rollup: session-stitch primitive + interval-union daily cap.** Replace
+   `bucketSeconds = max(activeSeconds)` and the `period_start`-grid dedup in
+   `totalSecondsByMac` / `dedupedTotalSeconds` with: per-(device,app) session
+   stitching on the idle gap, then profile-level interval union. Read window
+   bounds from `period_start`/`period_end`; **enforce `N ≥ 2 × R`**. Keep the
+   `legacy` path behind `presence_model`. Tests pin: (a) a continuous sparse
+   session reads its full span, not the sampled floor; (b) the same logical day
+   re-bucketed at R = 10 s vs 300 s yields the same minutes (the §2d invariant);
+   (c) two concurrent apps in one minute = one minute (union).
 
-3. **API rollup: cross-bucket continuation window.** Implement the gap-bridge
-   (`presence_continuation_seconds`, default 120) in the daily-cap and per-host
-   functions, anchored strictly on non-heartbeat rows. Tests: bridge a
-   traffic-free minute between two real minutes; do **not** bridge a gap > N;
-   keepalive-only run longer than N is not bridged (heartbeat-composition test
-   from §4.3).
+3. **API rollup: per-app time-on-site via session span + heartbeat filtering on
+   per-host surfaces.** Re-express `proportionalHostSeconds` as per-app session
+   spans; apply the heartbeat filter to per-host/per-site surfaces (today they
+   don't). Test the `N < R` collapse guard and the keepalive-bridge composition
+   from §4.4.
 
-4. **Admin / LuCI UI surface for the presence knobs.** Mirror the heartbeat
-   settings UI (#754/#760) — expose credit mode + continuation seconds with the
-   recommended defaults pre-filled.
+4. **Anchor session timing on `connection_events` (rate-independence).** Join
+   per-request timestamps (timing) with `traffic_reports` (bytes / heartbeat
+   classification) so the report interval `R` drops out of the formula entirely.
+   Mind the §query-explain rule — `connection_events` is a growth table; prove
+   the join's plan at prod scale and add the supporting index in the same PR.
+   (Can land after #2 as the rate-independence hardening.)
 
-5. **Presence replay/validation harness (sibling of #790).** Extend the
-   heartbeat replay tooling under `scripts/analysis/` with a presence replay that
-   reproduces the §2b table (current vs full vs brN per device-day) over a week
-   of prod data, as the go/no-go gate on the chosen defaults.
+5. **Admin / LuCI UI surface for the presence knobs.** Mirror the heartbeat
+   settings UI (#754/#760) — expose `presence_continuation_seconds` with the
+   `N ≥ 2 × R` validation surfaced, and `presence_model`.
 
-6. **e2e default-pinning gate (extends #930).** Pin `presence_credit_mode = full`
-   and `presence_continuation_seconds = 120` end-to-end so a future PR can't shift
-   the visible screen-time numbers silently.
+6. **Presence replay/validation harness (sibling of #790).** Extend the replay
+   tooling under `scripts/analysis/` to reproduce §2b/§2d (current vs session at
+   each `N`, and the re-bucketing invariance check) over a week of prod data, as
+   the go/no-go gate on the defaults.
 
-7. **(Complementary, not blocking) router-side foreground-host heuristic
-   (#842).** Re-confirm scope once the agent freeze lifts; it sharpens
-   `proportionalMins` byte-share but is independent of this undercount fix.
+7. **e2e default-pinning gate (extends #930).** Pin `presence_model = session`
+   and `presence_continuation_seconds = 120` end-to-end so a future PR — or a
+   change to `usage_report_interval` — can't shift the visible numbers silently.
+
+8. **(Complementary, not blocking) router-side foreground-host heuristic
+   (#842).** Re-confirm scope once the agent freeze lifts; sharpens per-host
+   byte-share but is independent of this undercount fix.
 
 ## Appendix — reproducing the data
 
@@ -314,6 +418,15 @@ Read-only against prod `traffic_reports` / `connection_events`
   gap-merged span at each N.
 - §2c — `lag(ts)` window over `connection_events` for the Math Academy FQDN,
   histogram the inter-event gap.
+- §2d — export `(mac,host,host_type,ts)` from `connection_events` for the kid
+  macs; in code, drop FQDN-allowlist heartbeats, then for each simulated report
+  interval `R` collapse the per-request timestamps into width-`R` buckets,
+  session-stitch at gap `N`, and report both `Σ` per-app spans and the profile
+  interval-union. The union under `N ≥ R` is flat across `R`; `N < R` → 0.
+  (`connection_events` carries no bytes, so only the FQDN half of the heartbeat
+  filter is modeled here — §2d is an invariance proof of the *algorithm*, not an
+  absolute minute count; the production path keeps byte-based filtering via the
+  `traffic_reports` join, sub-issue #4.)
 
 Prod credentials were loaded out-of-band (Render API → DB connection string,
 captured into a shell variable, never echoed) and the Render API key should be
