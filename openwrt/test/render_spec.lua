@@ -2002,3 +2002,228 @@ describe("render.write_blocked_hosts", function()
     os.remove(p)
   end)
 end)
+
+-- ── Global policy composition (#1319) ─────────────────────────────────────
+--
+-- The snapshot gains a top-level `global` BlockRules (#1316) applied FLAT to
+-- every MAC alongside the per-MAC rules, with fixed precedence (design
+-- docs/design/global-policy-layer.md §5.2):
+--
+--   ga(d)       ⇔ d ∈ G.extraAllowed          -- @global_allow
+--   gblock(d)   ⇔ G.blocked ∨ d ∈ G.extraBlocked ∨ d ∈ ⋃ipset(G.blocklistIds)
+--   rblock(m,d) ⇔ R.blocked ∨ d ∈ R.extraBlocked ∨ d ∈ ⋃ipset(R.blocklistIds)
+--   drop(m,d)   ⇔ ¬ga(d) ∧ ( gblock(d) ∨ (¬ra(m,d) ∧ rblock(m,d)) )
+--                 ∨ (G.blockIpOnly ∨ R.blockIpOnly) ∧ d ∉ resolved_<m>
+--
+-- Key asymmetry: per-MAC extraAllowed (ra) suppresses only per-MAC drops;
+-- ONLY @global_allow suppresses a @global_block / global lockdown.
+
+-- snap_one() with a `global` BlockRules attached. Caller mutates as needed.
+local function snap_global()
+  local s = snap_one()
+  s.global = {
+    blocked      = false,
+    blockReason  = nil,
+    extraBlocked = {},
+    extraAllowed = {},
+    blocklistIds = {},
+    blockIpOnly  = false,
+  }
+  return s
+end
+
+describe("render.dnsmasq global section (#1319)", function()
+  it("emits combined v4+v6 nftset= for each global.extraAllowed host → @global_allow", function()
+    local s = snap_global()
+    s.global.extraAllowed = { "wifihaven.local" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=/wifihaven.local/4#inet#wifihaven#global_allow,6#inet#wifihaven#global_allow6",
+      1, true))
+  end)
+
+  it("emits combined v4+v6 nftset= for each global.extraBlocked host → @global_block", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=/evil.example/4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6",
+      1, true))
+  end)
+
+  it("expands global.blocklistIds members into @global_block at resolve time", function()
+    local s = snap_global()
+    s.global.blocklistIds = { "ads" }
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    s._blocklist_hosts = { ads = { "ad.doubleclick.net" } }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=/ad.doubleclick.net/4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6",
+      1, true))
+  end)
+
+  it("emits no global nftset= lines when the global section is empty", function()
+    local conf = render.dnsmasq(snap_global())
+    assert.is_nil(conf:find("global_allow", 1, true))
+    assert.is_nil(conf:find("global_block", 1, true))
+  end)
+
+  it("is byte-identical to a snapshot with no global key when global is empty", function()
+    assert.equals(render.dnsmasq(snap_one()), render.dnsmasq(snap_global()))
+  end)
+end)
+
+describe("render.nft global composition (#1319)", function()
+  it("declares @global_allow / @global_allow6 sets when global.extraAllowed is set", function()
+    local s = snap_global()
+    s.global.extraAllowed = { "wifihaven.local" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("set global_allow {", 1, true))
+    assert.truthy(nft:find("set global_allow6 {", 1, true))
+  end)
+
+  it("declares @global_block / @global_block6 sets when global blocks are set", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find("set global_block {", 1, true))
+    assert.truthy(nft:find("set global_block6 {", 1, true))
+  end)
+
+  it("declares no global sets when the global section is empty", function()
+    local nft = render.nft(snap_global())
+    assert.is_nil(nft:find("global_allow", 1, true))
+    assert.is_nil(nft:find("global_block", 1, true))
+  end)
+
+  it("is byte-identical to a snapshot with no global key when global is empty", function()
+    assert.equals(render.nft(snap_one()), render.nft(snap_global()))
+  end)
+
+  -- ga carves out EVERY drop, including a whole-MAC block (#421-style, but
+  -- fleet-wide): a global-allowed host stays reachable for a blocked MAC.
+  it("global.extraAllowed carves out a whole-MAC block (per-MAC drop gets `!= @global_allow`)", function()
+    local s = snap_global()
+    s.global.extraAllowed = { "wifihaven.local" }
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    local nft = render.nft(s)
+    -- The blocked-MAC drop must carry the global-allow exception on both families.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @global_allow6 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      1, true))
+  end)
+
+  -- ga is appended AFTER the per-MAC ea exception on eb_/bl_ drops.
+  it("appends `!= @global_allow` to eb_ drops when global.extraAllowed is set", function()
+    local s = snap_global()
+    s.global.extraAllowed = { "wifihaven.local" }
+    local nft = render.nft(s) -- snap_one has extraBlocked = { "tiktok.com" }
+    assert.truthy(nft:find(
+      "ip daddr @eb_tiktok_com ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:host\"",
+      1, true))
+  end)
+
+  -- A global block drops for every MAC; only @global_allow saves it.
+  it("emits a per-MAC @global_block drop for every managed MAC", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    s.devices["de:ad:be:ef:00:01"] = { profileId = 1, name = "parent-phone", rules = nil }
+    s.profiles["1"] = {
+      name = "adults",
+      rules = { blocked = false, blockReason = nil, extraBlocked = {},
+                extraAllowed = {}, blocklistIds = {}, blockIpOnly = false },
+      failureMode = "block-all",
+    }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr de:ad:be:ef:00:01 ip daddr @global_block log group 1 counter drop comment \"wh_drop:de:ad:be:ef:00:01:global_block\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @global_block6 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+  end)
+
+  -- Asymmetry: a per-MAC extraAllowed does NOT suppress a global block (only
+  -- @global_allow does), so the @global_block drop must NOT carry an ea_
+  -- exception for the per-MAC allow.
+  it("per-MAC extraAllowed does NOT carve out @global_block (only @global_allow does)", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    s.profiles["3"].rules.extraAllowed = { "school.example" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+    -- No ea exception spliced into the global-block drop line.
+    assert.is_nil(nft:find(
+      "ip daddr @global_block ip daddr != @ea_aa_bb_cc_11_22_33_school_example",
+      1, true))
+  end)
+
+  -- Global lockdown: blocked = true on the global section drops everything for
+  -- every MAC except @global_allow.
+  it("global.blocked drops all traffic for every MAC except @global_allow", function()
+    local s = snap_global()
+    s.global.blocked      = true
+    s.global.blockReason  = "DefaultDeny"
+    s.global.extraAllowed = { "wifihaven.local" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @global_allow6 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
+      1, true))
+  end)
+
+  -- Global strict-IP applies blockIpOnly to every MAC.
+  it("global.blockIpOnly forces a resolved_<mac> drop for every MAC", function()
+    local s = snap_global()
+    s.global.blockIpOnly = true
+    local nft = render.nft(s)
+    assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33 {", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
+      1, true))
+  end)
+
+  -- Block-page DNAT must redirect global blocks too.
+  it("DNATs port 80 to the block page for a @global_block hit", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block ip daddr != @global_allow tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true)
+      or nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block tcp dport 80 dnat ip to 127.0.0.1:8081",
+      1, true))
+  end)
+
+  -- Every drop in wifihaven_block — including the new global drops — must
+  -- carry the nflog attribution prefix (the #1122 invariant).
+  it("every global drop carries `log group 1 counter drop`", function()
+    local s = snap_global()
+    s.global.blocked      = true
+    s.global.blockReason  = "DefaultDeny"
+    s.global.extraBlocked = { "evil.example" }
+    s.global.extraAllowed = { "wifihaven.local" }
+    s.global.blockIpOnly  = true
+    local nft = render.nft(s)
+    local block_start = nft:find("chain wifihaven_block {", 1, true)
+    local next_chain  = nft:find("\n%s*chain ", block_start + 1)
+    local body = nft:sub(block_start, (next_chain or #nft + 1) - 1)
+    for line in body:gmatch("[^\n]+") do
+      if line:find(" drop", 1, true) and not line:find("counter drop", 1, true) then
+        assert(false, "drop without log group / counter: " .. line)
+      end
+    end
+  end)
+end)

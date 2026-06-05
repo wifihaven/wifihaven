@@ -3,7 +3,11 @@
 Wires together:
   - pflog watcher  → connection_attempt events → POST /api/router/events
   - unbound watcher → populates HostnameCache for hostname attribution
-  - policy polling + config rendering  (TODO(#112): policy polling + pf/Unbound config rendering)
+  - policy polling + config rendering  (TODO(#112): policy polling + pf/Unbound
+    config rendering — this is also where the snapshot's flat `global` BlockRules
+    section (#1316/#1319) is composed onto every MAC, mirroring the OpenWRT
+    @global_allow/@global_block path in openwrt/.../render.lua. No enforcement
+    path exists here yet, so there is nothing for the global layer to break.)
   - usage reporting                    (TODO(#113): usage reporting POST /api/router/usage)
 
 Provides:
