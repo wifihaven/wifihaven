@@ -166,11 +166,11 @@ describe("render.nft — #385/#422 three-mode failover", function()
     s.profiles["3"].rules.extraBlocked = { "tiktok.com" }
     local nft_no_signal = render.nft(s)
     assert.truthy(nft_no_signal:find(
-      "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com drop", 1, true),
+      "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:cc:cc:cc:00:00:03:host\"", 1, true),
       "AllowAll must enforce normally when no failover signal is present")
     local nft_ok = render.nft(s, { poll_failed = false })
     assert.truthy(nft_ok:find(
-      "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com drop", 1, true),
+      "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_tiktok_com log group 1 counter drop comment \"wh_drop:cc:cc:cc:00:00:03:host\"", 1, true),
       "AllowAll must enforce normally when the most-recent poll succeeded")
   end)
 
@@ -184,15 +184,15 @@ describe("render.nft — #385/#422 three-mode failover", function()
     local nft = render.nft(s, { poll_failed = true })
     -- Block-all kid keeps its extraBlocked drop.
     assert.truthy(nft:find(
-      "ether saddr aa:aa:aa:00:00:01 ip daddr @eb_kidblocked_example drop",
+      "ether saddr aa:aa:aa:00:00:01 ip daddr @eb_kidblocked_example log group 1 counter drop comment \"wh_drop:aa:aa:aa:00:00:01:host\"",
       1, true))
     -- LastKnownGood adult keeps its extraBlocked drop.
     assert.truthy(nft:find(
-      "ether saddr bb:bb:bb:00:00:02 ip daddr @eb_adultblocked_example drop",
+      "ether saddr bb:bb:bb:00:00:02 ip daddr @eb_adultblocked_example log group 1 counter drop comment \"wh_drop:bb:bb:bb:00:00:02:host\"",
       1, true))
     -- AllowAll guest does NOT have its extraBlocked drop.
     assert.is_nil(nft:find(
-      "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_guestblocked_example drop",
+      "ether saddr cc:cc:cc:00:00:03 ip daddr @eb_guestblocked_example log group 1 counter drop comment \"wh_drop:cc:cc:cc:00:00:03:host\"",
       1, true))
   end)
 
