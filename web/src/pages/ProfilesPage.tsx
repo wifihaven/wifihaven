@@ -9,25 +9,21 @@ import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import { SchedulePicker } from '@/components/SchedulePicker'
 import type {
   AppDetail, AppMode, AppPolicyAssignment, AppScheduleMode, AppScheduleRule,
-  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, PauseMode, ProfileDetail,
+  CrossDeviceOverlapMode, Device, FailureMode, PauseMode, ProfileDetail,
   ProfileTimeSummary,
-  ScheduleRequest, UpsertAppAssignmentRequest, UpsertProfileRequest, User,
+  UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
-import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { EmptyState } from '@/components/EmptyState'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
 
-const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
-
 interface FormState {
   name: string
   blockedCategories: string[]
   paused: boolean
   timeLimit: string
-  schedules: ScheduleRequest[]
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
   defaultDeny: boolean
@@ -39,15 +35,15 @@ function detailToForm(pd: ProfileDetail): FormState {
     blockedCategories: pd.profile.blockedCategories,
     paused: pd.profile.paused,
     timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
-    schedules: pd.schedules.map(s => ({
-      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-    })),
     failureMode: pd.profile.failureMode,
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
     defaultDeny: pd.profile.defaultDeny,
   }
 }
 
+// #1494: schedules are no longer carried on the profile upsert — they attach
+// via api.profiles.setSchedules (PUT /profiles/{id}/schedules). So the
+// full-profile PUT this builds never touches schedules.
 function formToRequest(f: FormState): UpsertProfileRequest {
   const tl = f.timeLimit.trim() === '' ? null : Number(f.timeLimit)
   return {
@@ -55,7 +51,6 @@ function formToRequest(f: FormState): UpsertProfileRequest {
     blockedCategories: f.blockedCategories,
     paused: f.paused,
     timeLimit: tl !== null && Number.isFinite(tl) ? tl : null,
-    schedules: f.schedules,
     failureMode: f.failureMode,
     crossDeviceOverlapMode: f.crossDeviceOverlapMode,
     defaultDeny: f.defaultDeny,
@@ -159,7 +154,6 @@ export function ProfilesPage() {
   // unrelated profiles.
   const [pendingUserLinks, setPendingUserLinks] = useState<Set<string>>(new Set())
   const [userLinkErrorByProfile, setUserLinkErrorByProfile] = useState<Map<number, string>>(new Map())
-  const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [apps, setApps] = useState<AppDetail[]>([])
   // #972 — collapse-by-default; toggle state lives in-memory only. Persistence
   // across reloads is a deferred enhancement; the design doc calls this out.
@@ -238,13 +232,11 @@ export function ProfilesPage() {
     // #978 — the old modal pulled the blocklist category list for its picker;
     // the inline app-policy subsection owns that surface now, so we don't need
     // to fan out to /blocklists here anymore.
-    const [users, hs, appsList] = await Promise.all([
+    const [users, appsList] = await Promise.all([
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
-      api.household.get().catch(() => null),
       api.apps.list().catch(() => [] as AppDetail[]),
     ])
     setAllUsers(users)
-    setHousehold(hs)
     setApps([...appsList].sort((a, b) => a.app.name.localeCompare(b.app.name)))
   }
 
@@ -307,7 +299,6 @@ export function ProfilesPage() {
         blockedCategories: [],
         paused: false,
         timeLimit: null,
-        schedules: [],
         failureMode: 'last-known-good',
         crossDeviceOverlapMode: 'sum',
       })
@@ -479,7 +470,6 @@ export function ProfilesPage() {
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
-            defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
             onTogglePause={(mode) => togglePause(pd, mode)}
@@ -564,7 +554,7 @@ export function ProfilesPage() {
 // Expanded body holds the inline subsections (#973-#977) that replaced the
 // old per-profile modal, plus the read-only devices listing.
 function ProfileShellRow({
-  pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight, defaultTz,
+  pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight,
   onToggle, onDelete, onTogglePause, onGrantTime,
   onAppsChanged, onProfileChanged, updateProfile,
   onToggleUserLink, pendingUserLinks, userLinkError,
@@ -579,7 +569,6 @@ function ProfileShellRow({
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
-  defaultTz: string
   onToggle: () => void
   onDelete: () => void
   onTogglePause: (mode?: PauseMode) => void
@@ -618,9 +607,6 @@ function ProfileShellRow({
         blockedCategories: pd.profile.blockedCategories,
         paused: pd.profile.paused,
         timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
-        schedules: pd.schedules.map(s => ({
-          name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-        })),
         failureMode: pd.profile.failureMode,
         crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
       })
@@ -892,7 +878,7 @@ function ProfileShellRow({
 
           {/* #1474 — schedules subsection (bedtime/windows), split out of the
               Time-limits expander into its own top-level disclosure. */}
-          <ScheduleSubsection pd={pd} isAdmin={isAdmin} defaultTz={defaultTz} />
+          <ScheduleSubsection pd={pd} isAdmin={isAdmin} />
 
           {/* #973: read-only Devices listing for non-admins. Admins get the
               editable DevicesSubsection above; keeping a second copy here for
@@ -999,34 +985,6 @@ function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
 function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
   if (a.timeLimit !== b.timeLimit) return false
   if (a.crossDeviceOverlapMode !== b.crossDeviceOverlapMode) return false
-  return true
-}
-
-// #1474 — schedules are their own subsection now. Local form state +
-// structural equality so the debounced autosave can compare against the
-// last-saved baseline (mirrors TimeSubsection's pattern).
-interface ScheduleFormState {
-  schedules: ScheduleRequest[]
-}
-
-function scheduleFormFromDetail(pd: ProfileDetail): ScheduleFormState {
-  return {
-    schedules: pd.schedules.map(s => ({
-      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-    })),
-  }
-}
-
-function scheduleFormsEqual(a: ScheduleFormState, b: ScheduleFormState): boolean {
-  if (a.schedules.length !== b.schedules.length) return false
-  for (let i = 0; i < a.schedules.length; i++) {
-    const x = a.schedules[i]
-    const y = b.schedules[i]
-    if (x.name !== y.name || x.startLocal !== y.startLocal ||
-        x.endLocal !== y.endLocal || x.tz !== y.tz) return false
-    if (x.days.length !== y.days.length) return false
-    for (let j = 0; j < x.days.length; j++) if (x.days[j] !== y.days[j]) return false
-  }
   return true
 }
 
@@ -1402,63 +1360,45 @@ function TimeSubsection({
 }
 
 
-// #1474 — schedules subsection, split out of TimeSubsection. Its own
-// collapsible disclosure with the add/edit/remove schedule editor that used to
-// live under "Time limits". Schedules conceptually belong with bedtime/windows,
-// not screen-time accounting, so they get a sibling top-level subsection.
-//
-// Autosave mirrors TimeSubsection: schedules ride the same debounced
-// full-profile PUT (the wire carries `schedules` on UpsertProfileRequest), so
-// no API/wire change — just a relocated editor + independent collapse state.
+// #1494 — schedules subsection. A profile's block schedules are now #1069
+// household named schedules attached as BLOCK rules (downtime while active),
+// persisted via PUT /api/profiles/{id}/schedules -> profile_schedule_rules,
+// which enforcement reads (#1490). The old inline per-profile window editor
+// wrote the dead V1 `schedules` table — editing it was a silent no-op — so it
+// is gone, replaced by the reusable SchedulePicker (household schedules +
+// "Custom" inline that authors a reusable named schedule). A profile can
+// reference many; add/remove autosaves the full id set (replace semantics),
+// mirroring the per-app schedule-rule editor (#1380).
 function ScheduleSubsection({
-  pd, isAdmin, defaultTz,
+  pd, isAdmin,
 }: {
   pd: ProfileDetail
   isAdmin: boolean
-  defaultTz: string
 }) {
   const invalidators = useInvalidators()
+  const { data: namedSchedules = [] } = useNamedSchedules()
   const [expanded, setExpanded] = useState(false)
-  const [form, setForm] = useState<ScheduleFormState>(() => scheduleFormFromDetail(pd))
   const [status, setStatus] = useState<SaveStatus>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [pickId, setPickId] = useState<number | null>(null)
 
-  // Sync local state on upstream pd changes only when there are no pending
-  // local edits (mirrors TimeSubsection's baseline-compare; see its comment).
-  const baselineRef = useRef<ScheduleFormState>(form)
-  const formRef = useRef<ScheduleFormState>(form)
-  formRef.current = form
-  useEffect(() => {
-    const incoming = scheduleFormFromDetail(pd)
-    const local = formRef.current
-    if (scheduleFormsEqual(local, baselineRef.current)) {
-      if (!scheduleFormsEqual(local, incoming)) {
-        setForm(incoming)
-      }
-    }
-    baselineRef.current = incoming
-  }, [pd])
+  const attachedIds = pd.scheduleIds ?? []
+  const scheduleNameById = useMemo(() => {
+    const m = new Map<number, string>()
+    namedSchedules.forEach(s => m.set(s.id, s.name))
+    return m
+  }, [namedSchedules])
 
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current)
     if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
   }, [])
 
-  const scheduleSave = (next: ScheduleFormState) => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => { void doSave(next) }, 600)
-  }
-
-  async function doSave(next: ScheduleFormState) {
+  async function save(nextIds: number[]) {
     setStatus('saving')
     setErrorMsg(null)
     try {
-      const body = formToRequest(detailToForm(pd))
-      body.schedules = next.schedules
-      await api.profiles.update(pd.profile.id, body)
-      baselineRef.current = next
+      await api.profiles.setSchedules(pd.profile.id, nextIds)
       setStatus('saved')
       void invalidators.profileMutated()
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
@@ -1471,30 +1411,14 @@ function ScheduleSubsection({
     }
   }
 
-  const updateSchedules = (mut: (s: ScheduleRequest[]) => ScheduleRequest[]) => {
-    setForm(prev => {
-      const next = { schedules: mut(prev.schedules) }
-      scheduleSave(next)
-      return next
-    })
+  function attach() {
+    if (pickId == null || attachedIds.includes(pickId)) return
+    const next = [...attachedIds, pickId]
+    setPickId(null)
+    void save(next)
   }
-
-  function addSchedule() {
-    updateSchedules(s => [
-      ...s,
-      { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz },
-    ])
-  }
-  function patchSchedule(i: number, p: Partial<ScheduleRequest>) {
-    updateSchedules(s => s.map((x, idx) => idx === i ? { ...x, ...p } : x))
-  }
-  function removeSchedule(i: number) {
-    updateSchedules(s => s.filter((_, idx) => idx !== i))
-  }
-  function toggleDay(i: number, d: string) {
-    updateSchedules(s => s.map((x, idx) => idx !== i ? x : {
-      ...x, days: x.days.includes(d) ? x.days.filter(y => y !== d) : [...x.days, d],
-    }))
+  function detach(id: number) {
+    void save(attachedIds.filter(x => x !== id))
   }
 
   const statusLabel =
@@ -1530,13 +1454,11 @@ function ScheduleSubsection({
 
       {!expanded && (
         <div className="px-4 pb-3 space-y-1">
-          {pd.schedules.length > 0
-            ? pd.schedules.map(s => (
-              <div key={s.id} className="flex justify-between text-sm bg-brand-alt/50 rounded-lg px-3 py-2">
-                <span className="text-brand-text">{s.name}</span>
-                <span className="text-amber-700 font-mono text-xs">
-                  {s.startLocal} → {s.endLocal} <span className="text-amber-700/60">({s.tz})</span>
-                </span>
+          {attachedIds.length > 0
+            ? attachedIds.map(id => (
+              <div key={id} className="flex justify-between text-sm bg-brand-alt/50 rounded-lg px-3 py-2">
+                <span className="text-brand-text">{scheduleNameById.get(id) ?? `Schedule ${id}`}</span>
+                <span className="text-amber-700 font-mono text-xs">Blocked during</span>
               </div>
             ))
             : <p className="text-xs text-brand-text-muted">No schedules.</p>
@@ -1552,80 +1474,54 @@ function ScheduleSubsection({
             </div>
           )}
 
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
-                Schedules
-              </label>
-              {isAdmin && (
+          <div className="space-y-2">
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
+              Block schedules
+            </label>
+            <p className="text-xs text-brand-text-muted">
+              Internet is blocked for this profile while an attached schedule's
+              window is active. Schedules are shared household schedules — edit
+              one on the Schedules page and it changes everywhere it's used.
+            </p>
+
+            {attachedIds.length === 0 && (
+              <p className="text-xs text-brand-text-muted italic">No schedules attached.</p>
+            )}
+
+            {attachedIds.map(id => (
+              <div
+                key={id}
+                data-testid={`profile-schedule-attached-${pd.profile.id}-${id}`}
+                className="flex items-center gap-2 bg-brand-surface border border-brand-border-strong rounded-lg px-3 py-2">
+                <span className="flex-1 text-sm text-brand-ink">
+                  {scheduleNameById.get(id) ?? `Schedule ${id}`}
+                </span>
+                {isAdmin && (
+                  <button type="button"
+                    data-testid={`profile-schedule-attached-${pd.profile.id}-${id}-remove`}
+                    aria-label={`Remove ${scheduleNameById.get(id) ?? 'schedule'}`}
+                    onClick={() => detach(id)}
+                    className="text-brand-text-muted hover:text-red-700 transition-colors leading-none text-sm">×</button>
+                )}
+              </div>
+            ))}
+
+            {isAdmin && (
+              <div className="space-y-2 pt-1">
+                <SchedulePicker
+                  value={pickId}
+                  onChange={setPickId}
+                  testId={`profile-schedule-picker-${pd.profile.id}`}
+                />
                 <button type="button"
                   data-testid={`profile-schedule-add-${pd.profile.id}`}
-                  onClick={addSchedule}
-                  className="text-xs text-brand-accent hover:text-brand-accent">
-                  + Add schedule
+                  disabled={pickId == null || attachedIds.includes(pickId)}
+                  onClick={attach}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-brand-accent/10 text-brand-accent font-medium hover:bg-brand-accent/20 disabled:opacity-50">
+                  Attach schedule
                 </button>
-              )}
-            </div>
-            {form.schedules.length === 0 && (
-              <p className="text-xs text-brand-text-muted">No schedules.</p>
+              </div>
             )}
-            <div className="space-y-3">
-              {form.schedules.map((s, i) => (
-                <div key={i} className="bg-brand-surface border border-brand-border-strong rounded-xl p-3 space-y-2"
-                  data-testid={`profile-schedule-row-${pd.profile.id}-${i}`}>
-                  <div className="flex gap-2">
-                    <input type="text"
-                      value={s.name}
-                      disabled={!isAdmin}
-                      onChange={e => patchSchedule(i, { name: e.target.value })}
-                      placeholder="Bedtime"
-                      className="flex-1 bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm disabled:opacity-60" />
-                    {isAdmin && (
-                      <button type="button"
-                        onClick={() => removeSchedule(i)}
-                        className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 rounded-lg">
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex gap-2 items-center text-sm">
-                    <input type="time" value={s.startLocal}
-                      disabled={!isAdmin}
-                      onChange={e => patchSchedule(i, { startLocal: e.target.value })}
-                      data-testid={`profile-schedule-start-${pd.profile.id}-${i}`}
-                      className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink disabled:opacity-60" />
-                    <span className="text-brand-text-muted">→</span>
-                    <input type="time" value={s.endLocal}
-                      disabled={!isAdmin}
-                      onChange={e => patchSchedule(i, { endLocal: e.target.value })}
-                      data-testid={`profile-schedule-end-${pd.profile.id}-${i}`}
-                      className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink disabled:opacity-60" />
-                  </div>
-                  <TimezonePicker
-                    value={s.tz}
-                    onChange={tz => patchSchedule(i, { tz })}
-                    testId={`profile-schedule-tz-${pd.profile.id}-${i}`}
-                  />
-                  <div className="flex flex-wrap gap-1">
-                    {DAYS.map(d => {
-                      const on = s.days.includes(d)
-                      return (
-                        <button key={d} type="button"
-                          disabled={!isAdmin}
-                          onClick={() => toggleDay(i, d)}
-                          className={`text-xs px-2.5 py-1 rounded-lg border ${
-                            on
-                              ? 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
-                              : 'bg-brand-alt text-brand-text-muted border-brand-border-strong'
-                          } disabled:opacity-60`}>
-                          {d}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
           </div>
         </div>
       )}

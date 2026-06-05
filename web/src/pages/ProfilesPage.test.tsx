@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       setUsers: vi.fn(),
+      setSchedules: vi.fn(),
       usageByApp: vi.fn(),
     },
     // #1473 — the inline blocked-categories editor on the profile card
@@ -97,9 +98,11 @@ const kidsProfile: ProfileDetail = {
     pauseMode: 'soft',
     defaultDeny: false,
   },
-  schedules: [
-    { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
-  ],
+  // #1494: the legacy inline `schedules` read field is now always empty (the
+  // upsert no longer writes the V1 table). A profile's block schedules are the
+  // attached #1069 named-schedule ids.
+  schedules: [],
+  scheduleIds: [10],
   timeLimit: { id: 5, profileId: 1, dailyMinutes: 120 },
 }
 
@@ -115,6 +118,7 @@ const adultsProfile: ProfileDetail = {
     defaultDeny: false,
   },
   schedules: [],
+  scheduleIds: [],
   timeLimit: null,
 }
 
@@ -157,6 +161,7 @@ beforeEach(() => {
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.profiles.setSchedules as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
   ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
@@ -308,6 +313,11 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
   })
 
   it('clicking the row toggles the expanded body', async () => {
+    // #1494: the schedule summary now lists the attached named schedule's name
+    // (kidsProfile.scheduleIds = [10]) from the household catalog.
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      [{ id: 10, name: 'Bedtime', description: null, windows: [] }],
+    )
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -315,7 +325,6 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
     expect(within(kidsCard).getByText('Bedtime')).toBeInTheDocument()
     expect(within(kidsCard).getByText('120 min')).toBeInTheDocument()
-    expect(within(kidsCard).getByText('21:00 → 07:00')).toBeInTheDocument()
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
     expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
   })
@@ -564,7 +573,8 @@ describe('ProfilesPage — create (inline name-only, #978)', () => {
       blockedCategories: [],
       paused: false,
       timeLimit: null,
-      schedules: [],
+      // #1494: the create payload no longer carries schedules — they attach via
+      // PUT /profiles/{id}/schedules after the profile exists.
       // #385: column-default for a brand-new profile is LastKnownGood.
       failureMode: 'last-known-good',
       // #751: column-default for a brand-new profile is Sum.
@@ -736,24 +746,29 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
   })
 })
 
-describe('ProfilesPage — inline schedules subsection (#1474)', () => {
-  it('collapsed-by-default subsection summarizes configured windows', async () => {
+// #1494 — the profile editor's schedule section now attaches #1069 household
+// named schedules (via the shared SchedulePicker) and persists them through
+// PUT /api/profiles/{id}/schedules (api.profiles.setSchedules ->
+// profile_schedule_rules), which enforcement reads (#1490). The old inline
+// per-window editor wrote the dead V1 `schedules` table — a silent no-op — and
+// is gone. These tests pin the picker round-trip and that the legacy upsert
+// write path is never used for schedules.
+describe('ProfilesPage — inline schedules subsection (#1494 named-schedule picker)', () => {
+  const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
+  const schoolHours = { id: 11, name: 'School hours', description: null, windows: [] }
+
+  it('collapsed-by-default subsection summarizes attached named schedules', async () => {
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
 
     const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
-    // Collapsed: editor hidden, summary lists the configured window(s) — the
-    // schedule lines that used to live under "Time limits" (#1474).
+    // kidsProfile carries scheduleIds: [10] → the catalog name 'Bedtime' shows.
     expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
-    expect(within(sub).getByText(/21:00 → 07:00/)).toBeInTheDocument()
+    // The old inline per-window editor is gone — no window rows.
     expect(within(sub).queryByTestId('profile-schedule-row-1-0')).not.toBeInTheDocument()
-
-    await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
-    expect(within(sub).getByTestId('profile-schedule-row-1-0')).toBeInTheDocument()
-    expect(within(sub).getByTestId('profile-schedule-start-1-0')).toHaveValue('21:00')
-    expect(within(sub).getByTestId('profile-schedule-end-1-0')).toHaveValue('07:00')
   })
 
   it('empty schedules summary reads "No schedules"', async () => {
@@ -765,41 +780,58 @@ describe('ProfilesPage — inline schedules subsection (#1474)', () => {
     expect(within(sub).getByText(/No schedules/i)).toBeInTheDocument()
   })
 
-  it('adding a schedule autosaves via a single PUT carrying schedules', async () => {
+  it('attaching a named schedule round-trips through setSchedules, not the legacy upsert', async () => {
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
     const user = userEvent.setup()
     renderPage()
-    const adultsCard = await screen.findByTestId('profile-card-2')
+    const adultsCard = await screen.findByTestId('profile-card-2') // scheduleIds: []
     await expand(2, user)
     const sub = within(adultsCard).getByTestId('profile-schedule-subsection-2')
     await user.click(within(sub).getByTestId('profile-schedule-toggle-2'))
     await act(async () => {})
 
+    await user.selectOptions(within(sub).getByTestId('profile-schedule-picker-2-select'), '11')
     await user.click(within(sub).getByTestId('profile-schedule-add-2'))
 
-    // Poll for the debounced PUT — schedules ride the full-profile PUT.
     await waitFor(() =>
-      expect(api.profiles.update).toHaveBeenLastCalledWith(
-        2,
-        expect.objectContaining({
-          schedules: expect.arrayContaining([
-            expect.objectContaining({ name: 'Bedtime', startLocal: '21:00', endLocal: '07:00' }),
-          ]),
-        }),
-      ),
+      expect(api.profiles.setSchedules).toHaveBeenCalledWith(2, [11]),
     )
+    // The legacy full-profile PUT is NOT used to carry schedules.
+    expect(api.profiles.update).not.toHaveBeenCalled()
   })
 
-  it('non-admins see read-only schedules — no add button', async () => {
+  it('removing an attached schedule persists the reduced id set via setSchedules', async () => {
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1') // scheduleIds: [10]
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
+
+    await user.click(within(sub).getByTestId('profile-schedule-attached-1-10-remove'))
+
+    await waitFor(() =>
+      expect(api.profiles.setSchedules).toHaveBeenCalledWith(1, []),
+    )
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+
+  it('non-admins see read-only schedules — no picker, no attach/remove', async () => {
     mockAuth = { isAdmin: false }
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
     const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
     await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
+    // Read-only: no picker, no attach button, no remove control.
     expect(within(sub).queryByTestId('profile-schedule-add-1')).not.toBeInTheDocument()
-    // The schedule name input is rendered read-only (disabled).
-    expect(within(sub).getByTestId('profile-schedule-start-1-0')).toBeDisabled()
+    expect(within(sub).queryByTestId('profile-schedule-picker-1')).not.toBeInTheDocument()
+    expect(within(sub).queryByTestId('profile-schedule-attached-1-10-remove')).not.toBeInTheDocument()
+    // The attached schedule is still listed for reference.
+    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
   })
 })
 
