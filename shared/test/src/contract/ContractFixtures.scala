@@ -36,10 +36,20 @@ object ContractFixtures {
     val adultList  = BlocklistId.parse("adult").toOption.get
     val tiktok     = Hostname.parse("tiktok.com").toOption.get
     val khan       = Hostname.parse("khanacademy.org").toOption.get
+    val connCheck  = Hostname.parse("connectivitycheck.gstatic.com").toOption.get
+    val captive    = Hostname.parse("captive.apple.com").toOption.get
+    val uiHost     = Hostname.parse("wifihaven.local").toOption.get
 
     PolicySnapshot(
       etag = ETag.unsafe("\"sha256:abc123def4567890\""),
       generatedAt = "2026-05-17T14:00:00Z",
+      // #1316 / #1308: fleet-wide policy carried once. Here only the
+      // always-reachable allowlist (connectivity check, captive portal, the
+      // WifiHaven UI / block-page host) is set; the block dimensions stay at
+      // their inert allowAll defaults. The router applies this to every MAC.
+      global = BlockRules.allowAll.copy(
+        extraAllowed = List(connCheck, captive, uiHost),
+      ),
       devices = Map(
         macKid     -> DevicePolicy(
           profileId = Some(kidsPid),

@@ -1287,9 +1287,23 @@ case class ProfilePolicy(
     failureMode: FailureMode,
 ) derives JsonCodec
 
+// `global` carries fleet-wide policy ONCE per snapshot (#1308 design,
+// docs/design/global-policy-layer.md §3.1). It reuses `BlockRules` verbatim —
+// no new struct, no "why" metadata — so each field has the same router meaning
+// it has on a profile, just applied to every MAC: `extraAllowed` is the
+// always-reachable list that carves out every drop (the relocated infra /
+// UI / block-page hosts), `extraBlocked` / `blocklistIds` / `blocked` are
+// mandatory network-wide blocks a profile may NOT un-block, and `blockIpOnly`
+// is a network-wide strict-IP floor. The global section is NOT a third merge
+// tier: composition precedence (`global.extraAllowed` outranks everything;
+// global blocks outrank per-MAC allow) resolves server-side and the router
+// applies it as one more `BlockRules` (§5.2). Defaults to `allowAll` (inert)
+// so a snapshot with no global policy — and an older snapshot JSON predating
+// this field — decodes to a no-op. PolicyService assembly lands in #1318.
 case class PolicySnapshot(
     etag: ETag,
     generatedAt: String,
+    global: BlockRules = BlockRules.allowAll,
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
@@ -1308,30 +1322,37 @@ sealed trait BlockReason
 
 sealed trait MacBlockReason extends BlockReason
 object MacBlockReason {
-  case object Paused    extends MacBlockReason
-  case object Schedule  extends MacBlockReason
-  case object TimeLimit extends MacBlockReason
-  case object Manual    extends MacBlockReason
+  case object Paused      extends MacBlockReason
+  case object Schedule    extends MacBlockReason
+  case object TimeLimit   extends MacBlockReason
+  case object Manual      extends MacBlockReason
   // #1122: default-block path for devices with no profile assignment when
   // settings.unmanagedMacPolicy.policy=="block". Distinct from Manual (which
   // is an admin block on a known device) so the Logs page and block-page can
   // surface a more specific reason.
-  case object Unmanaged extends MacBlockReason
+  case object Unmanaged   extends MacBlockReason
+  // #1316 / #1308: a profile in default-deny mode collapses to `blocked = true`
+  // with this reason (block-page text only). Lowest-precedence reason — it is
+  // the steady-state baseline, so a concurrent Paused/Schedule/TimeLimit
+  // reports the stronger reason instead (see docs/design/global-policy-layer.md §3.3).
+  case object DefaultDeny extends MacBlockReason
 
   def asString(r: MacBlockReason): String      = r match {
-    case Paused    => "Paused"
-    case Schedule  => "Schedule"
-    case TimeLimit => "TimeLimit"
-    case Manual    => "Manual"
-    case Unmanaged => "Unmanaged"
+    case Paused      => "Paused"
+    case Schedule    => "Schedule"
+    case TimeLimit   => "TimeLimit"
+    case Manual      => "Manual"
+    case Unmanaged   => "Unmanaged"
+    case DefaultDeny => "DefaultDeny"
   }
   def parse(s: String): Option[MacBlockReason] = s match {
-    case "Paused"    => Some(Paused)
-    case "Schedule"  => Some(Schedule)
-    case "TimeLimit" => Some(TimeLimit)
-    case "Manual"    => Some(Manual)
-    case "Unmanaged" => Some(Unmanaged)
-    case _           => None
+    case "Paused"      => Some(Paused)
+    case "Schedule"    => Some(Schedule)
+    case "TimeLimit"   => Some(TimeLimit)
+    case "Manual"      => Some(Manual)
+    case "Unmanaged"   => Some(Unmanaged)
+    case "DefaultDeny" => Some(DefaultDeny)
+    case _             => None
   }
 
   given JsonCodec[MacBlockReason] = JsonCodec[String].transformOrFail(
@@ -1373,6 +1394,7 @@ object BlockReason {
     case "time_limit" | "TimeLimit"                            => MacBlockReason.TimeLimit
     case "manual" | "Manual"                                   => MacBlockReason.Manual
     case "unmanaged_mac" | "Unmanaged" | "device_not_enrolled" => MacBlockReason.Unmanaged
+    case "default_deny" | "DefaultDeny"                        => MacBlockReason.DefaultDeny
     case s if s.startsWith("category:")                        =>
       BlocklistId
         .parse(s.stripPrefix("category:"))
@@ -1399,43 +1421,45 @@ object BlockReason {
    * second `fromWire` reparse still produces the same `Unknown(raw)`.
    */
   def asWire(r: BlockReason): String = r match {
-    case Allow                    => "allow"
-    case Blocked                  => "blocked"
-    case ExtraAllowed             => "extra_allowed"
-    case ExtraBlocked             => "extra_blocked"
-    case NoProfile                => "no_profile"
-    case MacBlockReason.Paused    => "paused"
-    case MacBlockReason.Schedule  => "schedule"
-    case MacBlockReason.TimeLimit => "time_limit"
-    case MacBlockReason.Manual    => "manual"
-    case MacBlockReason.Unmanaged => "unmanaged_mac"
-    case Category(slug)           => s"category:${slug.value}"
-    case SiteTimeLimit(label)     => s"site_time_limit:$label"
-    case AppBlocked(appId)        => s"app:$appId"
-    case Unknown(raw)             => raw
+    case Allow                      => "allow"
+    case Blocked                    => "blocked"
+    case ExtraAllowed               => "extra_allowed"
+    case ExtraBlocked               => "extra_blocked"
+    case NoProfile                  => "no_profile"
+    case MacBlockReason.Paused      => "paused"
+    case MacBlockReason.Schedule    => "schedule"
+    case MacBlockReason.TimeLimit   => "time_limit"
+    case MacBlockReason.Manual      => "manual"
+    case MacBlockReason.Unmanaged   => "unmanaged_mac"
+    case MacBlockReason.DefaultDeny => "default_deny"
+    case Category(slug)             => s"category:${slug.value}"
+    case SiteTimeLimit(label)       => s"site_time_limit:$label"
+    case AppBlocked(appId)          => s"app:$appId"
+    case Unknown(raw)               => raw
   }
 
   // Kind-tagged JSON. Encoder/Decoder are written by hand to keep the wire
   // format stable independent of source-order rearrangement, and to give a
   // single source of truth for the strings the SPA pattern-matches on.
   given JsonEncoder[BlockReason] = JsonEncoder[Json].contramap {
-    case Allow                    => Json.Obj("kind" -> Json.Str("allow"))
-    case Blocked                  => Json.Obj("kind" -> Json.Str("blocked"))
-    case ExtraAllowed             => Json.Obj("kind" -> Json.Str("extraAllowed"))
-    case ExtraBlocked             => Json.Obj("kind" -> Json.Str("extraBlocked"))
-    case NoProfile                => Json.Obj("kind" -> Json.Str("noProfile"))
-    case MacBlockReason.Paused    => Json.Obj("kind" -> Json.Str("paused"))
-    case MacBlockReason.Schedule  => Json.Obj("kind" -> Json.Str("schedule"))
-    case MacBlockReason.TimeLimit => Json.Obj("kind" -> Json.Str("timeLimit"))
-    case MacBlockReason.Manual    => Json.Obj("kind" -> Json.Str("manual"))
-    case MacBlockReason.Unmanaged => Json.Obj("kind" -> Json.Str("unmanaged"))
-    case Category(slug)           =>
+    case Allow                      => Json.Obj("kind" -> Json.Str("allow"))
+    case Blocked                    => Json.Obj("kind" -> Json.Str("blocked"))
+    case ExtraAllowed               => Json.Obj("kind" -> Json.Str("extraAllowed"))
+    case ExtraBlocked               => Json.Obj("kind" -> Json.Str("extraBlocked"))
+    case NoProfile                  => Json.Obj("kind" -> Json.Str("noProfile"))
+    case MacBlockReason.Paused      => Json.Obj("kind" -> Json.Str("paused"))
+    case MacBlockReason.Schedule    => Json.Obj("kind" -> Json.Str("schedule"))
+    case MacBlockReason.TimeLimit   => Json.Obj("kind" -> Json.Str("timeLimit"))
+    case MacBlockReason.Manual      => Json.Obj("kind" -> Json.Str("manual"))
+    case MacBlockReason.Unmanaged   => Json.Obj("kind" -> Json.Str("unmanaged"))
+    case MacBlockReason.DefaultDeny => Json.Obj("kind" -> Json.Str("defaultDeny"))
+    case Category(slug)             =>
       Json.Obj("kind" -> Json.Str("category"), "slug" -> Json.Str(slug.value))
-    case SiteTimeLimit(label)     =>
+    case SiteTimeLimit(label)       =>
       Json.Obj("kind" -> Json.Str("siteTimeLimit"), "label" -> Json.Str(label))
-    case AppBlocked(appId)        =>
+    case AppBlocked(appId)          =>
       Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
-    case Unknown(raw)             =>
+    case Unknown(raw)               =>
       Json.Obj("kind" -> Json.Str("unknown"), "raw" -> Json.Str(raw))
   }
 
@@ -1458,6 +1482,7 @@ object BlockReason {
         case "timeLimit"     => Right(MacBlockReason.TimeLimit)
         case "manual"        => Right(MacBlockReason.Manual)
         case "unmanaged"     => Right(MacBlockReason.Unmanaged)
+        case "defaultDeny"   => Right(MacBlockReason.DefaultDeny)
         case "category"      =>
           field("slug").flatMap(s =>
             BlocklistId.parse(s).map(Category(_)).left.map(_ => s"invalid category slug: $s"),
