@@ -255,9 +255,11 @@ as #763 documents — that behaviour is untouched.
 The per-host fallback (`PolicyService.decide`, ~L216) independently re-derives
 `appAllowed` / `appBlocked` from the assignments. It must apply the same
 per-app effective-disposition resolution **and the same cap gate** so the
-fallback agrees with the snapshot. Note its current precedence chain — "paused >
-schedule > allowed-app > blocked-app > site_time_limit > time_limit > category"
-— places allowed-app *above* time_limit unconditionally; that must change so a
+fallback agrees with the snapshot. Note its current precedence chain — "allowed-app >
+paused > schedule > blocked-app > site_time_limit > time_limit > category"
+(allowed-app moved to the head of the chain in #1413 so `extraAllowed` beats the
+Paused/Schedule whole-MAC blocks too, matching the router carve-out) — places
+allowed-app *above* time_limit unconditionally; that must change so a
 *non-exempt* `allowed_during` app falls **below** time_limit (cap bites), while
 an *exempt* one stays above it. Concretely: an active `allowed_during` window
 short-circuits to Allow only when `exemptFromDaily` OR the cap is not yet

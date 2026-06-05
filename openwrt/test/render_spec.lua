@@ -667,6 +667,29 @@ describe("render.nft drop rules carry log group + counter + comment (#1122)", fu
       1, true))
   end)
 
+  it("#1413: Paused MAC carves out an allowed app host but still drops other traffic", function()
+    -- Prod miss (Kids/Math Academy, 2026-06): an allowed-mode app appeared
+    -- blocked while the profile was paused. The whole-MAC drop for a Paused MAC
+    -- with extraAllowed must carry `ip daddr != @ea_<m>_<allowed-host>` so the
+    -- allowed app stays reachable, while general traffic (no ea_ carve-out)
+    -- still drops. Reason-agnostic carve-out, locked here for the Paused reason.
+    local s = snap_one()
+    s.profiles["3"].rules.blocked      = true
+    s.profiles["3"].rules.blockReason  = "Paused"
+    s.profiles["3"].rules.extraAllowed = { "mathacademy.com" }
+    local nft = render.nft(s)
+    -- The per-MAC drop spares the allowed host via the ea_ exception (allow wins).
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Paused\"",
+      1, true))
+    -- The MAC is pulled out of the family-agnostic @blocked_macs set (it has a
+    -- per-MAC carve-out rule instead), so general traffic drops via that rule.
+    assert.is_nil(nft:find("@blocked_macs drop", 1, true))
+    -- No ea_ set is declared for an unrelated host, so non-allowed traffic has
+    -- no carve-out and is dropped by the rule above.
+    assert.is_nil(nft:find("@ea_aa_bb_cc_11_22_33_example_com", 1, true))
+  end)
+
   it("MacBlockReason wire strings: Paused / Schedule / TimeLimit / Manual / Unmanaged", function()
     -- Pin the contract between MacBlockReason.asString in PolicyService and
     -- the strings render.lua emits. The agent's nflog parser depends on this.
