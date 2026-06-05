@@ -463,6 +463,20 @@ the next poll after a window edge recomputes against the current instant
 if the future server-push channel above is built. Full design:
 [`docs/design/per-app-schedules.md`](design/per-app-schedules.md).
 
+**Hard pause ([#1418](https://github.com/wifihaven/wifihaven/issues/1418))
+is the same pattern in reverse — a functional override of the carve-out, not
+a new field.** Pause has two modes, stored per-profile in
+`profiles.pause_mode` (`'soft'` | `'hard'`, default `'soft'`). *Soft* pause is
+today's behaviour: the MAC drops except its `extraAllowed` hosts (an allowed
+app + the #1307 infra allowlist survive, per #421/#1413). *Hard* pause is a
+true off-switch — when a profile is paused **and** `pause_mode = 'hard'`,
+`PolicyService.computeBlockRules` ships `blocked = true` with `extraAllowed`
+emptied of the app/exempt/infra hosts, keeping only the deployment's
+`uiAllowedHosts` so the block page and admin SPA still load on the household
+LAN. With an empty `ea_` set the router drops the MAC unconditionally — no
+`ip daddr != @ea_…` exception — so it never learns "hard vs soft"; `blockReason`
+stays `Paused` (block-page copy only). No wire/router change.
+
 ## 6. Router HTTP API
 
 All endpoints below are served by the existing API process under
