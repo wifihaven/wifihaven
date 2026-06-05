@@ -141,6 +141,13 @@ created directly — no deferred-constraint dance.
 New migration (next free version after #1069's `V50`, e.g.
 `V51__app_policy_schedule_rules.sql`, sequenced *after* #1069's migration):
 
+> **Landed (`V51__app_policy_schedule_rules.sql`, #1378).** The table below
+> ships as the schema-only foundation PR, FKing `app_policy_assignments(id)`
+> (V28) and the #1069 `named_schedules(id)` (V50). It mirrors V50's
+> `profile_schedule_rules` exactly — same `(entity, schedule, mode)` shape, same
+> two indexes (by assignment for the per-app fold, by schedule for the
+> cascade-delete probe). Inert until #1379 adds the PolicyService evaluation.
+
 ```sql
 CREATE TABLE app_policy_schedule_rules (
   id             BIGSERIAL PRIMARY KEY,
