@@ -521,3 +521,79 @@ describe("blocklists.hosts_differ (#1412)", function()
   end)
 
 end)
+
+-- ── render byte-cap: never load/render an oversized list (#1412 OOM) ─────────
+--
+-- #1412: the prod agent OOM-killed (~700 MB RSS on a 1 GB router) loading the
+-- StevenBlack "extended" lists (ads-extended 83k + adult-extended 76k ≈ 160k
+-- hosts) into _blocklist_hosts and rendering ~160k `nftset=` directives — so NO
+-- bl_ set ever populated and category enforcement (incl. taboola in the 36-host
+-- 'ads' list) died as collateral damage. The fix bounds the per-list size by
+-- BYTES at the parse boundary: an oversized cache file is still fetched/cached
+-- (gc keeps working) but is NOT parsed into a host table nor rendered, and the
+-- skipped id is reported so the agent can log it. Byte size is the memory-safe
+-- discriminator — it's checked before building the 80k-entry Lua table.
+
+describe("blocklists size cap (#1412)", function()
+
+  local SMALL = "taboola.com\ndoubleclick.net\n"            -- ~25 B → kept
+  local function big(n)
+    local t = {}
+    for i = 1, n do t[i] = "host" .. i .. ".example.com" end
+    return table.concat(t, "\n") .. "\n"
+  end
+
+  it("load_cached skips a file larger than max_bytes and reports it", function()
+    local fs        = make_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    fs._files[cache_dir .. "/ads-v1.txt"]          = SMALL
+    fs._files[cache_dir .. "/ads-extended-v1.txt"] = big(5000)   -- well over the cap
+
+    local s = snap({
+      ads          = { version = "v1", url = "u" },
+      ["ads-extended"] = { version = "v1", url = "u" },
+    })
+    local hosts, skipped = blocklists.load_cached(s, fs, cache_dir, 1024)
+
+    -- Small list parsed; oversized list dropped to empty.
+    assert.truthy(#hosts["ads"] >= 1)
+    assert.equal(0, #(hosts["ads-extended"] or {}))
+    -- Skipped id reported (so the agent can log it).
+    local sk = {}
+    for _, id in ipairs(skipped or {}) do sk[id] = true end
+    assert.truthy(sk["ads-extended"], "oversized id must be reported as skipped")
+    assert.is_nil(sk["ads"])
+  end)
+
+  it("load_cached with no cap parses everything (backward compatible)", function()
+    local fs        = make_fs()
+    local cache_dir = "/etc/wifihaven/blocklists"
+    fs._files[cache_dir .. "/ads-extended-v1.txt"] = big(3000)
+    local s = snap({ ["ads-extended"] = { version = "v1", url = "u" } })
+    local hosts = blocklists.load_cached(s, fs, cache_dir)   -- no max_bytes arg
+    assert.equal(3000, #hosts["ads-extended"])
+  end)
+
+  it("refresh threads the byte cap and returns skipped ids", function()
+    local fs = make_fs()
+    -- ads fetched small (kept), ads-extended fetched huge (cached but not parsed).
+    local function http_get(url, _h)
+      if url:match("ads%-extended") then return 200, big(5000), {} end
+      return 200, SMALL, {}
+    end
+    local s = snap({
+      ads              = { version = "v1", url = "/api/blocklists/ads" },
+      ["ads-extended"] = { version = "v1", url = "/api/blocklists/ads-extended" },
+    })
+    local res = blocklists.refresh(s, http_get, fs, "/etc/wifihaven/blocklists", "http://api", "tok", 1024)
+
+    assert.truthy(#res.hosts["ads"] >= 1)
+    assert.equal(0, #(res.hosts["ads-extended"] or {}))
+    local sk = {}
+    for _, id in ipairs(res.skipped or {}) do sk[id] = true end
+    assert.truthy(sk["ads-extended"])
+    -- The oversized list is still WRITTEN to cache (gc + cache-busting keep working).
+    assert.not_nil(fs._files["/etc/wifihaven/blocklists/ads-extended-v1.txt"])
+  end)
+
+end)
