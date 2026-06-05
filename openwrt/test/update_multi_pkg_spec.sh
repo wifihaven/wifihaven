@@ -144,11 +144,42 @@ case "$expr" in
 esac
 EOF
 
-  # Mocks for apk and uhttpd init.d
+  # Mocks for apk and uhttpd init.d.
+  #
+  # The apk mock reproduces the apk-tools v3 output shapes (verified live on
+  # openwrt.lan, apk-tools 3.0.5) so the version-detection parse is exercised
+  # against realistic output:
+  #   - `apk info -v <pkg>` emits the package DESCRIPTION block, NOT a
+  #     pkgname-version line — this is exactly what broke LUCI_INSTALLED.
+  #   - `apk list --installed <pkg>` emits a `pkgname-version-rN ...` token
+  #     line, which is the reliable source of the installed semver.
+  # MOCK_LUCI_INSTALLED sets the installed luci-app version (empty = not
+  # installed). The agent's apk fallback is never hit in these tests because
+  # the baked-in VERSION file is always present.
   cat > "$BINDIR/apk" <<APKEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$TESTDIR/apk.calls"
-exit \${MOCK_APK_EXIT:-0}
+_cmd="\$1"
+_pkg=""
+for _a in "\$@"; do _pkg="\$_a"; done
+case "\$_cmd" in
+  info)
+    printf '%s: LuCI web UI for the WifiHaven router agent\n' "\$_pkg"
+    printf '%s: https://github.com/wifihaven/wifihaven\n' "\$_pkg"
+    printf '%s: 15 KiB\n' "\$_pkg"
+    exit 0
+    ;;
+  list)
+    if [ "\$_pkg" = "luci-app-wifihaven" ] && [ -n "\${MOCK_LUCI_INSTALLED:-}" ]; then
+      printf 'luci-app-wifihaven-%s-r1 noarch {luci-app-wifihaven} (MIT) [installed]\n' "\${MOCK_LUCI_INSTALLED}"
+    fi
+    exit 0
+    ;;
+  add)
+    exit \${MOCK_APK_EXIT:-0}
+    ;;
+esac
+exit 0
 APKEOF
 
   INITD_WIFIHAVEN="$BINDIR/wifihaven-initd"
@@ -183,6 +214,8 @@ luci_stamp()   { cat "$STATE/last_update_version.luci-app-wifihaven" 2>/dev/null
 downloads()    { cat "$TESTDIR/downloads.log" 2>/dev/null || echo ""; }
 wh_restarts()  { grep -c '^restart' "$TESTDIR/initd-wifihaven.calls" 2>/dev/null || echo 0; }
 uhttpd_reloads() { grep -c '^reload' "$TESTDIR/initd-uhttpd.calls" 2>/dev/null || echo 0; }
+apk_adds()     { grep -c '^add' "$TESTDIR/apk.calls" 2>/dev/null || echo 0; }
+logger_out()   { cat "$TESTDIR/logger.out" 2>/dev/null || echo ""; }
 
 # ── Case 1: both packages on new version → both upgraded, both stamps ────────
 setup_mocks
@@ -303,6 +336,60 @@ PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 [ "$(agent_stamp)" = "0.2.8" ] \
   && check "[migration] agent stamp present after migration" ok \
   || check "[migration] agent stamp present after migration" "stamp='$(agent_stamp)'"
+rm -rf "$TESTDIR"
+
+# ── Case 6: apk v3 installed-version detection — luci already current ─────────
+# Regression for #1420: on apk-tools v3, `apk info -v` emits the description
+# block, so the old parse captured "luci-app-wifihaven: LuCI web UI ..." as the
+# installed version instead of the semver. With NO stamp present (so the stamp
+# can't mask the bug), a correctly-detected installed version equal to LATEST
+# must make the luci run a complete no-op: no download, no `apk add`, no uhttpd
+# reload. With the broken parse the bogus string never equals LATEST, so the
+# script wastefully "upgrades".
+setup_mocks
+printf '0.2.8\n' > "$VERS_DIR/VERSION"   # agent already current → agent no-op
+export MOCK_LUCI_INSTALLED="0.2.8"        # luci installed & current per apk db
+# Deliberately no luci stamp file.
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+
+DL=$(downloads)
+printf '%s' "$DL" | grep -vq 'luci-app-wifihaven' \
+  && check "[apk v3 current] luci-app NOT downloaded (installed==latest detected)" ok \
+  || check "[apk v3 current] luci-app NOT downloaded (installed==latest detected)" "downloads: $DL"
+N=$(apk_adds)
+[ "$N" = "0" ] \
+  && check "[apk v3 current] apk add NOT called" ok \
+  || check "[apk v3 current] apk add NOT called" "apk add count $N; calls: $(cat "$TESTDIR/apk.calls" 2>/dev/null)"
+N=$(uhttpd_reloads)
+[ "$N" = "0" ] \
+  && check "[apk v3 current] uhttpd NOT reloaded" ok \
+  || check "[apk v3 current] uhttpd NOT reloaded" "got $N"
+unset MOCK_LUCI_INSTALLED
+rm -rf "$TESTDIR"
+
+# ── Case 7: apk v3 installed-version detection — bare semver in upgrade log ───
+# When luci IS behind, the upgrade must run AND the log line must show the bare
+# semver (e.g. "version 0.2.7 -> 0.2.8"), not the description string the broken
+# parse produced ("version luci-app-wifihaven: LuCI web UI ... -> 0.2.8").
+setup_mocks
+printf '0.2.8\n' > "$VERS_DIR/VERSION"   # agent current → only luci moves
+export MOCK_LUCI_INSTALLED="0.2.7"        # luci behind by one version
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+
+LOG=$(logger_out)
+printf '%s' "$LOG" | grep -q 'luci-app-wifihaven: version 0.2.7 -> 0.2.8' \
+  && check "[apk v3 behind] upgrade log shows bare semver 0.2.7 -> 0.2.8" ok \
+  || check "[apk v3 behind] upgrade log shows bare semver 0.2.7 -> 0.2.8" "log: $LOG"
+if printf '%s' "$LOG" | grep -q 'version luci-app-wifihaven: LuCI web UI'; then
+  check "[apk v3 behind] installed version is not the description string" "description leaked into log: $LOG"
+else
+  check "[apk v3 behind] installed version is not the description string" ok
+fi
+DL=$(downloads)
+printf '%s' "$DL" | grep -q 'luci-app-wifihaven_0.2.8-1_all.apk' \
+  && check "[apk v3 behind] luci-app asset downloaded" ok \
+  || check "[apk v3 behind] luci-app asset downloaded" "downloads: $DL"
+unset MOCK_LUCI_INSTALLED
 rm -rf "$TESTDIR"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
