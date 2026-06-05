@@ -331,6 +331,70 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Usage retry-queue depth (max + p95)",
+      "description": "max/quantile of usage_queue_depth — bucketed usage reports waiting in each agent's in-memory retry queue (#1033). 0 in steady state; a sustained non-zero value means agents are buffering usage POSTs that aren't reaching the API. Lets operators see the queue stacking up before the per-agent bucket cap drops data, which is what they were blind to during the #1017 outage.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "id": 11,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(usage_queue_depth{env=\"$env\"})",
+          "legendFormat": "max",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "quantile(0.95, usage_queue_depth{env=\"$env\"})",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Usage POST outcomes by result",
+      "description": "sum by (result) (rate(usage_post_total[5m])) — result ∈ {ok, queued, drained, drain_failed} (#1033). `ok` = posted on first try; `queued` = post failed, bucket enqueued for retry; `drained` = retry attempt succeeded; `drain_failed` = retry attempt failed and bucket re-armed with the next backoff. Rising `queued`/`drain_failed` is the leading indicator the API is unreachable.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (result) (rate(usage_post_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",

@@ -88,6 +88,12 @@ object MetricGuard {
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
+    // #1033 — usage-POST retry-queue health. Depth = buckets currently waiting for a backoff to
+    // elapse; `usage_post_total{result}` tracks the immediate-post outcome (`ok` | `queued`) and
+    // drain outcome (`drained` | `drain_failed`). Gives operators a first-class view of "are
+    // usage reports flowing or are they stacking up?" without grepping the ring-buffer syslog.
+    "usage_queue_depth"                         -> Set("router_id", "installation_id"),
+    "usage_post_total"                          -> Set("result", "router_id", "installation_id"),
     // Server-side ingest health for POST /api/router/metrics (#1205). Concrete, emitted now.
     "router_metrics_batches_total"              -> Set("status"),
     // #1243 rollup health — `rollup_job` is a handful of hand-named jobs (traffic_hourly,

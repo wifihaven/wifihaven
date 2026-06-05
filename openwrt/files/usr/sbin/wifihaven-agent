@@ -700,6 +700,13 @@ conntrack.watch({
         -- a backward wall-clock jump can't freeze the drain (#336).
         local posted = usage.post_with_retry(
           api_url, router_token, report, http_post, usage_queue, mono, nil, log)
+        -- #1033: classify the immediate-post outcome so operators can see whether
+        -- usage reports are flowing (`ok`) or stacking up in the retry queue
+        -- (`queued`). The empty-report short-circuit in post_with_retry also
+        -- returns true, but it never reaches this branch (build_report only
+        -- emits a report with records when there were counters to fold).
+        metrics.inc_counter(mreg, "usage_post_total",
+                            { result = posted and "ok" or "queued" })
         -- Reset counters and tracker regardless of post outcome: the report
         -- is now owned by the retry queue (or already sent), so leaving the
         -- nft counters intact would double-count on the next bucket.
@@ -725,6 +732,12 @@ conntrack.watch({
       -- go backward.
       metrics.set_gauge(mreg, "agent_uptime_seconds", {},
                         mono - agent_started_mono)
+      -- #1033: usage-POST retry-queue depth, sampled right before the push so
+      -- operators see the queue state as of this batch. Drained-to-empty
+      -- naturally renders as 0; a sustained non-zero value means usage
+      -- reports are failing to upload and the operator has time to react
+      -- before the bucket cap (usage.MAX_QUEUE_BUCKETS) starts dropping data.
+      metrics.set_gauge(mreg, "usage_queue_depth", {}, #usage_queue.buckets)
       -- #1325/#1302: fold the external cumulative sources (nftables drop
       -- counters; the dns-tail query-result tally) into the registry just
       -- before the push so the batch carries their latest deltas.
@@ -735,8 +748,28 @@ conntrack.watch({
     end
 
     -- Drain any retry-queued buckets whose backoff has elapsed (monotonic now).
+    -- #1033: bracket the drain so we can credit each removed bucket as
+    -- `drained` and each remaining bucket whose attempts went up as
+    -- `drain_failed`. The drain stops on the first failure (so subsequent
+    -- buckets aren't re-counted), and removals only happen on a successful
+    -- post, which makes the depth delta a faithful success count.
     if #usage_queue.buckets > 0 then
+      local depth_before = #usage_queue.buckets
+      local attempts_before = {}
+      for _, b in ipairs(usage_queue.buckets) do
+        attempts_before[b] = b.attempts
+      end
       usage.drain(api_url, router_token, usage_queue, http_post, mono, nil, log)
+      local drained = depth_before - #usage_queue.buckets
+      if drained > 0 then
+        metrics.inc_counter(mreg, "usage_post_total", { result = "drained" }, drained)
+      end
+      for _, b in ipairs(usage_queue.buckets) do
+        if attempts_before[b] and b.attempts > attempts_before[b] then
+          metrics.inc_counter(mreg, "usage_post_total", { result = "drain_failed" })
+          break -- drain() bails on first failure, so at most one bucket advances
+        end
+      end
     end
   end,
 })
