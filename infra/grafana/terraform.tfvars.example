@@ -13,3 +13,13 @@ grafana_auth = "<Grafana service-account token — Administration → Service ac
 # to use the stack's General folder. Not managed as a resource (keeps the
 # apply stateless-idempotent in CD).
 # folder_uid = "wifihaven"
+
+# ── Alerting (#1368 / docs/design/alerting.md) ───────────────────────────────
+# Required once the alerting resources (alerting.tf) are applied — gated on the
+# #1406 remote-state migration. In CD, fed from an OPERATOR_EMAIL secret.
+operator_email = "you@example.com"
+
+# Optional: Prometheus datasource uid the alert rules evaluate against.
+# Defaults to Grafana Cloud's built-in "grafanacloud-prom"; override for a
+# self-hosted stack.
+# prometheus_datasource_uid = "grafanacloud-prom"

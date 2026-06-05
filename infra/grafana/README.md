@@ -70,6 +70,59 @@ templated `${datasource}` variable resolved at view time, so the same JSON
 loads in both Grafana Cloud and a self-hosted provisioned Grafana, #1207),
 and the GitHub Actions secrets.
 
+## Alerting (#1368 — first rule of the #1381 strategy)
+
+[`alerting.tf`](alerting.tf) adds the first **Grafana-managed alert**: a
+router-metrics ingest failure (alert **C4** in
+[`docs/design/alerting.md`](../../docs/design/alerting.md) §7.1) now pages the
+operator instead of only being graphable. It reuses the exact success-ratio
+PromQL from the `api-self-metrics` ingest panel (#1373/#1384), adds a
+zero-traffic guard, fires `< 0.95 for 15m`, and routes it `critical`. It ships
+with the shared plumbing the rest of the §7 catalog extends:
+
+- `grafana_folder.alerts` — holds the rule group (a rule group requires a
+  `folder_uid`).
+- `grafana_contact_point` ×3 — `wifihaven-critical`, `wifihaven-warning`,
+  `wifihaven-staging`, all **email** to the single household operator. Distinct
+  resources so `critical` can later be re-pointed at a real pager with zero rule
+  churn (§4 — no invented transport).
+- `grafana_notification_policy` — the singleton root tree routing by
+  `severity` / `env` (staging matched first → notify, never page).
+- `grafana_rule_group.router_metrics_ingest` — C4 (prod, critical) + its
+  staging twin (warning).
+
+### Hard prerequisite: remote Terraform state (#1406)
+
+**These alerting resources cannot be applied by the current stateless CD.**
+Unlike `grafana_dashboard` (upserted by uid with `overwrite = true`), contact
+points, the notification policy, the folder, and the rule group are stateful
+with no upsert escape hatch — against the empty-every-run CD they 409 or
+accumulate duplicates (the same reason `main.tf` refuses to manage a folder for
+dashboards). So `infra/grafana` must first migrate onto an **HCP Terraform
+remote backend** — filed as the blocking prerequisite
+[#1406](https://github.com/wifihaven/wifihaven/issues/1406) (mirrors #1357 for
+`infra/cloudflare`). See [`docs/design/alerting.md`](../../docs/design/alerting.md)
+§3.1 and §9.
+
+This PR is therefore **stacked on #1406**:
+
+- It is CI-lint-clean today (`terraform fmt -check` + `validate -backend=false`
+  in the `grafana-terraform` job), which gates the PR.
+- The live `terraform apply` in `master-grafana.yml` must not run these rules
+  until #1406 lands the `cloud {}` backend, the workflow wiring, and the
+  operator's one-time HCP `grafana` workspace.
+
+### New variables
+
+- `operator_email` (**required**, no default) — recipient for all three contact
+  points. In CD fed from an `OPERATOR_EMAIL` secret (wired with #1406); locally
+  via `terraform.tfvars` / `TF_VAR_operator_email`. Marked `sensitive` to keep
+  PII out of plan/apply logs.
+- `prometheus_datasource_uid` (default `grafanacloud-prom`) — managed alert
+  rules evaluate server-side and need a concrete datasource uid (dashboards
+  resolve a templated variable at view time and don't). Override for a
+  self-hosted stack.
+
 ## Prerequisites
 
 1. A Grafana Cloud stack exists (free tier is fine; see design §6.2) — one
