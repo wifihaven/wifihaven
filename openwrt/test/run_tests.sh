@@ -31,6 +31,7 @@ sh test/init_spec.sh
 sh test/init_boot_spec.sh
 sh test/boot_skeleton_spec.sh
 sh test/update_spec.sh
+sh test/update_multi_pkg_spec.sh
 sh test/install_spec.sh
 sh test/nft_log_dep_spec.sh
 sh test/agent_spec.sh
