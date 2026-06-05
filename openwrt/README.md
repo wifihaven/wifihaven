@@ -234,11 +234,19 @@ If the agent refuses to start, the most common cause is a missing or empty
 ### Auto-update (default)
 
 The package installs `/usr/sbin/wifihaven-update` and a cron entry that runs
-it once a day at 04:00 router-local time:
+it **hourly** (#1414), so a shipped enforcement fix reaches the router within
+~1h instead of up to ~23h:
 
 ```
-0 4 * * * /usr/sbin/wifihaven-update
+0 * * * * /usr/sbin/wifihaven-update --jitter
 ```
+
+The `--jitter` flag makes each run sleep a bounded random delay
+(`0..WIFIHAVEN_UPDATE_JITTER_MAX` seconds, default 600) before any network
+work, so a fleet of routers doesn't all hit the GitHub release endpoint at the
+top of the hour. A run that finds the router already current is a true no-op —
+it does not reinstall or restart the agent, so the hourly cadence causes no
+enforcement blips.
 
 Each run hits the GitHub Releases API for the `latest` release, parses the
 `.ipk` asset version, and only invokes `opkg install --force-reinstall` when
@@ -261,7 +269,7 @@ delete the `wifihaven-update` line:
 
 ```sh
 crontab -e
-# remove the "0 4 * * * /usr/sbin/wifihaven-update" line, save, exit
+# remove the "0 * * * * /usr/sbin/wifihaven-update --jitter" line, save, exit
 /etc/init.d/cron restart
 ```
 

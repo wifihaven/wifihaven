@@ -107,7 +107,18 @@ WantedBy=timers.target
 
 This polls ghcr.io once a day (with a 5-min post-boot run so a freshly
 rebooted host catches up quickly). `docker compose pull` is a no-op when
-`latest` already matches the local digest, so it's cheap. To pull a new
+`latest` already matches the local digest, so it's cheap.
+
+> **Cadence note (#1414).** The **OpenWRT router agent** auto-update is now
+> **hourly** (§2.3) because the router is the enforcement plane and a shipped
+> enforcement fix shouldn't sit undeployed for most of a day. The **API
+> timer here stays daily**: it only matters for self-hosted installs, and the
+> cloud staging/prod APIs don't use it at all — they roll forward via Render
+> image push on merge, not this `OnUnitActiveSec=1d` poll. There's no
+> enforcement-latency reason to make the self-hosted API poll hourly, so it's
+> left daily.
+
+To pull a new
 image **on demand** rather than wait for the daily tick, run
 `systemctl start wifihaven-update.service` (or the `wifihaven-update-now`
 operator skill).
@@ -221,13 +232,18 @@ fi
 
 Add to cron (`crontab -e` or `/etc/crontabs/root`):
 ```
-0 4 * * * /usr/sbin/wifihaven-update
+0 * * * * /usr/sbin/wifihaven-update --jitter
 ```
 
-This checks once a day at 04:00 router-local time. The `.ipk` postinst
-installs this entry automatically and replaces any older entry from a
-previous package version (e.g. the historical `0 */6 * * *` cadence), so
-upgrades migrate the schedule without operator action. `opkg install --force-reinstall` preserves
+This checks **hourly** (#1414, superseding the older daily 04:00 cadence) so a
+shipped enforcement fix reaches the router within ~1h. The `--jitter` flag
+sleeps a bounded random delay (`0..WIFIHAVEN_UPDATE_JITTER_MAX`s, default 600)
+before any network work so a fleet doesn't all poll at the top of the hour, and
+an already-current run is a true no-op (no reinstall, no agent restart). The
+`.ipk` postinst installs this entry automatically and replaces any older entry
+from a previous package version (e.g. the historical daily `0 4 * * *` or
+`0 */6 * * *` cadence), so upgrades migrate the schedule without operator
+action. `opkg install --force-reinstall` preserves
 `/etc/config/wifihaven`, so the bearer token and router ID survive upgrades
 without re-enrollment.
 

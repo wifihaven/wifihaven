@@ -106,14 +106,32 @@ grep -A2 'ctrl/conffiles' "$BUILDER" | grep -q '/etc/config/wifihaven' \
   && check "build-ipk.sh declares conffile" ok \
   || check "build-ipk.sh declares conffile" "missing conffiles file"
 
-# 11. Cron interval is daily at 04:00 (issue #254 — see deploy.md §1.3 / §2.3)
+# 11. Cron interval is HOURLY with jitter (#1414, supersedes #254 daily cadence).
+# Hourly so a shipped enforcement fix reaches routers within ~1h instead of up
+# to ~23h. The `--jitter` flag spreads fleet load across the hour so routers
+# don't all hit the GitHub release endpoint at :00.
+grep -q '0 \* \* \* \* /usr/sbin/wifihaven-update --jitter' "$MAKEFILE" \
+  && check "[#1414] Makefile cron is hourly with --jitter" ok \
+  || check "[#1414] Makefile cron is hourly with --jitter" "wrong cron expression"
+
+grep -q '0 \* \* \* \* /usr/sbin/wifihaven-update --jitter' "$BUILDER" \
+  && check "[#1414] build-ipk.sh cron is hourly with --jitter" ok \
+  || check "[#1414] build-ipk.sh cron is hourly with --jitter" "wrong cron expression"
+
+# 11a. #1414: the old daily 04:00 cadence must be gone everywhere.
 grep -q '0 4 \* \* \* /usr/sbin/wifihaven-update' "$MAKEFILE" \
-  && check "Makefile cron is daily at 04:00" ok \
-  || check "Makefile cron is daily at 04:00" "wrong cron expression"
+  && check "[#1414] Makefile no longer installs daily 04:00 cron" "still daily 04:00" \
+  || check "[#1414] Makefile no longer installs daily 04:00 cron" ok
 
 grep -q '0 4 \* \* \* /usr/sbin/wifihaven-update' "$BUILDER" \
-  && check "build-ipk.sh cron is daily at 04:00" ok \
-  || check "build-ipk.sh cron is daily at 04:00" "wrong cron expression"
+  && check "[#1414] build-ipk.sh no longer installs daily 04:00 cron" "still daily 04:00" \
+  || check "[#1414] build-ipk.sh no longer installs daily 04:00 cron" ok
+
+# 11b. #1414: the updater understands the --jitter flag and bounds the sleep
+# with a urandom-derived delay (cheap when already current — no enforcement blip).
+grep -q -- '--jitter' "$SCRIPT" \
+  && check "[#1414] update script recognises --jitter flag" ok \
+  || check "[#1414] update script recognises --jitter flag" "no --jitter handling in script"
 
 # ---- Integration tests: run the script with mocked PATH ----
 # Each case writes mocks into $TESTDIR/bin, rewrites the script with sed to
@@ -255,6 +273,15 @@ printf '%s\n' "\$*" >> "$TESTDIR/opkg.calls"
 exit \${MOCK_OPKG_EXIT:-0}
 EOF
   chmod +x "$BINDIR/opkg"
+}
+
+mock_sleep() {
+  cat > "$BINDIR/sleep" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TESTDIR/sleep.calls"
+exit 0
+EOF
+  chmod +x "$BINDIR/sleep"
 }
 
 count_restart_calls() {
@@ -442,6 +469,40 @@ case "$URL" in
 esac
 rm -rf "$TESTDIR"
 unset MOCK_ASSETS
+
+# Case J (#1414): --jitter sleeps a bounded random delay before doing any
+# network work, so a hourly fleet doesn't hit the release endpoint at :00.
+# `sleep` is mocked so the test asserts the call + bound without waiting. Even
+# with jitter, an already-current run is a true no-op (no restart → no
+# enforcement blip on the hourly cadence).
+setup_mocks
+mock_apk
+mock_sleep
+printf '0.2.8\n' > "$VERS_DIR/VERSION"   # already current
+seed_luci_stamp_current
+WIFIHAVEN_UPDATE_JITTER_MAX=30 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" --jitter >/dev/null 2>&1 || true
+S=$(head -n1 "$TESTDIR/sleep.calls" 2>/dev/null || echo "")
+{ [ -n "$S" ] && [ "$S" -ge 0 ] && [ "$S" -le 30 ]; } 2>/dev/null \
+  && check "[#1414 jitter] --jitter sleeps within [0,JITTER_MAX]" ok \
+  || check "[#1414 jitter] --jitter sleeps within [0,JITTER_MAX]" "sleep arg='$S'"
+N=$(count_restart_calls)
+[ "$N" = "0" ] \
+  && check "[#1414 jitter+current] no restart on already-current hourly run" ok \
+  || check "[#1414 jitter+current] no restart on already-current hourly run" "expected 0, got $N"
+rm -rf "$TESTDIR"
+
+# Case K (#1414): without --jitter (manual / update-now skill path), no sleep
+# is invoked — on-demand updates stay instant.
+setup_mocks
+mock_apk
+mock_sleep
+printf '0.2.8\n' > "$VERS_DIR/VERSION"
+seed_luci_stamp_current
+PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
+[ ! -s "$TESTDIR/sleep.calls" ] \
+  && check "[#1414 no-flag] manual run does not jitter-sleep" ok \
+  || check "[#1414 no-flag] manual run does not jitter-sleep" "sleep called: $(cat "$TESTDIR/sleep.calls" 2>/dev/null)"
+rm -rf "$TESTDIR"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
