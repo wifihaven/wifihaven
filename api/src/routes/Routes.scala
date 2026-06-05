@@ -191,9 +191,10 @@ object ProfileRoutes {
       timeLimitRepo: TimeLimitRepo,
       userProfileRepo: UserProfileRepo,
       userRepo: UserRepo,
+      namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "profiles"                        ->
+      Method.GET / "api" / "profiles"                            ->
         handler { (req: Request) =>
           for {
             claims      <- requireAuth(req, auth)
@@ -202,28 +203,64 @@ object ProfileRoutes {
             details     <- ZIO
               .foreach(visible) { p =>
                 for {
-                  scheds <- scheduleRepo.listForProfile(p.id)
-                  tl     <- timeLimitRepo.findForProfile(p.id)
-                } yield ProfileDetail(p, scheds, tl)
+                  scheds  <- scheduleRepo.listForProfile(p.id)
+                  tl      <- timeLimitRepo.findForProfile(p.id)
+                  schedId <- namedScheduleRepo.blockScheduleIdsForProfile(p.id)
+                } yield ProfileDetail(p, scheds, tl, schedId)
               }
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(details.toJson)
         },
-      Method.GET / "api" / "profiles" / long("id")           ->
+      Method.GET / "api" / "profiles" / long("id")               ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
-            claims <- requireAuth(req, auth)
-            _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
-            p      <- profileRepo
+            claims  <- requireAuth(req, auth)
+            _       <- requireProfileReadAccess(claims, pid, userProfileRepo)
+            p       <- profileRepo
               .findById(pid)
               .mapError(ErrorMapper.dbErrorToResponse)
               .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-            scheds <- scheduleRepo.listForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
-            tl     <- timeLimitRepo.findForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
-          } yield Response.json(ProfileDetail(p, scheds, tl).toJson)
+            scheds  <- scheduleRepo.listForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
+            tl      <- timeLimitRepo.findForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
+            schedId <- namedScheduleRepo
+              .blockScheduleIdsForProfile(pid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.json(ProfileDetail(p, scheds, tl, schedId).toJson)
         },
-      Method.POST / "api" / "profiles"                       ->
+      // #1069: replace the set of named schedules attached to this profile as BLOCK schedules
+      // (downtime while active). A profile can reference many; allow-mode is deferred. Kept off the
+      // profile upsert so an ordinary profile save can't clobber the attachments.
+      Method.PUT / "api" / "profiles" / long("id") / "schedules" ->
+        handler { (id: Long, req: Request) =>
+          val pid = ProfileId(id)
+          for {
+            claims <- requireWriter(req, auth)
+            _      <- requireProfileAccess(claims, pid, userProfileRepo)
+            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+            sr     <- ZIO
+              .fromEither(body.fromJson[SetProfileSchedulesRequest])
+              .mapError(Response.badRequest(_))
+            _      <- profileRepo
+              .findById(pid)
+              .mapError(ErrorMapper.dbErrorToResponse)
+              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
+            _      <- ZIO.foreachDiscard(sr.scheduleIds.distinct) { sid =>
+              namedScheduleRepo
+                .findById(sid)
+                .mapError(ErrorMapper.dbErrorToResponse)
+                .flatMap(
+                  ZIO
+                    .fromOption(_)
+                    .orElseFail(Response.notFound(s"Schedule ${sid.value} not found")),
+                )
+            }
+            _      <- namedScheduleRepo
+              .setProfileBlockSchedules(pid, sr.scheduleIds)
+              .mapError(ErrorMapper.dbErrorToResponse)
+          } yield Response.ok
+        },
+      Method.POST / "api" / "profiles"                           ->
         handler { (req: Request) =>
           for {
             _    <- requireAdmin(req, auth)
@@ -267,7 +304,7 @@ object ProfileRoutes {
               .mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.json(s"""{"id":${id.value}}""")
         },
-      Method.PUT / "api" / "profiles" / long("id")           ->
+      Method.PUT / "api" / "profiles" / long("id")               ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
@@ -315,13 +352,13 @@ object ProfileRoutes {
             }).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok
         },
-      Method.DELETE / "api" / "profiles" / long("id")        ->
+      Method.DELETE / "api" / "profiles" / long("id")            ->
         handler { (id: Long, req: Request) =>
           requireAdmin(req, auth) *>
             profileRepo.delete(ProfileId(id)).mapError(ErrorMapper.dbErrorToResponse) *>
             ZIO.succeed(Response.ok)
         },
-      Method.GET / "api" / "profiles" / long("id") / "users" ->
+      Method.GET / "api" / "profiles" / long("id") / "users"     ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {
@@ -336,7 +373,7 @@ object ProfileRoutes {
             }
           } yield Response.json(summaries.toJson)
         },
-      Method.PUT / "api" / "profiles" / long("id") / "users" ->
+      Method.PUT / "api" / "profiles" / long("id") / "users"     ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
           for {

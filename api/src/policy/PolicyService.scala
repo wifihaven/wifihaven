@@ -86,6 +86,11 @@ class PolicyServiceLive(
     clock: Clock,
     uiAllowedHosts: List[Hostname] = Nil,
     globalPolicyRepo: GlobalPolicyRepo = NoopGlobalPolicyRepo,
+    // #1069: defaulted to the noop so the many direct test constructions keep their arity. The
+    // snapshot path gets named schedules via TimeStatusService; PolicyServiceLive needs this repo
+    // directly only for the per-host /decision fallback, where the production layer wires the real
+    // one.
+    namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
 ) extends PolicyService {
 
   // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
@@ -95,6 +100,17 @@ class PolicyServiceLive(
   // hosts when assembling the global section. (The #1307 infra-allow copy is
   // retired separately in #1321.)
   private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
+
+  // #1069: per-host /decision fallback must see the same schedule downtime as the snapshot —
+  // union the legacy per-profile schedules with the windows of every block-mode named schedule
+  // attached to the profile (as synthetic DbSchedules so `scheduleActiveAt` applies unchanged).
+  private def schedulesFor(pid: ProfileId): Task[List[DbSchedule]] =
+    for {
+      v1    <- scheduleRepo.listForProfile(pid)
+      named <- namedScheduleRepo.windowsForProfile(pid)
+    } yield v1 ++ named.map(w =>
+      DbSchedule(ScheduleId(0L), pid, "named-schedule", w.days, w.startLocal, w.endLocal, w.tz),
+    )
 
   def snapshot: Task[PolicySnapshot] =
     (for {
@@ -268,7 +284,7 @@ class PolicyServiceLive(
         case Some(pid) =>
           for {
             pOpt          <- profileRepo.findById(pid)
-            scheds        <- scheduleRepo.listForProfile(pid)
+            scheds        <- schedulesFor(pid)
             tl            <- timeLimitRepo.findForProfile(pid)
             stlims        <- siteTimeLimitRepo.listForProfile(pid)
             // #764: post-migration, extraAllowed/extraBlocked are sourced
@@ -458,9 +474,9 @@ private case class SnapshotCore(
 
 object PolicyService {
   val layer: ZLayer[
-    AppConfig & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
-      SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
-      AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
+    AppConfig & ProfileRepo & ScheduleRepo & NamedScheduleRepo & HouseholdSettingsRepo &
+      TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo &
+      TimeExtensionRepo & AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -468,6 +484,7 @@ object PolicyService {
         cfg: AppConfig,
         pr: ProfileRepo,
         sr: ScheduleRepo,
+        nsr: NamedScheduleRepo,
         hsr: HouseholdSettingsRepo,
         tlr: TimeLimitRepo,
         stlr: SiteTimeLimitRepo,
@@ -495,6 +512,7 @@ object PolicyService {
         clk,
         cfg.policy.uiAllowedHostsParsed,
         gpr,
+        nsr,
       )
   }
 
