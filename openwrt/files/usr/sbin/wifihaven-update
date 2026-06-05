@@ -233,7 +233,17 @@ update_package "wifihaven" "$AGENT_PKG_NAME_RE" "$AGENT_STAMP" "$AGENT_INSTALLED
 LUCI_INSTALLED=
 case "$PM" in
   opkg) LUCI_INSTALLED=$(opkg info luci-app-wifihaven 2>/dev/null | awk '/^Version:/{print $2; exit}' | sed 's/-.*//') ;;
-  apk)  LUCI_INSTALLED=$(apk info -v luci-app-wifihaven 2>/dev/null | head -1 | sed 's/^luci-app-wifihaven-//; s/-r.*//') ;;
+  # apk-tools v3 (`apk info -v <pkg>`) emits the package *description* block,
+  # not a `pkgname-version` line, so the old parse captured the description
+  # string as the version (#1420). `apk list --installed <pkg>` is the
+  # reliable source: its first token is `luci-app-wifihaven-<ver>-r<n>`, e.g.
+  #   luci-app-wifihaven-0.3.0-r1 noarch {luci-app-wifihaven} (MIT) [installed]
+  # from which we strip the name prefix and the `-r<n>` apk revision suffix.
+  apk)  LUCI_INSTALLED=$(apk list --installed luci-app-wifihaven 2>/dev/null \
+          | grep -E '^luci-app-wifihaven-[0-9]' \
+          | head -1 \
+          | awk '{print $1}' \
+          | sed 's/^luci-app-wifihaven-//; s/-r[0-9]*$//') ;;
 esac
 
 # Reload uhttpd so the new LuCI Lua files are picked up without a full reboot.
