@@ -26,6 +26,7 @@ opaque type AlertId               = Long
 opaque type AppId                 = Long
 opaque type AppPolicyAssignmentId = Long
 opaque type NamedScheduleId       = Long
+opaque type AppScheduleRuleId     = Long
 
 object ProfileId {
   def apply(l: Long): ProfileId            = l
@@ -136,6 +137,13 @@ object NamedScheduleId {
   given JsonFieldEncoder[NamedScheduleId]        = JsonFieldEncoder.long
   given JsonFieldDecoder[NamedScheduleId]        = JsonFieldDecoder.long
   given Ordering[NamedScheduleId]                = Ordering.Long
+}
+
+object AppScheduleRuleId {
+  def apply(l: Long): AppScheduleRuleId            = l
+  extension (a: AppScheduleRuleId) def value: Long = a
+  given JsonCodec[AppScheduleRuleId]               = JsonCodec.long
+  given Ordering[AppScheduleRuleId]                = Ordering.Long
 }
 
 /** UUID-backed router identifier. */
