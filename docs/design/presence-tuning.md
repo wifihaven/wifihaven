@@ -27,17 +27,22 @@ Stop computing presence per fixed bucket. Instead **sessionize activity**:
    continuous, exactly as a kid working a problem locally between requests is
    continuously present. Recommended **`N = 120 s`** (sensitivity 180 s), set at
    the knee of the measured think-gap distribution.
-2. **Aggregate by interval-union — at two scopes.** Both outputs come from the
-   same sessions:
-   - **Per-app presence** (app-specific — Math Academy time, YouTube time):
-     union of *that app's* sessions across the profile's devices. A first-class
-     output, and what a future per-app limit reads.
-   - **Daily total / cap:** union of *all* sessions across all apps and devices —
-     two apps active in the same minute count once.
+2. **Aggregate hierarchically: union within a device, then combine across devices
+   per the profile's existing `crossDeviceOverlapMode`.**
+   - **Within a device** sessions always union — one human on one screen, so two
+     apps (or the same app's sessions) overlapping in a minute count once.
+   - **Across devices** the existing per-profile setting decides:
+     `Sum` (the default) **adds** per-device numbers — same app on two devices
+     *double-counts*; `Dedup` (#751) **unions** intervals across devices so an
+     overlap counts once. This applies identically to per-app presence and the
+     daily total.
+   - **Per-app presence** (app-specific — Math Academy time, YouTube time) is a
+     first-class output, computed with the same rule: per-device union of that
+     app's sessions, combined across devices by `crossDeviceOverlapMode`.
 
-   The total is **not** the sum of the per-app numbers (overlap double-counts).
-   "Don't sum per-app" is about deriving the *total*, not about skipping per-app
-   presence — we keep that.
+   The daily total is **not** the sum of the per-app numbers (within a device,
+   different apps overlap). "Don't sum per-app" is about deriving the *total*,
+   not about skipping per-app presence — we keep that.
 
 **Why this shape, not "full-bucket credit":** crediting a whole bucket is
 bucket-size-dependent — it over-counts at 5-minute reporting and under-counts at
@@ -252,15 +257,13 @@ is flat ~117–125 min across R = 10…300).
 **Conclusions that shape the model (§4):**
 
 - Presence must be **sessionized on activity timestamps**, never "credit a
-  bucket." Both outputs we want come from the same sessions, via an
-  interval-**union** at different scopes:
-  - **Per-app presence** (the app-specific number — Math Academy time, YouTube
-    time): union of *that app's* sessions across the profile's devices. This is
-    a first-class output.
-  - **Daily total / cap:** union of *all* sessions across all apps and devices.
-  - The total is **not** the sum of the per-app numbers — overlapping apps would
-    double-count (total ≤ Σ per-app). "Never sum per-app" means *don't derive
-    the total that way*; it does **not** mean we skip per-app presence.
+  bucket." Both the per-app number (Math Academy time — a first-class output) and
+  the daily total come from the same sessions, **unioned within a device** and
+  then **combined across devices by the profile's existing
+  `crossDeviceOverlapMode`** (`Sum` default = double-count, `Dedup` = union,
+  #751). The total is **not** the sum of the per-app numbers — within a device,
+  different apps overlap. ("Never sum per-app" is about deriving the *total* that
+  way, not about skipping per-app presence.)
 - The idle window must satisfy **N ≥ R** (recommend **N ≥ 2 × R** for margin).
   At today's R = 60 s, N = 120 s is safe; if reporting moves to 5 minutes, a
   120 s gap would silently zero out presence unless timing is anchored on
@@ -314,29 +317,38 @@ buckets are available, each non-heartbeat row contributes its `[period_start,
 period_end]` interval as the activity — correct in the limit, but with a
 trailing-edge uncertainty of one report interval (§2d).
 
-Both aggregations are interval-**unions** of the same sessions, differing only in
-scope. The union is what makes them rate-stable (§2d table (i)).
+Both outputs come from the same sessions and follow the same two-level rule:
+**within a device, always union; across devices, apply the profile's existing
+`crossDeviceOverlapMode`** (`Sum` default — double-count; `Dedup` — union, #751).
+The within-device union is what makes the numbers rate-stable (§2d table (i)).
 
-### 4.2 Per-app presence (app-specific) — union of that app's sessions
+### 4.2 Per-app presence (app-specific) — first-class output
 
-The app-specific number we want ("how long on Math Academy", "how long on
-YouTube") is the **union of that one app's session intervals across the profile's
-devices** — union, not raw span-sum, so the same app open on two devices at once
-is one minute, not two. This is a **first-class output** and the successor to
-`proportionalMins` / `proportionalHostSeconds`. Heartbeat filtering must apply
-here too (today the per-host surfaces don't filter — fold that in). Per-app
-presence is what a future per-app time limit (#127/#301/#64) reads.
+The app-specific number ("how long on Math Academy", "how long on YouTube"):
 
-### 4.3 Daily total / cap — union across **all** apps and devices
+1. Per device, union *that app's* sessions on that device (one device can't be on
+   the app twice at once).
+2. Combine across the profile's devices by `crossDeviceOverlapMode`: **`Sum`** →
+   add the per-device per-app values (same app on two devices double-counts —
+   the default); **`Dedup`** → union that app's intervals across devices (overlap
+   counts once).
 
-The cap (and "total screen time") is the **union of every session interval across
-all of the profile's apps and devices** — so two different apps active in the same
-minute count once. This replaces the current "group by `period_start`, take max,
-sum buckets" dedup (`totalSecondsByMac` / `dedupedTotalSeconds`).
+This is the successor to `proportionalMins` / `proportionalHostSeconds` and what a
+future per-app time limit (#127/#301/#64) reads. Heartbeat filtering must apply
+here too (today the per-host surfaces don't filter — fold that in).
 
-**The total is not the sum of the per-app numbers** (overlap ⇒ total ≤ Σ per-app).
-Compute it as its own union over the full session set; surface per-app presence
-alongside it, not as its addends.
+### 4.3 Daily total / cap
+
+1. Per device, union *all* of that device's sessions across apps (two different
+   apps in the same minute → one minute on that device). Replaces the current
+   `totalSecondsByMac` "group by `period_start`, max, sum buckets".
+2. Combine across devices by the same `crossDeviceOverlapMode`: **`Sum`** → add
+   per-device totals; **`Dedup`** → union across devices (the current
+   `dedupedTotalSeconds` path).
+
+**The total is not the sum of the per-app numbers** — within a device, different
+apps overlap. Compute it from its own (per-device, all-app) union; surface
+per-app presence alongside, not as its addends.
 
 ### 4.4 The two invariants the implementation must hold
 
@@ -389,8 +401,11 @@ new semantics.
 2. **API rollup: session-stitch primitive + interval-union daily cap.** Replace
    `bucketSeconds = max(activeSeconds)` and the `period_start`-grid dedup in
    `totalSecondsByMac` / `dedupedTotalSeconds` with: per-(device,app) session
-   stitching on the idle gap, then profile-level interval union. Read window
-   bounds from `period_start`/`period_end`; **enforce `N ≥ 2 × R`**. Keep the
+   stitching on the idle gap, per-device union across apps, then combine across
+   devices by the profile's existing `crossDeviceOverlapMode` (`Sum` = add
+   per-device totals → `totalSecondsByMac`+sum today; `Dedup` = union across
+   devices → `dedupedTotalSeconds` today — preserve both). Read window bounds
+   from `period_start`/`period_end`; **enforce `N ≥ 2 × R`**. Keep the
    `legacy` path behind `presence_model`. **Wire the new knobs into the
    `time_used_daily` invalidation hook** — changing `presence_continuation_seconds`
    or `presence_model` must `DELETE` the affected cached rollups exactly as a
@@ -403,12 +418,14 @@ new semantics.
    `time_used_daily` and the next rollup reflects the new value.**
 
 3. **API rollup: per-app presence (app-specific) + heartbeat-filter the per-host
-   surfaces.** Re-express `proportionalHostSeconds` as the **union of that app's
-   sessions across the profile's devices** (not a raw span-sum — the same app on
-   two devices at once is one minute); apply the heartbeat filter to
-   per-host/per-site surfaces (today they don't). Tests pin: a sparse per-app
-   session reads its full span; same-app-on-two-devices overlap counts once; the
-   `N < R` collapse guard and the keepalive-bridge composition from §4.4.
+   surfaces.** Re-express `proportionalHostSeconds` as: per-device union of that
+   app's sessions, then combine across devices via the profile's existing
+   `crossDeviceOverlapMode` (`Sum` default = double-count, `Dedup` = union) —
+   the *same* setting the daily total uses, not a new knob. Apply the heartbeat
+   filter to per-host/per-site surfaces (today they don't). Tests pin: a sparse
+   per-app session reads its full span; same-app-on-two-devices double-counts
+   under `Sum` and counts once under `Dedup`; the `N < R` collapse guard and the
+   keepalive-bridge composition from §4.4.
 
 4. **Anchor session timing on `connection_events` (rate-independence).** Join
    per-request timestamps (timing) with `traffic_reports` (bytes / heartbeat
