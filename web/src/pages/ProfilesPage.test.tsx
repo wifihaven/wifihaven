@@ -1241,7 +1241,9 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     expect(fill.className).toContain('bg-red-500')
   })
 
-  it('does not render the bar for an app without a daily limit', async () => {
+  // #1433 — a no-limit app no longer shows the used/cap progress bar
+  // (`-usage`), but it DOES surface today's plain time-used (`-used`).
+  it('does not render the cap bar for an app without a daily limit', async () => {
     (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeAllowed])
     ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
@@ -1257,6 +1259,81 @@ describe('ProfilesPage — per-app usage bar in Apps section (#1061)', () => {
     await user.click(screen.getByTestId('profile-apps-toggle-1'))
     await screen.findByTestId('app-row-50')
     expect(screen.queryByTestId('app-row-50-usage')).not.toBeInTheDocument()
+  })
+})
+
+// #1433 — every app row surfaces today's time-used, not just time-limited
+// ones. Limited apps keep the "used / cap" bar; no-limit apps show a plain
+// "Xm today" readout fed by the same per-app proportional minutes.
+describe('ProfilesPage — per-app time-used for no-limit apps (#1433)', () => {
+  const youtubeAllowed = {
+    app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+    hosts: ['youtube.com'],
+    assignments: [
+      { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+  const tiktokBlocked = {
+    app: { id: 51, name: 'TikTok', slug: 'tiktok', templateId: null, icon: '🎵', createdAt: '2026-01-01' },
+    hosts: ['tiktok.com'],
+    assignments: [
+      { id: 3, appId: 51, profileId: 1, mode: 'blocked' as const, dailyMinutes: null, exemptFromDaily: true },
+    ],
+  }
+
+  it('renders "Xm today" with no cap for an allowed (no-limit) app', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeAllowed])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 50, appName: 'YouTube', appIcon: '📺', appIconType: 'emoji',
+        proportionalSeconds: 1380, presenceSeconds: 1380, hosts: [],
+      }],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    // 1380s → 23m, shown as plain "23m today" with no "/ cap".
+    const used = await screen.findByTestId('app-row-50-used')
+    expect(used).toHaveTextContent('23m today')
+    expect(used.textContent).not.toContain('/')
+    // No progress-bar variant for a no-limit app.
+    expect(screen.queryByTestId('app-row-50-usage')).not.toBeInTheDocument()
+  })
+
+  it('surfaces time-used for a blocked app too', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([tiktokBlocked])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [{
+        appId: 51, appName: 'TikTok', appIcon: '🎵', appIconType: 'emoji',
+        proportionalSeconds: 300, presenceSeconds: 300, hosts: [],
+      }],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    const used = await screen.findByTestId('app-row-51-used')
+    expect(used).toHaveTextContent('5m today')
+  })
+
+  it('omits the readout for a no-limit app with zero usage', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([youtubeAllowed])
+    ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26',
+      apps: [],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-50')
+    expect(screen.queryByTestId('app-row-50-used')).not.toBeInTheDocument()
   })
 })
 
