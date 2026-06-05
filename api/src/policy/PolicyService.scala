@@ -2,6 +2,7 @@ package wifihaven.api.policy
 
 import wifihaven.api.AppConfig
 import wifihaven.api.db.*
+import wifihaven.api.metrics.AppMetrics
 import wifihaven.api.presence.Presence
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
@@ -37,6 +38,7 @@ object PolicyServiceLive {
       appRepo: AppRepo,
       clock: Clock,
       uiAllowedHosts: List[Hostname] = Nil,
+      globalPolicyRepo: GlobalPolicyRepo = NoopGlobalPolicyRepo,
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -64,6 +66,7 @@ object PolicyServiceLive {
       tss,
       clock,
       uiAllowedHosts,
+      globalPolicyRepo,
     )
   }
 }
@@ -82,12 +85,26 @@ class PolicyServiceLive(
     timeStatusService: TimeStatusService,
     clock: Clock,
     uiAllowedHosts: List[Hostname] = Nil,
+    globalPolicyRepo: GlobalPolicyRepo = NoopGlobalPolicyRepo,
 ) extends PolicyService {
 
+  // #1318: the WifiHaven UI / block-page hosts are fleet-wide always-reachable
+  // hosts, so they live in `global.extraAllowed` (carving out every block at the
+  // router) rather than being copied into every profile's `extraAllowed`. The
+  // DB-backed `global_allow` set is unioned with these per-deployment config
+  // hosts when assembling the global section. (The #1307 infra-allow copy is
+  // retired separately in #1321.)
+  private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
+
   def snapshot: Task[PolicySnapshot] =
-    for {
-      settings <- householdSettingsRepo.get
-      now      <- clock.instant
+    (for {
+      settings  <- householdSettingsRepo.get
+      now       <- clock.instant
+      // #1318: the fleet-wide global BlockRules, assembled once from the global-policy tables.
+      // `uiGlobalAllow` (the per-deployment UI / block-page hosts) is unioned into its
+      // `extraAllowed` so those hosts are always reachable for every MAC via `global.extraAllowed`
+      // rather than copied into each profile.
+      globalRaw <- globalPolicyRepo.get
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
@@ -142,7 +159,6 @@ class PolicyServiceLive(
           siteLimits = pSiteLims,
           appExtraAllowed = appAllowedHosts,
           appExtraBlocked = appBlockedHosts,
-          uiAllowedHosts = uiAllowedHosts,
         )
 
         p.id -> ProfilePolicy(name = p.name, rules = rules, failureMode = p.failureMode)
@@ -151,9 +167,10 @@ class PolicyServiceLive(
       // #961: unmanaged-MAC enforcement is applied here at snapshot-build time,
       // not via a new wire field. For devices with no profile assignment we
       // emit explicit per-MAC `rules` keyed off the household policy:
-      //   - policy = "block": Manual-blocked with `uiAllowedHosts` in
-      //     extraAllowed so the SPA hostnames remain reachable from the
-      //     unmanaged device (otherwise the block-page redirect can't load).
+      //   - policy = "block": Manual-blocked. The UI / block-page hosts are no
+      //     longer copied here (#1318) — they live in `global.extraAllowed`,
+      //     which carves out this block too (it carves out every drop, including
+      //     a whole-MAC `blocked`), so the block-page redirect still loads.
       //   - policy = "allow": `rules = None`, same as today (router treats as
       //     unenrolled / allow-all).
       // The router's existing per-MAC override path enforces this without any
@@ -166,7 +183,7 @@ class PolicyServiceLive(
               blocked = true,
               blockReason = Some(MacBlockReason.Unmanaged),
               extraBlocked = Nil,
-              extraAllowed = uiAllowedHosts,
+              extraAllowed = Nil,
               blocklistIds = Nil,
               blockIpOnly = false,
             ),
@@ -185,15 +202,29 @@ class PolicyServiceLive(
         c -> Blocklist(version = version, url = BlocklistUrl.unsafe(s"/api/blocklists/${c.value}"))
       }.toMap
 
-      val core = SnapshotCore(devicePolicies, profilePolicies, pBlocklists)
+      // #1318: union the per-deployment UI / block-page hosts into the DB-backed
+      // global allow set. These are the relocated `uiAllowedHosts` — fleet-wide
+      // always-reachable hosts that carve out every block at the router.
+      val globalRules = globalRaw.copy(
+        extraAllowed = (globalRaw.extraAllowed ++ uiGlobalAllow).distinct,
+      )
+
+      val core = SnapshotCore(globalRules, devicePolicies, profilePolicies, pBlocklists)
       val etag = PolicyService.computeEtag(core)
-      PolicySnapshot(
+      val snap = PolicySnapshot(
         etag = etag,
         generatedAt = now.toString,
+        global = globalRules,
         devices = devicePolicies,
         profiles = profilePolicies,
         blocklists = pBlocklists,
       )
+      (snap, profiles.count(_.defaultDeny))
+    }).flatMap { case (snap, defaultDenyProfiles) =>
+      // #1318: surface the global-section size + default-deny profile count for operators.
+      AppMetrics
+        .setGlobalPolicy(snap.global.extraAllowed.size, defaultDenyProfiles)
+        .as(snap)
     }
 
   def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]] =
@@ -419,6 +450,7 @@ class PolicyServiceLive(
 }
 
 private case class SnapshotCore(
+    global: BlockRules,
     devices: Map[MacAddress, DevicePolicy],
     profiles: Map[ProfileId, ProfilePolicy],
     blocklists: Map[BlocklistId, Blocklist],
@@ -428,7 +460,7 @@ object PolicyService {
   val layer: ZLayer[
     AppConfig & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo &
       SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo &
-      AppRepo & TimeStatusService & Clock,
+      AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
     Nothing,
     PolicyService,
   ] = ZLayer.fromFunction {
@@ -444,6 +476,7 @@ object PolicyService {
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
         ar: AppRepo,
+        gpr: GlobalPolicyRepo,
         tss: TimeStatusService,
         clk: Clock,
     ) =>
@@ -461,6 +494,7 @@ object PolicyService {
         tss,
         clk,
         cfg.policy.uiAllowedHostsParsed,
+        gpr,
       )
   }
 
@@ -526,6 +560,9 @@ object PolicyService {
   /** Deterministic ETag over snapshot logical content. */
   private[policy] def computeEtag(core: SnapshotCore): ETag = {
     val parts = scala.collection.mutable.ArrayBuffer.empty[String]
+    // #1318: the global section is part of the snapshot's logical content, so a change to it must
+    // move the ETag (and re-poll the fleet) even when no device/profile changed.
+    parts += s"global:${blockRulesSig(core.global)}"
     core.devices.toList.sortBy(_._1.value).foreach { case (mac, d) =>
       val ruleSig = d.rules.fold("-")(blockRulesSig)
       parts += s"dev:${mac.value}|${d.profileId.map(_.value).getOrElse("-")}|${d.name}|$ruleSig"
@@ -552,7 +589,16 @@ object PolicyService {
    * #354 / #1104: collapse a profile's `ProfileDayState` plus its app & site-limit context into the
    * effective `BlockRules` served in the snapshot. `state` carries the canonical `blocked` and
    * `blockReason` already evaluated by `TimeStatusService.fold` (same precedence Paused > Schedule
-   * > TimeLimit). This function only adds the app/site-limit/UI-host wiring around it.
+   * > TimeLimit). This function only adds the app/site-limit wiring around it.
+   *
+   * #1318: two changes.
+   *   1. The UI / block-page hosts are NO LONGER unioned here — they moved to `global.extraAllowed`
+   *      (see `PolicyServiceLive.uiGlobalAllow`), which carves out every block fleet-wide. 2.
+   *      Default-deny (`profile.defaultDeny`): collapse to block-all (`blocked = true` +
+   *      `DefaultDeny` reason, unless a stronger Paused/Schedule/TimeLimit reason already applies)
+   *      with only the profile/device allow list reachable. `extraBlocked` / `blocklistIds` are
+   *      omitted because they are redundant under block-all (design §4). `blockIpOnly` still
+   *      applies — default-deny + `blockIpOnly` is the strictest combination.
    */
   private[policy] def computeBlockRules(
       profile: Profile,
@@ -560,7 +606,6 @@ object PolicyService {
       siteLimits: List[SiteTimeLimit],
       appExtraAllowed: List[Hostname] = Nil,
       appExtraBlocked: List[Hostname] = Nil,
-      uiAllowedHosts: List[Hostname] = Nil,
   ): BlockRules = {
     // Per-site limits exhausted today → host appears in extraBlocked too.
     // domainPattern is a glob string, not a Hostname — we keep it as-is in the
@@ -605,27 +650,48 @@ object PolicyService {
     // extraAllowed-beats-extraBlocked precedence then makes "allow wins" — same
     // semantics it already applies to the per-profile own lists (see
     // feedback_extraallowed_beats_blocked).
-    BlockRules(
-      blocked = state.blocked,
-      blockReason = state.blockReason,
-      extraBlocked = (appExtraBlocked ++ siteLimitExtraBlocked).distinct,
-      // #944: union the deployment's UI hosts into per-profile extraAllowed so
-      // a household device can always reach the admin UI even when this
-      // profile is paused or lists one of these hosts in a blocked-mode app
-      // (allow beats block at the router). Configured via wifihaven.policy
-      // .uiAllowedHosts per-deployment so prod doesn't allow staging through
-      // and vice versa. Will become DB-backed per #937.
-      // #1307: union the curated infra allowlist so connectivity-check / OCSP /
-      // CDN dependencies of an allowed app survive the whole-MAC block. Copied
-      // per-profile for now; the global policy layer (#1308) will dedup this.
-      // #1418: under a hard pause, drop everything except the UI hosts.
-      extraAllowed =
-        if (isHardPause) uiAllowedHosts.distinct
-        else
-          (appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts ++ infraAllowHosts).distinct,
-      blocklistIds = profile.blockedCategories,
-      blockIpOnly = profile.blockIpOnly,
-    )
+    //
+    // #1307: the curated infra allowlist (connectivity-check / OCSP / CDN deps of
+    // an allowed app) is still copied per-profile here so it survives the
+    // whole-MAC block; #1321 retires this copy once the router consumes
+    // `global.extraAllowed`. The deployment UI hosts moved to the global section
+    // already (#1318), so they are no longer unioned here.
+    //
+    // #1418: under a hard pause, drop even the app/exempt/infra carve-outs —
+    // per-profile `extraAllowed` goes empty. The deployment UI hosts (block page
+    // + admin SPA) still survive because they now live in `global.extraAllowed`,
+    // which the router applies as the top of the precedence ladder and carves out
+    // of every drop (#1319) — so a hard pause is a true off-switch for everything
+    // except the always-reachable global hosts, exactly as before #1318 (when the
+    // UI hosts were the per-profile carve-out the hard pause kept).
+    val profileExtraAllowed =
+      if (isHardPause) Nil
+      else (appExtraAllowed ++ appExemptAllowedHosts ++ infraAllowHosts).distinct
+
+    if (profile.defaultDeny)
+      // #1318: default-deny baseline. Block-all with only the profile/device
+      // allow list reachable; `global.extraAllowed` carves out separately at the
+      // router. `DefaultDeny` is the lowest-precedence reason, so a concurrent
+      // Paused/Schedule/TimeLimit (already folded into `state`) wins the
+      // block-page copy. extraBlocked/blocklistIds omitted — redundant under
+      // block-all.
+      BlockRules(
+        blocked = true,
+        blockReason = state.blockReason.orElse(Some(MacBlockReason.DefaultDeny)),
+        extraBlocked = Nil,
+        extraAllowed = profileExtraAllowed,
+        blocklistIds = Nil,
+        blockIpOnly = profile.blockIpOnly,
+      )
+    else
+      BlockRules(
+        blocked = state.blocked,
+        blockReason = state.blockReason,
+        extraBlocked = (appExtraBlocked ++ siteLimitExtraBlocked).distinct,
+        extraAllowed = profileExtraAllowed,
+        blocklistIds = profile.blockedCategories,
+        blockIpOnly = profile.blockIpOnly,
+      )
   }
 
   // ── #334: timezone-aware time math ────────────────────────────────────────

@@ -254,6 +254,71 @@ trait BlocklistRepo {
   def findMeta(id: BlocklistId): Task[Option[wifihaven.shared.BlocklistSummary]]
 }
 
+/**
+ * #1318 / #1308: reads the global-policy surfaces (V48) and assembles the fleet-wide
+ * `PolicySnapshot.global : BlockRules` that applies to every MAC. This repo is the only reader of
+ * the `global_allow` / `global_blocks` / `global_blocklists` tables and the `household_settings`
+ * global flags; the router never sees the audit `reason`/`added_by` columns — only the flat
+ * hostname / category lists the wire needs (design §7). PolicyService calls `get` once per
+ * snapshot.
+ *
+ * The `addAllow` / `addBlock` / `addBlocklist` / `setFlags` writers exist so the assembly path is
+ * exercisable end-to-end (and as the foundation the #1320 SPA editor will reuse); the curated
+ * authoring UI and its permissions are out of scope here.
+ */
+trait GlobalPolicyRepo {
+
+  /**
+   * The fleet-wide `BlockRules` resolved from the global tables + household flags:
+   *   - `extraAllowed` = active `global_allow` hosts (removed_at IS NULL)
+   *   - `extraBlocked` = active `global_blocks` hosts
+   *   - `blocklistIds` = all `global_blocklists` rows
+   *   - `blocked` / `blockReason` / `blockIpOnly` = the `household_settings` global flags
+   * Defaults to `BlockRules.allowAll` (inert) when nothing is configured.
+   */
+  def get: Task[BlockRules]
+
+  /** Append a host to the always-reachable set (carves out every drop). */
+  def addAllow(host: Hostname, reason: Option[String], addedBy: Option[Long]): Task[Unit]
+
+  /**
+   * Soft-delete the active `global_allow` row for `host` (sets removed_at); history is retained.
+   */
+  def removeAllow(host: Hostname, removedBy: Option[Long]): Task[Unit]
+
+  /** Append a host to the network-wide block set (un-blockable except by `global_allow`). */
+  def addBlock(host: Hostname, reason: Option[String], addedBy: Option[Long]): Task[Unit]
+
+  /**
+   * Soft-delete the active `global_blocks` row for `host` (sets removed_at); history is retained.
+   */
+  def removeBlock(host: Hostname, removedBy: Option[Long]): Task[Unit]
+
+  /** Associate a category blocklist with the household (applies to every MAC). */
+  def addBlocklist(id: BlocklistId, addedBy: Option[Long]): Task[Unit]
+
+  /** Set the flat global flags (network lockdown + strict-IP floor). */
+  def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit]
+}
+
+/**
+ * No-op variant for test wiring that doesn't exercise the global section (e.g. the
+ * `PolicyService.apply` factory used by the legacy snapshot specs). `get` returns the inert
+ * `BlockRules.allowAll`; writes are dropped — so those specs see the pre-global behaviour with no
+ * global carve-out or lockdown.
+ */
+object NoopGlobalPolicyRepo extends GlobalPolicyRepo {
+  def get: Task[BlockRules]                                                               =
+    ZIO.succeed(BlockRules.allowAll)
+  def addAllow(host: Hostname, reason: Option[String], addedBy: Option[Long]): Task[Unit] = ZIO.unit
+  def removeAllow(host: Hostname, removedBy: Option[Long]): Task[Unit]                    = ZIO.unit
+  def addBlock(host: Hostname, reason: Option[String], addedBy: Option[Long]): Task[Unit] = ZIO.unit
+  def removeBlock(host: Hostname, removedBy: Option[Long]): Task[Unit]                    = ZIO.unit
+  def addBlocklist(id: BlocklistId, addedBy: Option[Long]): Task[Unit]                    = ZIO.unit
+  def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit] =
+    ZIO.unit
+}
+
 trait TimeUsageRepo {
 
   /**
@@ -672,6 +737,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
       Boolean,
       String,
       String,
+      Boolean,
   )
   private def toP(r: R)                             = Profile(
     r._1,
@@ -682,10 +748,11 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     r._6,
     CrossDeviceOverlapMode.parse(r._7).getOrElse(CrossDeviceOverlapMode.Sum),
     PauseMode.parse(r._8).getOrElse(PauseMode.Soft),
+    r._9,
   )
   def listAll                                       =
     DbMetrics.timed("profile.listAll")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode FROM profiles ORDER BY id"
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny FROM profiles ORDER BY id"
         .query[R]
         .map(toP)
         .to[List]
@@ -693,7 +760,7 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
     )
   def findById(id: ProfileId)                       =
     DbMetrics.timed("profile.findById")(
-      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode FROM profiles WHERE id=$id"
+      sql"SELECT id,name,blocked_categories,paused,failure_mode,block_ip_only,cross_device_overlap_mode,pause_mode,default_deny FROM profiles WHERE id=$id"
         .query[R]
         .map(toP)
         .option
@@ -712,7 +779,8 @@ class ProfileRepoLive(xa: Transactor[Task]) extends ProfileRepo {
             failure_mode=${FailureMode.asString(p.failureMode)},
             block_ip_only=${p.blockIpOnly},
             cross_device_overlap_mode=${CrossDeviceOverlapMode.asString(p.crossDeviceOverlapMode)},
-            pause_mode=${PauseMode.asString(p.pauseMode)}
+            pause_mode=${PauseMode.asString(p.pauseMode)},
+            default_deny=${p.defaultDeny}
           WHERE id=${p.id}""".update.run
       .transact(xa)
       .unit
@@ -794,6 +862,85 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     sql"""INSERT INTO household_settings (id, daily_reset_time, daily_reset_tz)
           VALUES (1, '00:00', ${defaultZone})
           ON CONFLICT (id) DO NOTHING""".update.run.transact(xa).unit
+}
+
+class GlobalPolicyRepoLive(xa: Transactor[Task]) extends GlobalPolicyRepo {
+
+  def get: Task[BlockRules] =
+    DbMetrics.timed("globalPolicy.get") {
+      val allow      =
+        sql"SELECT host FROM global_allow WHERE removed_at IS NULL ORDER BY host"
+          .query[String]
+          .to[List]
+      val block      =
+        sql"SELECT host FROM global_blocks WHERE removed_at IS NULL ORDER BY host"
+          .query[String]
+          .to[List]
+      val blocklists =
+        sql"SELECT blocklist_id FROM global_blocklists ORDER BY blocklist_id"
+          .query[String]
+          .to[List]
+      // global_block_reason stores a MacBlockReason string (block-page copy); only meaningful
+      // when global_blocked is true. A lockdown with no stored reason reports `Manual`.
+      val flags      =
+        sql"""SELECT global_blocked, global_block_reason, global_block_ip_only
+              FROM household_settings WHERE id=1"""
+          .query[(Boolean, Option[String], Boolean)]
+          .option
+
+      (for {
+        a <- allow
+        b <- block
+        c <- blocklists
+        f <- flags
+      } yield {
+        val (blocked, reasonStr, ipOnly)   = f.getOrElse((false, None, false))
+        val reason: Option[MacBlockReason] =
+          if blocked then
+            reasonStr.flatMap(MacBlockReason.parse).orElse(Some(MacBlockReason.Manual))
+          else None
+        BlockRules(
+          blocked = blocked,
+          blockReason = reason,
+          extraBlocked = b.map(Hostname.unsafe),
+          extraAllowed = a.map(Hostname.unsafe),
+          blocklistIds = c.map(BlocklistId.unsafe),
+          blockIpOnly = ipOnly,
+        )
+      }).transact(xa)
+    }
+
+  def addAllow(host: Hostname, reason: Option[String], addedBy: Option[Long]): Task[Unit] =
+    sql"""INSERT INTO global_allow (host, reason, added_by)
+          VALUES (${host.value}, $reason, $addedBy)""".update.run.transact(xa).unit
+
+  def removeAllow(host: Hostname, removedBy: Option[Long]): Task[Unit] =
+    sql"""UPDATE global_allow SET removed_at=NOW(), removed_by=$removedBy
+          WHERE host=${host.value} AND removed_at IS NULL""".update.run.transact(xa).unit
+
+  def addBlock(host: Hostname, reason: Option[String], addedBy: Option[Long]): Task[Unit] =
+    sql"""INSERT INTO global_blocks (host, reason, added_by)
+          VALUES (${host.value}, $reason, $addedBy)""".update.run.transact(xa).unit
+
+  def removeBlock(host: Hostname, removedBy: Option[Long]): Task[Unit] =
+    sql"""UPDATE global_blocks SET removed_at=NOW(), removed_by=$removedBy
+          WHERE host=${host.value} AND removed_at IS NULL""".update.run.transact(xa).unit
+
+  def addBlocklist(id: BlocklistId, addedBy: Option[Long]): Task[Unit] =
+    sql"""INSERT INTO global_blocklists (blocklist_id, added_by)
+          VALUES (${id.value}, $addedBy)
+          ON CONFLICT (blocklist_id) DO NOTHING""".update.run.transact(xa).unit
+
+  def setFlags(
+      blocked: Boolean,
+      reason: Option[MacBlockReason],
+      blockIpOnly: Boolean,
+  ): Task[Unit] =
+    sql"""UPDATE household_settings
+            SET global_blocked=$blocked,
+                global_block_reason=${reason.map(MacBlockReason.asString)},
+                global_block_ip_only=$blockIpOnly
+          WHERE id=1""".update.run.transact(xa).unit
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
@@ -2788,6 +2935,7 @@ object Repos {
   val profileRepo           = ZLayer.fromFunction(ProfileRepoLive(_))
   val scheduleRepo          = ZLayer.fromFunction(ScheduleRepoLive(_))
   val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
+  val globalPolicyRepo      = ZLayer.fromFunction(GlobalPolicyRepoLive(_))
   val timeLimitRepo         = ZLayer.fromFunction(TimeLimitRepoLive(_))
   val siteTimeLimitRepo     = ZLayer.fromFunction(SiteTimeLimitRepoLive(_))
   val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_))
@@ -2803,5 +2951,5 @@ object Repos {
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
 }

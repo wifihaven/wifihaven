@@ -11,10 +11,12 @@ import zio.{Clock as _, *}
 import zio.test.*
 
 /**
- * #944: deployment-configured UI hosts (wifihaven.policy.uiAllowedHosts) must appear in every
- * profile's snapshot `extraAllowed`, regardless of paused state or whether the profile lists one of
- * them in `extraBlocked`. Router enforces allow-beats-block; this spec pins that the snapshot emits
- * the union. The list is per-deployment so prod doesn't let staging hosts through and vice versa.
+ * #944 → #1318: deployment-configured UI hosts (wifihaven.policy.uiAllowedHosts) are fleet-wide
+ * always-reachable hosts. As of #1318 they are emitted ONCE in `snapshot.global.extraAllowed`
+ * (which carves out every block at the router) rather than copied into every profile's
+ * `extraAllowed`. This spec pins the relocated shape: the UI hosts appear in the global section and
+ * NOT in per-profile `extraAllowed`, while the curated infra-allow hosts (#1307, retired in #1321)
+ * stay copied per-profile for now.
  */
 object PolicySnapshotGlobalAllowSpec
     extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
@@ -27,6 +29,8 @@ object PolicySnapshotGlobalAllowSpec
   private val uiHosts: List[Hostname] =
     List("wifihaven.net", "api.wifihaven.net").map(Hostname.unsafe)
 
+  // makePs wires the real GlobalPolicyRepo so the global section is assembled from the DB +
+  // uiAllowedHosts, exactly as production does.
   private def makePs =
     for {
       pr     <- ZIO.service[ProfileRepo]
@@ -39,6 +43,7 @@ object PolicySnapshotGlobalAllowSpec
       trRepo <- ZIO.service[TrafficReportRepo]
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
+      gpr    <- ZIO.service[GlobalPolicyRepo]
       clock  <- ZIO.service[Clock]
     } yield PolicyServiceLive(
       pr,
@@ -53,12 +58,15 @@ object PolicySnapshotGlobalAllowSpec
       ar,
       clock,
       uiHosts,
+      gpr,
     ): PolicyService
 
   private val expected: Set[String] = uiHosts.map(_.value).toSet
 
-  def spec = suite("policy snapshot — global allow hosts (#944)")(
-    test("empty uiAllowedHosts → snapshot extraAllowed is the app-derived list plus infra hosts") {
+  def spec = suite("policy snapshot — global allow hosts (#944 / #1318)")(
+    test(
+      "empty uiAllowedHosts → per-profile extraAllowed is the app-derived list plus infra hosts",
+    ) {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -71,6 +79,7 @@ object PolicySnapshotGlobalAllowSpec
         trr  <- ZIO.service[TrafficReportRepo]
         er   <- ZIO.service[TimeExtensionRepo]
         ar   <- ZIO.service[AppRepo]
+        gpr  <- ZIO.service[GlobalPolicyRepo]
         clk  <- ZIO.service[Clock]
         ps0  <- pr.listAll
         kids = ps0.find(_.name == "Kids").get
@@ -87,14 +96,18 @@ object PolicySnapshotGlobalAllowSpec
           er,
           ar,
           clk,
-        ) // uiAllowedHosts defaults to Nil
+          Nil, // empty uiAllowedHosts
+          gpr,
+        )
         snap <- svc.snapshot
       } yield assertTrue(
         snap.profiles(kids.id).rules.extraAllowed.map(_.value).toSet ==
           (Set("user.example") ++ PolicyService.infraAllowHosts.map(_.value).toSet),
+        // global is inert (no DB global_allow rows, no ui hosts configured)
+        snap.global.extraAllowed.isEmpty,
       )
     },
-    test("every profile's emitted extraAllowed includes all configured ui hosts (union)") {
+    test("configured ui hosts land in global.extraAllowed once, NOT per-profile") {
       for {
         _         <- cleanDb
         pr        <- ZIO.service[ProfileRepo]
@@ -105,21 +118,38 @@ object PolicySnapshotGlobalAllowSpec
         ps   <- makePs
         snap <- ps.snapshot
       } yield {
-        val perProfileAllowed = snap.profiles.values.map(_.rules.extraAllowed.map(_.value).toSet)
-        val allCover          = perProfileAllowed.forall(expected.subsetOf)
-        val kidsAllowed       = snap.profiles
-          .find(_._2.name == "Kids")
-          .get
-          ._2
-          .rules
-          .extraAllowed
-          .map(_.value)
-        val noDupes           = kidsAllowed.distinct == kidsAllowed
-        val carriesExisting   = kidsAllowed.contains("already-in.example")
-        assertTrue(allCover) && assertTrue(noDupes) && assertTrue(carriesExisting)
+        val globalAllowed = snap.global.extraAllowed.map(_.value).toSet
+        // ui hosts present in the global section exactly once
+        val globalCovers  = expected.subsetOf(globalAllowed)
+        val noGlobalDupes = snap.global.extraAllowed.distinct == snap.global.extraAllowed
+        // ui hosts are NOT copied into any profile's extraAllowed anymore
+        val noProfileCopy = snap.profiles.values.forall(p =>
+          expected.intersect(p.rules.extraAllowed.map(_.value).toSet).isEmpty,
+        )
+        // the profile's own app allow still flows per-profile
+        val kidsAllowed   =
+          snap.profiles(kids.id).rules.extraAllowed.map(_.value)
+        assertTrue(
+          globalCovers,
+          noGlobalDupes,
+          noProfileCopy,
+          kidsAllowed.contains("already-in.example"),
+        )
       }
     },
-    test("paused profile still emits global hosts in extraAllowed") {
+    test(
+      "global section is independent of any profile (carries ui hosts even with zero app allows)",
+    ) {
+      for {
+        _    <- cleanDb
+        ps   <- makePs
+        snap <- ps.snapshot
+      } yield assertTrue(
+        snap.profiles.nonEmpty,
+        expected.subsetOf(snap.global.extraAllowed.map(_.value).toSet),
+      )
+    },
+    test("paused profile blocks but ui hosts stay reachable via global.extraAllowed") {
       for {
         _   <- cleanDb
         pr  <- ZIO.service[ProfileRepo]
@@ -130,17 +160,18 @@ object PolicySnapshotGlobalAllowSpec
         snap <- svc.snapshot
       } yield {
         val rules = snap.profiles(kids.id).rules
-        assertTrue(rules.blocked) &&
-        assertTrue(expected.subsetOf(rules.extraAllowed.map(_.value).toSet))
+        assertTrue(
+          rules.blocked,
+          // ui hosts are NOT in the paused profile's own extraAllowed — they carve out via global
+          expected.intersect(rules.extraAllowed.map(_.value).toSet).isEmpty,
+          expected.subsetOf(snap.global.extraAllowed.map(_.value).toSet),
+        )
       }
     },
     test("every profile's extraAllowed includes the #1337 Apple connectivity-test host") {
       // #1337: Apple's network-connectivity-test CDN is a device-level infra dep that
       // was dropped under a whole-MAC block. It lives in the curated infraAllowHosts
-      // constant, so it must surface in every profile's extraAllowed (copied
-      // per-profile, allow beats the @blocked_macs drop via #421 ea_ enforcement).
-      // App-specific CDN edge hostnames were deliberately NOT added (they rotate);
-      // app assets are covered via the app's branded domains instead.
+      // constant, still copied per-profile (the #1307 copy is retired separately in #1321).
       val newHosts = Set("netcts.cdn-apple.com")
       for {
         _    <- cleanDb
@@ -170,7 +201,7 @@ object PolicySnapshotGlobalAllowSpec
       )
     },
     test(
-      "global host in extraBlocked still appears in extraAllowed (allow-beats-block at router)",
+      "ui host blocked as an app appears in per-profile extraBlocked; global.extraAllowed still saves it",
     ) {
       for {
         _   <- cleanDb
@@ -182,12 +213,15 @@ object PolicySnapshotGlobalAllowSpec
         svc  <- makePs
         snap <- svc.snapshot
       } yield {
-        val rules   = snap.profiles(kids.id).rules
-        val blocked = rules.extraBlocked.map(_.value).toSet
-        val allowed = rules.extraAllowed.map(_.value).toSet
-        assertTrue(blocked.contains("wifihaven.net")) &&
-        assertTrue(allowed.contains("wifihaven.net")) &&
-        assertTrue(expected.subsetOf(allowed))
+        val rules         = snap.profiles(kids.id).rules
+        val blocked       = rules.extraBlocked.map(_.value).toSet
+        val globalAllowed = snap.global.extraAllowed.map(_.value).toSet
+        assertTrue(
+          blocked.contains("wifihaven.net"),
+          // the ui host is allow-listed at the global layer, which beats the per-MAC block at the
+          // router (allow-beats-block, top of the precedence ladder)
+          globalAllowed.contains("wifihaven.net"),
+        )
       }
     },
   ) @@ TestAspect.sequential
