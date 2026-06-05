@@ -101,5 +101,18 @@ jobs:
           TF_VAR_grafana_url: ${{ secrets.GRAFANA_URL }}
           TF_VAR_grafana_auth: ${{ secrets.GRAFANA_AUTH }}
         run: |
-          terraform init -input=false
+          # The HCP workspace (TF_WORKSPACE=grafana) must already exist — it is a
+          # one-time, operator-gated setup step, NOT created by this pipeline (see
+          # infra/grafana/README.md "One-time backend setup"). If it is missing,
+          # `terraform init` fails with "Invalid workspace selection / failed to
+          # find workspace". Catch that specific case and print the fix, so the
+          # red CD is self-explanatory instead of looking like an apply error.
+          if ! init_out=$(terraform init -input=false 2>&1); then
+            echo "$init_out"
+            if echo "$init_out" | grep -q "Invalid workspace selection"; then
+              echo "::error title=HCP workspace missing::The HCP Terraform workspace '${TF_WORKSPACE}' does not exist in org '${TF_CLOUD_ORGANIZATION}'. This is the one-time backend setup, not an apply error. Create it (Execution Mode = Local, no VCS) per infra/grafana/README.md 'One-time backend setup', then re-run this job."
+            fi
+            exit 1
+          fi
+          echo "$init_out"
           terraform apply -auto-approve -input=false

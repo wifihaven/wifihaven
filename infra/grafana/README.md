@@ -94,12 +94,28 @@ and the GitHub Actions secrets.
 
 ## Prerequisites
 
+> **HARD PREREQUISITE — the HCP workspace must exist before the `cloud {}`
+> block can be used.** The `cloud {}` block in `main.tf` points at HCP
+> Terraform org `wifihaven` / workspace `grafana`. That workspace is **not**
+> created by the CD pipeline — it is a one-time, operator-gated setup step
+> (see [One-time backend setup](#one-time-backend-setup--state-adoption-operator-gated)
+> below). If the workspace is missing, `terraform init` fails with
+> `Invalid workspace selection — Terraform failed to find workspace "grafana"
+> in organization wifihaven`, and **every** `master-grafana.yml` run on `main`
+> goes red at init (this was [#1440](https://github.com/wifihaven/wifihaven/issues/1440),
+> the gap left by the #1406 backend migration; #1357 did this for `cloudflare`).
+> Merging a `cloud {}` block before its workspace exists is therefore a
+> back-compat trap: create the workspace first, then merge the block.
+
 1. A Grafana Cloud stack exists (free tier is fine; see design §6.2) — one
    stack serves every environment. Ours is
    [`wifihaven.grafana.net`](https://wifihaven.grafana.net).
 2. A **Grafana service-account token** for the stack with dashboard write
    scope: Grafana Cloud → Administration → Service accounts → add token.
 3. Terraform ≥ 1.6 installed (`brew install terraform`).
+4. The **`grafana` HCP Terraform workspace** exists in org `wifihaven`,
+   Execution Mode = Local, no VCS attachment — see
+   [One-time backend setup](#one-time-backend-setup--state-adoption-operator-gated).
 
 ## CI / auto-deploy (the normal path)
 
@@ -141,12 +157,26 @@ the existing dashboards by uid** instead of creating duplicates, and after that
 first apply the state tracks all 7 so the **second apply is a no-op**. That is
 the structural reason there is no duplicate-dashboard churn.
 
-1. **Create the HCP workspace.** On https://app.terraform.io, in the existing
-   `wifihaven` org (the same org as `infra/cloudflare`), create a workspace
-   named `grafana`. Set its **Execution Mode = Local** (workspace → Settings →
-   General). Local mode matters: the apply must run on your machine / the runner
+1. **Create the HCP workspace.** In the existing `wifihaven` org (the same org
+   as `infra/cloudflare`), create a workspace named `grafana` with **Execution
+   Mode = Local** and **no VCS attachment** — mirror the `cloudflare` workspace
+   exactly. Local mode matters: the apply must run on your machine / the runner
    where the Grafana provider plugin and `grafana_auth` live, not remotely on
-   HCP.
+   HCP. **The CD pipeline does not create this** — until it exists, every
+   `master-grafana.yml` run on `main` fails at `terraform init` with `Invalid
+   workspace selection` (#1440).
+
+   Either via the **UI** (https://app.terraform.io → `wifihaven` → New workspace
+   → API-driven / CLI-driven → name `grafana` → Settings → General → Execution
+   Mode = Local), or via the **API** (mirrors `cloudflare`):
+
+   ```sh
+   curl -s -X POST \
+     -H "Authorization: Bearer $TF_API_TOKEN" \
+     -H "Content-Type: application/vnd.api+json" \
+     https://app.terraform.io/api/v2/organizations/wifihaven/workspaces \
+     -d '{"data":{"type":"workspaces","attributes":{"name":"grafana","execution-mode":"local","auto-apply":false}}}'
+   ```
 
 2. **Authenticate + point at the workspace:**
 
