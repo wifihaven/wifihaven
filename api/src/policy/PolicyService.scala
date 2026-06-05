@@ -500,6 +500,14 @@ object PolicyService {
     // actually populated from resolved IPs, which is a separate router-side gap
     // tracked in its own issue — not something more infra-allow entries can fix.
     "netcts.cdn-apple.com",          // Apple network connectivity-test CDN
+    // #1411: Google's gvt2.com infra domain — connectivity-check probes,
+    // Play/app asset bootstrap, and download shards (`r1---sn-xxxx.gvt2.com`)
+    // that rotate. These are device-level transitive deps the whole-MAC drop
+    // kills, making otherwise-allowed Google apps appear blocked. Pure Google
+    // infra, not a site users reach directly → low bypass risk. Added as the
+    // apex `gvt2.com` so the router's trailing-suffix match carves out every
+    // `*.gvt2.com` subdomain (incl. the rotating shards), not just one host.
+    "gvt2.com",                      // Google connectivity / Play / download infra (all subdomains)
   ).map(Hostname.unsafe)
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
