@@ -39,6 +39,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       trRepo <- ZIO.service[TrafficReportRepo]
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
+      nsr    <- ZIO.service[NamedScheduleRepo]
       ref    <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
@@ -53,6 +54,7 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       er,
       ar,
       clk,
+      namedScheduleRepo = nsr,
     ): PolicyService
 
   private def callBlocked(

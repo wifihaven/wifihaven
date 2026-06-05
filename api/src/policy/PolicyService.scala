@@ -39,6 +39,11 @@ object PolicyServiceLive {
       clock: Clock,
       uiAllowedHosts: List[Hostname] = Nil,
       globalPolicyRepo: GlobalPolicyRepo = NoopGlobalPolicyRepo,
+      // #1482: schedule downtime is read from the named-schedule model, so specs that assert
+      // schedule blocking pass the real repo here; it threads into both the snapshot
+      // (TimeStatusService) and the per-host /decision path. Defaults to the noop so the many specs
+      // that don't exercise schedules keep their positional constructions unchanged.
+      namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
   ): PolicyServiceLive = {
     val tss = new TimeStatusServiceLive(
       profileRepo,
@@ -51,6 +56,7 @@ object PolicyServiceLive {
       // Snapshot specs only exercise today; today is always live. A real rollup repo would be
       // ignored on this path, so wire a noop and avoid threading the repo through every test.
       NoopTimeUsedRollupRepo,
+      namedScheduleRepo,
     )
     new PolicyServiceLive(
       profileRepo,
@@ -67,13 +73,19 @@ object PolicyServiceLive {
       clock,
       uiAllowedHosts,
       globalPolicyRepo,
+      namedScheduleRepo,
     )
   }
 }
 
 class PolicyServiceLive(
     profileRepo: ProfileRepo,
-    scheduleRepo: ScheduleRepo,
+    // #1482: the legacy per-profile `schedules` table is no longer an enforcement source — schedule
+    // downtime is read exclusively from `named_schedules` / `profile_schedule_rules` (both the
+    // snapshot, via TimeStatusService, and the per-host /decision fallback below). Retained
+    // injected-but-unused to keep the constructor arity ~40 test constructions depend on; removed
+    // when the legacy table is dropped (the future two-phase destructive PR).
+    @scala.annotation.unused scheduleRepo: ScheduleRepo,
     householdSettingsRepo: HouseholdSettingsRepo,
     timeLimitRepo: TimeLimitRepo,
     siteTimeLimitRepo: SiteTimeLimitRepo,
@@ -101,16 +113,17 @@ class PolicyServiceLive(
   // retired separately in #1321.)
   private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
 
-  // #1069: per-host /decision fallback must see the same schedule downtime as the snapshot —
-  // union the legacy per-profile schedules with the windows of every block-mode named schedule
-  // attached to the profile (as synthetic DbSchedules so `scheduleActiveAt` applies unchanged).
+  // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
+  // the windows of every block-mode named schedule attached to the profile (as synthetic
+  // DbSchedules so `scheduleActiveAt` applies unchanged). Named schedules are the sole source.
   private def schedulesFor(pid: ProfileId): Task[List[DbSchedule]] =
-    for {
-      v1    <- scheduleRepo.listForProfile(pid)
-      named <- namedScheduleRepo.windowsForProfile(pid)
-    } yield v1 ++ named.map(w =>
-      DbSchedule(ScheduleId(0L), pid, "named-schedule", w.days, w.startLocal, w.endLocal, w.tz),
-    )
+    namedScheduleRepo
+      .windowsForProfile(pid)
+      .map(
+        _.map(w =>
+          DbSchedule(ScheduleId(0L), pid, "named-schedule", w.days, w.startLocal, w.endLocal, w.tz),
+        ),
+      )
 
   def snapshot: Task[PolicySnapshot] =
     (for {
