@@ -299,9 +299,9 @@ object ProfileRoutes {
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
-            _    <- scheduleRepo
-              .replaceForProfile(id, upr.schedules)
-              .mapError(ErrorMapper.dbErrorToResponse)
+            // #1494: profile upsert no longer writes the legacy `schedules`
+            // table. Block schedules are attached via PUT
+            // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
             _    <- ZIO
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -348,9 +348,9 @@ object ProfileRoutes {
               s"profile updated: id=${pid.value} paused=${p.paused}→${upr.paused} " +
                 s"name=${upr.name}",
             )
-            _      <- scheduleRepo
-              .replaceForProfile(pid, upr.schedules)
-              .mapError(ErrorMapper.dbErrorToResponse)
+            // #1494: profile upsert no longer writes the legacy `schedules`
+            // table. Block schedules are attached via PUT
+            // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
             _      <- (upr.timeLimit match {
               case Some(mins) => timeLimitRepo.upsert(pid, mins)
               case None       => timeLimitRepo.delete(pid)

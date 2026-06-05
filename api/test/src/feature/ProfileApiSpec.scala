@@ -79,27 +79,19 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
       },
     ),
     suite("POST /api/profiles")(
-      test("admin can create a profile with schedules and time limits") {
+      test("admin can create a profile with categories and time limits") {
         for {
           _              <- cleanDb
           profileRepo    <- ZIO.service[ProfileRepo]
-          schedRepo      <- ZIO.service[ScheduleRepo]
           tlRepo         <- ZIO.service[TimeLimitRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
+          // #1494: schedules are no longer part of the upsert; block schedules
+          // attach via PUT /api/profiles/{id}/schedules (see SchedulesApiSpec).
           body = UpsertProfileRequest(
             name = "Teenager",
             blockedCategories = List(BlocklistId.unsafe("adult"), BlocklistId.unsafe("gambling")),
             paused = false,
-            schedules = List(
-              ScheduleRequest(
-                "Bedtime",
-                List("mon", "tue", "wed", "thu", "fri"),
-                java.time.LocalTime.of(22, 0),
-                java.time.LocalTime.of(8, 0),
-                java.time.ZoneId.of("UTC"),
-              ),
-            ),
             timeLimit = Some(180),
           ).toJson
           req  = Request
@@ -111,12 +103,9 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           teen     <- ZIO
             .fromOption(profiles.find(_.name == "Teenager"))
             .orElseFail(new Exception("Profile not found"))
-          scheds   <- schedRepo.listForProfile(teen.id)
           tl       <- tlRepo.findForProfile(teen.id)
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(teen.blockedCategories.contains(BlocklistId.unsafe("adult"))) &&
-          assertTrue(scheds.length == 1) &&
-          assertTrue(scheds.head.startLocal == java.time.LocalTime.of(22, 0)) &&
           assertTrue(tl.exists(_.dailyMinutes == 180))
       },
       // #1494: enforcement now reads schedules from named_schedules /
@@ -176,7 +165,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             name = "AdultsAllowAll",
             blockedCategories = Nil,
             paused = false,
-            schedules = Nil,
             timeLimit = None,
             failureMode = Some(FailureMode.AllowAll),
           ).toJson
@@ -201,7 +189,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             name = "Kids",
             blockedCategories = Nil,
             paused = false,
-            schedules = Nil,
             timeLimit = None,
             failureMode = Some(FailureMode.AllowAll),
           ).toJson
@@ -222,7 +209,7 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           hash           <- auth.hashPassword("readpass")
           _              <- userRepo.create("reader", hash, "child")
           token          <- auth.login("reader", "readpass").map(_.token.value)
-          body = UpsertProfileRequest("Test", Nil, false, Nil, None).toJson
+          body = UpsertProfileRequest("Test", Nil, false, None).toJson
           req  = Request
             .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
@@ -235,7 +222,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         for {
           _              <- cleanDb
           profileRepo    <- ZIO.service[ProfileRepo]
-          schedRepo      <- ZIO.service[ScheduleRepo]
           tlRepo         <- ZIO.service[TimeLimitRepo]
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
@@ -245,15 +231,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
             name = "Kids Updated",
             blockedCategories = List(BlocklistId.unsafe("adult")),
             paused = false,
-            schedules = List(
-              ScheduleRequest(
-                "Bedtime",
-                List("mon", "tue", "wed", "thu", "fri"),
-                java.time.LocalTime.of(20, 0),
-                java.time.LocalTime.of(7, 0),
-                java.time.ZoneId.of("UTC"),
-              ),
-            ),
             timeLimit = Some(120),
           ).toJson
           req    = Request
@@ -266,11 +243,9 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           resp    <- routes.runZIO(req)
           updated <- profileRepo.findById(kidsId)
           tl      <- tlRepo.findForProfile(kidsId)
-          scheds  <- schedRepo.listForProfile(kidsId)
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(updated.exists(_.name == "Kids Updated")) &&
-          assertTrue(tl.exists(_.dailyMinutes == 120)) &&
-          assertTrue(scheds.exists(_.startLocal == java.time.LocalTime.of(20, 0)))
+          assertTrue(tl.exists(_.dailyMinutes == 120))
       },
     ),
     suite("PUT /api/profiles/:id pause is idempotent (#406)")(
@@ -291,7 +266,6 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
               name = "Kids",
               blockedCategories = Nil,
               paused = paused,
-              schedules = Nil,
               timeLimit = None,
             ).toJson
             Request

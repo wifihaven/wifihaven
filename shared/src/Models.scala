@@ -578,7 +578,13 @@ case class UpsertProfileRequest(
     name: String,
     blockedCategories: List[BlocklistId],
     paused: Boolean,
-    schedules: List[ScheduleRequest],
+    // #1494: schedules are NO LONGER carried here. Enforcement reads from
+    // named_schedules / profile_schedule_rules (#1482/#1490); a profile's block
+    // schedules are attached via PUT /api/profiles/{id}/schedules
+    // (SetProfileSchedulesRequest). The legacy inline array wrote the dead V1
+    // `schedules` table, so editing it was a silent no-op — the field is gone.
+    // (An older client that still sends `schedules` is tolerated: ZIO JSON
+    // ignores the unknown field, and nothing acts on it.)
     timeLimit: Option[Int],
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,

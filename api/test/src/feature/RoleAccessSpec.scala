@@ -136,7 +136,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           upRepo,
           userRepo,
         )
-        body   = UpsertProfileRequest("Hacked", Nil, false, Nil, None).toJson
+        body   = UpsertProfileRequest("Hacked", Nil, false, None).toJson
         req    = Request
           .put(URL.decode(s"/api/profiles/$kidsId").toOption.get, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))
@@ -177,7 +177,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           "Kids Renamed",
           List(BlocklistId.unsafe("adult")),
           false,
-          Nil,
           None,
         ).toJson
         req    = Request
@@ -215,7 +214,6 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           "Pwned",
           Nil,
           false,
-          Nil,
           None,
         ).toJson
         req    = Request
@@ -244,7 +242,7 @@ object RoleAccessSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           upRepo,
           userRepo,
         )
-        body   = UpsertProfileRequest("New", Nil, false, Nil, None).toJson
+        body   = UpsertProfileRequest("New", Nil, false, None).toJson
         req    = Request
           .post(URL.decode("/api/profiles").toOption.get, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))

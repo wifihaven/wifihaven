@@ -117,7 +117,6 @@ object PolicySnapshotBlockIpOnlySpec
             name = "Kids",
             blockedCategories = Nil,
             paused = false,
-            schedules = Nil,
             timeLimit = None,
             blockIpOnly = ipOnly,
           ).toJson
@@ -168,7 +167,6 @@ object PolicySnapshotBlockIpOnlySpec
             name = name,
             blockedCategories = Nil,
             paused = false,
-            schedules = Nil,
             timeLimit = None,
             blockIpOnly = ipOnly,
           ).toJson
