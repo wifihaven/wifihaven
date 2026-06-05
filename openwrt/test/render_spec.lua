@@ -2248,3 +2248,107 @@ describe("render.nft global composition (#1319)", function()
     end
   end)
 end)
+
+-- ── #1322: the tricky precedence COMPOSITIONS the design (§5.2/§5.3) calls out ──
+-- These pin the interactions the #1319 base tests don't: a host on BOTH global
+-- lists (global.extraAllowed beating global.extraBlocked), default-deny composed
+-- with blockIpOnly, the device-override-replaces-profile path composed with the
+-- global layer, and the §5.2 invariant that blockIpOnly carries NO allow
+-- carve-out (allowed hosts pass via resolved_<m> naturally).
+describe("render.nft global composition — precedence compositions (#1322)", function()
+  -- global.extraAllowed is the TOP of the ladder: it beats a global block too.
+  -- A host on both @global_block and @global_allow must stay reachable, so the
+  -- per-MAC @global_block drop carries the `!= @global_allow` carve-out.
+  it("global.extraAllowed beats global.extraBlocked (host in both → @global_block drop carves out @global_allow)", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    s.global.extraAllowed = { "evil.example" } -- same host on both lists
+    local nft = render.nft(s)
+    -- The drop matches @global_block but is suppressed for any IP also in
+    -- @global_allow — i.e. evil.example's resolved IPs survive.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @global_block6 ip6 daddr != @global_allow6 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+  end)
+
+  -- default-deny × blockIpOnly is the strictest combination (design §4): the
+  -- profile collapses to blocked=true with only its extraAllowed reachable AND
+  -- a resolved_<m> strict-IP drop fires independently. A packet survives only if
+  -- it is explicitly allowed AND was locally resolved.
+  it("default-deny + blockIpOnly: per-MAC block carves out @ea_ AND a separate resolved_<m> drop fires", function()
+    local s = snap_global()
+    -- the server-collapsed default-deny wire shape: blocked + DefaultDeny +
+    -- only extraAllowed, extraBlocked/blocklistIds omitted, blockIpOnly on.
+    s.profiles["3"].rules = {
+      blocked      = true,
+      blockReason  = "DefaultDeny",
+      extraBlocked = {},
+      extraAllowed = { "pbskids.org" },
+      blocklistIds = {},
+      blockIpOnly  = true,
+    }
+    local nft = render.nft(s)
+    -- 1) whole-MAC block, carved out by the per-MAC ea exception, DefaultDeny reason
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_pbskids_org log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
+      1, true))
+    -- 2) the independent strict-IP drop on resolved_<m>
+    assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33 {", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
+      1, true))
+  end)
+
+  -- §5.2 invariant: blockIpOnly has NO allowlist carve-out. Allowed hosts land
+  -- in resolved_<m> at DNS time and so pass the IP-only test naturally; splicing
+  -- a `!= @global_allow` / `!= @ea_` clause into the resolved_ drop would be
+  -- wrong. Even with a global allow list present, the resolved_ drop must be the
+  -- bare strict-IP predicate.
+  it("blockIpOnly drop never carries an allow carve-out, even with global.extraAllowed set", function()
+    local s = snap_global()
+    s.global.blockIpOnly  = true
+    s.global.extraAllowed = { "ok.example" }
+    local nft = render.nft(s)
+    -- the resolved_ drop line is exactly the bare strict-IP predicate
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
+      1, true))
+    -- no `@global_allow` spliced onto the resolved_ line
+    assert.is_nil(nft:find(
+      "@resolved_aa_bb_cc_11_22_33 ip daddr != @global_allow", 1, true))
+  end)
+
+  -- global-allow vs profile-deny vs device-allow conflict (§5.1 replace + §5.2):
+  -- a device override that runs allow-by-default REPLACES its default-deny / blocked
+  -- profile, so the device escapes the whole-MAC profile block — but a GLOBAL block
+  -- still applies to it (only @global_allow saves a global block).
+  it("device-allow override escapes a blocked profile but a global block still applies", function()
+    local s = snap_global()
+    -- profile is whole-MAC blocked (e.g. default-deny / paused)…
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    -- …but THIS device overrides to allow-by-default (replace semantics)…
+    s.devices["aa:bb:cc:11:22:33"].rules = {
+      blocked      = false,
+      blockReason  = nil,
+      extraBlocked = {},
+      extraAllowed = {},
+      blocklistIds = {},
+      blockIpOnly  = false,
+    }
+    -- …and there is a fleet-wide global block + global allow.
+    s.global.extraBlocked = { "evil.example" }
+    s.global.extraAllowed = { "ok.example" }
+    local nft = render.nft(s)
+    -- The device is NOT whole-MAC blocked — no Paused drop for it (override won).
+    assert.is_nil(nft:find("wh_drop:aa:bb:cc:11:22:33:Paused", 1, true))
+    -- But the global block still drops for this managed MAC, carved out only by
+    -- @global_allow (its own empty extraAllowed cannot loosen a global block).
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+  end)
+end)
