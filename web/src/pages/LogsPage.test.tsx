@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ConnectionEventAggRow, Device, ProfileDetail, QueryLog } from '@/types/api'
 
 vi.mock('@/api/client', () => ({
@@ -42,10 +42,18 @@ const profileDetails: ProfileDetail[] = [
   { profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft' }, schedules: [], timeLimit: null },
 ]
 
+// Surfaces the current URL search string so tests can assert query-param
+// persistence under MemoryRouter (which doesn't touch window.location).
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="location-search">{loc.search}</div>
+}
+
 function renderAt(path = '/usage/events') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <LogsPage />
+      <LocationProbe />
     </MemoryRouter>,
   )
 }
@@ -235,6 +243,88 @@ describe('LogsPage — infinite scroll (#862)', () => {
     expect(await screen.findByTestId('end-of-stream')).toBeInTheDocument()
   })
 
+})
+
+describe('LogsPage — status filter (#1432)', () => {
+  it('defaults to All — /api/logs called without a blocked filter, funnel inactive', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt()
+    await waitFor(() => expect(queryMock).toHaveBeenCalled())
+    expect(queryMock.mock.calls[0][0].blocked).toBeUndefined()
+    // The status filter is a funnel on the Status column header, like the
+    // device/profile filters — inactive (no count badge) by default.
+    expect(screen.getAllByTestId('ce-filter-status').length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('ce-filter-status-count')).not.toBeInTheDocument()
+  })
+
+  it('checking Blocked in the Status header filter sets ?status=blocked and passes blocked=true', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    // server filters; mock returns only blocked rows when asked for blocked-only
+    const blockedLog: QueryLog = {
+      ...log1, id: 2, host: { type: 'fqdn', value: 'pornhub.com' },
+      blocked: true, reason: { kind: 'category', slug: 'adult' },
+    }
+    queryMock.mockImplementation((p: { blocked?: boolean }) =>
+      Promise.resolve({ rows: p.blocked ? [blockedLog] : [log1, blockedLog], nextCursor: null }),
+    )
+    renderAt()
+    await screen.findByText('example.com')
+
+    await userEvent.click(screen.getByTestId('ce-filter-status'))
+    await userEvent.click(screen.getByTestId('ce-filter-status-opt-blocked'))
+    await waitFor(() => {
+      const last = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+      expect(last.blocked).toBe(true)
+    })
+    // URL persists the selection.
+    await waitFor(() =>
+      expect(screen.getByTestId('location-search').textContent).toContain('status=blocked'),
+    )
+    // only the blocked row renders
+    expect(await screen.findByText('pornhub.com')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('example.com')).not.toBeInTheDocument())
+  })
+
+  it('checking Allowed passes blocked=false to /api/logs', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt()
+    await screen.findByText('example.com')
+    await userEvent.click(screen.getByTestId('ce-filter-status'))
+    await userEvent.click(screen.getByTestId('ce-filter-status-opt-allowed'))
+    await waitFor(() => {
+      const last = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+      expect(last.blocked).toBe(false)
+    })
+  })
+
+  it('checking both Blocked and Allowed clears the filter (Blocked OR Allowed = all)', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt('/usage/events?status=blocked')
+    await screen.findByText('example.com')
+    await userEvent.click(screen.getByTestId('ce-filter-status'))
+    await userEvent.click(screen.getByTestId('ce-filter-status-opt-allowed'))
+    await waitFor(() => {
+      const last = queryMock.mock.calls[queryMock.mock.calls.length - 1][0]
+      expect(last.blocked).toBeUndefined()
+    })
+  })
+
+  it('initializes from ?status=blocked and passes blocked=true on first fetch', async () => {
+    const queryMock = api.logs.query as unknown as ReturnType<typeof vi.fn>
+    renderAt('/usage/events?status=blocked')
+    await waitFor(() => expect(queryMock).toHaveBeenCalled())
+    expect(queryMock.mock.calls[0][0].blocked).toBe(true)
+    // funnel shows its active count badge
+    expect(screen.getByTestId('ce-filter-status-count')).toBeInTheDocument()
+  })
+
+  it('aggregated view also passes the blocked filter to /connection-events/series', async () => {
+    const seriesMock = api.logs.series as unknown as ReturnType<typeof vi.fn>
+    renderAt('/usage/events?status=blocked')
+    await userEvent.click(screen.getByTestId('bucket-1h'))
+    await waitFor(() => expect(seriesMock).toHaveBeenCalled())
+    expect(seriesMock.mock.calls[0][0].blocked).toBe(true)
+  })
 })
 
 describe('LogsPage — jump-to-date (#951)', () => {
