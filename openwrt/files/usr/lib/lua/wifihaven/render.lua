@@ -410,6 +410,18 @@ function M.dnsmasq(snapshot)
   -- issue #1460) reproduces this on a real router. Merging every set for
   -- a given host into ONE comma-joined directive sidesteps the parser quirk
   -- (verified live with dnsmasq 2.91 on OpenWRT 23.05).
+  --
+  -- **The merged directive must stay within dnsmasq's line limit (#1489).**
+  -- dnsmasq reads config lines into a fixed MAXDNAME(1025)-byte buffer with no
+  -- line continuation, so a directive over 1024 bytes is truncated and its
+  -- remainder is parsed as a bogus option — dnsmasq then refuses to start and
+  -- :53 returns "connection refused" (the Gate 3a staging-smoke regression in
+  -- #1489). Because only one directive per host is honoured we cannot split a
+  -- host across lines, so the per-host spec count must stay bounded. The only
+  -- per-host spec that scales with device count is the per-(MAC,host) ea_
+  -- populator — the #1307 infra-allow copy lands the same host in every
+  -- profile's extraAllowed, so one ea_ spec per device would pile onto a
+  -- single line. We skip the redundant ones in the ea_ loop below.
   local bl_hosts = snapshot._blocklist_hosts or {}
   local bl_ids   = sorted_keys(snapshot.blocklists or {})
   local ga_hosts = global_allow_hosts(snapshot)
@@ -422,23 +434,42 @@ function M.dnsmasq(snapshot)
   --   3. bl_  (per-category, in bl_ids order; hosts in source order)
   --   4. ga_  (global allow, sorted)
   --   5. gb_  (global block, sorted)
-  -- Within each source the v4 spec precedes v6.
-  local host_order, host_specs = {}, {}
+  -- Within each source the v4 spec precedes v6. add_spec de-duplicates
+  -- identical specs per host (e.g. the same host listed twice in one
+  -- blocklist) so the merged directive never carries a redundant comma entry.
+  local host_order, host_specs, host_seen = {}, {}, {}
   local function add_spec(host, spec)
     if not host_specs[host] then
       host_specs[host] = {}
+      host_seen[host] = {}
       host_order[#host_order + 1] = host
     end
-    host_specs[host][#host_specs[host] + 1] = spec
+    if not host_seen[host][spec] then
+      host_seen[host][spec] = true
+      host_specs[host][#host_specs[host] + 1] = spec
+    end
   end
+
+  -- #1489: a host that is also in global.extraAllowed needs NO per-(MAC,host)
+  -- ea_ populator. @global_allow already carves it out of every drop for every
+  -- MAC (render.nft's ga_suffix), so the ea_ specs are pure redundancy — and
+  -- they are the only per-host nftset spec that scales with device count, so
+  -- emitting one per device is what overflows dnsmasq's config-line buffer
+  -- above. Skip them; enforcement rides on @global_allow, and dns-tail (#1346)
+  -- still populates the per-(MAC,host) ea_ sets from live replies regardless.
+  -- This mirrors the #1307→#1321 redundancy the global-allow layer retires.
+  local ga_host_set = {}
+  for _, h in ipairs(ga_hosts) do ga_host_set[h] = true end
 
   local ea_macs = {}
   for m in pairs(ea_by_mac) do ea_macs[#ea_macs + 1] = m end
   table.sort(ea_macs)
   for _, mac in ipairs(ea_macs) do
     for _, host in ipairs(ea_by_mac[mac]) do
-      add_spec(host, "4#inet#wifihaven#" .. ea_set_name(mac, host))
-      add_spec(host, "6#inet#wifihaven#" .. ea6_set_name(mac, host))
+      if not ga_host_set[host] then
+        add_spec(host, "4#inet#wifihaven#" .. ea_set_name(mac, host))
+        add_spec(host, "6#inet#wifihaven#" .. ea6_set_name(mac, host))
+      end
     end
   end
   for _, host in ipairs(effective_extra_blocked_hosts(snapshot)) do
