@@ -106,6 +106,30 @@ describe("block_page.parse_blocked_hosts (#594)", function()
   end)
 end)
 
+describe("block_page.resolve_base (#1174)", function()
+  -- The block-page redirect base is deployment config, separate from the API
+  -- URL. In the cloud deploy the SPA (which serves /blocked) lives on a
+  -- different host (wifihaven.net) than the API (api.wifihaven.net), so the
+  -- redirect must target the SPA host, not api_url. resolve_base picks the
+  -- configured block-page URL when set and falls back to api_url otherwise
+  -- (the self-hosted / back-compat case, where the SPA is bundled with the API
+  -- on the same host).
+  it("returns the block-page URL when it differs from api_url (cloud case)", function()
+    assert.equals("https://wifihaven.net",
+      bp.resolve_base("https://wifihaven.net", "https://api.wifihaven.net"))
+  end)
+
+  it("falls back to api_url when the block-page URL is unset (self-hosted/back-compat)", function()
+    assert.equals("https://api.wifihaven.net", bp.resolve_base(nil, "https://api.wifihaven.net"))
+    assert.equals("https://api.wifihaven.net", bp.resolve_base("", "https://api.wifihaven.net"))
+  end)
+
+  it("post-#1171 cutover is a pure config change (app.wifihaven.net)", function()
+    assert.equals("https://app.wifihaven.net",
+      bp.resolve_base("https://app.wifihaven.net", "https://api.wifihaven.net"))
+  end)
+end)
+
 describe("block_page.build_dest_url", function()
   it("emits a fully-formed /blocked URL with host, reason, and mac", function()
     local u = bp.build_dest_url(
@@ -114,6 +138,15 @@ describe("block_page.build_dest_url", function()
     assert.truthy(u:find("host=youtube.com", 1, true))
     assert.truthy(u:find("reason=Paused", 1, true))
     assert.truthy(u:find("mac=aa%3Abb%3Acc%3A11%3A22%3A33", 1, true))
+  end)
+
+  -- #1174: when the block-page base is the public SPA host (not api_url), the
+  -- redirect targets the SPA, not the API host.
+  it("targets the SPA host when given the block-page base (#1174)", function()
+    local base = bp.resolve_base("https://wifihaven.net", "https://api.wifihaven.net")
+    local u = bp.build_dest_url(base, "youtube.com", "aa:bb:cc:11:22:33", "Schedule")
+    assert.truthy(u:find("https://wifihaven.net/blocked", 1, true))
+    assert.is_nil(u:find("api.wifihaven.net", 1, true))
   end)
 
   it("returns nil when api_url is not configured", function()
@@ -150,6 +183,15 @@ describe("block_page.render_html", function()
   it("inline fallback includes viewport meta (#580)", function()
     local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
     assert.truthy(html:find('name="viewport"', 1, true))
+  end)
+
+  -- #1174: render_html redirects to whatever base it is given. With the SPA
+  -- host as base, the redirect document points at the SPA, not the API host.
+  it("redirect document points at the block-page base, not api_url (#1174)", function()
+    local base = bp.resolve_base("https://wifihaven.net", "https://api.wifihaven.net")
+    local html = bp.render_html(base, "youtube.com", "aa:bb:cc:11:22:33", "Schedule")
+    assert.truthy(html:find("https://wifihaven.net/blocked", 1, true))
+    assert.is_nil(html:find("api.wifihaven.net", 1, true))
   end)
 
   it("falls back to inline copy when api_url is missing", function()
