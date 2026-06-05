@@ -3,11 +3,16 @@
 # never commit real values.
 #
 # In CD these are NOT read from a tfvars file: master-grafana.yml feeds them
-# from the GRAFANA_URL / GRAFANA_AUTH GitHub Actions secrets (one Grafana
-# Cloud stack serves every environment).
+# from the GRAFANA_URL / GRAFANA_AUTH / GRAFANA_OPERATOR_EMAIL GitHub Actions
+# secrets (one Grafana Cloud stack serves every environment).
 
 grafana_url  = "https://<your-stack>.grafana.net"
 grafana_auth = "<Grafana service-account token — Administration → Service accounts>"
+
+# Address every alert contact point delivers to (the single household
+# operator). Secret — never commit a real value. In CD it is the
+# GRAFANA_OPERATOR_EMAIL secret, fed as TF_VAR_operator_email.
+operator_email = "<operator email>"
 
 # Optional: uid of a pre-created folder to hold the dashboards. Leave unset
 # to use the stack's General folder. Not managed as a resource (keeps the

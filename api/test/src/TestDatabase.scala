@@ -178,10 +178,10 @@ object TestDatabase {
    * bootstrap layer always provides it.
    */
   type AllRepos =
-    TestDb & UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo &
-      GlobalPolicyRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo &
-      TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
-      ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo
+    TestDb & UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & NamedScheduleRepo &
+      HouseholdSettingsRepo & GlobalPolicyRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
+      BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo &
+      BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg

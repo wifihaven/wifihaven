@@ -182,6 +182,73 @@ case class Schedule(
     tz: ZoneId,
 ) derives JsonCodec
 
+// #1069: household-scoped reusable named schedule. A `NamedSchedule` owns one
+// or more `ScheduleWindow`s; anything time-bound (profiles today, per-app rules
+// #1378 and schedule-driven blocklists #1067 next) references it by id. A
+// window is the exact typed shape of the legacy per-profile `Schedule` (days /
+// startLocal / endLocal / tz) so the existing DST-correct
+// `PolicyService.scheduleActiveAt` evaluates it unchanged. This is an
+// API-internal model — it never reaches the router wire (`PolicySnapshot`):
+// PolicyService folds the active windows into the existing per-MAC BlockRules.
+case class ScheduleWindow(
+    days: List[String],
+    startLocal: LocalTime,
+    endLocal: LocalTime,
+    tz: ZoneId,
+) derives JsonCodec
+
+case class NamedSchedule(
+    id: NamedScheduleId,
+    name: String,
+    description: Option[String],
+    windows: List[ScheduleWindow],
+) derives JsonCodec
+
+// Create/replace bodies for the /api/schedules CRUD. `windows` is the full
+// desired set (replace semantics, mirroring how AppRepo.setHosts replaces).
+case class CreateNamedScheduleRequest(
+    name: String,
+    description: Option[String] = None,
+    windows: List[ScheduleWindow] = Nil,
+) derives JsonCodec
+
+case class UpdateNamedScheduleRequest(
+    name: String,
+    description: Option[String] = None,
+    windows: List[ScheduleWindow] = Nil,
+) derives JsonCodec
+
+// #1069: the (named schedule, mode) attachments on a profile. `mode` decides
+// what an active window does. Profiles are block-only for now (allow-mode is
+// deferred — see the #1069 thread), so the API below sets block schedules; the
+// mode lives here so the model already matches the per-app schedule shape when
+// allow lands.
+enum ScheduleMode { case BlockedDuring, AllowedDuring }
+
+object ScheduleMode {
+  def asString(m: ScheduleMode): String      = m match {
+    case BlockedDuring => "blocked_during"
+    case AllowedDuring => "allowed_during"
+  }
+  def parse(s: String): Option[ScheduleMode] = s match {
+    case "blocked_during" => Some(BlockedDuring)
+    case "allowed_during" => Some(AllowedDuring)
+    case _                => None
+  }
+  given JsonCodec[ScheduleMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown schedule mode: $s"),
+    asString,
+  )
+}
+
+// Body for PUT /api/profiles/{id}/schedules — replace the profile's block
+// schedules with this set (a profile can reference many). Kept off
+// UpsertProfileRequest so an ordinary profile save can't clobber it. Allow-mode
+// profile schedules are deferred, so this carries ids only (block implied).
+case class SetProfileSchedulesRequest(
+    scheduleIds: List[NamedScheduleId] = Nil,
+) derives JsonCodec
+
 case class TimeLimit(
     id: TimeLimitId,
     profileId: ProfileId,
@@ -833,6 +900,9 @@ case class ProfileDetail(
     profile: Profile,
     schedules: List[Schedule],
     timeLimit: Option[TimeLimit],
+    // #1069: ids of the named schedules attached to this profile as block
+    // schedules (downtime while active). Empty until the operator attaches one.
+    scheduleIds: List[NamedScheduleId] = Nil,
 ) derives JsonCodec
 
 /**

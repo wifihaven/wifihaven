@@ -91,10 +91,13 @@ object Main extends ZIOAppDefault {
         // Service handles are pure layer reads (no DB I/O); resolve them up front
         // so the retried DB-init block below is purely the idempotent DB work.
         hsRepo <- ZIO.service[HouseholdSettingsRepo]
-        appRepoForSeed <- ZIO.service[AppRepo]
-        blRepoForSeed  <- ZIO.service[BlocklistRepo]
-        blCacheForSeed <- ZIO.service[BlocklistCache]
-        blFetcher      <- ZIO.service[BlocklistFetcher]
+        appRepoForSeed        <- ZIO.service[AppRepo]
+        blRepoForSeed         <- ZIO.service[BlocklistRepo]
+        blCacheForSeed        <- ZIO.service[BlocklistCache]
+        profileRepoForSeed    <- ZIO.service[ProfileRepo]
+        schedRepoForSeed      <- ZIO.service[ScheduleRepo]
+        namedSchedRepoForSeed <- ZIO.service[NamedScheduleRepo]
+        blFetcher             <- ZIO.service[BlocklistFetcher]
         tz = java.time.ZoneId.systemDefault()
         // #1255: a transient DB outage (a few seconds during a resize/failover/
         // restart) used to throw a Hikari/PSQL connection error straight to
@@ -134,6 +137,18 @@ object Main extends ZIOAppDefault {
             // REPLACE semantics; remote-fetch failures leave existing rows alone.
             _           <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
             _           <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
+            // #1069: migrate any legacy per-profile schedules into the named-schedule model and
+            // seed the default starter set on a fresh household. Idempotent — see ScheduleSeeder.
+            schedSummary <- ScheduleSeeder.seedAndMigrate(
+              namedSchedRepoForSeed,
+              schedRepoForSeed,
+              profileRepoForSeed,
+              tz,
+            )
+            _            <- ZIO.logInfo(
+              s"named schedules: migrated=${schedSummary.migrated} profiles, " +
+                s"seededDefaults=${schedSummary.seededDefaults}",
+            )
           } yield ()
         }
         // #1248: migrations + ensureDefault + seeds are done — flip readiness so
@@ -248,36 +263,37 @@ object Main extends ZIOAppDefault {
       ready: UIO[Boolean],
   ) =
     for {
-      auth          <- ZIO.service[AuthService]
-      userRepo      <- ZIO.service[UserRepo]
-      upRepo        <- ZIO.service[UserProfileRepo]
-      profileRepo   <- ZIO.service[ProfileRepo]
-      schedRepo     <- ZIO.service[ScheduleRepo]
-      hsRepo        <- ZIO.service[HouseholdSettingsRepo]
-      globalRepo    <- ZIO.service[GlobalPolicyRepo]
-      tlRepo        <- ZIO.service[TimeLimitRepo]
-      stlRepo       <- ZIO.service[SiteTimeLimitRepo]
-      deviceRepo    <- ZIO.service[DeviceRepo]
-      blRepo        <- ZIO.service[BlocklistRepo]
-      blCache       <- ZIO.service[BlocklistCache]
-      blFetcher2    <- ZIO.service[BlocklistFetcher]
-      usageRepo     <- ZIO.service[TimeUsageRepo]
-      extRepo       <- ZIO.service[TimeExtensionRepo]
-      routerRepo    <- ZIO.service[RouterRepo]
-      trafficRepo   <- ZIO.service[TrafficReportRepo]
-      rollupRepo2   <- ZIO.service[RollupRepo]
-      connRepo      <- ZIO.service[ConnectionEventRepo]
-      blockEvRepo   <- ZIO.service[BlockEventRepo]
-      alertRepo     <- ZIO.service[AlertRepo]
-      appRepo       <- ZIO.service[AppRepo]
-      notifier      <- ZIO.service[Notifier]
-      policy        <- ZIO.service[PolicyService]
-      timeStatus    <- ZIO.service[wifihaven.api.policy.TimeStatusService]
-      cfg           <- ZIO.service[AppConfig]
-      clock         <- ZIO.service[Clock]
-      timeCache     <- ZIO.service[TimeStatusCache]
-      xa            <- ZIO.service[Transactor[Task]]
-      promPublisher <- ZIO.service[PrometheusPublisher]
+      auth           <- ZIO.service[AuthService]
+      userRepo       <- ZIO.service[UserRepo]
+      upRepo         <- ZIO.service[UserProfileRepo]
+      profileRepo    <- ZIO.service[ProfileRepo]
+      schedRepo      <- ZIO.service[ScheduleRepo]
+      namedSchedRepo <- ZIO.service[NamedScheduleRepo]
+      hsRepo         <- ZIO.service[HouseholdSettingsRepo]
+      globalRepo     <- ZIO.service[GlobalPolicyRepo]
+      tlRepo         <- ZIO.service[TimeLimitRepo]
+      stlRepo        <- ZIO.service[SiteTimeLimitRepo]
+      deviceRepo     <- ZIO.service[DeviceRepo]
+      blRepo         <- ZIO.service[BlocklistRepo]
+      blCache        <- ZIO.service[BlocklistCache]
+      blFetcher2     <- ZIO.service[BlocklistFetcher]
+      usageRepo      <- ZIO.service[TimeUsageRepo]
+      extRepo        <- ZIO.service[TimeExtensionRepo]
+      routerRepo     <- ZIO.service[RouterRepo]
+      trafficRepo    <- ZIO.service[TrafficReportRepo]
+      rollupRepo2    <- ZIO.service[RollupRepo]
+      connRepo       <- ZIO.service[ConnectionEventRepo]
+      blockEvRepo    <- ZIO.service[BlockEventRepo]
+      alertRepo      <- ZIO.service[AlertRepo]
+      appRepo        <- ZIO.service[AppRepo]
+      notifier       <- ZIO.service[Notifier]
+      policy         <- ZIO.service[PolicyService]
+      timeStatus     <- ZIO.service[wifihaven.api.policy.TimeStatusService]
+      cfg            <- ZIO.service[AppConfig]
+      clock          <- ZIO.service[Clock]
+      timeCache      <- ZIO.service[TimeStatusCache]
+      xa             <- ZIO.service[Transactor[Task]]
+      promPublisher  <- ZIO.service[PrometheusPublisher]
       routerAuth = new RouterAuthLive(routerRepo)
       routerMetrics <- RouterMetricsService.make
       dbHealthCheck = sql"SELECT 1".query[Int].unique.transact(xa).unit
@@ -308,7 +324,16 @@ object Main extends ZIOAppDefault {
       val systemRoutes: Routes[Any, Response] =
         VersionRoutes.routes(wifihaven.api.BuildInfo.fromEnv) ++
           AuthRoutes.routes(auth, userRepo, upRepo) ++
-          ProfileRoutes.routes(auth, profileRepo, schedRepo, tlRepo, upRepo, userRepo) ++
+          ProfileRoutes.routes(
+            auth,
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            upRepo,
+            userRepo,
+            namedSchedRepo,
+          ) ++
+          ScheduleRoutes.routes(auth, namedSchedRepo) ++
           HouseholdSettingsRoutes.routes(auth, hsRepo) ++
           GlobalPolicyRoutes.routes(auth, globalRepo, userRepo) ++
           DeviceRoutes.routes(auth, deviceRepo, upRepo)

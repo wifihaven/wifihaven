@@ -108,6 +108,71 @@ trait ProfileRepo {
   def setPaused(id: ProfileId, paused: Boolean): Task[Unit]
 }
 
+/**
+ * #1069: CRUD over the household-scoped `named_schedules` table + its typed `schedule_windows`
+ * child rows, plus the `profile_schedule_rules` join that attaches schedules to profiles. No
+ * business logic — name validation and snapshot expansion live in the routes / PolicyService. A
+ * schedule's windows (and a profile's block-schedule set) are replaced wholesale on write (same
+ * shape as [[AppRepo.setHosts]]).
+ */
+trait NamedScheduleRepo {
+  def listAll: Task[List[NamedSchedule]]
+  def findById(id: NamedScheduleId): Task[Option[NamedSchedule]]
+  def findByName(name: String): Task[Option[NamedSchedule]]
+  def create(name: String, description: Option[String], windows: List[ScheduleWindow]): Task[
+    NamedScheduleId,
+  ]
+  def update(
+      id: NamedScheduleId,
+      name: String,
+      description: Option[String],
+      windows: List[ScheduleWindow],
+  ): Task[Unit]
+  def delete(id: NamedScheduleId): Task[Unit]
+
+  // ── profile_schedule_rules (block-mode only for now; allow-mode deferred) ──
+
+  /** Ids of the named schedules attached to `pid` as block schedules. */
+  def blockScheduleIdsForProfile(pid: ProfileId): Task[List[NamedScheduleId]]
+
+  /** Replace `pid`'s block-mode schedule attachments with exactly `ids` (de-duped). */
+  def setProfileBlockSchedules(pid: ProfileId, ids: List[NamedScheduleId]): Task[Unit]
+
+  /**
+   * Windows of every block-mode schedule attached to `pid` (flattened across its
+   * `profile_schedule_rules`), or `Nil` if none. PolicyService folds these into the profile's
+   * scheduled-downtime decision.
+   */
+  def windowsForProfile(pid: ProfileId): Task[List[ScheduleWindow]]
+
+  /** Batched [[windowsForProfile]] for the all-profiles snapshot path — avoids an N+1. */
+  def windowsForAllProfiles: Task[Map[ProfileId, List[ScheduleWindow]]]
+}
+
+/**
+ * No-named-schedules stub. Lets TimeStatusServiceLive's many direct test constructions keep their
+ * existing arity (the real repo is wired via the layer); a profile then has no named-schedule
+ * downtime, leaving the legacy `schedules` behaviour exactly as before.
+ */
+object NoopNamedScheduleRepo extends NamedScheduleRepo {
+  def listAll                       = ZIO.succeed(Nil)
+  def findById(id: NamedScheduleId) = ZIO.succeed(None)
+  def findByName(name: String)      = ZIO.succeed(None)
+  def create(name: String, description: Option[String], windows: List[ScheduleWindow]) =
+    ZIO.succeed(NamedScheduleId(0L))
+  def update(
+      id: NamedScheduleId,
+      name: String,
+      description: Option[String],
+      windows: List[ScheduleWindow],
+  ) = ZIO.unit
+  def delete(id: NamedScheduleId)                                                      = ZIO.unit
+  def blockScheduleIdsForProfile(pid: ProfileId)                           = ZIO.succeed(Nil)
+  def setProfileBlockSchedules(pid: ProfileId, ids: List[NamedScheduleId]) = ZIO.unit
+  def windowsForProfile(pid: ProfileId)                                    = ZIO.succeed(Nil)
+  def windowsForAllProfiles                                                = ZIO.succeed(Map.empty)
+}
+
 trait ScheduleRepo {
   def listAll: Task[List[Schedule]]
   def listForProfile(pid: ProfileId): Task[List[Schedule]]
@@ -2980,11 +3045,134 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
     )
 }
 
+class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {
+  // (days, start_local, end_local, tz) — same typed shape as the V1 schedules columns.
+  private type W = (List[String], LocalTime, LocalTime, ZoneId)
+  private def toWindow(w: W) = ScheduleWindow(w._1, w._2, w._3, w._4)
+
+  private def windowsFor(id: NamedScheduleId): ConnectionIO[List[ScheduleWindow]] =
+    sql"SELECT days,start_local,end_local,tz FROM schedule_windows WHERE schedule_id=$id ORDER BY id"
+      .query[W]
+      .map(toWindow)
+      .to[List]
+
+  private def insertWindows(id: NamedScheduleId, ws: List[ScheduleWindow]): ConnectionIO[Unit] =
+    ws.foldLeft(FC.unit) { (acc, w) =>
+      acc *> sql"""INSERT INTO schedule_windows(schedule_id,days,start_local,end_local,tz)
+                   VALUES($id,${w.days.toArray},${w.startLocal},${w.endLocal},${w.tz})""".update.run.void
+    }
+
+  def listAll =
+    DbMetrics.timed("namedSchedule.listAll")(
+      (for {
+        rows <-
+          sql"SELECT id,name,description FROM named_schedules ORDER BY name"
+            .query[(NamedScheduleId, String, Option[String])]
+            .to[List]
+        out  <- rows.traverse { case (id, name, desc) =>
+          windowsFor(id).map(ws => NamedSchedule(id, name, desc, ws))
+        }
+      } yield out).transact(xa),
+    )
+
+  def findById(id: NamedScheduleId) =
+    (for {
+      row <-
+        sql"SELECT id,name,description FROM named_schedules WHERE id=$id"
+          .query[(NamedScheduleId, String, Option[String])]
+          .option
+      out <- row.traverse { case (rid, name, desc) =>
+        windowsFor(rid).map(ws => NamedSchedule(rid, name, desc, ws))
+      }
+    } yield out).transact(xa)
+
+  def findByName(name: String) =
+    (for {
+      row <-
+        sql"SELECT id,name,description FROM named_schedules WHERE name=$name"
+          .query[(NamedScheduleId, String, Option[String])]
+          .option
+      out <- row.traverse { case (rid, n, desc) =>
+        windowsFor(rid).map(ws => NamedSchedule(rid, n, desc, ws))
+      }
+    } yield out).transact(xa)
+
+  def create(name: String, description: Option[String], windows: List[ScheduleWindow]) =
+    (for {
+      id <-
+        sql"INSERT INTO named_schedules(name,description) VALUES($name,$description) RETURNING id"
+          .query[NamedScheduleId]
+          .unique
+      _  <- insertWindows(id, windows)
+    } yield id).transact(xa)
+
+  def update(
+      id: NamedScheduleId,
+      name: String,
+      description: Option[String],
+      windows: List[ScheduleWindow],
+  ) =
+    (sql"""UPDATE named_schedules SET name=$name, description=$description, updated_at=NOW()
+           WHERE id=$id""".update.run *>
+      sql"DELETE FROM schedule_windows WHERE schedule_id=$id".update.run *>
+      insertWindows(id, windows)).transact(xa).unit
+
+  def delete(id: NamedScheduleId) =
+    sql"DELETE FROM named_schedules WHERE id=$id".update.run.transact(xa).unit
+
+  private val BlockedDuring = "blocked_during"
+
+  def blockScheduleIdsForProfile(pid: ProfileId) =
+    sql"""SELECT schedule_id FROM profile_schedule_rules
+          WHERE profile_id=$pid AND mode=$BlockedDuring
+          ORDER BY schedule_id"""
+      .query[NamedScheduleId]
+      .to[List]
+      .transact(xa)
+
+  def setProfileBlockSchedules(pid: ProfileId, ids: List[NamedScheduleId]) = {
+    val del = sql"""DELETE FROM profile_schedule_rules
+                    WHERE profile_id=$pid AND mode=$BlockedDuring""".update.run
+    val ins = ids.distinct.foldLeft(FC.unit) { (acc, sid) =>
+      acc *> sql"""INSERT INTO profile_schedule_rules(profile_id, schedule_id, mode)
+                   VALUES($pid, $sid, $BlockedDuring)
+                   ON CONFLICT (profile_id, schedule_id, mode) DO NOTHING""".update.run.void
+    }
+    (del *> ins).transact(xa).unit
+  }
+
+  // Block-mode windows attached to a profile: rules -> named_schedules -> windows.
+  def windowsForProfile(pid: ProfileId) =
+    sql"""SELECT sw.days, sw.start_local, sw.end_local, sw.tz
+          FROM schedule_windows sw
+          JOIN profile_schedule_rules psr ON psr.schedule_id = sw.schedule_id
+          WHERE psr.profile_id = $pid AND psr.mode = $BlockedDuring
+          ORDER BY sw.id"""
+      .query[W]
+      .map(toWindow)
+      .to[List]
+      .transact(xa)
+
+  def windowsForAllProfiles =
+    sql"""SELECT psr.profile_id, sw.days, sw.start_local, sw.end_local, sw.tz
+          FROM schedule_windows sw
+          JOIN profile_schedule_rules psr ON psr.schedule_id = sw.schedule_id
+          WHERE psr.mode = $BlockedDuring
+          ORDER BY psr.profile_id, sw.id"""
+      .query[(ProfileId, List[String], LocalTime, LocalTime, ZoneId)]
+      .to[List]
+      .transact(xa)
+      .map(_.groupBy(_._1).map { case (pid, rows) =>
+        pid -> rows.map(r => ScheduleWindow(r._2, r._3, r._4, r._5))
+      })
+}
+
 object Repos {
   val userRepo              = ZLayer.fromFunction(UserRepoLive(_))
   val userProfileRepo       = ZLayer.fromFunction(UserProfileRepoLive(_))
   val profileRepo           = ZLayer.fromFunction(ProfileRepoLive(_))
   val scheduleRepo          = ZLayer.fromFunction(ScheduleRepoLive(_))
+  val namedScheduleRepo     = ZLayer.fromFunction(NamedScheduleRepoLive(_))
   val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
   val globalPolicyRepo      = ZLayer.fromFunction(GlobalPolicyRepoLive(_))
   val timeLimitRepo         = ZLayer.fromFunction(TimeLimitRepoLive(_))
@@ -3002,5 +3190,5 @@ object Repos {
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
 }

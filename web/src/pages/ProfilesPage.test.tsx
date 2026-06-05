@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
@@ -543,82 +543,84 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
     expect(within(sub).getByTestId('profile-time-overlap-sum-1')).toBeChecked()
   })
 
+  // Real timers + waitFor throughout (no fake-timer juggling). These debounced
+  // autosave tests previously used `vi.useFakeTimers({ shouldAdvanceTime })`,
+  // which flaked (#1439): the time-limit input's mount value-resync
+  // `useEffect(() => setX(value.x))` can run AFTER our change (its passive
+  // effect hadn't flushed when the element was found under CI load), reverting
+  // the input so the debounce never commits and the PUT is never sent.
+  // `await act` drains those pending mount effects before we interact; `waitFor`
+  // then polls for the real-clock debounce.
   it('autosaves the daily cap after debounce — single PUT, no Save button', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      renderPage()
-      const kidsCard = await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
 
-      const input = within(kidsCard).getByTestId('profile-time-limit-1')
-      // Set atomically: char-by-char typing under fake timers lets the 700ms
-      // debounce fire on a transient partial value, producing extra PUTs.
-      fireEvent.change(input, { target: { value: '90' } })
+    const input = within(kidsCard).getByTestId('profile-time-limit-1')
+    // Drain the input's pending mount effects (value-resync) before interacting.
+    await act(async () => {})
 
-      // Pre-debounce: no save yet.
-      expect(api.profiles.update).not.toHaveBeenCalled()
+    // Set atomically: char-by-char typing lets the debounce fire on a transient
+    // partial value, producing extra PUTs. fireEvent.change gives one value.
+    fireEvent.change(input, { target: { value: '90' } })
 
-      await vi.advanceTimersByTimeAsync(700)
+    // Pre-debounce: no save yet.
+    expect(api.profiles.update).not.toHaveBeenCalled()
 
+    await waitFor(() => {
       expect(api.profiles.update).toHaveBeenCalledTimes(1)
       expect(api.profiles.update).toHaveBeenLastCalledWith(
         1,
         expect.objectContaining({ timeLimit: 90, name: 'Kids' }),
       )
+    })
 
-      // "Saved" indicator surfaces after the PUT resolves.
-      await waitFor(() => {
-        const status = within(kidsCard).getByTestId('profile-time-status-1')
-        expect(status).toHaveAttribute('data-status', 'saved')
-        expect(status).toHaveTextContent('Saved')
-      })
-    } finally {
-      vi.useRealTimers()
-    }
+    // "Saved" indicator surfaces after the PUT resolves.
+    await waitFor(() => {
+      const status = within(kidsCard).getByTestId('profile-time-status-1')
+      expect(status).toHaveAttribute('data-status', 'saved')
+      expect(status).toHaveTextContent('Saved')
+    })
   })
 
   it('autosaves the cross-device overlap toggle', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      renderPage()
-      const kidsCard = await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    await act(async () => {})
 
-      await user.click(within(kidsCard).getByTestId('profile-time-overlap-dedup-1'))
-      await vi.advanceTimersByTimeAsync(700)
+    await user.click(within(kidsCard).getByTestId('profile-time-overlap-dedup-1'))
 
+    // Poll for the debounced PUT — see the daily-cap test (#1439).
+    await waitFor(() =>
       expect(api.profiles.update).toHaveBeenLastCalledWith(
         1,
         expect.objectContaining({ crossDeviceOverlapMode: 'dedup' }),
-      )
-    } finally {
-      vi.useRealTimers()
-    }
+      ),
+    )
   })
 
   it('clearing the daily cap sends timeLimit:null', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      renderPage()
-      const kidsCard = await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    await act(async () => {})
 
-      await user.clear(within(kidsCard).getByTestId('profile-time-limit-1'))
-      await vi.advanceTimersByTimeAsync(700)
+    await user.clear(within(kidsCard).getByTestId('profile-time-limit-1'))
 
+    // Poll for the debounced PUT — see the daily-cap test (#1439).
+    await waitFor(() =>
       expect(api.profiles.update).toHaveBeenLastCalledWith(
         1,
         expect.objectContaining({ timeLimit: null }),
-      )
-    } finally {
-      vi.useRealTimers()
-    }
+      ),
+    )
   })
 
   it('non-admins see read-only subsection — no editable inputs', async () => {

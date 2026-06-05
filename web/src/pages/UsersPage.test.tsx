@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ProfileDetail, User } from '@/types/api'
 
@@ -119,88 +119,87 @@ describe('UsersPage — inline autosave edit (#1001)', () => {
     expect(within(editor).queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument()
   })
 
+  // Real timers + waitFor throughout (no fake-timer juggling). The debounced
+  // autosave tests previously used `vi.useFakeTimers({ shouldAdvanceTime })`,
+  // which flaked (#1439): `findByTestId` resolves the moment the editor input
+  // commits — under CI load that can be BEFORE the editor's mount passive
+  // effects run, including the value-resync `useEffect(() => setX(value.x))`.
+  // If that resync fires AFTER our change it reverts the input and the debounce
+  // never commits, so the PATCH is never sent. `await act` drains those pending
+  // mount effects before we interact; `waitFor` then polls for the real-clock
+  // debounce to fire.
   it('renaming fires a debounced PATCH {username}', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      render(<UsersPage />)
-      await screen.findByText('bob')
-      await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
-      const editor = await screen.findByTestId('user-editor-11')
-      const input = within(editor).getByTestId('user-name-input-11')
+    const user = userEvent.setup()
+    render(<UsersPage />)
+    await screen.findByText('bob')
+    await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
+    const editor = await screen.findByTestId('user-editor-11')
+    const input = within(editor).getByTestId('user-name-input-11')
+    // Drain the editor's pending mount effects (the value-resync) before
+    // interacting, so they can't revert the change after it lands.
+    await act(async () => {})
 
-      // Set atomically: char-by-char typing under fake timers lets the 700ms
-      // debounce fire on a transient partial value, producing extra PATCHes.
-      fireEvent.change(input, { target: { value: 'bobby' } })
-      expect(api.users.patch).not.toHaveBeenCalled()
-      await vi.advanceTimersByTimeAsync(700)
+    // Set atomically: char-by-char typing lets the debounce fire on a transient
+    // partial value, producing extra PATCHes. fireEvent.change gives one value.
+    fireEvent.change(input, { target: { value: 'bobby' } })
+    expect(api.users.patch).not.toHaveBeenCalled()
 
-      expect(api.users.patch).toHaveBeenCalledWith(11, { username: 'bobby' })
-    } finally {
-      vi.useRealTimers()
-    }
+    await waitFor(() =>
+      expect(api.users.patch).toHaveBeenCalledWith(11, { username: 'bobby' }),
+    )
   })
 
   it('changing role fires PATCH {role}', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      render(<UsersPage />)
-      await screen.findByText('bob')
-      await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
-      const editor = await screen.findByTestId('user-editor-11')
+    const user = userEvent.setup()
+    render(<UsersPage />)
+    await screen.findByText('bob')
+    await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
+    const editor = await screen.findByTestId('user-editor-11')
+    await act(async () => {})
 
-      await user.click(within(editor).getByRole('button', { name: 'adult' }))
-      await vi.advanceTimersByTimeAsync(700)
+    await user.click(within(editor).getByRole('button', { name: 'adult' }))
 
-      expect(api.users.patch).toHaveBeenCalledWith(11, { role: 'adult' })
-    } finally {
-      vi.useRealTimers()
-    }
+    // Poll for the debounced PATCH — see the rename test (#1439).
+    await waitFor(() =>
+      expect(api.users.patch).toHaveBeenCalledWith(11, { role: 'adult' }),
+    )
   })
 
   it('toggling a profile fires PATCH {profileIds} with full-replace semantics', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      render(<UsersPage />)
-      await screen.findByText('bob')
-      await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
-      const editor = await screen.findByTestId('user-editor-11')
+    const user = userEvent.setup()
+    render(<UsersPage />)
+    await screen.findByText('bob')
+    await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
+    const editor = await screen.findByTestId('user-editor-11')
+    await act(async () => {})
 
-      // bob currently has Kids (1); add Adults (2)
-      await user.click(within(editor).getByRole('button', { name: 'Adults' }))
-      await vi.advanceTimersByTimeAsync(700)
+    // bob currently has Kids (1); add Adults (2)
+    await user.click(within(editor).getByRole('button', { name: 'Adults' }))
 
-      expect(api.users.patch).toHaveBeenCalledWith(11, { profileIds: [1, 2] })
-    } finally {
-      vi.useRealTimers()
-    }
+    // Poll for the debounced PATCH — see the rename test (#1439).
+    await waitFor(() =>
+      expect(api.users.patch).toHaveBeenCalledWith(11, { profileIds: [1, 2] }),
+    )
   })
 
   it('PATCH failure surfaces inline error + Retry; dirty value retained; Retry re-sends', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      (api.users.patch as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'))
-      render(<UsersPage />)
-      await screen.findByText('bob')
-      await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
-      const editor = await screen.findByTestId('user-editor-11')
-      const input = within(editor).getByTestId('user-name-input-11')
+    (api.users.patch as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'))
+    const user = userEvent.setup()
+    render(<UsersPage />)
+    await screen.findByText('bob')
+    await user.click(within(screen.getByTestId('user-row-11')).getByRole('button', { name: /^edit$/i }))
+    const editor = await screen.findByTestId('user-editor-11')
+    const input = within(editor).getByTestId('user-name-input-11')
+    await act(async () => {})
 
-      fireEvent.change(input, { target: { value: 'bobby' } })
-      await vi.advanceTimersByTimeAsync(700)
+    fireEvent.change(input, { target: { value: 'bobby' } })
 
-      const status = within(editor).getByTestId('user-save-status-11')
-      await waitFor(() => expect(status).toHaveAttribute('data-status', 'error'))
-      expect(input).toHaveValue('bobby')
+    const status = within(editor).getByTestId('user-save-status-11')
+    await waitFor(() => expect(status).toHaveAttribute('data-status', 'error'))
+    expect(input).toHaveValue('bobby')
 
-      await user.click(within(editor).getByTestId('user-save-status-11-retry'))
-      await waitFor(() => expect(api.users.patch).toHaveBeenCalledTimes(2))
-    } finally {
-      vi.useRealTimers()
-    }
+    await user.click(within(editor).getByTestId('user-save-status-11-retry'))
+    await waitFor(() => expect(api.users.patch).toHaveBeenCalledTimes(2))
   })
 })
 
