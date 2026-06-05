@@ -85,6 +85,7 @@ const kidsProfile: ProfileDetail = {
     paused: false,
     failureMode: 'block-all',
     crossDeviceOverlapMode: 'sum',
+    pauseMode: 'soft',
   },
   schedules: [
     { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
@@ -100,6 +101,7 @@ const adultsProfile: ProfileDetail = {
     paused: true,
     failureMode: 'last-known-good',
     crossDeviceOverlapMode: 'sum',
+    pauseMode: 'soft',
   },
   schedules: [],
   timeLimit: null,
