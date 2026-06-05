@@ -107,7 +107,7 @@ cat > "$WORK/post-install" <<'POSTINSTALL'
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-rotate-dnsmasq-log/d' /etc/crontabs/root
-echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
+echo '0 * * * * /usr/sbin/wifihaven-update --jitter' >> /etc/crontabs/root
 echo '*/10 * * * * /usr/sbin/wifihaven-rotate-dnsmasq-log' >> /etc/crontabs/root
 /etc/init.d/cron enable 2>/dev/null || true
 /etc/init.d/cron restart 2>/dev/null || true
@@ -129,7 +129,7 @@ cat > "$WORK/trigger" <<'TRIGGER'
 mkdir -p /etc/crontabs
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-update/d' /etc/crontabs/root
 [ -f /etc/crontabs/root ] && sed -i '/wifihaven-rotate-dnsmasq-log/d' /etc/crontabs/root
-echo '0 4 * * * /usr/sbin/wifihaven-update' >> /etc/crontabs/root
+echo '0 * * * * /usr/sbin/wifihaven-update --jitter' >> /etc/crontabs/root
 echo '*/10 * * * * /usr/sbin/wifihaven-rotate-dnsmasq-log' >> /etc/crontabs/root
 /etc/init.d/cron enable 2>/dev/null || true
 /etc/init.d/cron restart 2>/dev/null || true

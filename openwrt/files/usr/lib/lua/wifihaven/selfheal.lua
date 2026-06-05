@@ -12,7 +12,12 @@
 
 local M = {}
 
-M.CANONICAL_LINE = "0 4 * * * /usr/sbin/wifihaven-update"
+-- #1414: hourly (was daily 04:00) so a shipped enforcement fix reaches the
+-- fleet within ~1h. The --jitter flag makes wifihaven-update sleep a bounded
+-- random delay before any network work, spreading fleet load across the hour.
+-- Older routers carrying the daily "0 4 * * *" line are healed to this on the
+-- next agent startup (stale-cadence heal below).
+M.CANONICAL_LINE = "0 * * * * /usr/sbin/wifihaven-update --jitter"
 M.DEFAULT_PATH   = "/etc/crontabs/root"
 
 local function read_lines(path)

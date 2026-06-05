@@ -18,6 +18,13 @@
 # /etc/config/wifihaven is declared as a conffile, so router_token survives
 # upgrades under either package manager.
 # Safe to run from cron; logs to syslog under tag "wifihaven".
+#
+# Flags:
+#   --jitter  Sleep a bounded random delay (0..WIFIHAVEN_UPDATE_JITTER_MAX
+#             seconds, default 600) before doing any network work. The hourly
+#             cron entry (#1414) passes this so a fleet of routers doesn't all
+#             hit the GitHub release endpoint at the top of the hour. Manual /
+#             on-demand runs (the update-now skill) omit it and stay instant.
 set -u
 
 API_URL="https://api.github.com/repos/wifihaven/wifihaven/releases/latest"
@@ -25,6 +32,31 @@ INSTALLED_VERSION_FILE=/usr/lib/wifihaven/VERSION
 STATE_DIR=/var/lib/wifihaven
 
 log() { logger -t wifihaven "update: $*"; }
+
+# ── argument parsing ─────────────────────────────────────────────────────────
+JITTER=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --jitter) JITTER=1 ;;
+    *) log "ignoring unknown argument: $_arg" ;;
+  esac
+done
+
+# ── jitter (#1414) ───────────────────────────────────────────────────────────
+# Spread hourly fleet load. Draw a base-10 value from /dev/urandom (leading
+# zeros stripped to avoid octal interpretation in $(( )) ) and reduce it modulo
+# the configured ceiling. A no-change run after the sleep is still a true no-op
+# on the enforcement path (update_package returns before any reload), so jitter
+# never causes an enforcement blip on an already-current router.
+JITTER_MAX=${WIFIHAVEN_UPDATE_JITTER_MAX:-600}
+if [ "$JITTER" = "1" ] && [ "$JITTER_MAX" -gt 0 ]; then
+  _r=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c 6)
+  _r=$(printf '%s' "$_r" | sed 's/^0*//')
+  [ -n "$_r" ] || _r=0
+  _sleep=$(( _r % (JITTER_MAX + 1) ))
+  log "jitter: sleeping ${_sleep}s (max ${JITTER_MAX}s) before update check"
+  sleep "$_sleep"
+fi
 
 # Detect package manager. Prefer apk (24.10+) when both are present, since
 # routers mid-migration may still ship a vestigial opkg binary.
