@@ -92,6 +92,29 @@ templated `${datasource}` variable resolved at view time, so the same JSON
 loads in both Grafana Cloud and a self-hosted provisioned Grafana, #1207),
 and the GitHub Actions secrets.
 
+## Alerting
+
+The alerting half of the design (`docs/design/alerting.md`) is managed here
+too:
+
+- **Contact points + notification policy** ([`alerting.tf`](alerting.tf), #1403)
+  — three email contact points and the singleton severity/env routing tree.
+- **A managed alerts folder** ([`alerting-rules.tf`](alerting-rules.tf)) that
+  the rule groups live in. Unlike the dashboards, a Grafana managed alert rule
+  group needs a concrete, non-empty folder, so this one is managed in-repo
+  (idempotent now that the HCP backend owns its state).
+- **Warning rule group** ([`alerting-rules-warning.tf`](alerting-rules-warning.tf),
+  #1405) — W1–W5 (§7.2). W5 ships **disabled** (`is_paused`) because its
+  series is router-pushed and not yet trustworthy in prod (§8, #1382).
+- **Critical rule group** ([`alerting-rules-critical.tf`](alerting-rules-critical.tf),
+  #1404) — C1–C7 (§7.1).
+
+Unlike the dashboards, the alert rules reference a **concrete** Prometheus
+datasource UID (managed rules cannot use a templated `${datasource}`). It
+comes from the `prometheus_datasource_uid` variable, default `grafanacloud-prom`
+(the built-in Grafana Cloud hosted Prometheus); override
+`TF_VAR_prometheus_datasource_uid` only for a self-hosted stack. Not a secret.
+
 ## Prerequisites
 
 > **HARD PREREQUISITE — the HCP workspace must exist before the `cloud {}`
