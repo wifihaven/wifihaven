@@ -214,7 +214,6 @@ luci_stamp()   { cat "$STATE/last_update_version.luci-app-wifihaven" 2>/dev/null
 downloads()    { cat "$TESTDIR/downloads.log" 2>/dev/null || echo ""; }
 wh_restarts()  { grep -c '^restart' "$TESTDIR/initd-wifihaven.calls" 2>/dev/null || echo 0; }
 uhttpd_reloads() { grep -c '^reload' "$TESTDIR/initd-uhttpd.calls" 2>/dev/null || echo 0; }
-apk_adds()     { grep -c '^add' "$TESTDIR/apk.calls" 2>/dev/null || echo 0; }
 logger_out()   { cat "$TESTDIR/logger.out" 2>/dev/null || echo ""; }
 
 # ── Case 1: both packages on new version → both upgraded, both stamps ────────
@@ -353,13 +352,16 @@ export MOCK_LUCI_INSTALLED="0.2.8"        # luci installed & current per apk db
 PATH="$BINDIR:/usr/bin:/bin" "$PATCHED" >/dev/null 2>&1 || true
 
 DL=$(downloads)
-printf '%s' "$DL" | grep -vq 'luci-app-wifihaven' \
-  && check "[apk v3 current] luci-app NOT downloaded (installed==latest detected)" ok \
-  || check "[apk v3 current] luci-app NOT downloaded (installed==latest detected)" "downloads: $DL"
-N=$(apk_adds)
-[ "$N" = "0" ] \
-  && check "[apk v3 current] apk add NOT called" ok \
-  || check "[apk v3 current] apk add NOT called" "apk add count $N; calls: $(cat "$TESTDIR/apk.calls" 2>/dev/null)"
+if printf '%s' "$DL" | grep -q 'luci-app-wifihaven'; then
+  check "[apk v3 current] luci-app NOT downloaded (installed==latest detected)" "downloads: $DL"
+else
+  check "[apk v3 current] luci-app NOT downloaded (installed==latest detected)" ok
+fi
+if grep -q '^add' "$TESTDIR/apk.calls" 2>/dev/null; then
+  check "[apk v3 current] apk add NOT called" "apk calls: $(cat "$TESTDIR/apk.calls" 2>/dev/null)"
+else
+  check "[apk v3 current] apk add NOT called" ok
+fi
 N=$(uhttpd_reloads)
 [ "$N" = "0" ] \
   && check "[apk v3 current] uhttpd NOT reloaded" ok \
