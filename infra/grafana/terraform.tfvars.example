@@ -18,3 +18,9 @@ operator_email = "<operator email>"
 # to use the stack's General folder. Not managed as a resource (keeps the
 # apply stateless-idempotent in CD).
 # folder_uid = "wifihaven"
+
+# Optional: UID of the Prometheus datasource the alert rules query. Defaults
+# to grafanacloud-prom (the built-in Grafana Cloud hosted Prometheus).
+# Override only for a self-hosted stack whose datasource UID differs. Not a
+# secret. (The alerts folder itself is managed in-repo; see alerting-rules.tf.)
+# prometheus_datasource_uid = "grafanacloud-prom"
