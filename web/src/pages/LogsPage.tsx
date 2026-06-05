@@ -30,18 +30,13 @@ type EventsBucket  = TrafficUsageBucket  // shared with Traffic page; raw = /api
 
 const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'profile', 'app']
 
-// #1432 — result/status filter. "Blocked" = the event's stored connection-layer
-// result (not DNS — blocked hosts still resolve). All / Blocked / Allowed maps
-// to the server-side `blocked` filter on /api/logs and /connection-events/series:
-// undefined (all), true, false respectively. Persisted via ?status= so it's
-// shareable and survives refresh, consistent with ?groupBy / ?until.
+// #1432 — result/status filter, lives in the Status column header as a funnel
+// popover, exactly like the Device / Profile header filters. "Blocked" = the
+// event's stored connection-layer result (not DNS — blocked hosts still
+// resolve). It maps to the server-side `blocked` filter on /api/logs and
+// /connection-events/series. Persisted via ?status= so it's shareable and
+// survives refresh, consistent with ?groupBy / ?until.
 type StatusFilter = 'all' | 'blocked' | 'allowed'
-
-const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
-  { value: 'all',     label: 'All' },
-  { value: 'blocked', label: 'Blocked' },
-  { value: 'allowed', label: 'Allowed' },
-]
 
 function parseStatus(sp: URLSearchParams): StatusFilter {
   const s = sp.get('status')
@@ -53,39 +48,24 @@ function statusToBlocked(s: StatusFilter): boolean | undefined {
   return s === 'all' ? undefined : s === 'blocked'
 }
 
-function StatusFilterControl({
+// Adapts the single-value status filter onto the multi-select HeaderFilter
+// shape used by every other column. The two checkboxes (Blocked / Allowed)
+// are logical opposites, so neither-or-both checked = no filter (Blocked OR
+// Allowed = every event), one checked = that result only.
+function StatusHeaderFilter({
   value, onChange,
 }: { value: StatusFilter; onChange: (v: StatusFilter) => void }) {
   return (
-    <div className="inline-flex items-center gap-2">
-      <span className="text-[11px] uppercase tracking-wide text-brand-text-muted">Status</span>
-      <div
-        role="group"
-        aria-label="Filter by status"
-        data-testid="ce-status-filter"
-        className="inline-flex rounded border border-brand-border overflow-hidden"
-      >
-        {STATUS_OPTIONS.map(opt => {
-          const active = opt.value === value
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              data-testid={`ce-status-${opt.value}`}
-              aria-pressed={active}
-              onClick={() => onChange(opt.value)}
-              className={`px-3 py-1 text-xs ${
-                active
-                  ? 'bg-brand-accent text-white'
-                  : 'bg-white/40 text-brand-text hover:text-brand-accent'
-              }`}
-            >
-              {opt.label}
-            </button>
-          )
-        })}
-      </div>
-    </div>
+    <HeaderFilter
+      testId="ce-filter-status"
+      title="Filter status"
+      options={[
+        { value: 'blocked', label: 'Blocked' },
+        { value: 'allowed', label: 'Allowed' },
+      ]}
+      selected={value === 'all' ? [] : [value]}
+      onChange={next => onChange(next.length === 1 ? (next[0] as StatusFilter) : 'all')}
+    />
   )
 }
 
@@ -153,8 +133,6 @@ export function LogsPage() {
     setSearchParams(sp, { replace: true })
   }
 
-  const blocked = statusToBlocked(status)
-
   function toggleGroup(key: string) {
     setGroupBy(prev => {
       const next = prev.includes(key as EventsGroupBy)
@@ -191,18 +169,17 @@ export function LogsPage() {
         onUntilChange={setUntil}
       />
 
-      <StatusFilterControl value={status} onChange={setStatus} />
-
       {bucket === 'raw'
         ? <RawEventsView
             macs={macs}
             profileIds={profileIds}
-            blocked={blocked}
+            status={status}
             devices={devices}
             profiles={profiles}
             until={until}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
+            onStatusChange={setStatus}
           />
         : <AggregatedEventsView
             bucket={bucket}
@@ -210,13 +187,14 @@ export function LogsPage() {
             onToggleGroup={toggleGroup}
             macs={macs}
             profileIds={profileIds}
-            blocked={blocked}
+            status={status}
             devices={devices}
             profiles={profiles}
             appCount={appCount}
             until={until}
             onMacsChange={setMacs}
             onProfileIdsChange={setProfileIds}
+            onStatusChange={setStatus}
           />}
     </div>
   )
@@ -245,23 +223,26 @@ function ErrorBanner({ message }: { message: string }) {
 interface FilterApi {
   macs: string[]
   profileIds: number[]
+  status: StatusFilter
   devices: Device[]
   profiles: ProfileDetail[]
   onMacsChange: (v: string[]) => void
   onProfileIdsChange: (v: number[]) => void
+  onStatusChange: (v: StatusFilter) => void
 }
 
 interface RawProps extends FilterApi {
   until: string | null
-  blocked: boolean | undefined
 }
 
 // #862: infinite scroll. Initial fetch anchored at NOW (or `until`); cursor
 // walks back. /api/logs still requires `hours`, so we ask for a wide band
 // (1y) and let the row cap bound.
 function RawEventsView({
-  macs, profileIds, blocked, devices, profiles, until, onMacsChange, onProfileIdsChange,
+  macs, profileIds, status, devices, profiles, until,
+  onMacsChange, onProfileIdsChange, onStatusChange,
 }: RawProps) {
+  const blocked = statusToBlocked(status)
   const [logs, setLogs]       = useState<QueryLog[]>([])
   const [cursor, setCursor]   = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(true)
@@ -356,7 +337,12 @@ function RawEventsView({
               </span>
             </th>
             <th className="text-left px-2 py-1">Domain</th>
-            <th className="text-left px-2 py-1">Status</th>
+            <th className="text-left px-2 py-1">
+              <span className="inline-flex items-center gap-1">
+                <span>Status</span>
+                <StatusHeaderFilter value={status} onChange={onStatusChange} />
+              </span>
+            </th>
             <th className="text-left px-2 py-1 hidden sm:table-cell">Reason</th>
             <th className="text-left px-2 py-1 hidden lg:table-cell">Location</th>
           </tr>
@@ -460,14 +446,14 @@ interface AggProps extends FilterApi {
   onToggleGroup: (key: string) => void
   appCount: number | null
   until: string | null
-  blocked: boolean | undefined
 }
 
 function AggregatedEventsView({
   bucket, groupBy, onToggleGroup,
-  macs, profileIds, blocked, devices, profiles, appCount, until,
-  onMacsChange, onProfileIdsChange,
+  macs, profileIds, status, devices, profiles, appCount, until,
+  onMacsChange, onProfileIdsChange, onStatusChange,
 }: AggProps) {
+  const blocked = statusToBlocked(status)
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
   const [cursor, setCursor]   = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(true)
@@ -581,7 +567,12 @@ function AggregatedEventsView({
                 onToggle={onToggleGroup} testIdPrefix="ce-group" />
             </th>
             <th className="text-right px-2 py-1">OK</th>
-            <th className="text-right px-2 py-1">Blocked</th>
+            <th className="text-right px-2 py-1">
+              <span className="inline-flex items-center gap-1 justify-end">
+                <span>Blocked</span>
+                <StatusHeaderFilter value={status} onChange={onStatusChange} />
+              </span>
+            </th>
             <th className="text-left px-2 py-1 hidden sm:table-cell">Last seen</th>
           </tr>
         </thead>
