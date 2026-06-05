@@ -21,6 +21,15 @@ name: Master Grafana CD
 # grafana_dashboard is upserted by its stable uid (overwrite = true) — so a
 # re-run just reconciles the stack to the repo.
 #
+# State + locking live on HCP Terraform (the `cloud {}` block in
+# infra/grafana/main.tf, #1406); the apply itself runs here on the runner (HCP
+# workspace in *local* execution mode), exactly like the Cloudflare pipeline
+# (#1357). Remote state is the hard prerequisite for the alerting resources
+# (#1403/#1404/#1405): a create against fresh-every-run empty state would 409 or
+# accumulate duplicates. With the migrated state, a re-run with no repo edits
+# reports "No changes". The one-time state migration + the TF_API_TOKEN secret
+# are operator-gated — see infra/grafana/README.md.
+#
 # No production-approval gate: a dashboard change is low-risk and independent
 # of the API/SPA release, so it ships straight from a push to main (the change
 # already went through PR review + the ci.yml grafana-terraform lint job).
@@ -36,11 +45,14 @@ on:
       - '.github/workflows/master-grafana.yml'
   workflow_dispatch:
 
-# Scoped to this pipeline's own group — a newer dashboard push pre-empts an
-# in-flight apply (the next run reconciles to the latest repo state anyway).
+# Scoped to this pipeline's own group. Now that state lives on HCP (#1406) we do
+# NOT cancel in-progress runs: killing `terraform apply` mid-run could orphan the
+# HCP state lock and block the next apply (mirrors master-cloudflare.yml).
+# Queueing lets the in-flight apply finish, then the next push reconciles to the
+# latest repo state.
 concurrency:
   group: master-grafana-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -57,17 +69,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Check Grafana secrets are configured
+      - name: Check Grafana + HCP secrets are configured
         id: gate
         env:
           GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
           GRAFANA_AUTH: ${{ secrets.GRAFANA_AUTH }}
+          TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
         run: |
-          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ]; then
+          if [ -n "$GRAFANA_URL" ] && [ -n "$GRAFANA_AUTH" ] && [ -n "$TF_API_TOKEN" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GRAFANA_URL / GRAFANA_AUTH not set — skipping dashboard deploy."
+            echo "::notice::GRAFANA_URL / GRAFANA_AUTH / TF_API_TOKEN not all set — skipping dashboard deploy. See infra/grafana/README.md for the one-time backend setup."
           fi
 
       - name: Set up Terraform
@@ -80,6 +93,11 @@ jobs:
         if: steps.gate.outputs.configured == 'true'
         working-directory: infra/grafana
         env:
+          # HCP Terraform: remote state + locking (workspace in local exec mode).
+          TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+          TF_CLOUD_ORGANIZATION: wifihaven
+          TF_WORKSPACE: grafana
+          # Grafana provider auth — supplied to the apply running on the runner.
           TF_VAR_grafana_url: ${{ secrets.GRAFANA_URL }}
           TF_VAR_grafana_auth: ${{ secrets.GRAFANA_AUTH }}
         run: |
