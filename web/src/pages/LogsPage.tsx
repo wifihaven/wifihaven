@@ -30,6 +30,65 @@ type EventsBucket  = TrafficUsageBucket  // shared with Traffic page; raw = /api
 
 const EVENTS_GROUP_KEYS: EventsGroupBy[] = ['domain', 'device', 'profile', 'app']
 
+// #1432 — result/status filter. "Blocked" = the event's stored connection-layer
+// result (not DNS — blocked hosts still resolve). All / Blocked / Allowed maps
+// to the server-side `blocked` filter on /api/logs and /connection-events/series:
+// undefined (all), true, false respectively. Persisted via ?status= so it's
+// shareable and survives refresh, consistent with ?groupBy / ?until.
+type StatusFilter = 'all' | 'blocked' | 'allowed'
+
+const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: 'all',     label: 'All' },
+  { value: 'blocked', label: 'Blocked' },
+  { value: 'allowed', label: 'Allowed' },
+]
+
+function parseStatus(sp: URLSearchParams): StatusFilter {
+  const s = sp.get('status')
+  return s === 'blocked' || s === 'allowed' ? s : 'all'
+}
+
+// undefined = no server-side filter (All).
+function statusToBlocked(s: StatusFilter): boolean | undefined {
+  return s === 'all' ? undefined : s === 'blocked'
+}
+
+function StatusFilterControl({
+  value, onChange,
+}: { value: StatusFilter; onChange: (v: StatusFilter) => void }) {
+  return (
+    <div className="inline-flex items-center gap-2">
+      <span className="text-[11px] uppercase tracking-wide text-brand-text-muted">Status</span>
+      <div
+        role="group"
+        aria-label="Filter by status"
+        data-testid="ce-status-filter"
+        className="inline-flex rounded border border-brand-border overflow-hidden"
+      >
+        {STATUS_OPTIONS.map(opt => {
+          const active = opt.value === value
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              data-testid={`ce-status-${opt.value}`}
+              aria-pressed={active}
+              onClick={() => onChange(opt.value)}
+              className={`px-3 py-1 text-xs ${
+                active
+                  ? 'bg-brand-accent text-white'
+                  : 'bg-white/40 text-brand-text hover:text-brand-accent'
+              }`}
+            >
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function parseEventsGroupBy(sp: URLSearchParams): EventsGroupBy[] {
   // #917: repeated ?groupBy=device&groupBy=domain serialization; comma form
   // still accepted for back-compat.
@@ -64,6 +123,8 @@ export function LogsPage() {
   // #951: optional anchor for the right edge of the window. null = "now".
   // Round-trips through ?until=<ISO> in the URL.
   const [until, setUntilState]          = useState<string | null>(() => searchParams.get('until'))
+  // #1432: result/status filter, round-tripped through ?status=.
+  const [status, setStatusState]        = useState<StatusFilter>(() => parseStatus(searchParams))
   const [devices, setDevices]   = useState<Device[]>([])
   const [profiles, setProfiles] = useState<ProfileDetail[]>([])
   // #769: surface the "no apps yet" empty-state when the operator drills on
@@ -83,6 +144,16 @@ export function LogsPage() {
     else sp.delete('until')
     setSearchParams(sp, { replace: true })
   }
+
+  function setStatus(next: StatusFilter) {
+    setStatusState(next)
+    const sp = new URLSearchParams(searchParams)
+    if (next === 'all') sp.delete('status')
+    else sp.set('status', next)
+    setSearchParams(sp, { replace: true })
+  }
+
+  const blocked = statusToBlocked(status)
 
   function toggleGroup(key: string) {
     setGroupBy(prev => {
@@ -120,10 +191,13 @@ export function LogsPage() {
         onUntilChange={setUntil}
       />
 
+      <StatusFilterControl value={status} onChange={setStatus} />
+
       {bucket === 'raw'
         ? <RawEventsView
             macs={macs}
             profileIds={profileIds}
+            blocked={blocked}
             devices={devices}
             profiles={profiles}
             until={until}
@@ -136,6 +210,7 @@ export function LogsPage() {
             onToggleGroup={toggleGroup}
             macs={macs}
             profileIds={profileIds}
+            blocked={blocked}
             devices={devices}
             profiles={profiles}
             appCount={appCount}
@@ -178,13 +253,14 @@ interface FilterApi {
 
 interface RawProps extends FilterApi {
   until: string | null
+  blocked: boolean | undefined
 }
 
 // #862: infinite scroll. Initial fetch anchored at NOW (or `until`); cursor
 // walks back. /api/logs still requires `hours`, so we ask for a wide band
 // (1y) and let the row cap bound.
 function RawEventsView({
-  macs, profileIds, devices, profiles, until, onMacsChange, onProfileIdsChange,
+  macs, profileIds, blocked, devices, profiles, until, onMacsChange, onProfileIdsChange,
 }: RawProps) {
   const [logs, setLogs]       = useState<QueryLog[]>([])
   const [cursor, setCursor]   = useState<string | null>(null)
@@ -202,7 +278,7 @@ function RawEventsView({
     return ids.length ? ids : undefined
   }, [macs, devices])
 
-  const filterKey = `${deviceIds?.join(',') ?? ''}|${profileIds.join(',')}|${until ?? ''}`
+  const filterKey = `${deviceIds?.join(',') ?? ''}|${profileIds.join(',')}|${until ?? ''}|${blocked ?? ''}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -213,6 +289,7 @@ function RawEventsView({
           hours:      RAW_HOURS_BAND,
           deviceIds,
           profileIds: profileIds.length ? profileIds : undefined,
+          blocked,
           limit:      RAW_PAGE_SIZE,
           until:      until ?? undefined,
           cursor:     curs ?? undefined,
@@ -227,7 +304,7 @@ function RawEventsView({
         setLoading(false)
       }
     },
-    [deviceIds, profileIds, until],
+    [deviceIds, profileIds, until, blocked],
   )
 
   useEffect(() => {
@@ -383,11 +460,12 @@ interface AggProps extends FilterApi {
   onToggleGroup: (key: string) => void
   appCount: number | null
   until: string | null
+  blocked: boolean | undefined
 }
 
 function AggregatedEventsView({
   bucket, groupBy, onToggleGroup,
-  macs, profileIds, devices, profiles, appCount, until,
+  macs, profileIds, blocked, devices, profiles, appCount, until,
   onMacsChange, onProfileIdsChange,
 }: AggProps) {
   const [rows, setRows]       = useState<ConnectionEventAggRow[]>([])
@@ -397,7 +475,7 @@ function AggregatedEventsView({
   const [error, setError]     = useState<string | null>(null)
   const sentinelRef           = useRef<HTMLDivElement | null>(null)
 
-  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}`
+  const filterKey = `${bucket}|${groupBy.join(',')}|${macs.join(',')}|${profileIds.join(',')}|${until ?? ''}|${blocked ?? ''}`
 
   const load = useCallback(
     async (curs: string | null) => {
@@ -409,6 +487,7 @@ function AggregatedEventsView({
           groupBy,
           macs:       macs.length ? macs : undefined,
           profileIds: profileIds.length ? profileIds : undefined,
+          blocked,
           hours:      AGG_HOURS_BAND,
           limit:      AGG_PAGE_SIZE,
           until:      until ?? undefined,
@@ -424,7 +503,7 @@ function AggregatedEventsView({
         setLoading(false)
       }
     },
-    [bucket, groupBy, macs, profileIds, until],
+    [bucket, groupBy, macs, profileIds, until, blocked],
   )
 
   useEffect(() => {

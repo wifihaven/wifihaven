@@ -251,7 +251,7 @@ describe('LogsPage — status filter (#1432)', () => {
     // server filters; mock returns only blocked rows when asked for blocked-only
     const blockedLog: QueryLog = {
       ...log1, id: 2, host: { type: 'fqdn', value: 'pornhub.com' },
-      blocked: true, reason: { kind: 'category' },
+      blocked: true, reason: { kind: 'category', slug: 'adult' },
     }
     queryMock.mockImplementation((p: { blocked?: boolean }) =>
       Promise.resolve({ rows: p.blocked ? [blockedLog] : [log1, blockedLog], nextCursor: null }),
