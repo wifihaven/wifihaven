@@ -5,7 +5,7 @@ name: Publish OpenWRT release
 # `release-assets` artifact produced by build-release-artifacts.yml earlier in
 # the same Master Router CD run and attaches those exact bytes to the GitHub
 # Release. A publish can therefore no longer fail on a rebuild after the gates
-# passed and a human approved (the #1224 failure mode).
+# passed (the #1224 failure mode).
 #
 # The release version is NOT recomputed here — it is passed in verbatim via
 # the `version` input, threaded from build-release-artifacts.yml's `version`
@@ -13,7 +13,8 @@ name: Publish OpenWRT release
 #
 # Triggers:
 #   - workflow_call — invoked by master-router.yml's publish-openwrt job,
-#     behind the approve-production manual gate.
+#     gated directly on the router e2e gates (Gates 2 + 3a). The manual
+#     approve-production gate was removed in #1461.
 on:
   workflow_call:
     inputs:
