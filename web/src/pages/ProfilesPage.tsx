@@ -1717,6 +1717,19 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
           </span>
         </div>
       )}
+      {/* #1433 — surface today's time-used even for apps without a daily
+          limit, so the operator has at-a-glance usage visibility regardless
+          of whether a limit is set. Plain "Xm today" text — no cap and no
+          progress bar (the bar above is reserved for time-limited apps).
+          Hidden until usage loads and only when there is some to show. */}
+      {!isTimeLimited && usedMins != null && usedMins > 0 && (
+        <div
+          data-testid={`app-row-${app.app.id}-used`}
+          className="text-xs font-mono text-brand-text"
+        >
+          {formatMins(usedMins)} today
+        </div>
+      )}
       {mode === 'time_limited' && (
         <label className="flex items-center gap-2 text-xs text-brand-text cursor-pointer select-none">
           <input
