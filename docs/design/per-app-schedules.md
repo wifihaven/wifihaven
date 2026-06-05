@@ -66,14 +66,13 @@ the `Schedule` domain model in `shared/src/Models.scala`:
 - Overnight wrap (`startLocal > endLocal`), DOW membership, and the tail day
   are all handled by the *already-existing* `PolicyService.scheduleActiveAt`
   and `scheduleEndInstantAfter`. We do not write new time math.
-- **Timezone comes from household settings at read time, never `java.time`
-  directly.** Profile schedules already get their `tz: ZoneId` injected when
-  the `Schedule` is constructed from the row (the `schedules` table stores no
-  zone column); per-app windows follow the same path. All "is W active now?"
-  evaluation goes through the injected `wifihaven.shared.Clock` (`Clock.instant`)
-  projected into that zone, exactly as profile schedules do today. DST is
-  handled transparently by `ZonedDateTime` (see PolicyService §"#334
-  timezone-aware time math").
+- **Each window carries its own IANA `tz`, never `java.time` directly.** The V1
+  `schedules` table stores a per-row `tz` (added in V16), and the #1069
+  `schedule_windows` child table mirrors it per window, so the `Schedule.tz:
+  ZoneId` is read straight off the row. All "is W active now?" evaluation goes
+  through the injected `wifihaven.shared.Clock` (`Clock.instant`) projected into
+  that zone, exactly as profile schedules do today. DST is handled transparently
+  by `ZonedDateTime` (see PolicyService §"#334 timezone-aware time math").
 
 Because we reuse `scheduleActiveAt`, per-app windows inherit overnight-wrap,
 DOW, and DST correctness for free, and the schedule-boundary unit tests can
@@ -88,10 +87,10 @@ per-app schedules reference a named schedule exclusively.** No inline
 
 Rationale:
 
-- #1069 already proposes the household `schedules` table (named, JSONB
-  `windows` supporting compound time blocks) **and** an
-  `app_policy_assignments.schedule_id` reference. Building per-app schedules on
-  that foundation avoids inventing a second, parallel inline-window
+- #1069 already proposes the household named-schedule table (named, with a
+  typed `schedule_windows` child table supporting compound time blocks) **and**
+  an `app_policy_assignments.schedule_id` reference. Building per-app schedules
+  on that foundation avoids inventing a second, parallel inline-window
   representation that would later have to be migrated into the named model
   anyway.
 - A one-off window is just a named schedule the operator creates ad hoc
@@ -99,7 +98,7 @@ Rationale:
   case, so "reference a named schedule, not only inline windows" (the #1376
   ask) is satisfied by *named-only* once #1069 exists — cleaner than carrying
   both, with no `CHECK`-enforced either/or column pair.
-- A named schedule's JSONB `windows` array already covers the compound case
+- A named schedule's `schedule_windows` rows already cover the compound case
   (e.g. "school hours: weekdays 8–15, Fri 8–12"), so per-app schedules inherit
   multi-window support for free without their own one-to-many window rows.
 
@@ -109,21 +108,38 @@ schedule, blocklist activation) converge on the one #1069 primitive.
 
 ### 3.3 What #1069 gives us, and what #1376 adds
 
-#1069 gives an assignment a **single** gating schedule via
-`app_policy_assignments.schedule_id` (its stated use: gate a `time_limited`
-app's budget by a window). #1376 needs two things #1069 does not provide:
+An app needs two things from a schedule reference:
 
-1. a **mode** — *allowed during* vs *blocked during* — which #1069's bare
-   `schedule_id` does not carry; and
+1. a **mode** — *allowed during* vs *blocked during*; and
 2. the ability to attach **more than one** (schedule, mode) pair to a single app
    (e.g. *allowed during* Bedtime **and** *blocked during* Homework).
 
 So #1376 adds a small child table of `(assignment, named-schedule, mode)`
-rules. Because #1069 lands first, the FK target (`schedules`) already exists and
-the FK is created directly — no deferred-constraint dance.
+rules. Because #1069 lands first, the FK target already exists and the FK is
+created directly — no deferred-constraint dance.
 
-New migration (next free version, e.g. `V49__app_policy_schedule_rules.sql`,
-sequenced *after* #1069's migration):
+> **#1069 landed (`V50__named_schedules.sql`).** The new household-scoped
+> primitive is the **`named_schedules`** table (parent: id, name, description,
+> timestamps) plus a typed **`schedule_windows`** child table (`schedule_id`,
+> `days TEXT[]`, `start_local TIME`, `end_local TIME`, `tz TEXT`) — mirroring
+> the V1 `schedules` time columns so the existing `Schedule` model and
+> `scheduleActiveAt` apply unchanged. The name is `named_schedules`, NOT
+> `schedules` — the spec's chosen name collided with the V1 profile-scoped
+> `schedules` table, which deployed enforcement code still reads, so it could
+> not be dropped/renamed in an additive migration.
+>
+> **Profiles reference schedules through a `(profile, schedule, mode)` join
+> table — `profile_schedule_rules` — NOT a single `profiles.schedule_id`
+> column.** #1069 deliberately dropped the single-reference columns its spec
+> sketched (`profiles.schedule_id`, `app_policy_assignments.schedule_id`):
+> they can't carry a mode and cap a profile at one schedule. The
+> `app_policy_schedule_rules` table below is the **exact same shape** for apps,
+> FKing **`named_schedules(id)`**, and is the **next** free version after V50
+> (e.g. `V51__app_policy_schedule_rules.sql`). The two tables are intentionally
+> identical — profiles and apps share one (entity, schedule, mode) model.
+
+New migration (next free version after #1069's `V50`, e.g.
+`V51__app_policy_schedule_rules.sql`, sequenced *after* #1069's migration):
 
 ```sql
 CREATE TABLE app_policy_schedule_rules (
@@ -131,7 +147,7 @@ CREATE TABLE app_policy_schedule_rules (
   assignment_id  BIGINT NOT NULL
                    REFERENCES app_policy_assignments(id) ON DELETE CASCADE,
   schedule_id    BIGINT NOT NULL
-                   REFERENCES schedules(id) ON DELETE CASCADE,   -- #1069 named schedule
+                   REFERENCES named_schedules(id) ON DELETE CASCADE,  -- #1069 named schedule
   mode           TEXT NOT NULL
                    CHECK (mode IN ('allowed_during','blocked_during')),
   created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -141,9 +157,6 @@ CREATE INDEX idx_app_policy_schedule_rules_assignment
   ON app_policy_schedule_rules(assignment_id);
 ```
 
-(If #1069's final schema names the table differently, this FK target tracks
-that name — the dependency is explicit so the names stay in sync.)
-
 **Migration-isolation (AGENTS.md "Schema changes land in their own PR").** This
 is a brand-new table referencing only tables that already exist once #1069 has
 landed, so:
@@ -152,7 +165,7 @@ landed, so:
   never touch `app_policy_schedule_rules`, so the existing `api.test` suite
   (which applies every migration including this one against image-(N-1) code)
   passes unchanged — that is the gate.
-- The migration PR contains **only** the `V49__….sql` plus doc updates. No
+- The migration PR contains **only** the `V51__….sql` plus doc updates. No
   source, no tests, no fixtures. The PolicyService eval, repo methods, and tests
   land in the follow-up PR (§"Sub-issues").
 - **Not a growth table** ("Migrations that are fast on dev … minutes-long on
