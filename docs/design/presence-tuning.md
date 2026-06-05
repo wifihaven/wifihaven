@@ -389,22 +389,24 @@ new semantics.
    the join's plan at prod scale and add the supporting index in the same PR.
    (Can land after #2 as the rate-independence hardening.)
 
-5. **Admin / LuCI UI surface for the presence knobs.** Mirror the heartbeat
-   settings UI (#754/#760) — expose `presence_continuation_seconds` with the
-   `N ≥ 2 × R` validation surfaced, and `presence_model`.
-
-6. **Presence replay/validation harness (sibling of #790).** Extend the replay
+5. **Presence replay/validation harness (sibling of #790).** Extend the replay
    tooling under `scripts/analysis/` to reproduce §2b/§2d (current vs session at
    each `N`, and the re-bucketing invariance check) over a week of prod data, as
    the go/no-go gate on the defaults.
 
-7. **e2e default-pinning gate (extends #930).** Pin `presence_model = session`
+6. **e2e default-pinning gate (extends #930).** Pin `presence_model = session`
    and `presence_continuation_seconds = 120` end-to-end so a future PR — or a
    change to `usage_report_interval` — can't shift the visible numbers silently.
 
-8. **(Complementary, not blocking) router-side foreground-host heuristic
+7. **(Complementary, not blocking) router-side foreground-host heuristic
    (#842).** Re-confirm scope once the agent freeze lifts; sharpens per-host
    byte-share but is independent of this undercount fix.
+
+> **No UI sub-issue.** Unlike the heartbeat filter, these knobs are pure
+> **API-side rollup** parameters — they never reach the router, so there is no
+> LuCI surface to mirror, and they are not user-facing toggles. They live as
+> `household_settings` defaults (recommended values above), adjustable via config
+> / API if ever needed, with the values pinned by #6.
 
 ## Appendix — reproducing the data
 
