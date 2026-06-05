@@ -35,6 +35,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       trRepo <- ZIO.service[TrafficReportRepo]
       er     <- ZIO.service[TimeExtensionRepo]
       ar     <- ZIO.service[AppRepo]
+      nsr    <- ZIO.service[NamedScheduleRepo]
       ref    <- Ref.make(dt)
       clk = new Clock.TestClock(ref)
     } yield PolicyServiceLive(
@@ -49,6 +50,7 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       er,
       ar,
       clk,
+      namedScheduleRepo = nsr,
     ): PolicyService
 
   private def makePsDefault = makePsAt(TestClock.schoolDayAfternoon)

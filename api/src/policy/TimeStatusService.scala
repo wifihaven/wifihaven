@@ -106,7 +106,12 @@ trait TimeStatusService {
 
 class TimeStatusServiceLive(
     profileRepo: ProfileRepo,
-    scheduleRepo: ScheduleRepo,
+    // #1482: the legacy per-profile `schedules` table is no longer an enforcement source —
+    // `named_schedules` / `profile_schedule_rules` is now the single source of truth (existing
+    // rows were folded in by the boot-time `ScheduleSeeder`). The repo stays injected but unused
+    // here to preserve the constructor arity that ~40 test constructions depend on; it is removed
+    // wholesale when the legacy table is dropped (the future two-phase destructive PR).
+    @scala.annotation.unused scheduleRepo: ScheduleRepo,
     timeLimitRepo: TimeLimitRepo,
     siteTimeLimitRepo: SiteTimeLimitRepo,
     deviceRepo: DeviceRepo,
@@ -115,27 +120,23 @@ class TimeStatusServiceLive(
     // Defaulting to the noop lets the many call sites in TimeApiSpec / snapshot specs keep their
     // 7-arg constructions — they exercise the all-live path either way.
     rollupRepo: TimeUsedRollupRepo = NoopTimeUsedRollupRepo,
-    // #1069: a profile's attached block-mode named-schedule windows are unioned into the legacy
-    // `schedules` for the blocked-flag decision. Defaults to the noop so existing direct
-    // constructions keep their arity.
+    // #1069/#1482: a profile's downtime schedules come from the windows of every named schedule
+    // attached to it as a block schedule (via `profile_schedule_rules`, mode=blocked_during).
+    // Defaults to the noop so existing direct constructions keep their arity.
     namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
 ) extends TimeStatusService {
 
-  // #1069: a profile's effective downtime schedules = its legacy per-profile `schedules` rows
-  // unioned with the windows of every named schedule attached to it as a block schedule (via
-  // `profile_schedule_rules`, mode=blocked_during). Named windows become synthetic DbSchedules so
-  // the existing `scheduleActiveAt` math applies unchanged (it reads only days/start/end/tz —
-  // id/profileId/name are irrelevant).
+  // #1069/#1482: a profile's effective downtime schedules = the windows of every named schedule
+  // attached to it as a block schedule (via `profile_schedule_rules`, mode=blocked_during). Named
+  // windows become synthetic DbSchedules so the existing `scheduleActiveAt` math applies unchanged
+  // (it reads only days/start/end/tz — id/profileId/name are irrelevant).
   private def syntheticWindows(pid: ProfileId, ws: List[ScheduleWindow]): List[DbSchedule] =
     ws.map(w =>
       DbSchedule(ScheduleId(0L), pid, "named-schedule", w.days, w.startLocal, w.endLocal, w.tz),
     )
 
   private def schedulesFor(pid: ProfileId): Task[List[DbSchedule]] =
-    for {
-      v1    <- scheduleRepo.listForProfile(pid)
-      named <- namedScheduleRepo.windowsForProfile(pid)
-    } yield v1 ++ syntheticWindows(pid, named)
+    namedScheduleRepo.windowsForProfile(pid).map(syntheticWindows(pid, _))
 
   def todaysState(
       now: Instant,
@@ -209,16 +210,14 @@ class TimeStatusServiceLive(
     for {
       profiles <- profileRepo.listAll
       devices  <- deviceRepo.listAll
-      schedsP  <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
       namedP   <- namedScheduleRepo.windowsForAllProfiles
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
       exts     <- extRepo.snapshotAllByProfile(date)
     } yield {
-      val schedMap = schedsP.toMap.map { case (pid, v1) =>
-        pid -> (v1 ++ syntheticWindows(pid, namedP.getOrElse(pid, Nil)))
-      }
+      val schedMap =
+        profiles.map(p => p.id -> syntheticWindows(p.id, namedP.getOrElse(p.id, Nil))).toMap
       val tlMap    = tlsP.toMap
       val stlMap   = stlsP.toMap
       val devsByP  =
@@ -311,16 +310,14 @@ class TimeStatusServiceLive(
     val watermark = rolled.values.iterator.map(_.rolledThrough).min
     for {
       devices <- deviceRepo.listAll
-      schedsP <- ZIO.foreach(profiles)(p => scheduleRepo.listForProfile(p.id).map(p.id -> _))
       namedP  <- namedScheduleRepo.windowsForAllProfiles
       tlsP    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
       stlsP   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       tail    <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
       exts    <- extRepo.snapshotAllByProfile(date)
     } yield {
-      val schedMap = schedsP.toMap.map { case (pid, v1) =>
-        pid -> (v1 ++ syntheticWindows(pid, namedP.getOrElse(pid, Nil)))
-      }
+      val schedMap =
+        profiles.map(p => p.id -> syntheticWindows(p.id, namedP.getOrElse(p.id, Nil))).toMap
       val tlMap    = tlsP.toMap
       val stlMap   = stlsP.toMap
       val devsByP  =
