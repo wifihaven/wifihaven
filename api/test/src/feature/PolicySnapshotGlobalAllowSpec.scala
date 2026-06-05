@@ -151,6 +151,25 @@ object PolicySnapshotGlobalAllowSpec
         snap.profiles.values.forall(p => newHosts.subsetOf(p.rules.extraAllowed.map(_.value).toSet)),
       )
     },
+    test("every profile's extraAllowed includes the #1411 gvt2.com Google infra host") {
+      // #1411: www.gvt2.com is Google's connectivity-check / infra endpoint, a
+      // device-level transitive dep dropped under a whole-MAC block. It lives in
+      // the curated infraAllowHosts constant, so it must surface in every
+      // profile's extraAllowed (copied per-profile, allow beats the @blocked_macs
+      // drop via #421 ea_ enforcement). Added as an exact host: the ea_ ipset is
+      // populated from resolved hostnames and suffix/wildcard population isn't
+      // wired, so rotating download shards (*.gvt2.com) are out of scope here,
+      // same call as the akamai/apple decision in #1337/#1339.
+      val newHosts = Set("www.gvt2.com")
+      for {
+        _    <- cleanDb
+        svc  <- makePs
+        snap <- svc.snapshot
+      } yield assertTrue(
+        snap.profiles.nonEmpty,
+        snap.profiles.values.forall(p => newHosts.subsetOf(p.rules.extraAllowed.map(_.value).toSet)),
+      )
+    },
     test(
       "global host in extraBlocked still appears in extraAllowed (allow-beats-block at router)",
     ) {
