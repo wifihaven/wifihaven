@@ -237,6 +237,57 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         )
     },
     test(
+      "#1413: paused profile + AppMode.Allowed host → allow:extra_allowed (extraAllowed beats pause)",
+    ) {
+      // Prod miss (Kids/Math Academy, 2026-06): an allowed-mode app was reported
+      // (and, on agents that consult this endpoint, blocked) as paused. Per #421
+      // extraAllowed beats EVERY whole-MAC block — including Paused — exactly as
+      // the snapshot/router @blocked_macs carve-out does. The per-host fallback
+      // must agree: an allowed app stays reachable while the profile is paused,
+      // and no block_event is recorded for it.
+      val mac = "aa:bb:cc:11:22:44"
+      for {
+        _     <- cleanDb
+        rr    <- ZIO.service[RouterRepo]
+        pr    <- ZIO.service[ProfileRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        ber   <- ZIO.service[BlockEventRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- pr.setPaused(kid, true)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
+        appId <- ar.create("Math Academy", "math-academy", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
+        ps    <- makePsDefault
+        routes = RouterRoutes.routes(rr, ps, RouterAuthLive(rr), ber)
+        tok    <- seedAndEnrollRouter(rr, routes)
+        // The allowed app survives the pause.
+        allow  <- callDecide(routes, tok, mac, "mathacademy.com")
+        aBody  <- allow.body.asString
+        aDr    <- ZIO.fromEither(aBody.fromJson[RouterDecisionResponse])
+        // A non-allowlisted host is still blocked by the pause.
+        block  <- callDecide(routes, tok, mac, "example.com")
+        bBody  <- block.body.asString
+        bDr    <- ZIO.fromEither(bBody.fromJson[RouterDecisionResponse])
+        events <- ber.recent(10)
+      } yield assertTrue(aDr.decision == ConnectionDecision.Allow) &&
+        assertTrue(aDr.reason == "extra_allowed") &&
+        assertTrue(bDr.decision == ConnectionDecision.Block) &&
+        assertTrue(bDr.reason == "paused") &&
+        // No block_event for the allowed host; the paused host still records one.
+        assertTrue(
+          !events.exists(_.host == HostId.Fqdn(Hostname.unsafe("mathacademy.com"))),
+        ) &&
+        assertTrue(
+          events.exists(e =>
+            e.host == HostId.Fqdn(Hostname.unsafe("example.com")) &&
+              e.reason == MacBlockReason.Paused,
+          ),
+        )
+    },
+    test(
       "active schedule → block:schedule, expires_at = when schedule ends, block_event recorded",
     ) {
       // Bedtime = Monday 2025-01-06 21:30; schedule is 21:00–07:00 every day.

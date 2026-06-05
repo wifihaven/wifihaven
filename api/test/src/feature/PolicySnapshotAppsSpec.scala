@@ -373,6 +373,37 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(!eb.contains("mathacademy.com"))
     },
     test(
+      "#1413: AppMode.Allowed app stays in extraAllowed when profile is paused (blocked=Paused)",
+    ) {
+      // Prod miss (Kids/Math Academy, 2026-06): an allowed-mode app got blocked
+      // when the profile was paused. extraAllowed must beat the Paused block at
+      // the snapshot layer (#421), exactly as #1307 locked for TimeLimit. The
+      // Paused-reason sibling of #1307. Mirrors the prod assignment: mode=Allowed,
+      // single apex host, whole-MAC paused.
+      val mac = "aa:bb:cc:dd:ee:23"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- pr.setPaused(kid, true)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-mac", kid)
+        appId <- ar.create("Math Academy", "math-academy", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("mathacademy.com")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+        eb    = rules.extraBlocked.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        assertTrue(ea.contains("mathacademy.com")) &&
+        assertTrue(!eb.contains("mathacademy.com"))
+    },
+    test(
       "#1307: global infra hosts are in every profile's extraAllowed, even when blocked=TimeLimit",
     ) {
       // Allowed-mode apps appeared blocked when the daily cap ran out because
