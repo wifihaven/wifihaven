@@ -494,6 +494,41 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Global policy layer (#1318)",
+      "description": "wifihaven_global_allow_hosts — size of the fleet-wide always-reachable set (global.extraAllowed); a host here bypasses every block, so watch it grow. wifihaven_default_deny_profiles — profiles running the block-all baseline. Both set per snapshot assembly in PolicyService.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "id": 15,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "wifihaven_global_allow_hosts{env=\"$env\"}",
+          "legendFormat": "global allow hosts",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "wifihaven_default_deny_profiles{env=\"$env\"}",
+          "legendFormat": "default-deny profiles",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "refresh": "30s",

@@ -179,9 +179,9 @@ object TestDatabase {
    */
   type AllRepos =
     TestDb & UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & HouseholdSettingsRepo &
-      TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TimeUsageRepo &
-      TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo & ConnectionEventRepo &
-      AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo
+      GlobalPolicyRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo &
+      TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo & BlockEventRepo &
+      ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo
 
   val layer: ZLayer[Any, Throwable, EmbeddedPostgres & TestDb & Transactor[Task] & AllRepos] = {
     val pg = embeddedPg

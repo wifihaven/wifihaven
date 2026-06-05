@@ -214,11 +214,20 @@ full composition model, precedence table, and per-profile **default-deny**
 mode (`blocked = true` baseline + `MacBlockReason.DefaultDeny`, with
 `extraAllowed` and `global.extraAllowed` carving out).
 
-> **Status (#1308).** This is the target. Until the follow-ups land, the
-> always-reachable hosts are still copied into each profile's `extraAllowed`
-> (`PolicyService.computeBlockRules`); #1307 ships its allowlist the same
-> copy-into-every-profile way as a near-term fix. This design removes that
-> redundancy.
+> **Status (#1308).** Server-side assembly has landed (#1318):
+> `PolicyService` now emits `snapshot.global` (a `BlockRules`) from the V48
+> global-policy tables + the per-deployment UI hosts, evaluates per-profile
+> `default_deny` into `blocked = true` + `MacBlockReason.DefaultDeny`, and the
+> snapshot ETag covers the global section. The **deployment UI / block-page
+> hosts** have moved out of every profile's `extraAllowed` into
+> `global.extraAllowed`. Still outstanding: the **router** does not yet compose
+> the global section (#1319) — an old agent ignores the additive `global` field
+> and keeps enforcing per-MAC exactly as before — and the curated **#1307 infra
+> allowlist is still copied into each profile's `extraAllowed`**
+> (`PolicyService.computeBlockRules`), retired only once the router consumes
+> `global.extraAllowed` (#1321). So in the current window the UI hosts are
+> enforced via the global layer (needs #1319) while the infra hosts are still
+> enforced the per-profile way.
 
 > **Known deviations from this model as of May 2026** (tracked follow-ups,
 > not the canonical design):

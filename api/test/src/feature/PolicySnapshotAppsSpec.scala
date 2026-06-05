@@ -487,10 +487,15 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(ea.contains("khanacademy.org")) &&
         assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea))
     },
-    test("#1418: HARD pause still spares the deployment uiAllowedHosts (block page / admin UI)") {
-      // We deliberately keep uiAllowedHosts through a hard pause so the kid sees
-      // the block page and the admin SPA loads on the LAN — only the app/infra
-      // allowlists are cut. extraAllowed must equal exactly the UI hosts.
+    test(
+      "#1418/#1318: HARD pause still spares the deployment uiAllowedHosts via global.extraAllowed",
+    ) {
+      // We deliberately keep the deployment UI hosts reachable through a hard
+      // pause so the kid sees the block page and the admin SPA loads on the LAN —
+      // only the app/infra allowlists are cut. As of #1318 the UI hosts live in
+      // `global.extraAllowed` (not per-profile), and the router carves them out
+      // of every drop (#1319), so the per-profile `extraAllowed` is now empty
+      // while the global section carries exactly the UI hosts.
       val uiHosts = List(Hostname.unsafe("blockpage.wifihaven.lan"))
       for {
         _     <- cleanDb
@@ -529,8 +534,12 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         snap <- svc.snapshot
         rules = snap.profiles(kid).rules
         ea    = rules.extraAllowed.map(_.value).toSet
+        ga    = snap.global.extraAllowed.map(_.value).toSet
       } yield assertTrue(rules.blocked) &&
-        assertTrue(ea == Set("blockpage.wifihaven.lan")) &&
+        // per-profile extraAllowed is empty under hard pause (app/infra cut, UI relocated)
+        assertTrue(ea.isEmpty) &&
+        // the deployment UI hosts survive via the fleet-wide global section
+        assertTrue(ga == Set("blockpage.wifihaven.lan")) &&
         assertTrue(!ea.contains("khanacademy.org")) &&
         assertTrue(!ea.contains("connectivitycheck.gstatic.com"))
     },

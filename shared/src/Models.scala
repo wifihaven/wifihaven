@@ -162,6 +162,14 @@ case class Profile(
     // #1418: soft (default) honors extraAllowed through a pause; hard cuts even
     // allowlisted/global hosts. Only consulted when the profile is paused.
     pauseMode: PauseMode = PauseMode.Soft,
+    // #1318 / #1308: default-deny baseline. When true the profile's effective
+    // BlockRules collapse to block-all (`blocked = true` + `DefaultDeny` reason)
+    // with only `extraAllowed` (plus the fleet-wide `global.extraAllowed`)
+    // reachable — the inverse of the allow-by-default + blocklists model.
+    // Resolved entirely server-side in PolicyService; the router never sees the
+    // flag, only the collapsed `blocked = true`. Default false. Additive field
+    // with a default, so an older client that omits it decodes unchanged.
+    defaultDeny: Boolean = false,
 ) derives JsonCodec
 
 case class Schedule(

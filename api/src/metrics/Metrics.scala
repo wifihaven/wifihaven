@@ -76,6 +76,12 @@ object MetricGuard {
     "auth_failures_total"                       -> Set("reason"),
     "agent_connected_routers"                   -> Set.empty[String],
     "traffic_reports_filtered_zero_bytes_total" -> Set.empty[String],
+    // #1318 — global-policy-layer visibility. `global_allow_hosts` is the size of the
+    // security-sensitive fleet-wide always-reachable set (a host here bypasses every block);
+    // `default_deny_profiles` counts profiles running the block-all baseline. Both are unlabelled
+    // household-scoped gauges set each time the policy snapshot is assembled.
+    "wifihaven_global_allow_hosts"              -> Set.empty[String],
+    "wifihaven_default_deny_profiles"           -> Set.empty[String],
     // §5.1 router-sourced, pushed via POST /api/router/metrics (#1205). Every one carries the
     // server-attached `router_id` + `installation_id` plus its own bounded enum label.
     "dnsmasq_restarts_total"                    -> Set("reason", "router_id", "installation_id"),
@@ -231,6 +237,22 @@ object AppMetrics {
 
   def setConnectedRouters(count: Int): UIO[Unit] =
     MetricGuard.gauge("agent_connected_routers", Map.empty, count.toDouble)
+
+  // ── Global policy layer (#1318) ─────────────────────────────────────────────
+  // Emitted from PolicyService.snapshot each time the snapshot is assembled.
+  // `global_allow_hosts` tracks the size of the fleet-wide always-reachable set
+  // (`global.extraAllowed`) — a host on it is reachable from every device past
+  // any block, so operators want to watch it grow. `default_deny_profiles`
+  // counts profiles running the block-all baseline. Both unlabelled, gated by
+  // the cardinality firewall on the name.
+
+  def setGlobalPolicy(globalAllowHosts: Int, defaultDenyProfiles: Int): UIO[Unit] =
+    MetricGuard.gauge("wifihaven_global_allow_hosts", Map.empty, globalAllowHosts.toDouble) *>
+      MetricGuard.gauge(
+        "wifihaven_default_deny_profiles",
+        Map.empty,
+        defaultDenyProfiles.toDouble,
+      )
 
   // ── Router metrics ingest (#1205) ────────────────────────────────────────────
   // One increment per POST /api/router/metrics. `status` ∈ {ok, malformed,
