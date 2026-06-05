@@ -81,9 +81,22 @@ end
 --   failures: structured { id?, status } records the agent folds into
 --             blocklist_fetch_failures_total{status} (#1301). `status` is the
 --             bounded enum from classify_fetch_status / a fixed local-IO token.
-function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
+-- max_bytes (optional): #1412 OOM guard. A cached/fetched body larger than this
+-- is still WRITTEN to cache (so gc + version-busting keep working) but is NOT
+-- parsed into a host table — parsing an 80k-line list builds a Lua table large
+-- enough to OOM a 1 GB router when several such lists are assigned. nil = no cap
+-- (legacy callers / tests). The cap is checked by byte size BEFORE parse_body so
+-- the big table is never allocated.
+function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
   local result = { hosts_by_id = {}, errors = {}, failures = {} }
+
+  -- Parse a body into hosts unless it exceeds the byte cap (then return empty
+  -- without building the table). See max_bytes above (#1412).
+  local function parse_bounded(text)
+    if max_bytes and text and #text > max_bytes then return {} end
+    return parse_body(text or "")
+  end
 
   -- Record both a human string and a structured {id, status} failure so the
   -- agent can emit the bounded-cardinality metric without re-parsing strings.
@@ -165,7 +178,7 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
     -- Check if (id, version) is already cached.
     local existing = read_fn(path)
     if existing then
-      result.hosts_by_id[id] = parse_body(existing)
+      result.hosts_by_id[id] = parse_bounded(existing)
     else
       -- Fetch from API. Signature matches the agent's http_get: status first.
       -- Send the router bearer token — the route is router-authenticated (#1360).
@@ -186,7 +199,7 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
             fail(id, "write_failed",
               string.format("blocklists: rename failed for %s: %s", tostring(id), tostring(rerr)))
           else
-            result.hosts_by_id[id] = parse_body(body or "")
+            result.hosts_by_id[id] = parse_bounded(body or "")
           end
         end
       end
@@ -197,10 +210,16 @@ function M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_
 end
 
 -- Load all currently-cached blocklists from disk.
--- Returns { [id] = {hosts} } for ids whose (id, version) file exists.
-function M.load_cached(snapshot, fs, cache_dir)
+-- Returns `result, skipped`:
+--   result  = { [id] = {hosts} } for ids whose (id, version) file exists.
+--   skipped = { id, ... } ids whose cache file exceeded max_bytes and was left
+--             unparsed (result[id] = {}). The caller logs these so an oversized
+--             list that is silently not enforced is observable.
+-- max_bytes (optional): #1412 OOM guard — see fetch_and_cache. nil = no cap.
+function M.load_cached(snapshot, fs, cache_dir, max_bytes)
   cache_dir = cache_dir or DEFAULT_CACHE_DIR
-  local result = {}
+  local result  = {}
+  local skipped = {}
 
   local read_fn
   if fs then
@@ -219,14 +238,18 @@ function M.load_cached(snapshot, fs, cache_dir)
   for id, bl in pairs(bls) do
     local path    = cache_path(cache_dir, id, bl.version)
     local content = read_fn(path)
-    if content then
+    if content and max_bytes and #content > max_bytes then
+      -- Oversized: do NOT parse (would build a huge table — the #1412 OOM).
+      result[id]               = {}
+      skipped[#skipped + 1]    = id
+    elseif content then
       result[id] = parse_body(content)
     else
       result[id] = {}
     end
   end
 
-  return result
+  return result, skipped
 end
 
 -- refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
@@ -247,11 +270,12 @@ end
 -- failures back to the caller lets the agent emit blocklist_fetch_failures_total
 -- and simply retry on the next cadence rather than no-op until the next snapshot
 -- change (which on a stable household may be hours/days away).
-function M.refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
-  local fc    = M.fetch_and_cache(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token)
+function M.refresh(snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
+  local fc             = M.fetch_and_cache(
+    snapshot, http_get_fn, fs, cache_dir, base_url, auth_token, max_bytes)
   M.gc(snapshot, fs, cache_dir)
-  local hosts = M.load_cached(snapshot, fs, cache_dir)
-  return { hosts = hosts, failures = fc.failures, errors = fc.errors }
+  local hosts, skipped = M.load_cached(snapshot, fs, cache_dir, max_bytes)
+  return { hosts = hosts, failures = fc.failures, errors = fc.errors, skipped = skipped }
 end
 
 -- hosts_differ(a, b) → boolean
