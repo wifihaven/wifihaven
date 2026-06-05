@@ -588,6 +588,18 @@ object PolicyService {
         Hostname.unsafe(sd.domainPattern)
     }
 
+    // #1418: hard pause is a true off-switch. When this profile is paused AND
+    // its pause_mode is `hard`, drop even the app/exempt/infra carve-outs — only
+    // the deployment's UI hosts survive so the kid still sees the block page and
+    // the admin SPA loads on the household LAN. We gate on the *effective* block
+    // reason being Paused (not merely the flag) so the hard mode only bites when
+    // the profile is actually paused; a hard-mode profile blocked for some other
+    // reason (schedule, time limit) keeps the normal soft carve-outs. The router
+    // stays oblivious: an empty `extraAllowed` simply means no `ea_` carve-out,
+    // so the @blocked_macs drop is unconditional — no "hard vs soft" on the wire.
+    val isHardPause =
+      profile.pauseMode == PauseMode.Hard && state.blockReason.contains(MacBlockReason.Paused)
+
     // #763: app expansion is additive. A host in both an allowed-mode app and
     // a blocked-mode app will appear in both lists; the router's
     // extraAllowed-beats-extraBlocked precedence then makes "allow wins" — same
@@ -606,8 +618,11 @@ object PolicyService {
       // #1307: union the curated infra allowlist so connectivity-check / OCSP /
       // CDN dependencies of an allowed app survive the whole-MAC block. Copied
       // per-profile for now; the global policy layer (#1308) will dedup this.
+      // #1418: under a hard pause, drop everything except the UI hosts.
       extraAllowed =
-        (appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts ++ infraAllowHosts).distinct,
+        if (isHardPause) uiAllowedHosts.distinct
+        else
+          (appExtraAllowed ++ appExemptAllowedHosts ++ uiAllowedHosts ++ infraAllowHosts).distinct,
       blocklistIds = profile.blockedCategories,
       blockIpOnly = profile.blockIpOnly,
     )

@@ -10,6 +10,13 @@ export type FailureMode = 'block-all' | 'allow-all' | 'last-known-good'
 // is `sum` (preserves pre-#751 semantics).
 export type CrossDeviceOverlapMode = 'sum' | 'dedup'
 
+// #1418: pause has two modes. `soft` (default) is today's behavior — a paused
+// profile still spares its allowlisted hosts (an allowed app + the global infra
+// allowlist stay reachable). `hard` is a true off-switch: even those go dark,
+// keeping only the block-page / admin-UI hosts. Wire form matches
+// shared/src/Models.scala PauseMode.asString.
+export type PauseMode = 'soft' | 'hard'
+
 export interface Profile {
   id: number
   name: string
@@ -17,6 +24,7 @@ export interface Profile {
   paused: boolean
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
+  pauseMode: PauseMode
 }
 
 export interface Schedule {
@@ -637,6 +645,8 @@ export interface UpsertProfileRequest {
   failureMode: FailureMode
   // #751: omit to preserve existing value on update; defaults to 'sum' on create.
   crossDeviceOverlapMode?: CrossDeviceOverlapMode
+  // #1418: omit to preserve existing value on update; defaults to 'soft' on create.
+  pauseMode?: PauseMode
 }
 
 export interface UpsertDeviceRequest {

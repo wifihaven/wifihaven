@@ -434,6 +434,121 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea)) &&
         assertTrue(ea.contains("connectivitycheck.gstatic.com"))
     },
+    test(
+      "#1418: HARD pause drops the allowed-app host AND infra hosts from extraAllowed",
+    ) {
+      // Hard pause is a true off-switch: unlike soft pause (#421/#1413), even
+      // an allowed-mode app and the #1307 global infra allowlist go dark. With
+      // no uiAllowedHosts configured here, extraAllowed must come back empty so
+      // the router drops the MAC unconditionally (no `ip daddr != @ea_…`).
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
+        p     <- pr.findById(kid).map(_.get)
+        _     <- pr.update(p.copy(paused = true, pauseMode = PauseMode.Hard))
+        svc   <- makePs
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        assertTrue(ea.isEmpty) &&
+        assertTrue(!ea.contains("khanacademy.org")) &&
+        assertTrue(!ea.contains("connectivitycheck.gstatic.com"))
+    },
+    test(
+      "#1418: SOFT pause keeps the allowed-app host AND infra hosts (regression guard)",
+    ) {
+      // The default, unchanged behavior: a soft-paused profile still spares its
+      // extraAllowed hosts (#421/#1413) and the curated infra allowlist (#1307).
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
+        p     <- pr.findById(kid).map(_.get)
+        _     <- pr.update(p.copy(paused = true, pauseMode = PauseMode.Soft))
+        svc   <- makePs
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        assertTrue(ea.contains("khanacademy.org")) &&
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea))
+    },
+    test("#1418: HARD pause still spares the deployment uiAllowedHosts (block page / admin UI)") {
+      // We deliberately keep uiAllowedHosts through a hard pause so the kid sees
+      // the block page and the admin SPA loads on the LAN — only the app/infra
+      // allowlists are cut. extraAllowed must equal exactly the UI hosts.
+      val uiHosts = List(Hostname.unsafe("blockpage.wifihaven.lan"))
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        hsr   <- ZIO.service[HouseholdSettingsRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        stlr  <- ZIO.service[SiteTimeLimitRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        blr   <- ZIO.service[BlocklistRepo]
+        trr   <- ZIO.service[TrafficReportRepo]
+        er    <- ZIO.service[TimeExtensionRepo]
+        ar    <- ZIO.service[AppRepo]
+        clk   <- ZIO.service[Clock]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        appId <- ar.create("Khan", "khan", None, None)
+        _     <- ar.setHosts(appId, List(Hostname.unsafe("khanacademy.org")))
+        _     <- ar.upsertAssignment(appId, kid, AppMode.Allowed, None, true)
+        p     <- pr.findById(kid).map(_.get)
+        _     <- pr.update(p.copy(paused = true, pauseMode = PauseMode.Hard))
+        svc =
+          PolicyServiceLive(
+            pr,
+            sr,
+            hsr,
+            tlr,
+            stlr,
+            dr,
+            blr,
+            trr,
+            er,
+            ar,
+            clk,
+            uiHosts,
+          ): PolicyService
+        snap <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(ea == Set("blockpage.wifihaven.lan")) &&
+        assertTrue(!ea.contains("khanacademy.org")) &&
+        assertTrue(!ea.contains("connectivitycheck.gstatic.com"))
+    },
+    test("#1418: profile round-trips pauseMode through the repo") {
+      for {
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        p0  <- pr.findById(kid).map(_.get)
+        _   <- pr.update(p0.copy(pauseMode = PauseMode.Hard))
+        p1  <- pr.findById(kid).map(_.get)
+        _   <- pr.update(p1.copy(pauseMode = PauseMode.Soft))
+        p2  <- pr.findById(kid).map(_.get)
+      } yield assertTrue(p0.pauseMode == PauseMode.Soft) &&
+        assertTrue(p1.pauseMode == PauseMode.Hard) &&
+        assertTrue(p2.pauseMode == PauseMode.Soft)
+    },
     test("#1105: same app assigned to two profiles with different exempt flags → independent") {
       for {
         _     <- cleanDb

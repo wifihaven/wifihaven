@@ -253,6 +253,9 @@ object ProfileRoutes {
                   // (matches the DB column default and preserves
                   // pre-#751 per-profile semantics).
                   upr.crossDeviceOverlapMode.getOrElse(CrossDeviceOverlapMode.Sum),
+                  // #1418: omitted pauseMode defaults to Soft (matches the DB
+                  // column default and preserves today's pause semantics).
+                  upr.pauseMode.getOrElse(PauseMode.Soft),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -293,6 +296,8 @@ object ProfileRoutes {
                   // #751: same preserve-on-omit semantics.
                   crossDeviceOverlapMode =
                     upr.crossDeviceOverlapMode.getOrElse(p.crossDeviceOverlapMode),
+                  // #1418: same preserve-on-omit semantics for the pause mode.
+                  pauseMode = upr.pauseMode.getOrElse(p.pauseMode),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)

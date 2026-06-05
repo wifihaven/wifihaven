@@ -8,7 +8,7 @@ import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 import type {
   AppDetail, AppMode, AppPolicyAssignment,
-  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, ProfileDetail,
+  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, PauseMode, ProfileDetail,
   ProfileTimeSummary,
   ScheduleRequest, UpsertProfileRequest, User,
 } from '@/types/api'
@@ -886,6 +886,7 @@ interface TimeFormState {
   timeLimit: string
   schedules: ScheduleRequest[]
   crossDeviceOverlapMode: CrossDeviceOverlapMode
+  pauseMode: PauseMode
 }
 
 function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
@@ -895,12 +896,14 @@ function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
       name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
     })),
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+    pauseMode: pd.profile.pauseMode,
   }
 }
 
 function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
   if (a.timeLimit !== b.timeLimit) return false
   if (a.crossDeviceOverlapMode !== b.crossDeviceOverlapMode) return false
+  if (a.pauseMode !== b.pauseMode) return false
   if (a.schedules.length !== b.schedules.length) return false
   for (let i = 0; i < a.schedules.length; i++) {
     const x = a.schedules[i]
@@ -968,6 +971,7 @@ function TimeSubsection({
       body.timeLimit = tl !== null && Number.isFinite(tl) && tl > 0 ? tl : null
       body.schedules = next.schedules
       body.crossDeviceOverlapMode = next.crossDeviceOverlapMode
+      body.pauseMode = next.pauseMode
       await api.profiles.update(pd.profile.id, body)
       baselineRef.current = next
       setStatus('saved')
@@ -1209,6 +1213,52 @@ function TimeSubsection({
                   <span className="text-brand-text-muted"> (one profile = one human)</span>
                   <span className="block text-xs text-brand-text mt-0.5">
                     union the per-device active windows. Two devices both active in the same 5-minute window count as 5 minutes against the daily cap. Right when one person carries an iPad and a phone for the same profile.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {/* #1418 pause-mode radios: soft (default) keeps allowlisted apps +
+              the block page reachable through a pause; hard is a true off-switch. */}
+          <div>
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
+              Pause mode
+            </label>
+            <div className="space-y-2">
+              <label className="flex items-start gap-3 text-sm text-brand-text cursor-pointer">
+                <input
+                  type="radio"
+                  name={`pause-mode-${pd.profile.id}`}
+                  data-testid={`profile-pause-mode-soft-${pd.profile.id}`}
+                  disabled={!isAdmin}
+                  checked={form.pauseMode === 'soft'}
+                  onChange={() => update({ pauseMode: 'soft' })}
+                  className="mt-1 w-4 h-4 accent-brand-accent"
+                />
+                <span>
+                  <span className="font-medium text-brand-ink">Soft pause</span>
+                  <span className="text-brand-text-muted"> (default)</span>
+                  <span className="block text-xs text-brand-text mt-0.5">
+                    block the internet but keep explicitly-allowed apps reachable (e.g. a homework app), plus the block page. Best for "dinner time, but homework still works."
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm text-brand-text cursor-pointer">
+                <input
+                  type="radio"
+                  name={`pause-mode-${pd.profile.id}`}
+                  data-testid={`profile-pause-mode-hard-${pd.profile.id}`}
+                  disabled={!isAdmin}
+                  checked={form.pauseMode === 'hard'}
+                  onChange={() => update({ pauseMode: 'hard' })}
+                  className="mt-1 w-4 h-4 accent-brand-accent"
+                />
+                <span>
+                  <span className="font-medium text-brand-ink">Hard pause</span>
+                  <span className="text-brand-text-muted"> (true off-switch)</span>
+                  <span className="block text-xs text-brand-text mt-0.5">
+                    cut everything, including allowed apps. Only the block page stays reachable. For discipline, a lost device, or an emergency. Applies the next time you pause this profile.
                   </span>
                 </span>
               </label>
