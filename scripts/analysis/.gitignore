@@ -1,0 +1,7 @@
+# Exported prod data — read-only analysis inputs, never committed.
+data/
+*.csv
+
+# Python bytecode
+__pycache__/
+*.pyc
