@@ -282,7 +282,7 @@ pass "dhcp_lease + 3 connection_attempt shapes posted"
 # Wire strings are pinned to MacBlockReason.asString in shared/Models.scala
 # and to render.lua's `comment "wh_drop:<mac>:<reason>"` emission. The Scala
 # side has PolicySnapshotMacDropAttributionSpec; the Lua side has
-# render_spec.lua's `drop rules carry log group + counter + comment` block.
+# render_spec.lua's `drop rules carry log prefix + counter + comment` block.
 # This step is the third leg — proving the API actually round-trips them.
 step "#1122: nflog-synthesized blocked-MAC events round-trip /api/logs?blocked=true"
 
