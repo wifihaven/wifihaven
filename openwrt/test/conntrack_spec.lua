@@ -1498,3 +1498,28 @@ describe("nft_eb_hit (#579)", function()
     assert.is_false(conntrack.nft_eb_hit("9.9.9.9", "safe.org", function(_) return false end))
   end)
 end)
+
+describe("encode_events_body (#1126 ingest reliability)", function()
+  local quiet = {
+    debug = function() end, info = function() end,
+    warn  = function() end, err  = function() end,
+  }
+
+  it("returns nil for an empty batch (never serialize {} as the events object)", function()
+    -- luci.jsonc would encode an empty Lua table as `{}` (object), which the
+    -- API rejects as a type error ("Unexpected end of input"-class warnings).
+    assert.is_nil(conntrack.encode_events_body("r-1", {}, quiet))
+    assert.is_nil(conntrack.encode_events_body("r-1", nil, quiet))
+  end)
+
+  it("encodes a non-empty batch as a well-formed object with an events array", function()
+    local body = conntrack.encode_events_body("r-1", {
+      { ["type"] = "connection_attempt", mac = "aa:bb:cc:11:22:33", allowed = false },
+    }, quiet)
+    assert.is_string(body)
+    assert.equal("{", body:sub(1, 1))
+    assert.truthy(body:find('"routerId":"r-1"', 1, true))
+    -- events must be a JSON array, not an object.
+    assert.truthy(body:find('"events":[', 1, true))
+  end)
+end)

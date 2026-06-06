@@ -1,0 +1,96 @@
+#!/usr/bin/lua
+-- wifihaven-nflog-tail — sidecar that tails the kernel log for wifihaven
+-- forward-chain drop records and spools them for the main agent (#1126).
+--
+-- render.lua emits every per-MAC / per-host / per-category / ip-only drop rule
+-- with `log prefix "wh_drop:<mac>:<reason> " counter drop`, which writes a
+-- packet record to the kernel ring buffer (the LOG backend). This sidecar runs
+-- the blocking `logread -f`, keeps only the `wh_drop:` lines, and appends them
+-- to a tmpfs spool (paths.nflog_drops). The main agent drains new complete
+-- lines from that spool on its cooperative tick (nflog.drain_file) and
+-- synthesizes connection_attempt(allowed=false) events.
+--
+-- This mirrors the dns-tail split (#259): the blocking read lives in a separate
+-- procd instance so the agent never needs non-blocking I/O. The parse / dedup /
+-- event-build logic stays in wifihaven.nflog (unit-tested); this script is just
+-- the transport.
+
+local uci   = require("uci")
+local log   = require("wifihaven.log")
+local paths = require("wifihaven.paths")
+
+local cursor = uci.cursor()
+local function uci_get(opt, default)
+  return cursor:get("wifihaven", "@wifihaven[0]", opt) or default
+end
+
+local debug_opt = uci_get("debug", "0")
+-- Bound the tmpfs spool. When it grows past this, truncate in place; the agent
+-- detects the shrink (file shorter than its saved offset) and rewinds its
+-- cursor to 0. At most the lines written since the agent's last drain are lost
+-- — acceptable for a best-effort, agent-deduped visibility stream. The agent
+-- drains every few seconds, so in practice it has consumed everything well
+-- before a rotation.
+local cap_bytes = tonumber(uci_get("nflog_spool_max_bytes", "262144"))
+
+log.init({ debug = debug_opt })
+
+local out_path = paths.nflog_drops
+log.info("nflog-tail: starting spool=%s cap=%d", out_path, cap_bytes)
+
+-- logread -f follows the kernel log live. We re-popen on pipe close below
+-- (procd also respawns the whole instance), so a logd restart self-heals.
+local handle = io.popen("logread -f 2>/dev/null", "r")
+if not handle then
+  log.err("nflog-tail: cannot start `logread -f`")
+  os.exit(1)
+end
+
+local out = io.open(out_path, "a")
+if not out then
+  log.err("nflog-tail: cannot open spool %s for append", out_path)
+  os.exit(1)
+end
+
+local matched      = 0
+local last_stat    = os.time()
+local matched_stat = 0
+
+while true do
+  local line = handle:read("*l")
+  if not line then
+    log.warn("nflog-tail: logread pipe closed; exiting (procd will respawn)")
+    break
+  end
+  -- Cheap plain-substring prefilter — only the wifihaven drop records carry
+  -- the wh_drop: token. Full parsing happens agent-side in nflog.parse_line.
+  if line:find("wh_drop:", 1, true) then
+    out:write(line, "\n")
+    out:flush()
+    matched      = matched + 1
+    matched_stat = matched_stat + 1
+    -- Rotate (truncate in place) once the spool exceeds the cap.
+    if out:seek("end") >= cap_bytes then
+      out:close()
+      out = io.open(out_path, "w")
+      if not out then
+        log.err("nflog-tail: cannot reopen spool %s after rotate", out_path)
+        os.exit(1)
+      end
+      log.debug("nflog-tail: rotated spool (>= %d bytes)", cap_bytes)
+    end
+  end
+
+  -- One-line heartbeat so a silent failure (logread dropping the pipe, render
+  -- not emitting log prefix, regex never matching) is diagnosable from logread
+  -- alone, matching the dns-tail heartbeat (#480).
+  local now = os.time()
+  if (now - last_stat) >= 60 then
+    log.info("nflog-tail: matched=%d (+%d in last %ds)", matched, matched_stat, now - last_stat)
+    last_stat    = now
+    matched_stat = 0
+  end
+end
+
+handle:close()
+if out then out:close() end

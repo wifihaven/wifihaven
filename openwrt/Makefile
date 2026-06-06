@@ -39,6 +39,7 @@ define Package/wifihaven/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-agent $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-dns-tail $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-nflog-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-update $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-rotate-dnsmasq-log $(1)/usr/sbin/
 

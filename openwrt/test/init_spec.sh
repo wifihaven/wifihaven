@@ -46,6 +46,11 @@ grep -q 'wifihaven-dns-tail' "$INIT" \
   && check "starts wifihaven-dns-tail sidecar" ok \
   || check "starts wifihaven-dns-tail sidecar" "not found"
 
+# 5c. nflog-tail sidecar must also be started (#1126 — blocked-flow visibility)
+grep -q 'wifihaven-nflog-tail' "$INIT" \
+  && check "starts wifihaven-nflog-tail sidecar" ok \
+  || check "starts wifihaven-nflog-tail sidecar" "not found"
+
 # 6. Must configure procd_set_param respawn (auto-restart on crash)
 grep -q 'procd_set_param respawn' "$INIT" \
   && check "sets procd_set_param respawn" ok \
