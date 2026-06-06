@@ -690,6 +690,27 @@ describe("render.nft drop rules carry log group + counter + comment (#1122)", fu
     assert.is_nil(nft:find("@ea_aa_bb_cc_11_22_33_example_com", 1, true))
   end)
 
+  it("#1513: TimeLimit MAC carves out an exempt app's FULL host-set (every ea_ clause)", function()
+    -- Prod bug (Kids/Math Academy, 2026-06): an exempt time_limited app was
+    -- blocked when the profile hit its DAILY limit because only its apex host
+    -- was carved. The router is a dumb applier — given the app's full host-set
+    -- in extraAllowed, the whole-MAC TimeLimit drop must carry one
+    -- `ip daddr != @ea_<m>_<host>` clause PER host so every host stays
+    -- reachable while general traffic still drops. Hosts render sorted.
+    local s = snap_one()
+    s.profiles["3"].rules.blocked      = true
+    s.profiles["3"].rules.blockReason  = "TimeLimit"
+    s.profiles["3"].rules.extraAllowed = { "mathacademy.com", "mathacademy-cdn.net" }
+    local nft = render.nft(s)
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy-cdn_net ip daddr != @ea_aa_bb_cc_11_22_33_mathacademy_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @ea6_aa_bb_cc_11_22_33_mathacademy-cdn_net ip6 daddr != @ea6_aa_bb_cc_11_22_33_mathacademy_com log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:TimeLimit\"",
+      1, true))
+    assert.is_nil(nft:find("@blocked_macs drop", 1, true))
+  end)
+
   it("MacBlockReason wire strings: Paused / Schedule / TimeLimit / Manual / Unmanaged", function()
     -- Pin the contract between MacBlockReason.asString in PolicyService and
     -- the strings render.lua emits. The agent's nflog parser depends on this.

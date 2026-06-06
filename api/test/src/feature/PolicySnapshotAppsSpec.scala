@@ -337,6 +337,91 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
         assertTrue(!ea.contains("youtube.com"))
     },
+    // ── #1513: exempt time_limited app's FULL host-set survives the daily block ──
+    //
+    // Prod bug (Kids/Math Academy, 2026-06): an exempt-from-daily time_limited
+    // app was blocked when the profile hit its DAILY limit. The carve gate +
+    // the "under its own limit" budget check must be evaluated at the APP level
+    // over the app's FULL host-set — not per host. With apex-only host-sets the
+    // two views coincide; once an app carries multiple hosts (#1505) a per-host
+    // check (a) splits the app's usage across hosts so its own limit never bites
+    // and (b) carves only the apex, leaving the app's real traffic to be dropped
+    // by the whole-MAC block. These tests use a multi-host app to lock the
+    // app-level semantics in regardless of #1505's host-set seeding.
+    test(
+      "#1513: exempt multi-host app UNDER its own limit → ENTIRE host-set in extraAllowed under daily block",
+    ) {
+      val mac = "aa:bb:cc:dd:ee:51"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("Math Academy", "math-academy", None, None)
+        // Apex + an off-domain asset/CDN host (the #1505 shape).
+        _     <- ar.setHosts(
+          appId,
+          List(Hostname.unsafe("mathacademy.com"), Hostname.unsafe("mathacademy-cdn.net")),
+        )
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(30), true)
+        rid   <- seedRouterRow
+        // Profile daily cap (30) exhausted by NON-exempt traffic.
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        // App usage split across both hosts, total 20 < its own 30-min limit.
+        _     <- seedTraffic(rid, mac, "mathacademy.com", LocalDate.of(2025, 1, 6), 10)
+        _     <- seedTraffic(rid, mac, "mathacademy-cdn.net", LocalDate.of(2025, 1, 6), 10)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(ea.contains("mathacademy.com")) &&
+        assertTrue(ea.contains("mathacademy-cdn.net"))
+    },
+    test(
+      "#1513: exempt multi-host app OVER its own limit (each host individually under) → NOT carved → blocked",
+    ) {
+      val mac = "aa:bb:cc:dd:ee:52"
+      for {
+        _     <- cleanDb
+        pr    <- ZIO.service[ProfileRepo]
+        sr    <- ZIO.service[ScheduleRepo]
+        dr    <- ZIO.service[DeviceRepo]
+        tlr   <- ZIO.service[TimeLimitRepo]
+        ar    <- ZIO.service[AppRepo]
+        kid   <- TestLayers.seedKidsProfile(pr, sr)
+        _     <- tlr.upsert(kid, 30)
+        _     <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        appId <- ar.create("Math Academy", "math-academy", None, None)
+        _     <- ar.setHosts(
+          appId,
+          List(Hostname.unsafe("mathacademy.com"), Hostname.unsafe("mathacademy-cdn.net")),
+        )
+        // App's own daily limit is 30 min.
+        _     <- ar.upsertAssignment(appId, kid, AppMode.TimeLimited, Some(30), true)
+        rid   <- seedRouterRow
+        // Profile daily cap exhausted by non-exempt traffic → whole-MAC TimeLimit block.
+        _     <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        // Each host is individually UNDER 30 (20 + 20), but the app's TOTAL (40)
+        // exceeds its own 30-min limit → the app must NOT be carved. A per-host
+        // check would carve both (the bug); the app-level check blocks it.
+        _     <- seedTraffic(rid, mac, "mathacademy.com", LocalDate.of(2025, 1, 6), 20)
+        _     <- seedTraffic(rid, mac, "mathacademy-cdn.net", LocalDate.of(2025, 1, 6), 20)
+        svc   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap  <- svc.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
+      } yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(!ea.contains("mathacademy.com")) &&
+        assertTrue(!ea.contains("mathacademy-cdn.net"))
+    },
     test(
       "#1307: AppMode.Allowed app stays in extraAllowed when daily cap exhausted (blocked=TimeLimit)",
     ) {
