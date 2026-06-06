@@ -457,6 +457,17 @@ new semantics.
 6. **e2e default-pinning gate (extends #930).** Pin
    `presence_continuation_seconds = 120` end-to-end so a future PR — or a
    change to `usage_report_interval` — can't shift the visible numbers silently.
+   **Shipped — #1468 (subsumes #930).** `api/test/src/feature/PresenceDefaultsPinSpec.scala`
+   pins the fresh-install defaults end-to-end via `GET /api/household/settings`
+   (`presence_continuation_seconds = 120`, heartbeat filter on / 10 KB threshold,
+   and the 16-FQDN keepalive allowlist), pins the Scala fallbacks
+   (`HouseholdSettings.DefaultPresenceContinuationSeconds`,
+   `Presence.DefaultContinuationSeconds`) against the same literals, and asserts
+   the rate-independence invariant through `GET /api/usage/series`: the same
+   sparse 5-minute span reported at R = 60 s vs R = 300 s reads the same visible
+   minutes (a regression to the rate-dependent `sum(activeSeconds)` path would
+   diverge). Gate 1 (`scripts/e2e-tests.sh`) additionally asserts the live wire
+   exposes these knobs and holds `N ≥ 2·R` on operator-mutable staging.
 
 7. **(Complementary, not blocking) router-side foreground-host heuristic
    (#842).** Re-confirm scope once the agent freeze lifts; sharpens per-host
