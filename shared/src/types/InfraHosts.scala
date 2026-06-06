@@ -32,6 +32,21 @@ package wifihaven.shared.types
  * matches every subdomain via [[HostMatch.matchesPattern]] (and the router's trailing-suffix match
  * on the allow side). Matching is case-sensitive on the assumption of normalized input
  * (`Hostname.parse` lowercases).
+ *
+ * TWO TIERS (#1525). The list has two parts because "allow through the block" and "don't count as
+ * engagement" are *almost* the same set but not quite:
+ *
+ *   - [[canonical]] — allow **and** suppress. Safe to carve out of the block AND drop from
+ *     presence. This is the set `PolicyService.infraAllowHosts` ships.
+ *   - [[suppressOnly]] — suppress **only**, never allowed through the block. Folded in from the
+ *     retired `household_settings.heartbeat_host_patterns` seed (#1525) — device infra that should
+ *     not count as engagement but must NOT be made reachable under a block. The clearest example is
+ *     iCloud Private Relay (`mask*.icloud.com`): allow-carving it would punch an anti-filtering
+ *     tunnel through every block. These were already suppress-only before #1525 (they lived in the
+ *     heartbeat list, never in `infraAllowHosts`), so this split preserves both behaviors exactly.
+ *
+ * Presence/dashboard suppression uses [[isBackground]] (= `canonical ++ suppressOnly`); the policy
+ * allow carve-out uses [[canonical]] only.
  */
 object InfraHosts {
 
@@ -63,10 +78,50 @@ object InfraHosts {
     "safebrowsingohttpgateway.googleapis.com",// #1503 Safe Browsing OHTTP gateway
   )
 
-  /** The first canonical pattern this FQDN matches, if any (used for the classify reason). */
+  /**
+   * #1525: suppress-from-presence ONLY — device infra that must NOT be allow-carved out of the
+   * block. Folded in from the retired `household_settings.heartbeat_host_patterns` V24 seed (the
+   * entries not already on [[canonical]]). These were suppress-only before #1525 too.
+   *
+   * `mask*.icloud.com` is the load-bearing reason this tier is separate from [[canonical]]: it is
+   * iCloud Private Relay, an anti-filtering tunnel — counting it as engagement is wrong, but making
+   * it reachable under a block would defeat the block. Apex form so subdomains match.
+   */
+  val suppressOnly: List[String] = List(
+    "push.apple.com",      // APNs (was *.push.apple.com)
+    "apple-dns.net",       // Apple DNS/edge infra (was *.apple-dns.net)
+    "akadns.net",          // Akamai DNS infra (was *.akadns.net) — NOT allow-carved (CDN-DNS)
+    "ess.apple.com",       // Apple enterprise/identity infra (was *.ess.apple.com)
+    "time.apple.com",      // Apple time sync
+    "gdmf.apple.com",      // Apple software-update metadata
+    "pancake.apple.com",   // Apple Maps/infra
+    "mask.icloud.com",     // iCloud Private Relay — suppress, never allow (bypass)
+    "mask-h2.icloud.com",  // iCloud Private Relay (HTTP/2)
+    "mask-api.icloud.com", // iCloud Private Relay (API)
+    "rcs.telephony.goog",  // RCS messaging infra (was *.rcs.telephony.goog)
+    "mtalk.google.com",    // GCM/FCM push
+    "ntp.org",             // NTP time sync (was *.ntp.org)
+    "time.cloudflare.com", // Cloudflare NTP
+  )
+
+  /** All hosts suppressed from presence counting: allow+suppress plus suppress-only (#1525). */
+  private val background: List[String] = canonical ++ suppressOnly
+
+  /** The first canonical (allow+suppress) pattern this FQDN matches, if any. */
   def matchedPattern(fqdn: String): Option[String] =
     canonical.find(p => HostMatch.matchesPattern(fqdn, p))
 
-  /** Whether `fqdn` is device-level infrastructure on the unified [[canonical]] list. */
+  /**
+   * Whether `fqdn` is on the [[canonical]] allow+suppress list. Drives the policy allow carve-out.
+   */
   def isInfra(fqdn: String): Boolean = matchedPattern(fqdn).isDefined
+
+  /** The first background (allow+suppress or suppress-only) pattern this FQDN matches, if any. */
+  def matchedBackgroundPattern(fqdn: String): Option[String] =
+    background.find(p => HostMatch.matchesPattern(fqdn, p))
+
+  /**
+   * Whether `fqdn` is device-level background infra — the presence/dashboard suppression predicate.
+   */
+  def isBackground(fqdn: String): Boolean = matchedBackgroundPattern(fqdn).isDefined
 }

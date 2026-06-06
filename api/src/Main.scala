@@ -373,7 +373,6 @@ object Main extends ZIOAppDefault {
             deviceRepo,
             profileRepo,
             upRepo,
-            hsRepo,
             clock,
           ) ++
           BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists)

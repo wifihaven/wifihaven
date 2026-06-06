@@ -101,9 +101,8 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       dr     <- ZIO.service[DeviceRepo]
       pr     <- ZIO.service[ProfileRepo]
       upRepo <- ZIO.service[UserProfileRepo]
-      hsRepo <- ZIO.service[HouseholdSettingsRepo]
       clock  <- ZIO.service[Clock]
-    } yield DashboardNowRoutes.routes(auth, tr, cr, dr, pr, upRepo, hsRepo, clock)
+    } yield DashboardNowRoutes.routes(auth, tr, cr, dr, pr, upRepo, clock)
 
   /**
    * V1__init seeds two profiles ("Kids" and "Adults"). Tests that need a clean slate clear them so

@@ -37,7 +37,6 @@ object DashboardNowRoutes {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       userProfileRepo: UserProfileRepo,
-      householdSettingsRepo: HouseholdSettingsRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
@@ -50,10 +49,6 @@ object DashboardNowRoutes {
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
             allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
             visibleProf <- visibleProfiles(claims, allProfiles, userProfileRepo)
-            // #1503: the now-widget ranks active hosts; route that ranking through the same
-            // heartbeat/infra filter every other usage surface uses so device-level infra
-            // (gvt2, ls.apple, OCSP, …) is never surfaced as "watching X right now".
-            settings    <- householdSettingsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             visibleMacs = visibleDevs.map(_.mac)
             // Both inputs in parallel.
             since       = now.minus(TopHostsWindow)
@@ -77,7 +72,6 @@ object DashboardNowRoutes {
               devices = visibleDevs,
               lastSeen = lastSeen,
               rows = rows,
-              filter = settings.heartbeatFilter,
             )
           } yield Response.json(response.toJson)
         },
@@ -86,10 +80,12 @@ object DashboardNowRoutes {
   /**
    * Pure assembly — exposed for unit tests.
    *
-   * `filter` (default `Off`) is applied only to the host *ranking* (`topHosts`, `nowActivity`) via
-   * [[dropBackground]], so device-level infra never surfaces as the active host (#1503). It is
-   * deliberately NOT applied to active-device detection: a device whose only recent traffic is
-   * infra is still "online", it just has no foreground host to show.
+   * The host *ranking* (`topHosts`, `nowActivity`) drops device-level background infra via
+   * [[dropBackground]], so infra never surfaces as the active host (#1503/#1525). Suppression keys
+   * on host IDENTITY only (the unified [[InfraHosts]] set), never the byte floor — so it cannot
+   * hide a genuine low-byte foreground request (the #1446 undercount mechanism). It is deliberately
+   * NOT applied to active-device detection: a device whose only recent traffic is infra is still
+   * "online", it just has no foreground host to show.
    */
   def buildResponse(
       now: Instant,
@@ -97,7 +93,6 @@ object DashboardNowRoutes {
       devices: List[Device],
       lastSeen: Map[MacAddress, Instant],
       rows: List[TrafficRollupRow],
-      filter: HeartbeatFilter = HeartbeatFilter.Off,
   ): DashboardNow = {
     val trafficCutoff                             = now.minus(TrafficActiveWindow)
     val rowsByMac                                 = rows.groupBy(_.mac)
@@ -123,8 +118,8 @@ object DashboardNowRoutes {
             name = d.name,
             mac = d.mac,
             lastSeenSeconds = lastSeenSeconds,
-            topHosts = topHostsFromRows(devRows, filter),
-            nowActivity = nowActivityFromRows(devRows, filter),
+            topHosts = topHostsFromRows(devRows),
+            nowActivity = nowActivityFromRows(devRows),
           )
         }
       }
@@ -144,11 +139,8 @@ object DashboardNowRoutes {
    * bucket and returns its top host. If earlier consecutive buckets share the same top host,
    * reports a `minutes` run (capped at 60); otherwise `minutes = None`. See #852.
    */
-  def nowActivityFromRows(
-      rows: List[TrafficRollupRow],
-      filter: HeartbeatFilter = HeartbeatFilter.Off,
-  ): Option[DashboardNowActivity] = {
-    val buckets = dropBackground(rows, filter)
+  def nowActivityFromRows(rows: List[TrafficRollupRow]): Option[DashboardNowActivity] = {
+    val buckets = dropBackground(rows)
       .groupBy(_.periodEnd)
       .toList
       .sortBy { case (end, _) => -end.getEpochSecond }
@@ -181,11 +173,8 @@ object DashboardNowRoutes {
       .headOption
       .map(_._1)
 
-  def topHostsFromRows(
-      rows: List[TrafficRollupRow],
-      filter: HeartbeatFilter = HeartbeatFilter.Off,
-  ): List[DashboardNowHost] =
-    dropBackground(rows, filter)
+  def topHostsFromRows(rows: List[TrafficRollupRow]): List[DashboardNowHost] =
+    dropBackground(rows)
       .groupBy(_.host)
       .view
       .mapValues(rs => rs.map(_.activeSeconds.toLong).sum)
@@ -195,28 +184,13 @@ object DashboardNowRoutes {
       .map { case (h, s) => DashboardNowHost(h, s) }
 
   /**
-   * #1503: drop device-level background hosts before ranking, so the now-widget never surfaces
-   * infra/telemetry as "watching X right now". Suppression is keyed on host IDENTITY only — never
-   * on the byte floor — so it cannot hide a genuine low-byte foreground request (the #1446
-   * undercount mechanism); a single chatty 60-byte keepalive looks identical to a real
-   * request-driven app at the byte level, so only identity is safe here. Two identity sources:
-   *
-   *   - the unified [[InfraHosts]] canonical set (the same list `PolicyService.infraAllowHosts`
-   *     allows and `Presence` suppresses) — always, independent of the operator's filter toggle.
-   *   - the operator's curated `heartbeatHostPatterns` (e.g. `*.push.apple.com`) — only when the
-   *     heartbeat filter is enabled, matching how the other surfaces honor that toggle.
+   * #1503/#1525: drop device-level background infra before ranking, so the now-widget never
+   * surfaces infra/telemetry as "watching X right now". Suppression is keyed on host IDENTITY only
+   * (the unified [[InfraHosts]] background set — `canonical ∪ suppressOnly`), never on the byte
+   * floor — so it cannot hide a genuine low-byte foreground request (the #1446 undercount
+   * mechanism): a single chatty 60-byte keepalive looks identical to a real request-driven app at
+   * the byte level, so only identity is safe here.
    */
-  private def dropBackground(
-      rows: List[TrafficRollupRow],
-      filter: HeartbeatFilter,
-  ): List[TrafficRollupRow] =
-    rows.filterNot(r => isBackgroundHost(r.host, filter))
-
-  private def isBackgroundHost(host: HostId, filter: HeartbeatFilter): Boolean =
-    host.asFqdn.exists { fqdn =>
-      InfraHosts.isInfra(fqdn.value) ||
-      (filter.enabled && filter.heartbeatHostPatterns.exists(p =>
-        HostMatch.matchesPattern(fqdn.value, p),
-      ))
-    }
+  private def dropBackground(rows: List[TrafficRollupRow]): List[TrafficRollupRow] =
+    rows.filterNot(r => r.host.asFqdn.exists(fqdn => InfraHosts.isBackground(fqdn.value)))
 }

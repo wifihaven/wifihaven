@@ -66,5 +66,47 @@ object InfraHostsSpec extends ZIOSpecDefault {
         InfraHosts.canonical.forall(h => !h.startsWith("*.")),
       )
     },
+    test(
+      "#1525 suppress-only tier (folded from heartbeat_host_patterns) is background, not allowed",
+    ) {
+      // These suppress from presence counting (isBackground) but must NOT be allow-carved (isInfra):
+      // allowing iCloud Private Relay through a block would be an anti-filtering bypass.
+      val suppressOnly = List(
+        "api-push.push.apple.com",
+        "x.apple-dns.net",
+        "y.akadns.net",
+        "time.apple.com",
+        "gdmf.apple.com",
+        "mask.icloud.com",
+        "mask-h2.icloud.com",
+        "mtalk.google.com",
+        "z.rcs.telephony.goog",
+        "pool.ntp.org",
+        "time.cloudflare.com",
+      )
+      assertTrue(
+        suppressOnly.forall(InfraHosts.isBackground),
+        suppressOnly.forall(h => !InfraHosts.isInfra(h)),
+        // Private Relay specifically must never be on the allow (canonical) list.
+        !InfraHosts.isInfra("mask.icloud.com"),
+        InfraHosts.isBackground("mask.icloud.com"),
+      )
+    },
+    test("#1525 canonical hosts are both allowed and background; the boundary holds for both") {
+      assertTrue(
+        InfraHosts.isInfra("gvt2.com") && InfraHosts.isBackground("gvt2.com"),
+        // app/CDN hosts are neither allowed nor suppressed.
+        !InfraHosts.isBackground("www.tinkercad.com"),
+        !InfraHosts.isBackground("firestore.googleapis.com"),
+        !InfraHosts.isBackground("a1744.dscw154.akamai.net"),
+      )
+    },
+    test("#1525 every suppressOnly entry is a parseable lowercased apex/exact host") {
+      assertTrue(
+        InfraHosts.suppressOnly.forall(h => Hostname.parse(h).isRight),
+        InfraHosts.suppressOnly.forall(h => h == h.toLowerCase),
+        InfraHosts.suppressOnly.forall(h => !h.startsWith("*.")),
+      )
+    },
   )
 }
