@@ -157,12 +157,36 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       }
     },
     test(
-      "time_limited app: exhausted budget pushes host into extraBlocked; non-exhausted does not",
+      "time_limited app: exhausting the app's budget on ONE host blocks the whole host-set (#1505)",
     ) {
-      // Stop-gap semantics (documented in #763 PR): one synthesized SiteTimeLimit
-      // row per host of the time_limited app, each carrying the app's
-      // dailyMinutes independently. Verified here by hitting one host's budget
-      // without traffic on the sibling host.
+      // #1505: the limit is per-app, aggregated across the whole host-set — not a separate per-host
+      // budget. So 30 m spent on the off-domain asset host alone exhausts the app's 30 m limit and
+      // pushes BOTH the apex and the asset host into extraBlocked (the router then drops the whole
+      // app). The pre-#1505 behavior blocked only the host whose own bucket-count hit the limit.
+      for {
+        _    <- cleanDb
+        ar   <- ZIO.service[AppRepo]
+        kids <- kidsId
+        dr   <- ZIO.service[DeviceRepo]
+        _    <- dr.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:90"), "iPad", Some(kids), "10.0.0.9")
+        routerId <- seedRouterRow
+        appId    <- ar.create("YouTube", "youtube", None, None)
+        _        <- ar.setHosts(
+          appId,
+          List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+        )
+        _        <- ar.upsertAssignment(appId, kids, AppMode.TimeLimited, Some(30), true)
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        // 30 m entirely on the off-domain asset host; the apex saw no traffic at all.
+        _    <- seedTraffic(routerId, "aa:bb:cc:dd:ee:90", "ytimg.com", today, 30)
+        svc  <- makePs
+        snap <- svc.snapshot
+      } yield {
+        val eb = snap.profiles(kids).rules.extraBlocked.map(_.value).toSet
+        assertTrue(eb.contains("youtube.com")) && assertTrue(eb.contains("ytimg.com"))
+      }
+    },
+    test("time_limited app: under-budget app keeps its whole host-set reachable") {
       for {
         _     <- cleanDb
         ar    <- ZIO.service[AppRepo]
@@ -176,7 +200,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         svc   <- makePs
         snap  <- svc.snapshot
       } yield {
-        // With no traffic recorded, neither synthesized site-limit is exhausted.
+        // With no traffic recorded, the app's aggregate is 0 < 30 — nothing blocked.
         val eb = snap.profiles(kids).rules.extraBlocked.map(_.value).toSet
         assertTrue(!eb.contains("youtube.com")) && assertTrue(!eb.contains("ytimg.com"))
       }

@@ -917,7 +917,8 @@ object TimeRoutes {
       )
       presence <- trafficRepo.listPresenceRows(macs, date)
       perMacTotal     = {
-        val exemptPats = state.perSite.filter(_.exemptFromDaily).map(_.domainPattern)
+        // #1505: exempt the app's whole host-set from the daily cap, not just the representative.
+        val exemptPats = state.perSite.filter(_.exemptFromDaily).flatMap(_.hosts)
         wifihaven.api.presence.Presence
           .totalMinutesByMac(
             presence,
@@ -1181,7 +1182,8 @@ object TimeRoutes {
       profile  <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).map(_.domainPattern))
+      // #1505: exempt + count each app's whole host-set, aggregated per app (one bar per app).
+      exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).flatMap(_.hosts))
       totalUsed  = wifihaven.api.presence.Presence
         .totalMinutesByMac(
           presence,
@@ -1190,17 +1192,19 @@ object TimeRoutes {
           settings.presenceContinuationSeconds,
         )
         .getOrElse(device.mac, 0)
-      // #1504: per-device per-site usage via the #1464 session-stitch primitive (this view is a
-      // single device, so cross-device overlap mode is moot) — not the legacy bucket-max model.
-      perPat     = wifihaven.api.presence.Presence
-        .patternMinutesByMac(
+      // #1505 + #1504: per-device per-app usage via the #1464 session-stitch primitive, aggregated
+      // across each app's whole host-set (one bar per app). Single-device view, so cross-device
+      // overlap mode is moot — Sum and Dedup coincide.
+      perApp     = wifihaven.api.presence.Presence
+        .patternGroupMinutesForProfile(
           presence,
-          stateOpt.toList.flatMap(_.perSite.map(_.domainPattern)),
+          stateOpt.toList.flatMap(_.perSite).map(s => s.label -> s.hosts),
+          wifihaven.shared.CrossDeviceOverlapMode.Sum,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
         )
       siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
-        val used = perPat.getOrElse((device.mac, s.domainPattern), 0)
+        val used = perApp.getOrElse(s.label, 0)
         SiteUsage(
           s.label,
           s.domainPattern,

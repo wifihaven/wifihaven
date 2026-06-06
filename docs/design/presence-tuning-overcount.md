@@ -275,6 +275,23 @@ attributes to the app. Not a fix for the *daily over-count*, but it **does**
 improve per-app reporting **and the per-site limit's accuracy for off-domain
 assets** (§3). Track separately; do not gate the over-count fix on it.
 
+> **Implemented (#1505).** The substantive change turned out to be on the
+> *accounting* side, not the seed data: the templates already carried off-domain
+> host-sets (e.g. `roblox.com` + `rbxcdn.com`), but the per-site limit treated
+> each host as an **independent** budget, so an app's off-domain asset ticked its
+> own limit rather than the app's single one. #1505 makes the per-site limit
+> **per-app, aggregated across the whole host-set** — presence is counted once
+> across the set (`Presence.patternGroupMinutesForProfile`), the whole set is
+> exempted from the daily cap together, and when the aggregate hits the limit
+> every host in the set goes to `extraBlocked`. Attribution on the traffic page
+> already worked via `app_hosts` (`HostMatch.lookupApex`); the new behavior is
+> that those same hosts now share one budget. The aggregate is computed with the
+> #1464 session-stitch primitive (Fix D / #1504, now merged) — the host-set
+> grouping composes on top of it, so it counts engaged wall-clock time, not the
+> bucket-max floor. Math Academy itself stays apex-only (its assets are served on
+> `mathacademy.com`); the mechanism is what unblocks any app that does serve
+> off-domain assets.
+
 ### Fix D (primary fix for "Math Academy reads 0") — migrate the per-site limit to the session-stitch model
 
 Make the per-site time-limit usage — both the **display**

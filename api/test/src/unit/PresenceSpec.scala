@@ -390,6 +390,96 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    suite("patternGroupMinutesForProfile (#1505 + #1504)")(
+      test("apex + off-domain asset host in one group aggregate into one budget") {
+        // The app's apex and an off-domain CDN host, hit in adjacent windows, session-stitch into
+        // the app total (engaged wall-clock across the whole host-set).
+        val rows = List(
+          row(mac1, 0, "www.mathacademy.com"),
+          row(mac1, 1, "assets.mathacademy-cdn.example"),
+        )
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")),
+          ) == Map("app:math-academy" -> 10),
+        )
+      },
+      test("overlapping windows on two of the group's hosts are unioned once (no double count)") {
+        val rows = List(
+          row(mac1, 0, "www.mathacademy.com"),
+          row(mac1, 0, "assets.mathacademy-cdn.example"),
+        )
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")),
+          ) == Map("app:math-academy" -> 5),
+        )
+      },
+      test(
+        "sparse request-driven activity reads engaged minutes, not the bucket-max floor (#1504)",
+      ) {
+        // Five contiguous 60s windows across the app's two hosts, each sampling only the 10s floor.
+        // Bucket-max would credit ~0; session-stitch unions them into one [0,300] = 5 min app total.
+        val rows = List(
+          sparseRow(mac1, 0, "www.mathacademy.com"),
+          sparseRow(mac1, 60, "assets.mathacademy-cdn.example"),
+          sparseRow(mac1, 120, "www.mathacademy.com"),
+          sparseRow(mac1, 180, "assets.mathacademy-cdn.example"),
+          sparseRow(mac1, 240, "www.mathacademy.com"),
+        )
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")),
+          ) == Map("app:math-academy" -> 5),
+        )
+      },
+      test("distinct groups accumulate independently; one host may count toward more than one") {
+        val rows = List(row(mac1, 0, "www.youtube.com"))
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            List(
+              "app:youtube" -> List("youtube.com"),
+              "app:video"   -> List("youtube.com"),
+            ),
+          ) == Map("app:youtube" -> 5, "app:video" -> 5),
+        )
+      },
+      test("a group whose hosts the rows never match doesn't appear") {
+        val rows = List(row(mac1, 0, "google.com"))
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com")),
+          ) == Map.empty,
+        )
+      },
+      test("Dedup unions a group's sessions across devices; Sum adds them") {
+        // Same app, two devices, fully overlapping windows. Sum double-counts (10), Dedup unions (5).
+        val rows   = List(
+          row(mac1, 0, "www.mathacademy.com"),
+          row(mac2, 0, "assets.mathacademy-cdn.example"),
+        )
+        val groups = List("app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example"))
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            groups,
+            CrossDeviceOverlapMode.Sum,
+          ) == Map("app:math-academy" -> 10),
+        ) &&
+        assertTrue(
+          Presence.patternGroupMinutesForProfile(
+            rows,
+            groups,
+            CrossDeviceOverlapMode.Dedup,
+          ) == Map("app:math-academy" -> 5),
+        )
+      },
+    ),
     suite("heartbeat filter (#714)")(
       test("filter off: low-byte rows still count toward the daily total") {
         val rows = List(row(mac1, 0, "apns.apple.com", secs = 60, bytes = 60L, periodSeconds = 60))
