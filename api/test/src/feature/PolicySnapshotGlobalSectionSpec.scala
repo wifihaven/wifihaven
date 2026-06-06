@@ -82,9 +82,16 @@ object PolicySnapshotGlobalSectionSpec
         ps   <- makePs
         snap <- ps.snapshot
       } yield {
-        val g = snap.global
+        val g     = snap.global
+        val ea    = g.extraAllowed.map(_.value).toSet
+        // #1321: the curated infra allowlist is unioned into global.extraAllowed
+        // alongside the DB-backed global_allow rows, so assert membership rather
+        // than an exact list (no ui hosts are configured in this spec).
+        val infra = PolicyService.infraAllowHosts.map(_.value).toSet
         assertTrue(
-          g.extraAllowed.map(_.value) == List("infra.example"),
+          ea.contains("infra.example"),
+          infra.subsetOf(ea),
+          ea == infra + "infra.example",
           g.extraBlocked.map(_.value) == List("evil.example"),
           g.blocklistIds.map(_.value) == List("ads"),
           g.blockIpOnly,
@@ -102,9 +109,15 @@ object PolicySnapshotGlobalSectionSpec
         _    <- gpr.removeAllow(Hostname.unsafe("removed.example"), None)
         ps   <- makePs
         snap <- ps.snapshot
-      } yield assertTrue(
-        snap.global.extraAllowed.map(_.value).toSet == Set("kept.example"),
-      )
+      } yield {
+        val ea = snap.global.extraAllowed.map(_.value).toSet
+        // #1321: kept DB row + the curated infra constant; removed row excluded.
+        assertTrue(
+          ea.contains("kept.example"),
+          !ea.contains("removed.example"),
+          PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea),
+        )
+      }
     },
     test("global lockdown flag → global.blocked + reason from household_settings") {
       for {
@@ -137,7 +150,8 @@ object PolicySnapshotGlobalSectionSpec
         assertTrue(
           rules.blocked,
           rules.blockReason.contains(MacBlockReason.DefaultDeny),
-          // only the explicit allow (plus copied infra hosts) is reachable
+          // only the explicit per-profile allow is reachable here; the curated
+          // infra set carves out separately via global.extraAllowed (#1321)
           rules.extraAllowed.map(_.value).contains("pbskids.org"),
           // extraBlocked / blocklistIds are omitted under block-all even though the
           // profile carries blocked_categories

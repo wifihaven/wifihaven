@@ -236,16 +236,15 @@ mode (`blocked = true` baseline + `MacBlockReason.DefaultDeny`, with
 > `PolicyService` now emits `snapshot.global` (a `BlockRules`) from the V48
 > global-policy tables + the per-deployment UI hosts, evaluates per-profile
 > `default_deny` into `blocked = true` + `MacBlockReason.DefaultDeny`, and the
-> snapshot ETag covers the global section. The **deployment UI / block-page
-> hosts** have moved out of every profile's `extraAllowed` into
-> `global.extraAllowed`. Still outstanding: the **router** does not yet compose
-> the global section (#1319) — an old agent ignores the additive `global` field
-> and keeps enforcing per-MAC exactly as before — and the curated **#1307 infra
-> allowlist is still copied into each profile's `extraAllowed`**
-> (`PolicyService.computeBlockRules`), retired only once the router consumes
-> `global.extraAllowed` (#1321). So in the current window the UI hosts are
-> enforced via the global layer (needs #1319) while the infra hosts are still
-> enforced the per-profile way.
+> snapshot ETag covers the global section. The router composes the global
+> section (#1319, `@global_allow` / `@global_block`). Both fleet-wide
+> always-reachable sets — the **deployment UI / block-page hosts** and the
+> curated **#1307 infra allowlist** (connectivity-check / OCSP / PKI /
+> captive-portal / gvt2) — now live in `global.extraAllowed` and are emitted
+> **once**; the per-profile copy in `PolicyService.computeBlockRules` has been
+> retired (#1321). They beat every block path for every MAC via the router's
+> global carve-out, exactly as the old per-(MAC) `ea_` copies did, with no
+> per-profile duplication and a single ETag-moving source.
 
 > **Known deviations from this model as of May 2026** (tracked follow-ups,
 > not the canonical design):
@@ -286,9 +285,12 @@ even when a whole MAC is blocked — an initial attempt added a top-level
 allowed) straight to the router. That was wrong: an always-allowed host is
 functionally indistinguishable from any other `extraAllowed` entry, and the
 router has no need for a separate "infra" channel or for *why* the host is
-allowed. The correct fix resolves the infra hosts server-side and copies them
-into every profile's `extraAllowed`, relying on the enforcement that already
-exists for that field. The router learns nothing new.
+allowed. The correct fix resolves the infra hosts server-side and emits them as
+ordinary always-reachable hosts, relying on the enforcement that already exists
+for `extraAllowed`. The router learns nothing new. (They first shipped copied
+into every profile's `extraAllowed`; #1321 then consolidated them — and the UI
+hosts — into `global.extraAllowed` so the fleet-wide set is carried once. The
+"no new field / no reason on the wire" lesson is unchanged either way.)
 
 **2. No policy *reasons* on the wire except where functionally required.**
 `blockReason: Option[MacBlockReason]` is the single intentional exception, and
@@ -494,15 +496,19 @@ if the future server-push channel above is built. Full design:
 is the same pattern in reverse — a functional override of the carve-out, not
 a new field.** Pause has two modes, stored per-profile in
 `profiles.pause_mode` (`'soft'` | `'hard'`, default `'soft'`). *Soft* pause is
-today's behaviour: the MAC drops except its `extraAllowed` hosts (an allowed
-app + the #1307 infra allowlist survive, per #421/#1413). *Hard* pause is a
-true off-switch — when a profile is paused **and** `pause_mode = 'hard'`,
-`PolicyService.computeBlockRules` ships `blocked = true` with `extraAllowed`
-emptied of the app/exempt/infra hosts, keeping only the deployment's
-`uiAllowedHosts` so the block page and admin SPA still load on the household
-LAN. With an empty `ea_` set the router drops the MAC unconditionally — no
-`ip daddr != @ea_…` exception — so it never learns "hard vs soft"; `blockReason`
-stays `Paused` (block-page copy only). No wire/router change.
+today's behaviour: the MAC drops except its per-profile `extraAllowed` hosts (an
+allowed app survives, per #421/#1413). *Hard* pause is a true off-switch — when a
+profile is paused **and** `pause_mode = 'hard'`,
+`PolicyService.computeBlockRules` ships `blocked = true` with the per-profile
+`extraAllowed` emptied of the app/exempt hosts. With an empty `ea_` set the
+router drops the MAC unconditionally — no `ip daddr != @ea_…` exception — so it
+never learns "hard vs soft"; `blockReason` stays `Paused` (block-page copy
+only). No wire/router change. The fleet-wide always-reachable set
+(`global.extraAllowed` — deployment UI / block-page hosts **and** the curated
+#1307 infra allowlist, consolidated there in #1321) is the top of the router's
+precedence ladder and survives a hard pause, so the block page and admin SPA
+still load on the household LAN and pure infra probes stay reachable; a hard
+pause remains a true off-switch for every *per-profile* carve-out.
 
 ## 6. Router HTTP API
 

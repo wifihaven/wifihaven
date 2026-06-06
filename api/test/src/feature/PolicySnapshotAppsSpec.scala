@@ -214,11 +214,9 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         rules = snap.profiles(kids).rules
       } yield assertTrue(!rules.extraAllowed.map(_.value).contains("noone.example.com")) &&
         assertTrue(!rules.extraBlocked.map(_.value).contains("noone.example.com")) &&
-        // Kids profile defaults preserved: extraAllowed carries only the #1307
-        // global infra allowlist, no app hosts leak in.
-        assertTrue(
-          rules.extraAllowed.map(_.value).toSet == PolicyService.infraAllowHosts.map(_.value).toSet,
-        )
+        // #1321: a profile with no app assignments now has an EMPTY per-profile
+        // extraAllowed — the infra allowlist no longer copies in (it rides global).
+        assertTrue(rules.extraAllowed.isEmpty)
     },
     // ── #1105: time_limited app with exemptFromDaily carves around @blocked_macs ──
     test(
@@ -406,14 +404,15 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(!eb.contains("mathacademy.com"))
     },
     test(
-      "#1307: global infra hosts are in every profile's extraAllowed, even when blocked=TimeLimit",
+      "#1321: infra hosts ride global.extraAllowed (not per-profile) under blocked=TimeLimit",
     ) {
       // Allowed-mode apps appeared blocked when the daily cap ran out because
       // the whole-MAC @blocked_macs drop killed transitive connectivity-check /
-      // OCSP / CDN dependencies. We ship a curated infra allowlist in every
-      // profile's extraAllowed (relying on the existing #421 ea_ enforcement)
-      // until the global policy layer (#1308) removes the per-profile copy. No
-      // snapshot-shape change: this stays functional, not policy-based (#1311).
+      // OCSP / CDN dependencies. The curated infra allowlist now ships ONCE via
+      // global.extraAllowed (#1321), which the router carves out of every drop
+      // for every MAC (#1319/#421) — so the host stays reachable while the
+      // per-profile extraAllowed no longer duplicates it. Functional, not
+      // policy-based (#1311); no snapshot-shape change.
       val mac = "aa:bb:cc:dd:ee:14"
       for {
         _    <- cleanDb
@@ -431,18 +430,26 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         snap <- svc.snapshot
         rules = snap.profiles(kid).rules
         ea    = rules.extraAllowed.map(_.value).toSet
+        ga    = snap.global.extraAllowed.map(_.value).toSet
       } yield assertTrue(rules.blocked) &&
         assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
-        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea)) &&
-        assertTrue(ea.contains("connectivitycheck.gstatic.com"))
+        // infra no longer copied into the per-profile list…
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.intersect(ea).isEmpty) &&
+        // …it lives in the global section, reachable for this (and every) MAC.
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ga)) &&
+        assertTrue(ga.contains("connectivitycheck.gstatic.com"))
     },
     test(
-      "#1418: HARD pause drops the allowed-app host AND infra hosts from extraAllowed",
+      "#1418/#1321: HARD pause empties per-profile extraAllowed; infra survives via global",
     ) {
-      // Hard pause is a true off-switch: unlike soft pause (#421/#1413), even
-      // an allowed-mode app and the #1307 global infra allowlist go dark. With
-      // no uiAllowedHosts configured here, extraAllowed must come back empty so
-      // the router drops the MAC unconditionally (no `ip daddr != @ea_…`).
+      // Hard pause is a true off-switch for per-profile carve-outs: unlike soft
+      // pause (#421/#1413), the allowed-mode app host is dropped from the
+      // profile's own extraAllowed, so the router drops the MAC unconditionally
+      // (no `ip daddr != @ea_…`). As of #1321 the curated infra allowlist no
+      // longer lives per-profile — it rides global.extraAllowed, which the router
+      // carves out of every drop (#1319). So a hard pause still cuts the kid off
+      // from real apps/sites while pure infra probes (OCSP / connectivity-check /
+      // gvt2) stay reachable fleet-wide, exactly like the deployment UI hosts.
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
@@ -458,17 +465,21 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         snap  <- svc.snapshot
         rules = snap.profiles(kid).rules
         ea    = rules.extraAllowed.map(_.value).toSet
+        ga    = snap.global.extraAllowed.map(_.value).toSet
       } yield assertTrue(rules.blocked) &&
         assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        // per-profile extraAllowed is empty — the app host AND infra are gone from it
         assertTrue(ea.isEmpty) &&
         assertTrue(!ea.contains("khanacademy.org")) &&
-        assertTrue(!ea.contains("connectivitycheck.gstatic.com"))
+        // but infra is still reachable globally (survives the hard pause)
+        assertTrue(ga.contains("connectivitycheck.gstatic.com"))
     },
     test(
-      "#1418: SOFT pause keeps the allowed-app host AND infra hosts (regression guard)",
+      "#1418/#1321: SOFT pause keeps the allowed-app host per-profile; infra rides global",
     ) {
       // The default, unchanged behavior: a soft-paused profile still spares its
-      // extraAllowed hosts (#421/#1413) and the curated infra allowlist (#1307).
+      // own extraAllowed hosts (#421/#1413). The curated infra allowlist now
+      // surfaces via global.extraAllowed (#1321) rather than the per-profile copy.
       for {
         _     <- cleanDb
         pr    <- ZIO.service[ProfileRepo]
@@ -484,20 +495,24 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         snap  <- svc.snapshot
         rules = snap.profiles(kid).rules
         ea    = rules.extraAllowed.map(_.value).toSet
+        ga    = snap.global.extraAllowed.map(_.value).toSet
       } yield assertTrue(rules.blocked) &&
         assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
         assertTrue(ea.contains("khanacademy.org")) &&
-        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ea))
+        // infra no longer copied per-profile; it is in the global section
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.intersect(ea).isEmpty) &&
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ga))
     },
     test(
       "#1418/#1318: HARD pause still spares the deployment uiAllowedHosts via global.extraAllowed",
     ) {
       // We deliberately keep the deployment UI hosts reachable through a hard
       // pause so the kid sees the block page and the admin SPA loads on the LAN —
-      // only the app/infra allowlists are cut. As of #1318 the UI hosts live in
-      // `global.extraAllowed` (not per-profile), and the router carves them out
-      // of every drop (#1319), so the per-profile `extraAllowed` is now empty
-      // while the global section carries exactly the UI hosts.
+      // only the per-profile app allowlist is cut. As of #1318 the UI hosts live
+      // in `global.extraAllowed` (not per-profile), and #1321 moves the curated
+      // infra allowlist there too; the router carves the global section out of
+      // every drop (#1319), so the per-profile `extraAllowed` is empty under a
+      // hard pause while the global section carries the UI hosts + infra.
       val uiHosts = List(Hostname.unsafe("blockpage.wifihaven.lan"))
       for {
         _     <- cleanDb
@@ -538,10 +553,12 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         ea    = rules.extraAllowed.map(_.value).toSet
         ga    = snap.global.extraAllowed.map(_.value).toSet
       } yield assertTrue(rules.blocked) &&
-        // per-profile extraAllowed is empty under hard pause (app/infra cut, UI relocated)
+        // per-profile extraAllowed is empty under hard pause (app cut, UI + infra relocated)
         assertTrue(ea.isEmpty) &&
-        // the deployment UI hosts survive via the fleet-wide global section
-        assertTrue(ga == Set("blockpage.wifihaven.lan")) &&
+        // the deployment UI hosts survive via the fleet-wide global section…
+        assertTrue(ga.contains("blockpage.wifihaven.lan")) &&
+        // …alongside the curated infra allowlist, which also now rides global
+        assertTrue(PolicyService.infraAllowHosts.map(_.value).toSet.subsetOf(ga)) &&
         assertTrue(!ea.contains("khanacademy.org")) &&
         assertTrue(!ea.contains("connectivitycheck.gstatic.com"))
     },

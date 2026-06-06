@@ -109,8 +109,8 @@ class PolicyServiceLive(
   // hosts, so they live in `global.extraAllowed` (carving out every block at the
   // router) rather than being copied into every profile's `extraAllowed`. The
   // DB-backed `global_allow` set is unioned with these per-deployment config
-  // hosts when assembling the global section. (The #1307 infra-allow copy is
-  // retired separately in #1321.)
+  // hosts when assembling the global section. (#1321 moved the curated
+  // `infraAllowHosts` onto the same global path, retiring its per-profile copy.)
   private val uiGlobalAllow: List[Hostname] = uiAllowedHosts
 
   // #1069/#1482: per-host /decision fallback must see the same schedule downtime as the snapshot —
@@ -235,11 +235,19 @@ class PolicyServiceLive(
         c -> Blocklist(version = version, url = BlocklistUrl.unsafe(s"/api/blocklists/${c.value}"))
       }.toMap
 
-      // #1318: union the per-deployment UI / block-page hosts into the DB-backed
-      // global allow set. These are the relocated `uiAllowedHosts` — fleet-wide
-      // always-reachable hosts that carve out every block at the router.
+      // #1318/#1321: union the fleet-wide always-reachable hosts into the
+      // DB-backed global allow set. Two relocated sources join `global_allow`:
+      //   - `uiGlobalAllow` — the per-deployment UI / block-page hosts (#1318).
+      //   - `infraAllowHosts` — the curated connectivity-check / OCSP / PKI /
+      //     captive-portal / gvt2 device-level deps (#1307), which #1321 stops
+      //     copying into every profile's `extraAllowed` and ships here ONCE.
+      // The router applies `global.extraAllowed` as the top of the precedence
+      // ladder (@global_allow, #1319), carving every drop out for every MAC — so
+      // these hosts beat every block path identically to the old per-(MAC) ea_
+      // copies, with no per-profile duplication and a single ETag-moving source.
       val globalRules = globalRaw.copy(
-        extraAllowed = (globalRaw.extraAllowed ++ uiGlobalAllow).distinct,
+        extraAllowed =
+          (globalRaw.extraAllowed ++ uiGlobalAllow ++ PolicyService.infraAllowHosts).distinct,
       )
 
       val core = SnapshotCore(globalRules, devicePolicies, profilePolicies, pBlocklists)
@@ -556,10 +564,12 @@ object PolicyService {
    * only spares each profile's explicit `extraAllowed` hosts, so without these an allowed app's
    * apex host resolves while its transitive dependencies are dropped and the app *appears* blocked.
    *
-   * We ship these by copying them into every profile's `extraAllowed`; the existing #421 ea_
-   * enforcement then makes them beat the block. This is deliberately functional, not a new snapshot
-   * field — the router needs the hosts, not the reason they're allowed (#1311). The global policy
-   * layer (#1308) will let us state this once instead of per-profile, removing the redundancy.
+   * #1321: these ship ONCE via `global.extraAllowed` (unioned in by `PolicyServiceLive.snapshot`),
+   * not copied into every profile. The router applies the global section as the top of its
+   * precedence ladder (@global_allow, #1319), carving every drop out for every MAC — so they still
+   * beat the block exactly as the old per-(MAC) ea_ copies did, now from a single fleet-wide source
+   * with no per-profile duplication. This stays deliberately functional, not a new snapshot field —
+   * the router needs the hosts, not the reason they're allowed (#1311).
    */
   val infraAllowHosts: List[Hostname] = List(
     "connectivitycheck.gstatic.com", // Android / Chrome connectivity probe
@@ -702,22 +712,24 @@ object PolicyService {
     // semantics it already applies to the per-profile own lists (see
     // feedback_extraallowed_beats_blocked).
     //
-    // #1307: the curated infra allowlist (connectivity-check / OCSP / CDN deps of
-    // an allowed app) is still copied per-profile here so it survives the
-    // whole-MAC block; #1321 retires this copy once the router consumes
-    // `global.extraAllowed`. The deployment UI hosts moved to the global section
-    // already (#1318), so they are no longer unioned here.
+    // #1321: the curated infra allowlist (connectivity-check / OCSP / CDN deps
+    // of an allowed app) is NO LONGER copied per-profile. It moved to
+    // `global.extraAllowed` (see `PolicyServiceLive.snapshot`), which the router
+    // carves out of every drop for every MAC (@global_allow, #1319) — so infra
+    // hosts still beat every block path, now from a single fleet-wide source
+    // instead of duplicated into each profile's `extraAllowed`. The deployment UI
+    // hosts moved to the global section earlier (#1318) for the same reason.
     //
-    // #1418: under a hard pause, drop even the app/exempt/infra carve-outs —
-    // per-profile `extraAllowed` goes empty. The deployment UI hosts (block page
-    // + admin SPA) still survive because they now live in `global.extraAllowed`,
-    // which the router applies as the top of the precedence ladder and carves out
-    // of every drop (#1319) — so a hard pause is a true off-switch for everything
-    // except the always-reachable global hosts, exactly as before #1318 (when the
-    // UI hosts were the per-profile carve-out the hard pause kept).
+    // #1418: under a hard pause, drop even the app/exempt carve-outs — per-profile
+    // `extraAllowed` goes empty so the router drops the MAC unconditionally (no
+    // `ip daddr != @ea_…`). The always-reachable global hosts (UI / block page +
+    // admin SPA, and now the infra allowlist) still survive because they live in
+    // `global.extraAllowed`, the top of the router's precedence ladder (#1319) —
+    // so a hard pause remains a true off-switch for every per-profile carve-out,
+    // sparing only the fleet-wide always-reachable set.
     val profileExtraAllowed =
       if (isHardPause) Nil
-      else (appExtraAllowed ++ appExemptAllowedHosts ++ infraAllowHosts).distinct
+      else (appExtraAllowed ++ appExemptAllowedHosts).distinct
 
     if (profile.defaultDeny)
       // #1318: default-deny baseline. Block-all with only the profile/device
