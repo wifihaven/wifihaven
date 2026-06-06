@@ -10,7 +10,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.test.*
 
-import java.time.{LocalDateTime, LocalTime, ZoneId}
+import java.time.{LocalDate, LocalDateTime, LocalTime, ZoneId, ZoneOffset}
 
 /**
  * #1069: the policy snapshot must fold a profile's *named* schedule (referenced via
@@ -102,6 +102,37 @@ object PolicySnapshotNamedScheduleSpec
       _   <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", pid)
     } yield (pid, sid)
 
+  // Set a 1-minute daily limit on the profile and accrue well past it, so the
+  // TimeLimit step (#3) would block on its own — used to prove Schedule (#2)
+  // wins. seedTraffic mirrors RouterDecisionSpec: 5-min traffic_reports buckets
+  // for 2025-01-06 (the TestClock fixture date).
+  private def seedDailyLimitExceeded(pid: ProfileId) =
+    for {
+      tlr <- ZIO.service[TimeLimitRepo]
+      rr  <- ZIO.service[RouterRepo]
+      tr  <- ZIO.service[TrafficReportRepo]
+      _   <- tlr.upsert(pid, 1)
+      rid <- rr.create("gw-seed", Sha256Hex.unsafe("n" * 64))
+      date    = LocalDate.of(2025, 1, 6)
+      day0    = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      inserts = (0 until 4).toList.map { i =>
+        val start = day0.plusSeconds(i * 300L)
+        TrafficReportInsert(
+          rid,
+          MacAddress.unsafe("aa:bb:cc:11:22:33"),
+          None,
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          date,
+          start,
+          start.plusSeconds(300),
+          300,
+          500_000L,
+          500_000L,
+        )
+      }
+      _ <- tr.insertBatch(inserts)
+    } yield ()
+
   def spec = suite("policy snapshot — named schedules (#1069)")(
     test("active named-schedule window (bedtime 21:30) → device blocked, reason=Schedule") {
       for {
@@ -137,6 +168,31 @@ object PolicySnapshotNamedScheduleSpec
         ps   <- makePsAt(TestClock.bedtime)
         snap <- ps.snapshot
       } yield assertTrue(blockedMacs(snap).isEmpty)
+    },
+    // #1494: an attached named schedule must win over an also-active daily
+    // TimeLimit — PolicyService precedence is Schedule (#2) > TimeLimit (#3).
+    // This is the snapshot-level counterpart to e2e §7, which writes the
+    // schedule through the same attach path (profile_schedule_rules).
+    test("active named schedule + exceeded daily limit → Schedule wins over TimeLimit") {
+      for {
+        _    <- cleanDb
+        pid  <- seedBedtimeNamedSchedule.map(_._1)
+        _    <- seedDailyLimitExceeded(pid)
+        ps   <- makePsAt(TestClock.bedtime)
+        snap <- ps.snapshot
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "Schedule"))
+    },
+    test("control: same exceeded limit, no active schedule → TimeLimit blocks") {
+      // Outside the bedtime window the schedule is inactive, so the same usage
+      // falls through to TimeLimit — confirming the limit really is hot and the
+      // test above isn't just measuring an absent TimeLimit.
+      for {
+        _    <- cleanDb
+        pid  <- seedBedtimeNamedSchedule.map(_._1)
+        _    <- seedDailyLimitExceeded(pid)
+        ps   <- makePsAt(TestClock.schoolDayAfternoon)
+        snap <- ps.snapshot
+      } yield assertTrue(blockedMacs(snap) == List("aa:bb:cc:11:22:33" -> "TimeLimit"))
     },
     test("no schedule reference → never blocked by schedule") {
       for {

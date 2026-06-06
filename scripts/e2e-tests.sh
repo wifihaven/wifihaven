@@ -63,7 +63,7 @@ pass "profiles list returned $(wc -c <"$TMP/profiles.json") bytes"
 step "Create a profile"
 CREATE=$(curl -fsS -X POST "$BASE/api/profiles" \
   "${AUTH[@]}" -H 'content-type: application/json' \
-  -d "{\"name\":\"$PROFILE_NAME\",\"blockedCategories\":[\"adult\"],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}")
+  -d "{\"name\":\"$PROFILE_NAME\",\"blockedCategories\":[\"adult\"],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"timeLimit\":null,\"siteTimeLimits\":[]}")
 PID=$(echo "$CREATE" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
 [ -n "$PID" ] || fail "no profile id in create response: $CREATE"
 pass "created profile id=$PID name=$PROFILE_NAME"
