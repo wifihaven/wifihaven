@@ -677,7 +677,10 @@ export interface UpsertProfileRequest {
   name: string
   blockedCategories: string[]
   paused: boolean
-  schedules: ScheduleRequest[]
+  // #1494: schedules are NOT carried here. A profile's block schedules are
+  // #1069 household named schedules attached via PUT /api/profiles/{id}/schedules
+  // (SetProfileSchedulesRequest -> profile_schedule_rules), which enforcement
+  // reads (#1482/#1490). The old inline array wrote the dead V1 schedules table.
   timeLimit: number | null
   failureMode: FailureMode
   // #751: omit to preserve existing value on update; defaults to 'sum' on create.

@@ -154,6 +154,11 @@ export const api = {
     update: (id: number, data: UpsertProfileRequest) =>
       req<void>('PUT', `/profiles/${id}`, data),
     delete: (id: number) => req<void>('DELETE', `/profiles/${id}`),
+    // #1494 / #1069 — replace the set of #1069 household named schedules
+    // attached to this profile as BLOCK schedules (downtime while active).
+    // Writes profile_schedule_rules; enforcement reads it (#1490).
+    setSchedules: (id: number, scheduleIds: number[]) =>
+      req<void>('PUT', `/profiles/${id}/schedules`, { scheduleIds }),
     getUsers: (id: number) => req<User[]>('GET', `/profiles/${id}/users`),
     setUsers: (id: number, userIds: number[]) =>
       req<void>('PUT', `/profiles/${id}/users`, { userIds }),
