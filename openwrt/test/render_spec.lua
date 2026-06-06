@@ -72,6 +72,20 @@ describe("render.dnsmasq", function()
       1, true))
   end)
 
+  -- #1529: the iMessage app template ships a single suffix host `ess.apple.com`.
+  -- dnsmasq's nftset=/ess.apple.com/ directive is suffix-matching, so it covers
+  -- the observed iMessage edge subdomains (query.ess.apple.com,
+  -- identity.ess.apple.com, kt-prod.ess.apple.com) without enumerating each.
+  -- This is the mechanism that lets a multi-host app target a wildcard edge.
+  it("emits suffix-matching nftset=/ess.apple.com/... for the iMessage edge host (#1529)", function()
+    local s = snap_one()
+    s.profiles["3"].rules.extraBlocked = { "ess.apple.com" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=/ess.apple.com/4#inet#wifihaven#eb_ess_apple_com,6#inet#wifihaven#eb6_ess_apple_com",
+      1, true))
+  end)
+
   it("does NOT emit nftset= for extraAllowed hosts when extraAllowed is empty", function()
     -- snap_one has extraAllowed = {} so no ea_ nftsets / eatag should appear.
     local conf = render.dnsmasq(snap_one())

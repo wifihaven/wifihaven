@@ -102,6 +102,7 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           "khan-academy",
           "math-academy",
           "lexia",
+          "imessage",
         )
         val slugs    = templates.map(_.slug.value).toSet
         assertTrue(slugs == expected) &&
@@ -168,6 +169,24 @@ object AppTemplatesSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         val hosts  = gimkit.hosts.map(_.value).toSet
         assertTrue(hosts.contains("gimkit.com")) &&
         assertTrue(hosts.contains("gimkitconnect.com"))
+      }
+    },
+    test("imessage template targets the iMessage edge and excludes shared APNs hosts (#1529)") {
+      // iMessage rides shared Apple infra, so a clean block isn't possible via
+      // host-set alone (APNs multiplexing + 17.0.0.0/8 IP traffic). The default
+      // set is the iMessage-specific service edge `ess.apple.com` (suffix-matched
+      // by dnsmasq's nftset=, covering the observed query/identity/kt-prod
+      // subdomains). It must NOT contain push.apple.com / courier hosts —
+      // blocking those breaks ALL Apple push notifications system-wide.
+      for {
+        templates <- AppTemplates.loadAll()
+      } yield {
+        val imessage = templates.find(_.slug == AppTemplateId.unsafe("imessage")).get
+        val hosts    = imessage.hosts.map(_.value).toSet
+        assertTrue(imessage.name == "iMessage") &&
+        assertTrue(hosts.contains("ess.apple.com")) &&
+        assertTrue(hosts.forall(h => !h.contains("push.apple.com"))) &&
+        assertTrue(hosts.forall(h => !h.contains("courier")))
       }
     },
     test("each template's hosts parse as apex hostnames") {

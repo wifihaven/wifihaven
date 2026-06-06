@@ -1,0 +1,27 @@
+slug: imessage
+name: iMessage
+# Emoji fallback: 💬
+icon: "https://icons.duckduckgo.com/ip3/apple.com.ico"
+icon_type: url
+# iMessage rides shared Apple infrastructure, so a fully clean block is NOT
+# possible via a host-set alone — be honest with the operator about this:
+#
+#   * Delivery happens over APNs (push.apple.com / N-courier.push.apple.com,
+#     TCP 5223). APNs is the SAME channel for every Apple push notification
+#     (all apps, FaceTime, Find My), so blocking it breaks notifications
+#     system-wide. It is deliberately EXCLUDED from this set. (Validated
+#     against prod traffic_reports: the courier.push.apple.com hosts are by
+#     far the highest-volume Apple traffic on real devices — collateral if
+#     blocked, #1529.)
+#   * Much of iMessage's transport is IP-based within Apple's 17.0.0.0/8,
+#     which a hostname set can't see; pair with blockIpOnly (#574/#384) to
+#     constrain hard-coded-IP / DoH bypass.
+#
+# So the default target is the iMessage-specific service edge only:
+# `ess.apple.com`. dnsmasq's nftset= directive is suffix-matching, so this one
+# entry covers the iMessage edge subdomains observed on real devices
+# (query.ess.apple.com, identity.ess.apple.com, kt-prod.ess.apple.com — #1529).
+# Blocking it disrupts iMessage activation and send/receive, but may not stop
+# delivery of an already-established session that is still riding APNs.
+hosts:
+  - ess.apple.com
