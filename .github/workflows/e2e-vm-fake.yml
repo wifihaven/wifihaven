@@ -64,9 +64,13 @@ jobs:
       || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, kvm]
     # Local wall time for the full fake-mode pack is ~15–20m (per #685
-    # validation: ipk arm green 3x at 18m avg). 30m covers a cold image
-    # build on the runner plus headroom.
-    timeout-minutes: 30
+    # validation: ipk arm green 3x at 18m avg). Bumped from 30→40m after
+    # run 27045183975 timed out the ipk arm at exactly 30m while the apk
+    # arm finished at 28m26s — the cold-image-build + shared-host load on
+    # api.lan now eats most of the headroom, so 30m no longer covers the
+    # tail. 40m re-establishes the safety margin without masking a real
+    # regression in the scenario pack itself.
+    timeout-minutes: 40
     # #685: matrix over ipk-23.05 and apk-25.12 router images. fail-fast=false
     # so a regression in one flavor still reports the other arm's status
     # (needed to surface apk-only regressions like the #531 history case).

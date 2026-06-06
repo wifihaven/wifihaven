@@ -364,6 +364,20 @@ trait GlobalPolicyRepo {
 
   /** Set the flat global flags (network lockdown + strict-IP floor). */
   def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit]
+
+  /**
+   * Full audit history (active + soft-deleted) of the always-reachable allow set, newest first.
+   * Unlike [[get]], this surfaces the `reason` / `added_by` / `removed_by` columns (resolved to
+   * usernames) so the #1320 SPA can render the security-sensitive bypass-list audit trail. The
+   * active set (rows with `removedAt == None`) is exactly what [[get]] puts on the wire.
+   */
+  def allowAudit: Task[List[GlobalPolicyAuditEntry]]
+
+  /** Full audit history (active + soft-deleted) of the network-wide block set, newest first. */
+  def blockAudit: Task[List[GlobalPolicyAuditEntry]]
+
+  /** Replace the household-global category set (`global.blocklistIds`) wholesale. */
+  def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit]
 }
 
 /**
@@ -382,6 +396,9 @@ object NoopGlobalPolicyRepo extends GlobalPolicyRepo {
   def addBlocklist(id: BlocklistId, addedBy: Option[Long]): Task[Unit]                    = ZIO.unit
   def setFlags(blocked: Boolean, reason: Option[MacBlockReason], blockIpOnly: Boolean): Task[Unit] =
     ZIO.unit
+  def allowAudit: Task[List[GlobalPolicyAuditEntry]]                           = ZIO.succeed(Nil)
+  def blockAudit: Task[List[GlobalPolicyAuditEntry]]                           = ZIO.succeed(Nil)
+  def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit] = ZIO.unit
 }
 
 trait TimeUsageRepo {
@@ -889,26 +906,28 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
       sql"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
                  heartbeat_host_patterns,
-                 unmanaged_mac_policy::text
+                 unmanaged_mac_policy::text,
+                 presence_continuation_seconds
             FROM household_settings WHERE id=1"""
-        .query[(LocalTime, ZoneId, Boolean, Int, List[String], String)]
+        .query[(LocalTime, ZoneId, Boolean, Int, List[String], String, Int)]
         .unique
-        .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson) =>
+        .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson, presenceCont) =>
           val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
-          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm)
+          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm, presenceCont)
         }
         .transact(xa),
     )
 
   def update(s: HouseholdSettings): Task[Unit] = {
     val ummJson    = s.unmanagedMacPolicy.toJson
-    // #1160: invalidate the time-used rollup atomically with the settings
-    // update. Any change to the daily-reset boundary (tz / reset hour) or the
-    // heartbeat filter changes the active-minute definition for every cached
-    // day; deleting the cache forces the next rollup tick to refill from
-    // first principles. The DELETE is wholesale because all three fields gate
-    // the same aggregation — fine-grained invalidation would only add risk of
-    // missing a code path that mutates the filter.
+    // #1160 / #1464: invalidate the time-used rollup atomically with the
+    // settings update. Any change to the daily-reset boundary (tz / reset hour),
+    // the heartbeat filter, or the presence session-stitch knob
+    // (`presence_continuation_seconds`) changes the active-minute definition for
+    // every cached day; deleting the cache forces the next rollup tick to refill
+    // from first principles. The DELETE is wholesale because all of these fields
+    // gate the same aggregation — fine-grained invalidation would only add risk
+    // of missing a code path that mutates one of them.
     val upd        =
       sql"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
@@ -917,6 +936,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
                   heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
                   unmanaged_mac_policy=${ummJson}::jsonb,
+                  presence_continuation_seconds=${s.presenceContinuationSeconds},
                   updated_at=NOW()
             WHERE id=1""".update.run
     val invalidate = sql"DELETE FROM time_used_daily".update.run
@@ -1006,6 +1026,40 @@ class GlobalPolicyRepoLive(xa: Transactor[Task]) extends GlobalPolicyRepo {
                 global_block_reason=${reason.map(MacBlockReason.asString)},
                 global_block_ip_only=$blockIpOnly
           WHERE id=1""".update.run.transact(xa).unit
+
+  private def audit(table: doobie.Fragment): Task[List[GlobalPolicyAuditEntry]] =
+    (fr"""SELECT g.host, g.reason, ua.username, g.added_at::TEXT, ur.username, g.removed_at::TEXT
+          FROM""" ++ table ++ fr"""g
+          LEFT JOIN users ua ON ua.id = g.added_by
+          LEFT JOIN users ur ON ur.id = g.removed_by
+          ORDER BY g.added_at DESC, g.id DESC""")
+      .query[(String, Option[String], Option[String], String, Option[String], Option[String])]
+      .to[List]
+      .map(_.map { case (host, reason, addedBy, addedAt, removedBy, removedAt) =>
+        GlobalPolicyAuditEntry(
+          Hostname.unsafe(host),
+          reason,
+          addedBy,
+          addedAt,
+          removedBy,
+          removedAt,
+        )
+      })
+      .transact(xa)
+
+  def allowAudit: Task[List[GlobalPolicyAuditEntry]] =
+    DbMetrics.timed("globalPolicy.allowAudit")(audit(fr"global_allow"))
+
+  def blockAudit: Task[List[GlobalPolicyAuditEntry]] =
+    DbMetrics.timed("globalPolicy.blockAudit")(audit(fr"global_blocks"))
+
+  def setBlocklists(ids: List[BlocklistId], addedBy: Option[Long]): Task[Unit] = {
+    val del = sql"DELETE FROM global_blocklists".update.run
+    val ins = ids.map(id => sql"""INSERT INTO global_blocklists (blocklist_id, added_by)
+                                  VALUES (${id.value}, $addedBy)
+                                  ON CONFLICT (blocklist_id) DO NOTHING""".update.run)
+    (del *> ins.foldLeft(FC.unit)(_ *> _.void)).transact(xa).unit
+  }
 }
 
 class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
@@ -2853,6 +2907,34 @@ trait AppRepo {
   def deleteAssignment(appId: AppId, profileId: ProfileId): Task[Unit]
   def listAssignmentsForApp(appId: AppId): Task[List[AppPolicyAssignment]]
   def listAssignmentsForProfile(profileId: ProfileId): Task[List[AppPolicyAssignment]]
+
+  // ── #1379: per-app schedule rules (`app_policy_schedule_rules`, V51) ──────
+
+  /**
+   * Replace the full set of schedule rules on an assignment with exactly `rules` (de-duped on
+   * (scheduleId, mode)). Replace semantics, mirroring [[setHosts]] — an empty list clears them.
+   */
+  def setScheduleRules(
+      assignmentId: AppPolicyAssignmentId,
+      rules: List[(NamedScheduleId, AppScheduleMode)],
+  ): Task[Unit]
+
+  /** The schedule rules attached to a single assignment (no window resolution). */
+  def scheduleRulesForAssignment(
+      assignmentId: AppPolicyAssignmentId,
+  ): Task[List[AppScheduleRule]]
+
+  /**
+   * For every assignment under `profileId`, the flattened (mode, window) pairs of its schedule
+   * rules — each rule's referenced #1069 named schedule resolved to its `schedule_windows` rows.
+   * PolicyService folds these into the per-app effective disposition (design §4.1): an
+   * `allowed_during` / `blocked_during` rule is "active at now" iff ANY of its windows is, so the
+   * per-rule grouping is irrelevant and we flatten to (mode, window) pairs per assignment.
+   * Assignments with no rules are absent from the map.
+   */
+  def appScheduleWindowsForProfile(
+      profileId: ProfileId,
+  ): Task[Map[AppPolicyAssignmentId, List[(AppScheduleMode, ScheduleWindow)]]]
 }
 
 class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
@@ -2992,6 +3074,46 @@ class AppRepoLive(xa: Transactor[Task]) extends AppRepo {
         .to[List]
         .transact(xa),
     )
+
+  // ── #1379: per-app schedule rules ─────────────────────────────────────────
+
+  def setScheduleRules(
+      assignmentId: AppPolicyAssignmentId,
+      rules: List[(NamedScheduleId, AppScheduleMode)],
+  ) = {
+    val del =
+      sql"DELETE FROM app_policy_schedule_rules WHERE assignment_id=$assignmentId".update.run
+    val ins = rules.distinct.foldLeft(FC.unit) { case (acc, (sid, mode)) =>
+      acc *> sql"""INSERT INTO app_policy_schedule_rules(assignment_id, schedule_id, mode)
+                   VALUES($assignmentId, $sid, ${AppScheduleMode.asString(mode)})
+                   ON CONFLICT (assignment_id, schedule_id, mode) DO NOTHING""".update.run.void
+    }
+    (del *> ins).transact(xa).unit
+  }
+
+  def scheduleRulesForAssignment(assignmentId: AppPolicyAssignmentId) =
+    sql"""SELECT id, assignment_id, schedule_id, mode
+          FROM app_policy_schedule_rules WHERE assignment_id=$assignmentId ORDER BY id"""
+      .query[(AppScheduleRuleId, AppPolicyAssignmentId, NamedScheduleId, AppScheduleMode)]
+      .map { case (id, aid, sid, mode) => AppScheduleRule(sid, mode, id, aid) }
+      .to[List]
+      .transact(xa)
+
+  // Resolve each assignment's rules to flattened (mode, window) pairs in one join:
+  // app_policy_schedule_rules -> assignment (for the profile filter) -> schedule_windows.
+  def appScheduleWindowsForProfile(profileId: ProfileId) =
+    sql"""SELECT apsr.assignment_id, apsr.mode, sw.days, sw.start_local, sw.end_local, sw.tz
+          FROM app_policy_schedule_rules apsr
+          JOIN app_policy_assignments apa ON apa.id = apsr.assignment_id
+          JOIN schedule_windows sw        ON sw.schedule_id = apsr.schedule_id
+          WHERE apa.profile_id = $profileId
+          ORDER BY apsr.assignment_id, apsr.id, sw.id"""
+      .query[(AppPolicyAssignmentId, AppScheduleMode, List[String], LocalTime, LocalTime, ZoneId)]
+      .to[List]
+      .transact(xa)
+      .map(_.groupBy(_._1).map { case (aid, rows) =>
+        aid -> rows.map(r => (r._2, ScheduleWindow(r._3, r._4, r._5, r._6)))
+      })
 }
 
 class NamedScheduleRepoLive(xa: Transactor[Task]) extends NamedScheduleRepo {

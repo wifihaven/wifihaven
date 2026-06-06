@@ -2,33 +2,31 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { useProfiles, useDevices, useInvalidators, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
+import { useBlocklists, useProfiles, useDevices, useInvalidators, useNamedSchedules, useProfileUsageByApp, useTimeStatusSummary } from '@/api/queries'
 import { useAuth } from '@/hooks/useAuth'
 import { useDebouncedSave, type SaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
+import { SchedulePicker } from '@/components/SchedulePicker'
 import type {
-  AppDetail, AppMode, AppPolicyAssignment,
-  CrossDeviceOverlapMode, Device, FailureMode, HouseholdSettings, PauseMode, ProfileDetail,
+  AppDetail, AppMode, AppPolicyAssignment, AppScheduleMode, AppScheduleRule,
+  CrossDeviceOverlapMode, Device, FailureMode, PauseMode, ProfileDetail,
   ProfileTimeSummary,
-  ScheduleRequest, UpsertProfileRequest, User,
+  UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
-import { TimezonePicker, browserTimezone } from '@/components/TimezonePicker'
 import { AppIcon } from '@/components/AppIcon'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
 import { EmptyState } from '@/components/EmptyState'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
 
-const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
-
 interface FormState {
   name: string
   blockedCategories: string[]
   paused: boolean
   timeLimit: string
-  schedules: ScheduleRequest[]
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
+  defaultDeny: boolean
 }
 
 function detailToForm(pd: ProfileDetail): FormState {
@@ -37,14 +35,15 @@ function detailToForm(pd: ProfileDetail): FormState {
     blockedCategories: pd.profile.blockedCategories,
     paused: pd.profile.paused,
     timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
-    schedules: pd.schedules.map(s => ({
-      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-    })),
     failureMode: pd.profile.failureMode,
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
+    defaultDeny: pd.profile.defaultDeny,
   }
 }
 
+// #1494: schedules are no longer carried on the profile upsert — they attach
+// via api.profiles.setSchedules (PUT /profiles/{id}/schedules). So the
+// full-profile PUT this builds never touches schedules.
 function formToRequest(f: FormState): UpsertProfileRequest {
   const tl = f.timeLimit.trim() === '' ? null : Number(f.timeLimit)
   return {
@@ -52,9 +51,9 @@ function formToRequest(f: FormState): UpsertProfileRequest {
     blockedCategories: f.blockedCategories,
     paused: f.paused,
     timeLimit: tl !== null && Number.isFinite(tl) ? tl : null,
-    schedules: f.schedules,
     failureMode: f.failureMode,
     crossDeviceOverlapMode: f.crossDeviceOverlapMode,
+    defaultDeny: f.defaultDeny,
   }
 }
 
@@ -155,7 +154,6 @@ export function ProfilesPage() {
   // unrelated profiles.
   const [pendingUserLinks, setPendingUserLinks] = useState<Set<string>>(new Set())
   const [userLinkErrorByProfile, setUserLinkErrorByProfile] = useState<Map<number, string>>(new Map())
-  const [household, setHousehold] = useState<HouseholdSettings | null>(null)
   const [apps, setApps] = useState<AppDetail[]>([])
   // #972 — collapse-by-default; toggle state lives in-memory only. Persistence
   // across reloads is a deferred enhancement; the design doc calls this out.
@@ -234,13 +232,11 @@ export function ProfilesPage() {
     // #978 — the old modal pulled the blocklist category list for its picker;
     // the inline app-policy subsection owns that surface now, so we don't need
     // to fan out to /blocklists here anymore.
-    const [users, hs, appsList] = await Promise.all([
+    const [users, appsList] = await Promise.all([
       isAdmin ? api.users.list().catch(() => [] as User[]) : Promise.resolve([] as User[]),
-      api.household.get().catch(() => null),
       api.apps.list().catch(() => [] as AppDetail[]),
     ])
     setAllUsers(users)
-    setHousehold(hs)
     setApps([...appsList].sort((a, b) => a.app.name.localeCompare(b.app.name)))
   }
 
@@ -303,7 +299,6 @@ export function ProfilesPage() {
         blockedCategories: [],
         paused: false,
         timeLimit: null,
-        schedules: [],
         failureMode: 'last-known-good',
         crossDeviceOverlapMode: 'sum',
       })
@@ -326,12 +321,16 @@ export function ProfilesPage() {
     onSuccess: () => Promise.all([invalidators.profiles(), refetchAux()]),
   })
 
-  async function togglePause(pd: ProfileDetail) {
+  async function togglePause(pd: ProfileDetail, mode?: PauseMode) {
     // #406: setting `paused` explicitly via the full-profile PUT is
     // idempotent under concurrent clicks. #423 tracks adding PATCH so we
     // don't have to send the whole profile.
+    // #1471: when pausing, the admin picks soft vs hard at click-time; the
+    // chosen mode rides this same PUT. Resume omits it (preserve existing).
     const body = formToRequest(detailToForm(pd))
-    body.paused = !pd.profile.paused
+    const nextPaused = !pd.profile.paused
+    body.paused = nextPaused
+    if (nextPaused && mode) body.pauseMode = mode
     await updateMutation.mutateAsync({ id: pd.profile.id, body })
   }
 
@@ -471,10 +470,9 @@ export function ProfilesPage() {
             isAdmin={isAdmin}
             expanded={expanded.has(pd.profile.id)}
             highlight={highlightId === pd.profile.id}
-            defaultTz={household?.dailyResetTz ?? browserTimezone()}
             onToggle={() => toggleExpanded(pd.profile.id)}
             onDelete={() => del(pd.profile.id, pd.profile.name)}
-            onTogglePause={() => togglePause(pd)}
+            onTogglePause={(mode) => togglePause(pd, mode)}
             onGrantTime={() => setExtProfileId(pd.profile.id)}
             onAppsChanged={reloadApps}
             onProfileChanged={() => invalidators.profileMutated()}
@@ -556,7 +554,7 @@ export function ProfilesPage() {
 // Expanded body holds the inline subsections (#973-#977) that replaced the
 // old per-profile modal, plus the read-only devices listing.
 function ProfileShellRow({
-  pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight, defaultTz,
+  pd, summary, devices, allDevices, users, apps, allUsers, isAdmin, expanded, highlight,
   onToggle, onDelete, onTogglePause, onGrantTime,
   onAppsChanged, onProfileChanged, updateProfile,
   onToggleUserLink, pendingUserLinks, userLinkError,
@@ -571,10 +569,9 @@ function ProfileShellRow({
   isAdmin: boolean
   expanded: boolean
   highlight: boolean
-  defaultTz: string
   onToggle: () => void
   onDelete: () => void
-  onTogglePause: () => void
+  onTogglePause: (mode?: PauseMode) => void
   onGrantTime: () => void
   onAppsChanged: () => void | Promise<void>
   onProfileChanged: () => void | Promise<unknown>
@@ -610,9 +607,6 @@ function ProfileShellRow({
         blockedCategories: pd.profile.blockedCategories,
         paused: pd.profile.paused,
         timeLimit: pd.timeLimit ? pd.timeLimit.dailyMinutes : null,
-        schedules: pd.schedules.map(s => ({
-          name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-        })),
         failureMode: pd.profile.failureMode,
         crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
       })
@@ -620,6 +614,27 @@ function ProfileShellRow({
     },
     { key: pd.profile.id },
   )
+
+  // #1471 — soft/hard pause is chosen at click-time via a small picker on the
+  // Pause action (resume stays a single click). Close it on outside-click or
+  // Escape so it behaves like a normal popover menu.
+  const [pausePickerOpen, setPausePickerOpen] = useState(false)
+  const pausePickerRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!pausePickerOpen) return
+    const onDocClick = (e: MouseEvent) => {
+      if (pausePickerRef.current && !pausePickerRef.current.contains(e.target as Node)) {
+        setPausePickerOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPausePickerOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [pausePickerOpen])
 
   return (
     <div
@@ -718,20 +733,61 @@ function ProfileShellRow({
               busywork. Icon-only Pause (chip already says Paused/Active);
               Delete is muted + far right so it's hard to mis-click. */}
           {isAdmin && (
-            <button
-              type="button"
-              onClick={onTogglePause}
-              data-testid={`profile-row-pause-${pd.profile.id}`}
-              aria-label={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
-              title={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
-              className={`text-xs px-2 py-1.5 rounded-lg border transition-colors ${
-                pd.profile.paused
-                  ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
-                  : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
-              }`}
-            >
-              {pd.profile.paused ? '▶' : '⏸'}
-            </button>
+            <div className="relative" ref={pausePickerRef}>
+              <button
+                type="button"
+                // #1471 — Resume is a single click; Pause opens the soft/hard
+                // picker so the mode is chosen at the moment of pausing.
+                onClick={() => {
+                  if (pd.profile.paused) onTogglePause()
+                  else setPausePickerOpen(o => !o)
+                }}
+                data-testid={`profile-row-pause-${pd.profile.id}`}
+                aria-label={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
+                aria-haspopup={pd.profile.paused ? undefined : 'menu'}
+                aria-expanded={pd.profile.paused ? undefined : pausePickerOpen}
+                title={pd.profile.paused ? 'Resume profile' : 'Pause profile'}
+                className={`text-xs px-2 py-1.5 rounded-lg border transition-colors ${
+                  pd.profile.paused
+                    ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent-dark/20'
+                    : 'bg-amber-500/10 text-amber-700 border-amber-500/20 hover:bg-amber-500/20'
+                }`}
+              >
+                {pd.profile.paused ? '▶' : '⏸'}
+              </button>
+              {!pd.profile.paused && pausePickerOpen && (
+                <div
+                  role="menu"
+                  data-testid={`profile-row-pause-menu-${pd.profile.id}`}
+                  className="absolute right-0 top-full mt-1 z-20 w-56 bg-white rounded-xl border border-brand-border-strong shadow-lg p-1"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setPausePickerOpen(false); onTogglePause('soft') }}
+                    data-testid={`profile-row-pause-soft-${pd.profile.id}`}
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-brand-alt transition-colors"
+                  >
+                    <span className="block text-sm font-medium text-brand-ink">Soft pause</span>
+                    <span className="block text-xs text-brand-text-muted">
+                      Block the internet but keep allowed apps + the block page reachable.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setPausePickerOpen(false); onTogglePause('hard') }}
+                    data-testid={`profile-row-pause-hard-${pd.profile.id}`}
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-brand-alt transition-colors"
+                  >
+                    <span className="block text-sm font-medium text-brand-ink">Hard pause</span>
+                    <span className="block text-xs text-brand-text-muted">
+                      Cut everything; only the block page stays reachable.
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           )}
           {isAdmin && (
             <button
@@ -755,6 +811,20 @@ function ProfileShellRow({
               own. Read-only; lives above the edit subsections. */}
           <ProfileTimelineChart profileId={pd.profile.id} />
 
+          {/* #1320 — per-profile default-deny baseline. Block-all; only the
+              profile's allowed apps/hosts + the household global allowlist are
+              reachable. The inverse of allow-by-default + blocklists. #1472 —
+              hoisted to the top of the expanded view: default-deny is the
+              profile's most fundamental posture, so it reads first, before
+              devices / categories / apps. */}
+          {isAdmin && (
+            <DefaultDenySubsection
+              pd={pd}
+              updateProfile={updateProfile}
+              onProfileChanged={onProfileChanged}
+            />
+          )}
+
           {/* #973: inline devices subsection. Name is edited inline in the
               card header above (no redundant collapsible). Devices autosave
               per-row via PATCH /devices. Post-#978 the Edit-modal escape
@@ -765,15 +835,27 @@ function ProfileShellRow({
           {isAdmin && (
             <DevicesSubsection pd={pd} assigned={devices} allDevices={allDevices} />
           )}
-          {pd.profile.blockedCategories.length > 0 && (
-            <div>
-              <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
-              <div className="flex flex-wrap gap-2">
-                {pd.profile.blockedCategories.map(c => (
-                  <span key={c} className="text-xs bg-red-500/10 text-red-700 px-2 py-1 rounded-lg font-mono">{c}</span>
-                ))}
+          {/* #1473 — blocked categories are edited inline here (admins),
+              replacing the read-only chips. Toggling a category autosaves
+              blockedCategories via the same full-profile PUT the Blocklists
+              matrix uses. Non-admins keep the read-only chips below. */}
+          {isAdmin ? (
+            <CategoriesSubsection
+              pd={pd}
+              updateProfile={updateProfile}
+              onProfileChanged={onProfileChanged}
+            />
+          ) : (
+            pd.profile.blockedCategories.length > 0 && (
+              <div>
+                <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
+                <div className="flex flex-wrap gap-2">
+                  {pd.profile.blockedCategories.map(c => (
+                    <span key={c} className="text-xs bg-red-500/10 text-red-700 px-2 py-1 rounded-lg font-mono">{c}</span>
+                  ))}
+                </div>
               </div>
-            </div>
+            )
           )}
 
           {/* #976: apps subsection — inline app-policy editor. Post-#764 the
@@ -790,9 +872,13 @@ function ProfileShellRow({
           )}
 
           {/* #975 — inline time-limit + cross-device overlap subsection.
-              Replaces the modal's daily-cap + schedules + overlap blocks for
-              this profile. */}
-          <TimeSubsection pd={pd} isAdmin={isAdmin} defaultTz={defaultTz} />
+              Replaces the modal's daily-cap + overlap blocks for this profile.
+              Schedules split into their own sibling subsection (#1474). */}
+          <TimeSubsection pd={pd} isAdmin={isAdmin} />
+
+          {/* #1474 — schedules subsection (bedtime/windows), split out of the
+              Time-limits expander into its own top-level disclosure. */}
+          <ScheduleSubsection pd={pd} isAdmin={isAdmin} />
 
           {/* #973: read-only Devices listing for non-admins. Admins get the
               editable DevicesSubsection above; keeping a second copy here for
@@ -877,51 +963,204 @@ function ProfileShellRow({
 // #423; this component swaps to it without UI changes when it ships).
 //
 // Subsection is collapsed-by-default. Collapsed header carries the at-a-
-// glance summary: "Daily limit: X min" + one row per schedule. Expanded body
-// holds the editable inputs (daily cap, schedules editor, overlap radios).
+// glance summary: "Daily limit: X min" + the cross-device overlap mode.
+// Expanded body holds the editable inputs (daily cap, overlap radios, pause
+// mode). Schedules used to live here too, but #1474 split them out into the
+// sibling ScheduleSubsection below — this component no longer touches them.
 // SaveStatus comes from the shared useDebouncedSave hook; SaveStatusBadge is
 // the shared component in components/SaveStatusBadge.tsx (#973, #995).
 
 interface TimeFormState {
   timeLimit: string
-  schedules: ScheduleRequest[]
   crossDeviceOverlapMode: CrossDeviceOverlapMode
-  pauseMode: PauseMode
 }
 
 function timeFormFromDetail(pd: ProfileDetail): TimeFormState {
   return {
     timeLimit: pd.timeLimit ? String(pd.timeLimit.dailyMinutes) : '',
-    schedules: pd.schedules.map(s => ({
-      name: s.name, days: s.days, startLocal: s.startLocal, endLocal: s.endLocal, tz: s.tz,
-    })),
     crossDeviceOverlapMode: pd.profile.crossDeviceOverlapMode,
-    pauseMode: pd.profile.pauseMode,
   }
 }
 
 function timeFormsEqual(a: TimeFormState, b: TimeFormState): boolean {
   if (a.timeLimit !== b.timeLimit) return false
   if (a.crossDeviceOverlapMode !== b.crossDeviceOverlapMode) return false
-  if (a.pauseMode !== b.pauseMode) return false
-  if (a.schedules.length !== b.schedules.length) return false
-  for (let i = 0; i < a.schedules.length; i++) {
-    const x = a.schedules[i]
-    const y = b.schedules[i]
-    if (x.name !== y.name || x.startLocal !== y.startLocal ||
-        x.endLocal !== y.endLocal || x.tz !== y.tz) return false
-    if (x.days.length !== y.days.length) return false
-    for (let j = 0; j < x.days.length; j++) if (x.days[j] !== y.days[j]) return false
-  }
   return true
 }
 
+// #1320 — per-profile default-deny toggle. Flips the whole profile to a
+// block-all baseline (only its allowed apps/hosts + the household global
+// allowlist stay reachable). Persists via the existing full-profile PUT —
+// formToRequest carries defaultDeny — so it composes with every other field.
+// #1473 — inline blocked-categories editor. Fetches the blocklist catalog
+// (the same `GET /api/blocklists` the Blocklists matrix page uses) and renders
+// a checklist; toggling a category writes blockedCategories via the
+// full-profile PUT. Admin-only — the catalog endpoint requires admin, and this
+// is the editing surface (non-admins fall back to the read-only chips).
+function CategoriesSubsection({
+  pd, updateProfile, onProfileChanged,
+}: {
+  pd: ProfileDetail
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onProfileChanged: () => void | Promise<unknown>
+}) {
+  // Catalog comes from the shared react-query cache (GET /api/blocklists), so
+  // all profile cards reuse one fetch rather than each firing its own.
+  const blocklistsQuery = useBlocklists()
+  const lists = blocklistsQuery.data ?? []
+  const loading = blocklistsQuery.isPending
+  const loadError = blocklistsQuery.isError
+    ? (blocklistsQuery.error instanceof Error ? blocklistsQuery.error.message : 'failed to load categories')
+    : null
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const error = saveError ?? loadError
+
+  const selected = pd.profile.blockedCategories
+
+  // Bundled first (alphabetical), then operator/test lists — matches the
+  // Blocklists matrix ordering so the two surfaces read consistently.
+  const sorted = useMemo(
+    () => [...lists].sort((a, b) => {
+      if (a.bundled !== b.bundled) return a.bundled ? -1 : 1
+      return a.id.localeCompare(b.id)
+    }),
+    [lists],
+  )
+
+  async function toggle(id: string) {
+    if (savingId) return
+    setSavingId(id)
+    setSaveError(null)
+    try {
+      const has = selected.includes(id)
+      const next = has ? selected.filter(c => c !== id) : [...selected, id]
+      const body = formToRequest(detailToForm(pd))
+      body.blockedCategories = next
+      await updateProfile(body)
+      await onProfileChanged()
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to update')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  return (
+    <div data-testid={`profile-categories-subsection-${pd.profile.id}`}>
+      <p className="text-xs text-brand-text-muted uppercase tracking-wider mb-2">Blocked categories</p>
+      {loading ? (
+        <p className="text-xs text-brand-text-muted">Loading categories…</p>
+      ) : sorted.length === 0 ? (
+        <p className="text-xs text-brand-text-muted">
+          No blocklist categories available.{' '}
+          <Link to="/blocklists" className="text-brand-accent hover:underline">Manage blocklists</Link>
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {sorted.map(b => {
+            const on = selected.includes(b.id)
+            const saving = savingId === b.id
+            return (
+              <label
+                key={b.id}
+                data-testid={`profile-category-${pd.profile.id}-${b.id}`}
+                title={b.description ?? undefined}
+                className={`inline-flex items-center text-xs px-3 py-1.5 rounded-lg border cursor-pointer transition-colors ${
+                  on
+                    ? 'bg-red-500/20 text-red-700 border-red-500/40'
+                    : 'bg-brand-alt text-brand-text border-brand-border-strong hover:border-brand-border-strong'
+                } ${saving ? 'opacity-50 cursor-wait' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  disabled={saving}
+                  onChange={() => toggle(b.id)}
+                  data-testid={`profile-category-toggle-${pd.profile.id}-${b.id}`}
+                  aria-label={b.name}
+                  className="sr-only"
+                />
+                <span>{on ? '✓ ' : ''}{b.name}</span>
+              </label>
+            )
+          })}
+        </div>
+      )}
+      {error && (
+        <p className="text-xs text-red-700 mt-1" data-testid={`profile-categories-error-${pd.profile.id}`}>
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function DefaultDenySubsection({
+  pd, updateProfile, onProfileChanged,
+}: {
+  pd: ProfileDetail
+  updateProfile: (body: UpsertProfileRequest) => Promise<unknown>
+  onProfileChanged: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const on = pd.profile.defaultDeny
+
+  async function toggle() {
+    if (saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      const body = formToRequest(detailToForm(pd))
+      body.defaultDeny = !on
+      await updateProfile(body)
+      onProfileChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div data-testid={`profile-default-deny-${pd.profile.id}`}>
+      <div className="flex items-start justify-between gap-4 bg-brand-alt/40 rounded-xl px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-brand-ink">Default-deny</p>
+          <p className="text-xs text-brand-text-muted mt-0.5">
+            {on
+              ? 'Everything is blocked except this profile’s allowed apps/hosts and the household global allowlist.'
+              : 'Allow by default; only blocked categories and blocked hosts are dropped. Turn on to block everything not explicitly allowed.'}
+          </p>
+        </div>
+        <label className="inline-flex items-center cursor-pointer shrink-0">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={saving}
+            onChange={toggle}
+            data-testid={`profile-default-deny-toggle-${pd.profile.id}`}
+            aria-label="Default-deny"
+            className="sr-only peer"
+          />
+          <span className="w-11 h-6 bg-brand-border rounded-full peer-checked:bg-red-600 relative transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5" />
+        </label>
+      </div>
+      {error && (
+        <p className="text-xs text-red-700 mt-1" data-testid={`profile-default-deny-error-${pd.profile.id}`}>
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function TimeSubsection({
-  pd, isAdmin, defaultTz,
+  pd, isAdmin,
 }: {
   pd: ProfileDetail
   isAdmin: boolean
-  defaultTz: string
 }) {
   const invalidators = useInvalidators()
   const [expanded, setExpanded] = useState(false)
@@ -969,9 +1208,11 @@ function TimeSubsection({
       const body = formToRequest(detailToForm(pd))
       const tl = next.timeLimit.trim() === '' ? null : Number(next.timeLimit)
       body.timeLimit = tl !== null && Number.isFinite(tl) && tl > 0 ? tl : null
-      body.schedules = next.schedules
+      // Schedules round-trip unchanged from pd (formToRequest already carried
+      // them); this subsection no longer edits them (#1474).
       body.crossDeviceOverlapMode = next.crossDeviceOverlapMode
-      body.pauseMode = next.pauseMode
+      // #1471: pauseMode is no longer edited here; omit it from the time-form
+      // PUT so the existing value is preserved (the pause action owns it now).
       await api.profiles.update(pd.profile.id, body)
       baselineRef.current = next
       setStatus('saved')
@@ -992,32 +1233,6 @@ function TimeSubsection({
       scheduleSave(next)
       return next
     })
-  }
-
-  const updateSchedules = (mut: (s: ScheduleRequest[]) => ScheduleRequest[]) => {
-    setForm(prev => {
-      const next = { ...prev, schedules: mut(prev.schedules) }
-      scheduleSave(next)
-      return next
-    })
-  }
-
-  function addSchedule() {
-    updateSchedules(s => [
-      ...s,
-      { name: 'Bedtime', days: [...DAYS], startLocal: '21:00', endLocal: '07:00', tz: defaultTz },
-    ])
-  }
-  function patchSchedule(i: number, p: Partial<ScheduleRequest>) {
-    updateSchedules(s => s.map((x, idx) => idx === i ? { ...x, ...p } : x))
-  }
-  function removeSchedule(i: number) {
-    updateSchedules(s => s.filter((_, idx) => idx !== i))
-  }
-  function toggleDay(i: number, d: string) {
-    updateSchedules(s => s.map((x, idx) => idx !== i ? x : {
-      ...x, days: x.days.includes(d) ? x.days.filter(y => y !== d) : [...x.days, d],
-    }))
   }
 
   const statusLabel =
@@ -1061,14 +1276,6 @@ function TimeSubsection({
             )
             : <p className="text-xs text-brand-text-muted">No daily limit.</p>
           }
-          {pd.schedules.length > 0 && pd.schedules.map(s => (
-            <div key={s.id} className="flex justify-between text-sm bg-brand-alt/50 rounded-lg px-3 py-2">
-              <span className="text-brand-text">{s.name}</span>
-              <span className="text-amber-700 font-mono text-xs">
-                {s.startLocal} → {s.endLocal} <span className="text-amber-700/60">({s.tz})</span>
-              </span>
-            </div>
-          ))}
           <p className="text-xs text-brand-text-muted">
             Cross-device overlap: <span className="text-brand-text">
               {pd.profile.crossDeviceOverlapMode === 'sum' ? 'count each device' : 'combine overlap'}
@@ -1096,82 +1303,6 @@ function TimeSubsection({
               onChange={e => update({ timeLimit: e.target.value })}
               placeholder="Leave blank for unlimited"
               className="w-full bg-brand-surface border border-brand-border-strong rounded-xl px-4 py-2.5 text-brand-ink placeholder-brand-text-muted focus:outline-none focus:border-brand-accent disabled:opacity-60" />
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
-                Schedules
-              </label>
-              {isAdmin && (
-                <button type="button"
-                  data-testid={`profile-time-add-schedule-${pd.profile.id}`}
-                  onClick={addSchedule}
-                  className="text-xs text-brand-accent hover:text-brand-accent">
-                  + Add schedule
-                </button>
-              )}
-            </div>
-            {form.schedules.length === 0 && (
-              <p className="text-xs text-brand-text-muted">No schedules.</p>
-            )}
-            <div className="space-y-3">
-              {form.schedules.map((s, i) => (
-                <div key={i} className="bg-brand-surface border border-brand-border-strong rounded-xl p-3 space-y-2"
-                  data-testid={`profile-time-schedule-${pd.profile.id}-${i}`}>
-                  <div className="flex gap-2">
-                    <input type="text"
-                      value={s.name}
-                      disabled={!isAdmin}
-                      onChange={e => patchSchedule(i, { name: e.target.value })}
-                      placeholder="Bedtime"
-                      className="flex-1 bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm disabled:opacity-60" />
-                    {isAdmin && (
-                      <button type="button"
-                        onClick={() => removeSchedule(i)}
-                        className="text-xs text-red-700 hover:text-red-700 bg-red-500/10 px-3 rounded-lg">
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex gap-2 items-center text-sm">
-                    <input type="time" value={s.startLocal}
-                      disabled={!isAdmin}
-                      onChange={e => patchSchedule(i, { startLocal: e.target.value })}
-                      data-testid={`profile-time-schedule-start-${pd.profile.id}-${i}`}
-                      className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink disabled:opacity-60" />
-                    <span className="text-brand-text-muted">→</span>
-                    <input type="time" value={s.endLocal}
-                      disabled={!isAdmin}
-                      onChange={e => patchSchedule(i, { endLocal: e.target.value })}
-                      data-testid={`profile-time-schedule-end-${pd.profile.id}-${i}`}
-                      className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink disabled:opacity-60" />
-                  </div>
-                  <TimezonePicker
-                    value={s.tz}
-                    onChange={tz => patchSchedule(i, { tz })}
-                    testId={`profile-time-schedule-tz-${pd.profile.id}-${i}`}
-                  />
-                  <div className="flex flex-wrap gap-1">
-                    {DAYS.map(d => {
-                      const on = s.days.includes(d)
-                      return (
-                        <button key={d} type="button"
-                          disabled={!isAdmin}
-                          onClick={() => toggleDay(i, d)}
-                          className={`text-xs px-2.5 py-1 rounded-lg border ${
-                            on
-                              ? 'bg-brand-accent/20 text-brand-accent border-brand-accent/40'
-                              : 'bg-brand-alt text-brand-text-muted border-brand-border-strong'
-                          } disabled:opacity-60`}>
-                          {d}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
           </div>
 
           {/* #751 cross-device overlap radios, lifted from the modal. */}
@@ -1219,50 +1350,178 @@ function TimeSubsection({
             </div>
           </div>
 
-          {/* #1418 pause-mode radios: soft (default) keeps allowlisted apps +
-              the block page reachable through a pause; hard is a true off-switch. */}
-          <div>
-            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider mb-2">
-              Pause mode
-            </label>
-            <div className="space-y-2">
-              <label className="flex items-start gap-3 text-sm text-brand-text cursor-pointer">
-                <input
-                  type="radio"
-                  name={`pause-mode-${pd.profile.id}`}
-                  data-testid={`profile-pause-mode-soft-${pd.profile.id}`}
-                  disabled={!isAdmin}
-                  checked={form.pauseMode === 'soft'}
-                  onChange={() => update({ pauseMode: 'soft' })}
-                  className="mt-1 w-4 h-4 accent-brand-accent"
-                />
-                <span>
-                  <span className="font-medium text-brand-ink">Soft pause</span>
-                  <span className="text-brand-text-muted"> (default)</span>
-                  <span className="block text-xs text-brand-text mt-0.5">
-                    block the internet but keep explicitly-allowed apps reachable (e.g. a homework app), plus the block page. Best for "dinner time, but homework still works."
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 text-sm text-brand-text cursor-pointer">
-                <input
-                  type="radio"
-                  name={`pause-mode-${pd.profile.id}`}
-                  data-testid={`profile-pause-mode-hard-${pd.profile.id}`}
-                  disabled={!isAdmin}
-                  checked={form.pauseMode === 'hard'}
-                  onChange={() => update({ pauseMode: 'hard' })}
-                  className="mt-1 w-4 h-4 accent-brand-accent"
-                />
-                <span>
-                  <span className="font-medium text-brand-ink">Hard pause</span>
-                  <span className="text-brand-text-muted"> (true off-switch)</span>
-                  <span className="block text-xs text-brand-text mt-0.5">
-                    cut everything, including allowed apps. Only the block page stays reachable. For discipline, a lost device, or an emergency. Applies the next time you pause this profile.
-                  </span>
-                </span>
-              </label>
+          {/* #1471 — the persistent soft/hard "Pause mode" radios were removed
+              here. The choice is now made at the moment of pausing, via the
+              picker on the row Pause action (see ProfileShellRow). */}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// #1494 — schedules subsection. A profile's block schedules are now #1069
+// household named schedules attached as BLOCK rules (downtime while active),
+// persisted via PUT /api/profiles/{id}/schedules -> profile_schedule_rules,
+// which enforcement reads (#1490). The old inline per-profile window editor
+// wrote the dead V1 `schedules` table — editing it was a silent no-op — so it
+// is gone, replaced by the reusable SchedulePicker (household schedules +
+// "Custom" inline that authors a reusable named schedule). A profile can
+// reference many; add/remove autosaves the full id set (replace semantics),
+// mirroring the per-app schedule-rule editor (#1380).
+function ScheduleSubsection({
+  pd, isAdmin,
+}: {
+  pd: ProfileDetail
+  isAdmin: boolean
+}) {
+  const invalidators = useInvalidators()
+  const { data: namedSchedules = [] } = useNamedSchedules()
+  const [expanded, setExpanded] = useState(false)
+  const [status, setStatus] = useState<SaveStatus>('idle')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [pickId, setPickId] = useState<number | null>(null)
+
+  const attachedIds = pd.scheduleIds ?? []
+  const scheduleNameById = useMemo(() => {
+    const m = new Map<number, string>()
+    namedSchedules.forEach(s => m.set(s.id, s.name))
+    return m
+  }, [namedSchedules])
+
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+  }, [])
+
+  async function save(nextIds: number[]) {
+    setStatus('saving')
+    setErrorMsg(null)
+    try {
+      await api.profiles.setSchedules(pd.profile.id, nextIds)
+      setStatus('saved')
+      void invalidators.profileMutated()
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => {
+        setStatus(s => (s === 'saved' ? 'idle' : s))
+      }, 2000)
+    } catch (e) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to save')
+    }
+  }
+
+  function attach() {
+    if (pickId == null || attachedIds.includes(pickId)) return
+    const next = [...attachedIds, pickId]
+    setPickId(null)
+    void save(next)
+  }
+  function detach(id: number) {
+    void save(attachedIds.filter(x => x !== id))
+  }
+
+  const statusLabel =
+    status === 'saving' ? 'Saving…'
+    : status === 'saved' ? 'Saved'
+    : status === 'error' ? 'Save failed'
+    : ''
+
+  return (
+    <div data-testid={`profile-schedule-subsection-${pd.profile.id}`}
+      className="bg-brand-surface/40 border border-brand-border rounded-xl">
+      <button type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        data-testid={`profile-schedule-toggle-${pd.profile.id}`}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left">
+        <span className={`text-brand-text-muted transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <span className="text-xs font-semibold text-brand-text uppercase tracking-wider">Schedules</span>
+        <span className="flex-1" />
+        {statusLabel && (
+          <span
+            data-testid={`profile-schedule-status-${pd.profile.id}`}
+            data-status={status}
+            className={`text-xs font-mono ${
+              status === 'error' ? 'text-red-700'
+              : status === 'saving' ? 'text-brand-text-muted'
+              : 'text-brand-accent'
+            }`}>
+            {statusLabel}
+          </span>
+        )}
+      </button>
+
+      {!expanded && (
+        <div className="px-4 pb-3 space-y-1">
+          {attachedIds.length > 0
+            ? attachedIds.map(id => (
+              <div key={id} className="flex justify-between text-sm bg-brand-alt/50 rounded-lg px-3 py-2">
+                <span className="text-brand-text">{scheduleNameById.get(id) ?? `Schedule ${id}`}</span>
+                <span className="text-amber-700 font-mono text-xs">Blocked during</span>
+              </div>
+            ))
+            : <p className="text-xs text-brand-text-muted">No schedules.</p>
+          }
+        </div>
+      )}
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 border-t border-brand-border pt-3">
+          {errorMsg && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-700 text-xs rounded-lg px-3 py-2">
+              {errorMsg}
             </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="block text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
+              Block schedules
+            </label>
+            <p className="text-xs text-brand-text-muted">
+              Internet is blocked for this profile while an attached schedule's
+              window is active. Schedules are shared household schedules — edit
+              one on the Schedules page and it changes everywhere it's used.
+            </p>
+
+            {attachedIds.length === 0 && (
+              <p className="text-xs text-brand-text-muted italic">No schedules attached.</p>
+            )}
+
+            {attachedIds.map(id => (
+              <div
+                key={id}
+                data-testid={`profile-schedule-attached-${pd.profile.id}-${id}`}
+                className="flex items-center gap-2 bg-brand-surface border border-brand-border-strong rounded-lg px-3 py-2">
+                <span className="flex-1 text-sm text-brand-ink">
+                  {scheduleNameById.get(id) ?? `Schedule ${id}`}
+                </span>
+                {isAdmin && (
+                  <button type="button"
+                    data-testid={`profile-schedule-attached-${pd.profile.id}-${id}-remove`}
+                    aria-label={`Remove ${scheduleNameById.get(id) ?? 'schedule'}`}
+                    onClick={() => detach(id)}
+                    className="text-brand-text-muted hover:text-red-700 transition-colors leading-none text-sm">×</button>
+                )}
+              </div>
+            ))}
+
+            {isAdmin && (
+              <div className="space-y-2 pt-1">
+                <SchedulePicker
+                  value={pickId}
+                  onChange={setPickId}
+                  testId={`profile-schedule-picker-${pd.profile.id}`}
+                />
+                <button type="button"
+                  data-testid={`profile-schedule-add-${pd.profile.id}`}
+                  disabled={pickId == null || attachedIds.includes(pickId)}
+                  onClick={attach}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-brand-accent/10 text-brand-accent font-medium hover:bg-brand-accent/20 disabled:opacity-50">
+                  Attach schedule
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1524,12 +1783,7 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   // that run `profileMutated()` on success, mirroring `grantMutation`.
   const invalidators = useInvalidators()
   const setPolicyMutation = useMutation({
-    mutationFn: (vars: { mode: AppMode; dailyMinutes: number | null; exemptFromDaily?: boolean }) =>
-      api.apps.setPolicy(app.app.id, profileId, {
-        mode: vars.mode,
-        dailyMinutes: vars.dailyMinutes,
-        ...(vars.exemptFromDaily !== undefined ? { exemptFromDaily: vars.exemptFromDaily } : {}),
-      }),
+    mutationFn: (req: UpsertAppAssignmentRequest) => api.apps.setPolicy(app.app.id, profileId, req),
     onSuccess: () => invalidators.profileMutated(),
   })
   const deletePolicyMutation = useMutation({
@@ -1545,6 +1799,12 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  // #1380 — attached schedule rules, seeded from the persisted assignment and
+  // re-seeded when it changes from outside (mirrors minutesDraft below).
+  const [scheduleRules, setScheduleRules] = useState<AppScheduleRule[]>(
+    () => current?.scheduleRules ?? [],
+  )
+  const rulesSig = JSON.stringify(current?.scheduleRules ?? [])
   // Re-seed the input when the persisted policy changes from outside
   // (e.g. another tab, or after our own setPolicy round-trip lands).
   // Without this the input keeps stale values once `current` updates.
@@ -1554,12 +1814,31 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
       ? String(current.dailyMinutes) : ''
     setMinutesDraft(next)
   }, [current?.mode, current?.dailyMinutes])
+  useEffect(() => {
+    if (busy) return
+    setScheduleRules(current?.scheduleRules ?? [])
+  }, [rulesSig])
 
-  async function apply(mode: AppMode, dailyMinutes: number | null, exemptFromDaily?: boolean) {
+  // PUT replaces the whole assignment, so every write must carry the current
+  // schedule rules (additive `scheduleRules`, omitted when empty so the no-rule
+  // payload shape — and the existing assertions on it — stay unchanged).
+  async function apply(
+    mode: AppMode,
+    dailyMinutes: number | null,
+    exemptFromDaily?: boolean,
+    rules?: AppScheduleRule[],
+  ) {
+    const effectiveRules = rules ?? scheduleRules
+    const req: UpsertAppAssignmentRequest = {
+      mode,
+      dailyMinutes,
+      ...(exemptFromDaily !== undefined ? { exemptFromDaily } : {}),
+      ...(effectiveRules.length > 0 ? { scheduleRules: effectiveRules } : {}),
+    }
     setBusy(true)
     setLocalError(null)
     try {
-      await setPolicyMutation.mutateAsync({ mode, dailyMinutes, exemptFromDaily })
+      await setPolicyMutation.mutateAsync(req)
       await onChanged()
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : 'Failed to update')
@@ -1590,6 +1869,29 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
   const mode = current?.mode ?? null
   const isTimeLimited = mode === 'time_limited'
   const currentMinutes = isTimeLimited ? current?.dailyMinutes ?? null : null
+
+  // #1380 — schedule-rule add/remove and the exempt-from-daily toggle persist
+  // the whole assignment immediately (autosave, no Save button). Re-applying
+  // the current mode/minutes keeps everything but the changed dimension intact.
+  async function addRule(scheduleId: number, ruleMode: AppScheduleMode) {
+    if (mode == null) return
+    if (scheduleRules.some(r => r.scheduleId === scheduleId && r.mode === ruleMode)) return
+    const next = [...scheduleRules, { scheduleId, mode: ruleMode }]
+    setScheduleRules(next)
+    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
+  }
+
+  async function removeRule(scheduleId: number, ruleMode: AppScheduleMode) {
+    if (mode == null) return
+    const next = scheduleRules.filter(r => !(r.scheduleId === scheduleId && r.mode === ruleMode))
+    setScheduleRules(next)
+    await apply(mode, current?.dailyMinutes ?? null, current?.exemptFromDaily, next)
+  }
+
+  async function setScheduleExempt(nextExempt: boolean) {
+    if (mode == null) return
+    await apply(mode, current?.dailyMinutes ?? null, nextExempt)
+  }
 
   // Operator feedback: the old UX made you type minutes AND click a
   // separate "Time-limit" button, then showed the duration twice. Now
@@ -1748,9 +2050,176 @@ function AppRow({ app, profileId, onChanged, usedMins }: {
           </span>
         </label>
       )}
+      {mode != null && (
+        <ScheduleRuleEditor
+          appId={app.app.id}
+          rules={scheduleRules}
+          exemptFromDaily={current?.exemptFromDaily ?? true}
+          showExemptToggle={mode !== 'time_limited'}
+          busy={busy}
+          onAdd={addRule}
+          onRemove={removeRule}
+          onSetExempt={setScheduleExempt}
+        />
+      )}
       {localError && (
         <p className="text-xs text-red-700" data-testid={`app-row-${app.app.id}-error`}>{localError}</p>
       )}
+    </div>
+  )
+}
+
+// #1380 — per-app schedule rules on an app's profile assignment. Each rule
+// attaches a #1069 household named schedule (via the shared SchedulePicker)
+// with a mode:
+//   • Allowed during — the app stays reachable while the schedule's window is
+//     active, even during profile downtime (a carve-out). Still subject to the
+//     daily time limit unless the assignment is exempt (rows 9a–9c).
+//   • Blocked during — the app is dropped while the window is active, even when
+//     the profile is otherwise unrestricted.
+// No bespoke time editor here — the named schedule owns its day/time windows
+// (the picker's "Custom" flow authors a reusable one). Add/remove autosaves the
+// assignment (no Save button), consistent with the block/allow toggles above.
+const SCHEDULE_MODE_LABEL: Record<AppScheduleMode, string> = {
+  allowed_during: 'Allowed during',
+  blocked_during: 'Blocked during',
+}
+
+function ScheduleRuleEditor({
+  appId, rules, exemptFromDaily, showExemptToggle, busy,
+  onAdd, onRemove, onSetExempt,
+}: {
+  appId: number
+  rules: AppScheduleRule[]
+  exemptFromDaily: boolean
+  // Hidden for time_limited apps, whose own "Counts toward daily limit" row
+  // already governs the same exemptFromDaily flag (avoid two controls).
+  showExemptToggle: boolean
+  busy: boolean
+  onAdd: (scheduleId: number, mode: AppScheduleMode) => void | Promise<void>
+  onRemove: (scheduleId: number, mode: AppScheduleMode) => void | Promise<void>
+  onSetExempt: (next: boolean) => void | Promise<void>
+}) {
+  const [pickMode, setPickMode] = useState<AppScheduleMode>('allowed_during')
+  const [pickScheduleId, setPickScheduleId] = useState<number | null>(null)
+  const { data: namedSchedules = [] } = useNamedSchedules()
+
+  const scheduleNameById = useMemo(() => {
+    const m = new Map<number, string>()
+    namedSchedules.forEach(s => m.set(s.id, s.name))
+    return m
+  }, [namedSchedules])
+
+  const hasAllowedRule = rules.some(r => r.mode === 'allowed_during')
+
+  function add() {
+    if (pickScheduleId == null) return
+    void onAdd(pickScheduleId, pickMode)
+    setPickScheduleId(null)
+  }
+
+  const modeBtn = 'text-xs px-2.5 py-1 rounded-lg border border-transparent transition-colors disabled:opacity-50'
+  const modeOn = 'bg-brand-accent/20 text-brand-accent'
+  const modeOff = 'bg-brand-alt text-brand-text'
+
+  return (
+    <div
+      data-testid={`app-row-${appId}-schedules`}
+      className="border-t border-brand-border pt-2 space-y-2"
+    >
+      <p className="text-xs font-semibold text-brand-text-muted uppercase tracking-wider">
+        Schedules
+      </p>
+
+      {rules.length === 0 && (
+        <p className="text-xs text-brand-text-muted italic">
+          No schedule rules. Attach a named schedule to make this app reachable
+          or blocked only during a window.
+        </p>
+      )}
+
+      {rules.map(r => (
+        <div
+          key={`${r.scheduleId}-${r.mode}`}
+          data-testid={`app-row-${appId}-schedule-rule-${r.scheduleId}-${r.mode}`}
+          className="flex items-start gap-2 bg-brand-surface border border-brand-border-strong rounded-lg px-2.5 py-1.5"
+        >
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-brand-ink">
+              <span
+                className={`font-medium ${r.mode === 'allowed_during' ? 'text-brand-accent' : 'text-red-700'}`}
+              >
+                {SCHEDULE_MODE_LABEL[r.mode]}
+              </span>
+              {' '}
+              <span className="font-medium">{scheduleNameById.get(r.scheduleId) ?? `schedule ${r.scheduleId}`}</span>
+            </p>
+            <p className="text-[11px] text-brand-text-muted">
+              {r.mode === 'allowed_during'
+                ? 'Reachable while this window is active — even during profile downtime.'
+                : 'Blocked while this window is active — even when the profile is otherwise allowed.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid={`app-row-${appId}-schedule-rule-${r.scheduleId}-${r.mode}-remove`}
+            aria-label={`Remove ${SCHEDULE_MODE_LABEL[r.mode]} ${scheduleNameById.get(r.scheduleId) ?? 'schedule'} rule`}
+            disabled={busy}
+            onClick={() => onRemove(r.scheduleId, r.mode)}
+            className="text-brand-text-muted hover:text-red-700 transition-colors leading-none text-sm disabled:opacity-50"
+          >×</button>
+        </div>
+      ))}
+
+      {/* #1380 — exempt-from-daily surfaced alongside an allowed-during rule so
+          the cap-bites-non-exempt behaviour (rows 9a–9c) isn't a surprise. */}
+      {hasAllowedRule && showExemptToggle && (
+        <label
+          data-testid={`app-row-${appId}-schedule-exempt`}
+          className="flex items-start gap-2 text-xs text-brand-text cursor-pointer select-none"
+        >
+          <input
+            type="checkbox"
+            checked={exemptFromDaily}
+            disabled={busy}
+            onChange={e => onSetExempt(e.target.checked)}
+            className="w-3.5 h-3.5 mt-0.5 accent-amber-500"
+          />
+          <span>
+            {exemptFromDaily
+              ? 'Exempt from the daily time limit — reachable in-window even past the cap.'
+              : 'Still blocked by the daily time limit — the cap applies even in-window.'}
+          </span>
+        </label>
+      )}
+
+      <div className="space-y-2">
+        <div className="inline-flex rounded-lg bg-brand-alt p-0.5">
+          {(['allowed_during', 'blocked_during'] as const).map(m => (
+            <button
+              key={m}
+              type="button"
+              data-testid={`app-row-${appId}-schedule-mode-${m}`}
+              disabled={busy}
+              onClick={() => setPickMode(m)}
+              className={`${modeBtn} ${pickMode === m ? modeOn : modeOff}`}
+            >{SCHEDULE_MODE_LABEL[m]}</button>
+          ))}
+        </div>
+        <SchedulePicker
+          value={pickScheduleId}
+          onChange={setPickScheduleId}
+          disabled={busy}
+          testId={`app-row-${appId}-schedule-picker`}
+        />
+        <button
+          type="button"
+          data-testid={`app-row-${appId}-schedule-add`}
+          disabled={busy || pickScheduleId == null}
+          onClick={add}
+          className="text-xs px-2.5 py-1 rounded-lg bg-brand-accent/10 text-brand-accent font-medium hover:bg-brand-accent/20 disabled:opacity-50"
+        >Add rule</button>
+      </div>
     </div>
   )
 }

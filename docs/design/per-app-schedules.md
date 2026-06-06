@@ -125,8 +125,21 @@ created directly — no deferred-constraint dance.
 > the V1 `schedules` time columns so the existing `Schedule` model and
 > `scheduleActiveAt` apply unchanged. The name is `named_schedules`, NOT
 > `schedules` — the spec's chosen name collided with the V1 profile-scoped
-> `schedules` table, which deployed enforcement code still reads, so it could
-> not be dropped/renamed in an additive migration.
+> `schedules` table, which deployed enforcement code still read at the time, so
+> it could not be dropped/renamed in an additive migration.
+>
+> **#1482 made `named_schedules` the single enforcement source.** The boot-time
+> `ScheduleSeeder` migrates each profile's legacy `schedules` rows into the named
+> model, and `PolicyService` / `TimeStatusService` now read schedule downtime
+> **exclusively** from `named_schedules` / `profile_schedule_rules` (the legacy
+> union is gone). The V1 `schedules` table still exists — it backs the legacy
+> profile-CRUD/display surface and keeps the pre-migration image enforcing on a
+> rollback — but it is no longer an enforcement source. Retiring it is staged as
+> **two** further PRs, honouring the migration-isolation rule: first a code/test
+> PR that removes the now-dead legacy `ScheduleRepo` (its repo, the
+> profile-upsert `schedules` write/read, the `@unused` injection retained here
+> for arity, and the fixtures that seed it), then a migration-only PR that drops
+> the table — done once the named path has fully rolled out.
 >
 > **Profiles reference schedules through a `(profile, schedule, mode)` join
 > table — `profile_schedule_rules` — NOT a single `profiles.schedule_id`
@@ -140,6 +153,13 @@ created directly — no deferred-constraint dance.
 
 New migration (next free version after #1069's `V50`, e.g.
 `V51__app_policy_schedule_rules.sql`, sequenced *after* #1069's migration):
+
+> **Landed (`V51__app_policy_schedule_rules.sql`, #1378).** The table below
+> ships as the schema-only foundation PR, FKing `app_policy_assignments(id)`
+> (V28) and the #1069 `named_schedules(id)` (V50). It mirrors V50's
+> `profile_schedule_rules` exactly — same `(entity, schedule, mode)` shape, same
+> two indexes (by assignment for the per-app fold, by schedule for the
+> cascade-delete probe). Inert until #1379 adds the PolicyService evaluation.
 
 ```sql
 CREATE TABLE app_policy_schedule_rules (

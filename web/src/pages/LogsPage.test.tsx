@@ -39,7 +39,7 @@ const devices: Device[] = [
   { id: 10, mac: 'aa:bb:cc:dd:ee:01', name: "Kid's iPad", profileId: 1, profileName: 'Kids', lastSeenIp: null, lastSeenAt: null },
 ]
 const profileDetails: ProfileDetail[] = [
-  { profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft' }, schedules: [], timeLimit: null },
+  { profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false }, schedules: [], timeLimit: null },
 ]
 
 // Surfaces the current URL search string so tests can assert query-param

@@ -179,29 +179,42 @@
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "title": "Agent versions across the fleet",
-      "description": "count by (version) (agent_version{value=1}) — how many routers run each agent version (info-gauge idiom: agent_version is a constant 1 carrying the version label). Use during a rollout to watch routers move to the new build.",
-      "type": "timeseries",
+      "description": "agent_version == 1, evaluated instant — one row per router showing the version it is currently running (info-gauge idiom: agent_version is a constant 1 carrying the version label). Instant (not range) so a version a router has moved off of drops out after Prometheus staleness (~5m) rather than lingering as in-window history — a range/timeseries view kept showing the pre-upgrade version next to the new one (#1457). During a rollout a router may briefly show two rows while the superseded series ages out.",
+      "type": "table",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "id": 6,
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "unit": "short",
-          "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } }
+          "color": { "mode": "thresholds" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [{ "displayName": "Router", "desc": false }],
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "count by (version) (agent_version{env=\"$env\"})",
-          "legendFormat": "{{version}}",
+          "expr": "agent_version{env=\"$env\"} == 1",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "__auto",
           "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true, "__name__": true, "env": true, "instance": true, "job": true, "installation_id": true },
+            "indexByName": { "router_id": 0, "version": 1 },
+            "renameByName": { "router_id": "Router", "version": "Version" }
+          }
         }
       ]
     },

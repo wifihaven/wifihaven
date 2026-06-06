@@ -1102,17 +1102,24 @@ describe("render blocklist enforcement (#352)", function()
       1, true))
   end)
 
-  it("emits one nftset= line per (host, id) when the same host appears in two blocklists", function()
+  it("merges both bl_ specs into ONE nftset= directive when the same host appears in two blocklists (#1460)", function()
+    -- Post-#1460 contract: every nft set targeting a given host lands in ONE
+    -- comma-joined `nftset=/<host>/...` directive. dnsmasq honours only the
+    -- first matching `nftset=/<host>/...` directive per domain and silently
+    -- drops the rest, which is the H3 enforcement-gap bug: an ea_ directive
+    -- emitted before a global_block directive for the same host leaves
+    -- @global_block empty. Two bl_ sets covering the same host are the
+    -- closest pre-existing analogue.
     local s = snap_bl()
     s.blocklists["test_social"] = { version = "v1", url = "http://api/api/blocklists/test_social" }
     s._blocklist_hosts["test_social"] = { "doubleclick.net", "facebook.com" }
     local conf = render.dnsmasq(s)
+    local _, dir_count = conf:gsub("nftset=/doubleclick%.net/", "")
+    assert.equals(1, dir_count)
     assert.truthy(conf:find(
-      "nftset=/doubleclick.net/4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads",
-      1, true))
+      "4#inet#wifihaven#bl_test_ads,6#inet#wifihaven#bl6_test_ads", 1, true))
     assert.truthy(conf:find(
-      "nftset=/doubleclick.net/4#inet#wifihaven#bl_test_social,6#inet#wifihaven#bl6_test_social",
-      1, true))
+      "4#inet#wifihaven#bl_test_social,6#inet#wifihaven#bl6_test_social", 1, true))
   end)
 
   it("emits no nftset= lines when _blocklist_hosts is absent or empty", function()
@@ -2078,9 +2085,12 @@ describe("render.dnsmasq global section (#1319)", function()
     s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
     s._blocklist_hosts = { ads = { "ad.doubleclick.net" } }
     local conf = render.dnsmasq(s)
+    -- The member host gets the global_block specs (alongside any bl_ specs
+    -- if a profile/global also names the "ads" category — dnsmasq fires
+    -- every spec in the merged directive, see #1460).
+    assert.truthy(conf:find("nftset=/ad.doubleclick.net/", 1, true))
     assert.truthy(conf:find(
-      "nftset=/ad.doubleclick.net/4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6",
-      1, true))
+      "4#inet#wifihaven#global_block,6#inet#wifihaven#global_block6", 1, true))
   end)
 
   it("emits no global nftset= lines when the global section is empty", function()
@@ -2091,6 +2101,191 @@ describe("render.dnsmasq global section (#1319)", function()
 
   it("is byte-identical to a snapshot with no global key when global is empty", function()
     assert.equals(render.dnsmasq(snap_one()), render.dnsmasq(snap_global()))
+  end)
+
+  -- ── #1460 H3 regression: the merge invariant ────────────────────────────
+  --
+  -- dnsmasq honours only ONE matching `nftset=/<host>/...` directive per
+  -- domain and silently drops the rest. When a host appears in BOTH a
+  -- per-profile extraAllowed (ea_) and global.extraBlocked (@global_block),
+  -- emitting two separate directives leaves @global_block empty and the
+  -- fleet-wide block never fires — the exact gap H3 in
+  -- scripts/e2e/scenarios_fake/test_global_policy.py reproduces on a real
+  -- router. render.dnsmasq must merge every spec for a given host into one
+  -- directive so all sets fire on every reply.
+  it("merges ea_ and global_block specs for the same host into ONE directive (#1460 H3)", function()
+    local s = snap_global()
+    -- Set up the H3 shape: profile allows example.org, global blocks it.
+    s.profiles["3"].rules.extraAllowed = { "example.org" }
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.global.extraBlocked = { "example.org" }
+    local conf = render.dnsmasq(s)
+    -- Exactly one nftset= directive for example.org.
+    local _, count = conf:gsub("nftset=/example%.org/", "")
+    assert.equals(1, count)
+    -- That single directive carries BOTH the ea_ and global_block specs.
+    assert.truthy(conf:find(
+      "4#inet#wifihaven#ea_aa_bb_cc_11_22_33_example_org", 1, true))
+    assert.truthy(conf:find(
+      "6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_example_org", 1, true))
+    assert.truthy(conf:find("4#inet#wifihaven#global_block", 1, true))
+    assert.truthy(conf:find("6#inet#wifihaven#global_block6", 1, true))
+  end)
+
+  -- ── #1489 regression: over-long merged nftset line crashes dnsmasq ───────
+  --
+  -- dnsmasq honours only ONE nftset directive per host (domain_find_sets
+  -- returns a single longest-suffix match), so render.dnsmasq merges every set
+  -- for a host into one comma-joined directive (#1460). dnsmasq also reads
+  -- config lines into a fixed MAXDNAME(1025)-byte buffer with NO line
+  -- continuation: a directive longer than 1024 bytes is truncated and its
+  -- remainder is parsed as a bogus option, so dnsmasq refuses to start and
+  -- :53 returns "connection refused" — exactly the Gate 3a staging-smoke
+  -- failure in #1489 (regression from #1483's merge).
+  --
+  -- The per-(MAC,host) ea_ populator is the ONLY per-host spec that scales
+  -- with device count. The #1307 infra-allow copy puts the same host into
+  -- every profile's extraAllowed, so one ea_ spec per device lands on a
+  -- single merged line. When that host is also in global.extraAllowed those
+  -- ea_ specs are pure redundancy — @global_allow already carves the host out
+  -- of every drop for every MAC (render.nft ga_suffix) — so render.dnsmasq
+  -- must not emit them.
+  it("omits redundant per-(MAC,host) ea_ populators for a global.extraAllowed host (#1489)", function()
+    local s = snap_global()
+    s.profiles["3"].rules.extraAllowed = { "infra.wifihaven.net" }
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.global.extraAllowed = { "infra.wifihaven.net" }
+    local conf = render.dnsmasq(s)
+    -- Enforcement is preserved: the host still drives the fleet-wide allow set.
+    assert.truthy(conf:find(
+      "nftset=/infra.wifihaven.net/4#inet#wifihaven#global_allow,6#inet#wifihaven#global_allow6",
+      1, true))
+    -- ...but the redundant per-(MAC,host) ea_ spec is gone.
+    assert.is_nil(conf:find("ea_aa_bb_cc_11_22_33_infra_wifihaven_net", 1, true))
+    assert.is_nil(conf:find("ea6_aa_bb_cc_11_22_33_infra_wifihaven_net", 1, true))
+  end)
+
+  it("still emits per-(MAC,host) ea_ populators for a host NOT in global.extraAllowed", function()
+    -- A normal per-device allow (not in the global layer) keeps its ea_ set —
+    -- only the redundant global-allow copies are skipped.
+    local s = snap_global()
+    s.profiles["3"].rules.extraAllowed = { "khanacademy.org" }
+    s.profiles["3"].rules.extraBlocked = {}
+    s.profiles["3"].rules.blocklistIds = {}
+    s.global.extraAllowed = { "infra.wifihaven.net" }
+    local conf = render.dnsmasq(s)
+    assert.truthy(conf:find(
+      "nftset=/khanacademy.org/4#inet#wifihaven#ea_aa_bb_cc_11_22_33_khanacademy_org,6#inet#wifihaven#ea6_aa_bb_cc_11_22_33_khanacademy_org",
+      1, true))
+  end)
+
+  it("keeps every merged nftset directive within dnsmasq's 1024-byte line limit (#1489)", function()
+    -- Many devices each carry the same global-allowed infra host in their
+    -- effective extraAllowed (the #1307 per-profile copy). Pre-#1489 this
+    -- produced one ea_ spec per device on a single merged line, overflowing
+    -- dnsmasq's config-line buffer and stopping it from starting.
+    local s = snap_global()
+    s.devices = {}
+    s.profiles = {}
+    for i = 1, 24 do
+      local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
+      s.devices[mac] = { profileId = i }
+      s.profiles[tostring(i)] = {
+        name = "p" .. i,
+        failureMode = "last-known-good",
+        rules = {
+          blocked = false, extraBlocked = {}, blocklistIds = {},
+          extraAllowed = { "infra.wifihaven.net" },
+        },
+      }
+    end
+    s.global.extraAllowed = { "infra.wifihaven.net" }
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "nftset line exceeds dnsmasq's 1024-byte config-line limit (%d bytes): %s…",
+        #line, line:sub(1, 72)))
+    end
+  end)
+
+  -- ── #1489 follow-up: line-length cap, not just global-skip ─────────────
+  --
+  -- The Gate 3a staging-smoke failure after #1493 shipped is the same
+  -- "connection refused on :53" — but for a host that is in many profiles'
+  -- extraAllowed AND is NOT in global.extraAllowed (e.g. a manually-allowed
+  -- host like khanacademy.org carried by lots of profiles). The
+  -- global-extraAllowed skip from #1493 has no effect there, so the merged
+  -- nftset directive still piles up one ea_ spec per device and overflows
+  -- dnsmasq's 1024-byte config-line buffer.
+  --
+  -- render.dnsmasq must bound EVERY merged directive to 1024 bytes. The
+  -- per-(MAC,host) ea_ populator is droppable: dns-tail (#1346) repopulates
+  -- ea_ sets from live replies, so a missing dnsmasq populator at startup
+  -- only delays the first per-MAC carve-out for that host — far better than
+  -- dnsmasq refusing to start and taking :53 down for everyone.
+  it("caps the merged directive even when the heavy host is NOT in global.extraAllowed (#1489)", function()
+    local s = snap_global()
+    s.devices = {}
+    s.profiles = {}
+    -- 30 profiles each allow the same non-global host. With ea_/ea6_ specs
+    -- ~62 bytes each plus comma, that's ~3700 bytes on one line pre-cap.
+    for i = 1, 30 do
+      local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
+      s.devices[mac] = { profileId = i }
+      s.profiles[tostring(i)] = {
+        name = "p" .. i,
+        failureMode = "last-known-good",
+        rules = {
+          blocked = false, extraBlocked = {}, blocklistIds = {},
+          extraAllowed = { "khanacademy.org" },
+        },
+      }
+    end
+    -- Deliberately NOT in global.extraAllowed — exercises the cap path.
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "nftset line exceeds dnsmasq's 1024-byte config-line limit (%d bytes): %s…",
+        #line, line:sub(1, 72)))
+    end
+    -- A trace comment must name the host so the operator can see what was
+    -- dropped (rather than silently degrading).
+    assert.truthy(conf:find("khanacademy.org", 1, true))
+    assert.truthy(conf:find("dropped", 1, true))
+  end)
+
+  -- Mixed case: a heavy host also carries a non-ea_ spec (e.g. it appears
+  -- in a blocklist). Capping drops the ea_ specs but keeps the bl_ spec, so
+  -- the surviving merged directive is still emitted and still under 1024.
+  it("preserves non-ea_ specs when capping an overflowing heavy host (#1489)", function()
+    local s = snap_global()
+    s.devices = {}
+    s.profiles = {}
+    for i = 1, 30 do
+      local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
+      s.devices[mac] = { profileId = i }
+      s.profiles[tostring(i)] = {
+        name = "p" .. i,
+        failureMode = "last-known-good",
+        rules = {
+          blocked = false, extraBlocked = {}, blocklistIds = { "ads" },
+          extraAllowed = { "shared.example" },
+        },
+      }
+    end
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    s._blocklist_hosts = { ads = { "shared.example" } }
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "nftset line exceeds 1024 bytes (%d): %s…", #line, line:sub(1, 72)))
+    end
+    -- The bl_ad / bl6_ad specs survive — only the ea_ specs were dropped.
+    assert.truthy(conf:find(
+      "nftset=/shared.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads",
+      1, true))
   end)
 end)
 
@@ -2246,5 +2441,109 @@ describe("render.nft global composition (#1319)", function()
         assert(false, "drop without log group / counter: " .. line)
       end
     end
+  end)
+end)
+
+-- ── #1322: the tricky precedence COMPOSITIONS the design (§5.2/§5.3) calls out ──
+-- These pin the interactions the #1319 base tests don't: a host on BOTH global
+-- lists (global.extraAllowed beating global.extraBlocked), default-deny composed
+-- with blockIpOnly, the device-override-replaces-profile path composed with the
+-- global layer, and the §5.2 invariant that blockIpOnly carries NO allow
+-- carve-out (allowed hosts pass via resolved_<m> naturally).
+describe("render.nft global composition — precedence compositions (#1322)", function()
+  -- global.extraAllowed is the TOP of the ladder: it beats a global block too.
+  -- A host on both @global_block and @global_allow must stay reachable, so the
+  -- per-MAC @global_block drop carries the `!= @global_allow` carve-out.
+  it("global.extraAllowed beats global.extraBlocked (host in both → @global_block drop carves out @global_allow)", function()
+    local s = snap_global()
+    s.global.extraBlocked = { "evil.example" }
+    s.global.extraAllowed = { "evil.example" } -- same host on both lists
+    local nft = render.nft(s)
+    -- The drop matches @global_block but is suppressed for any IP also in
+    -- @global_allow — i.e. evil.example's resolved IPs survive.
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @global_block6 ip6 daddr != @global_allow6 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
+  end)
+
+  -- default-deny × blockIpOnly is the strictest combination (design §4): the
+  -- profile collapses to blocked=true with only its extraAllowed reachable AND
+  -- a resolved_<m> strict-IP drop fires independently. A packet survives only if
+  -- it is explicitly allowed AND was locally resolved.
+  it("default-deny + blockIpOnly: per-MAC block carves out @ea_ AND a separate resolved_<m> drop fires", function()
+    local s = snap_global()
+    -- the server-collapsed default-deny wire shape: blocked + DefaultDeny +
+    -- only extraAllowed, extraBlocked/blocklistIds omitted, blockIpOnly on.
+    s.profiles["3"].rules = {
+      blocked      = true,
+      blockReason  = "DefaultDeny",
+      extraBlocked = {},
+      extraAllowed = { "pbskids.org" },
+      blocklistIds = {},
+      blockIpOnly  = true,
+    }
+    local nft = render.nft(s)
+    -- 1) whole-MAC block, carved out by the per-MAC ea exception, DefaultDeny reason
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @ea_aa_bb_cc_11_22_33_pbskids_org log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:DefaultDeny\"",
+      1, true))
+    -- 2) the independent strict-IP drop on resolved_<m>
+    assert.truthy(nft:find("set resolved_aa_bb_cc_11_22_33 {", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
+      1, true))
+  end)
+
+  -- §5.2 invariant: blockIpOnly has NO allowlist carve-out. Allowed hosts land
+  -- in resolved_<m> at DNS time and so pass the IP-only test naturally; splicing
+  -- a `!= @global_allow` / `!= @ea_` clause into the resolved_ drop would be
+  -- wrong. Even with a global allow list present, the resolved_ drop must be the
+  -- bare strict-IP predicate.
+  it("blockIpOnly drop never carries an allow carve-out, even with global.extraAllowed set", function()
+    local s = snap_global()
+    s.global.blockIpOnly  = true
+    s.global.extraAllowed = { "ok.example" }
+    local nft = render.nft(s)
+    -- the resolved_ drop line is exactly the bare strict-IP predicate
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @resolved_aa_bb_cc_11_22_33 log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:ip_only\"",
+      1, true))
+    -- no `@global_allow` spliced onto the resolved_ line
+    assert.is_nil(nft:find(
+      "@resolved_aa_bb_cc_11_22_33 ip daddr != @global_allow", 1, true))
+  end)
+
+  -- global-allow vs profile-deny vs device-allow conflict (§5.1 replace + §5.2):
+  -- a device override that runs allow-by-default REPLACES its default-deny / blocked
+  -- profile, so the device escapes the whole-MAC profile block — but a GLOBAL block
+  -- still applies to it (only @global_allow saves a global block).
+  it("device-allow override escapes a blocked profile but a global block still applies", function()
+    local s = snap_global()
+    -- profile is whole-MAC blocked (e.g. default-deny / paused)…
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Paused"
+    -- …but THIS device overrides to allow-by-default (replace semantics)…
+    s.devices["aa:bb:cc:11:22:33"].rules = {
+      blocked      = false,
+      blockReason  = nil,
+      extraBlocked = {},
+      extraAllowed = {},
+      blocklistIds = {},
+      blockIpOnly  = false,
+    }
+    -- …and there is a fleet-wide global block + global allow.
+    s.global.extraBlocked = { "evil.example" }
+    s.global.extraAllowed = { "ok.example" }
+    local nft = render.nft(s)
+    -- The device is NOT whole-MAC blocked — no Paused drop for it (override won).
+    assert.is_nil(nft:find("wh_drop:aa:bb:cc:11:22:33:Paused", 1, true))
+    -- But the global block still drops for this managed MAC, carved out only by
+    -- @global_allow (its own empty extraAllowed cannot loosen a global block).
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @global_block ip daddr != @global_allow log group 1 counter drop comment \"wh_drop:aa:bb:cc:11:22:33:global_block\"",
+      1, true))
   end)
 end)

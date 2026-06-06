@@ -25,6 +25,8 @@ object UsageRoutes {
       profileRepo: ProfileRepo,
       appRepo: AppRepo,
       rollupRepo: RollupRepo,
+      hsRepo: HouseholdSettingsRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
@@ -109,16 +111,17 @@ object UsageRoutes {
             today  <- clock.today
             fromS = req.url.queryParam("from").getOrElse(today.toString)
             toS   = req.url.queryParam("to").getOrElse(fromS)
-            from <- ZIO
+            from     <- ZIO
               .attempt(LocalDate.parse(fromS))
               .orElseFail(Response.badRequest(s"invalid from: $fromS"))
-            to   <- ZIO
+            to       <- ZIO
               .attempt(LocalDate.parse(toS))
               .orElseFail(Response.badRequest(s"invalid to: $toS"))
-            _    <- ZIO
+            _        <- ZIO
               .fail(Response.badRequest("from must be <= to"))
               .when(from.isAfter(to))
-            resp <- buildUsageByApp(
+            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            resp     <- buildUsageByApp(
               pid,
               from,
               to,
@@ -126,6 +129,8 @@ object UsageRoutes {
               deviceRepo,
               trafficRepo,
               appRepo,
+              settings.heartbeatFilter,
+              settings.presenceContinuationSeconds,
             )
           } yield Response.json(resp.toJson)
         },
@@ -173,6 +178,7 @@ object UsageRoutes {
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
               else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+            settings  <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             resp      <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
                 buildForDevice(
@@ -186,6 +192,7 @@ object UsageRoutes {
                   userProfileRepo,
                   groupByApp,
                   appLookup,
+                  settings,
                 )
               case (_, Some(pid)) =>
                 buildForProfile(
@@ -198,8 +205,10 @@ object UsageRoutes {
                   deviceRepo,
                   trafficRepo,
                   userProfileRepo,
+                  siteTimeLimitRepo,
                   groupByApp,
                   appLookup,
+                  settings,
                 )
               case _              => ZIO.fail(Response.badRequest("unreachable"))
             }
@@ -232,6 +241,7 @@ object UsageRoutes {
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
               else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+            settings  <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             resp      <- buildBatch(
               pids,
               date,
@@ -242,8 +252,10 @@ object UsageRoutes {
               deviceRepo,
               trafficRepo,
               userProfileRepo,
+              siteTimeLimitRepo,
               groupByApp,
               appLookup,
+              settings,
             )
           } yield Response.json(resp.toJson)
         },
@@ -264,33 +276,67 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
       groupByApp: Boolean,
       appLookup: HostId => Option[UsageSeries.AppInfo],
+      settings: HouseholdSettings,
   ): IO[Response, UsageSeriesBatchResponse] =
     for {
       _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
-      profiles   <- ZIO.foreach(pids) { pid =>
+      profiles    <- ZIO.foreach(pids) { pid =>
         profileRepo
           .findById(pid)
           .mapError(ErrorMapper.dbErrorToResponse)
           .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
       }
-      allDevices <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      // #1492: exempt-from-daily site patterns must match the headline daily total exactly, so
+      // load them per profile (same input `usedSecondsForProfile` uses) and carve them out.
+      exemptByPid <- ZIO
+        .foreach(pids) { pid =>
+          siteTimeLimitRepo
+            .listForProfile(pid)
+            .map(sl => pid -> sl.filter(_.exemptFromDaily).map(_.domainPattern))
+        }
+        .map(_.toMap)
+        .mapError(ErrorMapper.dbErrorToResponse)
       devicesByPid = pids.iterator
         .map(pid => pid -> allDevices.filter(_.profileId.contains(pid)))
         .toMap
-      allMacs      = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
-      rows <- fetchPresenceDayWindow(trafficRepo, allMacs, date, zone)
+      allMacs = devicesByPid.valuesIterator.flatten.map(_.mac).toList.distinct
+      rows        <- fetchPresenceDayWindow(trafficRepo, allMacs, date, zone)
     } yield {
       val series = profiles.map { profile =>
         val devices   = devicesByPid.getOrElse(profile.id, Nil)
         val macSet    = devices.iterator.map(_.mac).toSet
         val nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
         val pRows     = rows.filter(r => macSet.contains(r.mac))
-        val (topHosts, bucketsByHost, topDevices, bucketsByDevice) =
-          UsageSeries.buildProfile(pRows, nameByMac, zone, topN, profile.crossDeviceOverlapMode)
-        val (topEntries, bucketsByEntry)                           =
-          if (groupByApp) UsageSeries.buildEntries(pRows, zone, topN, appLookup)
+        val exempt    = exemptByPid.getOrElse(profile.id, Nil)
+        val (topHosts, bucketsByHost, topDevices, bucketsByDevice, presenceTotalMins) =
+          UsageSeries.buildProfile(
+            pRows,
+            nameByMac,
+            date,
+            zone,
+            topN,
+            profile.crossDeviceOverlapMode,
+            exempt,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+          )
+        val (topEntries, bucketsByEntry)                                              =
+          if (groupByApp)
+            UsageSeries.buildEntries(
+              pRows,
+              date,
+              zone,
+              topN,
+              profile.crossDeviceOverlapMode,
+              exempt,
+              settings.heartbeatFilter,
+              settings.presenceContinuationSeconds,
+              appLookup,
+            )
           else (List.empty[UsageEntityTotal], List.empty[UsageEntityBucket])
         UsageSeriesResponse(
           profileId = Some(profile.id),
@@ -303,6 +349,7 @@ object UsageRoutes {
           bucketsByDevice = bucketsByDevice,
           topEntries = topEntries,
           bucketsByEntry = bucketsByEntry,
+          presenceTotalMins = presenceTotalMins,
         )
       }
       UsageSeriesBatchResponse(series)
@@ -324,6 +371,8 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       appRepo: AppRepo,
+      filter: HeartbeatFilter,
+      continuationSeconds: Int,
   ): IO[Response, ProfileUsageByApp] =
     for {
       profile <- profileRepo
@@ -357,23 +406,31 @@ object UsageRoutes {
         h => h.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))
       }
 
-      val propByHost    = wifihaven.api.presence.Presence.proportionalHostSeconds(presence)
-      val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence)
+      val overlap       = profile.crossDeviceOverlapMode
+      // #1465: per-host presence is now the session-stitch span (heartbeat-filtered),
+      // combined across the profile's devices by its `crossDeviceOverlapMode`.
+      val propByHost    =
+        wifihaven.api.presence.Presence
+          .proportionalHostSeconds(presence, overlap, filter, continuationSeconds)
+      val seenByHost    = wifihaven.api.presence.Presence.hostMinutes(presence, filter)
       val propMinByHost =
-        wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, overlap, filter, continuationSeconds)
 
       val appProp    = scala.collection.mutable.Map.empty[Option[AppId], Long]
       val hostsByApp =
         scala.collection.mutable.Map.empty[Option[AppId], List[HostUsage]]
-      for ((h, secs)   <- propByHost) {
+      for ((h, secs) <- propByHost) {
         val key = appOfHost(h)
-        appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs.round))
+        appProp.updateWith(key)(prev => Some(prev.getOrElse(0L) + secs))
         val hu  = HostUsage(h, seenByHost.getOrElse(h, 0), propMinByHost.getOrElse(h, 0))
         hostsByApp.updateWith(key)(prev => Some(hu :: prev.getOrElse(Nil)))
       }
-      // Per-app bucket-dedup for presence-seconds.
+      // Per-app bucket-dedup for presence-seconds (heartbeat rows stripped, #1465).
       val appPresence = scala.collection.mutable.Map.empty[Option[AppId], Long]
-      for ((_, bucket) <- presence.groupBy(r => (r.mac, r.periodStart))) {
+      val activeRows =
+        presence.filterNot(r => wifihaven.api.presence.Presence.isHeartbeat(r, filter))
+      for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
         val secs = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
         val keys = bucket.iterator.map(r => appOfHost(r.host)).toSet
         for (a <- keys)
@@ -442,6 +499,7 @@ object UsageRoutes {
       userProfileRepo: UserProfileRepo,
       groupByApp: Boolean,
       appLookup: HostId => Option[UsageSeries.AppInfo],
+      settings: HouseholdSettings,
   ): IO[Response, UsageSeriesResponse] =
     for {
       device <- deviceRepo
@@ -450,9 +508,29 @@ object UsageRoutes {
         .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
       _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
       rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
-      (topHosts, buckets)          = UsageSeries.build(rows, zone, topN)
-      (topEntries, bucketsByEntry) =
-        if (groupByApp) UsageSeries.buildEntries(rows, zone, topN, appLookup)
+      (topHosts, buckets, presenceTotalMins) =
+        UsageSeries.build(
+          rows,
+          date,
+          zone,
+          topN,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
+      // Single-device view → per-device union is the total; no cross-device overlap mode applies.
+      (topEntries, bucketsByEntry)           =
+        if (groupByApp)
+          UsageSeries.buildEntries(
+            rows,
+            date,
+            zone,
+            topN,
+            CrossDeviceOverlapMode.Sum,
+            Nil,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+            appLookup,
+          )
         else (List.empty[UsageEntityTotal], List.empty[UsageEntityBucket])
     } yield UsageSeriesResponse(
       deviceMac = Some(mac),
@@ -463,6 +541,7 @@ object UsageRoutes {
       buckets = buckets,
       topEntries = topEntries,
       bucketsByEntry = bucketsByEntry,
+      presenceTotalMins = presenceTotalMins,
     )
 
   private def buildForProfile(
@@ -475,24 +554,49 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
+      siteTimeLimitRepo: SiteTimeLimitRepo,
       groupByApp: Boolean,
       appLookup: HostId => Option[UsageSeries.AppInfo],
+      settings: HouseholdSettings,
   ): IO[Response, UsageSeriesResponse] =
     for {
-      _       <- requireProfileReadAccess(claims, pid, userProfileRepo)
-      profile <- profileRepo
+      _          <- requireProfileReadAccess(claims, pid, userProfileRepo)
+      profile    <- profileRepo
         .findById(pid)
         .mapError(ErrorMapper.dbErrorToResponse)
         .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-      all     <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      all        <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      siteLimits <- siteTimeLimitRepo.listForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
+      exempt    = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
       devices   = all.filter(_.profileId.contains(pid))
       macs      = devices.map(_.mac)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap
       rows <- fetchPresenceDayWindow(trafficRepo, macs, date, zone)
-      (topHosts, bucketsByHost, topDevices, bucketsByDevice) =
-        UsageSeries.buildProfile(rows, nameByMac, zone, topN, profile.crossDeviceOverlapMode)
-      (topEntries, bucketsByEntry)                           =
-        if (groupByApp) UsageSeries.buildEntries(rows, zone, topN, appLookup)
+      (topHosts, bucketsByHost, topDevices, bucketsByDevice, presenceTotalMins) =
+        UsageSeries.buildProfile(
+          rows,
+          nameByMac,
+          date,
+          zone,
+          topN,
+          profile.crossDeviceOverlapMode,
+          exempt,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
+      (topEntries, bucketsByEntry)                                              =
+        if (groupByApp)
+          UsageSeries.buildEntries(
+            rows,
+            date,
+            zone,
+            topN,
+            profile.crossDeviceOverlapMode,
+            exempt,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+            appLookup,
+          )
         else (List.empty[UsageEntityTotal], List.empty[UsageEntityBucket])
     } yield UsageSeriesResponse(
       profileId = Some(pid),
@@ -505,6 +609,7 @@ object UsageRoutes {
       bucketsByDevice = bucketsByDevice,
       topEntries = topEntries,
       bucketsByEntry = bucketsByEntry,
+      presenceTotalMins = presenceTotalMins,
     )
 
   // Pull the requested local-day window as a single partition-pruned query

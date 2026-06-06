@@ -460,34 +460,48 @@ pass "blockReason=Paused in policy snapshot"
 pause_profile false
 
 # ── 7. Active schedule reflected in policy snapshot ───────────────────────
-step "Add always-on schedule → blockReason=Schedule in snapshot"
-# PUT the full profile with an all-days, all-hours schedule. The snapshot no
-# longer carries raw schedules; it just collapses an active schedule into
-# blockReason=Schedule.
-SCHED_BODY=$(cat <<EOF
-{
-  "name": "$PROFILE_NAME",
-  "blockedCategories": [],
-  "extraBlocked": [],
-  "extraAllowed": [],
-  "paused": false,
-  "schedules": [
-    {
-      "name": "always",
-      "days": ["mon","tue","wed","thu","fri","sat","sun"],
-      "startLocal": "00:00",
-      "endLocal":   "23:59",
-      "tz":         "UTC"
-    }
-  ],
-  "timeLimit": 1,
-  "siteTimeLimits": []
-}
-EOF
-)
+step "Attach always-on named schedule → blockReason=Schedule in snapshot"
+# #1494: enforcement reads schedules from named_schedules / profile_schedule_rules
+# since #1490; the profile upsert no longer writes the legacy `schedules` table
+# (an inline `schedules` array is now ignored). So a schedule must be authored as
+# a household-scoped named schedule (POST /api/schedules) and attached to the
+# profile (PUT /api/profiles/{id}/schedules). The snapshot then collapses an
+# active window into blockReason=Schedule.
+#
+# First (re)assert the profile carries a 1-minute daily limit so TimeLimit would
+# otherwise fire (§3 already accrued ~90s of usage today) — this lets §7 prove
+# the Schedule > TimeLimit precedence end to end, not just "some block".
 curl -fsS -X PUT "$BASE/api/profiles/$PID" "${AUTH[@]}" \
   -H 'content-type: application/json' \
-  -d "$SCHED_BODY" >/dev/null
+  -d "{
+        \"name\": \"$PROFILE_NAME\",
+        \"blockedCategories\": [],
+        \"extraBlocked\": [],
+        \"extraAllowed\": [],
+        \"paused\": false,
+        \"timeLimit\": 1,
+        \"siteTimeLimits\": []
+      }" >/dev/null
+
+# Create an all-days, all-hours named schedule (unique name per run).
+SCHED_ID=$(curl -fsS -X POST "$BASE/api/schedules" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{
+        \"name\": \"e2e-always-${RUN_ID}\",
+        \"windows\": [
+          {
+            \"days\": [\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\",\"sun\"],
+            \"startLocal\": \"00:00\",
+            \"endLocal\":   \"23:59\",
+            \"tz\":         \"UTC\"
+          }
+        ]
+      }" | _py "import json,sys; print(json.load(sys.stdin)['id'])")
+
+# Attach the named schedule to the profile as a BLOCK schedule.
+curl -fsS -X PUT "$BASE/api/profiles/$PID/schedules" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"scheduleIds\": [$SCHED_ID]}" >/dev/null
 
 curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap4.json"
 SCHED_REASON=$(_py "
@@ -498,12 +512,14 @@ if p is None:
     raise SystemExit('profile $PID missing from snapshot.profiles')
 print(p['rules'].get('blockReason'))
 ")
-# Either Schedule (always-on schedule) or TimeLimit (90s usage from §3 still
-# in today's bucket). The snapshot's precedence is Schedule > TimeLimit, so we
-# expect Schedule — but if scheduling is for any reason inactive we still want
-# to assert *some* block, not silently regress.
+# The profile has an active always-on schedule AND a reached 1-min daily limit
+# (~90s used in §3). PolicyService precedence is Schedule > TimeLimit, so the
+# snapshot must collapse to Schedule. Asserting strictly Schedule (not "some
+# block") is what catches the #1494 regression: if the attach write path or the
+# #1490 read path breaks, the schedule goes unseen and this falls through to
+# TimeLimit.
 case "$SCHED_REASON" in
-  Schedule)  pass "blockReason=Schedule in snapshot" ;;
+  Schedule)  pass "blockReason=Schedule in snapshot (Schedule > TimeLimit)" ;;
   *)         fail "expected blockReason=Schedule, got '$SCHED_REASON'" ;;
 esac
 
@@ -583,16 +599,32 @@ esac
 # wall-clock timestamp is all that's needed.
 # ════════════════════════════════════════════════════════════════════════════
 
-# ── #924: per-FQDN time — proportional (byte-share) vs presence attribution ──
+# ── #924: per-app (per-FQDN) time — session-span presence attribution (#1465) ──
 #
 # Gap from #715: e2e only ever asserted whole-device minutes, never the per-host
-# split on /api/time/status `hostUsage`. Each (mac, period_start) bucket credits
-# every host its FULL duration as `usedMins` (presence) but splits the duration
-# by byte share as `proportionalMins` (#715). Post ONE bucket with two hosts at a
-# 90/10 byte split and assert: the heavy host's proportionalMins exceeds half the
-# (shared) presence minutes, the light host's is strictly below its presence
-# minutes, and heavy > light.
-step "#924: hostUsage proportional vs presence split on /api/time/status"
+# split on /api/time/status `hostUsage`.
+#
+# #1491 / #1465 note: `proportionalMins` USED to be a byte-share weighting of a
+# single bucket's duration (#715). The #1465 presence rework (session-stitch,
+# api/src/presence/Presence.scala `proportionalHostSeconds`, landed in #1488)
+# REPLACED byte-share with a wall-clock session-span model: a host's
+# `proportionalMins` is now the length of its stitched [period_start, period_end]
+# sessions — independent of bytes and of report rate. The old fixture posted one
+# bucket with a 90/10 *byte* split and asserted heavy>light by bytes; under the
+# session model both hosts share the same single 5-min window, so both came out
+# `proportionalMins:5` and the assertion flaked/failed (#1491). The race wasn't in
+# timing — it was the semantics changing under the test as #1488 rolled out to
+# staging.
+#
+# So the differential is now expressed as PRESENCE SPAN, not byte ratio: the heavy
+# host is active across three contiguous 5-min windows (which stitch into one
+# ~15-min session) while the light host is active in only the last window (~5-min
+# session). We poll /api/time/status until the heavy session has settled to
+# clearly dominate the light one. Do NOT reintroduce a byte-ratio expectation
+# here — the byte-share path is gone from this surface. If #1466 (connection-event
+# anchored span edges) later shifts the magnitudes, the ratio tolerance below may
+# need a bump, but `heavy > light` is the stable invariant.
+step "#924: hostUsage per-app session-span split on /api/time/status"
 P924_ID=$(curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
   -H 'content-type: application/json' \
   -d "{\"name\":\"e2e-924-${RUN_ID}\",\"blockedCategories\":[],\"extraBlocked\":[],\"extraAllowed\":[],\"paused\":false,\"schedules\":[],\"timeLimit\":null,\"siteTimeLimits\":[]}" \
@@ -605,27 +637,36 @@ curl -fsS -X PUT "$BASE/api/devices" "${AUTH[@]}" \
   -d "{\"mac\":\"$MAC924\",\"name\":\"e2e-924-dev-${RUN_ID}\",\"profileId\":$P924_ID}" >/dev/null
 EXTRA_DEVICES+=("$MAC924")
 
-# 900k vs 100k bytes = 90/10 split, both active the full 300s → presence
-# usedMins=5 for each host; proportional splits 300s into 270s (=4 min) heavy
-# vs 30s (=0 min) light.
-U924_BODY=$(cat <<EOF
-{
-  "routerId": "$RID",
-  "periodStart": "$FIVE_AGO",
-  "periodEnd": "$NOW",
-  "records": [
-    {"mac":"$MAC924","ip":"192.168.4.10","host":{"type":"fqdn","value":"heavy924.example.com"},"activeSeconds":300,"bytesIn":900000,"bytesOut":0},
-    {"mac":"$MAC924","ip":"192.168.4.10","host":{"type":"fqdn","value":"light924.example.com"},"activeSeconds":300,"bytesIn":100000,"bytesOut":0}
-  ]
+# Three contiguous 5-min windows ending ~now. traffic_reports is keyed by
+# (router_id, period_start, mac, host_type, host_value) and one /api/router/usage
+# batch carries a single (periodStart, periodEnd), so each window is its own POST.
+# heavy924 is present in all three windows → stitched into one ~15-min session;
+# light924 only in the last → one ~5-min session. Byte counts are equal and
+# irrelevant under the session model (kept non-trivial just so the records are
+# realistic). Timestamps come from a single clock read so the windows abut exactly
+# (gap 0 ≤ effectiveGap, so they stitch).
+read -r W15 W10 W5 W0 < <(_py "
+from datetime import datetime,timezone,timedelta
+n=datetime.now(timezone.utc)
+f=lambda m:(n-timedelta(minutes=m)).strftime('%Y-%m-%dT%H:%M:%SZ')
+print(f(15),f(10),f(5),f(0))
+")
+HEAVY924_REC="{\"mac\":\"$MAC924\",\"ip\":\"192.168.4.10\",\"host\":{\"type\":\"fqdn\",\"value\":\"heavy924.example.com\"},\"activeSeconds\":300,\"bytesIn\":100000,\"bytesOut\":0}"
+LIGHT924_REC="{\"mac\":\"$MAC924\",\"ip\":\"192.168.4.10\",\"host\":{\"type\":\"fqdn\",\"value\":\"light924.example.com\"},\"activeSeconds\":300,\"bytesIn\":100000,\"bytesOut\":0}"
+post_924_window() { # $1=periodStart $2=periodEnd $3=records JSON array
+  curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
+    -H 'content-type: application/json' \
+    -d "{\"routerId\":\"$RID\",\"periodStart\":\"$1\",\"periodEnd\":\"$2\",\"records\":$3}" >/dev/null
 }
-EOF
-)
-curl -fsS -X POST "$BASE/api/router/usage" "${RAUTH[@]}" \
-  -H 'content-type: application/json' -d "$U924_BODY" >/dev/null
-pass "#924: posted 1 bucket, 2 hosts, 90/10 byte split"
+post_924_window "$W15" "$W10" "[$HEAVY924_REC]"
+post_924_window "$W10" "$W5"  "[$HEAVY924_REC]"
+post_924_window "$W5"  "$W0"  "[$HEAVY924_REC,$LIGHT924_REC]"
+pass "#924: posted 3 windows — heavy in all (≈15-min session), light in last (≈5-min)"
 
 # today-cache TTL is 30s (api/src/cache/TimeStatusCache.scala); allow up to 40s
-# for a poisoned-empty entry to expire on a staging rollover.
+# for a poisoned-empty entry to expire and for all three windows to ingest. We
+# poll until the heavy session-span has SETTLED to dominate the light one, rather
+# than asserting at a fixed point (the heavy windows may land one at a time).
 H924_OK=""
 deadline=$(( $(date +%s) + 40 ))
 while (( $(date +%s) < deadline )); do
@@ -640,16 +681,19 @@ hu = {h['host'].get('value'): h for h in p.get('hostUsage', []) if h['host'].get
 heavy = hu.get('heavy924.example.com'); light = hu.get('light924.example.com')
 if not heavy or not light:
     print('hosts-missing have=' + ','.join(sorted(hu))); raise SystemExit
-ok = (heavy['proportionalMins'] > heavy['usedMins'] / 2
-      and light['proportionalMins'] < light['usedMins']
-      and heavy['proportionalMins'] > light['proportionalMins'])
+# #1465 session-span: heavy's stitched ~15-min session must clearly dominate
+# light's single ~5-min window. Require >=2x separation + both>0 so a transient
+# tie (before all three heavy windows ingest) keeps the loop polling instead of
+# passing by coincidence.
+ok = (light['proportionalMins'] > 0
+      and heavy['proportionalMins'] >= 2 * light['proportionalMins'])
 print('ok' if ok else 'fail heavy=%s light=%s' % (heavy, light))
 ")
   [ "$H924_OK" = "ok" ] && break
   sleep 2
 done
-[ "$H924_OK" = "ok" ] || fail "#924: proportional/presence split wrong: $H924_OK"
-pass "#924: heavy proportionalMins > ½ presence; light < presence; heavy > light"
+[ "$H924_OK" = "ok" ] || fail "#924: per-app session-span split wrong: $H924_OK"
+pass "#924: heavy session-span proportionalMins ≥ 2× light; both > 0"
 
 # ── #927: household-local day bucketing of usage across the reset boundary ───
 #

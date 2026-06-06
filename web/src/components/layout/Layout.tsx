@@ -34,6 +34,8 @@ const settingsNav: NavItem[] = [
   },
   { to: '/apps',       label: 'Apps',       icon: '◳', adminOnly: true },
   { to: '/blocklists', label: 'Blocklists', icon: '⊘', adminOnly: true },
+  { to: '/schedules',  label: 'Schedules',  icon: '◷', adminOnly: true },
+  { to: '/global-policy', label: 'Global Policy', icon: '🌐', adminOnly: true },
   { to: '/users',   label: 'Users',   icon: '◐', adminOnly: true },
   { to: '/routers', label: 'Routers', icon: '⬢', adminOnly: true },
   { to: '/admin',   label: 'Settings', icon: '⚙', adminOnly: true },

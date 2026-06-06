@@ -25,6 +25,11 @@ export interface Profile {
   failureMode: FailureMode
   crossDeviceOverlapMode: CrossDeviceOverlapMode
   pauseMode: PauseMode
+  // #1320 / #1308: default-deny baseline. When true the profile blocks all
+  // traffic except its extraAllowed hosts/apps + the household global allowlist
+  // (the inverse of the allow-by-default + blocklists model). Resolved
+  // server-side into the per-MAC `blocked = true`; the router never sees it.
+  defaultDeny: boolean
 }
 
 export interface Schedule {
@@ -35,6 +40,34 @@ export interface Schedule {
   startLocal: string  // "HH:mm" wall-clock time in `tz`
   endLocal: string    // "HH:mm" wall-clock time in `tz`
   tz: string          // IANA timezone, e.g. "America/Los_Angeles"
+}
+
+// #1069 — household-scoped reusable named schedule. One named schedule owns
+// one or more windows; anything time-bound (profiles today, per-app rules
+// #1380, blocklists #1067 next) references it by id. This is the SPA mirror of
+// the API's `NamedSchedule` — it never reaches the router wire; PolicyService
+// folds the active windows into the per-MAC BlockRules at snapshot time.
+export interface ScheduleWindow {
+  days: string[]      // lowercase 3-letter tokens: "mon".."sun"
+  startLocal: string  // "HH:mm" wall-clock time in `tz`
+  endLocal: string    // "HH:mm" wall-clock time in `tz`
+  tz: string          // IANA timezone, e.g. "America/Los_Angeles"
+}
+
+export interface NamedSchedule {
+  id: number
+  name: string
+  description: string | null
+  windows: ScheduleWindow[]
+}
+
+// Create/update bodies for the /api/schedules CRUD. `windows` is the full
+// desired set (replace semantics) — matches the API's
+// Create/UpdateNamedScheduleRequest.
+export interface NamedScheduleRequest {
+  name: string
+  description?: string | null
+  windows: ScheduleWindow[]
 }
 
 // #714 — server-side heartbeat filter for device/profile screen-time totals.
@@ -81,6 +114,10 @@ export interface ProfileDetail {
   profile: Profile
   schedules: Schedule[]
   timeLimit: TimeLimit | null
+  // #1069 — ids of the household named schedules attached to this profile as
+  // block schedules (downtime while active). Empty until the operator attaches
+  // one. Optional for back-compat with older API responses that omit it.
+  scheduleIds?: number[]
 }
 
 export interface Device {
@@ -453,6 +490,11 @@ export interface UsageSeriesResponse {
   // #1079 — populated when the request asked groupBy=app.
   topEntries?: UsageEntityTotal[]
   bucketsByEntry?: UsageEntityBucket[]
+  // #1492 — the day-level session-stitch presence total (floored once). This is
+  // the same number the profile card shows as time-used; display it as the graph
+  // headline rather than summing the per-hour bars, which lose sub-minute
+  // fractions and read a few minutes low. Optional: older API responses omit it.
+  presenceTotalMins?: number
 }
 
 // #1099 — batched per-profile series: one round-trip resolves the whole
@@ -640,13 +682,64 @@ export interface UpsertProfileRequest {
   name: string
   blockedCategories: string[]
   paused: boolean
-  schedules: ScheduleRequest[]
+  // #1494: schedules are NOT carried here. A profile's block schedules are
+  // #1069 household named schedules attached via PUT /api/profiles/{id}/schedules
+  // (SetProfileSchedulesRequest -> profile_schedule_rules), which enforcement
+  // reads (#1482/#1490). The old inline array wrote the dead V1 schedules table.
   timeLimit: number | null
   failureMode: FailureMode
   // #751: omit to preserve existing value on update; defaults to 'sum' on create.
   crossDeviceOverlapMode?: CrossDeviceOverlapMode
   // #1418: omit to preserve existing value on update; defaults to 'soft' on create.
   pauseMode?: PauseMode
+  // #1320: omit to preserve existing value on update; defaults to false on create.
+  defaultDeny?: boolean
+}
+
+// #1320 / #1308: admin-facing management + audit view of the household-global
+// policy (`PolicySnapshot.global`). The wire snapshot carries only flat
+// hostname / category lists for the router; the *why* and *who* (the
+// security-sensitive bypass-list audit trail) are surfaced ONLY here.
+
+// One row of the global allow/block audit history. `removedAt == null` ⇒ the
+// entry is active and feeds the snapshot; non-null ⇒ soft-deleted, kept for
+// audit. `addedBy`/`removedBy` are usernames resolved server-side.
+export interface GlobalPolicyAuditEntry {
+  host: string
+  reason: string | null
+  addedBy: string | null
+  addedAt: string
+  removedBy: string | null
+  removedAt: string | null
+}
+
+export type MacBlockReason =
+  | 'Paused' | 'Schedule' | 'TimeLimit' | 'Manual' | 'Unmanaged' | 'DefaultDeny'
+
+export interface GlobalPolicyView {
+  // Full history (active + soft-deleted). The active set feeding the snapshot
+  // is the entries with `removedAt == null`.
+  allow: GlobalPolicyAuditEntry[]
+  blocks: GlobalPolicyAuditEntry[]
+  blocklistIds: string[]
+  blocked: boolean
+  blockReason: MacBlockReason | null
+  blockIpOnly: boolean
+}
+
+export interface AddGlobalHostRequest {
+  host: string
+  reason?: string | null
+}
+
+export interface SetGlobalBlocklistsRequest {
+  blocklistIds: string[]
+}
+
+export interface SetGlobalFlagsRequest {
+  blocked: boolean
+  blockReason?: MacBlockReason | null
+  blockIpOnly: boolean
 }
 
 export interface UpsertDeviceRequest {
@@ -712,6 +805,24 @@ export interface App {
   createdAt: string
 }
 
+// #1380 / #1376 — per-app schedule rules. Each rule attaches a #1069 named
+// schedule (by id) to an app's profile assignment with a mode:
+//   allowed_during — the app stays reachable while the schedule's window is
+//     active, even during profile downtime (a carve-out that beats whole-MAC
+//     blocks per #421). Subject to the daily time limit unless exemptFromDaily.
+//   blocked_during — the app is dropped while the window is active, even when
+//     the profile is otherwise unrestricted.
+// API-internal: PolicyService collapses active rules into the existing per-MAC
+// extraAllowed / extraBlocked snapshot fields — no wire/router change (design
+// doc docs/design/per-app-schedules.md §2–§5). Mirrors the API's ScheduleMode
+// wire strings.
+export type AppScheduleMode = 'allowed_during' | 'blocked_during'
+
+export interface AppScheduleRule {
+  scheduleId: number
+  mode: AppScheduleMode
+}
+
 export interface AppPolicyAssignment {
   id: number
   appId: number
@@ -719,6 +830,9 @@ export interface AppPolicyAssignment {
   mode: AppMode
   dailyMinutes: number | null
   exemptFromDaily: boolean
+  // #1380 — attached per-app schedule rules. Optional/back-compat: omitted by
+  // an API that predates #1379 (defaults to no rules).
+  scheduleRules?: AppScheduleRule[]
 }
 
 export interface AppDetail {
@@ -769,6 +883,9 @@ export interface UpsertAppAssignmentRequest {
   mode: AppMode
   dailyMinutes?: number | null
   exemptFromDaily?: boolean
+  // #1380 — additive (default Nil server-side). The full desired rule set for
+  // this assignment (replace semantics, like SetProfileSchedulesRequest's ids).
+  scheduleRules?: AppScheduleRule[]
 }
 
 // #958: BlocklistSummary as returned by GET /api/blocklists.

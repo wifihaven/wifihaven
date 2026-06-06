@@ -1,0 +1,42 @@
+-- V52__presence_tuning_settings.sql
+-- #1463: presence-tuning knob on household_settings (schema-only foundation).
+--
+-- Background: presence (the minutes that drive screen-time totals, time-limit
+-- enforcement, and the dashboards) is today derived from a per-10-second
+-- activity sample that only ticks when *new bytes* are observed. For
+-- request-driven apps with long local "think time" (the educational / reading
+-- apps), most 60-second buckets register only the floor 10 s of a fully-engaged
+-- minute, so presence reads ~3.3× low for the kid devices (analysis: #1446 /
+-- PR #1449, docs/design/presence-tuning.md). The fix replaces fixed-bucket
+-- presence with an activity-session model stitched on a wall-clock idle gap.
+--
+-- The session model is unconditional and global — there is no toggle back to
+-- the legacy max(activeSeconds) path, so this migration adds only the one tuning
+-- knob the model needs:
+--
+--   - presence_continuation_seconds — the idle gap `N` that ends a session.
+--     Per (device, app), activity is merged into a session as long as the gap
+--     to the next activity is ≤ N; a session's presence is its first→last
+--     span. Default 120 (the knee of the measured think-gap distribution).
+--     Spec requires N ≥ 2 × usage_report_interval; that validation lives in
+--     the follow-up code, not here.
+--
+-- This is a SCHEMA-ONLY migration (per the migration-isolation rule in
+-- CLAUDE.md / AGENTS.md §migrations-back-compat): it ships with no source and
+-- no tests. The rollup / repo / route / invalidation-hook changes that READ
+-- and WRITE this column are the follow-up PRs (#1464 / #1465). Until then the
+-- column is inert — nothing reads it, every existing row gets the default, and
+-- behavior is unchanged.
+--
+-- `household_settings` is a small singleton-style metadata table, NOT one of
+-- the unbounded-growth event tables (traffic_reports, connection_events, …).
+-- Adding a column with a constant default is metadata-only in PG 11+ (no table
+-- rewrite), so this is safe on the Flyway startup critical path even at prod
+-- data volume.
+--
+-- Nullable-by-default contract: the column is NOT NULL DEFAULT, so image-(N-1)
+-- — which never names it in any INSERT/UPDATE — keeps working unchanged;
+-- existing rows and any new rows it writes get the default.
+
+ALTER TABLE household_settings
+  ADD COLUMN presence_continuation_seconds INTEGER NOT NULL DEFAULT 120;

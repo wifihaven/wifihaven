@@ -359,10 +359,52 @@ case class UpdateAppRequest(
 
 case class SetAppHostsRequest(hosts: List[String]) derives JsonCodec
 
+// #1379: per-app schedule rules. Each rule attaches a #1069 named schedule
+// (NamedScheduleId, V50 `named_schedules`) to an app's (app, profile) assignment
+// with a mode:
+//   - AllowedDuring — while any window of the schedule is active, the app's hosts
+//     are carved into `extraAllowed`, beating the profile's whole-MAC block (#421)
+//     — the headline "reachable during bedtime" case.
+//   - BlockedDuring — while active, the app's hosts go to `extraBlocked`, even when
+//     the profile is otherwise unrestricted.
+// API-internal only: this is NEVER a `PolicySnapshot` field. PolicyService folds
+// the active windows into the existing per-MAC `extraAllowed` / `extraBlocked`
+// (docs/design/per-app-schedules.md §2, §4) — no wire/router change.
+enum AppScheduleMode { case AllowedDuring, BlockedDuring }
+
+object AppScheduleMode {
+  def asString(m: AppScheduleMode): String      = m match {
+    case AllowedDuring => "allowed_during"
+    case BlockedDuring => "blocked_during"
+  }
+  def parse(s: String): Option[AppScheduleMode] = s match {
+    case "allowed_during" => Some(AllowedDuring)
+    case "blocked_during" => Some(BlockedDuring)
+    case _                => None
+  }
+  given JsonCodec[AppScheduleMode]              = JsonCodec[String].transformOrFail(
+    s => parse(s).toRight(s"unknown app schedule mode: $s"),
+    asString,
+  )
+}
+
+// A single (assignment, named-schedule, mode) rule row (`app_policy_schedule_rules`,
+// V51). `id` / `assignmentId` are server-assigned and default to placeholders so the
+// request shape below only needs `{scheduleId, mode}` on input.
+case class AppScheduleRule(
+    scheduleId: NamedScheduleId,
+    mode: AppScheduleMode,
+    id: AppScheduleRuleId = AppScheduleRuleId(0L),
+    assignmentId: AppPolicyAssignmentId = AppPolicyAssignmentId(0L),
+) derives JsonCodec
+
 case class UpsertAppAssignmentRequest(
     mode: AppMode,
     dailyMinutes: Option[Int] = None,
     exemptFromDaily: Option[Boolean] = None,
+    // #1379: additive — the full desired set of per-app schedule rules (replace
+    // semantics, like SetAppHostsRequest.hosts). Existing clients omit it (`Nil`).
+    scheduleRules: List[AppScheduleRule] = Nil,
 ) derives JsonCodec
 
 case class AppDetail(
@@ -578,13 +620,25 @@ case class UpsertProfileRequest(
     name: String,
     blockedCategories: List[BlocklistId],
     paused: Boolean,
-    schedules: List[ScheduleRequest],
+    // #1494: schedules are NO LONGER carried here. Enforcement reads from
+    // named_schedules / profile_schedule_rules (#1482/#1490); a profile's block
+    // schedules are attached via PUT /api/profiles/{id}/schedules
+    // (SetProfileSchedulesRequest). The legacy inline array wrote the dead V1
+    // `schedules` table, so editing it was a silent no-op — the field is gone.
+    // (An older client that still sends `schedules` is tolerated: ZIO JSON
+    // ignores the unknown field, and nothing acts on it.)
     timeLimit: Option[Int],
     failureMode: Option[FailureMode] = None,
     blockIpOnly: Option[Boolean] = None,
     crossDeviceOverlapMode: Option[CrossDeviceOverlapMode] = None,
     // #1418: omitted → preserve existing value (default 'soft' on create).
     pauseMode: Option[PauseMode] = None,
+    // #1320 / #1308: per-profile default-deny baseline (block-all; only
+    // extraAllowed + global.extraAllowed reachable). Omitted → preserve
+    // existing value (default false on create). Additive optional field, so an
+    // older client that never sends it leaves the profile's default-deny
+    // setting untouched.
+    defaultDeny: Option[Boolean] = None,
 ) derives JsonCodec
 
 case class ScheduleRequest(
@@ -600,13 +654,24 @@ case class HouseholdSettings(
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
     unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
+    // #1464: idle gap `N` (seconds) for the presence session-stitch model. Per
+    // (device, app), activity merges into one session as long as the wall-clock
+    // gap to the next activity is ≤ N; a larger gap ends the session and its
+    // presence is the [first, last]-activity span. Default 120 (migration V52);
+    // the rollup raises it to the 2×R collapse guard at compute time.
+    presenceContinuationSeconds: Int = HouseholdSettings.DefaultPresenceContinuationSeconds,
 ) derives JsonCodec
+
+object HouseholdSettings {
+  val DefaultPresenceContinuationSeconds: Int = 120
+}
 
 case class UpdateHouseholdSettingsRequest(
     dailyResetTime: LocalTime,
     dailyResetTz: ZoneId,
     heartbeatFilter: HeartbeatFilter,
     unmanagedMacPolicy: UnmanagedMacPolicy = UnmanagedMacPolicy.Default,
+    presenceContinuationSeconds: Int = HouseholdSettings.DefaultPresenceContinuationSeconds,
 ) derives JsonCodec
 
 /**
@@ -998,6 +1063,11 @@ case class UsageSeriesResponse(
     bucketsByDevice: List[UsageDeviceBucket] = Nil,
     topEntries: List[UsageEntityTotal] = Nil,
     bucketsByEntry: List[UsageEntityBucket] = Nil,
+    // #1492: the day-level session-stitch presence total (floored once), so the graph's headline
+    // reconciles exactly with the time-used number on the profile card. Summing the per-hour
+    // `totalMins` would drop sub-minute fractions and read a few minutes low; clients should show
+    // this as the "total". Additive; older clients ignore it. Defaults to 0 for the empty case.
+    presenceTotalMins: Int = 0,
 ) derives JsonCodec
 
 // #1099: batched per-profile series for the /profiles page. One request
@@ -1388,6 +1458,55 @@ case class DevicePolicy(
     profileId: Option[ProfileId],
     name: String,
     rules: Option[BlockRules],
+) derives JsonCodec
+
+// ── Global policy management (#1320 / #1308) ──────────────────────────────
+// Admin-facing read/write surface for the household-global allow/block sets
+// that PolicyService (#1318) collapses into `PolicySnapshot.global`. The wire
+// snapshot carries only the flat hostname / category lists the router needs;
+// the *why* and *who* — the security-sensitive audit trail for the
+// always-reachable bypass list (design §7) — live in the DB and are surfaced
+// ONLY through these management types, never to the router.
+
+// One row of the `global_allow` / `global_blocks` audit history. `removedAt ==
+// None` ⇒ the entry is active and feeds `PolicySnapshot.global`; `Some` ⇒ it
+// was soft-deleted and is retained for audit only. `addedBy`/`removedBy` are
+// resolved to usernames server-side (the DB stores user ids).
+case class GlobalPolicyAuditEntry(
+    host: Hostname,
+    reason: Option[String],
+    addedBy: Option[String],
+    addedAt: String,
+    removedBy: Option[String],
+    removedAt: Option[String],
+) derives JsonCodec
+
+// Full management view of the global section. `allow`/`blocks` include
+// soft-deleted history so the audit trail is visible; the active set feeding
+// `PolicySnapshot.global` is exactly the rows with `removedAt == None`.
+case class GlobalPolicyView(
+    allow: List[GlobalPolicyAuditEntry],
+    blocks: List[GlobalPolicyAuditEntry],
+    blocklistIds: List[BlocklistId],
+    blocked: Boolean,
+    blockReason: Option[MacBlockReason],
+    blockIpOnly: Boolean,
+) derives JsonCodec
+
+// Append a host to the global allow or block set, with an optional audit
+// `reason`. Re-adding a previously-removed host is fine (the soft-deleted row
+// keeps its `removedAt`; a fresh active row is inserted).
+case class AddGlobalHostRequest(host: Hostname, reason: Option[String] = None) derives JsonCodec
+
+// Replace the household-global category set (`global.blocklistIds`) wholesale.
+case class SetGlobalBlocklistsRequest(blocklistIds: List[BlocklistId]) derives JsonCodec
+
+// Set the flat global flags: the network-lockdown kill switch (`blocked` +
+// block-page `blockReason`) and the network-wide strict-IP floor.
+case class SetGlobalFlagsRequest(
+    blocked: Boolean,
+    blockReason: Option[MacBlockReason] = None,
+    blockIpOnly: Boolean,
 ) derives JsonCodec
 
 case class ProfilePolicy(

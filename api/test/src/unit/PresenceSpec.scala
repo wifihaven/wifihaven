@@ -1,7 +1,7 @@
 package wifihaven.api.unit
 
 import wifihaven.api.presence.{Presence, PresenceRow}
-import wifihaven.shared.HeartbeatFilter
+import wifihaven.shared.{CrossDeviceOverlapMode, HeartbeatFilter}
 import wifihaven.shared.types.*
 import zio.test.*
 
@@ -53,6 +53,31 @@ object PresenceSpec extends ZIOSpecDefault {
       periodSeconds,
     )
 
+  private val yt = HostId.Fqdn(Hostname.unsafe("youtube.com"))
+
+  /**
+   * #1465: a row at an explicit second offset with an explicit window length, for the
+   * session-stitch surfaces. `period_start` / `period_seconds` drive the activity interval `[start,
+   * start+len)`; `active_seconds` is irrelevant to the session model (it set the old
+   * `max(activeSeconds)` floor), so we just mirror the window length into it.
+   */
+  private def appRow(
+      mac: MacAddress,
+      offsetSec: Long,
+      host: String,
+      periodSeconds: Int,
+      bytes: Long = 1_000_000L,
+  ) =
+    PresenceRow(
+      mac,
+      baseDate,
+      base.plusSeconds(offsetSec),
+      HostId.Fqdn(Hostname.unsafe(host)),
+      periodSeconds,
+      bytes,
+      periodSeconds,
+    )
+
   def spec = suite("Presence")(
     suite("totalMinutesByMac")(
       test("collapses multiple hostnames in the same bucket to one count") {
@@ -99,14 +124,138 @@ object PresenceSpec extends ZIOSpecDefault {
           Presence.totalMinutesByMac(rows, List("*.youtube.com")) == Map.empty[MacAddress, Int],
         )
       },
-      test("uses max active_seconds in the bucket as duration") {
-        // The agent emits the same bucket duration on every row, but if multiple ticks land in
-        // the same period (shouldn't happen in practice) we trust the largest value.
+      test("#1464 session span ignores active_seconds — full period span is the evidence") {
+        // The session model credits each non-heartbeat row its full [period_start, period_end]
+        // span (300s here), NOT the sampled active_seconds. So a row that sampled only 60s of its
+        // 300s window still contributes the whole window — this is the within-minute undercount
+        // fix (docs/design/presence-tuning.md §4.1).
         val rows = List(
-          row(mac1, 0, "a.com", 60),
-          row(mac1, 0, "b.com", 300),
+          row(mac1, 0, "a.com", secs = 60),
+          row(mac1, 0, "b.com", secs = 300),
         )
         assertTrue(Presence.totalMinutesByMac(rows, Nil) == Map(mac1 -> 5))
+      },
+      test("#1464 (a) a continuous sparse session reads its full span, not the sampled floor") {
+        // Five contiguous 60s windows, each sampling only the 10s activity floor — a kid working
+        // a problem locally between requests. Old bucket model: Σ max(activeSeconds) = 50s → 0 min.
+        // Session model: the five windows stitch into one [0, 300] session → 5 min.
+        val rows = (0 until 5).toList.map { i =>
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(i * 60L),
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 10,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          )
+        }
+        assertTrue(Presence.totalSecondsByMac(rows, Nil) == Map(mac1 -> 300L)) &&
+        assertTrue(Presence.totalMinutesByMac(rows, Nil) == Map(mac1 -> 5))
+      },
+      test("#1464 (b) re-bucketing the same day at R=10s vs R=300s yields the same minutes") {
+        // §2d rate-independence: 300s of continuous activity, expressed once as 30 fine (10s)
+        // windows and once as a single coarse (300s) window. Both must read 300s = 5 min — bucket
+        // size is only the resolution of the evidence, never a term in the formula.
+        val fine   = (0 until 30).toList.map { i =>
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(i * 10L),
+            HostId.Fqdn(Hostname.unsafe("khanacademy.org")),
+            activeSeconds = 10,
+            bytes = 200_000L,
+            periodSeconds = 10,
+          )
+        }
+        val coarse = List(
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("khanacademy.org")),
+            activeSeconds = 10,
+            bytes = 200_000L,
+            periodSeconds = 300,
+          ),
+        )
+        assertTrue(
+          Presence.totalSecondsByMac(fine, Nil) == Presence.totalSecondsByMac(coarse, Nil),
+        ) &&
+        assertTrue(Presence.totalMinutesByMac(fine, Nil) == Map(mac1 -> 5))
+      },
+      test(
+        "#1464 (c) two concurrent apps in one minute count as one minute (within-device union)",
+      ) {
+        // Same 60s window, two different apps. One human on one screen: the device's per-app
+        // sessions union, so the minute counts once — not twice.
+        val rows = List(
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("youtube.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+        )
+        assertTrue(Presence.totalSecondsByMac(rows, Nil) == Map(mac1 -> 60L))
+      },
+      test("#1464 collapse guard: N below 2×R is raised so contiguous windows still merge") {
+        // A misconfigured N (10s) below 2×R (R=60s) would, unguarded, stop contiguous windows from
+        // merging and zero out presence (§2d (ii)). The effectiveGap clamp to 2×R keeps the two
+        // contiguous windows stitched into one 120s session.
+        val rows = (0 until 2).toList.map { i =>
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(i * 60L),
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          )
+        }
+        assertTrue(
+          Presence.totalSecondsByMac(rows, Nil, continuationSeconds = 10) == Map(mac1 -> 120L),
+        )
+      },
+      test("#1464 a real idle gap beyond N is NOT bridged (sessions stay separate)") {
+        // Two 60s windows 600s apart (gap = 540s > N=120). They must remain two 60s sessions →
+        // 120s total, not one bridged 660s span.
+        val rows = List(
+          PresenceRow(
+            mac1,
+            baseDate,
+            base,
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+          PresenceRow(
+            mac1,
+            baseDate,
+            base.plusSeconds(600L),
+            HostId.Fqdn(Hostname.unsafe("mathacademy.com")),
+            activeSeconds = 60,
+            bytes = 200_000L,
+            periodSeconds = 60,
+          ),
+        )
+        assertTrue(
+          Presence.totalSecondsByMac(rows, Nil, continuationSeconds = 120) == Map(mac1 -> 120L),
+        )
       },
     ),
     suite("patternMinutesByMac")(
@@ -340,89 +489,179 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
-    // #715: byte-share-weighted per-host attribution. Same input as hostMinutes,
-    // but each bucket's wall-clock duration is split across hosts by byte share
-    // instead of credited in full to each host.
-    suite("proportionalHostMinutes (#715)")(
-      test("80/20 byte split in a single bucket yields a 4:1 minute attribution") {
+    // #1465: per-app presence is now the union of that app's sessions (the §4.1
+    // session-stitch primitive), replacing the #715 byte-share weighting. Within
+    // a device the sessions are unioned; across devices they combine by the
+    // profile's existing `crossDeviceOverlapMode`. Heartbeat keepalives are
+    // stripped *before* stitching (the byte-share weighting used to do that job).
+    suite("proportionalHostSeconds — session-stitch per-app presence (#1465)")(
+      test("a sparse per-app session reads its full span, not the sampled floor") {
+        // youtube pinged every 60s with 10s windows over 5 minutes. The 50s
+        // think-gaps are < N=120s, so the activity stitches into one continuous
+        // [0, 310s) session — 5 min — instead of 6 × 10s sampled windows (1 min).
+        val rows =
+          (0 to 5).toList.map(i => appRow(mac1, i * 60L, "youtube.com", periodSeconds = 10))
+        assertTrue(Presence.proportionalHostSeconds(rows) == Map(yt -> 310L)) &&
+        assertTrue(Presence.proportionalHostMinutes(rows) == Map(yt -> 5))
+      },
+      test("same app on two devices double-counts under Sum, counts once under Dedup") {
+        // Both devices on youtube for the same [0, 300s) window.
         val rows = List(
-          row(mac1, 0, "youtube.com", secs = 300, bytes = 800L),
-          row(mac1, 0, "icloud.com", secs = 300, bytes = 200L),
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 300),
+          appRow(mac2, 0L, "youtube.com", periodSeconds = 300),
         )
-        // bucket = 300s. youtube 800/1000 → 240s = 4m. icloud 200/1000 → 60s = 1m.
         assertTrue(
-          Presence.proportionalHostMinutes(rows) == Map(
-            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 4,
-            HostId.Fqdn(Hostname.unsafe("icloud.com"))  -> 1,
-          ),
+          Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Sum) == Map(yt -> 600L),
+        ) &&
+        assertTrue(
+          Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Dedup) == Map(yt -> 300L),
         )
       },
-      test("ten polling hosts + one heavy host: heavy host dominates proportional minutes") {
-        // Reproduces the prod shape in #715: device shows ~60 used mins, but a
-        // bucket-presence breakdown lists 10 hosts at 50–80m each because each
-        // one was touched in every bucket. With byte-share weighting, ~all of
-        // the attributed minutes go to the host that actually moved bytes.
-        val heavy   = "youtube.com"
+      test("N < R collapse guard: a misconfigured N is clamped to 2×R (§4.4 inv. 1)") {
+        // Two youtube windows of R=60s, 60s apart (gap = 120−60 = 60). A misconfigured
+        // N=10s would, unguarded, leave them as two 60s sessions; the shared #1464
+        // effectiveGap clamp raises N to 2×R=120s ≥ 60, so the per-app surface bridges
+        // them into one [0,180s) session — same rate-independence guard the daily cap
+        // uses. R is read from period_seconds, never assumed to be 60s.
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 120L, "youtube.com", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.proportionalHostSeconds(rows, continuationSeconds = 10) == Map(yt -> 180L),
+        )
+      },
+      test("a real idle gap beyond the guarded N is not bridged") {
+        // Two 60s windows 600s apart: gap 540 > effectiveGap(120). They stay two
+        // 60s sessions → 120s, not one bridged 660s span.
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 600L, "youtube.com", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.proportionalHostSeconds(rows, continuationSeconds = 120) == Map(yt -> 120L),
+        )
+      },
+      test("keepalive-only window between two real sessions is bridged (§4.4 inv. 2)") {
+        // youtube [0,60) · apns keepalive [60,120) (sub-threshold bytes) · youtube
+        // [120,180). With the filter on the keepalive is stripped before stitching,
+        // leaving youtube windows 60s apart (< N) which bridge into [0, 180s).
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 60L, "apns.apple.com", periodSeconds = 60, bytes = 60L),
+          appRow(mac1, 120L, "youtube.com", periodSeconds = 60),
+        )
+        assertTrue(Presence.proportionalHostSeconds(rows, filter = f) == Map(yt -> 180L))
+      },
+      test("a keepalive run longer than N does NOT bridge the two real sessions") {
+        // Same shape, but the two youtube bursts are 190s apart (> N=120s), so
+        // they stay separate: 60 + 60 = 120s, the keepalive span never counted.
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 60L, "apns.apple.com", periodSeconds = 190, bytes = 60L),
+          appRow(mac1, 250L, "youtube.com", periodSeconds = 60),
+        )
+        assertTrue(Presence.proportionalHostSeconds(rows, filter = f) == Map(yt -> 120L))
+      },
+      test("ten polling hosts + one heavy host: the heartbeat filter removes the pollers") {
+        // The #715 byte-share weighting is gone; the heartbeat filter is now what
+        // strips chatty keepalives from the per-host surface. With the filter on,
+        // only the heavy real-traffic host survives — at its full session span
+        // (12 contiguous 5-min windows → one 60-min session).
         val pollers = (0 until 10).map(i => s"poll-$i.example.com").toList
         val rows    = (0 until 12).toList.flatMap { b =>
-          val heavyRow = row(mac1, b, heavy, secs = 300, bytes = 5_000_000L)
-          val pollRows = pollers.map(p => row(mac1, b, p, secs = 300, bytes = 200L))
+          val heavyRow =
+            appRow(mac1, b * 300L, "youtube.com", periodSeconds = 300, bytes = 5_000_000L)
+          val pollRows =
+            pollers.map(p => appRow(mac1, b * 300L, p, periodSeconds = 300, bytes = 200L))
           heavyRow :: pollRows
         }
-        val out     = Presence.proportionalHostMinutes(rows)
-        // 12 buckets × 5min = 60 wall-clock minutes for the mac. youtube gets
-        // 5_000_000 / (5_000_000 + 10 * 200) ≈ 99.96% of each bucket → ~59 mins.
-        // Each poller gets ~1/(2 500) of each bucket → 0m after the floor /60.
-        assertTrue(out(HostId.Fqdn(Hostname.unsafe(heavy))) == 59) &&
-        // Bucket-presence still shows every poller at 12 × 5 = 60 minutes.
+        val f       = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        assertTrue(Presence.proportionalHostMinutes(rows, filter = f) == Map(yt -> 60))
+      },
+      test("with no devices/rows the per-app surface is empty") {
+        assertTrue(Presence.proportionalHostSeconds(Nil) == Map.empty[HostId, Long])
+      },
+    ),
+    suite("heartbeat filter on per-host / per-site surfaces (#1465)")(
+      test("hostMinutes drops heartbeat rows when the filter is on") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        val rows = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 60),
+          appRow(mac1, 0L, "apns.apple.com", periodSeconds = 60, bytes = 60L),
+        )
+        assertTrue(Presence.hostMinutes(rows, f) == Map(yt -> 1)) &&
+        // filter off: the keepalive host still shows (legacy behaviour preserved).
+        assertTrue(Presence.hostMinutes(rows).keySet.size == 2)
+      },
+      test("patternMinutesByMac drops heartbeat rows when the filter is on") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        val rows = List(appRow(mac1, 0L, "apns.apple.com", periodSeconds = 60, bytes = 60L))
         assertTrue(
-          pollers.forall(p => Presence.hostMinutes(rows)(HostId.Fqdn(Hostname.unsafe(p))) == 60),
+          Presence
+            .patternMinutesByMac(rows, List("*.apple.com"), f) == Map
+            .empty[(MacAddress, String), Int],
         ) &&
-        // …but proportionally every poller is below the per-minute floor.
-        assertTrue(pollers.forall(p => out.getOrElse(HostId.Fqdn(Hostname.unsafe(p)), 0) == 0))
-      },
-      test("bucket with zero total bytes contributes nothing") {
-        // Defensive: in the wild the agent only emits rows with bytes > 0, but
-        // we guard the divide-by-zero so test fixtures with bytes=0 don't blow
-        // up. Such a bucket simply doesn't attribute to any host proportionally
-        // — bucket-presence (hostMinutes) is the right view for that case.
-        val rows = List(
-          row(mac1, 0, "a.com", secs = 300, bytes = 0L),
-          row(mac1, 0, "b.com", secs = 300, bytes = 0L),
-        )
-        assertTrue(Presence.proportionalHostMinutes(rows).isEmpty) &&
-        assertTrue(Presence.hostMinutes(rows).valuesIterator.toSet == Set(5))
-      },
-      test("multiple rows for the same host in one bucket collapse before splitting") {
-        // Two ipv4-typed rows resolving to the same fqdn via the read-side
-        // LATERAL join. Bytes for the host must sum before computing share —
-        // otherwise the host would lose weight to itself.
-        val rows = List(
-          row(mac1, 0, "youtube.com", secs = 300, bytes = 400L),
-          row(mac1, 0, "youtube.com", secs = 300, bytes = 400L), // same host
-          row(mac1, 0, "icloud.com", secs = 300, bytes = 200L),
-        )
-        // youtube collapses to 800. share = 800/1000 → 240s = 4m.
+        // filter off: the row still counts toward the per-site total.
         assertTrue(
-          Presence.proportionalHostMinutes(rows) == Map(
-            HostId.Fqdn(Hostname.unsafe("youtube.com")) -> 4,
-            HostId.Fqdn(Hostname.unsafe("icloud.com"))  -> 1,
-          ),
+          Presence.patternMinutesByMac(rows, List("*.apple.com")) == Map((mac1, "*.apple.com") -> 1),
         )
       },
-      test("sums proportional seconds across buckets and macs") {
-        val rows = List(
-          // bucket 0: mac1 splits youtube 50/50 with poll → 2.5m each
-          row(mac1, 0, "youtube.com", secs = 300, bytes = 500L),
-          row(mac1, 0, "poll.com", secs = 300, bytes = 500L),
-          // bucket 1: mac1 alone on youtube → 5m
-          row(mac1, 1, "youtube.com", secs = 300, bytes = 1_000L),
-          // bucket 2: mac2 alone on poll → 5m
-          row(mac2, 2, "poll.com", secs = 300, bytes = 1_000L),
+    ),
+    // ── #1492: hour-clipped decomposition for the presence-based usage graph ──
+    suite("#1492 hour-clip + span surfaces")(
+      test("secondsByLocalHour splits a span across the hour boundary and sums to its length") {
+        val zone   = java.time.ZoneId.of("UTC")
+        // [00:59:30, 01:00:30) — 30s in hour 0, 30s in hour 1.
+        val span   = Presence.Span(
+          base.plusSeconds(3570).getEpochSecond,
+          base.plusSeconds(3630).getEpochSecond,
         )
-        val out  = Presence.proportionalHostMinutes(rows)
-        assertTrue(out(HostId.Fqdn(Hostname.unsafe("youtube.com"))) == 7) && // 2.5 + 5 = 7.5 → 7
-        assertTrue(out(HostId.Fqdn(Hostname.unsafe("poll.com"))) == 7)       // 2.5 + 5 = 7.5 → 7
+        val byHour = Presence.secondsByLocalHour(List(span), baseDate, zone)
+        assertTrue(byHour.getOrElse(0, 0L) == 30L) &&
+        assertTrue(byHour.getOrElse(1, 0L) == 30L) &&
+        assertTrue(byHour.values.sum == 60L)
+      },
+      test("deviceSessionSpans union reconciles with totalSecondsByMac (the headline total)") {
+        val rows     = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 300),
+          appRow(mac1, 300L, "khanacademy.org", periodSeconds = 300),
+          appRow(mac2, 0L, "youtube.com", periodSeconds = 300),
+        )
+        val viaSpans = Presence
+          .deviceSessionSpans(rows, Nil)
+          .view
+          .mapValues(Presence.unionSeconds)
+          .toMap
+        assertTrue(viaSpans == Presence.totalSecondsByMac(rows, Nil))
+      },
+      test("hostSessionSpans seconds reconcile with proportionalHostSeconds (Sum and Dedup)") {
+        // Same host on two devices in the same window: Sum double-counts, Dedup unions.
+        val rows          = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 300),
+          appRow(mac2, 0L, "youtube.com", periodSeconds = 300),
+        )
+        val sumViaSpans   = Presence
+          .hostSessionSpans(rows, CrossDeviceOverlapMode.Sum)
+          .view
+          .mapValues(_.iterator.map(_.seconds).sum)
+          .toMap
+        val dedupViaSpans = Presence
+          .hostSessionSpans(rows, CrossDeviceOverlapMode.Dedup)
+          .view
+          .mapValues(Presence.unionSeconds)
+          .toMap
+        assertTrue(
+          sumViaSpans == Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Sum),
+        ) &&
+        assertTrue(
+          dedupViaSpans == Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Dedup),
+        ) &&
+        // Sum = 600s (both devices), Dedup = 300s (overlap counts once).
+        assertTrue(sumViaSpans.getOrElse(yt, 0L) == 600L) &&
+        assertTrue(dedupViaSpans.getOrElse(yt, 0L) == 300L)
       },
     ),
   )

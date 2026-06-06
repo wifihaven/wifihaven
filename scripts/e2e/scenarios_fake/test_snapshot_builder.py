@@ -158,3 +158,61 @@ def test_snapshot_with_assigned_device_canary_shape():
     rules = snap["profiles"]["100"]["rules"]
     assert rules["blocked"] is True
     assert rules["blockReason"] == "Paused"
+
+
+# ── Global section (#1460) ────────────────────────────────────────────────────
+
+
+def test_global_omitted_unless_set():
+    """Without set_global(), the snapshot carries no `global` key — keeping the
+    default top-level shape (test_empty_build_has_top_level_contract_keys) and
+    rendering byte-identically to pre-#1319 (render.lua treats absent global as
+    allowAll)."""
+    snap = SnapshotBuilder().build(etag='"sha256:no-global"')
+    assert "global" not in snap
+
+
+def test_set_global_emits_blockrules_shape():
+    """set_global() produces a BlockRules dict under `global` with the contract
+    field set the agent reads (matches the golden's `global` row)."""
+    snap = (
+        SnapshotBuilder()
+        .set_global(
+            extra_allowed=["connectivitycheck.gstatic.com"],
+            extra_blocked=["malware.example"],
+        )
+        .build(etag='"sha256:with-global"')
+    )
+    g = snap["global"]
+    assert set(g) == {
+        "blocked", "extraBlocked", "extraAllowed", "blocklistIds", "blockIpOnly",
+    }
+    assert g["extraAllowed"] == ["connectivitycheck.gstatic.com"]
+    assert g["extraBlocked"] == ["malware.example"]
+    assert g["blocked"] is False
+    assert g["blockIpOnly"] is False
+
+
+def test_set_global_matches_golden_global_keys():
+    """The builder's `global` key set lines up with the contract golden's, so
+    the fake serves bytes the agent decodes."""
+    g = _golden()["global"]
+    built = SnapshotBuilder().set_global(
+        extra_allowed=g["extraAllowed"],
+    ).build(etag='"sha256:golden-global"')["global"]
+    assert set(built) == set(g)
+
+
+def test_set_global_lockdown_allows_optional_reason():
+    """Unlike add_profile(blocked=True), set_global(blocked=True) does NOT
+    require a block_reason — a global lockdown's reason is cosmetic."""
+    snap = SnapshotBuilder().set_global(blocked=True).build(etag='"sha256:lockdown"')
+    assert snap["global"]["blocked"] is True
+    assert "blockReason" not in snap["global"]
+    # ...but it may be set when a test asserts on block-page copy.
+    snap2 = (
+        SnapshotBuilder()
+        .set_global(blocked=True, block_reason="Manual")
+        .build(etag='"sha256:lockdown2"')
+    )
+    assert snap2["global"]["blockReason"] == "Manual"

@@ -293,12 +293,15 @@ object ProfileRoutes {
                   // #1418: omitted pauseMode defaults to Soft (matches the DB
                   // column default and preserves today's pause semantics).
                   upr.pauseMode.getOrElse(PauseMode.Soft),
+                  // #1320: omitted defaultDeny defaults to false on create
+                  // (matches the DB column default).
+                  upr.defaultDeny.getOrElse(false),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
-            _    <- scheduleRepo
-              .replaceForProfile(id, upr.schedules)
-              .mapError(ErrorMapper.dbErrorToResponse)
+            // #1494: profile upsert no longer writes the legacy `schedules`
+            // table. Block schedules are attached via PUT
+            // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
             _    <- ZIO
               .foreachDiscard(upr.timeLimit)(mins => timeLimitRepo.upsert(id, mins))
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -335,6 +338,8 @@ object ProfileRoutes {
                     upr.crossDeviceOverlapMode.getOrElse(p.crossDeviceOverlapMode),
                   // #1418: same preserve-on-omit semantics for the pause mode.
                   pauseMode = upr.pauseMode.getOrElse(p.pauseMode),
+                  // #1320: same preserve-on-omit semantics for default-deny.
+                  defaultDeny = upr.defaultDeny.getOrElse(p.defaultDeny),
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -343,9 +348,9 @@ object ProfileRoutes {
               s"profile updated: id=${pid.value} paused=${p.paused}→${upr.paused} " +
                 s"name=${upr.name}",
             )
-            _      <- scheduleRepo
-              .replaceForProfile(pid, upr.schedules)
-              .mapError(ErrorMapper.dbErrorToResponse)
+            // #1494: profile upsert no longer writes the legacy `schedules`
+            // table. Block schedules are attached via PUT
+            // /api/profiles/{id}/schedules (named_schedules / profile_schedule_rules).
             _      <- (upr.timeLimit match {
               case Some(mins) => timeLimitRepo.upsert(pid, mins)
               case None       => timeLimitRepo.delete(pid)
@@ -593,14 +598,24 @@ object TimeRoutes {
               val macSet  = devices.map(_.mac).toSet
               val pRows   = presence.filter(r => macSet.contains(r.mac))
               val perMac  = wifihaven.api.presence.Presence
-                .totalMinutesByMac(pRows, Nil, settings.heartbeatFilter)
+                .totalMinutesByMac(
+                  pRows,
+                  Nil,
+                  settings.heartbeatFilter,
+                  settings.presenceContinuationSeconds,
+                )
               // #751: same Sum/Dedup branch as the daily summary.
               val total   = p.crossDeviceOverlapMode match {
                 case CrossDeviceOverlapMode.Sum   =>
                   devices.iterator.map(d => perMac.getOrElse(d.mac, 0)).sum
                 case CrossDeviceOverlapMode.Dedup =>
                   wifihaven.api.presence.Presence
-                    .dedupedTotalMinutes(pRows, Nil, settings.heartbeatFilter)
+                    .dedupedTotalMinutes(
+                      pRows,
+                      Nil,
+                      settings.heartbeatFilter,
+                      settings.presenceContinuationSeconds,
+                    )
               }
               ProfileTimeSummaryWeek(
                 p.id,
@@ -904,7 +919,12 @@ object TimeRoutes {
       perMacTotal     = {
         val exemptPats = state.perSite.filter(_.exemptFromDaily).map(_.domainPattern)
         wifihaven.api.presence.Presence
-          .totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
+          .totalMinutesByMac(
+            presence,
+            exemptPats,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+          )
       }
       siteUsage       = state.perSite.map { s =>
         SiteUsage(
@@ -924,8 +944,15 @@ object TimeRoutes {
       // with zero presence are dropped so the top-10 list isn't padded by
       // hosts that exist only because the bucket touched them at all.
       hostUsage       = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
-        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        val presenceMins =
+          wifihaven.api.presence.Presence.hostMinutes(presence, settings.heartbeatFilter)
+        val proportional = wifihaven.api.presence.Presence
+          .proportionalHostMinutes(
+            presence,
+            profile.crossDeviceOverlapMode,
+            settings.heartbeatFilter,
+            settings.presenceContinuationSeconds,
+          )
         presenceMins.iterator
           .filter(_._2 > 0)
           .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
@@ -986,8 +1013,9 @@ object TimeRoutes {
         DeviceUsageSummary(d.mac, d.name, perMacTotal.getOrElse(d.mac, 0))
       }
       hostUsage       = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
-        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence, heartbeatFilter)
+        val proportional = wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, profile.crossDeviceOverlapMode, heartbeatFilter)
         presenceMins.iterator
           .filter(_._2 > 0)
           .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
@@ -1038,8 +1066,10 @@ object TimeRoutes {
         .totalMinutesByMac(presence, Nil, heartbeatFilter)
       totalUsed = perMac.getOrElse(device.mac, 0)
       hostUsage = {
-        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence)
-        val proportional = wifihaven.api.presence.Presence.proportionalHostMinutes(presence)
+        val presenceMins = wifihaven.api.presence.Presence.hostMinutes(presence, heartbeatFilter)
+        // Per-device path: only one mac in play, so Sum/Dedup are equivalent.
+        val proportional = wifihaven.api.presence.Presence
+          .proportionalHostMinutes(presence, CrossDeviceOverlapMode.Sum, heartbeatFilter)
         presenceMins.iterator
           .filter(_._2 > 0)
           .map { case (h, m) => HostUsage(h, m, proportional.getOrElse(h, 0)) }
@@ -1153,12 +1183,18 @@ object TimeRoutes {
       )
       exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).map(_.domainPattern))
       totalUsed  = wifihaven.api.presence.Presence
-        .totalMinutesByMac(presence, exemptPats, settings.heartbeatFilter)
+        .totalMinutesByMac(
+          presence,
+          exemptPats,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
         .getOrElse(device.mac, 0)
       perPat     = wifihaven.api.presence.Presence
         .patternMinutesByMac(
           presence,
           stateOpt.toList.flatMap(_.perSite.map(_.domainPattern)),
+          settings.heartbeatFilter,
         )
       siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
         val used = perPat.getOrElse((device.mac, s.domainPattern), 0)
@@ -1521,6 +1557,7 @@ object HouseholdSettingsRoutes {
                   upd.dailyResetTz,
                   upd.heartbeatFilter,
                   upd.unmanagedMacPolicy,
+                  upd.presenceContinuationSeconds,
                 ),
               )
               .mapError(ErrorMapper.dbErrorToResponse)
@@ -1570,11 +1607,15 @@ object HouseholdSettingsRoutes {
               case Some(_)           =>
                 ZIO.fail(Response.badRequest("unmanagedMacPolicy must be a JSON object"))
             }
+            // #1464: presence_continuation_seconds is an API/config-side rollup
+            // knob with no SPA surface, so PATCH preserves the stored value
+            // rather than exposing it as a patchable field.
             merged = HouseholdSettings(
               dailyResetTime = timePatch.applyTo(existing.dailyResetTime),
               dailyResetTz = tzPatch.applyTo(existing.dailyResetTz),
               heartbeatFilter = mergedFilter,
               unmanagedMacPolicy = mergedUmm,
+              presenceContinuationSeconds = existing.presenceContinuationSeconds,
             )
             _            <- repo.update(merged).mapError(ErrorMapper.dbErrorToResponse)
           } yield Response.ok

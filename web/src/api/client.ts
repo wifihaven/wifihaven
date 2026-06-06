@@ -2,9 +2,11 @@ import { apiHealth } from '@/api/apiHealth'
 import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
+  GlobalPolicyView, AddGlobalHostRequest, SetGlobalBlocklistsRequest, SetGlobalFlagsRequest,
   CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest, PatchAppRequest,
+  NamedSchedule, NamedScheduleRequest,
   RecentApexesResponse, RouterSummary, SetUserProfilesRequest, TimeExtension,
   TrafficUsageBucket, TrafficUsageGroupBy, TrafficUsageResponse,
   PatchDeviceRequest,
@@ -152,6 +154,11 @@ export const api = {
     update: (id: number, data: UpsertProfileRequest) =>
       req<void>('PUT', `/profiles/${id}`, data),
     delete: (id: number) => req<void>('DELETE', `/profiles/${id}`),
+    // #1494 / #1069 — replace the set of #1069 household named schedules
+    // attached to this profile as BLOCK schedules (downtime while active).
+    // Writes profile_schedule_rules; enforcement reads it (#1490).
+    setSchedules: (id: number, scheduleIds: number[]) =>
+      req<void>('PUT', `/profiles/${id}/schedules`, { scheduleIds }),
     getUsers: (id: number) => req<User[]>('GET', `/profiles/${id}/users`),
     setUsers: (id: number, userIds: number[]) =>
       req<void>('PUT', `/profiles/${id}/users`, { userIds }),
@@ -175,6 +182,26 @@ export const api = {
     get: () => req<HouseholdSettings>('GET', '/household/settings'),
     patch: (data: Record<string, unknown>) =>
       req<void>('PATCH', '/household/settings', data),
+  },
+
+  // ── Global policy (#1320 / #1308) ──────────────────────────────────────
+  // Admin-only writes; GET is the management + audit view. `global.extraAllowed`
+  // is a security-sensitive bypass surface, so every mutation is auditable
+  // server-side (reason + acting user). Hosts are sent raw in the DELETE path —
+  // zio-http does not decode percent-encoded chars in path segments, and a
+  // hostname's dots/labels are valid path chars.
+  global: {
+    get: () => req<GlobalPolicyView>('GET', '/global/policy'),
+    addAllow: (data: AddGlobalHostRequest) =>
+      req<void>('POST', '/global/allow', data),
+    removeAllow: (host: string) => req<void>('DELETE', `/global/allow/${host}`),
+    addBlock: (data: AddGlobalHostRequest) =>
+      req<void>('POST', '/global/blocks', data),
+    removeBlock: (host: string) => req<void>('DELETE', `/global/blocks/${host}`),
+    setBlocklists: (blocklistIds: string[]) =>
+      req<void>('PUT', '/global/blocklists', { blocklistIds } as SetGlobalBlocklistsRequest),
+    setFlags: (data: SetGlobalFlagsRequest) =>
+      req<void>('PUT', '/global/flags', data),
   },
 
   // ── Devices ────────────────────────────────────────────────────────────
@@ -372,6 +399,20 @@ export const api = {
   // ── Dashboard "now" ────────────────────────────────────────────────────
   dashboard: {
     now: () => req<DashboardNow>('GET', '/dashboard/now'),
+  },
+
+  // ── Named schedules (#1069) ────────────────────────────────────────────
+  // Household-scoped reusable time-window primitive. Admin-only writes; the
+  // PATCH carries the full schedule shape (replace semantics) so the edit form
+  // can autosave (#423/#995). Referenced rows cascade-delete their references
+  // server-side, so the SPA warns before deleting a referenced schedule.
+  schedules: {
+    list: () => req<NamedSchedule[]>('GET', '/schedules'),
+    create: (data: NamedScheduleRequest) =>
+      req<NamedSchedule>('POST', '/schedules', data),
+    update: (id: number, data: NamedScheduleRequest) =>
+      req<NamedSchedule>('PATCH', `/schedules/${id}`, data),
+    delete: (id: number) => req<void>('DELETE', `/schedules/${id}`),
   },
 
   // ── Blocklists ─────────────────────────────────────────────────────────

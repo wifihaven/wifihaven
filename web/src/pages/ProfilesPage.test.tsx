@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
+import type { BlocklistSummary, Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
@@ -13,11 +13,15 @@ vi.mock('@/api/client', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       setUsers: vi.fn(),
+      setSchedules: vi.fn(),
       usageByApp: vi.fn(),
     },
-    // #978 — the old ProfileEditor modal listed blocklist categories from
-    // /blocklists; the inline app-policy subsection owns that surface now,
-    // so ProfilesPage no longer calls api.blocklists.list.
+    // #1473 — the inline blocked-categories editor on the profile card
+    // fetches the blocklist catalog from /blocklists (same fetch the
+    // Blocklists matrix page uses) and PATCHes blockedCategories.
+    blocklists: {
+      list: vi.fn(),
+    },
     devices: {
       list: vi.fn(),
       patch: vi.fn(),
@@ -32,6 +36,12 @@ vi.mock('@/api/client', () => ({
       list: vi.fn(),
       setPolicy: vi.fn(),
       deletePolicy: vi.fn(),
+    },
+    // #1380 — the per-app schedule-rule editor embeds the #1069 SchedulePicker,
+    // which reads/writes the household named-schedule catalog.
+    schedules: {
+      list: vi.fn(),
+      create: vi.fn(),
     },
     time: {
       summaryAll: vi.fn(),
@@ -86,10 +96,13 @@ const kidsProfile: ProfileDetail = {
     failureMode: 'block-all',
     crossDeviceOverlapMode: 'sum',
     pauseMode: 'soft',
+    defaultDeny: false,
   },
-  schedules: [
-    { id: 10, profileId: 1, name: 'Bedtime', days: ['mon', 'tue'], startLocal: '21:00', endLocal: '07:00', tz: 'UTC' },
-  ],
+  // #1494: the legacy inline `schedules` read field is now always empty (the
+  // upsert no longer writes the V1 table). A profile's block schedules are the
+  // attached #1069 named-schedule ids.
+  schedules: [],
+  scheduleIds: [10],
   timeLimit: { id: 5, profileId: 1, dailyMinutes: 120 },
 }
 
@@ -102,8 +115,10 @@ const adultsProfile: ProfileDetail = {
     failureMode: 'last-known-good',
     crossDeviceOverlapMode: 'sum',
     pauseMode: 'soft',
+    defaultDeny: false,
   },
   schedules: [],
+  scheduleIds: [],
   timeLimit: null,
 }
 
@@ -125,6 +140,15 @@ const adultsSummary: ProfileTimeSummary = {
   dailyLimitMins: null, usedMins: 0, extensionMins: 0, remainingMins: null,
 }
 
+// #1473 — blocklist catalog returned by GET /api/blocklists, consumed by the
+// inline blocked-categories editor on the profile card.
+const blocklistCatalog: BlocklistSummary[] = [
+  { id: 'adult', name: 'Adult content', description: 'Adult sites', bundled: true, source: null, hostCount: 100, lastBuiltAt: null },
+  { id: 'gambling', name: 'Gambling', description: null, bundled: true, source: null, hostCount: 50, lastBuiltAt: null },
+  { id: 'social', name: 'Social media', description: null, bundled: true, source: null, hostCount: 30, lastBuiltAt: null },
+  { id: 'malware', name: 'Malware', description: null, bundled: false, source: 'operator', hostCount: 10, lastBuiltAt: null },
+]
+
 const aliceUser: User = { id: 10, username: 'alice', role: 'child', profileIds: [1] }
 const bobUser:   User = { id: 11, username: 'bob',   role: 'adult', profileIds: [2] }
 const carolUser: User = { id: 12, username: 'carol', role: 'admin', profileIds: [1, 2] }
@@ -137,6 +161,7 @@ beforeEach(() => {
   ;(api.profiles.update as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.setUsers as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.profiles.setSchedules as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.devices.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([phoneDevice, tabletDevice])
   ;(api.devices.patch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.users.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([aliceUser, bobUser, carolUser])
@@ -144,9 +169,12 @@ beforeEach(() => {
     dailyResetTime: '00:00',
     dailyResetTz: 'America/Los_Angeles',
   })
+  ;(api.blocklists.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(blocklistCatalog)
   ;(api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
   ;(api.apps.setPolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.apps.deletePolicy as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  ;(api.schedules.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
   ;(api.profiles.usageByApp as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
     profileId: 1, profileName: 'Kids', from: '2026-05-26', to: '2026-05-26', apps: [],
   })
@@ -285,6 +313,11 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
   })
 
   it('clicking the row toggles the expanded body', async () => {
+    // #1494: the schedule summary now lists the attached named schedule's name
+    // (kidsProfile.scheduleIds = [10]) from the household catalog.
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      [{ id: 10, name: 'Bedtime', description: null, windows: [] }],
+    )
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
@@ -292,7 +325,6 @@ describe('ProfilesPage — list (collapse-by-default shell, #972)', () => {
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
     expect(within(kidsCard).getByText('Bedtime')).toBeInTheDocument()
     expect(within(kidsCard).getByText('120 min')).toBeInTheDocument()
-    expect(within(kidsCard).getByText('21:00 → 07:00')).toBeInTheDocument()
     await user.click(within(kidsCard).getByTestId('profile-row-toggle-1'))
     expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
   })
@@ -368,6 +400,8 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
   // collapsed summary row (alongside the +Time button). The card no longer
   // needs to be expanded to reach either action.
   // #406: pause is still an explicit PUT with the full profile + paused=!current.
+  // #1471: clicking Pause on an active profile no longer fires immediately —
+  // it surfaces a soft/hard choice; the chosen mode rides the same PUT.
   it('Pause button is rendered in the collapsed row and fires update without expanding', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -376,10 +410,13 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
     expect(within(kidsCard).queryByText('Bedtime')).not.toBeInTheDocument()
     const pauseBtn = within(kidsCard).getByTestId('profile-row-pause-1')
     await user.click(pauseBtn)
+    // the click opens the soft/hard picker; nothing is saved yet
+    expect(api.profiles.update).not.toHaveBeenCalled()
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-soft-1'))
     await waitFor(() =>
       expect(api.profiles.update).toHaveBeenCalledWith(
         1,
-        expect.objectContaining({ paused: true, name: 'Kids' }),
+        expect.objectContaining({ paused: true, pauseMode: 'soft', name: 'Kids' }),
       ),
     )
     await waitFor(() => expect(api.profiles.list).toHaveBeenCalledTimes(2))
@@ -437,6 +474,75 @@ describe('ProfilesPage — pause / delete in collapsed row (#1063)', () => {
   })
 })
 
+// #1471 — soft vs hard pause is chosen at the moment of pausing, via a small
+// picker on the row Pause action, NOT as a persistent radio buried in the
+// Time-limits subsection. The chosen mode rides the same PUT that sets paused.
+describe('ProfilesPage — pause-mode chosen at pause-time (#1471)', () => {
+  it('clicking Pause surfaces a soft/hard choice rather than saving immediately', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-1'))
+    expect(within(kidsCard).getByTestId('profile-row-pause-soft-1')).toBeInTheDocument()
+    expect(within(kidsCard).getByTestId('profile-row-pause-hard-1')).toBeInTheDocument()
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+
+  it('choosing Hard pause PUTs paused=true with pauseMode=hard', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-1'))
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-hard-1'))
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ paused: true, pauseMode: 'hard', name: 'Kids' }),
+      ),
+    )
+  })
+
+  it('choosing Soft pause PUTs paused=true with pauseMode=soft', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-1'))
+    await user.click(within(kidsCard).getByTestId('profile-row-pause-soft-1'))
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ paused: true, pauseMode: 'soft', name: 'Kids' }),
+      ),
+    )
+  })
+
+  it('Resume stays a single click (no picker) for a paused profile', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await user.click(within(adultsCard).getByTestId('profile-row-pause-2'))
+    // no picker for resume
+    expect(within(adultsCard).queryByTestId('profile-row-pause-soft-2')).not.toBeInTheDocument()
+    expect(within(adultsCard).queryByTestId('profile-row-pause-hard-2')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(api.profiles.update).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({ paused: false, name: 'Adults' }),
+      ),
+    )
+  })
+
+  it('the standalone persistent Pause-mode radios are gone from the Time-limits subsection', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    expect(within(kidsCard).queryByTestId('profile-pause-mode-soft-1')).not.toBeInTheDocument()
+    expect(within(kidsCard).queryByTestId('profile-pause-mode-hard-1')).not.toBeInTheDocument()
+  })
+})
+
 // #978 — the old ProfileEditor modal is gone; "+ New Profile" now opens a
 // tiny inline name-only form at the top of the page. Everything else (time
 // limit, schedules, blocked categories, app policies, users, devices) is
@@ -467,7 +573,8 @@ describe('ProfilesPage — create (inline name-only, #978)', () => {
       blockedCategories: [],
       paused: false,
       timeLimit: null,
-      schedules: [],
+      // #1494: the create payload no longer carries schedules — they attach via
+      // PUT /profiles/{id}/schedules after the profile exists.
       // #385: column-default for a brand-new profile is LastKnownGood.
       failureMode: 'last-known-good',
       // #751: column-default for a brand-new profile is Sum.
@@ -520,103 +627,110 @@ describe('ProfilesPage — create (inline name-only, #978)', () => {
 // gone — per-host policy lives in apps, exercised by the apps subsection.
 
 describe('ProfilesPage — inline time-limit subsection (#975)', () => {
-  it('collapsed-by-default subsection shows daily-limit + schedule summary', async () => {
+  it('collapsed-by-default subsection shows daily-limit + overlap, no schedules (#1474)', async () => {
     const user = userEvent.setup()
     renderPage()
     const kidsCard = await screen.findByTestId('profile-card-1')
     await expand(1, user)
 
     const sub = within(kidsCard).getByTestId('profile-time-subsection-1')
-    // Collapsed: editor body is hidden, but the summary readout matches what the
-    // expanded card used to show pre-#975 ("Daily limit: 120 min" + "Bedtime …").
+    // Collapsed: editor body is hidden. The summary readout shows the daily cap
+    // and the cross-device overlap mode — schedules moved to their own expander
+    // (#1474), so no "Bedtime …" line here.
     expect(within(sub).getByText(/Daily limit:/)).toBeInTheDocument()
     expect(within(sub).getByText('120 min')).toBeInTheDocument()
-    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
-    expect(within(sub).getByText(/21:00 → 07:00/)).toBeInTheDocument()
+    expect(within(sub).getByText(/Cross-device overlap:/)).toBeInTheDocument()
+    expect(within(sub).queryByText('Bedtime')).not.toBeInTheDocument()
+    expect(within(sub).queryByText(/21:00 → 07:00/)).not.toBeInTheDocument()
     // Editable inputs only appear after expand.
     expect(within(sub).queryByTestId('profile-time-limit-1')).not.toBeInTheDocument()
 
     await user.click(within(sub).getByTestId('profile-time-toggle-1'))
     expect(within(sub).getByTestId('profile-time-limit-1')).toHaveValue(120)
     expect(within(sub).getByTestId('profile-time-overlap-sum-1')).toBeChecked()
+    // The schedule editor is no longer inside the time subsection (#1474).
+    expect(within(sub).queryByTestId('profile-schedule-add-1')).not.toBeInTheDocument()
+    expect(within(sub).queryByTestId('profile-schedule-row-1-0')).not.toBeInTheDocument()
   })
 
+  // Real timers + waitFor throughout (no fake-timer juggling). These debounced
+  // autosave tests previously used `vi.useFakeTimers({ shouldAdvanceTime })`,
+  // which flaked (#1439): the time-limit input's mount value-resync
+  // `useEffect(() => setX(value.x))` can run AFTER our change (its passive
+  // effect hadn't flushed when the element was found under CI load), reverting
+  // the input so the debounce never commits and the PUT is never sent.
+  // `await act` drains those pending mount effects before we interact; `waitFor`
+  // then polls for the real-clock debounce.
   it('autosaves the daily cap after debounce — single PUT, no Save button', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      renderPage()
-      const kidsCard = await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
 
-      const input = within(kidsCard).getByTestId('profile-time-limit-1')
-      // Set atomically: char-by-char typing under fake timers lets the 700ms
-      // debounce fire on a transient partial value, producing extra PUTs.
-      fireEvent.change(input, { target: { value: '90' } })
+    const input = within(kidsCard).getByTestId('profile-time-limit-1')
+    // Drain the input's pending mount effects (value-resync) before interacting.
+    await act(async () => {})
 
-      // Pre-debounce: no save yet.
-      expect(api.profiles.update).not.toHaveBeenCalled()
+    // Set atomically: char-by-char typing lets the debounce fire on a transient
+    // partial value, producing extra PUTs. fireEvent.change gives one value.
+    fireEvent.change(input, { target: { value: '90' } })
 
-      await vi.advanceTimersByTimeAsync(700)
+    // Pre-debounce: no save yet.
+    expect(api.profiles.update).not.toHaveBeenCalled()
 
+    await waitFor(() => {
       expect(api.profiles.update).toHaveBeenCalledTimes(1)
       expect(api.profiles.update).toHaveBeenLastCalledWith(
         1,
         expect.objectContaining({ timeLimit: 90, name: 'Kids' }),
       )
+    })
 
-      // "Saved" indicator surfaces after the PUT resolves.
-      await waitFor(() => {
-        const status = within(kidsCard).getByTestId('profile-time-status-1')
-        expect(status).toHaveAttribute('data-status', 'saved')
-        expect(status).toHaveTextContent('Saved')
-      })
-    } finally {
-      vi.useRealTimers()
-    }
+    // "Saved" indicator surfaces after the PUT resolves.
+    await waitFor(() => {
+      const status = within(kidsCard).getByTestId('profile-time-status-1')
+      expect(status).toHaveAttribute('data-status', 'saved')
+      expect(status).toHaveTextContent('Saved')
+    })
   })
 
   it('autosaves the cross-device overlap toggle', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      renderPage()
-      const kidsCard = await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    await act(async () => {})
 
-      await user.click(within(kidsCard).getByTestId('profile-time-overlap-dedup-1'))
-      await vi.advanceTimersByTimeAsync(700)
+    await user.click(within(kidsCard).getByTestId('profile-time-overlap-dedup-1'))
 
+    // Poll for the debounced PUT — see the daily-cap test (#1439).
+    await waitFor(() =>
       expect(api.profiles.update).toHaveBeenLastCalledWith(
         1,
         expect.objectContaining({ crossDeviceOverlapMode: 'dedup' }),
-      )
-    } finally {
-      vi.useRealTimers()
-    }
+      ),
+    )
   })
 
   it('clearing the daily cap sends timeLimit:null', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
-    try {
-      renderPage()
-      const kidsCard = await screen.findByTestId('profile-card-1')
-      await expand(1, user)
-      await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(within(kidsCard).getByTestId('profile-time-toggle-1'))
+    await act(async () => {})
 
-      await user.clear(within(kidsCard).getByTestId('profile-time-limit-1'))
-      await vi.advanceTimersByTimeAsync(700)
+    await user.clear(within(kidsCard).getByTestId('profile-time-limit-1'))
 
+    // Poll for the debounced PUT — see the daily-cap test (#1439).
+    await waitFor(() =>
       expect(api.profiles.update).toHaveBeenLastCalledWith(
         1,
         expect.objectContaining({ timeLimit: null }),
-      )
-    } finally {
-      vi.useRealTimers()
-    }
+      ),
+    )
   })
 
   it('non-admins see read-only subsection — no editable inputs', async () => {
@@ -629,7 +743,95 @@ describe('ProfilesPage — inline time-limit subsection (#975)', () => {
     const input = within(kidsCard).getByTestId('profile-time-limit-1')
     expect(input).toBeDisabled()
     expect(within(kidsCard).getByTestId('profile-time-overlap-sum-1')).toBeDisabled()
-    expect(within(kidsCard).queryByTestId('profile-time-add-schedule-1')).not.toBeInTheDocument()
+  })
+})
+
+// #1494 — the profile editor's schedule section now attaches #1069 household
+// named schedules (via the shared SchedulePicker) and persists them through
+// PUT /api/profiles/{id}/schedules (api.profiles.setSchedules ->
+// profile_schedule_rules), which enforcement reads (#1490). The old inline
+// per-window editor wrote the dead V1 `schedules` table — a silent no-op — and
+// is gone. These tests pin the picker round-trip and that the legacy upsert
+// write path is never used for schedules.
+describe('ProfilesPage — inline schedules subsection (#1494 named-schedule picker)', () => {
+  const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
+  const schoolHours = { id: 11, name: 'School hours', description: null, windows: [] }
+
+  it('collapsed-by-default subsection summarizes attached named schedules', async () => {
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
+    // kidsProfile carries scheduleIds: [10] → the catalog name 'Bedtime' shows.
+    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
+    // The old inline per-window editor is gone — no window rows.
+    expect(within(sub).queryByTestId('profile-schedule-row-1-0')).not.toBeInTheDocument()
+  })
+
+  it('empty schedules summary reads "No schedules"', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2')
+    await expand(2, user)
+    const sub = within(adultsCard).getByTestId('profile-schedule-subsection-2')
+    expect(within(sub).getByText(/No schedules/i)).toBeInTheDocument()
+  })
+
+  it('attaching a named schedule round-trips through setSchedules, not the legacy upsert', async () => {
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    renderPage()
+    const adultsCard = await screen.findByTestId('profile-card-2') // scheduleIds: []
+    await expand(2, user)
+    const sub = within(adultsCard).getByTestId('profile-schedule-subsection-2')
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-2'))
+    await act(async () => {})
+
+    await user.selectOptions(within(sub).getByTestId('profile-schedule-picker-2-select'), '11')
+    await user.click(within(sub).getByTestId('profile-schedule-add-2'))
+
+    await waitFor(() =>
+      expect(api.profiles.setSchedules).toHaveBeenCalledWith(2, [11]),
+    )
+    // The legacy full-profile PUT is NOT used to carry schedules.
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+
+  it('removing an attached schedule persists the reduced id set via setSchedules', async () => {
+    (api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1') // scheduleIds: [10]
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
+
+    await user.click(within(sub).getByTestId('profile-schedule-attached-1-10-remove'))
+
+    await waitFor(() =>
+      expect(api.profiles.setSchedules).toHaveBeenCalledWith(1, []),
+    )
+    expect(api.profiles.update).not.toHaveBeenCalled()
+  })
+
+  it('non-admins see read-only schedules — no picker, no attach/remove', async () => {
+    mockAuth = { isAdmin: false }
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    const sub = within(kidsCard).getByTestId('profile-schedule-subsection-1')
+    await user.click(within(sub).getByTestId('profile-schedule-toggle-1'))
+    // Read-only: no picker, no attach button, no remove control.
+    expect(within(sub).queryByTestId('profile-schedule-add-1')).not.toBeInTheDocument()
+    expect(within(sub).queryByTestId('profile-schedule-picker-1')).not.toBeInTheDocument()
+    expect(within(sub).queryByTestId('profile-schedule-attached-1-10-remove')).not.toBeInTheDocument()
+    // The attached schedule is still listed for reference.
+    expect(within(sub).getByText('Bedtime')).toBeInTheDocument()
   })
 })
 
@@ -1022,6 +1224,102 @@ describe('ProfilesPage — apps section (#767)', () => {
   })
 })
 
+// #1380 — per-app schedule rules in the assignment editor. Each rule attaches
+// a #1069 named schedule (via the shared SchedulePicker) with a mode
+// (allowed-during / blocked-during); the rule set rides the assignment's
+// UpsertAppAssignmentRequest as additive `scheduleRules`. Autosave: add/remove
+// persists immediately (no Save button).
+describe('ProfilesPage — per-app schedule rules (#1380)', () => {
+  const bedtime = { id: 10, name: 'Bedtime', description: null, windows: [] }
+  const schoolHours = { id: 11, name: 'School hours', description: null, windows: [] }
+
+  function ytWithRules(scheduleRules: { scheduleId: number; mode: 'allowed_during' | 'blocked_during' }[]) {
+    return {
+      app: { id: 50, name: 'YouTube', slug: 'youtube', templateId: null, icon: '📺', createdAt: '2026-01-01' },
+      hosts: ['youtube.com'],
+      assignments: [
+        { id: 2, appId: 50, profileId: 1, mode: 'allowed' as const, dailyMinutes: null, exemptFromDaily: true, scheduleRules },
+      ],
+    }
+  }
+
+  async function openAppsSection(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(screen.getByTestId('profile-apps-toggle-1'))
+    await screen.findByTestId('app-row-50')
+  }
+
+  it('renders attached schedule rules with their schedule name and mode', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const rule = await screen.findByTestId('app-row-50-schedule-rule-10-allowed_during')
+    expect(within(rule).getByText('Bedtime')).toBeInTheDocument()
+    expect(rule.textContent).toMatch(/Allowed during/i)
+  })
+
+  it('attaching a named schedule as allowed-during calls setPolicy with the rule', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    await user.selectOptions(screen.getByTestId('app-row-50-schedule-picker-select'), '10')
+    await user.click(screen.getByTestId('app-row-50-schedule-mode-allowed_during'))
+    await user.click(screen.getByTestId('app-row-50-schedule-add'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        scheduleRules: [{ scheduleId: 10, mode: 'allowed_during' }],
+      }),
+    )
+  })
+
+  it('attaching a named schedule as blocked-during calls setPolicy with the rule', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    await user.selectOptions(screen.getByTestId('app-row-50-schedule-picker-select'), '11')
+    await user.click(screen.getByTestId('app-row-50-schedule-mode-blocked_during'))
+    await user.click(screen.getByTestId('app-row-50-schedule-add'))
+    await waitFor(() =>
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, {
+        mode: 'allowed',
+        dailyMinutes: null,
+        exemptFromDaily: true,
+        scheduleRules: [{ scheduleId: 11, mode: 'blocked_during' }],
+      }),
+    )
+  })
+
+  it('removing a rule persists the assignment without it', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime, schoolHours])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    await user.click(await screen.findByTestId('app-row-50-schedule-rule-10-allowed_during-remove'))
+    await waitFor(() =>
+      // empty rule set → scheduleRules omitted from the additive payload;
+      // the assignment's exemptFromDaily flag is preserved across the replace.
+      expect(api.apps.setPolicy).toHaveBeenCalledWith(50, 1, { mode: 'allowed', dailyMinutes: null, exemptFromDaily: true }),
+    )
+  })
+
+  it('an allowed-during rule surfaces the exempt-from-daily cap copy', async () => {
+    (api.apps.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([ytWithRules([{ scheduleId: 10, mode: 'allowed_during' }])])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([bedtime])
+    const user = userEvent.setup()
+    await openAppsSection(user)
+    const exempt = await screen.findByTestId('app-row-50-schedule-exempt')
+    expect(exempt.textContent).toMatch(/daily (time )?limit/i)
+  })
+})
+
 // #976 — apps subsection inside the expanded card (per-app policy
 // editor). Default collapsed; opening reveals the same AppsSection the
 // modal uses, scoped to a profile-specific testid prefix. Post-#764 the
@@ -1391,5 +1689,138 @@ describe('ProfilesPage — app-policy edits refresh the profile-wide time bar (#
     await user.click(await screen.findByTestId('app-row-60-clear'))
     await waitFor(() => expect(api.apps.deletePolicy).toHaveBeenCalledWith(60, 1))
     await waitFor(() => expect(api.time.summaryAll).toHaveBeenCalledTimes(2))
+  })
+})
+
+// #1473 — blocked categories are now editable inline on the profile card.
+// The read-only chips are replaced (for admins) with a checklist of the
+// blocklist catalog; toggling a category autosaves blockedCategories via the
+// same full-profile PUT the Blocklists matrix uses.
+describe('ProfilesPage — inline blocked-categories editor (#1473)', () => {
+  it('renders the catalog with the profile’s current categories pre-selected', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    // Kids has ['adult', 'gambling'] selected; 'social' / 'malware' are off.
+    const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
+    expect(adult).toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-gambling')).toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-social')).not.toBeChecked()
+    expect(within(kidsCard).getByTestId('profile-category-toggle-1-malware')).not.toBeChecked()
+    // Catalog comes from the shared /blocklists fetch.
+    expect(api.blocklists.list).toHaveBeenCalled()
+  })
+
+  it('toggling an unselected category ADDS it to blockedCategories via the full PUT', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const social = await within(kidsCard).findByTestId('profile-category-toggle-1-social')
+    await user.click(social)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect([...body.blockedCategories].sort()).toEqual(['adult', 'gambling', 'social'])
+    // other fields carried through unchanged
+    expect(body.name).toBe('Kids')
+    expect(body.timeLimit).toBe(120)
+    expect(body.failureMode).toBe('block-all')
+  })
+
+  it('toggling a selected category REMOVES it from blockedCategories', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const adult = await within(kidsCard).findByTestId('profile-category-toggle-1-adult')
+    await user.click(adult)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect(body.blockedCategories).toEqual(['gambling'])
+  })
+
+  it('reflects the new selection after the profile refetches', async () => {
+    const listFn = api.profiles.list as unknown as ReturnType<typeof vi.fn>
+    listFn.mockResolvedValueOnce([kidsProfile, adultsProfile])
+    listFn.mockResolvedValue([
+      { ...kidsProfile, profile: { ...kidsProfile.profile, blockedCategories: ['adult', 'gambling', 'social'] } },
+      adultsProfile,
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    await user.click(await within(kidsCard).findByTestId('profile-category-toggle-1-social'))
+
+    await waitFor(() =>
+      expect(within(kidsCard).getByTestId('profile-category-toggle-1-social')).toBeChecked(),
+    )
+  })
+
+  it('non-admins see read-only chips, not the editable checklist', async () => {
+    mockAuth = { isAdmin: false }
+    const user = userEvent.setup()
+    renderPage()
+    const kidsCard = await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+    expect(within(kidsCard).queryByTestId('profile-category-toggle-1-adult')).not.toBeInTheDocument()
+    // The pre-#1473 read-only chips remain the non-admin fallback.
+    expect(within(kidsCard).getByText('adult')).toBeInTheDocument()
+    expect(within(kidsCard).getByText('gambling')).toBeInTheDocument()
+  })
+})
+
+describe('ProfilesPage — per-profile default-deny toggle (#1320)', () => {
+  it('toggling default-deny persists via the full-profile PUT, preserving other fields', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    // off by default for the Kids fixture
+    const toggle = await screen.findByTestId('profile-default-deny-toggle-1')
+    expect(toggle).not.toBeChecked()
+
+    await user.click(toggle)
+
+    await waitFor(() => expect(api.profiles.update).toHaveBeenCalled())
+    const calls = (api.profiles.update as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const [id, body] = calls[calls.length - 1]
+    expect(id).toBe(1)
+    expect(body.defaultDeny).toBe(true)
+    // other fields carried through the PUT unchanged
+    expect(body.name).toBe('Kids')
+    expect(body.blockedCategories).toEqual(['adult', 'gambling'])
+    expect(body.failureMode).toBe('block-all')
+    expect(body.timeLimit).toBe(120)
+  })
+
+  // #1472 — default-deny is the profile's most fundamental posture, so it
+  // renders FIRST in the expanded card, before the devices and apps subsections.
+  it('renders the default-deny subsection before the devices and apps subsections', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('profile-card-1')
+    await expand(1, user)
+
+    const defaultDeny = await screen.findByTestId('profile-default-deny-1')
+    const devices     = screen.getByTestId('profile-devices-subsection-1')
+    const apps        = screen.getByTestId('profile-apps-subsection-1')
+
+    // default-deny precedes both devices and apps in DOM order
+    expect(defaultDeny.compareDocumentPosition(devices))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(defaultDeny.compareDocumentPosition(apps))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   })
 })

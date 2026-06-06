@@ -13,8 +13,8 @@ name: VM e2e (Gate 3b — API/UI-side staging smoke)
 # that's the whole point of running against the last-published router.
 #
 # Triggers:
-#   - workflow_call    — invoked from master-api-ui.yml as a needs: of
-#                        approve-production (alongside smoke-staging +
+#   - workflow_call    — invoked from master-api-ui.yml as a needs: of the
+#                        deploy-production jobs (alongside smoke-staging +
 #                        api-smoke-staging)
 #   - workflow_dispatch — manual debugging from the Actions tab
 #

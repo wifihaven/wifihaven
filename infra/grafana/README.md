@@ -92,6 +92,56 @@ templated `${datasource}` variable resolved at view time, so the same JSON
 loads in both Grafana Cloud and a self-hosted provisioned Grafana, #1207),
 and the GitHub Actions secrets.
 
+## Alerting
+
+The alerting half of the design (`docs/design/alerting.md`) is managed here
+too:
+
+- **Contact points + notification policy** ([`alerting.tf`](alerting.tf), #1403)
+  — three email contact points and the singleton severity/env routing tree.
+- **A managed alerts folder** ([`alerting-rules.tf`](alerting-rules.tf)) that
+  the rule groups live in. Unlike the dashboards, a Grafana managed alert rule
+  group needs a concrete, non-empty folder, so this one is managed in-repo
+  (idempotent now that the HCP backend owns its state).
+- **Warning rule group** ([`alerting-rules-warning.tf`](alerting-rules-warning.tf),
+  #1405) — W1–W5 (§7.2). W5 ships **disabled** (`is_paused`) because its
+  series is router-pushed and not yet trustworthy in prod (§8, #1382).
+- **Critical rule group** ([`alerting-rules-critical.tf`](alerting-rules-critical.tf),
+  #1404) — C1–C7 (§7.1).
+
+Unlike the dashboards, the alert rules reference a **concrete** Prometheus
+datasource UID (managed rules cannot use a templated `${datasource}`). It
+comes from the `prometheus_datasource_uid` variable, default `grafanacloud-prom`
+(the built-in Grafana Cloud hosted Prometheus); override
+`TF_VAR_prometheus_datasource_uid` only for a self-hosted stack. Not a secret.
+
+### Verifying a critical rule actually pages (`docs/design/alerting.md` §10)
+
+The #1368 acceptance bar is a confirmed **page**, not just a graphable series.
+The safest critical rule to force end-to-end is **C4** — it self-heals the
+moment you stop, and it's the exact #1365 shape:
+
+```sh
+# Drive status="malformed" up on STAGING so the success ratio drops below 0.95.
+# Repeat for ~15m (the rule's `for`) so it transitions Pending → Firing.
+while true; do
+  curl -s -o /dev/null -X POST https://staging.wifihaven.net/api/router/metrics \
+    -H 'Authorization: Bearer <router-token>' \
+    -H 'Content-Type: application/json' --data '{"deliberately":"malformed"}'
+  sleep 5
+done
+```
+
+Then confirm, in order: the rule goes **Pending → Firing** after its `for`; the
+notification policy routes it (`wifihaven-critical`, or `wifihaven-staging` for
+the twin); the **email actually arrives** (a threshold crossing with no email is
+a routing bug, not a pass); stop the loop and confirm it returns to **Normal**
+with a resolved notification. C1/C2/C3 must be validated on a **prod-shaped
+scratch DB**, never by manufacturing a prod saturation event; C5/C6/C7 on
+staging by stopping the service / hitting a 500 route / stopping the agent. Use
+the per-rule **Preview** and per-contact-point **Test** button during setup, but
+the bar is a real forced firing reaching the inbox.
+
 ## Prerequisites
 
 > **HARD PREREQUISITE — the HCP workspace must exist before the `cloud {}`

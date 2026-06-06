@@ -2,7 +2,15 @@ package wifihaven.api.db
 
 import doobie.*
 import doobie.postgres.implicits.*
-import wifihaven.shared.{AppMode, BlockReason, FailureMode, IconType, MacBlockReason, UserRole}
+import wifihaven.shared.{
+  AppMode,
+  AppScheduleMode,
+  BlockReason,
+  FailureMode,
+  IconType,
+  MacBlockReason,
+  UserRole,
+}
 import wifihaven.shared.types.*
 import org.postgresql.util.PGobject
 import zio.json.*
@@ -37,6 +45,7 @@ object TypeMeta {
   given Meta[AppId]                 = Meta[Long].imap(AppId(_))(_.value)
   given Meta[AppPolicyAssignmentId] = Meta[Long].imap(AppPolicyAssignmentId(_))(_.value)
   given Meta[NamedScheduleId]       = Meta[Long].imap(NamedScheduleId(_))(_.value)
+  given Meta[AppScheduleRuleId]     = Meta[Long].imap(AppScheduleRuleId(_))(_.value)
 
   // ── UUID-backed ────────────────────────────────────────────────────────
   given Meta[RouterId] = Meta[java.util.UUID].imap(RouterId(_))(_.value)
@@ -87,6 +96,12 @@ object TypeMeta {
       .parse(s)
       .getOrElse(throw new IllegalStateException(s"DB has unknown icon type: $s")),
   )(IconType.asString)
+
+  given Meta[AppScheduleMode] = Meta[String].imap(s =>
+    AppScheduleMode
+      .parse(s)
+      .getOrElse(throw new IllegalStateException(s"DB has unknown app schedule mode: $s")),
+  )(AppScheduleMode.asString)
 
   given Meta[MacBlockReason] = Meta[String].imap(s =>
     MacBlockReason

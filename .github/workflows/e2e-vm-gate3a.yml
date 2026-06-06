@@ -15,7 +15,7 @@ name: VM e2e (Gate 3a — router-side staging smoke)
 #
 # Triggers:
 #   - workflow_call    — invoked from master-router.yml as a needs: of
-#                        approve-production (parallel to gate-2-router-fake-api)
+#                        publish-openwrt (parallel to gate-2-router-fake-api)
 #   - workflow_dispatch — manual debugging from the Actions tab
 #
 # Concurrency / host capacity (#895):

@@ -18,10 +18,12 @@ name: Master Router CD
 #       │                        workflow artifacts)
 #       → gate-2-router-fake-api  (boots the uploaded VM image + fake API)
 #       ‖ gate-3a-router-staging  (boots the uploaded VM image + staging API)
-#         → approve-production    (manual gate, `production` environment)
-#           → publish-openwrt     (DOWNLOADS the tested artifacts → rolling
+#         → publish-openwrt       (DOWNLOADS the tested artifacts → rolling
 #                                  openwrt-latest + versioned v<X.Y.Z>; no
-#                                  rebuild, no version re-derivation)
+#                                  rebuild, no version re-derivation. Gated
+#                                  directly on Gates 2 + 3a — the manual
+#                                  `production`-environment approval was
+#                                  removed in #1461)
 #
 # Gates 2 and 3a both share the e2e-vm self-hosted-runner concurrency
 # group (#657 capacity follow-up), so in practice they serialize on the
@@ -145,37 +147,21 @@ jobs:
       consume_vm_image_artifact: true
     secrets: inherit
 
-  # Manual-approval gate. Carries `environment: production` so GitHub pauses
-  # the run for an approval click before the rolling release is touched.
-  # API/UI prod approval lives on its own gate in master-api-ui.yml; both
-  # queue on the same `production` environment, so GitHub serializes
-  # approval prompts across the two pipelines.
-  approve-production:
-    name: Manual approval (router production gate)
-    if: github.ref == 'refs/heads/main'
-    needs: [gate-2-router-fake-api, gate-3a-router-staging]
-    runs-on: ubuntu-latest
-    permissions: {}
-    environment:
-      name: production
-      url: https://github.com/wifihaven/wifihaven/releases/tag/openwrt-latest
-    steps:
-      - name: Approved
-        run: echo "Router release approved — publishing openwrt-latest."
-
   # #1224: download-and-release ONLY. publish-openwrt-release.yml pulls the
   # release-assets artifact built pre-gate by build-release-artifacts and
   # attaches those exact, already-tested bytes — no recompile, no version
   # re-derivation. The version is threaded verbatim from the build job's
   # output, preserving the coordinated-version invariant (#499/#1134).
-  # `needs` build-release-artifacts (transitively satisfied via the gates,
-  # but listed explicitly so its `version` output is in scope here).
-  # Intentionally has NO concurrency group: once approval lands, this job
+  # #1461: gates directly on Gates 2 + 3a now that the manual approval job is
+  # gone — the rolling release publishes automatically once both router gates
+  # are green. `needs` build-release-artifacts explicitly so its `version`
+  # output is in scope here (transitively satisfied via the gates anyway).
+  # Intentionally has NO concurrency group: once the gates pass, this job
   # must run to completion regardless of any later main push.
   publish-openwrt:
     name: Publish OpenWRT release
     if: github.ref == 'refs/heads/main'
-    needs: [build-release-artifacts, approve-production]
+    needs: [build-release-artifacts, gate-2-router-fake-api, gate-3a-router-staging]
     permissions:
       contents: write
     uses: ./.github/workflows/publish-openwrt-release.yml

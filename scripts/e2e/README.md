@@ -74,6 +74,7 @@ scripts/e2e/
     test_time_limit.py · test_reassignment.py
     test_blocked_mac_events.py · test_install_health.py
     test_port_alloc.py · test_snapshot_builder.py
+    test_global_policy.py             suite H (#1460) — @global_allow / @global_block
   gate3/                              Gate 3 smoke + conftest
     test_smoke.py
 ```

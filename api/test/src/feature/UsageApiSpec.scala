@@ -42,6 +42,11 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
   /**
    * Insert one row into traffic_reports at (date, hour:minute UTC) for (mac, hostname). The full
    * bucket is `active_seconds = 300`, matching what the router emits in the wild.
+   *
+   * #1492: the usage series is now presence-based and heartbeat-filters its rows exactly as the
+   * headline daily total does (default filter: drop buckets under 10 KB). The router only ever
+   * emits bytes>0 rows; seed a realistic 50 KB so these buckets are real activity, not keepalives
+   * that the presence model would (correctly) drop.
    */
   private def insertRow(
       routerId: RouterId,
@@ -68,8 +73,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
             start,
             end,
             300,
-            0L,
-            0L,
+            25_000L,
+            25_000L,
           ),
         ),
       )
@@ -83,6 +88,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       profileRepo     <- ZIO.service[ProfileRepo]
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
+      hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
+      stlRepo         <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -94,6 +101,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         profileRepo,
         appRepo,
         rollupRepo,
+        hsRepo,
+        stlRepo,
         clock,
       ),
       auth,
@@ -338,13 +347,20 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.deviceMac.isEmpty) &&
           assertTrue(out.buckets.length == 24 && out.bucketsByDevice.length == 24) &&
           assertTrue(h14H.totalMins == 15 && h14D.totalMins == 15) &&
-          // Per-device stack: macA 10m + macB 5m, no Other.
+          // Per-device stack: macA 10m + macB 5m, no Other. In Sum mode the per-device
+          // session unions partition the profile total cleanly, so they still reconcile.
           assertTrue(h14D.perDevice.length == 2 && h14D.otherMins == 0) &&
           assertTrue(h14D.perDevice.iterator.map(_.mins).sum + h14D.otherMins == 15) &&
-          // Per-host stack invariant: sum(perHost.mins) + otherMins == totalMins.
-          assertTrue(h14H.perHost.iterator.map(_.mins).sum + h14H.otherMins == 15) &&
-          // Day totals reconcile.
-          assertTrue(out.topDevices.iterator.map(_.dayMins).sum == 15)
+          // #1492: per-host presence is the per-host session span, NOT a within-bucket
+          // partition — google runs on both devices (10m) and youtube on one (10m), so the
+          // per-host stack (20m) legitimately exceeds the 15m device-union total (design §4.3:
+          // the total is the device union, not the sum of per-app spans). otherMins clamps the
+          // rendered residual non-negative.
+          assertTrue(h14H.perHost.iterator.map(_.mins).sum >= h14H.totalMins) &&
+          assertTrue(h14H.otherMins == 0) &&
+          // Day totals reconcile with the headline (sum of per-device session unions).
+          assertTrue(out.topDevices.iterator.map(_.dayMins).sum == 15) &&
+          assertTrue(out.presenceTotalMins == 15)
       },
       test("profileId mode: rejects unknown profile with 404") {
         for {
@@ -490,6 +506,114 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.topEntries.length == 2) &&
           assertTrue(out.topEntries.forall(_.entity.kind == "host")) &&
           assertTrue(out.bucketsByEntry.iterator.map(_.otherMins).sum == 0)
+      },
+      // #1492 — the per-profile usage graph is presence-based: its headline
+      // (`presenceTotalMins`) reconciles with the session-stitch time-used total
+      // that drives the daily cap, and the per-app contributions match the
+      // canonical per-app presence surface. The fixture reproduces the prod
+      // undercount (each 5-min window only sampled 10s of bytes) so the legacy
+      // bucket-max graph would have read ~0 while the kid was present 25 minutes.
+      test("#1492: profile series total reconciles with time-used; per-app contributions match") {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          hsRepo      <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
+          base  = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          // Each window: full 5-min span, but only 10s sampled active (design §2a
+          // sparse-app undercount). Three contiguous youtube windows + two
+          // khanacademy windows → one bridged 25-min device session.
+          mkRow = (host: String, idx: Int) =>
+            TrafficReportInsert(
+              routerId,
+              MacAddress.unsafe(testMac),
+              None,
+              HostId.Fqdn(Hostname.unsafe(host)),
+              today,
+              base.plusSeconds(idx * 300L),
+              base.plusSeconds(idx * 300L + 300L),
+              10,
+              60_000L,
+              60_000L,
+            )
+          _        <- trafficRepo.insertBatch(
+            List(
+              mkRow("youtube.com", 0),
+              mkRow("youtube.com", 1),
+              mkRow("youtube.com", 2),
+              mkRow("khanacademy.org", 3),
+              mkRow("khanacademy.org", 4),
+            ),
+          )
+          settings <- hsRepo.get
+          rows     <- trafficRepo.listPresenceRows(List(MacAddress.unsafe(testMac)), today)
+          // The canonical time-used total (the number on the profile card / the cap).
+          expectedMins       = wifihaven.api.presence.Presence
+            .totalMinutesByMac(
+              rows,
+              Nil,
+              settings.heartbeatFilter,
+              settings.presenceContinuationSeconds,
+            )
+            .values
+            .sum
+          // What the legacy bucket-max graph would have plotted: Σ max(active_seconds).
+          naiveBucketMaxMins = (rows
+            .groupBy(r => (r.mac, r.periodStart))
+            .values
+            .map(_.map(_.activeSeconds).max.toLong)
+            .sum / 60).toInt
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/usage/series?profileId=${kidsId.value}&date=$today&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp    <- routes.runZIO(req)
+          body    <- resp.body.asString
+          out     <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+          // Cross-check the per-app contributions against the canonical per-app surface.
+          ubaResp <- routes.runZIO(
+            Request
+              .get(
+                URL
+                  .decode(s"/api/profiles/${kidsId.value}/usage-by-app?from=$today&to=$today")
+                  .toOption
+                  .get,
+              )
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          ubaBody <- ubaResp.body.asString
+          uba     <- ZIO.fromEither(ubaBody.fromJson[ProfileUsageByApp])
+          ytApp   = uba.apps.find(_.appName == "YouTube").get
+          ytEntry = out.topEntries.find(_.entity.name == "YouTube").get
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // The graph headline equals the session-stitch time-used total, exactly.
+          assertTrue(out.presenceTotalMins == expectedMins) &&
+          assertTrue(expectedMins == 25) &&
+          // ...and it is genuinely presence-based — the legacy bucket-max read ~0.
+          assertTrue(naiveBucketMaxMins == 0 && out.presenceTotalMins > naiveBucketMaxMins) &&
+          // The hourly bars sum to the same number (within per-hour flooring; here exact).
+          assertTrue(out.buckets.iterator.map(_.totalMins).sum == expectedMins) &&
+          // Per-app contributions are visible and reconcile with the per-app presence surface.
+          assertTrue(ytEntry.dayMins == (ytApp.proportionalSeconds / 60).toInt) &&
+          assertTrue(ytEntry.dayMins == 15) &&
+          // The two contributions explain the total (no within-device overlap in this fixture).
+          assertTrue(out.topEntries.map(_.dayMins).sum == expectedMins)
       },
     ) @@ TestAspect.sequential,
     // ── #846 Traffic Usage page ───────────────────────────────────────────
@@ -1483,6 +1607,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           _           <- appRepo.setHosts(muId, List(Hostname.unsafe("spotify.com")))
           // 1 bucket on youtube.com (5m), 1 bucket on spotify.com (5m),
           // 1 bucket on google.com (not in any app — falls into Other).
+          // Real-traffic byte volume so the default heartbeat filter (10KB floor,
+          // now applied to per-app surfaces too — #1465) keeps these rows.
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
           _  <- trafficRepo.insertBatch(
             List(
@@ -1495,8 +1621,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1000L,
-                1000L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1507,8 +1633,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(300),
                 start.plusSeconds(600),
                 300,
-                200L,
-                200L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1519,8 +1645,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(600),
                 start.plusSeconds(900),
                 300,
-                100L,
-                100L,
+                500_000L,
+                500_000L,
               ),
             ),
           )
@@ -1586,8 +1712,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1000L,
-                1000L,
+                500_000L,
+                500_000L,
               ),
             ),
           )
@@ -1642,8 +1768,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1000L,
-                1000L,
+                500_000L,
+                500_000L,
               ),
             ),
           )
@@ -1686,7 +1812,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           _           <- appRepo.setHosts(ytId, List(Hostname.unsafe("youtube.com")))
           _           <- appRepo.setHosts(muId, List(Hostname.unsafe("spotify.com")))
           start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
-          // YouTube: 2 buckets (10m). Music: 1 bucket (5m).
+          // YouTube: 2 buckets (10m). Music: 1 bucket (5m). Real-traffic bytes so
+          // the default heartbeat filter (now on per-app surfaces, #1465) keeps them.
           _  <- trafficRepo.insertBatch(
             List(
               TrafficReportInsert(
@@ -1698,8 +1825,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start,
                 start.plusSeconds(300),
                 300,
-                1L,
-                1L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1710,8 +1837,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(300),
                 start.plusSeconds(600),
                 300,
-                1L,
-                1L,
+                500_000L,
+                500_000L,
               ),
               TrafficReportInsert(
                 routerId,
@@ -1722,8 +1849,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
                 start.plusSeconds(600),
                 start.plusSeconds(900),
                 300,
-                1L,
-                1L,
+                500_000L,
+                500_000L,
               ),
             ),
           )

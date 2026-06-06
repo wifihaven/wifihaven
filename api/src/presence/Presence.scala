@@ -1,6 +1,6 @@
 package wifihaven.api.presence
 
-import wifihaven.shared.HeartbeatFilter
+import wifihaven.shared.{CrossDeviceOverlapMode, HeartbeatFilter}
 import wifihaven.shared.types.*
 import java.time.{Instant, LocalDate}
 
@@ -52,10 +52,139 @@ object Presence {
   private def bucketSeconds(bucket: Iterable[PresenceRow]): Long =
     bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
 
+  /** Default idle gap `N` (seconds) for the session-stitch model; mirrors migration V52. */
+  val DefaultContinuationSeconds: Int = 120
+
+  // ── Session-stitch primitive (#1464, design §4) ──────────────────────────────
+  //
+  // Presence is no longer "credit a bucket": that under-counts the request-driven
+  // apps whose `activeSeconds` bottoms out at the 10 s sample floor (~3.3× low on
+  // prod, docs/design/presence-tuning.md §2). Instead we sessionize activity on
+  // wall-clock timestamps so bucket size / report rate `R` is only the resolution
+  // of the evidence, never a term in the formula (§2d). The primitive below is
+  // shared by the daily-cap aggregates here and reused by the per-app surface
+  // (#1465) — keep it cleanly factored.
+
+  /** A wall-clock activity span in epoch seconds, `[startEpoch, endEpoch]` with `end ≥ start`. */
+  final case class Span(startEpoch: Long, endEpoch: Long) {
+    def seconds: Long = (endEpoch - startEpoch).max(0L)
+  }
+
   /**
-   * Per-mac total active-seconds for the day, summing each bucket's max activeSeconds
-   * (bucket-deduplicated across hosts) once. A bucket counts iff at least one host in the bucket is
-   * NOT in `exemptPatterns`. IP-literal hosts are never exempt (patterns only match FQDNs).
+   * Each non-heartbeat `traffic_reports` row contributes its full `[period_start, period_end]`
+   * interval as evidence of activity (design §4.1) — NOT its sampled `activeSeconds`, which is the
+   * undercount driver. The trailing edge carries up to one report-interval of uncertainty until the
+   * `connection_events`-anchored timing lands (#1466).
+   */
+  def spanOf(r: PresenceRow): Span = {
+    val start = r.periodStart.getEpochSecond
+    Span(start, start + r.periodSeconds.toLong.max(0L))
+  }
+
+  /**
+   * The idle gap actually used: the configured `N`, raised to the `2 × R` collapse guard (design
+   * §4.4 invariant 1). `R` is read from the data (`period_seconds`), never assumed to be 60 s. When
+   * `N < R` contiguous reporting windows stop merging and presence collapses to ~0 (§2d (ii));
+   * clamping up to `2 × R` keeps a misconfigured / coarse-reporting fleet from silently zeroing
+   * out.
+   */
+  def effectiveGap(rows: Iterable[PresenceRow], continuationSeconds: Int): Long = {
+    val r = rows.iterator.map(_.periodSeconds.toLong).maxOption.getOrElse(0L)
+    continuationSeconds.toLong.max(2L * r)
+  }
+
+  /**
+   * Session-stitch one time-ordered activity stream (design §4.1): fold spans into sessions,
+   * merging while the wall-clock idle gap to the next span is ≤ `gapSeconds`; a larger gap ends the
+   * session. A session's presence is its `[first, last]` span — every span in between counts as
+   * continuous. Caller is responsible for streaming one logical `(device, app)` partition.
+   */
+  def stitch(spans: List[Span], gapSeconds: Long): List[Span] =
+    spans
+      .sortBy(s => (s.startEpoch, s.endEpoch))
+      .foldLeft(List.empty[Span]) {
+        case (head :: tail, s) if s.startEpoch - head.endEpoch <= gapSeconds =>
+          head.copy(endEpoch = head.endEpoch.max(s.endEpoch)) :: tail
+        case (acc, s)                                                        => s :: acc
+      }
+      .reverse
+
+  /**
+   * Overlap-merge spans (gap 0) into a minimal, sorted, non-overlapping set. Shared by
+   * [[unionSeconds]] and the hour-clipped decomposition (#1492) so the union semantics are
+   * identical whether the caller wants total seconds or a per-hour breakdown.
+   */
+  def mergeSpans(spans: List[Span]): List[Span] =
+    spans
+      .sortBy(_.startEpoch)
+      .foldLeft(List.empty[Span]) {
+        case (head :: tail, s) if s.startEpoch <= head.endEpoch =>
+          head.copy(endEpoch = head.endEpoch.max(s.endEpoch)) :: tail
+        case (acc, s)                                           => s :: acc
+      }
+      .reverse
+
+  /**
+   * Overlap-merge spans (gap 0) and sum their wall-clock seconds — the within-device/profile union.
+   */
+  def unionSeconds(spans: List[Span]): Long =
+    mergeSpans(spans).map(_.seconds).sum
+
+  /**
+   * #1492: distribute spans across the 24 local-hour buckets of `date` in `zone`, in seconds. Each
+   * span is clipped to every hour it overlaps; spans are summed, so the caller controls overlap
+   * semantics by pre-merging (union — one contribution) or concatenating (sum — each counted). The
+   * seconds outside `[date 00:00, date+1 00:00)` are dropped, so summing the map reconciles with
+   * [[unionSeconds]] of the same (merged) spans whenever those spans lie within the day window —
+   * which the day-scoped presence query guarantees. Hours with no overlap are absent.
+   */
+  def secondsByLocalHour(
+      spans: List[Span],
+      date: LocalDate,
+      zone: java.time.ZoneId,
+  ): Map[Int, Long] = {
+    val dayStart = date.atStartOfDay(zone).toInstant.getEpochSecond
+    val acc      = scala.collection.mutable.Map.empty[Int, Long]
+    for {
+      s  <- spans
+      hr <- 0 until 24
+    } {
+      val hourStart = dayStart + hr.toLong * 3600L
+      val hourEnd   = hourStart + 3600L
+      val overlap   = (s.endEpoch.min(hourEnd) - s.startEpoch.max(hourStart)).max(0L)
+      if (overlap > 0L) acc(hr) = acc.getOrElse(hr, 0L) + overlap
+    }
+    acc.toMap
+  }
+
+  /**
+   * The non-heartbeat, non-exempt rows that bear on the daily cap. A row is dropped if it is a
+   * heartbeat (#714) or if its host matches an `exemptFromDaily` site pattern. Because each row
+   * spans its whole reporting window, dropping the exempt rows reproduces the old "bucket counts
+   * iff at least one non-exempt host" semantic exactly: a window with a non-exempt host keeps that
+   * host's full span; a window of only exempt hosts contributes nothing. IP-literal hosts are never
+   * exempt (patterns only match FQDNs).
+   */
+  private def countedRows(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter,
+  ): List[PresenceRow] = {
+    def isExempt(h: HostId) =
+      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
+    rows.filterNot(r => isHeartbeat(r, filter)).filterNot(r => isExempt(r.host))
+  }
+
+  /** Per-`(device, app)` sessions for a counted row-set, where `app = host` (design §4.1). */
+  private def sessionSpans(rows: List[PresenceRow], gap: Long): List[Span] =
+    rows.groupBy(r => (r.mac, r.host)).values.flatMap(hr => stitch(hr.map(spanOf), gap)).toList
+
+  /**
+   * Per-mac total active-seconds for the day (design §4.3): per-`(device, app)` session-stitch on
+   * the idle gap, then union those sessions within the device (two apps in the same minute count
+   * once). A row counts iff it is non-heartbeat and not on an `exemptFromDaily` host. The cross-
+   * device combination (`Sum` adds these; `Dedup` unions instead) lives in the caller / in
+   * [[dedupedTotalSeconds]].
    *
    * Surfaces raw seconds rather than floor-divided minutes so callers that need the precision (see
    * #516 e2e test) can ceil-divide themselves; minute-resolution callers should use
@@ -65,74 +194,120 @@ object Presence {
       rows: List[PresenceRow],
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
   ): Map[MacAddress, Long] = {
-    def isExempt(h: HostId) =
-      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
-    rows.iterator
-      .filterNot(r => isHeartbeat(r, filter))
-      .toList
-      .groupBy(r => (r.mac, r.periodStart))
-      .toList
-      .collect {
-        case ((mac, _), bucket) if bucket.exists(r => !isExempt(r.host)) =>
-          mac -> bucketSeconds(bucket)
-      }
-      .groupMapReduce(_._1)(_._2)(_ + _)
+    val counted = countedRows(rows, exemptPatterns, filter)
+    val gap     = effectiveGap(counted, continuationSeconds)
+    counted
+      .groupBy(_.mac)
+      .view
+      .mapValues(macRows => unionSeconds(sessionSpans(macRows, gap)))
+      .filter(_._2 > 0L)
+      .toMap
   }
 
   /**
-   * Per-mac total minutes for the day, counting each bucket once. A bucket counts iff at least one
-   * host in the bucket is NOT in `exemptPatterns` — i.e. the device was active on something that
-   * bears on the daily cap. IP-literal hosts are never exempt (patterns only match FQDNs).
+   * Per-mac total minutes for the day. A device's minutes are the union of its per-app sessions
+   * (design §4.3); IP-literal hosts are never exempt (patterns only match FQDNs).
    */
   def totalMinutesByMac(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
   ): Map[MacAddress, Int] =
-    totalSecondsByMac(rows, exemptPatterns, filter).view.mapValues(s => (s / 60).toInt).toMap
+    totalSecondsByMac(rows, exemptPatterns, filter, continuationSeconds).view
+      .mapValues(s => (s / 60).toInt)
+      .filter(_._2 != 0)
+      .toMap
 
   /**
-   * #751: profile-scoped active-bucket union across multiple macs. Each `period_start` instant
-   * counts once regardless of how many of the profile's devices were active in it — the right
-   * semantic when one profile = one human with multiple devices. A bucket counts iff at least one
-   * (mac, host) row in the bucket is non-heartbeat AND non-exempt; its contribution is the max
-   * `activeSeconds` across all macs present in that bucket (the longest-active device sets the
-   * wall-clock floor). Use [[totalSecondsByMac]] + sum when the operator wants per-device totals
-   * added (the `sum` mode).
+   * #751 / #1464: profile-scoped session union across ALL of the profile's devices — the `Dedup`
+   * cross-device mode. Sessions are stitched per `(device, app)` then unioned across every device
+   * and app, so one human on two screens at the same instant counts once. Use [[totalSecondsByMac]]
+   * + sum when the operator wants per-device totals added (the `Sum` mode).
    */
   def dedupedTotalSeconds(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
   ): Long = {
-    def isExempt(h: HostId) =
-      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
-    rows.iterator
-      .filterNot(r => isHeartbeat(r, filter))
-      .toList
-      .groupBy(_.periodStart)
-      .iterator
-      .collect {
-        case (_, bucket) if bucket.exists(r => !isExempt(r.host)) =>
-          bucketSeconds(bucket)
-      }
-      .sum
+    val counted = countedRows(rows, exemptPatterns, filter)
+    val gap     = effectiveGap(counted, continuationSeconds)
+    unionSeconds(sessionSpans(counted, gap))
   }
 
   def dedupedTotalMinutes(
       rows: List[PresenceRow],
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
   ): Int =
-    (dedupedTotalSeconds(rows, exemptPatterns, filter) / 60).toInt
+    (dedupedTotalSeconds(rows, exemptPatterns, filter, continuationSeconds) / 60).toInt
 
   /**
-   * #714 heartbeat classification, applied ONLY inside `totalSecondsByMac`/`totalMinutesByMac`.
-   * Per-site (`patternMinutesByMac`) and per-host (`hostMinutes`) breakdowns intentionally do not
-   * filter — heartbeats keep counting for per-site time for now; the operator wants to evaluate
-   * that separately. A row is classified as a heartbeat if the filter is enabled and total bytes
-   * are below `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few hundred).
+   * #1492: per-mac merged daily session spans — the per-device building block of the daily cap, in
+   * span form. Counts exactly the rows [[totalSecondsByMac]] does (non-heartbeat, non-exempt),
+   * stitches per `(device, app)` on the idle gap, then unions across apps within the device.
+   * `unionSeconds` of a mac's spans equals `totalSecondsByMac(...)` for that mac, so an
+   * hour-clipped decomposition of these spans reconciles with the headline daily total — this is
+   * what makes the per-profile usage graph presence-based (#1492) instead of bucket-max.
+   */
+  def deviceSessionSpans(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[MacAddress, List[Span]] = {
+    val counted = countedRows(rows, exemptPatterns, filter)
+    val gap     = effectiveGap(counted, continuationSeconds)
+    counted
+      .groupBy(_.mac)
+      .view
+      .mapValues(macRows => mergeSpans(sessionSpans(macRows, gap)))
+      .filter(_._2.nonEmpty)
+      .toMap
+  }
+
+  /**
+   * #1492: per-host (per-app) profile-level session spans — the span form of
+   * [[proportionalHostSeconds]]. `Sum` keeps each device's stitched spans of a host separate (the
+   * same host on two devices double-counts when their seconds are summed); `Dedup` unions a host's
+   * spans across devices so simultaneous use on two screens counts once. Summing a host's span
+   * seconds reproduces [[proportionalHostSeconds]] exactly, so the hour-clipped per-app breakdown
+   * stays consistent with the per-app presence surface (#1465). Heartbeat rows are dropped before
+   * stitching (§4.4-2), same as [[proportionalHostSeconds]].
+   */
+  def hostSessionSpans(
+      rows: List[PresenceRow],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[HostId, List[Span]] = {
+    val active        = rows.filterNot(r => isHeartbeat(r, filter))
+    val gap           = effectiveGap(active, continuationSeconds)
+    val perDeviceHost =
+      active.groupBy(r => (r.mac, r.host)).view.mapValues(rs => stitch(rs.map(spanOf), gap)).toMap
+    val byHost        = perDeviceHost.iterator
+      .map { case ((_, h), spans) => h -> spans }
+      .toList
+      .groupMapReduce(_._1)(_._2)(_ ++ _)
+    overlap match {
+      case CrossDeviceOverlapMode.Sum   => byHost
+      case CrossDeviceOverlapMode.Dedup => byHost.view.mapValues(mergeSpans).toMap
+    }
+  }
+
+  /**
+   * #714 heartbeat classification. As of #1465 the filter applies to every presence surface — the
+   * daily total (`totalSecondsByMac`/`totalMinutesByMac`), the per-site breakdown
+   * (`patternMinutesByMac`) and the per-host/per-app breakdown (`hostMinutes`,
+   * `proportionalHostSeconds`) — so keepalives no longer inflate per-site time or per-app presence
+   * (design §4.2). Each surface takes a `filter` argument (default `Off`); callers pass
+   * `settings.heartbeatFilter`. A row is classified as a heartbeat if the filter is enabled and
+   * total bytes are below `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a
+   * few hundred) or its FQDN matches a heartbeat host pattern.
    */
   def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
     filter.enabled && (
@@ -173,13 +348,16 @@ object Presence {
    * the bucket matches the pattern. Two hosts that both match the same pattern in one bucket still
    * only contribute one bucket's worth of time; the same host matching two patterns contributes one
    * bucket's worth to each (per-pattern caps are independent). IP-literal hosts never match
-   * patterns.
+   * patterns. Heartbeat rows are stripped first (#1465) so a keepalive run never ticks a per-site
+   * cap.
    */
   def patternMinutesByMac(
       rows: List[PresenceRow],
       patterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
   ): Map[(MacAddress, String), Int] = {
-    val buckets = rows.groupBy(r => (r.mac, r.periodStart)).toList
+    val buckets =
+      rows.filterNot(r => isHeartbeat(r, filter)).groupBy(r => (r.mac, r.periodStart)).toList
     val accum   = scala.collection.mutable.Map.empty[(MacAddress, String), Long]
     for {
       pat                <- patterns
@@ -194,11 +372,19 @@ object Presence {
    * the bucket once. Used for the per-profile "what did they spend time on today" breakdown (#262).
    * Note: summing across hosts can exceed the device's daily total — by design, the same bucket of
    * activity contributes its full duration to each host the device touched in that window. The
-   * daily cap still counts the bucket once via `totalMinutesByMac`.
+   * daily cap still counts the bucket once via `totalMinutesByMac`. Heartbeat rows are stripped
+   * first (#1465) so keepalive-only hosts don't pad the per-host breakdown.
    */
-  def hostMinutes(rows: List[PresenceRow]): Map[HostId, Int] = {
+  def hostMinutes(
+      rows: List[PresenceRow],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+  ): Map[HostId, Int] = {
     val accum = scala.collection.mutable.Map.empty[HostId, Long]
-    for ((_, bucket) <- rows.groupBy(r => (r.mac, r.periodStart))) {
+    for (
+      (_, bucket) <- rows
+        .filterNot(r => isHeartbeat(r, filter))
+        .groupBy(r => (r.mac, r.periodStart))
+    ) {
       val secs  = bucketSeconds(bucket)
       val hosts = bucket.iterator.map(_.host).toSet
       for (h <- hosts)
@@ -208,36 +394,71 @@ object Presence {
   }
 
   /**
-   * #715: per-host seconds attributed by byte share within each (mac, period_start) bucket. Each
-   * bucket's wall-clock duration is split across the hosts present in proportion to their share of
-   * the bucket's total bytes (bytes_in + bytes_out). Summing across hosts within one mac's bucket ≈
-   * the bucket duration, so this is a much fairer "wall-clock attention" number than
-   * [[hostMinutes]] (which credits every host the device touched with the bucket's full duration).
+   * #1465: per-host (per-app) presence seconds via session-stitch (design §4.2) — the successor to
+   * the #715 byte-share attribution. For each host (the "app"):
    *
-   * Note: when a bucket carries multiple rows for the same host (e.g. two ipv4-typed rows resolving
-   * to the same fqdn via the read-side LATERAL join), their bytes are summed before the share is
-   * computed so the same host doesn't get a double weight. If the bucket has zero total bytes (an
-   * edge case — the agent only emits records with bytes>0), the bucket is skipped entirely.
+   *   1. Per device, union *that host's* sessions on that device — non-heartbeat activity stitched
+   *      on the idle gap `continuationSeconds` (one device can't be on the host twice at once). 2.
+   *      Combine across the profile's devices by `overlap`: `Sum` (default) adds the per-device
+   *      per-host seconds — same host on two devices double-counts; `Dedup` unions that host's
+   *      spans across devices so overlap counts once.
+   *
+   * Heartbeat rows are dropped *before* stitching (§4.4-2), so a keepalive window can neither start
+   * nor extend a session; the idle gap bridges across a keepalive only when real sessions sit
+   * within `N` on each side. This replaces byte-share weighting as the keepalive-stripping
+   * mechanism, so a chatty poller no longer shows up at all rather than being weighted down to ~0.
+   *
+   * This is what a future per-app time limit (#127/#301/#64) reads. The per-profile daily total is
+   * NOT the sum of these per-host numbers — within a device, different hosts overlap; the total has
+   * its own (per-device, all-host) union (see `totalSecondsByMac`/`dedupedTotalSeconds`).
+   *
+   * Built on the shared #1464 session primitive ([[spanOf]] / [[stitch]] / [[unionSeconds]]) and
+   * the same [[effectiveGap]] `N ≥ 2 × R` collapse guard, so the per-app surface stays
+   * rate-independent and consistent with the daily cap. `continuationSeconds` defaults to
+   * [[DefaultContinuationSeconds]]; callers thread the configured
+   * `household_settings.presence_continuation_seconds`.
    */
-  def proportionalHostSeconds(rows: List[PresenceRow]): Map[HostId, Double] = {
-    val accum = scala.collection.mutable.Map.empty[HostId, Double]
-    for ((_, bucket) <- rows.groupBy(r => (r.mac, r.periodStart))) {
-      val secs   = bucketSeconds(bucket).toDouble
-      val byHost = bucket.iterator
-        .map(r => r.host -> r.bytes)
-        .toList
-        .groupMapReduce(_._1)(_._2)(_ + _)
-      val total  = byHost.valuesIterator.sum
-      if (secs > 0.0 && total > 0L)
-        for ((h, b) <- byHost) {
-          val share = b.toDouble / total.toDouble
-          accum.updateWith(h)(prev => Some(prev.getOrElse(0.0) + secs * share))
-        }
+  def proportionalHostSeconds(
+      rows: List[PresenceRow],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[HostId, Long] = {
+    val active = rows.filterNot(r => isHeartbeat(r, filter))
+    val gap    = effectiveGap(active, continuationSeconds)
+    // per (device, host) → that host's stitched sessions on that device.
+    val perDeviceHost: Map[(MacAddress, HostId), List[Span]] =
+      active.groupBy(r => (r.mac, r.host)).view.mapValues(rs => stitch(rs.map(spanOf), gap)).toMap
+    overlap match {
+      case CrossDeviceOverlapMode.Sum   =>
+        // add per-device per-host session seconds across devices.
+        perDeviceHost.iterator
+          .map { case ((_, h), spans) => h -> spans.iterator.map(_.seconds).sum }
+          .toList
+          .groupMapReduce(_._1)(_._2)(_ + _)
+          .filter(_._2 > 0L)
+      case CrossDeviceOverlapMode.Dedup =>
+        // union that host's spans across devices (overlap counts once).
+        perDeviceHost.iterator
+          .map { case ((_, h), spans) => h -> spans }
+          .toList
+          .groupMapReduce(_._1)(_._2)(_ ++ _)
+          .view
+          .mapValues(unionSeconds)
+          .filter(_._2 > 0L)
+          .toMap
     }
-    accum.toMap
   }
 
   /** Convenience: floor-divided minute view of [[proportionalHostSeconds]]. */
-  def proportionalHostMinutes(rows: List[PresenceRow]): Map[HostId, Int] =
-    proportionalHostSeconds(rows).view.mapValues(s => (s / 60).toInt).toMap
+  def proportionalHostMinutes(
+      rows: List[PresenceRow],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[HostId, Int] =
+    proportionalHostSeconds(rows, overlap, filter, continuationSeconds).view
+      .mapValues(s => (s / 60).toInt)
+      .filter(_._2 != 0)
+      .toMap
 }

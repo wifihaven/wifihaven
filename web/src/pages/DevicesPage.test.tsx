@@ -57,11 +57,11 @@ const laptop: Device = {
 }
 
 const kidsProfile: ProfileDetail = {
-  profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft' },
+  profile: { id: 1, name: 'Kids', blockedCategories: [], paused: false, failureMode: 'block-all', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
   schedules: [], timeLimit: null,
 }
 const adultsProfile: ProfileDetail = {
-  profile: { id: 2, name: 'Adults', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft' },
+  profile: { id: 2, name: 'Adults', blockedCategories: [], paused: false, failureMode: 'last-known-good', crossDeviceOverlapMode: 'sum', pauseMode: 'soft', defaultDeny: false },
   schedules: [], timeLimit: null,
 }
 

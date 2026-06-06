@@ -65,7 +65,6 @@ class AdminAPI:
             "extraBlocked": [],
             "extraAllowed": [],
             "paused": False,
-            "schedules": [],
             "timeLimit": None,
             "siteTimeLimits": [],
             "failureMode": "block-all",
@@ -83,11 +82,15 @@ class AdminAPI:
         """GET the profile, fold in `changes`, and PUT the merged result.
 
         Handles the fact that GET returns the profile in a nested shape
-        (`{profile: {...}, schedules: [...], timeLimit: {...} | null,
-        siteTimeLimits: [...]}`) while PUT requires a flat body and expects
-        `timeLimit` to be an integer minute-count, not the object the GET
-        returns. Callers should pass overrides as keyword args (e.g.
-        `extraBlocked=[...]`, `timeLimit=5`).
+        (`{profile: {...}, timeLimit: {...} | null, siteTimeLimits: [...]}`)
+        while PUT requires a flat body and expects `timeLimit` to be an integer
+        minute-count, not the object the GET returns. Callers should pass
+        overrides as keyword args (e.g. `extraBlocked=[...]`, `timeLimit=5`).
+
+        Schedules are NOT folded here: since #1490/#1494 the profile upsert no
+        longer carries schedules (an inline `schedules` array is an ignored
+        unknown field). Schedules attach via the named-schedule path — see
+        `add_schedule` / `remove_schedule`.
         """
         full = self.get_profile(profile_id)
         prof = full.get("profile", full) if isinstance(full, dict) else {}
@@ -103,7 +106,6 @@ class AdminAPI:
             "extraBlocked": prof.get("extraBlocked", []),
             "extraAllowed": prof.get("extraAllowed", []),
             "paused": prof.get("paused", False),
-            "schedules": full.get("schedules", []) if isinstance(full, dict) else [],
             "timeLimit": time_limit_minutes,
             "siteTimeLimits":
                 full.get("siteTimeLimits", []) if isinstance(full, dict) else [],
@@ -124,24 +126,51 @@ class AdminAPI:
     def set_profile_paused(self, profile_id: int, paused: bool) -> dict[str, Any]:
         return self.apply_profile_update(profile_id, paused=paused)
 
-    def add_schedule(self, profile_id: int, schedule: dict[str, Any]) -> dict[str, Any]:
-        """Append a schedule to the profile via fold-and-PUT.
+    def attached_schedule_ids(self, profile_id: int) -> list[Any]:
+        """The named-schedule ids attached to the profile as block schedules."""
+        full = self.get_profile(profile_id)
+        return full.get("scheduleIds", []) if isinstance(full, dict) else []
 
-        `schedule` is a dict in the shape the API expects (e.g. `{"daysOfWeek":
-        ["MON"], "startTime": "09:00", "endTime": "17:00", "timezone":
-        "America/Los_Angeles"}`). The server may assign an `id` on round-trip;
-        the returned profile reflects what was stored.
+    def set_profile_schedules(
+        self, profile_id: int, schedule_ids: list[Any],
+    ) -> None:
+        """Replace the profile's attached block schedules (#1494 write path).
+
+        PUT /api/profiles/{id}/schedules -> profile_schedule_rules. This is the
+        ONLY enforced schedule write path since #1490 — the legacy inline
+        `schedules` array on the profile upsert is dead.
         """
-        full = self.get_profile(profile_id)
-        existing = full.get("schedules", []) if isinstance(full, dict) else []
-        return self.apply_profile_update(profile_id, schedules=existing + [schedule])
+        self._request(
+            "PUT", f"/api/profiles/{profile_id}/schedules",
+            body={"scheduleIds": schedule_ids},
+        )
 
-    def remove_schedule(self, profile_id: int, schedule_id: Any) -> dict[str, Any]:
-        """Drop the schedule with the given id; no-op if absent."""
-        full = self.get_profile(profile_id)
-        existing = full.get("schedules", []) if isinstance(full, dict) else []
-        kept = [s for s in existing if s.get("id") != schedule_id]
-        return self.apply_profile_update(profile_id, schedules=kept)
+    def add_schedule(self, profile_id: int, window: dict[str, Any], *,
+                     name: str | None = None) -> Any:
+        """Create a household named schedule and attach it to the profile.
+
+        `window` is a ScheduleWindow dict — `{"days": ["mon", ...], "startLocal":
+        "21:00", "endLocal": "07:00", "tz": "UTC"}`. Returns the new schedule id.
+
+        Replaces the pre-#1494 fold-and-PUT of an inline `schedules` array, which
+        the API now ignores (enforcement reads named_schedules /
+        profile_schedule_rules since #1490).
+        """
+        sched_name = name or f"e2e-sched-p{profile_id}-{window.get('startLocal', '')}"
+        created = self._request(
+            "POST", "/api/schedules",
+            body={"name": sched_name, "windows": [window]},
+        )
+        sid = created.get("id") if isinstance(created, dict) else None
+        self.set_profile_schedules(
+            profile_id, self.attached_schedule_ids(profile_id) + [sid],
+        )
+        return sid
+
+    def remove_schedule(self, profile_id: int, schedule_id: Any) -> None:
+        """Detach the named schedule from the profile; no-op if not attached."""
+        kept = [s for s in self.attached_schedule_ids(profile_id) if s != schedule_id]
+        self.set_profile_schedules(profile_id, kept)
 
     # ── devices ───────────────────────────────────────────────────────────
 

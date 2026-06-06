@@ -157,6 +157,24 @@ def effective(d: DevicePolicy, profiles: Map[ProfileId, ProfilePolicy]): BlockRu
 After this single deref, the agent works with a `Map[MacAddress, BlockRules]`
 and profiles are unreachable.
 
+> **Scope decision (2026-06): authored policy has exactly two tiers — global
+> and profile. There is NO per-device override authoring surface.** The wire
+> shape (`DevicePolicy.rules: Option[BlockRules]`) *can* carry a device-specific
+> override, and `effective` above honours it — but the only thing that populates
+> `rules` today is the server-side **unmanaged-MAC block** path (a device with
+> no `profileId` under a `block` household policy). A managed device always
+> takes its rules from its assigned profile (`rules = None` on the wire).
+>
+> This is deliberate, not a gap: we compose policy from **global ∘ profile**
+> and assign devices to profiles. There is no DB column, repo, route, or SPA
+> editor for a per-device override, and we are **not** adding one right now.
+> Do not build per-device rule authoring, and do not describe the `rules` field
+> as a user-facing "device override" — it is an internal mechanism reserved for
+> the unmanaged-block case. (The `rules`-override **wire capability** stays
+> because it is additive and already used by that path; keeping it costs nothing
+> and removing it would be a breaking wire change.) Tracked/closed:
+> [#1452](https://github.com/wifihaven/wifihaven/issues/1452).
+
 Enforcement plane per field:
 
 | Field | Enforcement |
@@ -605,8 +623,13 @@ Notes:
   connectivity, PKI) — **not** copied into each profile's `extraAllowed`;
   changing them rewrites only `global` and the snapshot `etag`.
 - The first device above takes its rules from the `"kids"` profile.
-- The second device overrides the profile entirely — its `rules` are used
-  verbatim. The override replaces; it does not merge with the profile.
+- The second device carries an inline `rules` that the router uses verbatim
+  (replace, not merge). **This is the wire mechanism only** — today the sole
+  populator of an inline `rules` is the server-side unmanaged-MAC block path.
+  There is no per-device override authoring surface, and we are not adding one
+  (see the "Scope decision (2026-06)" callout in §0.2 above). Read this example
+  as "the router can apply a pre-resolved per-MAC rule," not "operators author
+  per-device overrides."
 - The router resolves each device into a single `BlockRules` once and then
   enforces purely per-MAC. Profiles are not consulted further.
 - All schedule / time-limit / pause / category evaluation has already

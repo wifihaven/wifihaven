@@ -69,6 +69,23 @@ present, **replaces** the profile rules entirely (it is not a merge). The
 agent resolves device → effective rules once at apply time, then enforcement
 is purely per-MAC. **The enforcement pipeline never sees profiles.**
 
+> **Authored policy has two tiers only: global and profile. There is NO
+> per-device override authoring surface, and we are not adding one (decided
+> 2026-06; [#1452](https://github.com/wifihaven/wifihaven/issues/1452) closed
+> as won't-do).** The `DevicePolicy.rules` override above is a *wire mechanism*,
+> not a feature: the only thing that populates an inline `rules` today is the
+> server-side **unmanaged-MAC block** path (a device with no `profileId` under
+> a `block` household policy). A managed device always inherits its profile's
+> resolved `BlockRules` (`rules = None` on the wire). Operators express policy
+> by editing **global** rules and **profile** rules and assigning devices to
+> profiles — full stop. So: do **not** add a `devices.rules` column, repo
+> method, route, `Device.rules` field, or SPA editor for per-device overrides;
+> do **not** call the `rules` field a user-facing "device override" in docs or
+> UI. The override **wire capability** stays (it is additive, already used by
+> the unmanaged path, and removing it would be a breaking wire change) — but it
+> is off-limits as an authoring concept. See `docs/architecture.md` §0.2
+> "Scope decision (2026-06)".
+
 New policy concepts (a new schedule type, a new failover behaviour, a new
 category model) land in the API server's `PolicyService` and present to
 the router as one of the fields above. **Do not add decision logic — schedule

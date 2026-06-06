@@ -63,6 +63,10 @@ function richResponse(date: string): UsageSeriesResponse {
     profileName: 'Kids',
     date,
     tz: 'UTC',
+    // #1492 — the session-stitch presence total. Intentionally distinct from the
+    // sum of the per-hour bars (45m below) to prove the headline reads this field,
+    // not the bar sum (which floors per hour and reads low — the prod 56m case).
+    presenceTotalMins: 56,
     topHosts: [
       { host: { type: 'fqdn', value: 'youtube.com' }, dayMins: 30 },
       { host: { type: 'fqdn', value: 'google.com' }, dayMins: 15 },
@@ -214,6 +218,34 @@ describe('ProfileTimelinePage', () => {
     )
     // No long tail in this fixture → no Other entry in the legend.
     expect(screen.queryByTestId('profile-timeline-entry-other')).toBeNull()
+  })
+
+  // #1492 — the graph headline must show the session-stitch presence total
+  // (the number on the profile card), NOT the sum of the floored per-hour bars.
+  it('#1492: headline total shows presenceTotalMins, not the summed hourly bars', async () => {
+    (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      richResponse('2026-05-20'),
+    )
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
+    )
+    // Bars sum to 45m, but the presence total is 56m — the headline shows 56m.
+    expect(screen.getByText(/56m total/)).toBeInTheDocument()
+    expect(screen.queryByText(/45m total/)).toBeNull()
+  })
+
+  // #1492 — falls back to the bar sum when the API omits presenceTotalMins
+  // (older deploy), so the headline never renders blank.
+  it('#1492: falls back to bar sum when presenceTotalMins is absent', async () => {
+    const resp = richResponse('2026-05-20')
+    delete resp.presenceTotalMins
+    ;(api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(resp)
+    renderPage([`/profiles/${PID}/timeline?date=2026-05-20`])
+    await waitFor(() =>
+      expect(screen.getByTestId('profile-timeline-chart')).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/45m total/)).toBeInTheDocument()
   })
 
   it('reads stackBy=device from URL', async () => {
