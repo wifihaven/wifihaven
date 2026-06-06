@@ -1190,11 +1190,14 @@ object TimeRoutes {
           settings.presenceContinuationSeconds,
         )
         .getOrElse(device.mac, 0)
+      // #1504: per-device per-site usage via the #1464 session-stitch primitive (this view is a
+      // single device, so cross-device overlap mode is moot) — not the legacy bucket-max model.
       perPat     = wifihaven.api.presence.Presence
         .patternMinutesByMac(
           presence,
           stateOpt.toList.flatMap(_.perSite.map(_.domainPattern)),
           settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
         )
       siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
         val used = perPat.getOrElse((device.mac, s.domainPattern), 0)

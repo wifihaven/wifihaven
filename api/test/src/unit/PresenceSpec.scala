@@ -365,6 +365,30 @@ object PresenceSpec extends ZIOSpecDefault {
             Map((mac1, "mathacademy.com") -> 16),
         )
       },
+      test("#1504: patternMinutesForProfile combines a site across devices per overlap mode") {
+        // Two devices engaged on the same site in the SAME 16 minutes. Sum adds each device's
+        // engaged time (32); Dedup unions the overlapping sessions across devices (16).
+        val rows = (0 until 16).flatMap { i =>
+          List(
+            sparseRow(mac1, i * 60L, "www.mathacademy.com"),
+            sparseRow(mac2, i * 60L, "www.mathacademy.com"),
+          )
+        }.toList
+        assertTrue(
+          Presence.patternMinutesForProfile(
+            rows,
+            List("mathacademy.com"),
+            CrossDeviceOverlapMode.Sum,
+          ) == Map("mathacademy.com" -> 32),
+        ) &&
+        assertTrue(
+          Presence.patternMinutesForProfile(
+            rows,
+            List("mathacademy.com"),
+            CrossDeviceOverlapMode.Dedup,
+          ) == Map("mathacademy.com" -> 16),
+        )
+      },
     ),
     suite("heartbeat filter (#714)")(
       test("filter off: low-byte rows still count toward the daily total") {
