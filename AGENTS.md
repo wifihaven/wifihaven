@@ -198,7 +198,9 @@ Key API surface (under `/api/router/*` and `/api/blocklists/*`):
 - **Device** — identified by MAC address (not IP, which changes with DHCP). Matched to a profile.
 - **Schedule** — time windows when internet is blocked entirely for a profile (e.g. bedtime 21:00–07:00).
 - **TimeLimit** — daily total minutes allowed per profile (e.g. 120 min/day total screen time).
-- **SiteTimeLimit** — daily minutes for a specific domain pattern, tracked *separately* from the main limit (e.g. 30 min YouTube, not counted in the 120 min total).
+- **App** — a named bundle of host patterns (a **host-set**: apex + off-domain asset/CDN domains) with a per-profile policy (allowed / blocked / time-limited). Apps are the unit usage and time limits are framed around — **the model is app-focused, not site-focused.**
+- **App time limit** — daily minutes for an *app*, counted against its **whole host-set aggregated as one budget** (#1505), tracked *separately* from the main daily limit (e.g. 30 min YouTube across `youtube.com` + `ytimg.com` + `googlevideo.com`, not counted in the 120 min total). A host belonging to no configured app **is its own single-host app**; there is no semantic catch-all "Other" app. "Other" only ever appears as a **display rollup** of the long tail (top-N + remainder) — a host there is *low on the list*, not *part of an Other app*.
+  > Naming debt: the code still spells this `SiteTimeLimit` / `SiteUsage` / `SiteDayState` / `perSite` and carries an `__other__` synthetic membership and a frozen `site_time_limit:` wire/persisted reason token. The internal/SPA identifiers and the single-host-app semantics are being renamed to "app" in a follow-up (#1526); the `site_time_limit:` token stays frozen until wire versioning (#376).
 - **TimeUsage** — per-(device, domain, date) minutes accumulated, reset at midnight. Updated by traffic monitor.
 - **TimeExtension** — admin-granted extra minutes for a device on a specific day, with audit trail.
 - **BlocklistDomain** — domain → category mapping. Loaded into memory cache, refreshed every 15 min.
@@ -216,7 +218,7 @@ Order matters because earlier conditions short-circuit:
 1. Profile paused → `blocked = true`, reason `Paused`
 2. Schedule active for current time → `blocked = true`, reason `Schedule`
 3. Daily time limit reached (`time_used_today >= daily_minutes + extensions_today`) → `blocked = true`, reason `TimeLimit`
-4. Per-site time limit reached for some domain → that domain added to `extraBlocked` for this MAC
+4. Per-app time limit reached (an app's usage, aggregated across its whole host-set, hits its limit) → **every** host in that app's host-set added to `extraBlocked` for this MAC
 5. Manual admin block → `blocked = true`, reason `Manual`
 6. Profile / device `extraBlocked` hostnames → `extraBlocked` for this MAC
 7. Profile / device `extraAllowed` hostnames → `extraAllowed` for this MAC (carves out blocks above)

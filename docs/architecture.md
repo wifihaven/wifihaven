@@ -863,23 +863,36 @@ openwrt/
 ### 7.5 Time-limit enforcement
 
 `PolicyService` on the API server tracks `time_used_today`, daily limits,
-extensions, and per-site limits. When a daily limit is exhausted, the API
+extensions, and **per-app limits**. When a daily limit is exhausted, the API
 emits the affected MAC with `blocked = true, blockReason = TimeLimit` in
-the next snapshot. When a per-site limit is exhausted, the relevant hosts
+the next snapshot. When a per-app limit is exhausted, the relevant hosts
 are added to that MAC's `extraBlocked`. **The agent does no time arithmetic.**
 
-A per-site (app) limit is scoped to an **app's whole host-set, aggregated as
-one budget** (#1505), not to each host independently. A time-limited app's
-usage is the union of presence across **all** its `app_hosts` — apex plus any
-off-domain asset/CDN hosts — counted once per presence bucket per app. So
-traffic to an off-domain asset host ticks the same limit as the apex (and is
-exempt from the daily cap when the app is `exemptFromDaily`), and when the
-app's aggregate hits its limit, **every** host in the set goes to
-`extraBlocked` together. This is bucket-max counting; migrating the per-site
-count to the #1464 session-stitch model is tracked separately (#1504). App
-host-sets are the curated per-app dependency domains and are distinct from the
-device-level infra-allow list (#1337/#1411): app assets *attribute and count*,
-device infra is *allowed and suppressed* — see the AGENTS.md "host-set" seam.
+> **The model is app-focused, not site-focused.** Usage and time limits are
+> framed around **apps**, not individual sites/domains. The limit is scoped to
+> an **app's whole host-set, aggregated as one budget** (#1505), not to each
+> host independently. A time-limited app's usage is the union of presence
+> across **all** its `app_hosts` — apex plus any off-domain asset/CDN hosts —
+> counted once per presence bucket per app. So traffic to an off-domain asset
+> host ticks the same limit as the apex (and is exempt from the daily cap when
+> the app is `exemptFromDaily`), and when the app's aggregate hits its limit,
+> **every** host in the set goes to `extraBlocked` together.
+>
+> **A host that belongs to no configured app is its own single-host app** — not
+> a member of some catch-all "Other" app. There is no semantic "Other" bucket:
+> it only ever appears as a **display rollup** of the long tail (e.g. a usage
+> view shows the top-5 apps and folds the remainder into "Other"). A host
+> landing in that rollup means "low on the list," **not** "part of an Other
+> app." The current `__other__` synthetic membership in the attribution code is
+> the legacy spelling of this and will be reworked to the single-host-app model
+> (and the lingering "site"/`SiteTimeLimit` naming renamed to "app") — see the
+> follow-up rename issue (#1526).
+>
+> This is bucket-max counting; migrating the per-app count to the #1464
+> session-stitch model is tracked separately (#1504). App host-sets are the
+> curated per-app dependency domains and are distinct from the device-level
+> infra-allow list (#1337/#1411): app assets *attribute and count*, device
+> infra is *allowed and suppressed* — see the AGENTS.md "host-set" seam.
 
 Per-MAC usage is reported to the API every 60 s via
 `POST /api/router/usage` (§6.4); the API accumulates and decides. Worst-case
