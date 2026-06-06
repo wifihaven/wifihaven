@@ -888,11 +888,13 @@ are added to that MAC's `extraBlocked`. **The agent does no time arithmetic.**
 > (and the lingering "site"/`SiteTimeLimit` naming renamed to "app") — see the
 > follow-up rename issue (#1526).
 >
-> This is bucket-max counting; migrating the per-app count to the #1464
-> session-stitch model is tracked separately (#1504). App host-sets are the
-> curated per-app dependency domains and are distinct from the device-level
-> infra-allow list (#1337/#1411): app assets *attribute and count*, device
-> infra is *allowed and suppressed* — see the AGENTS.md "host-set" seam.
+> The per-app count is computed with the #1464 session-stitch primitive (#1504,
+> via `Presence.patternGroupMinutesForProfile`) — engaged wall-clock time across
+> the whole host-set, combined across the profile's devices per its overlap
+> mode, not the legacy bucket-max floor. App host-sets are the curated per-app
+> dependency domains and are distinct from the device-level infra-allow list
+> (#1337/#1411): app assets *attribute and count*, device infra is *allowed and
+> suppressed* — see the AGENTS.md "host-set" seam.
 
 Per-MAC usage is reported to the API every 60 s via
 `POST /api/router/usage` (§6.4); the API accumulates and decides. Worst-case

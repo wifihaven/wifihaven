@@ -268,14 +268,16 @@ assets** (§3). Track separately; do not gate the over-count fix on it.
 > each host as an **independent** budget, so an app's off-domain asset ticked its
 > own limit rather than the app's single one. #1505 makes the per-site limit
 > **per-app, aggregated across the whole host-set** — presence is counted once
-> per bucket per app (`Presence.patternGroupMinutesByMac`), the whole set is
+> across the set (`Presence.patternGroupMinutesForProfile`), the whole set is
 > exempted from the daily cap together, and when the aggregate hits the limit
 > every host in the set goes to `extraBlocked`. Attribution on the traffic page
 > already worked via `app_hosts` (`HostMatch.lookupApex`); the new behavior is
-> that those same hosts now share one budget. Still bucket-max — the
-> session-stitch migration of this surface is Fix D (#1504). Math Academy itself
-> stays apex-only (its assets are served on `mathacademy.com`); the mechanism is
-> what unblocks any app that does serve off-domain assets.
+> that those same hosts now share one budget. The aggregate is computed with the
+> #1464 session-stitch primitive (Fix D / #1504, now merged) — the host-set
+> grouping composes on top of it, so it counts engaged wall-clock time, not the
+> bucket-max floor. Math Academy itself stays apex-only (its assets are served on
+> `mathacademy.com`); the mechanism is what unblocks any app that does serve
+> off-domain assets.
 
 ### Fix D (primary fix for "Math Academy reads 0") — migrate the per-site limit to the session-stitch model
 
