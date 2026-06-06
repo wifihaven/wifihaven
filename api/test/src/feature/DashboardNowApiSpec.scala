@@ -247,6 +247,38 @@ object DashboardNowApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         dev.topHosts.head.activeSeconds == 360L,
       )
     },
+    test("#1503 background infra hosts are excluded from the now-widget's top hosts") {
+      // The "watching X right now" widget must not surface device-level OS/telemetry infra as the
+      // active host. It routes the host ranking through Presence.isHeartbeat, which (post-#1503)
+      // drops the unified InfraHosts set on identity — so the dominant gvt2/ls.apple/OCSP chatter
+      // is excluded and only the genuine app remains, even though infra has more active_seconds.
+      for {
+        _        <- cleanDb
+        _        <- clearSeededProfiles
+        routerId <- seedRouter()
+        dr       <- ZIO.service[DeviceRepo]
+        pr       <- ZIO.service[ProfileRepo]
+        kid      <- pr.create("Kids", Nil)
+        _        <- TestLayers.seedDevice(dr, mac1, "iPad", kid)
+        now0     <- Clock.instant
+        t0 = now0.minusSeconds(10 * 60)
+        _      <- insertReport(routerId, mac1, "beacons3.gvt2.com", t0, activeSeconds = 300)
+        _      <- insertReport(routerId, mac1, "gsp-ssl.ls.apple.com", t0, activeSeconds = 300)
+        _      <- insertReport(routerId, mac1, "ocsp.digicert.com", t0, activeSeconds = 300)
+        _      <- insertReport(routerId, mac1, "youtube.com", t0, activeSeconds = 120)
+        _      <- insertConn(routerId, mac1, now0.minusSeconds(15))
+        auth   <- makeAuth
+        token  <- auth.login("admin", "changeme").map(_.token)
+        routes <- buildRoutes(auth)
+        resp   <- getJson(routes, "/api/dashboard/now", token)
+        body   <- resp.body.asString
+        parsed <- ZIO.fromEither(body.fromJson[DashboardNow])
+        dev = parsed.profiles.find(_.id == kid).get.activeDevices.head
+      } yield assertTrue(
+        dev.topHosts.map(_.host) == List(HostId.Fqdn(Hostname.unsafe("youtube.com"))),
+        dev.nowActivity.exists(_.topHost == HostId.Fqdn(Hostname.unsafe("youtube.com"))),
+      )
+    },
     test("nowActivity: consistent top host across 3 buckets → topHost + accurate minutes") {
       for {
         _        <- cleanDb
