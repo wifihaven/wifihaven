@@ -53,6 +53,31 @@ object PresenceSpec extends ZIOSpecDefault {
       periodSeconds,
     )
 
+  /**
+   * #1504: a row whose sampled `activeSeconds` is far below its reporting window — the
+   * request-driven app shape that bottoms out at the ~10 s sample floor. `period_start` /
+   * `period_seconds` drive the session-stitch interval `[start, start+len)`; `active_seconds` is
+   * what the legacy bucket-max model (mistakenly) credited, so keeping it small is what makes the
+   * two models diverge.
+   */
+  private def sparseRow(
+      mac: MacAddress,
+      offsetSec: Long,
+      host: String,
+      periodSeconds: Int = 60,
+      activeSeconds: Int = 10,
+      bytes: Long = 1_000_000L,
+  ) =
+    PresenceRow(
+      mac,
+      baseDate,
+      base.plusSeconds(offsetSec),
+      HostId.Fqdn(Hostname.unsafe(host)),
+      activeSeconds,
+      bytes,
+      periodSeconds,
+    )
+
   private val yt = HostId.Fqdn(Hostname.unsafe("youtube.com"))
 
   /**
@@ -327,6 +352,17 @@ object PresenceSpec extends ZIOSpecDefault {
         val rows = List(ipRow(mac1, 0, "192.0.2.1"))
         assertTrue(
           Presence.totalMinutesByMac(rows, List("*")) == Map(mac1 -> 5),
+        )
+      },
+      test("#1504: per-site count session-stitches engaged minutes, not bucket-max activeSeconds") {
+        // 16 contiguous 60 s windows of www.mathacademy.com, each sampling only the ~10 s
+        // activeSeconds floor. The legacy bucket-max model credits max(activeSeconds)=10 s per
+        // bucket → ~2 min (the prod undercount that made the site limit read 0). The #1464
+        // session-stitch credits the full [0, 960 s) engaged span → 16 min.
+        val rows = (0 until 16).map(i => sparseRow(mac1, i * 60L, "www.mathacademy.com")).toList
+        assertTrue(
+          Presence.patternMinutesByMac(rows, List("mathacademy.com")) ==
+            Map((mac1, "mathacademy.com") -> 16),
         )
       },
     ),

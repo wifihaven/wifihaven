@@ -70,6 +70,39 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       tr.insertBatch(inserts).unit
     }
 
+  /**
+   * #1504: seed `windows` contiguous 60 s reporting windows where each only sampled the ~10 s
+   * activeSeconds floor — the request-driven app shape. Engaged wall-clock time is `windows`
+   * minutes but `Σ max(activeSeconds)` is only ~`windows/6` minutes, so the legacy bucket-max
+   * per-site count undercounts ~6×. Starts at midnight UTC on `date`.
+   */
+  private def seedSparseTraffic(
+      routerId: RouterId,
+      mac: String,
+      hostname: String,
+      date: LocalDate,
+      windows: Int,
+  ): ZIO[TrafficReportRepo, Throwable, Unit] =
+    ZIO.serviceWithZIO[TrafficReportRepo] { tr =>
+      val day0    = date.atStartOfDay(ZoneOffset.UTC).toInstant
+      val inserts = (0 until windows).map { i =>
+        val start = day0.plusSeconds(i * 60L)
+        TrafficReportInsert(
+          routerId,
+          MacAddress.unsafe(mac),
+          None,
+          HostId.Fqdn(Hostname.unsafe(hostname)),
+          date,
+          start,
+          start.plusSeconds(60),
+          10,
+          500_000L,
+          500_000L,
+        )
+      }.toList
+      tr.insertBatch(inserts).unit
+    }
+
   private def settingsWithTz(
       hsr: HouseholdSettingsRepo,
       tz: String,
@@ -249,6 +282,53 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       } yield assertTrue(stOpt.exists(_.usedMinutes == 10)) &&
         assertTrue(
           stOpt.exists(_.perSite.exists(p => p.domainPattern == "khan.org" && p.exemptFromDaily)),
+        )
+    },
+    test("#1504: per-site usage counts engaged minutes, blocking at the true cap not bucket-max") {
+      // 30 contiguous minutes of www.mathacademy.com sampled at the 10 s activeSeconds floor.
+      // Bucket-max credits ~5 min — well under the 30 min site limit, so enforcement would let
+      // the kid run on. Session-stitch credits the real 30 engaged minutes, so the per-site cap
+      // is reached and the domain is blocked.
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ar  <- ZIO.service[AppRepo]
+        s   <- settingsWithTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:07", "kid-ipad", kid)
+        _   <- TestLayers.seedAppAssignment(
+          ar,
+          kid,
+          "mathacademy.com",
+          AppMode.TimeLimited,
+          dailyMinutes = Some(30),
+          exemptFromDaily = true,
+        )
+        rid <- seedRouterRow
+        _   <- seedSparseTraffic(
+          rid,
+          "aa:bb:cc:dd:ee:07",
+          "www.mathacademy.com",
+          LocalDate.of(2025, 1, 6),
+          30,
+        )
+        svc <- makeService
+        now = Clock.TestClock.schoolDayAfternoon.toInstant(ZoneOffset.UTC)
+        stOpt <- svc.todaysState(now, s, kid)
+      } yield assertTrue(
+        stOpt.exists(
+          _.perSite.exists(p => p.domainPattern == "mathacademy.com" && p.usedMinutes == 30),
+        ),
+      ) &&
+        assertTrue(
+          stOpt.exists(
+            _.perSite.exists(p =>
+              p.domainPattern == "mathacademy.com" && p.usedMinutes >= p.dailyLimitMinutes,
+            ),
+          ),
         )
     },
   ) @@ TestAspect.sequential
