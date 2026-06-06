@@ -195,6 +195,19 @@ composition rule at the end.
 
 ### Fix A (primary) — expand background/infra suppression for the daily cap
 
+> **Status (#1503, shipped).** Fix A + A.1 are implemented **at the code level,
+> not via a migration.** The canonical list now lives in
+> `shared.types.InfraHosts.canonical`, consumed by both `PolicyService.infraAllowHosts`
+> (allow carve-out) and `Presence.isHeartbeat` (suppression). Because it is a code
+> constant there is **no Flyway seed** — the migration-isolation two-PR split the
+> "migration, like V24" wording below would have forced is avoided. The list was
+> expanded with the observed classes (`*.gvt3.com`, `*.ls.apple.com`, `*.nel.goog`,
+> analytics SaaS, the safe-browsing hosts); `*.googleapis.com` is enumerated as
+> *specific* background subdomains only (never the apex) to keep per-app API traffic
+> attributing and counting. The stale `household_settings.heartbeatHostPatterns`
+> column is now an *additive* operator extra on top of the canonical list, not the
+> primary source of truth.
+
 Treat known OS/telemetry/infra/analytics/cert/safe-browsing hosts as
 non-counting for presence, the same way heartbeats are dropped. Concretely:
 
