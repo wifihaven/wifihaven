@@ -606,6 +606,86 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(kids.devices.length == 2) &&               // both devices in breakdown
           assertTrue(kids.devices.map(_.deviceName).toSet == Set("iPad", "iPhone"))
       },
+      // #1491 / #924 / #1465: per-app `proportionalMins` on `hostUsage` follows the
+      // session-span model (#1488) — the length of a host's stitched
+      // [period_start, period_end] sessions — NOT the old #715 byte-share weighting.
+      // A host present across several contiguous windows stitches into one long
+      // session and dominates a host present in only one window, deterministically
+      // and independent of bytes. This pins the e2e #924 step
+      // (scripts/e2e-router.sh) at the API level so it can't silently regress to a
+      // byte-ratio expectation: heavy924 is active across three contiguous 5-min
+      // windows (→ one ~15-min session) while light924 is active only in the last
+      // (→ one ~5-min session). (If #1466's connection-event-anchored span edges
+      // shift the exact magnitudes, update the 15/5 here in lockstep with the e2e
+      // tolerance — the heavy ≥ 2× light ordering is the stable invariant.)
+      test(
+        "#924/#1465: per-app proportionalMins follows session span — heavy across 3 windows dominates light in 1",
+      ) {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // heavy: buckets 0,1,2 → three contiguous windows that stitch into one
+          // [0, 900s) session. light: bucket 2 only → a single [600s, 900s) window.
+          _               <- seedTraffic(routerId, testMac, "heavy924.example.com", today, 15)
+          _               <- seedTraffic(routerId, testMac, "light924.example.com", today, 5, 2)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode(s"/api/time/status?profileId=${kidsId.value}").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids   = list.find(_.profileId == kidsId).get
+          byHost = kids.hostUsage.map(h => h.host.value -> h).toMap
+          heavy  = byHost("heavy924.example.com")
+          light  = byHost("light924.example.com")
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // session-span: heavy's stitched 15-min session, light's single 5-min window.
+          assertTrue(heavy.proportionalMins == 15) &&
+          assertTrue(light.proportionalMins == 5) &&
+          // the exact invariant the e2e #924 step asserts (heavy ≥ 2× light, both > 0).
+          assertTrue(
+            light.proportionalMins > 0 && heavy.proportionalMins >= 2 * light.proportionalMins,
+          )
+      },
       // #795: per-profile scope so the SPA can fetch one card's worth of data
       // instead of fanning out N sub-rollups. The filter is applied before the
       // per-profile loop runs, so only the requested profile's queries fire.
