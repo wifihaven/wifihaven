@@ -681,18 +681,42 @@ object PolicyService {
         Hostname.unsafe(sl.domainPattern)
     }
 
-    // #1105: time_limited app hosts with exemptFromDaily=true carve around the
-    // MAC-level @blocked_macs drop while they still have per-host budget. The
-    // exempt flag's original role was just to exclude the host from the daily
-    // tally; without this carve-out, hitting the profile cap silently dropped
-    // the exempt app too, violating the "Khan doesn't count" contract.
-    // Naturally transitions allow → block as the per-host budget exhausts
-    // (siteLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
-    // at the router; see feedback_extraallowed_beats_blocked).
-    val appExemptAllowedHosts: List[Hostname] = state.perSite.collect {
-      case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
-        Hostname.unsafe(sd.domainPattern)
-    }
+    // #1105/#1513: time_limited app hosts with exemptFromDaily=true carve around
+    // the MAC-level @blocked_macs drop while the app still has budget. The exempt
+    // flag's original role was just to exclude the host from the daily tally;
+    // without this carve-out, hitting the profile cap silently dropped the exempt
+    // app too, violating the "Khan doesn't count" contract.
+    //
+    // #1513: the carve gate AND the "under its own limit" budget check are
+    // evaluated at the APP level over the app's FULL host-set — NOT per host. One
+    // time_limited app emits one `SiteTimeLimit`/`SiteDayState` row PER host, all
+    // sharing the same `label` (= `app:<slug>`), daily limit, and exempt flag
+    // (see SiteTimeLimitRepoLive.listForProfile), so we group by `label` to
+    // recover the owning app. A per-host check was the prod bug: with an app's
+    // real asset/CDN hosts (#1505) it (a) splits the app's usage across hosts so
+    // its own limit never bites, and (b) — when over budget — would still carve
+    // the hosts that are individually under, leaving the app reachable past its
+    // limit. Summing the app's per-host minutes and comparing to its single limit
+    // makes the limit bite on the app as a whole; carve ALL its hosts iff exempt
+    // and under that limit, else none (the whole-MAC block then drops it). With
+    // the apex-only host-sets of today this is identical to the per-host result;
+    // it becomes correct automatically once #1505 maps each app's full host-set.
+    // (#1505 curates non-overlapping branded apexes, so the sum does not
+    // double-count; a nested host-set would only over-count → block sooner, the
+    // safe direction.) Naturally transitions allow → block as the app's budget
+    // exhausts (extraAllowed-beats-extraBlocked at the router; see
+    // feedback_extraallowed_beats_blocked).
+    val appExemptAllowedHosts: List[Hostname] =
+      state.perSite
+        .groupBy(_.label)
+        .collect {
+          case (_, rows)
+              if rows.exists(_.exemptFromDaily) &&
+                rows.map(_.usedMinutes).sum < rows.map(_.dailyLimitMinutes).max =>
+            rows.map(sd => Hostname.unsafe(sd.domainPattern))
+        }
+        .flatten
+        .toList
 
     // #1418: hard pause is a true off-switch. When this profile is paused AND
     // its pause_mode is `hard`, drop even the app/exempt/infra carve-outs — only
