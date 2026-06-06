@@ -305,17 +305,35 @@ object Presence {
    * (`patternMinutesByMac`) and the per-host/per-app breakdown (`hostMinutes`,
    * `proportionalHostSeconds`) — so keepalives no longer inflate per-site time or per-app presence
    * (design §4.2). Each surface takes a `filter` argument (default `Off`); callers pass
-   * `settings.heartbeatFilter`. A row is classified as a heartbeat if the filter is enabled and
-   * total bytes are below `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a
-   * few hundred) or its FQDN matches a heartbeat host pattern.
+   * `settings.heartbeatFilter`. A row is classified as a heartbeat if its FQDN is on the unified
+   * device-infra list (see below) OR — when the filter is enabled — total bytes are below
+   * `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few hundred) or its FQDN
+   * matches an operator-configured heartbeat host pattern.
+   *
+   * #1503: the FQDN check now also consults the canonical [[InfraHosts.canonical]] set — the same
+   * device-level infra `PolicyService.infraAllowHosts` carves out of the block. Maintaining the
+   * suppression list and the allow list as two hand-curated copies let them drift (the #1499
+   * ~93%-background over-count leak: `heartbeatHostPatterns` was missing `gvt2.com`, the OCSP
+   * responders, etc.). Unified-infra suppression keys purely on host *identity* and applies
+   * regardless of `filter.enabled` — device infra is never engagement, mirroring the allow side
+   * consuming the list unconditionally. Because it keys on identity (never on low bytes / short
+   * activity) it cannot re-open the #1446 undercount: a genuine app's sparse, low-byte requests are
+   * not on the list, so they still count.
    */
   def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
-    filter.enabled && (
+    isInfraHost(row) || (filter.enabled && (
       row.bytes < filter.bytesThreshold ||
         row.host.asFqdn.exists(fqdn =>
           filter.heartbeatHostPatterns.exists(p => matchesPattern(fqdn.value, p)),
         )
-    )
+    ))
+
+  /**
+   * #1503: whether the row's FQDN is on the unified device-infra list ([[InfraHosts]]). Keyed on
+   * host identity only — IP-literal hosts never match.
+   */
+  private def isInfraHost(row: PresenceRow): Boolean =
+    row.host.asFqdn.exists(fqdn => InfraHosts.isInfra(fqdn.value))
 
   /**
    * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the
@@ -330,7 +348,12 @@ object Presence {
 
   def classifyRows(rows: List[PresenceRow], filter: HeartbeatFilter): List[Classified] =
     rows.map { r =>
-      val rsns  = scala.collection.mutable.ListBuffer.empty[String]
+      val rsns = scala.collection.mutable.ListBuffer.empty[String]
+      // #1503: unified device-infra is always background, independent of filter.enabled.
+      for {
+        fqdn <- r.host.asFqdn
+        p    <- InfraHosts.matchedPattern(fqdn.value)
+      } rsns += s"infra:$p"
       if filter.enabled then {
         if r.bytes < filter.bytesThreshold then rsns += s"bytes<${filter.bytesThreshold}"
         for {
@@ -339,7 +362,7 @@ object Presence {
           if matchesPattern(fqdn.value, p)
         } rsns += s"host:$p"
       }
-      val label = if filter.enabled && rsns.nonEmpty then "heartbeat" else "active"
+      val label = if rsns.nonEmpty then "heartbeat" else "active"
       Classified(r, label, rsns.toList)
     }
 
