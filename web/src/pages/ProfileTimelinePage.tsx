@@ -171,7 +171,13 @@ export function ProfileTimelinePage() {
     stackBy === 'device' ? data?.bucketsByDevice
     : stackBy === 'app'    ? data?.bucketsByEntry
     : data?.buckets
-  const dayTotal = buckets?.reduce((a, b) => a + b.totalMins, 0) ?? 0
+  // #1492 — the headline is the session-stitch presence total (the same number
+  // the profile card shows as time-used), not the sum of the per-hour bars.
+  // Summing the floored hourly bars drops sub-minute fractions and reads a few
+  // minutes low; `presenceTotalMins` is floored once at the day level so the
+  // graph and the card agree. Fall back to the bar sum for older API responses.
+  const barSum   = buckets?.reduce((a, b) => a + b.totalMins, 0) ?? 0
+  const dayTotal = data?.presenceTotalMins ?? barSum
   const isEmpty  = dayTotal === 0
 
   return (
@@ -263,15 +269,16 @@ export function ProfileTimelinePage() {
           />
         )}
 
-        {/* Profile total uses sum-of-per-device-minutes semantics. Two siblings
-            both active in the same 5-min window count as 10 minutes here, but
-            the per-host stack still even-shares within each device's bucket
-            (#715). The numbers reconcile with the daily totals shown on the
-            /profiles card, within that overlap caveat. */}
+        {/* #1492 — the graph is presence-based: hourly bars are the session-stitch
+            presence (the same model that drives the time-used total), and the
+            headline `presenceTotalMins` equals the number on the profile card.
+            Per-app/host stacks are each entity's own session presence, so within a
+            device overlapping apps can make the stacks exceed the bar — the total
+            is the device union, not the sum of per-app spans (design §4.3). */}
         <p className="text-[11px] text-brand-text-muted mt-3">
-          Stacks total to wall-clock minutes per hour. Per-host minutes are proportional
-          within each 5-minute window; overlapping device activity counts once per device
-          (matches the daily total shown on the profile card).
+          Presence-based: bars are session minutes per hour and the total matches the
+          time-used shown on the profile card. Per-app contributions are each app's own
+          session time — overlapping apps on one device can sum past the hour's total.
         </p>
       </div>
 

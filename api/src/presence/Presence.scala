@@ -110,9 +110,11 @@ object Presence {
       .reverse
 
   /**
-   * Overlap-merge spans (gap 0) and sum their wall-clock seconds — the within-device/profile union.
+   * Overlap-merge spans (gap 0) into a minimal, sorted, non-overlapping set. Shared by
+   * [[unionSeconds]] and the hour-clipped decomposition (#1492) so the union semantics are
+   * identical whether the caller wants total seconds or a per-hour breakdown.
    */
-  def unionSeconds(spans: List[Span]): Long =
+  def mergeSpans(spans: List[Span]): List[Span] =
     spans
       .sortBy(_.startEpoch)
       .foldLeft(List.empty[Span]) {
@@ -120,8 +122,40 @@ object Presence {
           head.copy(endEpoch = head.endEpoch.max(s.endEpoch)) :: tail
         case (acc, s)                                           => s :: acc
       }
-      .map(_.seconds)
-      .sum
+      .reverse
+
+  /**
+   * Overlap-merge spans (gap 0) and sum their wall-clock seconds — the within-device/profile union.
+   */
+  def unionSeconds(spans: List[Span]): Long =
+    mergeSpans(spans).map(_.seconds).sum
+
+  /**
+   * #1492: distribute spans across the 24 local-hour buckets of `date` in `zone`, in seconds. Each
+   * span is clipped to every hour it overlaps; spans are summed, so the caller controls overlap
+   * semantics by pre-merging (union — one contribution) or concatenating (sum — each counted). The
+   * seconds outside `[date 00:00, date+1 00:00)` are dropped, so summing the map reconciles with
+   * [[unionSeconds]] of the same (merged) spans whenever those spans lie within the day window —
+   * which the day-scoped presence query guarantees. Hours with no overlap are absent.
+   */
+  def secondsByLocalHour(
+      spans: List[Span],
+      date: LocalDate,
+      zone: java.time.ZoneId,
+  ): Map[Int, Long] = {
+    val dayStart = date.atStartOfDay(zone).toInstant.getEpochSecond
+    val acc      = scala.collection.mutable.Map.empty[Int, Long]
+    for {
+      s  <- spans
+      hr <- 0 until 24
+    } {
+      val hourStart = dayStart + hr.toLong * 3600L
+      val hourEnd   = hourStart + 3600L
+      val overlap   = (s.endEpoch.min(hourEnd) - s.startEpoch.max(hourStart)).max(0L)
+      if (overlap > 0L) acc(hr) = acc.getOrElse(hr, 0L) + overlap
+    }
+    acc.toMap
+  }
 
   /**
    * The non-heartbeat, non-exempt rows that bear on the daily cap. A row is dropped if it is a
@@ -211,6 +245,59 @@ object Presence {
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): Int =
     (dedupedTotalSeconds(rows, exemptPatterns, filter, continuationSeconds) / 60).toInt
+
+  /**
+   * #1492: per-mac merged daily session spans — the per-device building block of the daily cap, in
+   * span form. Counts exactly the rows [[totalSecondsByMac]] does (non-heartbeat, non-exempt),
+   * stitches per `(device, app)` on the idle gap, then unions across apps within the device.
+   * `unionSeconds` of a mac's spans equals `totalSecondsByMac(...)` for that mac, so an
+   * hour-clipped decomposition of these spans reconciles with the headline daily total — this is
+   * what makes the per-profile usage graph presence-based (#1492) instead of bucket-max.
+   */
+  def deviceSessionSpans(
+      rows: List[PresenceRow],
+      exemptPatterns: List[String],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[MacAddress, List[Span]] = {
+    val counted = countedRows(rows, exemptPatterns, filter)
+    val gap     = effectiveGap(counted, continuationSeconds)
+    counted
+      .groupBy(_.mac)
+      .view
+      .mapValues(macRows => mergeSpans(sessionSpans(macRows, gap)))
+      .filter(_._2.nonEmpty)
+      .toMap
+  }
+
+  /**
+   * #1492: per-host (per-app) profile-level session spans — the span form of
+   * [[proportionalHostSeconds]]. `Sum` keeps each device's stitched spans of a host separate (the
+   * same host on two devices double-counts when their seconds are summed); `Dedup` unions a host's
+   * spans across devices so simultaneous use on two screens counts once. Summing a host's span
+   * seconds reproduces [[proportionalHostSeconds]] exactly, so the hour-clipped per-app breakdown
+   * stays consistent with the per-app presence surface (#1465). Heartbeat rows are dropped before
+   * stitching (§4.4-2), same as [[proportionalHostSeconds]].
+   */
+  def hostSessionSpans(
+      rows: List[PresenceRow],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[HostId, List[Span]] = {
+    val active        = rows.filterNot(r => isHeartbeat(r, filter))
+    val gap           = effectiveGap(active, continuationSeconds)
+    val perDeviceHost =
+      active.groupBy(r => (r.mac, r.host)).view.mapValues(rs => stitch(rs.map(spanOf), gap)).toMap
+    val byHost        = perDeviceHost.iterator
+      .map { case ((_, h), spans) => h -> spans }
+      .toList
+      .groupMapReduce(_._1)(_._2)(_ ++ _)
+    overlap match {
+      case CrossDeviceOverlapMode.Sum   => byHost
+      case CrossDeviceOverlapMode.Dedup => byHost.view.mapValues(mergeSpans).toMap
+    }
+  }
 
   /**
    * #714 heartbeat classification. As of #1465 the filter applies to every presence surface — the
