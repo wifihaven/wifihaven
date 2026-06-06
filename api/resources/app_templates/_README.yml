@@ -27,6 +27,17 @@
 #              Be conservative: prefer the few FQDNs each service truly needs;
 #              we iterate over time.
 #
+#              List the app's full host-set, including off-domain asset/CDN
+#              domains (e.g. youtube.com + ytimg.com + googlevideo.com). For a
+#              time-limited app the host-set is ONE aggregated budget (#1505):
+#              traffic to any host counts toward the app's single per-site limit
+#              and is exempt from the daily cap together — not a separate budget
+#              per host. Prefer the service's STABLE branded asset domains;
+#              avoid pinning rotating shared-CDN artifacts (*.akamai.net,
+#              *.fastly.net, *.cloudfront.net) here — they rot. These are the
+#              app's own dependency domains and are distinct from the
+#              device-level infra-allow list (#1337/#1411).
+#
 # File names beginning with `_` are reserved for documentation (this file) and
 # the manifest (`_index.yml`) and are ignored by the template loader.
 

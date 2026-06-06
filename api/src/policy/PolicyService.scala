@@ -137,11 +137,10 @@ class PolicyServiceLive(
       today = PolicyService.householdLocalDate(now, settings)
       // #1104: today's cap/block state for every profile in one batched read. Same call the
       // /api/time/status/... endpoints use — keeps the snapshot and the UI in lockstep.
-      dayStates <- timeStatusService.dayStateAll(now, today, settings)
-      profiles  <- profileRepo.listAll
-      devices   <- deviceRepo.listAll
-      stlims    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      cats      <- blocklistRepo.listCategories
+      dayStates   <- timeStatusService.dayStateAll(now, today, settings)
+      profiles    <- profileRepo.listAll
+      devices     <- deviceRepo.listAll
+      cats        <- blocklistRepo.listCategories
       catDomains  <- ZIO.foreach(cats)(c => blocklistRepo.loadCategory(c).map(c -> _))
       // #763: load apps + per-app hosts + per-profile assignments so we can
       // expand app modes into the per-profile BlockRules buckets below.
@@ -158,11 +157,8 @@ class PolicyServiceLive(
       appHostsMap = appHostsRaw.toMap
       appAssignsMap = appAssigns.toMap
       appSchedMap   = appSched.toMap
-      stlMap        = stlims.toMap
     } yield {
       val profilePolicies: Map[ProfileId, ProfilePolicy] = profiles.iterator.map { p =>
-        val pSiteLims = stlMap.getOrElse(p.id, Nil)
-
         // #1104: cap/block state comes from TimeStatusService — the same value the UI reads.
         // Computed before app bucketing because the #1379 carve gate keys off the raw daily-cap
         // condition (used/limit/extensions), independent of the collapsed blockReason.
@@ -189,7 +185,6 @@ class PolicyServiceLive(
         val rules = PolicyService.computeBlockRules(
           profile = p,
           state = state,
-          siteLimits = pSiteLims,
           appExtraAllowed = appAllowedHosts,
           appExtraBlocked = appBlockedHosts,
         )
@@ -336,12 +331,19 @@ class PolicyServiceLive(
 
                 // Per-profile daily usage — computed up front because the #1379 carve gate keys off
                 // whether the daily cap is exhausted, independent of the precedence chain below.
-                val pPres    = pres.filter(r => macs.contains(r.mac))
-                val patterns = stlims.map(_.domainPattern)
-                val perPat = Presence.patternMinutesByMac(pPres, patterns, settings.heartbeatFilter)
-                val byDomain     = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
-                  val mins = devs.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
-                  if mins == 0 then acc else acc.updated(pat, mins)
+                val pPres        = pres.filter(r => macs.contains(r.mac))
+                // #1505: per-site usage is aggregated per app across its full host-set (keyed by
+                // the synthesized `app:<slug>` label), so an off-domain asset host ticks the same
+                // limit as the apex. Mirrors `TimeStatusService.siteDayStates`.
+                val siteGroups   = TimeStatusService.groupSiteLimits(stlims)
+                val perGroup     = Presence.patternGroupMinutesByMac(
+                  pPres,
+                  siteGroups.map(g => g._1 -> g._4),
+                  settings.heartbeatFilter,
+                )
+                val byApp        = siteGroups.foldLeft(Map.empty[String, Int]) { (acc, g) =>
+                  val mins = devs.iterator.map(d => perGroup.getOrElse((d.mac, g._1), 0)).sum
+                  if mins == 0 then acc else acc.updated(g._1, mins)
                 }
                 val exemptPats   =
                   stlims.filter(_.exemptFromDaily).map(_.domainPattern)
@@ -407,7 +409,7 @@ class PolicyServiceLive(
                           settings,
                           tl.map(_.dailyMinutes),
                           stlims,
-                          byDomain,
+                          byApp,
                           totalMins,
                           exts,
                         ) match {
@@ -450,7 +452,9 @@ class PolicyServiceLive(
       settings: HouseholdSettings,
       dailyMinutes: Option[Int],
       siteLimits: List[SiteTimeLimit],
-      minutesByDomain: Map[String, Int],
+      // #1505: per-app aggregate minutes keyed by the synthesized `app:<slug>` label, so any of an
+      // app's hosts (apex or off-domain asset) ticks the same limit.
+      minutesByApp: Map[String, Int],
       totalMinutesUsed: Int,
       extensionsMinutes: Int,
   ): Option[RouterDecisionResponse] = {
@@ -458,7 +462,7 @@ class PolicyServiceLive(
     val resetAt      = PolicyService.nextDailyResetAfter(settings, now).toString
     val siteLimitHit = siteLimits.find { sl =>
       HostMatch.matchesPattern(hostname, sl.domainPattern) &&
-      minutesByDomain.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes
+      minutesByApp.getOrElse(sl.label, 0) >= sl.dailyMinutes
     }
     siteLimitHit
       .map(sl =>
@@ -664,22 +668,18 @@ object PolicyService {
   private[policy] def computeBlockRules(
       profile: Profile,
       state: ProfileDayState,
-      siteLimits: List[SiteTimeLimit],
       appExtraAllowed: List[Hostname] = Nil,
       appExtraBlocked: List[Hostname] = Nil,
   ): BlockRules = {
-    // Per-site limits exhausted today → host appears in extraBlocked too.
-    // domainPattern is a glob string, not a Hostname — we keep it as-is in the
-    // extraBlocked list so the router agent can match it. We do NOT wrap with
-    // Hostname here because glob patterns like *.youtube.com are not hostnames.
-    // Instead, we pass them as raw strings and convert via Hostname.unsafe for
-    // the typed list (the router treats these as patterns, so validation is relaxed).
-    val siteUsedByPattern: Map[String, Int]   =
-      state.perSite.iterator.map(s => s.domainPattern -> s.usedMinutes).toMap
-    val siteLimitExtraBlocked: List[Hostname] = siteLimits.collect {
-      case sl if siteUsedByPattern.getOrElse(sl.domainPattern, 0) >= sl.dailyMinutes =>
-        Hostname.unsafe(sl.domainPattern)
-    }
+    // Per-site limits exhausted today → the app's hosts appear in extraBlocked too. Hosts are kept
+    // as raw strings wrapped via Hostname.unsafe (the router treats these as patterns, so a glob
+    // like *.youtube.com that isn't a strict hostname is still accepted).
+    // #1505: per-site exhaustion is now per-app — `state.perSite` carries one entry per app with
+    // its usage aggregated across the whole host-set. When an app's aggregate hits its limit, ALL
+    // of the app's hosts go to extraBlocked (and the carve-out below stops carving them).
+    val siteLimitExtraBlocked: List[Hostname] = state.perSite.collect {
+      case sd if sd.usedMinutes >= sd.dailyLimitMinutes => sd.hosts.map(Hostname.unsafe)
+    }.flatten
 
     // #1105: time_limited app hosts with exemptFromDaily=true carve around the
     // MAC-level @blocked_macs drop while they still have per-host budget. The
@@ -691,8 +691,8 @@ object PolicyService {
     // at the router; see feedback_extraallowed_beats_blocked).
     val appExemptAllowedHosts: List[Hostname] = state.perSite.collect {
       case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
-        Hostname.unsafe(sd.domainPattern)
-    }
+        sd.hosts.map(Hostname.unsafe)
+    }.flatten
 
     // #1418: hard pause is a true off-switch. When this profile is paused AND
     // its pause_mode is `hard`, drop even the app/exempt/infra carve-outs — only

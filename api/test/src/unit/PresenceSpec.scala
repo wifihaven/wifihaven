@@ -330,6 +330,54 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    suite("patternGroupMinutesByMac (#1505)")(
+      test("apex + off-domain asset host in one group aggregate into one budget") {
+        // The app's apex and an off-domain CDN host, hit in separate buckets, sum to the app total.
+        val rows = List(
+          row(mac1, 0, "www.mathacademy.com"),
+          row(mac1, 1, "assets.mathacademy-cdn.example"),
+        )
+        assertTrue(
+          Presence.patternGroupMinutesByMac(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")),
+          ) == Map((mac1, "app:math-academy") -> 10),
+        )
+      },
+      test("a bucket touching two of the group's hosts is counted once (no double count)") {
+        val rows = List(
+          row(mac1, 0, "www.mathacademy.com"),
+          row(mac1, 0, "assets.mathacademy-cdn.example"),
+        )
+        assertTrue(
+          Presence.patternGroupMinutesByMac(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")),
+          ) == Map((mac1, "app:math-academy") -> 5),
+        )
+      },
+      test("distinct groups accumulate independently; a bucket may count toward more than one") {
+        val rows = List(row(mac1, 0, "www.youtube.com"))
+        assertTrue(
+          Presence.patternGroupMinutesByMac(
+            rows,
+            List(
+              "app:youtube" -> List("youtube.com"),
+              "app:video"   -> List("youtube.com"),
+            ),
+          ) == Map((mac1, "app:youtube") -> 5, (mac1, "app:video") -> 5),
+        )
+      },
+      test("a group whose hosts the buckets never match doesn't appear") {
+        val rows = List(row(mac1, 0, "google.com"))
+        assertTrue(
+          Presence.patternGroupMinutesByMac(
+            rows,
+            List("app:math-academy" -> List("mathacademy.com")),
+          ) == Map.empty,
+        )
+      },
+    ),
     suite("heartbeat filter (#714)")(
       test("filter off: low-byte rows still count toward the daily total") {
         val rows = List(row(mac1, 0, "apns.apple.com", secs = 60, bytes = 60L, periodSeconds = 60))

@@ -40,6 +40,11 @@ final case class SiteDayState(
     dailyLimitMinutes: Int,
     usedMinutes: Int,
     exemptFromDaily: Boolean,
+    // #1505: the app's full host-set for this limit. `domainPattern` stays as a single
+    // representative (the apex) for the wire/UI, but enforcement and the daily-cap exemption use
+    // every host so off-domain asset/CDN traffic ticks the *same* app limit and is exempted from the
+    // daily total just like the apex. For a single-host app this is `List(domainPattern)`.
+    hosts: List[String] = Nil,
 )
 
 trait TimeStatusService {
@@ -377,6 +382,54 @@ object TimeStatusService {
   }
 
   /**
+   * #1505: collapse the per-(assignment × host) [[SiteTimeLimit]] rows into one group per app
+   * (keyed by `label`, which is `app:<slug>`), carrying the app's full host-set. `dailyMinutes` and
+   * `exemptFromDaily` are uniform across an app's synthesized rows, so we take them off any row.
+   * The representative `domainPattern` is the apex (shortest host) — used only for the wire/UI; the
+   * `hosts` list drives every per-app computation. Stable order (by label) for deterministic
+   * output.
+   */
+  private[policy] def groupSiteLimits(
+      siteLimits: List[SiteTimeLimit],
+  ): List[(String, Int, Boolean, List[String], String)] =
+    siteLimits
+      .groupBy(_.label)
+      .toList
+      .sortBy(_._1)
+      .map { case (label, lims) =>
+        val hosts = lims.map(_.domainPattern).distinct
+        val rep   = hosts.minByOption(_.length).getOrElse(label)
+        (label, lims.map(_.dailyMinutes).max, lims.exists(_.exemptFromDaily), hosts, rep)
+      }
+
+  /**
+   * #1505: per-app [[SiteDayState]] list — one entry per app, with `usedMinutes` aggregated across
+   * the app's whole host-set via [[Presence.patternGroupMinutesByMac]] and summed across the
+   * profile's devices.
+   */
+  private[policy] def siteDayStates(
+      siteLimits: List[SiteTimeLimit],
+      devices: List[Device],
+      presence: List[PresenceRow],
+      filter: HeartbeatFilter,
+  ): List[SiteDayState] = {
+    val groups   = groupSiteLimits(siteLimits)
+    val perGroup =
+      Presence.patternGroupMinutesByMac(presence, groups.map(g => g._1 -> g._4), filter)
+    groups.map { case (label, daily, exempt, hosts, rep) =>
+      val mins = devices.iterator.map(d => perGroup.getOrElse((d.mac, label), 0)).sum
+      SiteDayState(
+        label = label,
+        domainPattern = rep,
+        dailyLimitMinutes = daily,
+        usedMinutes = mins,
+        exemptFromDaily = exempt,
+        hosts = hosts,
+      )
+    }
+  }
+
+  /**
    * Pure folder: collapse the per-profile inputs into the canonical day state. Same math the
    * snapshot and the routes used to do independently — the consolidation contract (#1104) is that
    * every consumer reads through this function.
@@ -396,25 +449,13 @@ object TimeStatusService {
       now: Instant,
       settings: HouseholdSettings,
   ): ProfileDayState = {
-    val patterns = siteLimits.map(_.domainPattern)
-    val perPat   = Presence.patternMinutesByMac(presence, patterns, settings.heartbeatFilter)
     val totalSecondsUsed = usedSecondsForProfile(profile, devices, siteLimits, presence, settings)
     val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
 
-    val byDomain: Map[String, Int] = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
-      val mins = devices.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
-      if mins == 0 then acc else acc.updated(pat, mins)
-    }
-
-    val perSite = siteLimits.map { sl =>
-      SiteDayState(
-        label = sl.label,
-        domainPattern = sl.domainPattern,
-        dailyLimitMinutes = sl.dailyMinutes,
-        usedMinutes = byDomain.getOrElse(sl.domainPattern, 0),
-        exemptFromDaily = sl.exemptFromDaily,
-      )
-    }
+    // #1505: one limit per app (label), aggregated across the app's full host-set, instead of a
+    // separate per-host budget. `groupSiteLimits` collapses the per-(assignment × host) rows into
+    // one (label, host-set) group; presence is then counted once per bucket per group.
+    val perSite = siteDayStates(siteLimits, devices, presence, settings.heartbeatFilter)
 
     assemble(
       profile = profile,
@@ -498,13 +539,16 @@ object TimeStatusService {
     val remaining = dailyLimit.map(l => (l + extensionMinutes - usedMinutes).max(0))
 
     val perSite = perSiteOverride.getOrElse(
-      siteLimits.map { sl =>
+      // #1505: same per-app grouping as the live path, but with zero usage — this branch is the
+      // rollup+tail read, whose v1 rollup carries only the profile total (no per-site presence).
+      groupSiteLimits(siteLimits).map { case (label, daily, exempt, hosts, rep) =>
         SiteDayState(
-          label = sl.label,
-          domainPattern = sl.domainPattern,
-          dailyLimitMinutes = sl.dailyMinutes,
+          label = label,
+          domainPattern = rep,
+          dailyLimitMinutes = daily,
           usedMinutes = 0,
-          exemptFromDaily = sl.exemptFromDaily,
+          exemptFromDaily = exempt,
+          hosts = hosts,
         )
       },
     )

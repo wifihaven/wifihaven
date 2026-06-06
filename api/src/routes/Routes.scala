@@ -917,7 +917,8 @@ object TimeRoutes {
       )
       presence <- trafficRepo.listPresenceRows(macs, date)
       perMacTotal     = {
-        val exemptPats = state.perSite.filter(_.exemptFromDaily).map(_.domainPattern)
+        // #1505: exempt the app's whole host-set from the daily cap, not just the representative.
+        val exemptPats = state.perSite.filter(_.exemptFromDaily).flatMap(_.hosts)
         wifihaven.api.presence.Presence
           .totalMinutesByMac(
             presence,
@@ -1181,7 +1182,8 @@ object TimeRoutes {
       profile  <- pid.fold(ZIO.succeed("No profile"))(p =>
         profileRepo.findById(p).map(_.map(_.name).getOrElse("Unknown")),
       )
-      exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).map(_.domainPattern))
+      // #1505: exempt + count each app's whole host-set, aggregated per app (one bar per app).
+      exemptPats = stateOpt.toList.flatMap(_.perSite.filter(_.exemptFromDaily).flatMap(_.hosts))
       totalUsed  = wifihaven.api.presence.Presence
         .totalMinutesByMac(
           presence,
@@ -1190,14 +1192,14 @@ object TimeRoutes {
           settings.presenceContinuationSeconds,
         )
         .getOrElse(device.mac, 0)
-      perPat     = wifihaven.api.presence.Presence
-        .patternMinutesByMac(
+      perApp     = wifihaven.api.presence.Presence
+        .patternGroupMinutesByMac(
           presence,
-          stateOpt.toList.flatMap(_.perSite.map(_.domainPattern)),
+          stateOpt.toList.flatMap(_.perSite).map(s => s.label -> s.hosts),
           settings.heartbeatFilter,
         )
       siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
-        val used = perPat.getOrElse((device.mac, s.domainPattern), 0)
+        val used = perApp.getOrElse((device.mac, s.label), 0)
         SiteUsage(
           s.label,
           s.domainPattern,

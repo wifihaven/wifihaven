@@ -368,6 +368,34 @@ object Presence {
   }
 
   /**
+   * #1505: per-(mac, group) minutes, where a *group* is a named set of patterns — an app's full
+   * host-set. A bucket counts once toward a group when **any** pattern in that group matches a host
+   * in the bucket, so the app's apex and its off-domain asset/CDN hosts aggregate into one budget
+   * instead of each host ticking an independent per-host limit. Within a group a bucket is counted
+   * at most once even if it touched several of the group's hosts (no double count); across groups a
+   * bucket may count toward more than one (per-group caps are independent). Same bucket-max
+   * counting as [[patternMinutesByMac]] — the session-stitch migration of this surface is tracked
+   * separately (#1504). Heartbeat rows are stripped first so a keepalive run never ticks a cap.
+   */
+  def patternGroupMinutesByMac(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+  ): Map[(MacAddress, String), Int] = {
+    val buckets =
+      rows.filterNot(r => isHeartbeat(r, filter)).groupBy(r => (r.mac, r.periodStart)).toList
+    val accum   = scala.collection.mutable.Map.empty[(MacAddress, String), Long]
+    for {
+      (key, patterns)    <- groups
+      ((mac, _), bucket) <- buckets
+      if bucket.exists(r =>
+        r.host.asFqdn.exists(fqdn => patterns.exists(p => matchesPattern(fqdn.value, p))),
+      )
+    } accum.updateWith((mac, key))(prev => Some(prev.getOrElse(0L) + bucketSeconds(bucket)))
+    accum.view.mapValues(s => (s / 60).toInt).toMap
+  }
+
+  /**
    * Per-host minutes across all macs, attributing each bucket's duration to every distinct host in
    * the bucket once. Used for the per-profile "what did they spend time on today" breakdown (#262).
    * Note: summing across hosts can exceed the device's daily total — by design, the same bucket of
