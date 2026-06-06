@@ -403,26 +403,32 @@ object TimeStatusService {
       }
 
   /**
-   * #1505: per-app [[SiteDayState]] list — one entry per app, with `usedMinutes` aggregated across
-   * the app's whole host-set via [[Presence.patternGroupMinutesByMac]] and summed across the
-   * profile's devices.
+   * #1505 + #1504: per-app [[SiteDayState]] list — one entry per app, with `usedMinutes` aggregated
+   * across the app's whole host-set and counted via the #1464 session-stitch primitive
+   * ([[Presence.patternGroupMinutesForProfile]]), combined across the profile's devices per
+   * `overlap`. `presence` must already be scoped to the profile's devices.
    */
   private[policy] def siteDayStates(
       siteLimits: List[SiteTimeLimit],
-      devices: List[Device],
       presence: List[PresenceRow],
+      overlap: CrossDeviceOverlapMode,
       filter: HeartbeatFilter,
+      continuationSeconds: Int,
   ): List[SiteDayState] = {
     val groups   = groupSiteLimits(siteLimits)
-    val perGroup =
-      Presence.patternGroupMinutesByMac(presence, groups.map(g => g._1 -> g._4), filter)
+    val perGroup = Presence.patternGroupMinutesForProfile(
+      presence,
+      groups.map(g => g._1 -> g._4),
+      overlap,
+      filter,
+      continuationSeconds,
+    )
     groups.map { case (label, daily, exempt, hosts, rep) =>
-      val mins = devices.iterator.map(d => perGroup.getOrElse((d.mac, label), 0)).sum
       SiteDayState(
         label = label,
         domainPattern = rep,
         dailyLimitMinutes = daily,
-        usedMinutes = mins,
+        usedMinutes = perGroup.getOrElse(label, 0),
         exemptFromDaily = exempt,
         hosts = hosts,
       )
@@ -452,10 +458,17 @@ object TimeStatusService {
     val totalSecondsUsed = usedSecondsForProfile(profile, devices, siteLimits, presence, settings)
     val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
 
-    // #1505: one limit per app (label), aggregated across the app's full host-set, instead of a
-    // separate per-host budget. `groupSiteLimits` collapses the per-(assignment × host) rows into
-    // one (label, host-set) group; presence is then counted once per bucket per group.
-    val perSite = siteDayStates(siteLimits, devices, presence, settings.heartbeatFilter)
+    // #1505 + #1504: one limit per app (label), aggregated across the app's full host-set, counted
+    // with the #1464 session-stitch primitive (not bucket-max) and combined across the profile's
+    // devices per its overlap mode. `siteDayStates` groups the per-(assignment × host) rows into
+    // one (label, host-set) per app and counts engaged wall-clock time once across the whole set.
+    val perSite = siteDayStates(
+      siteLimits,
+      presence,
+      profile.crossDeviceOverlapMode,
+      settings.heartbeatFilter,
+      settings.presenceContinuationSeconds,
+    )
 
     assemble(
       profile = profile,

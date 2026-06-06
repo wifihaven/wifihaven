@@ -1192,14 +1192,19 @@ object TimeRoutes {
           settings.presenceContinuationSeconds,
         )
         .getOrElse(device.mac, 0)
+      // #1505 + #1504: per-device per-app usage via the #1464 session-stitch primitive, aggregated
+      // across each app's whole host-set (one bar per app). Single-device view, so cross-device
+      // overlap mode is moot — Sum and Dedup coincide.
       perApp     = wifihaven.api.presence.Presence
-        .patternGroupMinutesByMac(
+        .patternGroupMinutesForProfile(
           presence,
           stateOpt.toList.flatMap(_.perSite).map(s => s.label -> s.hosts),
+          wifihaven.shared.CrossDeviceOverlapMode.Sum,
           settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
         )
       siteUsage  = stateOpt.toList.flatMap(_.perSite).map { s =>
-        val used = perApp.getOrElse((device.mac, s.label), 0)
+        val used = perApp.getOrElse(s.label, 0)
         SiteUsage(
           s.label,
           s.domainPattern,

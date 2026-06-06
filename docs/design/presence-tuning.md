@@ -55,9 +55,12 @@ constraints hold (validated in §2d):
   merging and presence collapses to ~0. With per-request timestamps (§4.4) `R`
   is effectively sub-second and this is automatic; with bucket intervals it
   pins a hard rule: **N ≥ 2 × `usage_report_interval`**.
-- **Anchor timing on the finest evidence available** (per-request
+- ~~**Anchor timing on the finest evidence available** (per-request
   `connection_events`), so the trailing edge of a session isn't inflated by the
-  bucket width.
+  bucket width.~~ **Not pursued — see §5 item 4 (won't-do, #1466).** Usage is
+  traffic-based; `connection_events` carry no bytes and are not layered onto the
+  presence model. The `N ≥ 2 × R` guard above is the rate-independence property
+  the model relies on, and it needs no per-request timestamps.
 
 Everything is **anchored on non-heartbeat activity only**, so it composes with
 the existing heartbeat filter: a keepalive-only minute neither starts nor
@@ -266,11 +269,18 @@ is flat ~117–125 min across R = 10…300).
   way, not about skipping per-app presence.)
 - The idle window must satisfy **N ≥ R** (recommend **N ≥ 2 × R** for margin).
   At today's R = 60 s, N = 120 s is safe; if reporting moves to 5 minutes, a
-  120 s gap would silently zero out presence unless timing is anchored on
-  per-request events.
-- For true rate-independence, **anchor session timing on `connection_events`
+  120 s gap would silently zero out presence — the shipped mitigation is the
+  `effectiveGap` clamp that raises N to `2 × R` (and the config check that
+  rejects `presence_continuation_seconds < 2 × R`), **not** per-request anchoring
+  (won't-do, §5 item 4 / #1466).
+- ~~For true rate-independence, **anchor session timing on `connection_events`
   (per-request, R-independent)** and keep `traffic_reports` for the byte-based
-  heartbeat classification. That removes R from the formula entirely.
+  heartbeat classification. That removes R from the formula entirely.~~
+  **Won't-do — see §5 item 4 (#1466, closed 2026-06-06).** Usage is traffic-based
+  and `connection_events` carry no bytes, so they are not used for presence. The
+  `N ≥ 2 × R` guard is the rate-independence the model needs; this invariance
+  proof used a no-bytes simulation, but in production every bucket span is backed
+  by real bytes and continuous traffic is already R-independent.
 
 ## 3. Tunable parameters and current values
 
@@ -310,12 +320,16 @@ knee of the §2c think-gap distribution — it spans a full traffic-free reporti
 window plus margin while the > 180 s real breaks (the 23- and 53-minute gaps in
 the raw Math Academy session) stay separate.
 
-**Activity granularity (this is what makes it rate-independent):** anchor on
-per-request `connection_events` timestamps where available, so the session
-boundaries don't depend on `usage_report_interval`. When only `traffic_reports`
-buckets are available, each non-heartbeat row contributes its `[period_start,
-period_end]` interval as the activity — correct in the limit, but with a
-trailing-edge uncertainty of one report interval (§2d).
+**Activity granularity.** Each non-heartbeat `traffic_reports` row contributes
+its `[period_start, period_end]` interval as the activity — usage is traffic-based
+(this is the model shipped in #1464 / #1465). The original draft proposed anchoring
+on per-request `connection_events` timestamps for finer rate-independence;
+**that was not pursued (won't-do, §5 item 4, #1466, 2026-06-06):**
+`connection_events` carry no bytes, so they cannot be the basis for usage — a
+bucket with sustained real traffic but few/no connection events is genuine
+presence and event-anchoring would zero it out. The `N ≥ 2 × R` guard (§4.4
+invariant 1) supplies the rate-independence the model needs without per-request
+timestamps.
 
 Both outputs come from the same sessions and follow the same two-level rule:
 **within a device, always union; across devices, apply the profile's existing
@@ -355,9 +369,10 @@ per-app presence alongside, not as its addends.
 1. **Rate-independence: `N ≥ R` (recommend `N ≥ 2·R`).** §2d (ii) shows that
    when `N < R` presence collapses to **0**. The code must read `period_start` /
    `period_end` from the data (never assume 60 s), and a config check should
-   reject `presence_continuation_seconds < 2 × usage_report_interval`. Anchoring
-   on per-request events (§4.1) removes `R` from the formula and makes this
-   automatic.
+   reject `presence_continuation_seconds < 2 × usage_report_interval`. (The
+   original draft noted that anchoring on per-request events would make this
+   automatic; that approach was **not pursued** — §5 item 4, #1466 won't-do — so
+   the `N ≥ 2 × R` guard is the mechanism.)
 2. **Heartbeat composition.** Sessions are built from **non-heartbeat** activity
    only. A keepalive-only window (bytes < 10 KB or an allowlist FQDN) cannot
    start or extend a session; the idle window bridges *across* such a window only
@@ -442,12 +457,25 @@ new semantics.
    `household_settings.presence_continuation_seconds` at the daily call sites
    (the weekly/informational views stay on the 120 s default).
 
-4. **Anchor session timing on `connection_events` (rate-independence).** Join
-   per-request timestamps (timing) with `traffic_reports` (bytes / heartbeat
-   classification) so the report interval `R` drops out of the formula entirely.
-   Mind the §query-explain rule — `connection_events` is a growth table; prove
-   the join's plan at prod scale and add the supporting index in the same PR.
-   (Can land after #2 as the rate-independence hardening.)
+4. **~~Anchor session timing on `connection_events` (rate-independence).~~**
+   ~~Join per-request timestamps (timing) with `traffic_reports` (bytes /
+   heartbeat classification) so the report interval `R` drops out of the formula
+   entirely.~~
+   **Won't-do — #1466 closed (2026-06-06).** Usage/presence is **traffic-based**:
+   it is computed from the bytes/activity in `traffic_reports`, full stop.
+   `connection_events` carry **no bytes** (see V42 schema / §Appendix), so they
+   cannot serve as the basis for usage — a bucket with sustained real traffic but
+   few or no connection events is genuine presence and must be credited in full,
+   which event-anchored timing would zero out. The byte-based bucket-span session
+   model shipped in #1464 / #1465 (each non-heartbeat `traffic_reports` row
+   contributes its `[period_start, period_end]` span, stitched on the idle gap)
+   **stands as the presence model**; we do not layer `connection_events` timing
+   onto it. The §2d (i) "trailing-edge inflation" is real only in the *no-bytes
+   simulation* used to prove the invariant — in production every bucket span is
+   backed by actual bytes, and continuous traffic is already R-independent
+   (contiguous buckets stitch regardless of width). The `N ≥ 2 × R` collapse
+   guard (§4.4 invariant 1, shipped in #1464) is the one rate-independence
+   property the model needs, and it does not require per-request timestamps.
 
 5. **Presence replay/validation harness (sibling of #790).** Extend the replay
    tooling under `scripts/analysis/` to reproduce §2b/§2d (current vs session at
@@ -457,6 +485,17 @@ new semantics.
 6. **e2e default-pinning gate (extends #930).** Pin
    `presence_continuation_seconds = 120` end-to-end so a future PR — or a
    change to `usage_report_interval` — can't shift the visible numbers silently.
+   **Shipped — #1468 (subsumes #930).** `api/test/src/feature/PresenceDefaultsPinSpec.scala`
+   pins the fresh-install defaults end-to-end via `GET /api/household/settings`
+   (`presence_continuation_seconds = 120`, heartbeat filter on / 10 KB threshold,
+   and the 16-FQDN keepalive allowlist), pins the Scala fallbacks
+   (`HouseholdSettings.DefaultPresenceContinuationSeconds`,
+   `Presence.DefaultContinuationSeconds`) against the same literals, and asserts
+   the rate-independence invariant through `GET /api/usage/series`: the same
+   sparse 5-minute span reported at R = 60 s vs R = 300 s reads the same visible
+   minutes (a regression to the rate-dependent `sum(activeSeconds)` path would
+   diverge). Gate 1 (`scripts/e2e-tests.sh`) additionally asserts the live wire
+   exposes these knobs and holds `N ≥ 2·R` on operator-mutable staging.
 
 7. **(Complementary, not blocking) router-side foreground-host heuristic
    (#842).** Re-confirm scope once the agent freeze lifts; sharpens per-host

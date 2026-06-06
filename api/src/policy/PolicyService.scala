@@ -332,19 +332,20 @@ class PolicyServiceLive(
                 // Per-profile daily usage — computed up front because the #1379 carve gate keys off
                 // whether the daily cap is exhausted, independent of the precedence chain below.
                 val pPres        = pres.filter(r => macs.contains(r.mac))
-                // #1505: per-site usage is aggregated per app across its full host-set (keyed by
-                // the synthesized `app:<slug>` label), so an off-domain asset host ticks the same
-                // limit as the apex. Mirrors `TimeStatusService.siteDayStates`.
+                // #1505 + #1504: per-site usage is aggregated per app across its full host-set
+                // (keyed by the synthesized `app:<slug>` label), counted with the #1464
+                // session-stitch primitive and combined across the profile's devices per its
+                // overlap mode — so an off-domain asset host ticks the same limit as the apex, on
+                // engaged wall-clock time. Mirrors `TimeStatusService.siteDayStates`, keeping
+                // decide() consistent with the snapshot's fold and off the legacy bucket-max floor.
                 val siteGroups   = TimeStatusService.groupSiteLimits(stlims)
-                val perGroup     = Presence.patternGroupMinutesByMac(
+                val byApp        = Presence.patternGroupMinutesForProfile(
                   pPres,
                   siteGroups.map(g => g._1 -> g._4),
+                  p.crossDeviceOverlapMode,
                   settings.heartbeatFilter,
+                  settings.presenceContinuationSeconds,
                 )
-                val byApp        = siteGroups.foldLeft(Map.empty[String, Int]) { (acc, g) =>
-                  val mins = devs.iterator.map(d => perGroup.getOrElse((d.mac, g._1), 0)).sum
-                  if mins == 0 then acc else acc.updated(g._1, mins)
-                }
                 val exemptPats   =
                   stlims.filter(_.exemptFromDaily).map(_.domainPattern)
                 val perMacTot    =
