@@ -396,15 +396,20 @@ object TimeStatusService {
       now: Instant,
       settings: HouseholdSettings,
   ): ProfileDayState = {
-    val patterns = siteLimits.map(_.domainPattern)
-    val perPat   = Presence.patternMinutesByMac(presence, patterns, settings.heartbeatFilter)
+    val patterns         = siteLimits.map(_.domainPattern)
     val totalSecondsUsed = usedSecondsForProfile(profile, devices, siteLimits, presence, settings)
     val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
 
-    val byDomain: Map[String, Int] = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
-      val mins = devices.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
-      if mins == 0 then acc else acc.updated(pat, mins)
-    }
+    // #1504: per-site usage uses the same #1464 session-stitch primitive as the daily total above,
+    // combined across the profile's devices per its overlap mode — not the legacy bucket-max model
+    // that bottomed out at the 10s sample floor and made request-driven sites read ~0.
+    val byDomain: Map[String, Int] = Presence.patternMinutesForProfile(
+      presence,
+      patterns,
+      profile.crossDeviceOverlapMode,
+      settings.heartbeatFilter,
+      settings.presenceContinuationSeconds,
+    )
 
     val perSite = siteLimits.map { sl =>
       SiteDayState(

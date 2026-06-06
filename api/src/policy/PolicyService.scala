@@ -336,13 +336,18 @@ class PolicyServiceLive(
 
                 // Per-profile daily usage — computed up front because the #1379 carve gate keys off
                 // whether the daily cap is exhausted, independent of the precedence chain below.
-                val pPres    = pres.filter(r => macs.contains(r.mac))
-                val patterns = stlims.map(_.domainPattern)
-                val perPat = Presence.patternMinutesByMac(pPres, patterns, settings.heartbeatFilter)
-                val byDomain     = patterns.foldLeft(Map.empty[String, Int]) { (acc, pat) =>
-                  val mins = devs.iterator.map(d => perPat.getOrElse((d.mac, pat), 0)).sum
-                  if mins == 0 then acc else acc.updated(pat, mins)
-                }
+                val pPres        = pres.filter(r => macs.contains(r.mac))
+                val patterns     = stlims.map(_.domainPattern)
+                // #1504: per-site usage via the #1464 session-stitch primitive, combined across the
+                // profile's devices per its overlap mode — keeps decide() consistent with the
+                // snapshot's TimeStatusService.fold and off the legacy bucket-max undercount.
+                val byDomain     = Presence.patternMinutesForProfile(
+                  pPres,
+                  patterns,
+                  p.crossDeviceOverlapMode,
+                  settings.heartbeatFilter,
+                  settings.presenceContinuationSeconds,
+                )
                 val exemptPats   =
                   stlims.filter(_.exemptFromDaily).map(_.domainPattern)
                 val perMacTot    =
