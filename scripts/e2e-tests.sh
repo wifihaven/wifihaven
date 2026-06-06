@@ -220,18 +220,34 @@ assert isinstance(d.get('profiles'), list), 'profiles not a list: %r' % d.get('p
 "
 pass "dashboard/now has asOf + profiles[]"
 
-step "Household settings (#933)"
+step "Household settings (#933, #1468)"
 # GET /api/household/settings → HouseholdSettings. dailyResetTime/dailyResetTz
 # drive every household-local date computation, so assert they're present.
+#
+# #1468 (subsumes #930): the presence/heartbeat tuning knobs must also reach the
+# wire. Staging is operator-mutable, so the deterministic exact-default pinning
+# lives in the api.test gate (PresenceDefaultsPinSpec). Here we assert the live
+# contract: the fields are present and well-typed, and the rate-independence
+# invariant N >= 2*R holds (R = usage_report_interval, 60 s in the fleet) so a
+# silently-shipped sub-2R default — which collapses presence to 0 (design §2d) —
+# fails Gate 1 even on a tuned staging box.
 curl -fsS "${AUTH[@]}" "$BASE/api/household/settings" >"$TMP/hs.json"
 _py "
 import json
 s = json.load(open('$TMP/hs.json'))
 assert isinstance(s.get('dailyResetTime'), str) and s['dailyResetTime'], 'dailyResetTime missing: %r' % s
 assert isinstance(s.get('dailyResetTz'), str) and s['dailyResetTz'], 'dailyResetTz missing: %r' % s
-assert 'heartbeatFilter' in s, 'heartbeatFilter missing: %r' % s
+hb = s.get('heartbeatFilter')
+assert isinstance(hb, dict), 'heartbeatFilter missing/not an object: %r' % s
+assert isinstance(hb.get('enabled'), bool), 'heartbeatFilter.enabled not a bool: %r' % hb
+assert isinstance(hb.get('bytesThreshold'), int), 'heartbeatFilter.bytesThreshold not an int: %r' % hb
+assert isinstance(hb.get('heartbeatHostPatterns'), list), 'heartbeatFilter.heartbeatHostPatterns not a list: %r' % hb
+pcs = s.get('presenceContinuationSeconds')
+assert isinstance(pcs, int) and pcs > 0, 'presenceContinuationSeconds missing/non-positive: %r' % s
+# Rate-independence invariant: N >= 2*R with the fleet's R = 60 s.
+assert pcs >= 120, 'presenceContinuationSeconds=%r violates N >= 2*R (R=60)' % pcs
 "
-pass "household/settings has dailyResetTime + dailyResetTz + heartbeatFilter"
+pass "household/settings exposes presence/heartbeat knobs and holds N >= 2*R"
 
 step "Identity endpoint /api/me (#933)"
 # GET /api/me → MeResponse(username, role, profileIds). We logged in as admin,
