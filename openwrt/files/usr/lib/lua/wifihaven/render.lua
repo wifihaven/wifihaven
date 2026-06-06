@@ -497,7 +497,42 @@ function M.dnsmasq(snapshot)
     emit("# nftset populators — merged per host so dnsmasq fires every set")
     emit("# (ea+eb+bl+global; see issues 421, 496, 351, 392, 352, 1319 above)")
     for _, host in ipairs(host_order) do
-      emit(string.format("nftset=/%s/%s", host, table.concat(host_specs[host], ",")))
+      local specs = host_specs[host]
+      local line  = string.format("nftset=/%s/%s", host, table.concat(specs, ","))
+      -- #1489 follow-up: the global-extraAllowed skip above only spares a
+      -- host that lives in @global_allow. A host in many profiles'
+      -- extraAllowed but NOT in global.extraAllowed still piles one ea_ spec
+      -- per device onto a single merged line and overflows dnsmasq's 1024-
+      -- byte config-line buffer (Gate 3a staging-smoke regression after
+      -- #1493 shipped). When that happens, drop the per-(MAC,host) ea_/ea6_
+      -- specs from the merged directive: dns-tail (#1346) repopulates the
+      -- ea_ sets from live replies, so the per-MAC carve-out is only delayed
+      -- until the first reply lands for that host, not lost. Crashing
+      -- dnsmasq (which takes :53 down for every device) is strictly worse.
+      if #line > 1024 then
+        local kept, dropped = {}, 0
+        for _, s in ipairs(specs) do
+          if s:find("#ea_", 1, true) or s:find("#ea6_", 1, true) then
+            dropped = dropped + 1
+          else
+            kept[#kept + 1] = s
+          end
+        end
+        emit(string.format(
+          "# wifihaven: dropped %d per-(MAC,host) ea_ spec(s) for %s to fit dnsmasq's 1024-byte line limit (#1489); dns-tail (#1346) repopulates ea_ sets from live replies",
+          dropped, host))
+        if #kept > 0 then
+          line = string.format("nftset=/%s/%s", host, table.concat(kept, ","))
+        else
+          -- Only ea_ specs existed for this host. With them gone there is
+          -- nothing left to emit; the host carries no surviving nftset=
+          -- directive. dns-tail still populates the ea_ sets from live
+          -- replies, so the (MAC,host) carve-out is recovered after the
+          -- first resolution. Keeping dnsmasq alive is the goal.
+          line = nil
+        end
+      end
+      if line then emit(line) end
     end
     emit("")
   end
