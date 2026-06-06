@@ -773,6 +773,9 @@ conntrack.watch({
         })
         log.debug("nflog drain: processed %d spool line(s)", #lines)
       end
+      -- Sweep dedup entries older than the window so `seen` can't grow
+      -- unbounded over a long-lived agent (one entry per (mac, dst, host)).
+      nflog_dedup.gc()
     end
 
     -- Activity sampler (#295, #516): every 10 s, snapshot counters and feed
