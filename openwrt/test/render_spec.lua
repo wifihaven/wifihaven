@@ -2209,6 +2209,84 @@ describe("render.dnsmasq global section (#1319)", function()
         #line, line:sub(1, 72)))
     end
   end)
+
+  -- ── #1489 follow-up: line-length cap, not just global-skip ─────────────
+  --
+  -- The Gate 3a staging-smoke failure after #1493 shipped is the same
+  -- "connection refused on :53" — but for a host that is in many profiles'
+  -- extraAllowed AND is NOT in global.extraAllowed (e.g. a manually-allowed
+  -- host like khanacademy.org carried by lots of profiles). The
+  -- global-extraAllowed skip from #1493 has no effect there, so the merged
+  -- nftset directive still piles up one ea_ spec per device and overflows
+  -- dnsmasq's 1024-byte config-line buffer.
+  --
+  -- render.dnsmasq must bound EVERY merged directive to 1024 bytes. The
+  -- per-(MAC,host) ea_ populator is droppable: dns-tail (#1346) repopulates
+  -- ea_ sets from live replies, so a missing dnsmasq populator at startup
+  -- only delays the first per-MAC carve-out for that host — far better than
+  -- dnsmasq refusing to start and taking :53 down for everyone.
+  it("caps the merged directive even when the heavy host is NOT in global.extraAllowed (#1489)", function()
+    local s = snap_global()
+    s.devices = {}
+    s.profiles = {}
+    -- 30 profiles each allow the same non-global host. With ea_/ea6_ specs
+    -- ~62 bytes each plus comma, that's ~3700 bytes on one line pre-cap.
+    for i = 1, 30 do
+      local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
+      s.devices[mac] = { profileId = i }
+      s.profiles[tostring(i)] = {
+        name = "p" .. i,
+        failureMode = "last-known-good",
+        rules = {
+          blocked = false, extraBlocked = {}, blocklistIds = {},
+          extraAllowed = { "khanacademy.org" },
+        },
+      }
+    end
+    -- Deliberately NOT in global.extraAllowed — exercises the cap path.
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "nftset line exceeds dnsmasq's 1024-byte config-line limit (%d bytes): %s…",
+        #line, line:sub(1, 72)))
+    end
+    -- A trace comment must name the host so the operator can see what was
+    -- dropped (rather than silently degrading).
+    assert.truthy(conf:find("khanacademy.org", 1, true))
+    assert.truthy(conf:find("dropped", 1, true))
+  end)
+
+  -- Mixed case: a heavy host also carries a non-ea_ spec (e.g. it appears
+  -- in a blocklist). Capping drops the ea_ specs but keeps the bl_ spec, so
+  -- the surviving merged directive is still emitted and still under 1024.
+  it("preserves non-ea_ specs when capping an overflowing heavy host (#1489)", function()
+    local s = snap_global()
+    s.devices = {}
+    s.profiles = {}
+    for i = 1, 30 do
+      local mac = string.format("aa:bb:cc:%02x:%02x:%02x", i, i, i)
+      s.devices[mac] = { profileId = i }
+      s.profiles[tostring(i)] = {
+        name = "p" .. i,
+        failureMode = "last-known-good",
+        rules = {
+          blocked = false, extraBlocked = {}, blocklistIds = { "ads" },
+          extraAllowed = { "shared.example" },
+        },
+      }
+    end
+    s.blocklists = { ads = { version = "v1", url = "/api/blocklists/ads" } }
+    s._blocklist_hosts = { ads = { "shared.example" } }
+    local conf = render.dnsmasq(s)
+    for line in (conf .. "\n"):gmatch("([^\n]*)\n") do
+      assert.is_true(#line <= 1024, string.format(
+        "nftset line exceeds 1024 bytes (%d): %s…", #line, line:sub(1, 72)))
+    end
+    -- The bl_ad / bl6_ad specs survive — only the ea_ specs were dropped.
+    assert.truthy(conf:find(
+      "nftset=/shared.example/4#inet#wifihaven#bl_ads,6#inet#wifihaven#bl6_ads",
+      1, true))
+  end)
 end)
 
 describe("render.nft global composition (#1319)", function()
