@@ -443,40 +443,109 @@ object PresenceSpec extends ZIOSpecDefault {
         assertTrue(out.head.classified == "active") &&
         assertTrue(out.head.reasons.isEmpty)
       },
-      test("#788 host pattern match classifies as heartbeat even when bytes pass") {
-        // Row that would otherwise pass the bytes floor — only the FQDN allowlist trips it.
-        // Confirms host-pattern path is OR'd in correctly.
-        val f = HeartbeatFilter(
-          enabled = true,
-          bytesThreshold = 2048,
-          heartbeatHostPatterns = List("*.push.apple.com"),
-        )
+      test("#1525 suppress-only infra (push.apple.com) is a heartbeat even when bytes pass") {
+        // push.apple.com was folded from the retired heartbeatHostPatterns seed into the
+        // InfraHosts suppress-only tier, so it suppresses by IDENTITY regardless of bytes — and
+        // regardless of any operator heartbeatHostPatterns (now ignored; left empty here).
+        val f = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
         val r =
           row(mac1, 0, "api-push.push.apple.com", secs = 200, bytes = 50_000L, periodSeconds = 300)
         assertTrue(Presence.isHeartbeat(r, f)) &&
         assertTrue(Presence.totalMinutesByMac(List(r), Nil, f) == Map.empty[MacAddress, Int])
       },
-      test("#788 classifyRows surfaces host:<pattern> reason for FQDN match") {
-        val f    = HeartbeatFilter(
+      test(
+        "#1525 heartbeatHostPatterns is no longer read — a host only listed there still counts",
+      ) {
+        // The operator's hand-curated list is deprecated/ignored (#1525). A non-infra host that is
+        // ONLY in heartbeatHostPatterns is NOT suppressed; it counts like any foreground host.
+        val f = HeartbeatFilter(
           enabled = true,
           bytesThreshold = 2048,
-          heartbeatHostPatterns = List("*.push.apple.com", "time.apple.com"),
+          heartbeatHostPatterns = List("*.example.com"),
         )
+        val r = row(mac1, 0, "api.example.com", secs = 200, bytes = 50_000L, periodSeconds = 300)
+        assertTrue(!Presence.isHeartbeat(r, f)) &&
+        assertTrue(Presence.totalMinutesByMac(List(r), Nil, f) == Map(mac1 -> 5))
+      },
+      test("#1525 classifyRows surfaces infra:<pattern> for a suppress-only infra host") {
+        val f    = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
         val rows = List(
           row(mac1, 0, "courier.push.apple.com", secs = 200, bytes = 50_000L, periodSeconds = 300),
         )
         val out  = Presence.classifyRows(rows, f)
         assertTrue(out.head.classified == "heartbeat") &&
-        assertTrue(out.head.reasons == List("host:*.push.apple.com"))
+        assertTrue(out.head.reasons == List("infra:push.apple.com"))
       },
-      test("#788 host pattern only matches FQDNs, not IP literals") {
-        val f = HeartbeatFilter(
-          enabled = true,
-          bytesThreshold = 0,
-          heartbeatHostPatterns = List("*.push.apple.com"),
-        )
+      test("#788 background infra only matches FQDNs, not IP literals") {
+        val f = HeartbeatFilter(enabled = true, bytesThreshold = 0)
         val r = ipRow(mac1, 0, "17.57.146.1", secs = 200, bytes = 50_000L, periodSeconds = 300)
         assertTrue(!Presence.isHeartbeat(r, f))
+      },
+    ),
+    suite("infra-host suppression (#1503)")(
+      test(
+        "canonical infra hosts drop from the daily cap even when absent from heartbeatHostPatterns",
+      ) {
+        // #1499/#1503: the unified canonical infra list (PolicyService.infraAllowHosts ≡ the
+        // presence suppression set) drops device-level OS/telemetry/cert chatter even when the
+        // operator's hand-curated `heartbeatHostPatterns` has drifted and misses it — the ~93%
+        // background over-count leak. bytesThreshold is set so the byte floor does NOT catch
+        // these chatty (>10 KB) rows; only host-IDENTITY suppression removes them.
+        val f       = HeartbeatFilter(
+          enabled = true,
+          bytesThreshold = 10000,
+          heartbeatHostPatterns = List("*.push.apple.com"), // stale: misses the infra below
+        )
+        // ~16 min continuous engaged session on a real (non-infra) app host.
+        val genuine =
+          List(appRow(mac1, 0, "www.tinkercad.com", periodSeconds = 960, bytes = 2_000_000L))
+        // Five background-infra rows, far apart, each above the byte floor. Pre-fix these add
+        // ~10 min of bogus presence; post-fix the canonical list suppresses all five.
+        val infra   = List(
+          appRow(mac1, 3600, "beacons3.gvt2.com", periodSeconds = 120, bytes = 80_000L),
+          appRow(mac1, 7200, "gsp-ssl.ls.apple.com", periodSeconds = 120, bytes = 50_000L),
+          appRow(
+            mac1,
+            10800,
+            "safebrowsingohttpgateway.googleapis.com",
+            periodSeconds = 120,
+            bytes = 60_000L,
+          ),
+          appRow(mac1, 14400, "events.launchdarkly.com", periodSeconds = 120, bytes = 40_000L),
+          appRow(mac1, 18000, "ocsp.digicert.com", periodSeconds = 120, bytes = 30_000L),
+        )
+        assertTrue(Presence.totalMinutesByMac(genuine ++ infra, Nil, f) == Map(mac1 -> 16))
+      },
+      test(
+        "suppression keys on host identity, not bytes — a sparse low-byte genuine app still counts",
+      ) {
+        // #1446 guardrail: a request-driven app emits small/brief rows; those must NOT be dropped
+        // for being small. With the byte floor disabled, the genuine app's full span still counts
+        // while an infra host with an IDENTICAL low-byte/short profile is dropped by identity alone.
+        val f = HeartbeatFilter(enabled = true, bytesThreshold = 0, heartbeatHostPatterns = Nil)
+        val genuine  = appRow(mac1, 0, "app.tinkercad.com", periodSeconds = 600, bytes = 1500L)
+        val infraRow = appRow(mac1, 0, "b1.nel.goog", periodSeconds = 600, bytes = 1500L)
+        assertTrue(
+          !Presence.isHeartbeat(genuine, f),
+          Presence.isHeartbeat(infraRow, f),
+          Presence.totalMinutesByMac(List(genuine), Nil, f) == Map(mac1 -> 10),
+        )
+      },
+      test("isHeartbeat drops canonical infra regardless of the byte-filter toggle (filter Off)") {
+        // Device infra is never engagement; it must not depend on the operator enabling the
+        // byte filter — symmetric with PolicyService consuming the same list unconditionally.
+        val r = appRow(mac1, 0, "r3---sn-abc.gvt2.com", periodSeconds = 120, bytes = 90_000L)
+        assertTrue(Presence.isHeartbeat(r, HeartbeatFilter.Off))
+      },
+      test(
+        "classifyRows surfaces infra:<pattern> for a canonical infra host even with filter Off",
+      ) {
+        val rows = List(appRow(mac1, 0, "beacons2.gvt2.com", periodSeconds = 120, bytes = 90_000L))
+        val out  = Presence.classifyRows(rows, HeartbeatFilter.Off)
+        assertTrue(
+          out.head.classified == "heartbeat",
+          out.head.reasons == List("infra:gvt2.com"),
+        )
       },
     ),
     suite("hostMinutes")(

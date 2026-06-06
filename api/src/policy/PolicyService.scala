@@ -575,40 +575,15 @@ object PolicyService {
    * beat the block exactly as the old per-(MAC) ea_ copies did, now from a single fleet-wide source
    * with no per-profile duplication. This stays deliberately functional, not a new snapshot field —
    * the router needs the hosts, not the reason they're allowed (#1311).
+   *
+   * #1503: the host list itself is now derived from the single canonical [[InfraHosts.canonical]]
+   * list, shared with the `Presence` suppression set — "infra we must always allow" and "infra that
+   * must not count as engagement" are the same device-level set, and maintaining two hand-curated
+   * copies let them drift (the #1499 over-count leak). The device-infra-only boundary (no rotating
+   * per-app CDN hosts such as `*.akamai.net` / `*.fastly.net`, which attribute to the app via its
+   * branded domains) and the per-app-CDN rationale now live on [[InfraHosts]] and are unchanged.
    */
-  val infraAllowHosts: List[Hostname] = List(
-    "connectivitycheck.gstatic.com", // Android / Chrome connectivity probe
-    "captive.apple.com",             // iOS / macOS captive-portal probe
-    "ocsp.apple.com",                // Apple OCSP responder
-    "ocsp2.apple.com",               // Apple OCSP responder (secondary)
-    "crl.apple.com",                 // Apple CRL distribution
-    "g.aaplimg.com",                 // Apple geo-edge CDN: OCSP + asset shards
-    "ocsp.pki.goog",                 // Google Trust Services OCSP
-    "ocsp.digicert.com",             // DigiCert OCSP (common CA for app backends)
-    "clientservices.googleapis.com", // Google client-services bootstrap
-    // #1337: Apple's network-connectivity-test CDN — a device-level infra probe,
-    // owned by Apple and stable. Added as an exact host.
-    //
-    // We deliberately did NOT add CDN edge hostnames for specific apps (the
-    // operator originally hit `a1744.dscw154.akamai.net` for Math Academy and
-    // `prod.khan.map.fastly.net` for Khan): those are CDN *mapping* artifacts that
-    // rotate (Khan's `cdn.kastatic.org` is on Fastly now, not Akamai), so pinning
-    // one rots silently. Per-app CDN assets are covered the stable way — by the
-    // app's own branded domains in extraAllowed (e.g. `mathacademy.com`,
-    // `kastatic.org`), whose resolved IPs (including via CNAME to a CDN) belong in
-    // the per-(MAC, host) ea_ set. That carve-out only works once the ea_ set is
-    // actually populated from resolved IPs, which is a separate router-side gap
-    // tracked in its own issue — not something more infra-allow entries can fix.
-    "netcts.cdn-apple.com",          // Apple network connectivity-test CDN
-    // #1411: Google's gvt2.com infra domain — connectivity-check probes,
-    // Play/app asset bootstrap, and download shards (`r1---sn-xxxx.gvt2.com`)
-    // that rotate. These are device-level transitive deps the whole-MAC drop
-    // kills, making otherwise-allowed Google apps appear blocked. Pure Google
-    // infra, not a site users reach directly → low bypass risk. Added as the
-    // apex `gvt2.com` so the router's trailing-suffix match carves out every
-    // `*.gvt2.com` subdomain (incl. the rotating shards), not just one host.
-    "gvt2.com",                      // Google connectivity / Play / download infra (all subdomains)
-  ).map(Hostname.unsafe)
+  val infraAllowHosts: List[Hostname] = InfraHosts.canonical.map(Hostname.unsafe)
 
   /** Content-derived version: first 16 hex chars of SHA-256 over sorted domain list. */
   def blocklistContentVersion(domains: Iterable[String]): String = {

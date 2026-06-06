@@ -6,10 +6,6 @@ import { PageLoader } from './DashboardPage'
 import { useDebouncedSave, mergeSaveStatus } from '@/hooks/useDebouncedSave'
 import { SaveStatusBadge } from '@/components/SaveStatusBadge'
 
-function sameStrList(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i])
-}
-
 export function AdminPage() {
   const [hs, setHs] = useState<HouseholdSettings | null>(null)
   const [loading, setLoading] = useState(true)
@@ -142,13 +138,8 @@ function HeartbeatFilterCard({
 }) {
   const [enabled, setEnabled] = useState(value.heartbeatFilter.enabled)
   const [bytes, setBytes] = useState(value.heartbeatFilter.bytesThreshold)
-  const [hosts, setHosts] = useState<string[]>(value.heartbeatFilter.heartbeatHostPatterns)
   useEffect(() => { setEnabled(value.heartbeatFilter.enabled) }, [value.heartbeatFilter.enabled])
   useEffect(() => { setBytes(value.heartbeatFilter.bytesThreshold) }, [value.heartbeatFilter.bytesThreshold])
-  useEffect(
-    () => { setHosts(value.heartbeatFilter.heartbeatHostPatterns) },
-    [value.heartbeatFilter.heartbeatHostPatterns],
-  )
 
   const bytesValid = Number.isFinite(bytes) && bytes >= 0
 
@@ -167,19 +158,9 @@ function HeartbeatFilterCard({
       await reload()
     },
   )
-  const hostsSave = useDebouncedSave(
-    hosts,
-    async (next) => {
-      await api.household.patch({
-        heartbeatFilter: {
-          heartbeatHostPatterns: next.map(p => p.trim()).filter(p => p.length > 0),
-        },
-      })
-      await reload()
-    },
-    { equals: sameStrList },
-  )
-  const merged = mergeSaveStatus([enabledSave, bytesSave, hostsSave])
+  // #1525: the per-install heartbeat host allowlist editor was removed. Host-identity suppression
+  // now lives in the server-side canonical InfraHosts list; this card only tunes the byte floor.
+  const merged = mergeSaveStatus([enabledSave, bytesSave])
 
   return (
     <div
@@ -199,7 +180,8 @@ function HeartbeatFilterCard({
       <p className="text-xs text-brand-text">
         Excludes low-traffic background "heartbeat" rows from device/profile screen-time
         totals. A row is classified as a heartbeat when its bytes/minute is below the
-        configured floor.
+        configured floor. Known device-level infrastructure (OS/telemetry/cert/safe-browsing
+        hosts) is excluded automatically and is no longer configured here.
       </p>
       {!bytesValid && (
         <div
@@ -232,23 +214,6 @@ function HeartbeatFilterCard({
             className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-sm w-32"
           />
         </div>
-      </div>
-      <div>
-        <label className="block text-xs text-brand-text-muted mb-1">
-          Host allowlist (one pattern per line — `*.foo.com` or `foo.com`)
-        </label>
-        <textarea
-          value={hosts.join('\n')}
-          onChange={e => setHosts(e.target.value.split(/\r?\n/))}
-          data-testid="heartbeat-filter-hosts"
-          rows={8}
-          spellCheck={false}
-          className="bg-white border border-brand-border-strong rounded-lg px-3 py-2 text-brand-ink text-xs font-mono w-full"
-        />
-        <p className="text-xs text-brand-text-muted mt-1">
-          Rows whose host matches any pattern are classified as heartbeats regardless of
-          bytes / active fraction.
-        </p>
       </div>
     </div>
   )

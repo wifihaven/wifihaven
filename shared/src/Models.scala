@@ -700,6 +700,12 @@ object UnmanagedMacPolicy {
 case class HeartbeatFilter(
     enabled: Boolean,
     bytesThreshold: Int,
+    // DEPRECATED (#1525): no longer read for enforcement. Host-identity suppression now lives in the
+    // canonical `shared.types.InfraHosts` code constant (allow+suppress) plus its suppress-only
+    // tier, so this hand-curated per-install list is vestigial — it caused the #1499 drift it was
+    // meant to prevent. Retained on the wire and in `household_settings` for back-compat (older
+    // peers still send it; we accept and ignore). Slated for removal + column drop in a later,
+    // migration-isolated PR once the fleet has rolled forward. Do NOT add new readers.
     heartbeatHostPatterns: List[String] = Nil,
 ) derives JsonCodec
 

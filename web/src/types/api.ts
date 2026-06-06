@@ -76,7 +76,10 @@ export interface NamedScheduleRequest {
 export interface HeartbeatFilter {
   enabled: boolean
   bytesThreshold: number          // bytes/min floor (rows below are heartbeats)
-  heartbeatHostPatterns: string[] // #788 FQDN allowlist; *.foo.com / foo.com semantics
+  // DEPRECATED (#1525): no longer read for enforcement or edited in the UI. Host-identity
+  // suppression lives in the server-side canonical InfraHosts list. Kept on the type because the
+  // API still returns it; removed when the wire field + DB column are dropped.
+  heartbeatHostPatterns: string[]
 }
 
 // #961 — how the household treats MACs that have appeared on the network

@@ -306,17 +306,31 @@ object Presence {
    * (`patternMinutesByMac`) and the per-host/per-app breakdown (`hostMinutes`,
    * `proportionalHostSeconds`) — so keepalives no longer inflate per-site time or per-app presence
    * (design §4.2). Each surface takes a `filter` argument (default `Off`); callers pass
-   * `settings.heartbeatFilter`. A row is classified as a heartbeat if the filter is enabled and
-   * total bytes are below `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a
-   * few hundred) or its FQDN matches a heartbeat host pattern.
+   * `settings.heartbeatFilter`. A row is classified as a heartbeat if its FQDN is on the unified
+   * device-infra list (see below) OR — when the filter is enabled — total bytes are below
+   * `bytesThreshold` (one TCP keepalive ≈ 60 bytes; a few HTTP/2 PINGs ≈ a few hundred).
+   *
+   * #1503/#1525: the FQDN check consults the canonical [[InfraHosts]] background set — the same
+   * device-level infra `PolicyService.infraAllowHosts` carves out of the block, plus the
+   * suppress-only tier folded in from the retired `household_settings.heartbeat_host_patterns`
+   * column (#1525). Maintaining a suppression list and an allow list as two hand-curated copies let
+   * them drift (the #1499 ~93%-background over-count leak). Suppression keys purely on host
+   * *identity* and applies regardless of `filter.enabled` — device infra is never engagement,
+   * mirroring the allow side consuming the list unconditionally. Because it keys on identity (never
+   * on low bytes / short activity) it cannot re-open the #1446 undercount: a genuine app's sparse,
+   * low-byte requests are not on the list, so they still count. The `bytesThreshold` keepalive
+   * floor is unchanged and still gated on `filter.enabled`.
    */
   def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
-    filter.enabled && (
-      row.bytes < filter.bytesThreshold ||
-        row.host.asFqdn.exists(fqdn =>
-          filter.heartbeatHostPatterns.exists(p => matchesPattern(fqdn.value, p)),
-        )
-    )
+    isBackgroundHost(row) || (filter.enabled && row.bytes < filter.bytesThreshold)
+
+  /**
+   * #1503/#1525: whether the row's FQDN is device-level background infra
+   * ([[InfraHosts.isBackground]] \= allow+suppress canonical ∪ suppress-only). Keyed on host
+   * identity only — IP-literal hosts never match.
+   */
+  private def isBackgroundHost(row: PresenceRow): Boolean =
+    row.host.asFqdn.exists(fqdn => InfraHosts.isBackground(fqdn.value))
 
   /**
    * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the
@@ -331,16 +345,17 @@ object Presence {
 
   def classifyRows(rows: List[PresenceRow], filter: HeartbeatFilter): List[Classified] =
     rows.map { r =>
-      val rsns  = scala.collection.mutable.ListBuffer.empty[String]
-      if filter.enabled then {
-        if r.bytes < filter.bytesThreshold then rsns += s"bytes<${filter.bytesThreshold}"
-        for {
-          fqdn <- r.host.asFqdn
-          p    <- filter.heartbeatHostPatterns
-          if matchesPattern(fqdn.value, p)
-        } rsns += s"host:$p"
-      }
-      val label = if filter.enabled && rsns.nonEmpty then "heartbeat" else "active"
+      val rsns = scala.collection.mutable.ListBuffer.empty[String]
+      // #1503/#1525: device-level background infra is always suppressed, independent of
+      // filter.enabled — keyed on host identity via the unified InfraHosts background set.
+      for {
+        fqdn <- r.host.asFqdn
+        p    <- InfraHosts.matchedBackgroundPattern(fqdn.value)
+      } rsns += s"infra:$p"
+      // The byte-floor keepalive heuristic is still operator-gated.
+      if filter.enabled && r.bytes < filter.bytesThreshold then
+        rsns += s"bytes<${filter.bytesThreshold}"
+      val label = if rsns.nonEmpty then "heartbeat" else "active"
       Classified(r, label, rsns.toList)
     }
 
