@@ -19,7 +19,7 @@ define Package/wifihaven
   # table without them — silently dropping all enforcement, including the
   # block-page DNAT (#1144). kmod-nfnetlink-log is the NFLOG backend;
   # kmod-nf-log{,6} provide the netfilter log framework for each family.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nfnetlink-log +kmod-nf-log +kmod-nf-log6
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6
   PKGARCH:=all
 endef
 

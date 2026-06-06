@@ -975,24 +975,35 @@ function M.nft(snapshot, opts)
     end
   end
 
-  -- #1122: each drop rule carries `log group NFLOG_GROUP counter drop
-  -- comment "wh_drop:<mac>:<reason>"`. The agent's nflog tail (see
-  -- wifihaven.nflog) consumes the log-group stream and synthesizes
-  -- connection_attempt events with allowed=false + reason from the comment,
-  -- closing the visibility gap for forward-chain drops (which never get
-  -- conntrack-confirmed and therefore never reach the conntrack -E NEW
-  -- watcher). The `counter` keyword stays for ops debugging via
-  -- `nft list ruleset`; the `comment` is the agent's attribution channel.
+  -- #1122/#1126: each drop rule carries
+  --   `log prefix "wh_drop:<mac>:<reason> " counter drop comment "wh_drop:<mac>:<reason>"`.
+  -- The `log prefix` form writes to the kernel ring buffer (the LOG backend),
+  -- so the wifihaven-nflog-tail sidecar can read the dropped-packet records
+  -- straight off `logread -f` on stock OpenWRT — no NFLOG netlink consumer
+  -- (ulogd2) required. The agent then synthesizes connection_attempt events
+  -- with allowed=false + reason parsed from the prefix, closing the visibility
+  -- gap for forward-chain drops (which never get conntrack-confirmed and so
+  -- never reach the conntrack -E NEW watcher). The trailing space separates the
+  -- prefix token from the kernel's `IN=…` field block. `counter` stays for ops
+  -- debugging via `nft list ruleset`; the `comment` keeps the full
+  -- `wh_drop:<mac>:<reason>` legible there (and survives even if a future
+  -- kernel truncates a very long prefix).
   --
-  -- We also build a per-MAC blockReason lookup so the comment on each
+  -- #1126: this replaces the original #1122 NFLOG netlink form
+  -- (`log ... group <N>`). NFLOG had no stock userspace consumer, so the
+  -- production reader could never be wired without pulling in ulogd2; logread is
+  -- already understood by the agent. The load-critical kernel backend is now
+  -- the syslog logger (kmod-nf-log / kmod-nf-log6) rather than the netlink
+  -- logger (kmod-nfnetlink-log); nft_log_dep_spec.sh enforces that coherence.
+  --
+  -- We also build a per-MAC blockReason lookup so the prefix/comment on each
   -- whole-MAC drop carries the MacBlockReason that the API server resolved
   -- (Paused / Schedule / TimeLimit / Manual / Unmanaged). See
   -- PolicySnapshotMacDropAttributionSpec for the wire-string contract.
-  local NFLOG_GROUP = 1
   local function drop_suffix(mac, reason)
     return string.format(
-      " log group %d counter drop comment \"wh_drop:%s:%s\"",
-      NFLOG_GROUP, mac, reason)
+      " log prefix \"wh_drop:%s:%s \" counter drop comment \"wh_drop:%s:%s\"",
+      mac, reason, mac, reason)
   end
   local blocked_reason_by_mac = {}
   for mac, dev in pairs(snapshot.devices or {}) do
