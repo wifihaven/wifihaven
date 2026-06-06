@@ -1,24 +1,25 @@
 #!/bin/sh
-# Packaging-coherence guard (#1144).
+# Packaging-coherence guard (#1144, retargeted in #1126).
 #
-# render.lua emits forward-chain drop rules carrying `log group <N> counter
-# drop` (#1122, for the nflog → connection_attempt visibility path). The
-# nftables `log ... group` expression is NFLOG and needs the nfnetlink_log
-# kernel backend — OpenWRT package `kmod-nfnetlink-log`. It is NOT in the
-# default x86 image profile (only kmod-nft-{core,fib,nat,offload} ship via
-# firewall4), so wifihaven must pull it in itself.
+# render.lua emits forward-chain drop rules carrying a `log` action so the
+# agent's nflog tail can synthesize connection_attempt events for forward-chain
+# drops (the visibility path of #1122/#1126). An nftables `log` expression needs
+# a kernel log backend; if it is absent, the SINGLE atomic `nft -f` that the
+# agent applies (policy.lua) rejects the WHOLE table — including the block-page
+# DNAT chain — so ALL enforcement silently disappears (blocked hosts resolve and
+# serve real upstream, no block page). That is the Gate 3a regression in #1144.
 #
-# The agent applies the rendered ruleset with a single atomic `nft -f`
-# (policy.lua). If `log group` is unsupported, that one statement makes the
-# WHOLE table load fail — including the block-page DNAT chain — so ALL
-# enforcement silently disappears (blocked hosts resolve and serve real
-# upstream, no block page). That is the Gate 3a regression in #1144.
+# #1126 switched the drop rules from the NFLOG netlink form (`log ... group <N>`,
+# backend kmod-nfnetlink-log) to the syslog form (`log prefix "wh_drop:…"`,
+# backend kmod-nf-log / kmod-nf-log6) so the production reader can tail the drop
+# records straight off `logread` with no NFLOG userspace consumer. The
+# load-critical kernel dependency moved accordingly: this guard now ties the
+# `log prefix` emission to the kmod-nf-log{,6} packages instead.
 #
-# This guard ties the two facts together: as long as render emits `log group`,
-# every package-dependency declaration must list kmod-nfnetlink-log. Pure text
-# checks — runs in the standard Lua/shell test CI with no kernel needed, which
-# is exactly the gap that let #1122 through (render unit tests only string-
-# compare output; Gate 2 actually loads nft but was starved by concurrency).
+# Pure text checks — runs in the standard Lua/shell test CI with no kernel
+# needed, which is exactly the gap that let #1122 through (render unit tests only
+# string-compare output; Gate 2 actually loads nft but was starved by
+# concurrency).
 set -e
 
 PASS=0; FAIL=0
@@ -40,34 +41,37 @@ for f in "$RENDER" "$MAKEFILE" "$BUILD_IPK" "$BUILD_APK"; do
   [ -f "$f" ] || { printf "MISSING: %s\n" "$f"; exit 1; }
 done
 
-printf "nft_log_dep_spec: NFLOG kernel dep coherence (#1144)\n"
+printf "nft_log_dep_spec: nft log kernel dep coherence (#1144/#1126)\n"
 
-# Trigger condition: does render still emit an NFLOG `log group` statement?
-# If a future change drops the nflog path entirely, this guard becomes moot
-# and the dep checks below should be relaxed in the same change.
-if grep -q "log group" "$RENDER"; then
-  EMITS_LOG_GROUP=1
-  check "render.lua emits an NFLOG 'log group' statement" ok
+# Trigger condition: does render emit an nftables `log prefix` action on its
+# drop rules? Grep for the rule emitter (`drop_suffix`), not prose, so a comment
+# mentioning the old form can't false-trigger. If a future change drops the
+# nflog path entirely, this guard becomes moot and the dep checks below should
+# be relaxed in the same change.
+if grep -Eq 'log prefix \\"wh_drop:' "$RENDER"; then
+  EMITS_LOG=1
+  check "render.lua emits a 'log prefix' drop action" ok
 else
-  EMITS_LOG_GROUP=0
-  check "render.lua no longer emits 'log group' — dep guard now optional" ok
+  EMITS_LOG=0
+  check "render.lua no longer emits a 'log prefix' drop action — dep guard now optional" ok
 fi
 
-if [ "$EMITS_LOG_GROUP" = "1" ]; then
-  # Makefile DEPENDS uses the `+pkg` form.
-  grep -Eq "DEPENDS:=.*\+kmod-nfnetlink-log" "$MAKEFILE" \
-    && check "Makefile DEPENDS includes +kmod-nfnetlink-log" ok \
-    || check "Makefile DEPENDS includes +kmod-nfnetlink-log" "missing — atomic nft -f will reject the whole table"
+if [ "$EMITS_LOG" = "1" ]; then
+  # Makefile DEPENDS uses the `+pkg` form. Both the v4 (kmod-nf-log) and v6
+  # (kmod-nf-log6) syslog loggers are required: the drop rules log both families.
+  for pkg in kmod-nf-log kmod-nf-log6; do
+    grep -Eq "DEPENDS:=.*\+$pkg(\b| |$)" "$MAKEFILE" \
+      && check "Makefile DEPENDS includes +$pkg" ok \
+      || check "Makefile DEPENDS includes +$pkg" "missing — atomic nft -f will reject the whole table"
 
-  # build-ipk.sh control field uses comma-separated names.
-  grep -Eq "^Depends:.*kmod-nfnetlink-log" "$BUILD_IPK" \
-    && check "build-ipk.sh Depends includes kmod-nfnetlink-log" ok \
-    || check "build-ipk.sh Depends includes kmod-nfnetlink-log" "missing — ipk image lacks NFLOG support"
+    grep -Eq "^Depends:.*$pkg" "$BUILD_IPK" \
+      && check "build-ipk.sh Depends includes $pkg" ok \
+      || check "build-ipk.sh Depends includes $pkg" "missing — ipk image lacks the nft log backend"
 
-  # build-apk.sh passes a space-separated --info depends:... string.
-  grep -Eq "depends:[^\"]*kmod-nfnetlink-log" "$BUILD_APK" \
-    && check "build-apk.sh depends includes kmod-nfnetlink-log" ok \
-    || check "build-apk.sh depends includes kmod-nfnetlink-log" "missing — apk image lacks NFLOG support"
+    grep -Eq "depends:[^\"]*$pkg" "$BUILD_APK" \
+      && check "build-apk.sh depends includes $pkg" ok \
+      || check "build-apk.sh depends includes $pkg" "missing — apk image lacks the nft log backend"
+  done
 fi
 
 printf "  ── %d passed, %d failed\n" "$PASS" "$FAIL"

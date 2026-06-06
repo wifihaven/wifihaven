@@ -26,4 +26,12 @@ M.dns_metrics = "/tmp/wifihaven-dns-metrics.txt"
 -- wifihaven-dns-tail bl_ populator reads it on its set-refresh cadence.
 M.bl_member_index = "/tmp/wifihaven-bl-members.txt"
 
+-- nflog drop spool (#1126): wifihaven-nflog-tail tails `logread -f`, greps the
+-- nft `log prefix "wh_drop:…"` forward-drop records, and appends them here; the
+-- main agent drains new complete lines from this tmpfs spool on its cooperative
+-- tick (nflog.drain_file) and synthesizes connection_attempt events. Same
+-- own-the-blocking-read / tmpfs-IPC split as the dns-tail cache (#259), so the
+-- agent never needs non-blocking I/O.
+M.nflog_drops = "/tmp/wifihaven-nflog.log"
+
 return M

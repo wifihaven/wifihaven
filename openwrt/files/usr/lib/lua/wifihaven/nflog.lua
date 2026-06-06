@@ -10,8 +10,11 @@
 -- them. The Logs page therefore goes silent for blocked traffic — #1103.
 --
 -- Fix: every per-MAC drop rule emitted by render.lua now carries
---   `log group 1 counter drop comment "wh_drop:<mac>:<reason>"`
--- and this module tails the resulting nflog stream + synthesizes a
+--   `log prefix "wh_drop:<mac>:<reason> " counter drop comment "wh_drop:…"`
+-- (#1126 switched the read channel from NFLOG `log group` — which had no stock
+-- userspace consumer — to a `log prefix` that lands in the kernel ring buffer,
+-- readable straight off `logread`). This module tails the resulting stream
+-- (via the wifihaven-nflog-tail spool) + synthesizes a
 -- `connection_attempt` event for each dropped packet with allowed=false
 -- and reason set from the comment. The event then takes the same ingest
 -- + retry-queue path the conntrack watcher uses (#330).
@@ -157,6 +160,59 @@ function M.new_dedup(opts)
 end
 
 -- ---------------------------------------------------------------------------
+-- drain_file(path, state, open_fn) -> { line, ... }   (#1126 production reader)
+--
+-- The agent's cooperative loop cannot block on `logread -f`, so the
+-- wifihaven-nflog-tail sidecar owns that blocking read and appends matching
+-- `wh_drop:` lines to a tmpfs spool (paths.nflog_drops). This helper drains the
+-- COMPLETE lines appended since the last call, advancing state.offset past them
+-- so a line is never re-read. It is non-blocking by construction: it reads
+-- whatever is currently in the file and returns immediately.
+--
+--   state: { offset = <byte cursor> }   (mutated in place)
+--   open_fn(path, mode) -> file|nil      (injectable; defaults to io.open)
+--
+-- Robustness:
+--   * Missing file (sidecar not up yet) -> {} and offset untouched.
+--   * Partial trailing line (writer mid-write, no newline yet) -> NOT consumed;
+--     the cursor stops at the last newline so the rest is picked up next tick.
+--   * Rotation/truncation (file size < saved offset) -> rewind cursor to 0 and
+--     read the fresh content. At most the lines written since the last drain
+--     are lost — acceptable for a best-effort, agent-deduped visibility stream.
+-- ---------------------------------------------------------------------------
+function M.drain_file(path, state, open_fn)
+  open_fn = open_fn or io.open
+  state = state or {}
+  state.offset = state.offset or 0
+
+  local f = open_fn(path, "r")
+  if not f then return {} end
+
+  local size = f:seek("end")
+  if size == nil then f:close(); return {} end
+  -- Detect truncate/rotate: a spool shorter than our cursor was reset.
+  if size < state.offset then state.offset = 0 end
+  f:seek("set", state.offset)
+  local data = f:read("*a") or ""
+  f:close()
+  if data == "" then return {} end
+
+  local lines    = {}
+  local consumed = 0
+  -- Iterate (line-body, optional-newline) pairs. Only pairs that end with a
+  -- real newline are complete; a final pair with no newline is the partial
+  -- tail and is left in place (its bytes are NOT added to `consumed`).
+  for body, nl in data:gmatch("([^\n]*)(\n?)") do
+    if nl == "\n" then
+      lines[#lines + 1] = body
+      consumed = consumed + #body + 1
+    end
+  end
+  state.offset = state.offset + consumed
+  return lines
+end
+
+-- ---------------------------------------------------------------------------
 -- run(cfg) — blocking event loop; called from wifihaven-agent
 --
 -- cfg: {
@@ -166,6 +222,12 @@ end
 --   ts_fn           function() -> ISO8601      timestamp for each event
 --   now_fn          function() -> seconds      monotonic seconds for dedup
 --   window_seconds  int                        dedup window (default 60)
+--   dedup           dedup                       optional; a pre-built new_dedup()
+--                                               instance. Pass a persistent one
+--                                               so dedup survives across the
+--                                               per-tick run() calls the agent
+--                                               makes (#1126); omitted -> a
+--                                               fresh per-call dedup.
 --   log             logger                     optional; default stderr
 --   on_event        function(ev)               optional; fires after batcher.add
 -- }
@@ -175,7 +237,7 @@ function M.run(cfg)
   local batcher = cfg.batcher
   local ts_fn   = cfg.ts_fn or function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end
   local lookup  = cfg.lookup_hostname or function(_) return nil end
-  local dedup   = M.new_dedup({
+  local dedup   = cfg.dedup or M.new_dedup({
     window_seconds = cfg.window_seconds or 60,
     now_fn         = cfg.now_fn,
   })

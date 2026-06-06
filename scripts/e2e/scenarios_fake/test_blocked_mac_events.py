@@ -1,25 +1,26 @@
-"""#1122 — router deploy gate: forward-drop visibility via nflog.
+"""#1122/#1126 — router deploy gate: forward-drop visibility via nflog.
 
 Runs in the same Gate 2 (fake API + real router VM) lane as test_pause.py.
-Validates the router-side half of #1122:
+Validates the router-side half of #1122/#1126:
 
-  1. The deployed agent ships `nflog.lua` and `render.lua` installs per-MAC
-     drop rules that carry `log group 1 counter drop comment "wh_drop:<mac>:<reason>"`.
+  1. The deployed agent ships `nflog.lua`, the `wifihaven-nflog-tail` sidecar,
+     and `render.lua` installs per-MAC drop rules carrying
+     `log prefix "wh_drop:<mac>:<reason> " counter drop comment "wh_drop:…"`.
      This guards the data-plane contract end-to-end across the package build,
-     so if a future refactor drops `log group` from one of the drop families,
-     a router-side regression fires here in CI instead of in production.
+     so if a future refactor drops the `log prefix` from one of the drop
+     families, a router-side regression fires here in CI instead of in
+     production. (#1126 switched the read channel from NFLOG `log group` —
+     which had no stock consumer — to `log prefix`, readable off logread.)
 
-  2. With the snapshot pausing a MAC, the agent posts a synthesized
+  2. With the snapshot pausing a MAC, the agent's nflog reader (sidecar →
+     spool → nflog.drain_file → batcher) posts a synthesized
      `connection_attempt(allowed=false, reason=Paused)` event for client
-     traffic to the fake API. This validates the full nflog → batcher →
-     /api/router/events path on the real OpenWRT VM.
-
-Step 2 depends on the production nflog reader landing (#1126). Until that
-ships, only the static contract assertions in step 1 run; the dynamic
-emission test is skipped with an explicit reference to the gating issue.
-That keeps the file in CI rotation (so build/install regressions are caught
-on every router publish) without producing a hard red on a known-pending
-follow-up.
+     traffic to the fake API. This validates the full
+     logread → spool → agent → /api/router/events path on the real OpenWRT VM
+     and is the router-side proof for the #1524 "Connection Events near-blind"
+     gap (blocked traffic produced zero connection events). Companion ingest
+     coverage: RouterIngestSpec "nflog-synthesized blocked flow persists"
+     (#1116) and the agent-unit nflog_spec drain_file/run tests (#1117).
 """
 from __future__ import annotations
 
@@ -41,34 +42,37 @@ pytestmark = pytest.mark.nflog
 # ── static deploy contract ──────────────────────────────────────────────────
 
 
-def test_nflog_module_is_installed_on_router(router):
-    """The agent package ships openwrt/files/usr/lib/lua/wifihaven/nflog.lua.
+def test_nflog_module_and_sidecar_are_installed_on_router(router):
+    """The agent package ships nflog.lua AND the wifihaven-nflog-tail sidecar.
 
-    A package-build regression that drops the module (typo in the makefile
-    glob, file rename without update) fails the agent boot via the explicit
-    `require("wifihaven.nflog")` in /usr/sbin/wifihaven-agent — but only when
-    the agent restarts. This assertion catches the missing file at deploy
-    time, before any agent restart, so a bad release never ships."""
+    A package-build regression that drops either (typo in the makefile glob,
+    file rename without update) breaks the blocked-flow visibility path:
+    nflog.lua fails the agent boot via the explicit `require("wifihaven.nflog")`,
+    and a missing sidecar leaves the spool empty so the agent's drain reads
+    nothing. These assertions catch the missing files at deploy time, before
+    any agent restart, so a bad release never ships."""
     res = router_ssh(
-        "test -f /usr/lib/lua/wifihaven/nflog.lua && echo ok || echo missing",
+        "test -f /usr/lib/lua/wifihaven/nflog.lua "
+        "&& test -x /usr/sbin/wifihaven-nflog-tail && echo ok || echo missing",
         check=False, timeout=10,
     )
     assert (res.stdout or "").strip() == "ok", (
-        f"nflog.lua not installed on router: stdout={res.stdout!r} "
-        f"stderr={res.stderr!r}"
+        f"nflog.lua / wifihaven-nflog-tail not installed on router: "
+        f"stdout={res.stdout!r} stderr={res.stderr!r}"
     )
 
 
-def test_paused_snapshot_emits_per_mac_drop_with_log_group_and_wh_drop_comment(
+def test_paused_snapshot_emits_per_mac_drop_with_log_prefix_and_wh_drop_comment(
     router, client, fake_api,
 ):
     """With a paused profile, the live nft ruleset on the router carries a
-    per-MAC drop with `log group 1 counter drop comment "wh_drop:<mac>:Paused"`.
+    per-MAC drop with
+    `log prefix "wh_drop:<mac>:Paused " counter drop comment "wh_drop:<mac>:Paused"`.
 
-    This is the wire contract every nflog consumer (production reader in
-    #1126, ulogd sidecars, ad-hoc `nft monitor trace` debugging) depends on.
-    Pinning it here means a future render.lua refactor cannot silently drop
-    the `log group` or rename the comment prefix without a CI red.
+    This is the wire contract the production nflog reader (#1126, via
+    logread → spool) depends on. Pinning it here means a future render.lua
+    refactor cannot silently drop the `log prefix` or rename the token without
+    a CI red.
     """
     mac = client.mac
 
@@ -89,13 +93,13 @@ def test_paused_snapshot_emits_per_mac_drop_with_log_group_and_wh_drop_comment(
             check=False, timeout=10,
         )
         body = res.stdout or ""
-        # Order in render.lua: `ether saddr <mac> log group 1 counter drop
-        # comment "wh_drop:<mac>:Paused"`. We don't depend on whitespace
-        # beyond what nft normalises, so substring-match the parts that
-        # downstream consumers rely on.
+        # Order in render.lua: `ether saddr <mac> log prefix "wh_drop:<mac>:Paused "
+        # counter drop comment "wh_drop:<mac>:Paused"`. We don't depend on
+        # whitespace beyond what nft normalises, so substring-match the parts
+        # the production reader relies on.
         needles = [
             f"ether saddr {mac}",
-            "log group 1",
+            f'log prefix "wh_drop:{mac}:Paused "',
             "counter",
             "drop",
             f'comment "wh_drop:{mac}:Paused"',
@@ -108,19 +112,13 @@ def test_paused_snapshot_emits_per_mac_drop_with_log_group_and_wh_drop_comment(
         _drop_rule_landed,
         timeout_s=60,
         interval_s=2,
-        description=f"per-MAC drop with log group + wh_drop comment for {mac}",
+        description=f"per-MAC drop with log prefix + wh_drop comment for {mac}",
     )
 
 
-# ── dynamic event emission (gated on #1126) ────────────────────────────────
+# ── dynamic event emission (production reader, #1126) ───────────────────────
 
 
-@pytest.mark.skip(
-    reason="#1126 — production nflog reader (non-blocking glue alongside "
-    "conntrack.watch) not yet wired in wifihaven-agent. The static contract "
-    "above guarantees the data-plane is correct; this test un-skips when the "
-    "reader lands.",
-)
 def test_paused_mac_https_traffic_surfaces_as_nflog_event(router, client, fake_api):
     """Drive HTTPS (port 443) from a paused MAC and assert a synthesized
     `connection_attempt(allowed=false, reason=Paused)` arrives at the fake.

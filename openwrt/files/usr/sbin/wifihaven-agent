@@ -404,6 +404,7 @@ local last_usage_run      = 0
 local last_metrics_run    = 0
 local last_blocklist_run  = 0  -- #1412: category blocklist refresh cadence
 local last_activity_sample = 0
+local last_nflog_run      = 0  -- #1126: nflog drop-spool drain cadence
 local activity_tracker     = usage.new_tracker()
 local usage_queue          = usage.new_queue()  -- retry queue for failed POSTs (#309)
 
@@ -484,6 +485,7 @@ do
   last_metrics_run       = mono
   last_blocklist_run     = mono
   last_activity_sample   = mono
+  last_nflog_run         = mono
 end
 
 -- Snapshot nft counters for the activity tracker.  Cheap (same JSON we'd
@@ -569,21 +571,24 @@ local function lookup_hostname(dst_ip)
   return tbl[dst_ip]
 end
 
--- #1122: nflog tail. render.lua now emits
---   `log group 1 counter drop comment "wh_drop:<mac>:<reason>"`
--- on every per-MAC drop rule so forward-chain drops (which never reach the
--- postrouting confirm hook and so never emit IPCT_NEW) become visible to
--- the agent. The reader feeds parsed events into the same conntrack batcher
--- so the existing /api/router/events retry queue + event_id dedup applies.
---
--- The conntrack watch loop below is blocking; the production reader and
--- non-blocking glue that drives nflog.run() alongside it lands in
--- TODO(#1126): wire nflog production reader in wifihaven-agent. Until that
--- ships, this is wired only via the test-friendly entrypoint nflog.run, so
--- nothing happens at runtime — but the module is imported above so a build
--- regression (missing nflog.lua in the package) trips at agent startup
--- rather than mid-flight.
-local _ = nflog  -- keep linter happy; live wiring in #1126
+-- #1122/#1126: nflog tail. render.lua emits
+--   `log prefix "wh_drop:<mac>:<reason> " counter drop`
+-- on every forward-chain drop rule so dropped flows (which never reach the
+-- postrouting confirm hook and so never emit IPCT_NEW, and are therefore
+-- invisible to conntrack -E NEW) become visible to the agent. The
+-- wifihaven-nflog-tail sidecar owns the blocking `logread -f`, greps the
+-- wh_drop: records, and appends them to a tmpfs spool; here we drain that
+-- spool non-blockingly on the cooperative tick and feed parsed events into the
+-- SAME conntrack batcher, so the existing /api/router/events retry queue +
+-- event_id dedup applies. The dedup is created once here (not per tick) so a
+-- retry storm spanning ticks still collapses to one event per (mac, dst, host).
+local nflog_int    = tonumber(uci_get("nflog_poll_interval", "5"))
+local nflog_window = tonumber(uci_get("nflog_dedup_window", "60"))
+local nflog_state  = { offset = 0 }
+local nflog_dedup  = nflog.new_dedup({ window_seconds = nflog_window })
+-- Set by conntrack.watch via register_batcher below; the nflog drain adds its
+-- synthesized events to this shared batcher. nil until watch wires it.
+local events_batcher = nil
 
 conntrack.watch({
   router_id       = router_id,
@@ -601,6 +606,7 @@ conntrack.watch({
   flush_interval  = flush_int,
   http_post       = http_post,
   log             = log,
+  register_batcher = function(b) events_batcher = b end,
 
   -- Called on every conntrack line (after event processing).
   -- Drives the policy and usage timers co-operatively.
@@ -743,6 +749,33 @@ conntrack.watch({
           log.info("blocklist timer: category lists changed, re-applied ruleset")
         end
       end
+    end
+
+    -- nflog drop-spool drain (#1126). The wifihaven-nflog-tail sidecar appends
+    -- the kernel's `wh_drop:` forward-drop records to a tmpfs spool; drain the
+    -- new complete lines non-blockingly and synthesize connection_attempt
+    -- (allowed=false) events. They go into the shared conntrack batcher
+    -- (events_batcher) so the same /api/router/events POST + retry queue +
+    -- event_id dedup applies. Hostnames are attributed via the same dns-tail
+    -- cache the conntrack path uses (lookup_hostname), so a blocked flow surfaces
+    -- with a host, not a bare IP, whenever DNS attribution exists. A persistent
+    -- dedup (nflog_dedup) collapses retry storms across ticks.
+    if events_batcher and (mono - last_nflog_run) >= nflog_int then
+      last_nflog_run = mono
+      local lines = nflog.drain_file(paths.nflog_drops, nflog_state)
+      if #lines > 0 then
+        local idx = 0
+        nflog.run({
+          read_fn         = function() idx = idx + 1; return lines[idx] end,
+          batcher         = events_batcher,
+          dedup           = nflog_dedup,
+          lookup_hostname = lookup_hostname,
+        })
+        log.debug("nflog drain: processed %d spool line(s)", #lines)
+      end
+      -- Sweep dedup entries older than the window so `seen` can't grow
+      -- unbounded over a long-lived agent (one entry per (mac, dst, host)).
+      nflog_dedup.gc()
     end
 
     -- Activity sampler (#295, #516): every 10 s, snapshot counters and feed

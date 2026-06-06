@@ -72,14 +72,28 @@ object RouterIngestRoutes {
           val handle = for {
             router <- auth.authenticate(req)
             body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            rep    <- ZIO
-              .fromEither(body.fromJson[RouterEventsRequest])
-              .tapError(e =>
-                ZIO.logWarning(
-                  s"router events: deserialization failed for router=${router.id} bodyLen=${body.length} err=$e",
-                ),
-              )
-              .mapError(e => Response.badRequest(e))
+            // #1126: tolerate an empty/blank body as a no-op batch. A truncated
+            // or empty POST (network blip, retry-queue edge) used to fail
+            // RouterEventsRequest decoding with "Unexpected end of input" and
+            // 400, spamming the warn log and dropping the (harmless) batch. An
+            // empty events POST carries nothing to persist, so treat it as an
+            // accepted no-op rather than an error. Genuinely malformed non-empty
+            // bodies still 400 + warn below (and the agent emitter no longer
+            // produces them — see conntrack.encode_events_body).
+            rep    <-
+              if body.trim.isEmpty then
+                ZIO.logDebug(
+                  s"router events: empty body from router=${router.id}; treating as no-op batch",
+                ) *> ZIO.succeed(RouterEventsRequest(router.id, Nil))
+              else
+                ZIO
+                  .fromEither(body.fromJson[RouterEventsRequest])
+                  .tapError(e =>
+                    ZIO.logWarning(
+                      s"router events: deserialization failed for router=${router.id} bodyLen=${body.length} err=$e",
+                    ),
+                  )
+                  .mapError(e => Response.badRequest(e))
             _      <- ZIO
               .logWarning(
                 s"router events: routerId mismatch token=${router.id} body=${rep.routerId}",

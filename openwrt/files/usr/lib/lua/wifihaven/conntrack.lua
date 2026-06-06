@@ -356,6 +356,34 @@ function M.build_event(opts)
 end
 
 -- ---------------------------------------------------------------------------
+-- encode_events_body(router_id, events, log) -> string | nil
+--
+-- Serialize a RouterEventsRequest body, refusing to produce anything the API
+-- can't parse. This is the emitter half of the #1126 ingest-reliability fix:
+-- the recurring `router events: deserialization failed … Unexpected end of
+-- input` warnings come from malformed / empty bodies reaching the wire.
+--
+--   * Empty (or nil) events -> nil. luci.jsonc encodes an empty Lua table as
+--     `{}` (a JSON *object*), which the API decodes as a type error; and an
+--     empty batch is pointless to POST. Callers must skip the POST on nil.
+--   * A non-string / non-object stringify result -> nil (logged). Guards
+--     against a truncated encoding burning a retry slot or tripping the ingest
+--     warning. A non-empty Lua sequence always encodes as a JSON array, so the
+--     `events` field is well-formed whenever this returns a string.
+-- ---------------------------------------------------------------------------
+function M.encode_events_body(router_id, events, log)
+  log = log or default_log()
+  if not events or next(events) == nil then return nil end
+  local jsonc   = require("luci.jsonc")
+  local payload = jsonc.stringify({ routerId = router_id, events = events })
+  if type(payload) ~= "string" or payload:sub(1, 1) ~= "{" then
+    log.err("conntrack: refusing to POST malformed events body (got %s)", tostring(payload))
+    return nil
+  end
+  return payload
+end
+
+-- ---------------------------------------------------------------------------
 -- new_batcher(max_size, flush_interval_sec, flush_fn) -> batcher
 --
 -- Returns an object with:
@@ -498,26 +526,28 @@ end
 -- still-flapping API doesn't get hammered with the whole backlog at once.
 function M.drain_events(events_url, router_id, queue, post_fn, now, rng_fn, log)
   log = log or default_log()
-  local jsonc = require("luci.jsonc")
   local i = 1
   while i <= #queue.batches do
     local b = queue.batches[i]
     if b.next_attempt_at > now then
       i = i + 1
     else
-      local payload = jsonc.stringify({
-        routerId = router_id,
-        events   = b.events,
-      })
-      local status, _body, _err = post_fn(events_url, payload)
-      if status and status >= 200 and status < 300 then
+      local payload = M.encode_events_body(router_id, b.events, log)
+      if not payload then
+        -- Empty/malformed batch should never reach the queue, but if it does,
+        -- drop it rather than wedge the drain on an unsendable body.
         table.remove(queue.batches, i)
       else
-        b.attempts        = b.attempts + 1
-        b.next_attempt_at = now + next_backoff(b.attempts, rng_fn)
-        log.warn("conntrack: drain batch failed attempt=%d events=%d; next in %ds (status=%s)",
-                 b.attempts, #b.events, b.next_attempt_at - now, tostring(status))
-        return
+        local status, _body, _err = post_fn(events_url, payload)
+        if status and status >= 200 and status < 300 then
+          table.remove(queue.batches, i)
+        else
+          b.attempts        = b.attempts + 1
+          b.next_attempt_at = now + next_backoff(b.attempts, rng_fn)
+          log.warn("conntrack: drain batch failed attempt=%d events=%d; next in %ds (status=%s)",
+                   b.attempts, #b.events, b.next_attempt_at - now, tostring(status))
+          return
+        end
       end
     end
   end
@@ -800,7 +830,6 @@ end
 -- }
 -- ---------------------------------------------------------------------------
 function M.watch(cfg)
-  local jsonc      = require("luci.jsonc")
   local log        = cfg.log            or default_log()
   local lan_prefix = cfg.lan_prefix     or "192.168.1."
   local max_batch  = cfg.max_batch      or 50
@@ -827,10 +856,10 @@ function M.watch(cfg)
 
   local batcher = M.new_batcher(max_batch, flush_int, function(events)
     log.debug("conntrack: flushing batch size=%d url=%s", #events, events_url)
-    local payload = jsonc.stringify({
-      routerId = cfg.router_id,
-      events   = events,
-    })
+    local payload = M.encode_events_body(cfg.router_id, events, log)
+    -- #1126: empty/malformed bodies never go to the wire. The batcher only
+    -- flushes non-empty buffers, so this is defense-in-depth.
+    if not payload then return end
     local ok, last_status, last_body, last_err = M.post_with_retry(
       events_url, payload, max_retry, base_delay, do_post, cfg.sleep_fn)
     if not ok then
@@ -848,6 +877,13 @@ function M.watch(cfg)
                 last_status, #events)
     end
   end)
+
+  -- #1126: hand the batcher to the caller so the agent's nflog drain path can
+  -- add synthesized forward-drop events to the SAME batch + retry queue (the
+  -- whole loop is single-fibered/cooperative, so this is race-free). The
+  -- batcher's max-size auto-flush and the per-iteration batcher.tick() below
+  -- then flush conntrack and nflog events together.
+  if cfg.register_batcher then cfg.register_batcher(batcher) end
 
   log.info("conntrack: starting watcher lan_prefix=%s max_batch=%d flush_interval=%ds",
            lan_prefix, max_batch, flush_int)
