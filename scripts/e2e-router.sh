@@ -460,34 +460,48 @@ pass "blockReason=Paused in policy snapshot"
 pause_profile false
 
 # ── 7. Active schedule reflected in policy snapshot ───────────────────────
-step "Add always-on schedule → blockReason=Schedule in snapshot"
-# PUT the full profile with an all-days, all-hours schedule. The snapshot no
-# longer carries raw schedules; it just collapses an active schedule into
-# blockReason=Schedule.
-SCHED_BODY=$(cat <<EOF
-{
-  "name": "$PROFILE_NAME",
-  "blockedCategories": [],
-  "extraBlocked": [],
-  "extraAllowed": [],
-  "paused": false,
-  "schedules": [
-    {
-      "name": "always",
-      "days": ["mon","tue","wed","thu","fri","sat","sun"],
-      "startLocal": "00:00",
-      "endLocal":   "23:59",
-      "tz":         "UTC"
-    }
-  ],
-  "timeLimit": 1,
-  "siteTimeLimits": []
-}
-EOF
-)
+step "Attach always-on named schedule → blockReason=Schedule in snapshot"
+# #1494: enforcement reads schedules from named_schedules / profile_schedule_rules
+# since #1490; the profile upsert no longer writes the legacy `schedules` table
+# (an inline `schedules` array is now ignored). So a schedule must be authored as
+# a household-scoped named schedule (POST /api/schedules) and attached to the
+# profile (PUT /api/profiles/{id}/schedules). The snapshot then collapses an
+# active window into blockReason=Schedule.
+#
+# First (re)assert the profile carries a 1-minute daily limit so TimeLimit would
+# otherwise fire (§3 already accrued ~90s of usage today) — this lets §7 prove
+# the Schedule > TimeLimit precedence end to end, not just "some block".
 curl -fsS -X PUT "$BASE/api/profiles/$PID" "${AUTH[@]}" \
   -H 'content-type: application/json' \
-  -d "$SCHED_BODY" >/dev/null
+  -d "{
+        \"name\": \"$PROFILE_NAME\",
+        \"blockedCategories\": [],
+        \"extraBlocked\": [],
+        \"extraAllowed\": [],
+        \"paused\": false,
+        \"timeLimit\": 1,
+        \"siteTimeLimits\": []
+      }" >/dev/null
+
+# Create an all-days, all-hours named schedule (unique name per run).
+SCHED_ID=$(curl -fsS -X POST "$BASE/api/schedules" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{
+        \"name\": \"e2e-always-${RUN_ID}\",
+        \"windows\": [
+          {
+            \"days\": [\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\",\"sun\"],
+            \"startLocal\": \"00:00\",
+            \"endLocal\":   \"23:59\",
+            \"tz\":         \"UTC\"
+          }
+        ]
+      }" | _py "import json,sys; print(json.load(sys.stdin)['id'])")
+
+# Attach the named schedule to the profile as a BLOCK schedule.
+curl -fsS -X PUT "$BASE/api/profiles/$PID/schedules" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"scheduleIds\": [$SCHED_ID]}" >/dev/null
 
 curl -fsS "${RAUTH[@]}" "$BASE/api/router/policy" >"$TMP/snap4.json"
 SCHED_REASON=$(_py "
@@ -498,12 +512,14 @@ if p is None:
     raise SystemExit('profile $PID missing from snapshot.profiles')
 print(p['rules'].get('blockReason'))
 ")
-# Either Schedule (always-on schedule) or TimeLimit (90s usage from §3 still
-# in today's bucket). The snapshot's precedence is Schedule > TimeLimit, so we
-# expect Schedule — but if scheduling is for any reason inactive we still want
-# to assert *some* block, not silently regress.
+# The profile has an active always-on schedule AND a reached 1-min daily limit
+# (~90s used in §3). PolicyService precedence is Schedule > TimeLimit, so the
+# snapshot must collapse to Schedule. Asserting strictly Schedule (not "some
+# block") is what catches the #1494 regression: if the attach write path or the
+# #1490 read path breaks, the schedule goes unseen and this falls through to
+# TimeLimit.
 case "$SCHED_REASON" in
-  Schedule)  pass "blockReason=Schedule in snapshot" ;;
+  Schedule)  pass "blockReason=Schedule in snapshot (Schedule > TimeLimit)" ;;
   *)         fail "expected blockReason=Schedule, got '$SCHED_REASON'" ;;
 esac
 
