@@ -610,5 +610,59 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    // ── #1492: hour-clipped decomposition for the presence-based usage graph ──
+    suite("#1492 hour-clip + span surfaces")(
+      test("secondsByLocalHour splits a span across the hour boundary and sums to its length") {
+        val zone   = java.time.ZoneId.of("UTC")
+        // [00:59:30, 01:00:30) — 30s in hour 0, 30s in hour 1.
+        val span   = Presence.Span(
+          base.plusSeconds(3570).getEpochSecond,
+          base.plusSeconds(3630).getEpochSecond,
+        )
+        val byHour = Presence.secondsByLocalHour(List(span), baseDate, zone)
+        assertTrue(byHour.getOrElse(0, 0L) == 30L) &&
+        assertTrue(byHour.getOrElse(1, 0L) == 30L) &&
+        assertTrue(byHour.values.sum == 60L)
+      },
+      test("deviceSessionSpans union reconciles with totalSecondsByMac (the headline total)") {
+        val rows     = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 300),
+          appRow(mac1, 300L, "khanacademy.org", periodSeconds = 300),
+          appRow(mac2, 0L, "youtube.com", periodSeconds = 300),
+        )
+        val viaSpans = Presence
+          .deviceSessionSpans(rows, Nil)
+          .view
+          .mapValues(Presence.unionSeconds)
+          .toMap
+        assertTrue(viaSpans == Presence.totalSecondsByMac(rows, Nil))
+      },
+      test("hostSessionSpans seconds reconcile with proportionalHostSeconds (Sum and Dedup)") {
+        // Same host on two devices in the same window: Sum double-counts, Dedup unions.
+        val rows          = List(
+          appRow(mac1, 0L, "youtube.com", periodSeconds = 300),
+          appRow(mac2, 0L, "youtube.com", periodSeconds = 300),
+        )
+        val sumViaSpans   = Presence
+          .hostSessionSpans(rows, CrossDeviceOverlapMode.Sum)
+          .view
+          .mapValues(_.iterator.map(_.seconds).sum)
+          .toMap
+        val dedupViaSpans = Presence
+          .hostSessionSpans(rows, CrossDeviceOverlapMode.Dedup)
+          .view
+          .mapValues(Presence.unionSeconds)
+          .toMap
+        assertTrue(
+          sumViaSpans == Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Sum),
+        ) &&
+        assertTrue(
+          dedupViaSpans == Presence.proportionalHostSeconds(rows, CrossDeviceOverlapMode.Dedup),
+        ) &&
+        // Sum = 600s (both devices), Dedup = 300s (overlap counts once).
+        assertTrue(sumViaSpans.getOrElse(yt, 0L) == 600L) &&
+        assertTrue(dedupViaSpans.getOrElse(yt, 0L) == 300L)
+      },
+    ),
   )
 }

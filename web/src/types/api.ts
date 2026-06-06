@@ -490,6 +490,11 @@ export interface UsageSeriesResponse {
   // #1079 — populated when the request asked groupBy=app.
   topEntries?: UsageEntityTotal[]
   bucketsByEntry?: UsageEntityBucket[]
+  // #1492 — the day-level session-stitch presence total (floored once). This is
+  // the same number the profile card shows as time-used; display it as the graph
+  // headline rather than summing the per-hour bars, which lose sub-minute
+  // fractions and read a few minutes low. Optional: older API responses omit it.
+  presenceTotalMins?: number
 }
 
 // #1099 — batched per-profile series: one round-trip resolves the whole

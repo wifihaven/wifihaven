@@ -1015,6 +1015,11 @@ case class UsageSeriesResponse(
     bucketsByDevice: List[UsageDeviceBucket] = Nil,
     topEntries: List[UsageEntityTotal] = Nil,
     bucketsByEntry: List[UsageEntityBucket] = Nil,
+    // #1492: the day-level session-stitch presence total (floored once), so the graph's headline
+    // reconciles exactly with the time-used number on the profile card. Summing the per-hour
+    // `totalMins` would drop sub-minute fractions and read a few minutes low; clients should show
+    // this as the "total". Additive; older clients ignore it. Defaults to 0 for the empty case.
+    presenceTotalMins: Int = 0,
 ) derives JsonCodec
 
 // #1099: batched per-profile series for the /profiles page. One request

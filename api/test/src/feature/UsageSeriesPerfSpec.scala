@@ -73,8 +73,10 @@ object UsageSeriesPerfSpec
             startUtc,
             startUtc.plusSeconds(300),
             300,
-            100L,
-            100L,
+            // #1492: above the 10 KB heartbeat threshold so the presence-based series counts
+            // these as real activity (the default filter drops sub-10 KB buckets).
+            25_000L,
+            25_000L,
           ),
         ),
       )
@@ -89,6 +91,7 @@ object UsageSeriesPerfSpec
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[RollupRepo]
       hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
+      stlRepo         <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -101,6 +104,7 @@ object UsageSeriesPerfSpec
         appRepo,
         rollupRepo,
         hsRepo,
+        stlRepo,
         clock,
       ),
       auth,
