@@ -753,6 +753,65 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           rows.exists(r => r.host == HostId.Fqdn(Hostname.unsafe("youtube.com")) && !r.allowed),
         )
     },
+    test("events: empty body is accepted as a no-op batch (#1126 ingest reliability)") {
+      // A truncated/empty events POST used to fail RouterEventsRequest decoding
+      // ("Unexpected end of input") and 400. It carries nothing to persist, so
+      // the ingest now treats a blank body as an accepted no-op rather than an
+      // error, and the agent emitter no longer produces such bodies.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        resp     <- post(routes, "/api/router/events", "", Some(tk))
+        rows     <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(rows.isEmpty)
+    },
+    test("events: explicit empty events array is accepted (#1126)") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        body = s"""{"routerId":"$id","events":[]}"""
+        resp <- post(routes, "/api/router/events", body, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(resp.status == Status.Ok) && assertTrue(rows.isEmpty)
+    },
+    test("events: nflog-synthesized blocked flow persists with host + reason (#1126)") {
+      // The exact wire shape the agent's nflog path emits: a connection_attempt
+      // with allowed=false, a parsed reason, and an attributed fqdn host —
+      // proving the blocked-flow round-trip into connection_events (the #1524
+      // gap). Hand-rolled to also pin the field names.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        rawBody = s"""{
+          "routerId":"$id",
+          "events":[
+            {"type":"connection_attempt","mac":"$knownMac",
+             "host":{"type":"fqdn","value":"mathacademy.com"},
+             "destIp":"1.2.3.4","allowed":false,"reason":"Paused",
+             "ts":"2026-05-07T14:01:14Z","eventId":"11111111-1111-1111-1111-111111111111"}
+          ]
+        }"""
+        resp <- post(routes, "/api/router/events", rawBody, Some(tk))
+        rows <- cRepo.listForRouter(id, 100)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.size == 1) &&
+        assertTrue(
+          rows.exists(r =>
+            r.host == HostId.Fqdn(Hostname.unsafe("mathacademy.com")) &&
+              !r.allowed &&
+              r.reason == BlockReason.fromWire("Paused"),
+          ),
+        )
+    },
     test("events: first_seen_mac creates an unknown-device row when missing") {
       for {
         _        <- cleanDb
