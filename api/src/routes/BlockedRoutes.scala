@@ -89,28 +89,40 @@ object BlockedRoutes {
   }
 
   /**
-   * Map the router decision wire-reason to a (reasonClass, categoryName?) pair. The reason strings
-   * here mirror the literals emitted by [[PolicyService.decide]].
+   * Map the router decision wire-reason to a (reasonClass, categoryName?) pair.
+   *
+   * #1545: the wire-reason is parsed once through the canonical [[BlockReason.fromWire]] and the
+   * sealed result is matched exhaustively, so this re-parser can no longer drift from the strings
+   * [[PolicyService.decide]] emits (which now also go through [[BlockReason.asWire]]) — the
+   * compiler fails the build if a new `BlockReason` case is added without a mapping here.
+   *
+   * The old `case _ => ("extra_blocked", None)` fallthrough silently relabeled ANY unrecognized
+   * reason as "a specific site", so a future `decide()` reason an older block-page build hadn't
+   * learned would render the wrong copy. Now `Unknown(raw)` — and every reason that isn't one of
+   * the specific block classes the kid page distinguishes — maps to the generic `"blocked"` class
+   * (the SPA's `copyFor` default → "Access blocked."), never to `extra_blocked`.
    */
   private def mapReason(
       reason: String,
       blocklistRepo: BlocklistRepo,
-  ): Task[(String, Option[String])] = reason match {
-    case "paused"                              => ZIO.succeed(("paused", None))
-    case "schedule"                            => ZIO.succeed(("schedule", None))
-    case "time_limit"                          => ZIO.succeed(("time_limit", None))
-    case "extra_blocked"                       => ZIO.succeed(("extra_blocked", None))
-    case r if r.startsWith("site_time_limit:") => ZIO.succeed(("site_time_limit", None))
-    case r if r.startsWith("category:")        =>
-      val rest = r.drop("category:".length)
-      BlocklistId.parse(rest) match {
-        case Right(id) =>
-          blocklistRepo
-            .findMeta(id)
-            .map(meta => ("category", meta.map(_.name)))
-            .catchAll(_ => ZIO.succeed(("category", None)))
-        case Left(_)   => ZIO.succeed(("category", None))
-      }
-    case _                                     => ZIO.succeed(("extra_blocked", None))
+  ): Task[(String, Option[String])] = BlockReason.fromWire(reason) match {
+    case MacBlockReason.Paused        => ZIO.succeed(("paused", None))
+    case MacBlockReason.Schedule      => ZIO.succeed(("schedule", None))
+    case MacBlockReason.TimeLimit     => ZIO.succeed(("time_limit", None))
+    case BlockReason.ExtraBlocked     => ZIO.succeed(("extra_blocked", None))
+    case BlockReason.SiteTimeLimit(_) => ZIO.succeed(("site_time_limit", None))
+    case BlockReason.Category(id)     =>
+      blocklistRepo
+        .findMeta(id)
+        .map(meta => ("category", meta.map(_.name)))
+        .catchAll(_ => ZIO.succeed(("category", None)))
+    // Generic / unrecognized blocks. `decide()` only reaches mapReason on a Block decision, so the
+    // allow-side cases (Allow/ExtraAllowed/NoProfile) are defensive; Manual/Unmanaged/DefaultDeny/
+    // AppBlocked and any Unknown(raw) wire string render the neutral block copy rather than being
+    // mislabeled as a specific-site block.
+    case BlockReason.Allow | BlockReason.Blocked | BlockReason.ExtraAllowed |
+        BlockReason.NoProfile | BlockReason.AppBlocked(_) | BlockReason.Unknown(_) |
+        MacBlockReason.Manual | MacBlockReason.Unmanaged | MacBlockReason.DefaultDeny =>
+      ZIO.succeed(("blocked", None))
   }
 }

@@ -303,7 +303,13 @@ class PolicyServiceLive(
       device <- deviceRepo.listAll.map(_.find(_.mac.value.equalsIgnoreCase(mac)))
       result <- device.flatMap(_.profileId) match {
         case None      =>
-          ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
+          ZIO.succeed(
+            RouterDecisionResponse(
+              ConnectionDecision.Allow,
+              BlockReason.asWire(BlockReason.NoProfile),
+              None,
+            ),
+          )
         case Some(pid) =>
           for {
             pOpt            <- profileRepo.findById(pid)
@@ -329,7 +335,13 @@ class PolicyServiceLive(
             appSchedWindows <- appRepo.appScheduleWindowsForProfile(pid)
             res             <- pOpt match {
               case None    =>
-                ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
+                ZIO.succeed(
+                  RouterDecisionResponse(
+                    ConnectionDecision.Allow,
+                    BlockReason.asWire(BlockReason.NoProfile),
+                    None,
+                  ),
+                )
               case Some(p) =>
                 val h = hostname.toLowerCase.stripSuffix(".")
 
@@ -364,17 +376,31 @@ class PolicyServiceLive(
                 // router `ip daddr != @ea_<m>_<a>` carve-out.
                 if matchesAny(h, appAllowed) then
                   ZIO.succeed(
-                    RouterDecisionResponse(ConnectionDecision.Allow, "extra_allowed", None),
+                    RouterDecisionResponse(
+                      ConnectionDecision.Allow,
+                      BlockReason.asWire(BlockReason.ExtraAllowed),
+                      None,
+                    ),
                   )
                 else if p.paused then
-                  ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Block, "paused", None))
+                  ZIO.succeed(
+                    RouterDecisionResponse(
+                      ConnectionDecision.Block,
+                      BlockReason.asWire(MacBlockReason.Paused),
+                      None,
+                    ),
+                  )
                 else
                   scheduleBlock(scheds, now) match {
                     case Some(r) => ZIO.succeed(r)
                     case None    =>
                       if matchesAny(h, appBlocked) then
                         ZIO.succeed(
-                          RouterDecisionResponse(ConnectionDecision.Block, "extra_blocked", None),
+                          RouterDecisionResponse(
+                            ConnectionDecision.Block,
+                            BlockReason.asWire(BlockReason.ExtraBlocked),
+                            None,
+                          ),
                         )
                       else
                         timeLimitBlockFromState(h, now, settings, dayState) match {
@@ -384,10 +410,14 @@ class PolicyServiceLive(
                               case Some(cat) =>
                                 RouterDecisionResponse(
                                   ConnectionDecision.Block,
-                                  s"category:${cat.value}",
+                                  BlockReason.asWire(BlockReason.Category(cat)),
                                   None,
                                 )
                               case None      =>
+                                // #1545: BlockReason.Allow's canonical asWire is "allow"; this
+                                // allow-path has historically emitted the "allowed" alias on the
+                                // wire and the back-compat rules forbid changing it (fromWire
+                                // accepts both → Allow), so this single case stays a literal.
                                 RouterDecisionResponse(ConnectionDecision.Allow, "allowed", None)
                             }
                         }
@@ -407,7 +437,11 @@ class PolicyServiceLive(
       // it's tomorrow's endLocal; otherwise it's today's endLocal (which may be in the
       // past for the "tail" of a previous day's overnight window — handled below).
       val expiresAt = PolicyService.scheduleEndInstantAfter(s, now)
-      RouterDecisionResponse(ConnectionDecision.Block, "schedule", Some(expiresAt.toString))
+      RouterDecisionResponse(
+        ConnectionDecision.Block,
+        BlockReason.asWire(MacBlockReason.Schedule),
+        Some(expiresAt.toString),
+      )
     }
   }
 
@@ -438,7 +472,7 @@ class PolicyServiceLive(
       .map(sd =>
         RouterDecisionResponse(
           ConnectionDecision.Block,
-          s"site_time_limit:${sd.label}",
+          BlockReason.asWire(BlockReason.SiteTimeLimit(sd.label)),
           Some(resetAt),
         ),
       )
@@ -450,7 +484,11 @@ class PolicyServiceLive(
         else
           state.dailyLimitMinutes.flatMap { limit =>
             Option.when(state.usedMinutes >= limit + state.extensionMinutes)(
-              RouterDecisionResponse(ConnectionDecision.Block, "time_limit", Some(resetAt)),
+              RouterDecisionResponse(
+                ConnectionDecision.Block,
+                BlockReason.asWire(MacBlockReason.TimeLimit),
+                Some(resetAt),
+              ),
             )
           }
       }
