@@ -205,5 +205,46 @@ object PolicySnapshotNamedScheduleSpec
         snap <- ps.snapshot
       } yield assertTrue(blockedMacs(snap).isEmpty)
     },
+    // #1539 invariant guard: two profiles attaching the SAME named schedules
+    // must enforce identically. The prod symptom was divergent enforcement
+    // across profiles sharing 'Bedtime'+'Breakfast'; the evaluation path is
+    // profile-uniform, so this pins that identical attachments → identical
+    // `blocked`/reason for every profile. (Root cause was a display-only chip
+    // reading the dead legacy `schedules` table; this keeps the *server* side
+    // honest in case a future per-profile branch ever creeps in.)
+    test("two profiles sharing the same two named schedules block identically") {
+      for {
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        nsr <- ZIO.service[NamedScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        allDays = List("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+        // 'Bedtime' is active at 21:30; 'Breakfast' is inactive then. Both are
+        // attached to BOTH profiles, exactly like the prod setup.
+        bedtime   <- nsr.create(
+          "Bedtime",
+          Some("overnight"),
+          List(ScheduleWindow(allDays, LocalTime.of(21, 0), LocalTime.of(7, 0), ZoneId.of("UTC"))),
+        )
+        breakfast <- nsr.create(
+          "Breakfast",
+          Some("morning"),
+          List(ScheduleWindow(allDays, LocalTime.of(7, 0), LocalTime.of(8, 0), ZoneId.of("UTC"))),
+        )
+        pidA      <- pr.create("Kids", Nil)
+        pidB      <- pr.create("Teens", Nil)
+        _         <- nsr.setProfileBlockSchedules(pidA, List(bedtime, breakfast))
+        _         <- nsr.setProfileBlockSchedules(pidB, List(bedtime, breakfast))
+        _         <- TestLayers.seedDevice(dr, "aa:bb:cc:11:22:33", "kid-ipad", pidA)
+        _         <- TestLayers.seedDevice(dr, "aa:bb:cc:44:55:66", "teen-phone", pidB)
+        ps        <- makePsAt(TestClock.bedtime)
+        snap      <- ps.snapshot
+      } yield assertTrue(
+        blockedMacs(snap) == List(
+          "aa:bb:cc:11:22:33" -> "Schedule",
+          "aa:bb:cc:44:55:66" -> "Schedule",
+        ),
+      )
+    },
   ) @@ TestAspect.sequential
 }
