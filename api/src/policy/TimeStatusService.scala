@@ -490,6 +490,22 @@ object TimeStatusService {
    * source-of-truth invariant). Returning seconds — not minutes — lets the decomposition rolled +
    * tail stay exact across the watermark boundary.
    */
+  /**
+   * #1531: the WHOLE host-set of every exempt-from-daily app — the patterns excluded from the daily
+   * total. Derived from the same per-app collapse (`groupSiteLimits`) the per-app bars and
+   * `computeBlockRules` use, so the displayed `usedMinutes`, the snapshot's `blocked`, and the
+   * per-device summaries (#1546) all read ONE explicit host-set. The previous
+   * `siteLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
+   * emits one row per host; reusing the collapse makes the whole-host-set exemption explicit rather
+   * than an implicit dependency on that row shape, which would silently regress to apex-only the
+   * moment those rows were ever de-duped upstream. Shared by [[usedSecondsForProfile]] and
+   * [[usedSecondsByMac]] so the two can never derive exempt patterns differently.
+   */
+  private[policy] def exemptPatterns(siteLimits: List[SiteTimeLimit]): List[String] =
+    groupSiteLimits(siteLimits).collect {
+      case (_, _, exempt, hosts, _) if exempt => hosts
+    }.flatten
+
   def usedSecondsForProfile(
       profile: Profile,
       devices: List[Device],
@@ -497,19 +513,7 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Long = {
-    // #1531: exclude the WHOLE host-set of every exempt-from-daily app from the daily total — the
-    // counting-side counterpart of the enforcement carve-out (#1513), which keys the exempt
-    // allow-list on the per-app `SiteDayState.hosts`. Derive the exempt patterns from the same
-    // per-app collapse (`groupSiteLimits`) the per-app bars and `computeBlockRules` use, so the
-    // displayed `usedMinutes` and the snapshot's `blocked` read one explicit host-set. The previous
-    // `siteLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
-    // emits one row per host; reusing the collapse makes the whole-host-set exemption explicit
-    // rather than an implicit dependency on that row shape, which would silently regress to
-    // apex-only the moment those rows were ever de-duped upstream.
-    val exemptPats =
-      groupSiteLimits(siteLimits).collect {
-        case (_, _, exempt, hosts, _) if exempt => hosts
-      }.flatten
+    val exemptPats = exemptPatterns(siteLimits)
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
         val perMac = Presence.totalSecondsByMac(
@@ -526,6 +530,67 @@ object TimeStatusService {
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
         )
+    }
+  }
+
+  /**
+   * #1546: the per-mac decomposition of [[usedSecondsForProfile]]. Uses the IDENTICAL
+   * exempt-pattern derivation ([[exemptPatterns]]) and the profile's `crossDeviceOverlapMode`, so
+   * the per-device summaries the `/api/time/status` routes render can no longer drift from the
+   * canonical headline `usedMinutes` (the #1531 class of divergence at per-device granularity). The
+   * collapse invariant, in BOTH modes, is `usedSecondsByMac(...).values.sum ==
+   * usedSecondsForProfile(...)`:
+   *
+   *   - '''Sum''': each mac is credited its own engaged seconds (its per-`(device, app)` session
+   *     union). The profile total is the per-device sum, so this is the natural decomposition and
+   *     the equality is exact.
+   *   - '''Dedup''': the profile total is the cross-device UNION (one human on two screens counts
+   *     once), which is `<=` the sum of per-device engaged seconds. A flat per-device split would
+   *     therefore over-count (the prod divergence: two devices overlapping in the same window each
+   *     showed their full engaged time, totalling 2x the headline). Instead each device is credited
+   *     only the seconds it adds to the union that an earlier device — in `devices` order — has not
+   *     already covered. This disjoint marginal attribution telescopes to exactly the union, and a
+   *     device's own engaged seconds are an upper bound on its share, so no single device can
+   *     exceed the headline and the summaries can never total `>100%`.
+   *
+   * `presence` must already be scoped to the profile's devices (as the live read paths and the
+   * routes both do).
+   */
+  def usedSecondsByMac(
+      profile: Profile,
+      devices: List[Device],
+      siteLimits: List[SiteTimeLimit],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): Map[MacAddress, Long] = {
+    val exemptPats = exemptPatterns(siteLimits)
+    profile.crossDeviceOverlapMode match {
+      case CrossDeviceOverlapMode.Sum   =>
+        val perMac = Presence.totalSecondsByMac(
+          presence,
+          exemptPats,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
+        devices.iterator.map(d => d.mac -> perMac.getOrElse(d.mac, 0L)).toMap
+      case CrossDeviceOverlapMode.Dedup =>
+        val spansByMac = Presence.deviceSessionSpans(
+          presence,
+          exemptPats,
+          settings.heartbeatFilter,
+          settings.presenceContinuationSeconds,
+        )
+        // Disjoint marginal attribution in `devices` order: each mac gets the seconds it adds to the
+        // running union. Σ marginals == unionSeconds(all device spans) == dedupedTotalSeconds.
+        val (out, _)   =
+          devices.foldLeft((Map.empty[MacAddress, Long], List.empty[Presence.Span])) {
+            case ((acc, covered), d) =>
+              val macSpans = spansByMac.getOrElse(d.mac, Nil)
+              val marginal =
+                Presence.unionSeconds(covered ++ macSpans) - Presence.unionSeconds(covered)
+              (acc.updated(d.mac, marginal), Presence.mergeSpans(covered ++ macSpans))
+          }
+        out
     }
   }
 
