@@ -492,20 +492,20 @@ class PolicyServiceLive(
         ),
       )
       .orElse {
-        val isExemptSite = state.perSite.exists { sd =>
-          sd.exemptFromDaily && sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp))
-        }
-        if isExemptSite then None
-        else
-          state.dailyLimitMinutes.flatMap { limit =>
-            Option.when(state.usedMinutes >= limit + state.extensionMinutes)(
-              RouterDecisionResponse(
-                ConnectionDecision.Block,
-                BlockReason.asWire(MacBlockReason.TimeLimit),
-                Some(resetAt),
-              ),
-            )
-          }
+        // #1515: no exempt-app guard is needed here anymore. An exempt-from-daily app still under
+        // its own cap is carved into `profileAllowed` and allowed upstream (before this runs), and
+        // one over its cap is caught by `siteLimitHit` above — so by the time we reach the daily cap
+        // the host is never daily-exempt. The daily-cap predicate is the shared
+        // [[dailyCapExhausted]] (the same one the snapshot's `state.blocked` / TimeLimit reason
+        // folds), so the per-host /decision and the snapshot can't fold the daily cap differently
+        // (#1532).
+        Option.when(PolicyService.dailyCapExhausted(state))(
+          RouterDecisionResponse(
+            ConnectionDecision.Block,
+            BlockReason.asWire(MacBlockReason.TimeLimit),
+            Some(resetAt),
+          ),
+        )
       }
   }
 
