@@ -8,6 +8,7 @@ import wifihaven.shared.types.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 
 import java.time.{Duration, Instant}
 
@@ -34,20 +35,48 @@ object RouterIngestRoutes {
       Method.POST / "api" / "router" / "usage"  ->
         handler { (req: Request) =>
           for {
-            router   <- auth.authenticate(req)
-            body     <- req.body.asString.orElseFail(Response.badRequest(""))
-            rep      <- ZIO
-              .fromEither(body.fromJson[UsageReport])
+            router <- auth.authenticate(req)
+            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+            // #1569: decode the *envelope* (routerId, periodStart, periodEnd) +
+            // `records` as a raw JSON array, deferring per-record validation. A
+            // genuinely unparseable envelope (bad routerId/timestamps, not an
+            // object, `records` not an array, truncated body) still 400s — but
+            // now LOGGED (the prior code dropped the zio-json error straight into
+            // the 400 body and never logged it, so the offending field was
+            // invisible server-side; mirrors the #1126 events-handler pattern).
+            raw    <- ZIO
+              .fromEither(body.fromJson[RawUsageReport])
+              .tapError(e =>
+                ZIO.logWarning(
+                  s"router usage: envelope deserialization failed for router=${router.id} " +
+                    s"bodyLen=${body.length} bodySnippet=${snippet(body)} err=$e",
+                ),
+              )
               .mapError(e => Response.badRequest(e))
-            _        <- ZIO
+            _      <- ZIO
               .fail(Response.badRequest("router_id mismatch"))
-              .when(rep.routerId != router.id)
-            ps       <- parseInstant(rep.periodStart)
-            pe       <- parseInstant(rep.periodEnd)
+              .when(raw.routerId != router.id)
+            ps     <- parseInstant(raw.periodStart, router.id)
+            pe     <- parseInstant(raw.periodEnd, router.id)
+            // #1569: decode each record individually. A single malformed record
+            // (e.g. a host value that fails Hostname validation — an Akamai/CDN
+            // CNAME target with underscores, see #1572) used to fail the WHOLE
+            // batch, dropping every valid record with it. Now the bad records are
+            // skipped, logged (bounded), and metered, and the valid ones ingest.
+            decoded  = raw.records.zipWithIndex.map((j, i) => (i, j.as[UsageRecord]))
+            rejected = decoded.collect { case (i, Left(err)) => (i, err) }
+            records  = decoded.collect { case (_, Right(r)) => r }
+            _        <- ZIO.foreachDiscard(rejected) { (i, err) =>
+              ZIO.logWarning(
+                s"router usage: skipping malformed record[$i] for router=${router.id}: $err",
+              )
+            }
+            _        <- AppMetrics.recordUsageRecordsRejected(rejected.size)
             _        <- ZIO.logDebug(
-              s"router usage: router=${router.id} period=$ps..$pe records=${rep.records.size}",
+              s"router usage: router=${router.id} period=$ps..$pe records=${records.size} " +
+                s"rejected=${rejected.size}",
             )
-            _        <- ZIO.foreachDiscard(rep.records)(r =>
+            _        <- ZIO.foreachDiscard(records)(r =>
               ZIO.logDebug(
                 s"  usage record: mac=${r.mac} ip=${r.ip.getOrElse("-")} " +
                   s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
@@ -58,7 +87,7 @@ object RouterIngestRoutes {
               router.id,
               ps,
               pe,
-              rep.records,
+              records,
               settings,
               trafficRepo,
               timeUsageRepo,
@@ -118,8 +147,39 @@ object RouterIngestRoutes {
         },
     )
 
-  private def parseInstant(s: String): IO[Response, Instant] =
-    ZIO.attempt(Instant.parse(s)).orElseFail(Response.badRequest(s"invalid timestamp: $s"))
+  /**
+   * #1569: the wire-decode envelope for `POST /api/router/usage`. Identical field shape to
+   * [[UsageReport]] except `records` is held as a raw JSON array so each element can be decoded
+   * into a [[UsageRecord]] individually — a single malformed record (e.g. a host value that fails
+   * `Hostname` validation, see #1572) is then skipped + logged + metered instead of 400-ing the
+   * whole batch and dropping every valid record with it. The envelope itself (routerId, timestamps,
+   * records-is-an-array) must still parse or the request is a genuine 400. Decode-only; this is a
+   * server-side parse aid, NOT a wire-contract type — unknown fields are still ignored.
+   */
+  private case class RawUsageReport(
+      routerId: RouterId,
+      periodStart: String,
+      periodEnd: String,
+      records: List[Json],
+  ) derives JsonDecoder
+
+  /**
+   * #1569: short, bounded body excerpt for the decode-failure warn log — never the full body (avoid
+   * logging more PII than needed to identify the offending field).
+   */
+  private def snippet(body: String): String = {
+    val max = 200
+    if body.length <= max then body else body.take(max) + s"…(+${body.length - max} more)"
+  }
+
+  private def parseInstant(s: String, routerId: RouterId): IO[Response, Instant] =
+    ZIO
+      .attempt(Instant.parse(s))
+      .orElseFail(s)
+      .tapError(bad =>
+        ZIO.logWarning(s"router usage: invalid timestamp '$bad' from router=$routerId"),
+      )
+      .mapError(bad => Response.badRequest(s"invalid timestamp: $bad"))
 
   private def handleUsage(
       routerId: RouterId,

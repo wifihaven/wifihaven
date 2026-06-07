@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "WifiHaven ingest health + data quality (#1281, follow-up to #1209). The router→API ingest pipeline (POST /api/router/{usage,events,metrics}) plus the #864 zero-byte traffic filter. Every panel targets a series actually emitted by AppMetrics/HttpMetrics in api/src (grep-verified, not the design-doc catalog): traffic_reports_filtered_zero_bytes_total (#864), http_requests_total / http_request_duration_seconds (#1204), router_metrics_batches_total (#1205), auth_failures_total (#1204). The `route` label is the templated path (/api/router/usage), never a concrete id. See docs/design/metrics-observability.md §5.",
+  "description": "WifiHaven ingest health + data quality (#1281, follow-up to #1209). The router→API ingest pipeline (POST /api/router/{usage,events,metrics}) plus the #864 zero-byte traffic filter. Every panel targets a series actually emitted by AppMetrics/HttpMetrics in api/src (grep-verified, not the design-doc catalog): traffic_reports_filtered_zero_bytes_total (#864), http_requests_total / http_request_duration_seconds (#1204), router_metrics_batches_total (#1205), auth_failures_total (#1204), usage_records_rejected_total (#1569). The `route` label is the templated path (/api/router/usage), never a concrete id. See docs/design/metrics-observability.md §5.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -292,6 +292,82 @@
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "(sum(rate(router_metrics_batches_total{env=\"$env\",status=\"ok\"}[10m])) or vector(0)) / sum(rate(router_metrics_batches_total{env=\"$env\"}[10m]))",
           "legendFormat": "success ratio",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Usage records rejected at decode (#1569)",
+      "description": "sum by (reason) (rate(usage_records_rejected_total[5m])) — per-record usage-ingest rejections. A single malformed record (e.g. a host failing Hostname validation — a CDN CNAME target with underscores, #1572) is skipped + metered here instead of 400-ing the whole batch. A sustained non-zero rate means an agent/DNS source is emitting host values the API rejects; pair it with the server warn-log ('router usage: skipping malformed record') to see the offending field. `reason` is a bounded enum (decode_error today). From AppMetrics.recordUsageRecordsRejected.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 32 },
+      "id": 9,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(usage_records_rejected_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Usage records rejected (last 24h)",
+      "description": "sum(increase(usage_records_rejected_total[24h])) — total usage records skipped at decode over the trailing day. Non-zero means valid sibling records were preserved (no longer dropped with the batch) but the offending host values still need a fix (#1572). From AppMetrics.recordUsageRecordsRejected.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "id": 10,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(usage_records_rejected_total{env=\"$env\"}[24h]))",
+          "legendFormat": "rejected (24h)",
           "refId": "A"
         }
       ]

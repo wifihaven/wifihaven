@@ -76,6 +76,11 @@ object MetricGuard {
     "auth_failures_total"                       -> Set("reason"),
     "agent_connected_routers"                   -> Set.empty[String],
     "traffic_reports_filtered_zero_bytes_total" -> Set.empty[String],
+    // #1569 — usage-ingest records dropped at decode. A single malformed record
+    // (e.g. a host that fails Hostname validation — a CDN CNAME target with
+    // underscores, see #1572) is skipped + metered here instead of 400-ing the
+    // whole batch. `reason` is a small fixed enum (currently just `decode_error`).
+    "usage_records_rejected_total"              -> Set("reason"),
     // #1318 — global-policy-layer visibility. `global_allow_hosts` is the size of the
     // security-sensitive fleet-wide always-reachable set (a host here bypasses every block);
     // `default_deny_profiles` counts profiles running the block-all baseline. Both are unlabelled
@@ -236,6 +241,19 @@ object AppMetrics {
           Map.empty,
           rows.toLong,
         ),
+      )
+      .unit
+
+  // ── #1569: usage records dropped at decode ───────────────────────────────────
+  // A malformed record (host failing Hostname validation, etc.) is skipped at
+  // ingest instead of failing the whole batch. A rising rate flags an agent/DNS
+  // source emitting host values the API rejects (the #1572 CNAME-target case).
+  // `reason` is a small fixed enum — only `decode_error` today.
+
+  def recordUsageRecordsRejected(count: Int, reason: String = "decode_error"): UIO[Unit] =
+    ZIO
+      .when(count > 0)(
+        MetricGuard.counter("usage_records_rejected_total", Map("reason" -> reason), count.toLong),
       )
       .unit
 
