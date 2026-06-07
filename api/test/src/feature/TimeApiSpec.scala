@@ -1214,13 +1214,17 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
-        } yield assertTrue(kids.usedMins == 30) &&                         // union headline
-          assertTrue(kids.devices.map(_.usedMins).sum == kids.usedMins) && // disjoint, sums to union
-          assertTrue(kids.devices.forall(_.usedMins <= kids.usedMins))     // never >100%
+        } yield assertTrue(kids.usedMins == 30) &&                     // union headline
+          assertTrue(
+            kids.devices.map(_.usedMins).sum == kids.usedMins,
+          ) &&                                                         // disjoint, sums to union
+          assertTrue(kids.devices.forall(_.usedMins <= kids.usedMins)) // never >100%
       },
       // #1546 / #1531 at per-device granularity: a device's `usedMins` must exclude exempt-from-daily
       // app time the SAME way the headline does — both derive exempt patterns from `usedSecondsByMac`.
-      test("#1546 exempt-app: per-device usedMins excludes exempt time identically to the headline") {
+      test(
+        "#1546 exempt-app: per-device usedMins excludes exempt time identically to the headline",
+      ) {
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -1291,9 +1295,11 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           )
           devBody <- devResp.body.asString
           dev     <- ZIO.fromEither(devBody.fromJson[DeviceTimeStatus])
-        } yield assertTrue(kids.usedMins == 10) &&                  // exempt 25 min excluded
-          assertTrue(kids.devices.map(_.usedMins).sum == 10) &&     // per-device summary excludes it too
-          assertTrue(dev.usedMins == 10)                            // device endpoint headline agrees
+        } yield assertTrue(kids.usedMins == 10) && // exempt 25 min excluded
+          assertTrue(
+            kids.devices.map(_.usedMins).sum == 10,
+          ) &&                                     // per-device summary excludes it too
+          assertTrue(dev.usedMins == 10)           // device endpoint headline agrees
       },
       test("hostUsage: heartbeat filter strips keepalive pollers from per-host surfaces (#1465)") {
         // Reproduce the prod shape from #715: device sat at ~60 used minutes
