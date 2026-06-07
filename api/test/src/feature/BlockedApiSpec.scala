@@ -143,5 +143,32 @@ object BlockedApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
         info <- callBlocked(routes, "aa:bb:cc:11:22:55", "example.com")
       } yield assertTrue(!info.blocked)
     },
+    // #1545: regression for the silent `case _ => extra_blocked` fallthrough in
+    // BlockedRoutes.mapReason. A reason the API doesn't recognize (e.g. a future
+    // `decide()` reason an older block-page build hasn't learned) must render the
+    // GENERIC block copy, NOT be mislabeled as "extra_blocked" ("a specific site").
+    test("unknown block reason → generic reasonClass, NOT mislabeled extra_blocked") {
+      val stubPolicy = new PolicyService {
+        def snapshot: Task[PolicySnapshot]                                      =
+          ZIO.dieMessage("snapshot unused in this test")
+        def renderBlocklist(id: BlocklistId): Task[Option[(ETag, String)]]      =
+          ZIO.dieMessage("renderBlocklist unused in this test")
+        def decide(mac: String, hostname: String): Task[RouterDecisionResponse] =
+          ZIO.succeed(
+            RouterDecisionResponse(ConnectionDecision.Block, "future_app:slack", None),
+          )
+      }
+      for {
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        blr <- ZIO.service[BlocklistRepo]
+        routes = BlockedRoutes.routes(stubPolicy, dr, pr, blr)
+        info <- callBlocked(routes, "aa:bb:cc:11:22:99", "weird.example.com")
+      } yield assertTrue(info.blocked) &&
+        assertTrue(!info.reasonClass.contains("extra_blocked")) &&
+        assertTrue(info.reasonClass.contains("blocked")) &&
+        assertTrue(info.categoryName.isEmpty)
+    },
   ) @@ TestAspect.sequential
 }
