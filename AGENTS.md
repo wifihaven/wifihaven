@@ -789,6 +789,20 @@ For any new feature or bug fix, follow test-driven development:
 
 This applies to both unit tests and feature tests — pick whichever level fits the change (see "Testing philosophy" below).
 
+## Independent PR review (required before merge) {#independent-pr-review}
+
+**Every PR gets an independent review pass before merge using
+[`docs/pr-review-checklist.md`](docs/pr-review-checklist.md).** Spawn a review
+subagent against the diff (or run `/code-review` / the equivalent review
+command); treat **BLOCKERS as merge-gating**. The author should self-run the
+checklist before opening the PR, but the **independent pass — a separate agent,
+not the author self-reviewing — is the gate.** It is read-only and adversarial:
+the reviewer cites `file:line`, classifies findings BLOCKER / SHOULD-FIX / NIT,
+and ends with APPROVE or REQUEST-CHANGES, never approving with an open BLOCKER.
+The checklist leads with duplicated-logic / single-source-of-truth (see
+[Single source of truth](#single-source-of-truth)) and test-integrity, the two
+failure modes behind our recurring prod incidents.
+
 ## Testing philosophy
 
 ### Feature tests first, unit tests for edge cases only
