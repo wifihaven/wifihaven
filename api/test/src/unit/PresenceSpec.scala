@@ -1037,5 +1037,97 @@ object PresenceSpec extends ZIOSpecDefault {
         )
       },
     ),
+    // ── #1506: app-aware background suppression ───────────────────────────────
+    //
+    // Attribution BEATS suppression. A host that is BOTH a background/infra
+    // pattern AND a member of an ACTIVE app's host-set must NOT be dropped as
+    // device infra — it attributes to the app and COUNTS. Only hosts attributed
+    // to no active app fall through to background suppression, so device-level
+    // infra (connectivity probes, OCSP, telemetry) with no app behind it stays
+    // suppressed exactly as before (#1499 over-count protection preserved).
+    suite("app-aware background suppression (#1506)")(
+      test("a background host that IS in an active app's host-set is NOT a heartbeat") {
+        // clientservices.googleapis.com is canonical device infra (suppressed by
+        // identity). But if an app's host-set claims it, attribution wins: the
+        // app-aware predicate does not classify it as a heartbeat.
+        val f       = HeartbeatFilter(enabled = true, bytesThreshold = 10000)
+        val r       =
+          appRow(mac1, 0L, "clientservices.googleapis.com", periodSeconds = 300, bytes = 90_000L)
+        val appPats = List("clientservices.googleapis.com")
+        assertTrue(
+          Presence.isHeartbeat(r, f, appPats) == false,
+          // With NO app attribution the same host is still suppressed (no regression).
+          Presence.isHeartbeat(r, f, Nil) == true,
+        )
+      },
+      test("app attribution beats the byte floor too (a low-byte app host still counts)") {
+        // The #1446 guardrail extended: a sparse, low-byte request to a host the
+        // app genuinely depends on must count even when the byte filter is on.
+        val f       = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        val r       = row(mac1, 0, "dl.gvt2.com", secs = 60, bytes = 60L, periodSeconds = 60)
+        val appPats = List("gvt2.com")
+        assertTrue(
+          Presence.isHeartbeat(r, f, appPats) == false,
+          Presence.isHeartbeat(r, f, Nil) == true,
+        )
+      },
+      test("device-level infra with NO app attribution stays suppressed") {
+        // connectivitycheck.gstatic.com behind no active app → still infra.
+        val f = HeartbeatFilter.Off
+        val r = appRow(mac1, 0L, "connectivitycheck.gstatic.com", periodSeconds = 300)
+        assertTrue(
+          Presence.isHeartbeat(r, f, Nil) == true,
+          // and an unrelated active app's host-set does not rescue it.
+          Presence.isHeartbeat(r, f, List("youtube.com")) == true,
+        )
+      },
+      test("daily total: an app's background asset host counts when app-attributed") {
+        // www.fooapp.com [0,600) · dl.gvt2.com [600,1200): gvt2.com is canonical
+        // background infra. Without app attribution it is suppressed → only the
+        // 10-min genuine span counts. With the app's host-set carrying gvt2.com
+        // the asset attributes to the app: the two adjacent spans union into
+        // [0,1200) = 20 min.
+        val f       = HeartbeatFilter.Off
+        val genuine = appRow(mac1, 0L, "www.fooapp.com", periodSeconds = 600, bytes = 2_000_000L)
+        val asset   = appRow(mac1, 600L, "dl.gvt2.com", periodSeconds = 600, bytes = 80_000L)
+        val rows    = List(genuine, asset)
+        assertTrue(
+          Presence.totalMinutesByMac(rows, Nil, f) == Map(mac1 -> 10),
+          Presence.totalMinutesByMac(rows, Nil, f, appHostPatterns = List("gvt2.com")) ==
+            Map(mac1 -> 20),
+        )
+      },
+      test("reconciliation: a multi-host app's suppressed asset now contributes to the app") {
+        // The #1506 seam: an app whose off-domain asset host happens to be a
+        // background/infra pattern. Pre-fix the asset is dropped as infra and the
+        // app under-counts; post-fix the app-aware predicate (driven by the app's
+        // OWN host-set) lets it attribute and bridge.
+        //   www.fooapp.com [0,60) · gap 60s · dl.gvt2.com [120,180).
+        // gvt2.com is background infra but it is part of this app's host-set, so
+        // it counts and the cross-host gap < N bridges into one [0,180) = 180s.
+        val group = "app:fooapp" -> List("fooapp.com", "gvt2.com")
+        val rows  = List(
+          appRow(mac1, 0L, "www.fooapp.com", periodSeconds = 60),
+          appRow(mac1, 120L, "dl.gvt2.com", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:fooapp" -> 180L),
+        )
+      },
+      test("an app whose host-set does NOT include the infra host still under-counts it") {
+        // Control for the test above: the SAME infra row, but the app's host-set
+        // does not claim gvt2.com. The asset is correctly suppressed as infra and
+        // only the genuine apex window counts (60s) — attribution is keyed on the
+        // app's declared host-set, not on mere co-occurrence.
+        val group = "app:fooapp" -> List("fooapp.com")
+        val rows  = List(
+          appRow(mac1, 0L, "www.fooapp.com", periodSeconds = 60),
+          appRow(mac1, 120L, "dl.gvt2.com", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:fooapp" -> 60L),
+        )
+      },
+    ),
   )
 }
