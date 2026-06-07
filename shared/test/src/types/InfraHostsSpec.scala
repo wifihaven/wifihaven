@@ -53,6 +53,24 @@ object InfraHostsSpec extends ZIOSpecDefault {
       )
       assertTrue(appOrCdn.forall(h => !InfraHosts.isInfra(h)))
     },
+    test("#1540 Windows NCSI connectivity probes are allow-carved and suppressed (apex matches)") {
+      // Windows' Network Connectivity Status Indicator probes are device-level OS connectivity
+      // checks the user never initiates → canonical (allow-carve + presence-suppress), same tier
+      // as the Apple/Android probes. Apex form matches the www/ipv6/dns subdomains.
+      val ncsi = List(
+        "www.msftconnecttest.com",
+        "ipv6.msftconnecttest.com",
+        "www.msftncsi.com",
+        "dns.msftncsi.com",
+      )
+      assertTrue(
+        ncsi.forall(InfraHosts.isInfra),
+        ncsi.forall(InfraHosts.isBackground),
+        // WARP is an encrypted VPN tunnel — allow-carving it would punch an anti-filtering bypass
+        // through every block (same reasoning as iCloud Private Relay in suppressOnly). Not carved.
+        !InfraHosts.isInfra("connectivity.cloudflareclient.com"),
+      )
+    },
     test("matchedPattern returns the canonical pattern that matched") {
       assertTrue(
         InfraHosts.matchedPattern("r3---sn-abc.gvt2.com").contains("gvt2.com"),

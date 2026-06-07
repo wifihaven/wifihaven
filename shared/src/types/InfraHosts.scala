@@ -54,16 +54,18 @@ object InfraHosts {
     // ── Connectivity / captive-portal probes ──────────────────────────────
     "connectivitycheck.gstatic.com", // Android / Chrome connectivity probe
     "captive.apple.com",             // iOS / macOS captive-portal probe
+    "msftconnecttest.com",  // #1540 Windows NCSI connectivity probe (www / ipv6 subdomains)
+    "msftncsi.com",         // #1540 Windows NCSI legacy/secondary probe (www / dns subdomains)
     // ── CA OCSP / CRL responders ──────────────────────────────────────────
-    "ocsp.apple.com",                // Apple OCSP responder
-    "ocsp2.apple.com",               // Apple OCSP responder (secondary)
-    "crl.apple.com",                 // Apple CRL distribution
-    "ocsp.pki.goog",                 // Google Trust Services OCSP
-    "ocsp.digicert.com",             // DigiCert OCSP (common CA for app backends)
+    "ocsp.apple.com",       // Apple OCSP responder
+    "ocsp2.apple.com",      // Apple OCSP responder (secondary)
+    "crl.apple.com",        // Apple CRL distribution
+    "ocsp.pki.goog",        // Google Trust Services OCSP
+    "ocsp.digicert.com",    // DigiCert OCSP (common CA for app backends)
     // ── Apple edge / OS infra ─────────────────────────────────────────────
-    "g.aaplimg.com",                 // Apple geo-edge CDN: OCSP + asset shards
-    "netcts.cdn-apple.com",          // #1337 Apple network-connectivity-test CDN
-    "ls.apple.com",                  // #1503 Apple location services (*.ls.apple.com)
+    "g.aaplimg.com",        // Apple geo-edge CDN: OCSP + asset shards
+    "netcts.cdn-apple.com", // #1337 Apple network-connectivity-test CDN
+    "ls.apple.com",         // #1503 Apple location services (*.ls.apple.com)
     // ── Google infra ──────────────────────────────────────────────────────
     "clientservices.googleapis.com", // Google client-services bootstrap
     "gvt2.com",                // #1411 Google connectivity / Play / download infra (all subdomains)
