@@ -2,6 +2,7 @@ package wifihaven.api.feature
 
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
+import wifihaven.api.usage.{AppUsedRollupServiceLive, TimeUsedRollupJob}
 import wifihaven.shared.*
 import wifihaven.shared.Clock.TestClock
 import wifihaven.shared.types.*
@@ -78,6 +79,43 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       ar,
       clk,
       namedScheduleRepo = nsr,
+    ): PolicyService
+
+  // #1515: a PolicyService whose TimeStatusService uses the REAL today-rollup repos (TimeUsedRollup +
+  // AppUsedRollup) and the real per-app rollup read accessor — so the snapshot reads the rollup +
+  // live-tail path (the prod steady state), not the all-live path the other `makePs*` helpers force
+  // by wiring `NoopTimeUsedRollupRepo`. Used to prove the per-app cap enforces from `app_used_daily`.
+  private def makePsRollup =
+    for {
+      pr   <- ZIO.service[ProfileRepo]
+      sr   <- ZIO.service[ScheduleRepo]
+      hsr  <- ZIO.service[HouseholdSettingsRepo]
+      tlr  <- ZIO.service[TimeLimitRepo]
+      stlr <- ZIO.service[SiteTimeLimitRepo]
+      dr   <- ZIO.service[DeviceRepo]
+      blr  <- ZIO.service[BlocklistRepo]
+      trr  <- ZIO.service[TrafficReportRepo]
+      er   <- ZIO.service[TimeExtensionRepo]
+      ar   <- ZIO.service[AppRepo]
+      nsr  <- ZIO.service[NamedScheduleRepo]
+      ru   <- ZIO.service[TimeUsedRollupRepo]
+      aru  <- ZIO.service[AppUsedRollupRepo]
+      clk  <- ZIO.service[Clock]
+      aus = new AppUsedRollupServiceLive(pr, dr, stlr, ar, trr, aru)
+      tss = new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, nsr, aus)
+    } yield new PolicyServiceLive(
+      pr,
+      sr,
+      hsr,
+      tlr,
+      stlr,
+      dr,
+      blr,
+      trr,
+      er,
+      ar,
+      tss,
+      clk,
     ): PolicyService
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
@@ -243,6 +281,51 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(atEb.contains("ytimg.com")) &&
         assertTrue(!unEb.contains("youtube.com")) &&
         assertTrue(!unEb.contains("ytimg.com"))
+    },
+    test(
+      "#1515 rollup path: per-app cap enforces from app_used_daily + tail, not just the all-live path",
+    ) {
+      // Regression guard for the gap that the snapshot's per-app cap only fired on the all-live path:
+      // once a profile has rolled (the prod steady state) the snapshot read `perSite.usedMinutes` as
+      // ZERO and the cap never bit. Roll the day up so the snapshot takes the rollup + live-tail
+      // path, and assert the whole host-set is still blocked from `app_used_daily`.
+      for {
+        _     <- cleanDb
+        ar    <- ZIO.service[AppRepo]
+        kids  <- kidsId
+        dr    <- ZIO.service[DeviceRepo]
+        _     <- dr.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:92"), "iPad", Some(kids), "10.0.0.92")
+        rid   <- seedRouterRow
+        appId <- ar.create("YouTube", "youtube", None, None)
+        _     <- ar.setHosts(
+          appId,
+          List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")),
+        )
+        _     <- ar.upsertAssignment(appId, kids, AppMode.TimeLimited, Some(30), false)
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        // 30 m on the asset host alone → aggregate hits the 30 m cap.
+        _      <- seedTraffic(rid, "aa:bb:cc:dd:ee:92", "ytimg.com", today, 30)
+        // Roll the day up: writes app_used_daily (30 m YouTube) + time_used_daily for every profile,
+        // so the snapshot below reads the ROLLUP path rather than re-aggregating live.
+        pr     <- ZIO.service[ProfileRepo]
+        stlr   <- ZIO.service[SiteTimeLimitRepo]
+        trr    <- ZIO.service[TrafficReportRepo]
+        hsr    <- ZIO.service[HouseholdSettingsRepo]
+        ru     <- ZIO.service[TimeUsedRollupRepo]
+        aru    <- ZIO.service[AppUsedRollupRepo]
+        clk    <- ZIO.service[Clock]
+        now    <- clk.instant
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stlr, ar, trr, hsr, now)
+        // Proves the rollup branch is exercised: the per-app rollup row exists for this profile.
+        rolled <- aru.getDayForProfile(kids, today)
+        svc    <- makePsRollup
+        snap   <- svc.snapshot
+      } yield {
+        val eb = snap.profiles(kids).rules.extraBlocked.map(_.value).toSet
+        assertTrue(rolled.nonEmpty) &&
+        assertTrue(eb.contains("youtube.com")) &&
+        assertTrue(eb.contains("ytimg.com"))
+      }
     },
     test("conflicting allowed + blocked apps: host appears in both lists (router lets allow win)") {
       // feedback_extraallowed_beats_blocked: router precedence makes allow win.

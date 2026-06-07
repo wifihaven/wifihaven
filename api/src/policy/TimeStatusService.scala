@@ -2,6 +2,7 @@ package wifihaven.api.policy
 
 import wifihaven.api.db.*
 import wifihaven.api.presence.{Presence, PresenceRow}
+import wifihaven.api.usage.{AppUsedRollupService, NoopAppUsedRollupService}
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -129,6 +130,12 @@ class TimeStatusServiceLive(
     // attached to it as a block schedule (via `profile_schedule_rules`, mode=blocked_during).
     // Defaults to the noop so existing direct constructions keep their arity.
     namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
+    // #1515: the #1510 per-app rollup read accessor, used ONLY on the today-rollup read path to fill
+    // each profile's per-app `perSite.usedMinutes` from `app_used_daily` + a live tail — so the
+    // per-app cap enforces once a profile has rolled (the prod steady state), not just on the
+    // all-live path. Defaults to the noop: the all-live path (cache miss / past date) never consults
+    // it, and the many test constructions over `NoopTimeUsedRollupRepo` stay all-live.
+    appUsedRollupService: AppUsedRollupService = NoopAppUsedRollupService,
 ) extends TimeStatusService {
 
   // #1069/#1482: a profile's effective downtime schedules = the windows of every named schedule
@@ -266,7 +273,10 @@ class TimeStatusServiceLive(
           stls      <- siteTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
           tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
-          extMins <- extRepo.getProfileTotalExtension(profileId, date)
+          extMins    <- extRepo.getProfileTotalExtension(profileId, date)
+          // #1515: per-app cap usage from the #1510 per-app rollup + live tail, so the per-app cap
+          // enforces on the rollup path identically to the all-live path.
+          perAppMins <- appUsedRollupService.appCapMinutesByLabel(now, date, settings, profileId)
         } yield {
           val tailSeconds =
             TimeStatusService.usedSecondsForProfile(p, devices, stls, tail, settings)
@@ -281,6 +291,7 @@ class TimeStatusServiceLive(
               extensionMinutes = extMins,
               date = date,
               now = now,
+              perSiteOverride = Some(TimeStatusService.siteDayStatesFromMinutes(stls, perAppMins)),
             ),
           )
         }
@@ -320,6 +331,13 @@ class TimeStatusServiceLive(
       stlsP   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       tail    <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
       exts    <- extRepo.snapshotAllByProfile(date)
+      // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. Keyed by the
+      // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
+      perAppMins <- ZIO
+        .foreach(profiles)(p =>
+          appUsedRollupService.appCapMinutesByLabel(now, date, settings, p.id).map(p.id -> _),
+        )
+        .map(_.toMap)
     } yield {
       val schedMap =
         profiles.map(p => p.id -> syntheticWindows(p.id, namedP.getOrElse(p.id, Nil))).toMap
@@ -354,6 +372,12 @@ class TimeStatusServiceLive(
           extensionMinutes = exts.getOrElse(p.id, 0),
           date = date,
           now = now,
+          perSiteOverride = Some(
+            TimeStatusService.siteDayStatesFromMinutes(
+              stlMap.getOrElse(p.id, Nil),
+              perAppMins.getOrElse(p.id, Map.empty),
+            ),
+          ),
         )
       }.toMap
     }
@@ -364,7 +388,8 @@ object TimeStatusService {
 
   val layer: ZLayer[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo,
+      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo &
+      AppUsedRollupService,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -378,7 +403,8 @@ object TimeStatusService {
         er: TimeExtensionRepo,
         ru: TimeUsedRollupRepo,
         nsr: NamedScheduleRepo,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, nsr)
+        aur: AppUsedRollupService,
+    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, nsr, aur)
   }
 
   /**
@@ -415,25 +441,40 @@ object TimeStatusService {
       filter: HeartbeatFilter,
       continuationSeconds: Int,
   ): List[SiteDayState] = {
-    val groups   = groupSiteLimits(siteLimits)
     val perGroup = Presence.patternGroupMinutesForProfile(
       presence,
-      groups.map(g => g._1 -> g._4),
+      groupSiteLimits(siteLimits).map(g => g._1 -> g._4),
       overlap,
       filter,
       continuationSeconds,
     )
-    groups.map { case (label, daily, exempt, hosts, rep) =>
+    siteDayStatesFromMinutes(siteLimits, perGroup)
+  }
+
+  /**
+   * #1515: build the per-app [[SiteDayState]] list from a `label -> usedMinutes` map, where each
+   * key is the `app:<slug>` cap-group label [[groupSiteLimits]] emits. The single place the per-app
+   * cap groups (label / host-set / limit / exempt) are zipped with their used-minutes, regardless
+   * of where the minutes come from: the live presence aggregation ([[siteDayStates]]), the rollup +
+   * live-tail read path ([[TimeStatusServiceLive]], via
+   * [[wifihaven.api.usage.AppUsedRollupService.appCapMinutesByLabel]]), or the zero-usage default
+   * in [[assemble]]. Keeping one zip means the cap groups can't be shaped differently across those
+   * paths (#1532). A label absent from the map contributes zero minutes.
+   */
+  private[policy] def siteDayStatesFromMinutes(
+      siteLimits: List[SiteTimeLimit],
+      minutesByLabel: Map[String, Int],
+  ): List[SiteDayState] =
+    groupSiteLimits(siteLimits).map { case (label, daily, exempt, hosts, rep) =>
       SiteDayState(
         label = label,
         domainPattern = rep,
         dailyLimitMinutes = daily,
-        usedMinutes = perGroup.getOrElse(label, 0),
+        usedMinutes = minutesByLabel.getOrElse(label, 0),
         exemptFromDaily = exempt,
         hosts = hosts,
       )
     }
-  }
 
   /**
    * Pure folder: collapse the per-profile inputs into the canonical day state. Same math the
@@ -694,18 +735,12 @@ object TimeStatusService {
     val remaining = dailyLimit.map(l => (l + extensionMinutes - usedMinutes).max(0))
 
     val perSite = perSiteOverride.getOrElse(
-      // #1505: same per-app grouping as the live path, but with zero usage — this branch is the
-      // rollup+tail read, whose v1 rollup carries only the profile total (no per-site presence).
-      groupSiteLimits(siteLimits).map { case (label, daily, exempt, hosts, rep) =>
-        SiteDayState(
-          label = label,
-          domainPattern = rep,
-          dailyLimitMinutes = daily,
-          usedMinutes = 0,
-          exemptFromDaily = exempt,
-          hosts = hosts,
-        )
-      },
+      // #1505/#1515: same per-app grouping as the live path, but with zero usage. Reached only when
+      // a caller does NOT supply per-app usage; the rollup read paths now pass `perSiteOverride`
+      // built from the #1510 per-app rollup (so the per-app cap enforces on the rollup path too),
+      // and the live `fold` passes the presence-derived one. A bare `assemble` with no override
+      // degrades to "no per-app usage yet".
+      siteDayStatesFromMinutes(siteLimits, Map.empty),
     )
 
     ProfileDayState(
