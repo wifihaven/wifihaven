@@ -68,6 +68,27 @@ object ScheduleSeederSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         assertTrue(second.migrated == 0) &&
         assertTrue(afterFirst == afterSecond)
     },
+    test("#1538: a detached migrated schedule is NOT resurrected on the next migrate run") {
+      // Regression for the resurrection loop: the old guard skipped migration only when the
+      // profile CURRENTLY had a block-mode named schedule attached. Detaching it (deleting the
+      // profile_schedule_rules row) while the legacy `schedules` row was still retained for
+      // rollback safety made the guard see "not migrated" again, so the next boot re-migrated the
+      // retained legacy row and re-attached the schedule the operator had just removed.
+      for {
+        _        <- cleanDb
+        nsr      <- ZIO.service[NamedScheduleRepo]
+        kid      <- kidsProfileId
+        _        <- seedNow // migrate: creates + attaches Kids' named schedule
+        attached <- nsr.blockScheduleIdsForProfile(kid)
+        _        <- nsr.setProfileBlockSchedules(
+          kid,
+          Nil,
+        ) // operator detaches; legacy `schedules` row stays
+        _        <- seedNow // boot again — must NOT re-attach
+        after    <- nsr.blockScheduleIdsForProfile(kid)
+      } yield assertTrue(attached.length == 1) &&
+        assertTrue(after.isEmpty)
+    },
     test("seeds the default starter set when named_schedules is empty") {
       for {
         _       <- cleanDb

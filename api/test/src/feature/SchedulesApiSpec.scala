@@ -2,6 +2,7 @@ package wifihaven.api.feature
 
 import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
+import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
 import wifihaven.api.routes.*
 import wifihaven.shared.*
@@ -14,7 +15,7 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
-import java.time.{LocalTime, ZoneId}
+import java.time.{LocalDate, LocalTime, ZoneId}
 
 /**
  * #1069: feature tests for the household-scoped named-schedule CRUD (`/api/schedules`) and the
@@ -51,6 +52,22 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       nsr  <- ZIO.service[NamedScheduleRepo]
       auth <- makeAuth
     } yield ProfileRoutes.routes(auth, pr, sr, tlr, up, ur, nsr)
+
+  // #1538: same as `profileRoutes`, but wires a caller-supplied cache so a test can observe that
+  // the schedule-attach/detach PUT busts the shared per-profile time-status entry.
+  private def profileRoutesWithCache(cache: TimeStatusCache) =
+    for {
+      pr   <- ZIO.service[ProfileRepo]
+      sr   <- ZIO.service[ScheduleRepo]
+      tlr  <- ZIO.service[TimeLimitRepo]
+      up   <- ZIO.service[UserProfileRepo]
+      ur   <- ZIO.service[UserRepo]
+      nsr  <- ZIO.service[NamedScheduleRepo]
+      auth <- makeAuth
+    } yield ProfileRoutes.routes(auth, pr, sr, tlr, up, ur, nsr, cache)
+
+  private def sentinel(pid: ProfileId, date: LocalDate, usedMins: Int) =
+    ProfileTimeStatus(pid, "Kids", date.toString, None, usedMins, 0, None, Nil, Nil, Nil)
 
   private def adminToken =
     for {
@@ -277,6 +294,49 @@ object SchedulesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       } yield assertTrue(both.status == Status.Ok) &&
         assertTrue(detail.scheduleIds.toSet == Set(a.id, b.id)) &&
         assertTrue(after.scheduleIds == List(b.id))
+    },
+    test("#1538: detaching a profile's schedules invalidates its time-status cache") {
+      // Bug B: the PUT /profiles/{id}/schedules handler used to call setProfileBlockSchedules
+      // without busting the per-profile TimeStatusCache, so a detached profile kept showing a
+      // stale "paused for schedule" for up to the today-TTL. ProfileTimeStatus carries no blocked
+      // field, so we observe the fix at the cache layer: prime the shared cache, run the real
+      // detach PUT, and assert the entry was dropped (the next load recomputes).
+      for {
+        _     <- cleanDb
+        token <- adminToken
+        rs    <- scheduleRoutes
+        pr    <- ZIO.service[ProfileRepo]
+        cache = TimeStatusCache.makeUnsafe()
+        prRs   <- profileRoutesWithCache(cache)
+        clock  <- ZIO.service[Clock]
+        today  <- clock.today
+        pid    <- pr.create("Kids", Nil)
+        sched  <- post(rs, "/api/schedules", CreateNamedScheduleRequest("Bedtime").toJson, token)
+          .flatMap(_.body.asString)
+          .flatMap(b => ZIO.fromEither(b.fromJson[NamedSchedule]))
+        attach <- put(
+          prRs,
+          s"/api/profiles/${pid.value}/schedules",
+          SetProfileSchedulesRequest(List(sched.id)).toJson,
+          token,
+        )
+        // prime the cache, then confirm it really is cached (a 2nd load with a new value is ignored)
+        primed <- cache.getOrLoadDaily(pid, today, today)(ZIO.succeed(sentinel(pid, today, 111)))
+        cached <- cache.getOrLoadDaily(pid, today, today)(ZIO.succeed(sentinel(pid, today, 222)))
+        // detach via the real PUT handler — this must invalidate the cache
+        detach <- put(
+          prRs,
+          s"/api/profiles/${pid.value}/schedules",
+          SetProfileSchedulesRequest(Nil).toJson,
+          token,
+        )
+        // next load recomputes because the entry was dropped
+        fresh  <- cache.getOrLoadDaily(pid, today, today)(ZIO.succeed(sentinel(pid, today, 333)))
+      } yield assertTrue(attach.status == Status.Ok) &&
+        assertTrue(detach.status == Status.Ok) &&
+        assertTrue(primed.usedMins == 111) &&
+        assertTrue(cached.usedMins == 111) && // proves it was genuinely cached
+        assertTrue(fresh.usedMins == 333)     // proves the detach invalidated it
     },
   ) @@ TestAspect.sequential
 }
