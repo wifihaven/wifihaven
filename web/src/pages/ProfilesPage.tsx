@@ -10,7 +10,7 @@ import { SchedulePicker } from '@/components/SchedulePicker'
 import type {
   AppDetail, AppMode, AppPolicyAssignment, AppScheduleMode, AppScheduleRule,
   CrossDeviceOverlapMode, Device, FailureMode, PauseMode, ProfileDetail,
-  ProfileTimeSummary,
+  ProfileTimeSummary, ScheduleWindow,
   UpsertAppAssignmentRequest, UpsertProfileRequest, User,
 } from '@/types/api'
 import { AppIcon } from '@/components/AppIcon'
@@ -58,8 +58,18 @@ function formToRequest(f: FormState): UpsertProfileRequest {
 }
 
 // #972: chip states reflect the at-a-glance "what's this profile doing right
-// now" answer. Schedule-active check is approximated locally from the cached
-// ProfileDetail.schedules; subsection #973 may move this server-side.
+// now" answer. The schedule-active check is approximated locally — but it must
+// read the SAME source the server enforces from.
+//
+// #1539: that source is the household NAMED schedules attached via
+// `scheduleIds` (PolicyService folds their windows into the per-MAC `blocked`
+// flag), NOT the dead legacy `ProfileDetail.schedules` field. The legacy V1
+// `schedules` table stopped being an enforcement source in #1482/#1490 and the
+// upsert stopped writing it in #1494, so its rows are stale and vary per
+// profile. Driving the chip from it made profiles that share the same named
+// schedules show divergent chips ("Paused (schedule)" vs "Active") even though
+// enforcement was identical — the prod symptom in #1539. The chip now resolves
+// the attached named schedules' windows so display matches enforcement.
 type PauseChip = 'active' | 'paused-manual' | 'paused-schedule' | 'time-exceeded'
 
 const WEEKDAY_SHORT_TO_KEY: Record<string, string> = {
@@ -109,10 +119,17 @@ function previousWeekday(k: string): string {
   return ORDER[(i + 6) % 7]
 }
 
-function computeChip(pd: ProfileDetail, summary: ProfileTimeSummary | undefined): PauseChip {
+// `scheduleWindows` are the windows of the NAMED schedules attached to this
+// profile (resolved from `pd.scheduleIds` against the household catalog) — the
+// enforcement source. See the #1539 note above.
+function computeChip(
+  pd: ProfileDetail,
+  summary: ProfileTimeSummary | undefined,
+  scheduleWindows: ScheduleWindow[],
+): PauseChip {
   if (pd.profile.paused) return 'paused-manual'
   if (summary && summary.remainingMins != null && summary.remainingMins <= 0) return 'time-exceeded'
-  if (pd.schedules.some(s => isScheduleActiveNow(s))) return 'paused-schedule'
+  if (scheduleWindows.some(w => isScheduleActiveNow(w))) return 'paused-schedule'
   return 'active'
 }
 
@@ -581,7 +598,16 @@ function ProfileShellRow({
   userLinkError: string | null
 }) {
   const linkedUserIds = useMemo(() => new Set(users.map(u => u.id)), [users])
-  const chip = computeChip(pd, summary)
+  // #1539: resolve the windows of the NAMED schedules attached to this profile
+  // (the enforcement source) so the chip matches what PolicyService enforces —
+  // not the dead legacy `pd.schedules`. The catalog is shared/cached across all
+  // cards by useNamedSchedules, so this adds no extra fetch.
+  const { data: namedSchedules = [] } = useNamedSchedules()
+  const attachedScheduleWindows = useMemo(() => {
+    const attached = new Set(pd.scheduleIds ?? [])
+    return namedSchedules.filter(s => attached.has(s.id)).flatMap(s => s.windows)
+  }, [namedSchedules, pd.scheduleIds])
+  const chip = computeChip(pd, summary, attachedScheduleWindows)
   const hasLimit = summary?.dailyLimitMins != null
   const usedMins = summary?.usedMins ?? 0
   const limitBase = hasLimit ? (summary!.dailyLimitMins ?? 0) + (summary!.extensionMins ?? 0) : 0
