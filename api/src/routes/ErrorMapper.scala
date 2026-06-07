@@ -14,6 +14,27 @@ import zio.http.*
  */
 object ErrorMapper {
 
+  /**
+   * #1570: the single typed-error → `Response` mapping. Routes that have migrated to the central
+   * handler (Stage 1: the router ingest routes) fail with an [[ApiError]] and let this produce the
+   * response, instead of constructing `Response.badRequest(...)` / `notFound(...)` inline.
+   *
+   * Every branch reproduces the EXACT status + body the hand-rolled code produced before — the
+   * error responses are part of the cross-process wire contract (the OpenWRT agent branches on the
+   * status; the SPA renders the body text). Mapping is pure: logging and metering happen once, at
+   * the boundary ([[wifihaven.api.ErrorBoundary]]), so there is a single source for each concern.
+   */
+  def errorToResponse(e: ApiError): Response = e match {
+    case ApiError.BadRequest(m)    => Response.badRequest(m)
+    case ApiError.DecodeFailure(m) => Response.badRequest(m)
+    case ApiError.Unauthorized(m)  => Response.unauthorized(m)
+    case ApiError.Forbidden(m)     => Response.forbidden(m)
+    case ApiError.NotFound(m)      => Response.notFound(m)
+    case ApiError.Db(t)            => dbErrorToResponse(t)
+    case ApiError.Internal(m)      => Response.internalServerError(m)
+    case ApiError.Wrapped(r)       => r
+  }
+
   /** 503 + JSON body + Retry-After. Use for any ZIO[_, Throwable, _] that touches the DB. */
   def dbErrorToResponse(t: Throwable): Response =
     dbUnavailable(t.getClass.getSimpleName)

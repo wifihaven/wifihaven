@@ -1,5 +1,6 @@
 package wifihaven.api.feature
 
+import wifihaven.api.ErrorBoundary
 import wifihaven.api.db.*
 import wifihaven.api.policy.*
 import wifihaven.api.routes.*
@@ -59,7 +60,13 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       aRepo <- ZIO.service[AlertRepo]
       hsr   <- ZIO.service[HouseholdSettingsRepo]
       auth = new RouterAuthLive(rRepo)
-    } yield RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr)
+    } yield
+    // #1570: exercise the production stack — the ingest routes wrapped in the boundary handler,
+    // which is what logs error responses (the per-route inline error logging was removed in favor
+    // of the single boundary emitter). Status/body are unchanged by the wrapper.
+    ErrorBoundary.observe(
+      RouterIngestRoutes.routes(auth, rRepo, tRepo, tu, dRepo, cRepo, aRepo, hsr),
+    )
 
   private def makePolicyService =
     for {
@@ -1334,7 +1341,8 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
     },
     test("usage: a malformed envelope (bad timestamp) returns 400 and logs a warning") {
       // A genuinely unparseable envelope still 400s — but now the failure is
-      // LOGGED server-side (the #1569 diagnostic gap), and NO record-reject
+      // LOGGED server-side (the #1569 diagnostic gap, now via the #1570 boundary
+      // handler at WARN with the response-body snippet), and NO record-reject
       // metric is charged (we never reached per-record decode).
       for {
         _        <- cleanDb
@@ -1354,7 +1362,8 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         assertTrue(
           logs.exists(e =>
             e.logLevel == LogLevel.Warning &&
-              e.message().contains("router usage:") &&
+              // boundary log: "POST /api/router/usage -> 400 body=invalid timestamp: ..."
+              e.message().contains("/api/router/usage") &&
               e.message().contains("invalid timestamp"),
           ),
         ) &&
@@ -1373,10 +1382,11 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         (resp, logs) = captured
       } yield assertTrue(resp.status == Status.BadRequest) &&
         assertTrue(
+          // boundary log: WARN "POST /api/router/usage -> 400 body=<zio-json envelope error>"
           logs.exists(e =>
             e.logLevel == LogLevel.Warning &&
-              e.message().contains("router usage: envelope deserialization failed") &&
-              e.message().contains(s"router=$id"),
+              e.message().contains("POST /api/router/usage") &&
+              e.message().contains("400"),
           ),
         )
     },

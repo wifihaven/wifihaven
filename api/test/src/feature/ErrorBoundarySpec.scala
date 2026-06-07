@@ -206,6 +206,32 @@ object ErrorBoundarySpec
           ZTestLogger.default,
         )
     } @@ TestAspect.withLiveClock,
+    test(
+      "boundary covers the SPA catch-all: an unmatched /api/* path 404s and is logged + metered",
+    ) {
+      // StaticRoutes is the SPA fallback: an unmatched `/api/*` path returns 404 "no such API
+      // route" there (not a missing asset). Wrapped in the boundary (as Main wires it), that 404
+      // must be logged at WARN + metered — otherwise typo'd/removed API routes are a blind spot.
+      val spa = ErrorBoundary.observe(StaticRoutes.routes("/tmp/wifihaven-no-such-static-dir"))
+      (for {
+        resp <- spa.runZIO(Request.get(URL.decode("/api/does-not-exist").toOption.get))
+        _    <- ZIO.sleep(700.millis)
+        body <- scrape.catchAll(r => bodyText(r))
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(resp.status == Status.NotFound) &&
+        assertTrue(warned(logs, "no such API route")) &&
+        // metered as a 404 (route is the bounded trailing template, never the concrete path)
+        assertTrue(
+          body.linesIterator.exists(l =>
+            !l.startsWith("#") && l.startsWith("api_errors_total") && l.contains(
+              """status="404"""",
+            ),
+          ),
+        ))
+        .provideSome[TestDatabase.AllRepos & EmbeddedPostgres & Clock & PrometheusPublisher](
+          ZTestLogger.default,
+        )
+    } @@ TestAspect.withLiveClock,
     test("boundary leaves a 2xx alone — no error log, no api_errors_total series for that route") {
       (for {
         resp <- runSynthetic("/api/eb/ok")
@@ -223,17 +249,19 @@ object ErrorBoundarySpec
 
     // ── #1569 regression pin: usage decode failures are now LOGGED ─────────────
     test(
-      "REGRESSION #1569: a /api/router/usage decode failure is LOGGED at WARN (not just 400-bodied)",
+      "REGRESSION #1569: a /api/router/usage envelope decode failure is LOGGED at WARN (not just 400-bodied)",
     ) {
+      // The #1569 gap was the *envelope* decode 400: the usage route mapped the zio-json error into
+      // the 400 body but never logged it, so the failing field was invisible. (A malformed *record*
+      // is a different, post-#1574 path — skipped + metered, batch returns 200 — covered in
+      // RouterIngestSpec.) Here the whole body is non-JSON, so the envelope decode 400s and the
+      // boundary must log it.
       (for {
-        _       <- cleanDb
-        rRepo   <- ZIO.service[RouterRepo]
-        routes  <- buildIngest
-        (_, tk) <- seedRouter(rRepo)
-        // malformed: records[0].activeSeconds is a string where a number is required
-        bad =
-          """{"routerId":"00000000-0000-0000-0000-000000000000","periodStart":"2026-05-07T14:00:00Z","periodEnd":"2026-05-07T14:05:00Z","records":[{"mac":"aa:bb:cc:11:22:33","host":{"type":"fqdn","value":"x.com"},"activeSeconds":"not-a-number","bytesIn":1,"bytesOut":1}]}"""
-        resp     <- postIngest(routes, "/api/router/usage", bad, tk)
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildIngest
+        (_, tk)  <- seedRouter(rRepo)
+        resp     <- postIngest(routes, "/api/router/usage", "this is not json", tk)
         _        <- ZIO.sleep(700.millis)
         body     <- scrape.catchAll(r => bodyText(r))
         respBody <- bodyText(resp)
