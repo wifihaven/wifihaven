@@ -87,3 +87,10 @@ GraphQL `addSubIssue` mutation).
   than overloading `Other` — then add a row to the taxonomy table above. Reserve
   this for threads worth their own swimlane (an umbrella / multi-issue body of
   work); one-offs stay in `Other`.
+
+## Deciding what to pull next
+
+The repeatable "what do we work on next / what to spawn" process — reconcile
+the board, apply the standing priority stack, order foundation-first by
+dependency — is encoded as a skill:
+[`.claude/skills/epic-prioritization/SKILL.md`](../.claude/skills/epic-prioritization/SKILL.md).
