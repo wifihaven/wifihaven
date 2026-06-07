@@ -404,6 +404,33 @@ toggle back to the legacy `max(activeSeconds)` path, so there is no
 as it already is for the heartbeat settings, so the next rollup refills with the
 new semantics.
 
+#### Per-app rollup (`app_used_daily`, V53 / #1516)
+
+`app_used_daily` is the **per-(profile, app, date)** counterpart of
+`time_used_daily`: it caches each app's gap-bridged **engaged seconds** with the
+same `rolled_through` watermark, so the two compose identically (rolled + live
+tail). `TimeUsedRollupJob` writes both in one tick from one presence batch, and
+both are `DELETE`-invalidated together by a `household_settings` change. The
+per-app figure derives from the **single** per-app primitive
+(`Presence.appSecondsForProfile`, surfaced as `TimeStatusService.appSecondsByApp`),
+which is also what the per-app cap (#1505) ticks on — so:
+
+- **rollup ⇄ cap** (exact): `AppUsedRollupService.appEngagedMinutes` equals the
+  per-app cap aggregate (`SiteDayState.usedMinutes`), same primitive, same
+  floor-of-sum.
+- **rolled+tail ⇄ live** (exact): same watermark-decomposition argument as
+  `time_used_daily` — the watermark lands in an idle gap so no engaged span
+  straddles it.
+- **per-app sum ⇄ profile total** (restricted equality): `Σ_app engaged_seconds`
+  equals `time_used_daily.used_seconds` only when every counted second belongs to
+  a single, non-exempt, non-overlapping app with no non-app traffic. In general
+  the per-app sum may exceed the profile total (exempt apps, cross-app overlap,
+  and non-app traffic break strict equality). The headline daily total stays
+  `time_used_daily`; the per-app rollup is a decomposition, not a partition.
+
+This is the reconciliation invariant the per-app graph series (#1517) reads
+through: profile total ⇄ per-app rollup ⇄ per-app series.
+
 ## 5. Implementation sub-issues to file
 
 > File these against the Tuning epic (#1445). The eventual tuning change ships

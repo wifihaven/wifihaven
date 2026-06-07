@@ -20,8 +20,8 @@ import java.time.{LocalDate, LocalDateTime, ZoneOffset}
  *   - rollup ⇄ cap (EXACT): a multi-host app's engaged minutes via the reader equal the single
  *     per-app primitive (`Presence.appSecondsForProfile`, surfaced as the per-app cap aggregate
  *     `SiteDayState.usedMinutes`), including cross-host idle-gap bridging.
- *   - rolled+tail ⇄ live (EXACT): a planted rollup row + the live tail past the watermark sum to the
- *     all-live computation, with the watermark landing in an idle gap.
+ *   - rolled+tail ⇄ live (EXACT): a planted rollup row + the live tail past the watermark sum to
+ *     the all-live computation, with the watermark landing in an idle gap.
  *   - per-app sum ⇄ profile total (restricted equality): for non-exempt, non-overlapping apps with
  *     no non-app traffic, Σ app_used_daily.engaged_seconds == time_used_daily.used_seconds.
  *   - the re-aggregation tick is idempotent.
@@ -125,7 +125,9 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
     } yield upd
 
   def spec = suite("AppUsedRollupSpec (#1516)")(
-    test("multi-host app: reader engaged-minutes == per-app cap aggregate, with cross-host bridge") {
+    test(
+      "multi-host app: reader engaged-minutes == per-app cap aggregate, with cross-host bridge",
+    ) {
       // social.com @08:00 (5 min) then cdn.social.net @08:10 (5 min). The 300 s cross-host idle gap
       // is < the effective gap (2×R = 600 s for 300 s buckets), so the two different hosts of the
       // SAME app bridge into one [08:00, 08:15] engaged span = 15 min — NOT 5+5. The reader and the
@@ -156,7 +158,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         // The per-app cap aggregate (SiteDayState.usedMinutes) for the same app.
         tsvc   <- makeTimeService
         state  <- tsvc.dayStateLive(now, today, s, kid)
-        capMin  = state.flatMap(_.perSite.find(_.label == "app:social").map(_.usedMinutes))
+        capMin = state.flatMap(_.perSite.find(_.label == "app:social").map(_.usedMinutes))
       } yield assertTrue(perApp.get(app).contains(15)) &&
         assertTrue(capMin.contains(15))
     },
@@ -216,10 +218,10 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:62", "a.com", today, 10, 8 * 60)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:62", "b.com", today, 15, 9 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _        <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
-        timeRow  <- ru.getDayForProfile(kid, today)
-        appRows  <- aru.getDayForProfile(kid, today)
-        appSum    = appRows.values.map(_.engagedSeconds).sum
+        _       <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        timeRow <- ru.getDayForProfile(kid, today)
+        appRows <- aru.getDayForProfile(kid, today)
+        appSum = appRows.values.map(_.engagedSeconds).sum
       } yield assertTrue(timeRow.exists(_.usedSeconds == 1500L)) &&
         assertTrue(appSum == 1500L) &&
         assertTrue(appRows.size == 2)
@@ -244,9 +246,9 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         today = LocalDate.of(2025, 1, 6)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:63", "youtube.com", today, 20, 8 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _     <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
-        first <- aru.getDayForProfile(kid, today)
-        _     <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        first  <- aru.getDayForProfile(kid, today)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
         second <- aru.getDayForProfile(kid, today)
       } yield assertTrue(first.nonEmpty) && assertTrue(first == second)
     },

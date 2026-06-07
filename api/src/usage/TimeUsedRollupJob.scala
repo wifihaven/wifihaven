@@ -6,6 +6,7 @@ import wifihaven.api.db.{
   DeviceRepo,
   HouseholdSettingsRepo,
   ProfileRepo,
+  RolledAppDay,
   RolledDay,
   RollupRepo,
   SiteTimeLimitRepo,
@@ -14,7 +15,7 @@ import wifihaven.api.db.{
 }
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
-import wifihaven.shared.types.ProfileId
+import wifihaven.shared.types.{AppId, ProfileId}
 import zio.*
 
 import java.time.{Duration, Instant}
@@ -167,38 +168,57 @@ object TimeUsedRollupJob {
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
-  ): Task[Int] = {
-    // #1516: per-(profile, app) engaged-seconds rollup is wired into this tick in the adoption
-    // commit (it derives from TimeStatusService.appSecondsByApp, the single per-app primitive, and
-    // upserts app_used_daily with the same `now` watermark as the profile total). This stub keeps
-    // the wiring/signature in place while writing only the profile total.
-    val _ = (appRollup, appRepo)
-    for {
-      settings <- hs.get
-      today = PolicyService.householdLocalDate(now, settings)
-      profiles <- profileRepo.listAll
-      devices  <- deviceRepo.listAll
-      stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-      perProfile: Map[ProfileId, RolledDay] = {
-        val stlMap  = stlsP.toMap
-        val devsByP =
-          devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-        profiles.iterator.map { p =>
-          val devs = devsByP.getOrElse(p.id, Nil)
-          val mac  = devs.map(_.mac).toSet
-          val pres = presence.filter(r => mac.contains(r.mac))
-          val secs = TimeStatusService.usedSecondsForProfile(
-            p,
-            devs,
-            stlMap.getOrElse(p.id, Nil),
-            pres,
-            settings,
-          )
-          p.id -> RolledDay(secs, now)
-        }.toMap
-      }
-      n <- rollup.upsertBatch(today, perProfile)
-    } yield n
+  ): Task[Int] = for {
+    settings <- hs.get
+    today = PolicyService.householdLocalDate(now, settings)
+    profiles <- profileRepo.listAll
+    devices  <- deviceRepo.listAll
+    apps     <- appRepo.listAll
+    stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+    presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
+    rolls = computeRolls(profiles, devices, apps, stlsP.toMap, presence, settings, now)
+    n <- rollup.upsertBatch(today, rolls._1)
+    _ <- appRollup.upsertBatch(today, rolls._2)
+  } yield n
+
+  // Pure: collapse one presence batch into both the per-profile total roll (`time_used_daily`) and
+  // the per-(profile, app) engaged roll (`app_used_daily`), stamped with the same `now` watermark so
+  // the two compose identically (rolled + tail). The per-app figure derives from the SINGLE per-app
+  // primitive (`TimeStatusService.appSecondsByApp` → `Presence.appSecondsForProfile`), so the rollup
+  // reconciles exactly with the per-app cap and the per-app series. Only apps with engaged activity
+  // get a row (zero-activity apps are absent).
+  private def computeRolls(
+      profiles: List[wifihaven.shared.Profile],
+      devices: List[wifihaven.shared.Device],
+      apps: List[wifihaven.shared.App],
+      stlMap: Map[ProfileId, List[wifihaven.shared.SiteTimeLimit]],
+      presence: List[wifihaven.api.presence.PresenceRow],
+      settings: wifihaven.shared.HouseholdSettings,
+      now: Instant,
+  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay]) = {
+    val devsByP     =
+      devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+    val slugToAppId = apps.map(a => a.slug -> a.id).toMap
+    def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow] = {
+      val mac = devsByP.getOrElse(pid, Nil).map(_.mac).toSet
+      presence.filter(r => mac.contains(r.mac))
+    }
+    val perProfile = profiles.iterator.map { p =>
+      val secs = TimeStatusService.usedSecondsForProfile(
+        p,
+        devsByP.getOrElse(p.id, Nil),
+        stlMap.getOrElse(p.id, Nil),
+        presFor(p.id),
+        settings,
+      )
+      p.id -> RolledDay(secs, now)
+    }.toMap
+    val perApp     = profiles.iterator.flatMap { p =>
+      TimeStatusService
+        .appSecondsByApp(p, stlMap.getOrElse(p.id, Nil), slugToAppId, presFor(p.id), settings)
+        .iterator
+        .map { case (appId, secs) => (p.id, appId) -> RolledAppDay(secs, now) }
+    }.toMap
+    (perProfile, perApp)
   }
 }

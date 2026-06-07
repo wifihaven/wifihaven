@@ -507,16 +507,17 @@ object TimeStatusService {
     }.flatten
 
   /**
-   * #1516: per-app engaged seconds for a profile, keyed by `app_id`, derived from the SINGLE per-app
-   * presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same gap-bridged,
-   * cross-host union the per-app cap ([[siteDayStates]] / [[Presence.patternGroupMinutesForProfile]])
-   * ticks on. This is the value the `app_used_daily` rollup persists and the per-app series reads,
-   * so the rollup ⇄ cap ⇄ series identities hold by construction (there is exactly one per-app time
-   * computation). `slugToAppId` resolves each `app:<slug>` group key (from [[groupSiteLimits]]) to
-   * its registered `apps.id`; an app whose slug is absent is dropped (defensive — post-V35 every cap
-   * entry is a real registered app, so this never fires in practice). `presence` must already be
-   * scoped to the profile's devices. Seconds (not minutes) so the rolled + tail decomposition stays
-   * exact across the watermark boundary; floor-to-minutes happens once at read time.
+   * #1516: per-app engaged seconds for a profile, keyed by `app_id`, derived from the SINGLE
+   * per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
+   * gap-bridged, cross-host union the per-app cap ([[siteDayStates]] /
+   * [[Presence.patternGroupMinutesForProfile]]) ticks on. This is the value the `app_used_daily`
+   * rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series identities hold by
+   * construction (there is exactly one per-app time computation). `slugToAppId` resolves each
+   * `app:<slug>` group key (from [[groupSiteLimits]]) to its registered `apps.id`; an app whose
+   * slug is absent is dropped (defensive — post-V35 every cap entry is a real registered app, so
+   * this never fires in practice). `presence` must already be scoped to the profile's devices.
+   * Seconds (not minutes) so the rolled + tail decomposition stays exact across the watermark
+   * boundary; floor-to-minutes happens once at read time.
    */
   def appSecondsByApp(
       profile: Profile,

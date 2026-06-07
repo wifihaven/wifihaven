@@ -185,14 +185,14 @@ object Main extends ZIOAppDefault {
         // a time budget, or a separate small pool for the rollup work. The pool-size
         // bump (this PR) and the dedicated connect EC are the first-order fix; this
         // is the durability follow-up tracked in #1221.
-        timeRollupRepo   <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
+        timeRollupRepo    <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
         appRollupRepoForJ <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
-        profileRepoForJ  <- ZIO.service[wifihaven.api.db.ProfileRepo]
-        deviceRepoForJ   <- ZIO.service[wifihaven.api.db.DeviceRepo]
-        stlRepoForJ      <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
-        appRepoForJ      <- ZIO.service[AppRepo]
-        trafficRepoForJ  <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
-        _                <- TimeUsedRollupJob
+        profileRepoForJ   <- ZIO.service[wifihaven.api.db.ProfileRepo]
+        deviceRepoForJ    <- ZIO.service[wifihaven.api.db.DeviceRepo]
+        stlRepoForJ       <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+        appRepoForJ       <- ZIO.service[AppRepo]
+        trafficRepoForJ   <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
+        _                 <- TimeUsedRollupJob
           .loop(
             timeRollupRepo,
             appRollupRepoForJ,
@@ -206,40 +206,40 @@ object Main extends ZIOAppDefault {
             clockForJobs,
           )
           .forkScoped
-        _                <- ZIO.logInfo(
+        _                 <- ZIO.logInfo(
           "rollup fibers forked (hourly + daily + time_used_daily + conn_events_hourly + conn_events_daily)",
         )
         // #1243: poll the HikariCP MXBean into the Prometheus pool gauges. forkDaemon so it lives
         // for the process and never blocks startup.
-        dbPool           <- ZIO.service[Database.DbPool]
-        _                <- DbPoolMetrics.loop(dbPool.dataSource, dbPool.maxSize).forkDaemon
-        _                <- ZIO.logInfo("db-pool metrics fiber forked")
+        dbPool            <- ZIO.service[Database.DbPool]
+        _                 <- DbPoolMetrics.loop(dbPool.dataSource, dbPool.maxSize).forkDaemon
+        _                 <- ZIO.logInfo("db-pool metrics fiber forked")
         // #1204: publish agent_connected_routers — routers seen within the window.
         // forkDaemon: a read-only periodic SELECT, never blocks startup.
-        routerRepoMetric <- ZIO.service[RouterRepo]
-        _                <- RouterPresenceMetrics.loop(routerRepoMetric).forkDaemon
-        _                <- ZIO.logInfo("router-presence metrics fiber forked")
-        _                <- ZIO
+        routerRepoMetric  <- ZIO.service[RouterRepo]
+        _                 <- RouterPresenceMetrics.loop(routerRepoMetric).forkDaemon
+        _                 <- ZIO.logInfo("router-presence metrics fiber forked")
+        _                 <- ZIO
           .logWarning(
             "WIFIHAVEN_SEED_TEST_BLOCKLISTS=1 set — seeding dev test_ads/test_social. " +
               "Disable in production.",
           )
           .when(cfg.seedTestBlocklists)
-        _                <- BundledBlocklists
+        _                 <- BundledBlocklists
           .seed(blRepoForSeed, blCacheForSeed, blFetcher, BundledBlocklists.devTestBlocklists)
           .when(cfg.seedTestBlocklists)
         // #811: daily retention sweep. Forks a daemon fiber that runs at 03:00 UTC.
         // Multi-instance-safe via Postgres advisory lock — losing instances skip
         // the tick rather than racing on the same DELETE.
-        xaForJobs        <- ZIO.service[Transactor[Task]]
-        _                <- RetentionSweepJob.start(xaForJobs)
+        xaForJobs         <- ZIO.service[Transactor[Task]]
+        _                 <- RetentionSweepJob.start(xaForJobs)
         // #1176/#1179: backfill reason_text on connection_events / block_events rows inserted
         // between V40 and V44 (no reason_text column then). Fork-and-forget so a slow scan on a
         // cold Render PG doesn't gate the healthcheck; subsequent restarts re-run safely until
         // no NULLs remain.
-        _                <- ReasonTextBackfill.run(xaForJobs).forkDaemon
+        _                 <- ReasonTextBackfill.run(xaForJobs).forkDaemon
         // Keep the process alive on the already-bound server fiber; exits if it dies.
-        _                <- serverFiber.join
+        _                 <- serverFiber.join
       } yield ())
       .provide(serverEnv)
 
