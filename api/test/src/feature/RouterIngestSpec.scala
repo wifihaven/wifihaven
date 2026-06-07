@@ -1296,14 +1296,14 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"$badHost"},"activeSeconds":60,"bytesIn":100,"bytesOut":50}"""
         body    =
           s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[$goodRec,$badRec]}"""
-        resp    <- post(routes, "/api/router/usage", body, Some(tk))
-        sb      <- tu.getSecondsAndBytes(
+        resp  <- post(routes, "/api/router/usage", body, Some(tk))
+        sb    <- tu.getSecondsAndBytes(
           MacAddress.unsafe(knownMac),
           HostId.Fqdn(Hostname.unsafe("youtube.com")),
           testDate,
         )
-        rows    <- tRepo.listForRouter(id, 100)
-        after   <- rejectedCounter.value
+        rows  <- tRepo.listForRouter(id, 100)
+        after <- rejectedCounter.value
       } yield assertTrue(resp.status == Status.Ok) &&
         // the valid record ingested into both traffic_reports and time_usage
         assertTrue(sb == ((240L, 1000L, 500L))) &&
@@ -1321,13 +1321,13 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
         before   <- rejectedCounter.value
-        badRec   =
+        badRec =
           s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"$badHost"},"activeSeconds":60,"bytesIn":100,"bytesOut":50}"""
-        body     =
+        body   =
           s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[$badRec,$badRec]}"""
-        resp     <- post(routes, "/api/router/usage", body, Some(tk))
-        rows     <- tRepo.listForRouter(id, 100)
-        after    <- rejectedCounter.value
+        resp  <- post(routes, "/api/router/usage", body, Some(tk))
+        rows  <- tRepo.listForRouter(id, 100)
+        after <- rejectedCounter.value
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.isEmpty) &&
         assertTrue(after.count - before.count == 2.0)
@@ -1342,7 +1342,7 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         routes   <- buildRoutes
         (id, tk) <- seedRouter(rRepo)
         before   <- rejectedCounter.value
-        rawBody  =
+        rawBody =
           s"""{"routerId":"$id","periodStart":"not-a-timestamp","periodEnd":"${periodEnd.toString}","records":[]}"""
         captured <- (for {
           resp <- post(routes, "/api/router/usage", rawBody, Some(tk))
