@@ -71,6 +71,11 @@ object MetricGuard {
     // §5.2 API self-metrics.
     "http_requests_total"                       -> Set("route", "method", "status"),
     "http_request_duration_seconds"             -> Set("route", "method"),
+    // #1570 — error responses metered at the server boundary (ErrorBoundary). A dedicated,
+    // operator-facing error series sliced by templated route + status code, so the error-rate
+    // panel queries one obvious counter rather than filtering the all-requests counter. Bounded
+    // labels only (route ~40 templated paths, status the HTTP code).
+    "api_errors_total"                          -> Set("route", "status"),
     "db_query_duration_seconds"                 -> Set("op"),
     "db_queries_total"                          -> Set("op", "status"),
     "auth_failures_total"                       -> Set("reason"),
@@ -195,6 +200,18 @@ object AppMetrics {
         math.max(0.0, durationSeconds),
         HttpDurationBoundaries,
       )
+
+  // ── HTTP error responses (#1570) ─────────────────────────────────────────────
+  // Emitted from ErrorBoundary for every response with status >= 400, alongside a
+  // WARN (4xx) / ERROR (5xx) log. `route` is the templated path (same source as
+  // recordHttp above) and `status` the HTTP code — both bounded; never a per-mac /
+  // host / ip / user value.
+
+  def recordHttpError(route: String, status: Int): UIO[Unit] =
+    MetricGuard.counter(
+      "api_errors_total",
+      Map("route" -> route, "status" -> status.toString),
+    )
 
   // ── DB query timing (#1204) ──────────────────────────────────────────────────
   // Emitted from DbMetrics.timed around the Doobie transact of hot repo methods.

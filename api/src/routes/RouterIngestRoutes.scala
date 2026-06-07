@@ -34,30 +34,30 @@ object RouterIngestRoutes {
     Routes(
       Method.POST / "api" / "router" / "usage"  ->
         handler { (req: Request) =>
-          for {
-            router <- auth.authenticate(req)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
-            // #1569: decode the *envelope* (routerId, periodStart, periodEnd) +
-            // `records` as a raw JSON array, deferring per-record validation. A
-            // genuinely unparseable envelope (bad routerId/timestamps, not an
-            // object, `records` not an array, truncated body) still 400s — but
-            // now LOGGED (the prior code dropped the zio-json error straight into
-            // the 400 body and never logged it, so the offending field was
-            // invisible server-side; mirrors the #1126 events-handler pattern).
+          // #1570: fail with a typed ApiError; ErrorMapper.errorToResponse maps it and the
+          // ErrorBoundary logs (4xx WARN / 5xx ERROR) + meters. This subsumes the bespoke
+          // envelope/timestamp decode logging #1574 added for #1569 — the boundary now logs the 400
+          // once, with the response-body snippet (the zio-json error names the failing field), so
+          // the diagnostic gap stays closed without a second emitter.
+          //
+          // The per-RECORD skip path (below) is kept from #1574 and is NOT redundant with the
+          // boundary: a batch carrying a bad record still returns 200, so the boundary never sees
+          // it — the skip is logged + metered inline here.
+          val handle: ZIO[Any, ApiError, Response] = for {
+            router <- auth.authenticate(req).mapError(ApiError.Wrapped(_))
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
+            // #1569: decode the *envelope* (routerId, periodStart, periodEnd) + `records` as a raw
+            // JSON array, deferring per-record validation. A genuinely unparseable envelope (bad
+            // routerId/timestamps, not an object, `records` not an array, truncated body) still
+            // 400s — logged by the boundary.
             raw    <- ZIO
               .fromEither(body.fromJson[RawUsageReport])
-              .tapError(e =>
-                ZIO.logWarning(
-                  s"router usage: envelope deserialization failed for router=${router.id} " +
-                    s"bodyLen=${body.length} bodySnippet=${snippet(body)} err=$e",
-                ),
-              )
-              .mapError(e => Response.badRequest(e))
+              .mapError(ApiError.DecodeFailure(_))
             _      <- ZIO
-              .fail(Response.badRequest("router_id mismatch"))
+              .fail(ApiError.BadRequest("router_id mismatch"))
               .when(raw.routerId != router.id)
-            ps     <- parseInstant(raw.periodStart, router.id)
-            pe     <- parseInstant(raw.periodEnd, router.id)
+            ps     <- parseInstant(raw.periodStart)
+            pe     <- parseInstant(raw.periodEnd)
             // #1569: decode each record individually. A single malformed record
             // (e.g. a host value that fails Hostname validation — an Akamai/CDN
             // CNAME target with underscores, see #1572) used to fail the WHOLE
@@ -82,7 +82,7 @@ object RouterIngestRoutes {
                   s"host=${r.host.value} secs=${r.activeSeconds} bIn=${r.bytesIn} bOut=${r.bytesOut}",
               ),
             )
-            settings <- householdSettingsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            settings <- householdSettingsRepo.get.mapError(ApiError.Db(_))
             _        <- handleUsage(
               router.id,
               ps,
@@ -93,21 +93,27 @@ object RouterIngestRoutes {
               timeUsageRepo,
               deviceRepo,
             )
-            _ <- routerRepo.touch(router.id, None, None).mapError(ErrorMapper.dbErrorToResponse)
+            _        <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
           } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.POST / "api" / "router" / "events" ->
         handler { (req: Request) =>
-          val handle = for {
-            router <- auth.authenticate(req)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+          // #1570: typed errors + central mapping. The bespoke decode `logWarning`, the
+          // routerId-mismatch `logWarning`, and the trailing "returning status=" `logInfo` are
+          // gone — the ErrorBoundary now logs every 4xx (incl. this decode 400) at WARN with the
+          // response-body snippet, so logging is uniform with the usage route (the #1569 dedup:
+          // one emitter, not two).
+          val handle: ZIO[Any, ApiError, Response] = for {
+            router <- auth.authenticate(req).mapError(ApiError.Wrapped(_))
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             // #1126: tolerate an empty/blank body as a no-op batch. A truncated
             // or empty POST (network blip, retry-queue edge) used to fail
             // RouterEventsRequest decoding with "Unexpected end of input" and
             // 400, spamming the warn log and dropping the (harmless) batch. An
             // empty events POST carries nothing to persist, so treat it as an
             // accepted no-op rather than an error. Genuinely malformed non-empty
-            // bodies still 400 + warn below (and the agent emitter no longer
+            // bodies still 400 + warn (and the agent emitter no longer
             // produces them — see conntrack.encode_events_body).
             rep    <-
               if body.trim.isEmpty then
@@ -117,17 +123,9 @@ object RouterIngestRoutes {
               else
                 ZIO
                   .fromEither(body.fromJson[RouterEventsRequest])
-                  .tapError(e =>
-                    ZIO.logWarning(
-                      s"router events: deserialization failed for router=${router.id} bodyLen=${body.length} err=$e",
-                    ),
-                  )
-                  .mapError(e => Response.badRequest(e))
+                  .mapError(ApiError.DecodeFailure(_))
             _      <- ZIO
-              .logWarning(
-                s"router events: routerId mismatch token=${router.id} body=${rep.routerId}",
-              )
-              .zipRight(ZIO.fail(Response.badRequest("router_id mismatch")))
+              .fail(ApiError.BadRequest("router_id mismatch"))
               .when(rep.routerId != router.id)
             _      <- ZIO.logInfo(
               s"router events: router=${router.id} batchSize=${rep.events.size}",
@@ -141,9 +139,9 @@ object RouterIngestRoutes {
               ),
             )
             _      <- handleEvents(router.id, rep.events, deviceRepo, connEventRepo, alertRepo)
-            _ <- routerRepo.touch(router.id, None, None).mapError(ErrorMapper.dbErrorToResponse)
+            _      <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
           } yield Response.ok
-          handle.tapError(r => ZIO.logInfo(s"router events: returning status=${r.status.code}"))
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 
@@ -163,23 +161,10 @@ object RouterIngestRoutes {
       records: List[Json],
   ) derives JsonDecoder
 
-  /**
-   * #1569: short, bounded body excerpt for the decode-failure warn log — never the full body (avoid
-   * logging more PII than needed to identify the offending field).
-   */
-  private def snippet(body: String): String = {
-    val max = 200
-    if body.length <= max then body else body.take(max) + s"…(+${body.length - max} more)"
-  }
-
-  private def parseInstant(s: String, routerId: RouterId): IO[Response, Instant] =
-    ZIO
-      .attempt(Instant.parse(s))
-      .orElseFail(s)
-      .tapError(bad =>
-        ZIO.logWarning(s"router usage: invalid timestamp '$bad' from router=$routerId"),
-      )
-      .mapError(bad => Response.badRequest(s"invalid timestamp: $bad"))
+  // #1570: a bad timestamp is a typed BadRequest (400) mapped centrally; the boundary logs it.
+  // (The bespoke per-call warn log #1574 added is subsumed by the boundary — single emitter.)
+  private def parseInstant(s: String): IO[ApiError, Instant] =
+    ZIO.attempt(Instant.parse(s)).orElseFail(ApiError.BadRequest(s"invalid timestamp: $s"))
 
   private def handleUsage(
       routerId: RouterId,
@@ -190,7 +175,7 @@ object RouterIngestRoutes {
       trafficRepo: TrafficReportRepo,
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
-  ): IO[Response, Unit] = {
+  ): IO[ApiError, Unit] = {
     // #1010: bucket usage by the household's logical "today" (TZ + non-midnight
     // reset_time), matching the read-side date used by PolicyService.snapshot.
     val date         = PolicyService.householdLocalDate(periodStart, settings)
@@ -218,7 +203,7 @@ object RouterIngestRoutes {
       _        <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
       // Idempotency: ON CONFLICT DO NOTHING returns the count of NEW rows.
       // Only those rows should drive time_usage / device updates; replays return 0.
-      newCount <- trafficRepo.insertBatch(inserts).mapError(ErrorMapper.dbErrorToResponse)
+      newCount <- trafficRepo.insertBatch(inserts).mapError(ApiError.Db(_))
       _        <- ZIO.when(newCount > 0)(
         applyDelta(routerId, periodEnd, records, settings, timeUsageRepo, deviceRepo),
       )
@@ -243,7 +228,7 @@ object RouterIngestRoutes {
       settings: HouseholdSettings,
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
-  ): IO[Response, Unit] = {
+  ): IO[ApiError, Unit] = {
     // #1010: bucket time_usage by the household's logical "today" so the
     // cap-tracking read path (which uses the same household-local date) lines
     // up with the rows we wrote.
@@ -293,13 +278,13 @@ object RouterIngestRoutes {
         else bucketSecs
       timeUsageRepo
         .incrementSecondsAndBytes(mac, host, date, secs, bIn, bOut, proportionalSecs)
-        .mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
     } *>
       // For each unique mac in the batch, touch last_seen on the existing row (no-op if unknown).
       ZIO.foreachDiscard(records.map(r => (r.mac, r.ip)).distinct) { (mac, ip) =>
         deviceRepo
           .touchLastSeen(mac, ip, periodEnd)
-          .mapError(ErrorMapper.dbErrorToResponse)
+          .mapError(ApiError.Db(_))
           .unit
       }
   }
@@ -318,7 +303,7 @@ object RouterIngestRoutes {
       deviceRepo: DeviceRepo,
       connEventRepo: ConnectionEventRepo,
       alertRepo: AlertRepo,
-  ): IO[Response, Unit] = {
+  ): IO[ApiError, Unit] = {
     val connInserts = events.collect {
       case e if e.`type` == "connection_attempt" =>
         for {
@@ -332,9 +317,7 @@ object RouterIngestRoutes {
     }
     for {
       // Surface JSON validation errors as 400.
-      validated <- ZIO.foreach(connInserts)(e =>
-        ZIO.fromEither(e).mapError(m => Response.badRequest(m)),
-      )
+      validated <- ZIO.foreach(connInserts)(e => ZIO.fromEither(e).mapError(ApiError.BadRequest(_)))
       // #720: for each ipv4/ipv6-typed insert with a dest_ip, consult the
       // existing connection_events for a sibling fqdn-typed event we can
       // attribute it to. This handles the "fqdn observed first, ipv4 race-
@@ -345,7 +328,7 @@ object RouterIngestRoutes {
       // duplicates collapsed on conflict.
       inserted  <- connEventRepo
         .insertBatch(enriched)
-        .mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
         .when(enriched.nonEmpty)
         .map(_.getOrElse(0))
       _         <- ZIO
@@ -366,12 +349,12 @@ object RouterIngestRoutes {
   private def attachResolvedHost(
       ev: ConnectionEventInsert,
       connEventRepo: ConnectionEventRepo,
-  ): IO[Response, ConnectionEventInsert] =
+  ): IO[ApiError, ConnectionEventInsert] =
     (ev.host, ev.destIp) match {
       case (HostId.IPv4(_) | HostId.IPv6(_), Some(destIp)) =>
         connEventRepo
           .findRecentFqdnFor(ev.routerId, destIp, ev.ts.minus(fqdnBackfillWindow))
-          .mapError(ErrorMapper.dbErrorToResponse)
+          .mapError(ApiError.Db(_))
           .map(h => ev.copy(resolvedHost = h))
       case _                                               => ZIO.succeed(ev)
     }
@@ -379,12 +362,12 @@ object RouterIngestRoutes {
   private def backfillFromFqdn(
       ev: ConnectionEventInsert,
       connEventRepo: ConnectionEventRepo,
-  ): IO[Response, Unit] =
+  ): IO[ApiError, Unit] =
     (ev.host, ev.destIp) match {
       case (HostId.Fqdn(name), Some(destIp)) =>
         connEventRepo
           .backfillResolvedFor(ev.routerId, destIp, name, ev.ts.minus(fqdnBackfillWindow))
-          .mapError(ErrorMapper.dbErrorToResponse)
+          .mapError(ApiError.Db(_))
           .unit
       case _                                 => ZIO.unit
     }
@@ -411,7 +394,7 @@ object RouterIngestRoutes {
       e: RouterEvent,
       deviceRepo: DeviceRepo,
       alertRepo: AlertRepo,
-  ): IO[Response, Unit] =
+  ): IO[ApiError, Unit] =
     if e.`type` != "dhcp_lease" && e.`type` != "first_seen_mac" then ZIO.unit
     else
       e.mac match {
@@ -420,19 +403,19 @@ object RouterIngestRoutes {
           for {
             ts       <- ZIO
               .attempt(Instant.parse(e.ts))
-              .orElseFail(Response.badRequest(s"invalid ts: ${e.ts}"))
-            existing <- deviceRepo.findByMac(mac).mapError(ErrorMapper.dbErrorToResponse)
+              .orElseFail(ApiError.BadRequest(s"invalid ts: ${e.ts}"))
+            existing <- deviceRepo.findByMac(mac).mapError(ApiError.Db(_))
             _        <- existing match {
               case Some(_) =>
                 deviceRepo
                   .touchLastSeen(mac, e.ip, ts)
-                  .mapError(ErrorMapper.dbErrorToResponse)
+                  .mapError(ApiError.Db(_))
                   .unit *>
                   ZIO
                     .foreachDiscard(e.hostname)(h =>
                       deviceRepo
                         .renameIfAutoGenerated(mac, h.value)
-                        .mapError(ErrorMapper.dbErrorToResponse),
+                        .mapError(ApiError.Db(_)),
                     )
               case None    =>
                 // #711: a brand-new MAC. Insert the device row, then raise a
@@ -446,11 +429,11 @@ object RouterIngestRoutes {
                     e.ip,
                     ts,
                   )
-                  .mapError(ErrorMapper.dbErrorToResponse)
+                  .mapError(ApiError.Db(_))
                   .unit *>
                   alertRepo
                     .raiseNewDevice(mac, ts)
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
             }
           } yield ()
       }

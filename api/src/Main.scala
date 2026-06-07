@@ -431,10 +431,24 @@ object Main extends ZIOAppDefault {
       // seeds complete). #1204: wrap health + the gated real routes in the HTTP
       // metrics middleware (templated route labels), then mount the uninstrumented
       // /metrics scrape endpoint alongside.
+      // #1570: ErrorBoundary.observe wraps every served route family so any error response (4xx
+      // WARN / 5xx ERROR) is logged + metered (api_errors_total{route,status}) in one place —
+      // matching the coverage of HttpMetrics.instrument (which already counts all these in
+      // http_requests_total). This includes the SPA catch-all (StaticRoutes): an unmatched
+      // `/api/*` path 404s there ("no such API route") and a malformed URI 400s — both are real
+      // API errors worth surfacing, and the SPA fallback serves index.html (200) for client routes
+      // so there is no asset-404 flood. The `route` label is the route's bounded template (the
+      // trailing catch-all collapses every path to one series), so no per-path leak.
+      //
+      // It sits *inside* the readiness gate so the gate's startup 503s don't spam the log. Only
+      // /api/health (its own 503-while-starting semantics, polled constantly) and /metrics (the
+      // scrape endpoint) are left out — mirroring HttpMetrics' own exclusion of /metrics.
       HttpMetrics.instrument(
         healthRoutes ++
           Readiness.gate(
-            systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
+            ErrorBoundary.observe(
+              systemRoutes ++ statsRoutes ++ routerAndAdminRoutes ++ spaRoutes,
+            ),
             ready,
           ),
       ) ++ metricsRoutes
