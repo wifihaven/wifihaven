@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { BlocklistSummary, Device, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
+import type { BlocklistSummary, Device, NamedSchedule, ProfileDetail, ProfileTimeSummary, User } from '@/types/api'
 import { withQuery } from '@/test/queryWrapper'
 
 vi.mock('@/api/client', () => ({
@@ -1822,5 +1822,74 @@ describe('ProfilesPage — per-profile default-deny toggle (#1320)', () => {
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     expect(defaultDeny.compareDocumentPosition(apps))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+})
+
+// #1539 — the "Paused (schedule)" chip must reflect the schedules that actually
+// ENFORCE (the household named schedules attached via `scheduleIds`), not the
+// dead legacy `pd.schedules` field. Enforcement (PolicyService) folds the named
+// schedules' windows into the per-MAC `blocked` flag; #1482/#1494 left the V1
+// `schedules` table out of enforcement and the upsert no longer writes it. The
+// chip used to read `pd.schedules`, so two profiles sharing the SAME named
+// schedules could show divergent chips (one "Paused (schedule)", one "Active")
+// purely from stale/per-profile legacy rows — the prod symptom in #1539.
+describe('ProfilesPage — schedule chip reads named schedules, not legacy (#1539)', () => {
+  // Two windows whose union covers the whole local day on every weekday, so the
+  // chip is "active now" regardless of when the test runs (no wall-clock flake).
+  const alwaysActive: NamedSchedule = {
+    id: 10,
+    name: 'Bedtime',
+    description: 'always active for the test',
+    windows: [
+      { days: ['mon','tue','wed','thu','fri','sat','sun'], startLocal: '00:00', endLocal: '12:00', tz: 'UTC' },
+      { days: ['mon','tue','wed','thu','fri','sat','sun'], startLocal: '12:00', endLocal: '00:00', tz: 'UTC' },
+    ],
+  }
+
+  it('identical named-schedule attachments yield identical chips (legacy rows empty)', async () => {
+    // Both profiles attach the SAME named schedule (id 10), both with an EMPTY
+    // legacy `schedules` array — proving the chip comes from the named source.
+    const p1: ProfileDetail = {
+      ...kidsProfile,
+      profile: { ...kidsProfile.profile, id: 1, name: 'Kids', paused: false },
+      schedules: [], scheduleIds: [10], timeLimit: null,
+    }
+    const p2: ProfileDetail = {
+      ...kidsProfile,
+      profile: { ...kidsProfile.profile, id: 2, name: 'Teens', paused: false },
+      schedules: [], scheduleIds: [10], timeLimit: null,
+    }
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([p1, p2])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([alwaysActive])
+    ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    renderPage()
+    const c1 = await screen.findByTestId('profile-pause-chip-1')
+    const c2 = await screen.findByTestId('profile-pause-chip-2')
+    expect(c1).toHaveAttribute('data-chip', 'paused-schedule')
+    expect(c2).toHaveAttribute('data-chip', 'paused-schedule')
+  })
+
+  it('ignores the dead legacy `schedules` field (active legacy row, no named attachment → Active)', async () => {
+    // A profile with an active-now LEGACY schedule but NO named attachment must
+    // read "Active" — the legacy table is not an enforcement source (#1482), so
+    // the chip must not be driven by it.
+    const legacyOnly: ProfileDetail = {
+      ...kidsProfile,
+      profile: { ...kidsProfile.profile, id: 1, name: 'Kids', paused: false },
+      schedules: [
+        { id: 1, profileId: 1, name: 'legacy-am', days: ['mon','tue','wed','thu','fri','sat','sun'], startLocal: '00:00', endLocal: '12:00', tz: 'UTC' },
+        { id: 2, profileId: 1, name: 'legacy-pm', days: ['mon','tue','wed','thu','fri','sat','sun'], startLocal: '12:00', endLocal: '00:00', tz: 'UTC' },
+      ],
+      scheduleIds: [],
+      timeLimit: null,
+    }
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([legacyOnly])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    renderPage()
+    const chip = await screen.findByTestId('profile-pause-chip-1')
+    expect(chip).toHaveAttribute('data-chip', 'active')
   })
 })
