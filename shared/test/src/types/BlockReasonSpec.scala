@@ -125,6 +125,25 @@ object BlockReasonSpec extends ZIOSpecDefault {
           BlockReason.fromWire("category:UPPER!!!") == BlockReason.Unknown("category:UPPER!!!"),
         )
       },
+      // #1545: pin that every reason `PolicyService.decide` can emit survives a
+      // `fromWire(asWire(r))` round-trip, so routing the emitter and the block-page
+      // re-parser through the typed `BlockReason` cannot silently drop a case.
+      test("every reason decide() can emit round-trips through asWire/fromWire") {
+        val emitted: List[BlockReason] = List(
+          BlockReason.NoProfile,
+          BlockReason.ExtraAllowed,
+          BlockReason.Allow,
+          MacBlockReason.Paused,
+          MacBlockReason.Schedule,
+          BlockReason.ExtraBlocked,
+          MacBlockReason.TimeLimit,
+          BlockReason.Category(ads),
+          BlockReason.SiteTimeLimit("youtube"),
+        )
+        emitted.foldLeft(assertTrue(true)) { (acc, r) =>
+          acc && assertTrue(BlockReason.fromWire(BlockReason.asWire(r)) == r)
+        }
+      },
     ),
     suite("Type-system subtype constraint")(
       test("MacBlockReason is assignable to BlockReason") {
