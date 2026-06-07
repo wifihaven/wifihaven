@@ -2156,5 +2156,161 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         } yield assertTrue(resp.status == Status.NotFound)
       },
     ) @@ TestAspect.sequential,
+    // #1531: the displayed per-profile daily total must exclude presence on the WHOLE host-set of
+    // every exempt-from-daily app — not just the app's apex host. This mirrors, on the counting/
+    // display side, the multi-host-set generalization #1505/#1523 did for enforcement (#1513 is the
+    // enforcement-side sibling). The headline `usedMins` powering the dashboard tile
+    // (`/api/time/status/summary`) must equal `TimeStatusService.usedSecondsForProfile` exactly, so
+    // it cannot drift from the snapshot's `blocked` decision (#1160 single-source-of-truth).
+    suite("exempt-from-daily multi-host exclusion (#1531)")(
+      test(
+        "displayed daily total excludes the whole exempt app host-set; under cap → not blocked",
+      ) {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 30)
+          // One exempt-from-daily app ("Math Academy") with a TWO-host set. The apex (shortest host)
+          // is `a.example`; `b.example` is an equally-named off-domain asset host. An apex-only
+          // exclusion would still count `b.example` toward the daily total.
+          appId       <- appRepo.create("Math Academy", "mathacademy", None, None)
+          _           <- appRepo.setHosts(
+            appId,
+            List(Hostname.unsafe("a.example"), Hostname.unsafe("b.example")),
+          )
+          _        <- appRepo.upsertAssignment(appId, kidsId, AppMode.TimeLimited, Some(60), true)
+          _        <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // 45 min total presence split across the two exempt hosts and one non-exempt host. Only
+          // the 15 min on `c.unexempt.example` counts toward the 30-min daily cap.
+          off1            <- seedTraffic(routerId, testMac, "a.example", today, 15)
+          off2            <- seedTraffic(routerId, testMac, "b.example", today, 15, off1)
+          _               <- seedTraffic(routerId, testMac, "c.unexempt.example", today, 15, off2)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          settings        <- hsRepo.get
+          now             <- clock.instant
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/summary").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummary]])
+          kids = list.find(_.profileId == kidsId).get
+          // Single source of truth: the same day-state that drives the snapshot's `blocked`.
+          state <- tss.dayState(now, today, settings, kidsId).map(_.get)
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Only `c.unexempt.example` (15 m) counts — both `a.example` AND `b.example` excluded.
+          assertTrue(kids.usedMins == 15) &&
+          assertTrue(kids.usedMins <= 30) &&
+          assertTrue(state.usedMinutes == 15) &&
+          assertTrue(!state.blocked)
+      },
+      test("non-exempt presence past the cap → blocked, even with exempt app traffic present") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 30)
+          appId       <- appRepo.create("Math Academy", "mathacademy", None, None)
+          _           <- appRepo.setHosts(
+            appId,
+            List(Hostname.unsafe("a.example"), Hostname.unsafe("b.example")),
+          )
+          _        <- appRepo.upsertAssignment(appId, kidsId, AppMode.TimeLimited, Some(60), true)
+          _        <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Same two exempt hosts, but non-exempt browsing now pushes past the 30-min cap.
+          off1            <- seedTraffic(routerId, testMac, "a.example", today, 15)
+          off2            <- seedTraffic(routerId, testMac, "b.example", today, 15, off1)
+          _               <- seedTraffic(routerId, testMac, "c.unexempt.example", today, 35, off2)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          settings        <- hsRepo.get
+          now             <- clock.instant
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status/summary").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeSummary]])
+          kids = list.find(_.profileId == kidsId).get
+          state <- tss.dayState(now, today, settings, kidsId).map(_.get)
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Only the 35 m of non-exempt presence counts — exempt hosts still excluded.
+          assertTrue(kids.usedMins == 35) &&
+          assertTrue(state.usedMinutes == 35) &&
+          assertTrue(state.blocked)
+      },
+    ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential
 }
