@@ -10,6 +10,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
+import zio.metrics.Metric
 import zio.test.*
 
 import java.time.{Instant, LocalDate, LocalDateTime, OffsetDateTime}
@@ -107,6 +108,17 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
 
   private val knownMac   = "aa:bb:cc:11:22:33"
   private val unknownMac = "aa:bb:cc:99:99:99"
+
+  // #1569: the real Akamai CDN CNAME target observed on prod whose underscore
+  // labels fail Hostname validation (see #1572) — the exact value that 400'd the
+  // whole usage batch in the incident.
+  private val badHost =
+    "73-169-39-14_s-23-196-4-147_ts-1780860759-clienttons-s.akamaihd.net"
+
+  // #1569: read the cumulative value of usage_records_rejected_total{reason=decode_error}
+  // straight off the default metric registry MetricGuard emits into.
+  private val rejectedCounter =
+    Metric.counter("usage_records_rejected_total").tagged("reason", "decode_error")
 
   private def seedKnownDevice(dRepo: DeviceRepo, profileRepo: ProfileRepo): Task[Unit] =
     for {
@@ -1256,6 +1268,117 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
           testDate,
         )
       } yield assertTrue(sb == ((60L, 100L, 50L)))
+    },
+    // ── #1569: one malformed record must not drop the whole batch ────────────
+    test(
+      "usage: a batch with one malformed record ingests the valid records and meters the rejection",
+    ) {
+      // Incident #1569: a single host value that fails Hostname validation (an
+      // Akamai CDN CNAME target with underscores) used to fail the WHOLE
+      // UsageReport decode → 400 → every valid record in the ~130-record batch
+      // dropped. Now the bad record is skipped + metered and the valid ones
+      // ingest normally. Hand-rolled JSON so the malformed record is embedded
+      // verbatim (RouterEvent.toJson couldn't even construct the bad Hostname).
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        tu       <- ZIO.service[TimeUsageRepo]
+        tRepo    <- ZIO.service[TrafficReportRepo]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        before   <- rejectedCounter.value
+        goodRec =
+          s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"youtube.com"},"activeSeconds":240,"bytesIn":1000,"bytesOut":500}"""
+        badRec  =
+          s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"$badHost"},"activeSeconds":60,"bytesIn":100,"bytesOut":50}"""
+        body    =
+          s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[$goodRec,$badRec]}"""
+        resp    <- post(routes, "/api/router/usage", body, Some(tk))
+        sb      <- tu.getSecondsAndBytes(
+          MacAddress.unsafe(knownMac),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          testDate,
+        )
+        rows    <- tRepo.listForRouter(id, 100)
+        after   <- rejectedCounter.value
+      } yield assertTrue(resp.status == Status.Ok) &&
+        // the valid record ingested into both traffic_reports and time_usage
+        assertTrue(sb == ((240L, 1000L, 500L))) &&
+        assertTrue(rows.size == 1) &&
+        // exactly the one malformed record was metered as rejected
+        assertTrue(after.count - before.count == 1.0)
+    },
+    test("usage: a batch of ONLY malformed records is accepted (200) and meters them all") {
+      // No valid records to ingest, but the envelope is well-formed — so this is
+      // a 200 no-op-ingest, NOT a 400. The bad records are all metered.
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        tRepo    <- ZIO.service[TrafficReportRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        before   <- rejectedCounter.value
+        badRec   =
+          s"""{"mac":"$knownMac","host":{"type":"fqdn","value":"$badHost"},"activeSeconds":60,"bytesIn":100,"bytesOut":50}"""
+        body     =
+          s"""{"routerId":"$id","periodStart":"${periodStart.toString}","periodEnd":"${periodEnd.toString}","records":[$badRec,$badRec]}"""
+        resp     <- post(routes, "/api/router/usage", body, Some(tk))
+        rows     <- tRepo.listForRouter(id, 100)
+        after    <- rejectedCounter.value
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.isEmpty) &&
+        assertTrue(after.count - before.count == 2.0)
+    },
+    test("usage: a malformed envelope (bad timestamp) returns 400 and logs a warning") {
+      // A genuinely unparseable envelope still 400s — but now the failure is
+      // LOGGED server-side (the #1569 diagnostic gap), and NO record-reject
+      // metric is charged (we never reached per-record decode).
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        before   <- rejectedCounter.value
+        rawBody  =
+          s"""{"routerId":"$id","periodStart":"not-a-timestamp","periodEnd":"${periodEnd.toString}","records":[]}"""
+        captured <- (for {
+          resp <- post(routes, "/api/router/usage", rawBody, Some(tk))
+          logs <- ZTestLogger.logOutput
+        } yield (resp, logs)).provideLayer(ZTestLogger.default)
+        (resp, logs) = captured
+        after    <- rejectedCounter.value
+      } yield assertTrue(resp.status == Status.BadRequest) &&
+        assertTrue(
+          logs.exists(e =>
+            e.logLevel == LogLevel.Warning &&
+              e.message().contains("router usage:") &&
+              e.message().contains("invalid timestamp"),
+          ),
+        ) &&
+        assertTrue(after.count - before.count == 0.0)
+    },
+    test("usage: a non-JSON body returns 400 and logs the envelope decode failure") {
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        routes   <- buildRoutes
+        (id, tk) <- seedRouter(rRepo)
+        captured <- (for {
+          resp <- post(routes, "/api/router/usage", "this is not json", Some(tk))
+          logs <- ZTestLogger.logOutput
+        } yield (resp, logs)).provideLayer(ZTestLogger.default)
+        (resp, logs) = captured
+      } yield assertTrue(resp.status == Status.BadRequest) &&
+        assertTrue(
+          logs.exists(e =>
+            e.logLevel == LogLevel.Warning &&
+              e.message().contains("router usage: envelope deserialization failed") &&
+              e.message().contains(s"router=$id"),
+          ),
+        )
     },
     test("events: dhcp_lease for a known MAC does NOT raise an alert") {
       for {
