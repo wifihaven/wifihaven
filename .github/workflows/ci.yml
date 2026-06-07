@@ -114,6 +114,16 @@ jobs:
               - 'openwrt/test/build-luci-jsonc.sh'
               - 'openwrt/test/jsonc_shim_spec.lua'
               - 'api/**'
+              # #1550: a schema-only migration PR (only api/resources/db/migration/**
+              # files) cannot change any wire shape, so it must not trigger Contract
+              # Tests. dorny/paths-filter applies leading-'!' patterns as per-file
+              # ignores: a migration file fails to match ['api/**', '!.../migration/**'],
+              # so a migration-only diff resolves contract=false (skipped, treated as
+              # success by the umbrella `ci` job). A PR that also touches real api/**
+              # code still matches and runs contract as before. The `scala` filter is
+              # intentionally left matching api/** so api.test applies the migration —
+              # that is the migration-isolation gate.
+              - '!api/resources/db/migration/**'
               - 'shared/**'
               - 'build.mill'
               - 'scripts/regen-contract-fixtures.sh'
