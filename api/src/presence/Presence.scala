@@ -464,6 +464,12 @@ object Presence {
    * `rows` must already be scoped to the profile's devices. Seconds are summed before any
    * floor-division so the minute view rounds floor-of-sum, matching the daily total. Heartbeat rows
    * are stripped first (#1465); a group with no matching activity is absent from the result.
+   *
+   * #1514: now a thin alias for [[appSecondsForProfile]] — the single per-app time computation
+   * (#1532). The one behavioural change is that the app's host-set is session-stitched as one
+   * stream per device, so an idle gap `< N` between two *different* hosts of the same app bridges
+   * (the apex + off-domain assets count as one engaged span) instead of each host stitching in
+   * isolation and only overlap-merging afterward. See [[appSpansForProfile]] for the rationale.
    */
   def patternGroupSecondsForProfile(
       rows: List[PresenceRow],
@@ -471,22 +477,8 @@ object Presence {
       overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
-  ): Map[String, Long] = {
-    val active = rows.filterNot(r => isHeartbeat(r, filter))
-    val gap    = effectiveGap(active, continuationSeconds)
-    def matchesGroup(r: PresenceRow, pats: List[String]): Boolean =
-      r.host.asFqdn.exists(fqdn => pats.exists(p => matchesPattern(fqdn.value, p)))
-    groups.iterator.flatMap { case (key, pats) =>
-      val matching = active.filter(r => matchesGroup(r, pats))
-      val secs     = overlap match {
-        case CrossDeviceOverlapMode.Sum   =>
-          matching.groupBy(_.mac).valuesIterator.map(ms => unionSeconds(sessionSpans(ms, gap))).sum
-        case CrossDeviceOverlapMode.Dedup =>
-          unionSeconds(sessionSpans(matching, gap))
-      }
-      if secs > 0L then Some(key -> secs) else None
-    }.toMap
-  }
+  ): Map[String, Long] =
+    appSecondsForProfile(rows, groups, overlap, filter, continuationSeconds)
 
   /** Floor-divided minute view of [[patternGroupSecondsForProfile]] (per app host-set group). */
   def patternGroupMinutesForProfile(
@@ -497,6 +489,91 @@ object Presence {
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): Map[String, Int] =
     patternGroupSecondsForProfile(rows, groups, overlap, filter, continuationSeconds).view
+      .mapValues(s => (s / 60).toInt)
+      .filter(_._2 != 0)
+      .toMap
+
+  /**
+   * #1514: per-app session spans, **gap-bridged across the app's whole host-set**, combined across
+   * the profile's devices per `overlap`. A *group* is `(key, patterns)` — an app's `app:<slug>`
+   * label and its full host-set ([[TimeStatusService.groupSiteLimits]]).
+   *
+   * This is the span/union analogue of [[patternSecondsForProfile]] lifted from one pattern to an
+   * app's whole host-set, and the canonical per-app presence primitive every per-app consumer reads
+   * through (the rollup #1516, the per-app graph #1517, the per-app cap #1515) — there is exactly
+   * one per-app time computation, this one (#1532). [[patternGroupSecondsForProfile]] /
+   * [[patternGroupMinutesForProfile]] delegate here.
+   *
+   * The distinction from a naive per-host union: within a device the app's matching rows are
+   * **session-stitched as one stream** (all hosts together) on the idle gap, so an idle gap `< N`
+   * between two *different* hosts of the same app — the apex going quiet while an off-domain asset
+   * / CDN host carries the next request (#1505) — **bridges into one engaged span** rather than
+   * splitting into two. [[sessionSpans]] stitches per `(mac, host)` and would leave that cross-host
+   * gap unbridged; here we stitch the union of the app's hosts per device. Built on the shared
+   * #1464 primitive ([[spanOf]] / [[stitch]] / [[mergeSpans]]) and the same `N ≥ 2 × R` collapse
+   * guard ([[effectiveGap]]), so the per-app surface stays rate-independent and consistent with the
+   * daily cap and the per-host surface.
+   *
+   * Cross-device combination matches the daily total / per-host contract: `Sum` keeps each device's
+   * per-app stitched spans separate (concatenated, so summing their seconds double-counts a host
+   * used on two screens at once); `Dedup` unions a group's per-device spans so simultaneous use
+   * counts once. Heartbeat rows are stripped before stitching (#1465), so a keepalive can neither
+   * start nor bridge a session. `rows` must already be scoped to the profile's devices. A group
+   * with no matching activity is absent from the result.
+   */
+  def appSpansForProfile(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[String, List[Span]] = {
+    val active = rows.filterNot(r => isHeartbeat(r, filter))
+    val gap    = effectiveGap(active, continuationSeconds)
+    def matchesGroup(r: PresenceRow, pats: List[String]): Boolean =
+      r.host.asFqdn.exists(fqdn => pats.exists(p => matchesPattern(fqdn.value, p)))
+    groups.iterator.flatMap { case (key, pats) =>
+      val matching  = active.filter(r => matchesGroup(r, pats))
+      // Per device, stitch the union of the app's hosts as ONE stream so a gap < N
+      // between different hosts of the same app bridges (vs sessionSpans' per-(mac,host) split).
+      val perDevice =
+        matching.groupBy(_.mac).valuesIterator.map(ms => stitch(ms.map(spanOf), gap)).toList
+      val spans     = overlap match {
+        case CrossDeviceOverlapMode.Sum   => perDevice.flatten
+        case CrossDeviceOverlapMode.Dedup => mergeSpans(perDevice.flatten)
+      }
+      if spans.nonEmpty then Some(key -> spans) else None
+    }.toMap
+  }
+
+  /**
+   * #1514: per-app engaged seconds, gap-bridged across the app's whole host-set — the headline
+   * scalar form of [[appSpansForProfile]] (see it for the union-across-host-set + cross-host gap
+   * bridge + cross-device contract). Summing the span seconds reproduces the right mode for both:
+   * under `Sum` the spans are kept per device so the sum double-counts cross-device overlap; under
+   * `Dedup` they are pre-merged so the sum is the union. A group with no activity is absent.
+   */
+  def appSecondsForProfile(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[String, Long] =
+    appSpansForProfile(rows, groups, overlap, filter, continuationSeconds).view
+      .mapValues(_.iterator.map(_.seconds).sum)
+      .filter(_._2 > 0L)
+      .toMap
+
+  /** Floor-divided minute view of [[appSecondsForProfile]] (per app host-set group). */
+  def appMinutesForProfile(
+      rows: List[PresenceRow],
+      groups: List[(String, List[String])],
+      overlap: CrossDeviceOverlapMode = CrossDeviceOverlapMode.Sum,
+      filter: HeartbeatFilter = HeartbeatFilter.Off,
+      continuationSeconds: Int = DefaultContinuationSeconds,
+  ): Map[String, Int] =
+    appSecondsForProfile(rows, groups, overlap, filter, continuationSeconds).view
       .mapValues(s => (s / 60).toInt)
       .filter(_._2 != 0)
       .toMap

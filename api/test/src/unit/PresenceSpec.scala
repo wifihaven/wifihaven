@@ -883,5 +883,159 @@ object PresenceSpec extends ZIOSpecDefault {
         assertTrue(dedupViaSpans.getOrElse(yt, 0L) == 300L)
       },
     ),
+    // ── #1514: app-aware cross-host gap-bridged presence ──────────────────────
+    //
+    // appSecondsForProfile unions the session-stitch spans across the WHOLE app
+    // host-set as one stream, so an idle gap < N between DIFFERENT hosts of the
+    // same app bridges (the apex + off-domain assets of #1505 count once). This
+    // is the span/union analogue of patternSecondsForProfile and the single
+    // source #1516/#1517/#1515 build on.
+    suite("appSecondsForProfile / appSpansForProfile (#1514)")(
+      test("two hosts of one app in adjacent windows with an idle gap < N bridge into one span") {
+        // mathacademy.com [0,60) · gap 60s · mathacademy-cdn.example [120,180).
+        // effectiveGap = max(120, 2×60) = 120 ≥ 60, so the two DIFFERENT-host
+        // windows bridge across the gap into one engaged [0,180) = 180s span —
+        // NOT two 60s sessions (120s). The bridged gap is counted once, and the
+        // short windows are not double-counted.
+        val group = "app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")
+        val rows  = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 60),
+          appRow(mac1, 120L, "assets.mathacademy-cdn.example", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:math-academy" -> 180L),
+        ) &&
+        assertTrue(
+          Presence.appMinutesForProfile(rows, List(group)) == Map("app:math-academy" -> 3),
+        )
+      },
+      test("an idle gap > N between two of the app's hosts is NOT bridged") {
+        // Same two hosts but 600s apart: gap 540 > effectiveGap(120). They stay
+        // two 60s sessions → 120s, not one bridged 660s span.
+        val group = "app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")
+        val rows  = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 60),
+          appRow(mac1, 600L, "assets.mathacademy-cdn.example", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group)) == Map("app:math-academy" -> 120L),
+        )
+      },
+      test("hosts of different apps do NOT bridge into each other") {
+        // app A's host [0,60) and app B's host [120,180): within-app each would
+        // bridge a 60s gap, but they belong to DIFFERENT groups, so each app is
+        // its own [.,60) = 60s session — the gap is never bridged across apps.
+        val rows   = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 60),
+          appRow(mac1, 120L, "www.khanacademy.org", periodSeconds = 60),
+        )
+        val groups = List(
+          "app:math-academy" -> List("mathacademy.com"),
+          "app:khan"         -> List("khanacademy.org"),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, groups) ==
+            Map("app:math-academy" -> 60L, "app:khan" -> 60L),
+        )
+      },
+      test("no-match / empty host-set / no rows → absent (0)") {
+        val rows = List(appRow(mac1, 0L, "www.google.com", periodSeconds = 60))
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List("app:math" -> List("mathacademy.com"))) ==
+            Map.empty[String, Long],
+        ) &&
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List("app:empty" -> Nil)) == Map.empty[String, Long],
+        ) &&
+        assertTrue(
+          Presence.appSecondsForProfile(Nil, List("app:math" -> List("mathacademy.com"))) ==
+            Map.empty[String, Long],
+        )
+      },
+      test("single-host app reconciles with proportionalHostSeconds (no regression)") {
+        // A single-host app stitched as a group equals the existing per-host
+        // engaged seconds for that host — the union-across-host-set degenerates
+        // to the per-host session when the set has one host.
+        val rows    =
+          (0 to 5).toList.map(i => appRow(mac1, i * 60L, "youtube.com", periodSeconds = 10))
+        val perHost = Presence.proportionalHostSeconds(rows).getOrElse(yt, 0L)
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List("app:youtube" -> List("youtube.com"))) ==
+            Map("app:youtube" -> perHost),
+        ) &&
+        assertTrue(perHost == 310L)
+      },
+      test("Sum vs Dedup across two devices behaves like usedSecondsForProfile") {
+        // Same app, two devices, fully overlapping [0,300): Sum adds (600), Dedup
+        // unions (300) — the same cross-device contract the daily total uses.
+        val group = "app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")
+        val rows  = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 300),
+          appRow(mac2, 0L, "assets.mathacademy-cdn.example", periodSeconds = 300),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group), CrossDeviceOverlapMode.Sum) ==
+            Map("app:math-academy" -> 600L),
+        ) &&
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group), CrossDeviceOverlapMode.Dedup) ==
+            Map("app:math-academy" -> 300L),
+        )
+      },
+      test("appSpansForProfile seconds reconcile with appSecondsForProfile (Sum and Dedup)") {
+        // Two devices on the app in the same window: Sum keeps each device's
+        // spans (sum double-counts overlap), Dedup unions them. Summing the
+        // span seconds reproduces appSecondsForProfile under both modes, so the
+        // hour-clipped #1517 breakdown stays consistent with the headline.
+        val group      = "app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")
+        val rows       = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 300),
+          appRow(mac2, 0L, "assets.mathacademy-cdn.example", periodSeconds = 300),
+        )
+        val sumSpans   = Presence.appSpansForProfile(rows, List(group), CrossDeviceOverlapMode.Sum)
+        val dedupSpans =
+          Presence.appSpansForProfile(rows, List(group), CrossDeviceOverlapMode.Dedup)
+        val sumSeconds = sumSpans.view.mapValues(_.iterator.map(_.seconds).sum).toMap
+        val dedupSeconds = dedupSpans.view.mapValues(Presence.unionSeconds).toMap
+        assertTrue(
+          sumSeconds == Presence.appSecondsForProfile(rows, List(group), CrossDeviceOverlapMode.Sum),
+        ) &&
+        assertTrue(
+          dedupSeconds == Presence
+            .appSecondsForProfile(rows, List(group), CrossDeviceOverlapMode.Dedup),
+        ) &&
+        assertTrue(sumSeconds.getOrElse("app:math-academy", 0L) == 600L) &&
+        assertTrue(dedupSeconds.getOrElse("app:math-academy", 0L) == 300L)
+      },
+      test("appSpansForProfile bridges across hosts within a device") {
+        // The span form bridges the same cross-host idle gap appSecondsForProfile
+        // does: one [0,180) span, not two.
+        val group = "app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")
+        val rows  = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 60),
+          appRow(mac1, 120L, "assets.mathacademy-cdn.example", periodSeconds = 60),
+        )
+        val spans =
+          Presence.appSpansForProfile(rows, List(group)).getOrElse("app:math-academy", Nil)
+        assertTrue(spans.map(_.seconds).sum == 180L) &&
+        assertTrue(spans.size == 1)
+      },
+      test("heartbeat rows are stripped before stitching (a keepalive can't bridge across N)") {
+        // mathacademy [0,60) · apns keepalive [60,250) (190s, sub-threshold) ·
+        // cdn [250,310). With the filter on the keepalive is dropped, leaving the
+        // two real windows 190s apart (> N=120) — they do NOT bridge: 60+60=120s.
+        val f     = HeartbeatFilter(enabled = true, bytesThreshold = 2048)
+        val group = "app:math-academy" -> List("mathacademy.com", "mathacademy-cdn.example")
+        val rows  = List(
+          appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 60),
+          appRow(mac1, 60L, "apns.apple.com", periodSeconds = 190, bytes = 60L),
+          appRow(mac1, 250L, "assets.mathacademy-cdn.example", periodSeconds = 60),
+        )
+        assertTrue(
+          Presence.appSecondsForProfile(rows, List(group), filter = f) ==
+            Map("app:math-academy" -> 120L),
+        )
+      },
+    ),
   )
 }
