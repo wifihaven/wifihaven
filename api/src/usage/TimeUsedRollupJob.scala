@@ -198,7 +198,7 @@ object TimeUsedRollupJob {
   ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay]) = {
     val devsByP     =
       devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-    val slugToAppId = apps.map(a => a.slug -> a.id).toMap
+    val slugToAppId = TimeStatusService.slugToAppId(apps)
     def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow] = {
       val mac = devsByP.getOrElse(pid, Nil).map(_.mac).toSet
       presence.filter(r => mac.contains(r.mac))

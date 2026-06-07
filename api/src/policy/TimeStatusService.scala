@@ -519,6 +519,16 @@ object TimeStatusService {
    * Seconds (not minutes) so the rolled + tail decomposition stays exact across the watermark
    * boundary; floor-to-minutes happens once at read time.
    */
+  /**
+   * The `apps.slug` ⇄ `apps.id` resolution shared by the per-app rollup writer
+   * ([[wifihaven.api.usage.TimeUsedRollupJob]]) and reader
+   * ([[wifihaven.api.usage.AppUsedRollupService]]), so both resolve an `app:<slug>` cap group key
+   * to the same registered app identity. Centralized here next to [[appSecondsByApp]] (its
+   * consumer) so the keying convention can't drift between the two sides.
+   */
+  def slugToAppId(apps: List[App]): Map[String, AppId] =
+    apps.iterator.map(a => a.slug -> a.id).toMap
+
   def appSecondsByApp(
       profile: Profile,
       siteLimits: List[SiteTimeLimit],
