@@ -497,7 +497,19 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Long = {
-    val exemptPats = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
+    // #1531: exclude the WHOLE host-set of every exempt-from-daily app from the daily total — the
+    // counting-side counterpart of the enforcement carve-out (#1513), which keys the exempt
+    // allow-list on the per-app `SiteDayState.hosts`. Derive the exempt patterns from the same
+    // per-app collapse (`groupSiteLimits`) the per-app bars and `computeBlockRules` use, so the
+    // displayed `usedMinutes` and the snapshot's `blocked` read one explicit host-set. The previous
+    // `siteLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
+    // emits one row per host; reusing the collapse makes the whole-host-set exemption explicit
+    // rather than an implicit dependency on that row shape, which would silently regress to
+    // apex-only the moment those rows were ever de-duped upstream.
+    val exemptPats =
+      groupSiteLimits(siteLimits).collect {
+        case (_, _, exempt, hosts, _) if exempt => hosts
+      }.flatten
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
         val perMac = Presence.totalSecondsByMac(
