@@ -803,6 +803,20 @@ The checklist leads with duplicated-logic / single-source-of-truth (see
 [Single source of truth](#single-source-of-truth)) and test-integrity, the two
 failure modes behind our recurring prod incidents.
 
+**The review is POSTED to the PR and RE-RUN on each push.** The reviewer posts
+its findings as a marked, **non-approving** PR comment (`gh pr comment` — never a
+GitHub `--approve` / `--request-changes` review, so it can't interfere with
+required human reviews or the merge queue), leading with a machine-findable
+marker that records the reviewed commit
+(`<!-- wifihaven-pr-review reviewed-sha=<sha> -->`). On a subsequent push the
+review re-runs incrementally: it finds the prior marked comment, **statuses each
+prior finding** ADDRESSED / NOT-ADDRESSED / PARTIAL against current code, reviews
+only the **incremental delta** (`git diff <reviewed-sha>...HEAD`) for new
+findings, and posts an updated marked comment. A BLOCKER clears only when
+ADDRESSED *and* no new BLOCKER was introduced; any open BLOCKER stays
+merge-gating. See the *Posting & re-runs* section of the checklist for the full
+algorithm.
+
 ## Testing philosophy
 
 ### Feature tests first, unit tests for edge cases only
