@@ -565,5 +565,144 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         dr   <- ZIO.fromEither(body.fromJson[RouterDecisionResponse])
       yield assertTrue(dr.decision == ConnectionDecision.Allow)
     },
+    // ── #1515: snapshot ⇄ decide() agreement on the per-app cap ──────────────────────────────────
+    // The snapshot collapses each app's cap into nftables host-sets (`extraBlocked` / `extraAllowed`)
+    // the router applies blind, while /decision answers per host. They MUST agree for the same
+    // profile/now or the block-page reason drifts from what nftables enforces. These tests build ONE
+    // PolicyService and cross-check both readings; `routerAllows` mirrors the router's precedence
+    // (`extraAllowed` beats whole-MAC `blocked` beats `extraBlocked`, #421) so a snapshot verdict can
+    // be compared to a /decision verdict directly.
+    test(
+      "#1515 anti-divergence: over-cap multi-host app — snapshot blocks the whole host-set and decide() agrees",
+    ) {
+      val mac = "aa:bb:cc:11:22:33"
+      for
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ar  <- ZIO.service[AppRepo]
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        app <- ar.create("YouTube", "youtube", None, None)
+        _   <- ar.setHosts(app, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
+        _   <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(30), exemptFromDaily = true)
+        rid <- seedRouterRow
+        // 30 m on the off-domain asset host alone → aggregate hits the 30 m cap (apex idle).
+        _   <- seedTraffic(rid, mac, "ytimg.com", LocalDate.of(2025, 1, 6), 30)
+        ps    <- makePsDefault
+        snap  <- ps.snapshot
+        rules  = snap.profiles(kid).rules
+        apex  <- ps.decide(mac, "youtube.com")
+        asset <- ps.decide(mac, "ytimg.com")
+      yield assertTrue(rules.extraBlocked.map(_.value).toSet == Set("youtube.com", "ytimg.com")) &&
+        assertTrue(!routerAllows(rules, "youtube.com")) &&
+        assertTrue(!routerAllows(rules, "ytimg.com")) &&
+        assertTrue(apex.decision == ConnectionDecision.Block) &&
+        assertTrue(asset.decision == ConnectionDecision.Block) &&
+        assertTrue(decisionAllows(asset) == routerAllows(rules, "ytimg.com")) &&
+        assertTrue(decisionAllows(apex) == routerAllows(rules, "youtube.com"))
+    },
+    test(
+      "#1515 anti-divergence: exempt app UNDER cap stays reachable when the profile is PAUSED (snapshot ⇄ decide())",
+    ) {
+      // The #1513 regression class at the /decision layer: an exempt-from-daily app under its own cap
+      // is carved into `extraAllowed` for its WHOLE host-set, which beats the whole-MAC pause block at
+      // the router (#421). /decision must report the same Allow — its pause short-circuit cannot fire
+      // before the exempt carve, or the block page contradicts what nftables actually does.
+      val mac = "aa:bb:cc:11:22:33"
+      for
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ar  <- ZIO.service[AppRepo]
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- pr.setPaused(kid, true)
+        _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        app <- ar.create("Khan", "khan", None, None)
+        _   <- ar.setHosts(
+          app,
+          List(Hostname.unsafe("khanacademy.org"), Hostname.unsafe("cdn.kastatic.org")),
+        )
+        _   <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(60), exemptFromDaily = true)
+        rid <- seedRouterRow
+        // 20 m on the apex alone → aggregate 20 < 60 cap → under-cap, the whole set is carved.
+        _   <- seedTraffic(rid, mac, "khanacademy.org", LocalDate.of(2025, 1, 6), 20)
+        ps    <- makePsDefault
+        snap  <- ps.snapshot
+        rules  = snap.profiles(kid).rules
+        ea     = rules.extraAllowed.map(_.value).toSet
+        apex  <- ps.decide(mac, "khanacademy.org")
+        asset <- ps.decide(mac, "cdn.kastatic.org")
+      yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.Paused)) &&
+        assertTrue(ea.contains("khanacademy.org")) &&
+        assertTrue(ea.contains("cdn.kastatic.org")) &&
+        assertTrue(routerAllows(rules, "khanacademy.org")) &&
+        assertTrue(routerAllows(rules, "cdn.kastatic.org")) &&
+        assertTrue(apex.decision == ConnectionDecision.Allow) &&
+        assertTrue(asset.decision == ConnectionDecision.Allow) &&
+        assertTrue(decisionAllows(apex) == routerAllows(rules, "khanacademy.org")) &&
+        assertTrue(decisionAllows(asset) == routerAllows(rules, "cdn.kastatic.org"))
+    },
+    test(
+      "#1513 invariant: exempt app under cap reachable when the profile DAILY cap is hit (snapshot ⇄ decide())",
+    ) {
+      // The original #1513 prod regression: the profile daily cap is exhausted by OTHER (non-exempt)
+      // traffic, yet the exempt app under its own cap must stay reachable across its whole host-set.
+      val mac = "aa:bb:cc:11:22:33"
+      for
+        _   <- cleanDb
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        tlr <- ZIO.service[TimeLimitRepo]
+        ar  <- ZIO.service[AppRepo]
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- tlr.upsert(kid, 30)
+        _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        app <- ar.create("Khan", "khan", None, None)
+        _   <- ar.setHosts(
+          app,
+          List(Hostname.unsafe("khanacademy.org"), Hostname.unsafe("cdn.kastatic.org")),
+        )
+        _   <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(60), exemptFromDaily = true)
+        rid <- seedRouterRow
+        // 35 m on a non-exempt host exhausts the 30 m profile daily cap; 20 m exempt Khan stays
+        // under its own 60 m cap and does NOT count toward the daily total.
+        _   <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        _   <- seedTraffic(rid, mac, "khanacademy.org", LocalDate.of(2025, 1, 6), 20, bucketOffset = 12)
+        ps    <- makePsDefault
+        snap  <- ps.snapshot
+        rules  = snap.profiles(kid).rules
+        ea     = rules.extraAllowed.map(_.value).toSet
+        apex  <- ps.decide(mac, "khanacademy.org")
+        asset <- ps.decide(mac, "cdn.kastatic.org")
+      yield assertTrue(rules.blocked) &&
+        assertTrue(rules.blockReason.contains(MacBlockReason.TimeLimit)) &&
+        assertTrue(ea.contains("khanacademy.org")) &&
+        assertTrue(ea.contains("cdn.kastatic.org")) &&
+        assertTrue(apex.decision == ConnectionDecision.Allow) &&
+        assertTrue(asset.decision == ConnectionDecision.Allow) &&
+        assertTrue(decisionAllows(apex) == routerAllows(rules, "khanacademy.org")) &&
+        assertTrue(decisionAllows(asset) == routerAllows(rules, "cdn.kastatic.org"))
+    },
   ) @@ TestAspect.sequential
+
+  /** True iff a /decision response allowed the connection. */
+  private def decisionAllows(r: RouterDecisionResponse): Boolean =
+    r.decision == ConnectionDecision.Allow
+
+  /**
+   * The router's effective verdict for `host` from a profile's snapshot `BlockRules`, mirroring the
+   * nftables precedence the agent applies: `extraAllowed` carves out every drop (#421), then a
+   * whole-MAC `blocked` drops everything, then `extraBlocked` drops the host. Used to assert the
+   * /decision endpoint agrees with what the snapshot actually enforces. Hosts in these tests are
+   * exact (no globs), so a literal membership test matches the router's pattern check.
+   */
+  private def routerAllows(rules: BlockRules, host: String): Boolean =
+    if rules.extraAllowed.map(_.value).contains(host) then true
+    else if rules.blocked then false
+    else !rules.extraBlocked.map(_.value).contains(host)
 }

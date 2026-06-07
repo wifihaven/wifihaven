@@ -205,6 +205,45 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         assertTrue(!eb.contains("youtube.com")) && assertTrue(!eb.contains("ytimg.com"))
       }
     },
+    test(
+      "#1515 boundary: aggregate exactly AT the app cap blocks the whole host-set; one minute under does not",
+    ) {
+      // The per-app cap is a `>=` test on the gap-bridged aggregate across the whole host-set. Pin
+      // both sides of the boundary in one test so an off-by-one (`>` vs `>=`) can't slip through:
+      // 30 m on the asset host alone (apex idle) hits the 30 m cap → both hosts blocked; 25 m leaves
+      // 5 m of budget → neither blocked. Both readings come from the SAME aggregate the router caps
+      // on, so the whole app moves together either way.
+      for {
+        _    <- cleanDb
+        ar   <- ZIO.service[AppRepo]
+        kids <- kidsId
+        dr   <- ZIO.service[DeviceRepo]
+        _    <- dr.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:91"), "iPad", Some(kids), "10.0.0.91")
+        rid  <- seedRouterRow
+        today = TestClock.schoolDayAfternoon.toLocalDate
+        // ── at the limit: 30 m on the asset host alone → aggregate == cap → whole set blocked ──
+        atApp <- ar.create("YouTube", "youtube", None, None)
+        _     <- ar.setHosts(atApp, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
+        _     <- ar.upsertAssignment(atApp, kids, AppMode.TimeLimited, Some(30), true)
+        _     <- seedTraffic(rid, "aa:bb:cc:dd:ee:91", "ytimg.com", today, 30)
+        atSnap   <- makePs.flatMap(_.snapshot)
+        atEb = atSnap.profiles(kids).rules.extraBlocked.map(_.value).toSet
+        // ── one under: same app, reseed with 25 m → aggregate < cap → whole set reachable ──
+        _     <- cleanDb
+        kids2 <- kidsId
+        _     <- dr.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:91"), "iPad", Some(kids2), "10.0.0.91")
+        rid2  <- seedRouterRow
+        unApp <- ar.create("YouTube", "youtube", None, None)
+        _     <- ar.setHosts(unApp, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
+        _     <- ar.upsertAssignment(unApp, kids2, AppMode.TimeLimited, Some(30), true)
+        _     <- seedTraffic(rid2, "aa:bb:cc:dd:ee:91", "ytimg.com", today, 25)
+        unSnap   <- makePs.flatMap(_.snapshot)
+        unEb = unSnap.profiles(kids2).rules.extraBlocked.map(_.value).toSet
+      } yield assertTrue(atEb.contains("youtube.com")) &&
+        assertTrue(atEb.contains("ytimg.com")) &&
+        assertTrue(!unEb.contains("youtube.com")) &&
+        assertTrue(!unEb.contains("ytimg.com"))
+    },
     test("conflicting allowed + blocked apps: host appears in both lists (router lets allow win)") {
       // feedback_extraallowed_beats_blocked: router precedence makes allow win.
       // Snapshot is additive — both lists carry the host, and the router enforces
