@@ -79,10 +79,12 @@ object MetricsExportSpec
       (for {
         _              <- cleanDb
         timeRollupRepo <- ZIO.service[TimeUsedRollupRepo]
+        appRollupRepo  <- ZIO.service[AppUsedRollupRepo]
         rollupRepo     <- ZIO.service[RollupRepo]
         profileRepo    <- ZIO.service[ProfileRepo]
         deviceRepo     <- ZIO.service[DeviceRepo]
         stlRepo        <- ZIO.service[SiteTimeLimitRepo]
+        appRepo        <- ZIO.service[AppRepo]
         trafficRepo    <- ZIO.service[TrafficReportRepo]
         hsRepo         <- ZIO.service[HouseholdSettingsRepo]
         clock          <- ZIO.service[Clock]
@@ -91,10 +93,12 @@ object MetricsExportSpec
         fiber          <- TimeUsedRollupJob
           .loop(
             timeRollupRepo,
+            appRollupRepo,
             rollupRepo,
             profileRepo,
             deviceRepo,
             stlRepo,
+            appRepo,
             trafficRepo,
             hsRepo,
             clock,

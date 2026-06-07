@@ -1,9 +1,12 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.{
+  AppRepo,
+  AppUsedRollupRepo,
   DeviceRepo,
   HouseholdSettingsRepo,
   ProfileRepo,
+  RolledAppDay,
   RolledDay,
   RollupRepo,
   SiteTimeLimitRepo,
@@ -12,7 +15,7 @@ import wifihaven.api.db.{
 }
 import wifihaven.api.policy.{PolicyService, TimeStatusService}
 import wifihaven.shared.Clock
-import wifihaven.shared.types.ProfileId
+import wifihaven.shared.types.{AppId, ProfileId}
 import zio.*
 
 import java.time.{Duration, Instant}
@@ -55,10 +58,12 @@ object TimeUsedRollupJob {
    */
   def loop(
       rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
       runs: RollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
+      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
@@ -66,7 +71,18 @@ object TimeUsedRollupJob {
     runOnce(
       runs,
       clock,
-      now => doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now),
+      now =>
+        doTick(
+          rollup,
+          appRollup,
+          profileRepo,
+          deviceRepo,
+          siteTimeLimitRepo,
+          appRepo,
+          trafficRepo,
+          hs,
+          now,
+        ),
     )
       .repeat(Schedule.fixed(Interval))
       .unit
@@ -78,13 +94,26 @@ object TimeUsedRollupJob {
    */
   def oneTickForTest(
       rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
+      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
-  ): Task[Int] = doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now)
+  ): Task[Int] =
+    doTick(
+      rollup,
+      appRollup,
+      profileRepo,
+      deviceRepo,
+      siteTimeLimitRepo,
+      appRepo,
+      trafficRepo,
+      hs,
+      now,
+    )
 
   // ── internals ──────────────────────────────────────────────────────────────
 
@@ -131,9 +160,11 @@ object TimeUsedRollupJob {
   // bucket granularity (5 min); the next tick re-rolls with a fresh `now` and supersedes the row.
   private def doTick(
       rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
+      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
@@ -142,26 +173,52 @@ object TimeUsedRollupJob {
     today = PolicyService.householdLocalDate(now, settings)
     profiles <- profileRepo.listAll
     devices  <- deviceRepo.listAll
+    apps     <- appRepo.listAll
     stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    perProfile: Map[ProfileId, RolledDay] = {
-      val stlMap  = stlsP.toMap
-      val devsByP =
-        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-      profiles.iterator.map { p =>
-        val devs = devsByP.getOrElse(p.id, Nil)
-        val mac  = devs.map(_.mac).toSet
-        val pres = presence.filter(r => mac.contains(r.mac))
-        val secs = TimeStatusService.usedSecondsForProfile(
-          p,
-          devs,
-          stlMap.getOrElse(p.id, Nil),
-          pres,
-          settings,
-        )
-        p.id -> RolledDay(secs, now)
-      }.toMap
-    }
-    n <- rollup.upsertBatch(today, perProfile)
+    rolls = computeRolls(profiles, devices, apps, stlsP.toMap, presence, settings, now)
+    n <- rollup.upsertBatch(today, rolls._1)
+    _ <- appRollup.upsertBatch(today, rolls._2)
   } yield n
+
+  // Pure: collapse one presence batch into both the per-profile total roll (`time_used_daily`) and
+  // the per-(profile, app) engaged roll (`app_used_daily`), stamped with the same `now` watermark so
+  // the two compose identically (rolled + tail). The per-app figure derives from the SINGLE per-app
+  // primitive (`TimeStatusService.appSecondsByApp` → `Presence.appSecondsForProfile`), so the rollup
+  // reconciles exactly with the per-app cap and the per-app series. Only apps with engaged activity
+  // get a row (zero-activity apps are absent).
+  private def computeRolls(
+      profiles: List[wifihaven.shared.Profile],
+      devices: List[wifihaven.shared.Device],
+      apps: List[wifihaven.shared.App],
+      stlMap: Map[ProfileId, List[wifihaven.shared.SiteTimeLimit]],
+      presence: List[wifihaven.api.presence.PresenceRow],
+      settings: wifihaven.shared.HouseholdSettings,
+      now: Instant,
+  ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay]) = {
+    val devsByP     =
+      devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+    val slugToAppId = TimeStatusService.slugToAppId(apps)
+    def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow] = {
+      val mac = devsByP.getOrElse(pid, Nil).map(_.mac).toSet
+      presence.filter(r => mac.contains(r.mac))
+    }
+    val perProfile = profiles.iterator.map { p =>
+      val secs = TimeStatusService.usedSecondsForProfile(
+        p,
+        devsByP.getOrElse(p.id, Nil),
+        stlMap.getOrElse(p.id, Nil),
+        presFor(p.id),
+        settings,
+      )
+      p.id -> RolledDay(secs, now)
+    }.toMap
+    val perApp     = profiles.iterator.flatMap { p =>
+      TimeStatusService
+        .appSecondsByApp(p, stlMap.getOrElse(p.id, Nil), slugToAppId, presFor(p.id), settings)
+        .iterator
+        .map { case (appId, secs) => (p.id, appId) -> RolledAppDay(secs, now) }
+    }.toMap
+    (perProfile, perApp)
+  }
 }

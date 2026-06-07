@@ -507,6 +507,52 @@ object TimeStatusService {
     }.flatten
 
   /**
+   * #1516: per-app engaged seconds for a profile, keyed by `app_id`, derived from the SINGLE
+   * per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
+   * gap-bridged, cross-host union the per-app cap ([[siteDayStates]] /
+   * [[Presence.patternGroupMinutesForProfile]]) ticks on. This is the value the `app_used_daily`
+   * rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series identities hold by
+   * construction (there is exactly one per-app time computation). `slugToAppId` resolves each
+   * `app:<slug>` group key (from [[groupSiteLimits]]) to its registered `apps.id`; an app whose
+   * slug is absent is dropped (defensive — post-V35 every cap entry is a real registered app, so
+   * this never fires in practice). `presence` must already be scoped to the profile's devices.
+   * Seconds (not minutes) so the rolled + tail decomposition stays exact across the watermark
+   * boundary; floor-to-minutes happens once at read time.
+   */
+  /**
+   * The `apps.slug` ⇄ `apps.id` resolution shared by the per-app rollup writer
+   * ([[wifihaven.api.usage.TimeUsedRollupJob]]) and reader
+   * ([[wifihaven.api.usage.AppUsedRollupService]]), so both resolve an `app:<slug>` cap group key
+   * to the same registered app identity. Centralized here next to [[appSecondsByApp]] (its
+   * consumer) so the keying convention can't drift between the two sides.
+   */
+  def slugToAppId(apps: List[App]): Map[String, AppId] =
+    apps.iterator.map(a => a.slug -> a.id).toMap
+
+  def appSecondsByApp(
+      profile: Profile,
+      siteLimits: List[SiteTimeLimit],
+      slugToAppId: Map[String, AppId],
+      presence: List[PresenceRow],
+      settings: HouseholdSettings,
+  ): Map[AppId, Long] = {
+    val groups = groupSiteLimits(siteLimits).map(g => g._1 -> g._4)
+    Presence
+      .appSecondsForProfile(
+        presence,
+        groups,
+        profile.crossDeviceOverlapMode,
+        settings.heartbeatFilter,
+        settings.presenceContinuationSeconds,
+      )
+      .iterator
+      .flatMap { case (label, secs) =>
+        slugToAppId.get(label.stripPrefix("app:")).map(_ -> secs)
+      }
+      .toMap
+  }
+
+  /**
    * #1506: the union of EVERY active app's host-set for this profile — the app-attribution set fed
    * to [[Presence.isHeartbeat]] so a host an active app genuinely depends on is never dropped as
    * background infra (attribution beats suppression). Derived from the same per-app collapse

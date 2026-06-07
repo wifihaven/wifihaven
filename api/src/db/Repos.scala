@@ -919,7 +919,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     )
 
   def update(s: HouseholdSettings): Task[Unit] = {
-    val ummJson    = s.unmanagedMacPolicy.toJson
+    val ummJson       = s.unmanagedMacPolicy.toJson
     // #1160 / #1464: invalidate the time-used rollup atomically with the
     // settings update. Any change to the daily-reset boundary (tz / reset hour),
     // the heartbeat filter, or the presence session-stitch knob
@@ -928,7 +928,7 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // from first principles. The DELETE is wholesale because all of these fields
     // gate the same aggregation — fine-grained invalidation would only add risk
     // of missing a code path that mutates one of them.
-    val upd        =
+    val upd           =
       sql"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
                   daily_reset_tz=${s.dailyResetTz},
@@ -939,8 +939,12 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
                   presence_continuation_seconds=${s.presenceContinuationSeconds},
                   updated_at=NOW()
             WHERE id=1""".update.run
-    val invalidate = sql"DELETE FROM time_used_daily".update.run
-    (upd *> invalidate).transact(xa).unit
+    val invalidate    = sql"DELETE FROM time_used_daily".update.run
+    // #1516: the per-app rollup (`app_used_daily`) is gated by the SAME active-minute definition
+    // (heartbeat filter, daily-reset boundary, presence session-stitch knob), so invalidate it
+    // atomically too — the next tick refills both from first principles.
+    val invalidateApp = sql"DELETE FROM app_used_daily".update.run
+    (upd *> invalidate *> invalidateApp).transact(xa).unit
   }
 
   def ensureDefault(defaultZone: ZoneId): Task[Unit] =
@@ -3260,6 +3264,7 @@ object Repos {
   val appRepo               = ZLayer.fromFunction(AppRepoLive(_))
   val rollupRepo            = ZLayer.fromFunction(RollupRepoLive(_))
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
+  val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
 }
