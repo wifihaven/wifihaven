@@ -332,6 +332,9 @@ object Main extends ZIOAppDefault {
             upRepo,
             userRepo,
             namedSchedRepo,
+            // #1538: same cache instance TimeRoutes uses, so a schedule detach busts the
+            // per-profile time-status entry instead of leaving a stale "paused for schedule".
+            timeCache,
           ) ++
           ScheduleRoutes.routes(auth, namedSchedRepo) ++
           HouseholdSettingsRoutes.routes(auth, hsRepo) ++

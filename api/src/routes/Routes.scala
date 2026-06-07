@@ -192,6 +192,10 @@ object ProfileRoutes {
       userProfileRepo: UserProfileRepo,
       userRepo: UserRepo,
       namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
+      // #1538: the shared per-profile time-status cache, so the schedule-attach/detach PUT below
+      // can bust the cached ProfileTimeStatus the same way `/api/time/extend` does. Defaulted so
+      // the many test call sites that don't exercise caching keep their existing arity.
+      cache: TimeStatusCache = TimeStatusCache.makeUnsafe(),
   ): Routes[Any, Response] =
     Routes(
       Method.GET / "api" / "profiles"                            ->
@@ -258,6 +262,10 @@ object ProfileRoutes {
             _      <- namedScheduleRepo
               .setProfileBlockSchedules(pid, sr.scheduleIds)
               .mapError(ErrorMapper.dbErrorToResponse)
+            // #1538: attaching/detaching a block schedule changes whether this profile is "paused
+            // for schedule", so bust its cached ProfileTimeStatus the same way /api/time/extend
+            // does — otherwise a detach keeps showing a stale block for up to the today-TTL.
+            _      <- cache.invalidateProfile(pid)
           } yield Response.ok
         },
       Method.POST / "api" / "profiles"                           ->
