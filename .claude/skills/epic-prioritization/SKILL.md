@@ -87,9 +87,12 @@ taxonomy + umbrellas) and `AGENTS.md`, plus what recent merges show is actually
 closing out — do not hardcode it here, it shifts as threads finish.
 
 As of this writing the order is: **App-Centric Model → Schedules (remainder) →
-Tuning → …**, with **Observability already done**. We drive **one epic to
-closure at a time**, foundation-first, rather than spreading thin across epics —
-this avoids write-before-read ordering traps.
+Tuning → …**, with **Observability already done**. (These are working-thread
+names, not necessarily literal `Epic` field options — e.g. "App-Centric Model"
+and "Tuning" map onto board epics / umbrellas rather than being verbatim `Epic`
+values; resolve them against the live taxonomy in `docs/project-board.md`.) We
+drive **one epic to closure at a time**, foundation-first, rather than spreading
+thin across epics — this avoids write-before-read ordering traps.
 
 Two things jump the queue regardless of the stack:
 
