@@ -186,17 +186,21 @@ object Main extends ZIOAppDefault {
         // bump (this PR) and the dedicated connect EC are the first-order fix; this
         // is the durability follow-up tracked in #1221.
         timeRollupRepo   <- ZIO.service[wifihaven.api.db.TimeUsedRollupRepo]
+        appRollupRepoForJ <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
         profileRepoForJ  <- ZIO.service[wifihaven.api.db.ProfileRepo]
         deviceRepoForJ   <- ZIO.service[wifihaven.api.db.DeviceRepo]
         stlRepoForJ      <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+        appRepoForJ      <- ZIO.service[AppRepo]
         trafficRepoForJ  <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
         _                <- TimeUsedRollupJob
           .loop(
             timeRollupRepo,
+            appRollupRepoForJ,
             rollupRepo,
             profileRepoForJ,
             deviceRepoForJ,
             stlRepoForJ,
+            appRepoForJ,
             trafficRepoForJ,
             hsRepo,
             clockForJobs,

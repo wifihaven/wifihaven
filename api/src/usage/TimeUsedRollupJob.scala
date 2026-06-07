@@ -1,6 +1,8 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.{
+  AppRepo,
+  AppUsedRollupRepo,
   DeviceRepo,
   HouseholdSettingsRepo,
   ProfileRepo,
@@ -55,10 +57,12 @@ object TimeUsedRollupJob {
    */
   def loop(
       rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
       runs: RollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
+      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
@@ -66,7 +70,18 @@ object TimeUsedRollupJob {
     runOnce(
       runs,
       clock,
-      now => doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now),
+      now =>
+        doTick(
+          rollup,
+          appRollup,
+          profileRepo,
+          deviceRepo,
+          siteTimeLimitRepo,
+          appRepo,
+          trafficRepo,
+          hs,
+          now,
+        ),
     )
       .repeat(Schedule.fixed(Interval))
       .unit
@@ -78,13 +93,26 @@ object TimeUsedRollupJob {
    */
   def oneTickForTest(
       rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
+      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
-  ): Task[Int] = doTick(rollup, profileRepo, deviceRepo, siteTimeLimitRepo, trafficRepo, hs, now)
+  ): Task[Int] =
+    doTick(
+      rollup,
+      appRollup,
+      profileRepo,
+      deviceRepo,
+      siteTimeLimitRepo,
+      appRepo,
+      trafficRepo,
+      hs,
+      now,
+    )
 
   // ── internals ──────────────────────────────────────────────────────────────
 
@@ -131,37 +159,46 @@ object TimeUsedRollupJob {
   // bucket granularity (5 min); the next tick re-rolls with a fresh `now` and supersedes the row.
   private def doTick(
       rollup: TimeUsedRollupRepo,
+      appRollup: AppUsedRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
+      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
-  ): Task[Int] = for {
-    settings <- hs.get
-    today = PolicyService.householdLocalDate(now, settings)
-    profiles <- profileRepo.listAll
-    devices  <- deviceRepo.listAll
-    stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-    presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    perProfile: Map[ProfileId, RolledDay] = {
-      val stlMap  = stlsP.toMap
-      val devsByP =
-        devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-      profiles.iterator.map { p =>
-        val devs = devsByP.getOrElse(p.id, Nil)
-        val mac  = devs.map(_.mac).toSet
-        val pres = presence.filter(r => mac.contains(r.mac))
-        val secs = TimeStatusService.usedSecondsForProfile(
-          p,
-          devs,
-          stlMap.getOrElse(p.id, Nil),
-          pres,
-          settings,
-        )
-        p.id -> RolledDay(secs, now)
-      }.toMap
-    }
-    n <- rollup.upsertBatch(today, perProfile)
-  } yield n
+  ): Task[Int] = {
+    // #1516: per-(profile, app) engaged-seconds rollup is wired into this tick in the adoption
+    // commit (it derives from TimeStatusService.appSecondsByApp, the single per-app primitive, and
+    // upserts app_used_daily with the same `now` watermark as the profile total). This stub keeps
+    // the wiring/signature in place while writing only the profile total.
+    val _ = (appRollup, appRepo)
+    for {
+      settings <- hs.get
+      today = PolicyService.householdLocalDate(now, settings)
+      profiles <- profileRepo.listAll
+      devices  <- deviceRepo.listAll
+      stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
+      perProfile: Map[ProfileId, RolledDay] = {
+        val stlMap  = stlsP.toMap
+        val devsByP =
+          devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
+        profiles.iterator.map { p =>
+          val devs = devsByP.getOrElse(p.id, Nil)
+          val mac  = devs.map(_.mac).toSet
+          val pres = presence.filter(r => mac.contains(r.mac))
+          val secs = TimeStatusService.usedSecondsForProfile(
+            p,
+            devs,
+            stlMap.getOrElse(p.id, Nil),
+            pres,
+            settings,
+          )
+          p.id -> RolledDay(secs, now)
+        }.toMap
+      }
+      n <- rollup.upsertBatch(today, perProfile)
+    } yield n
+  }
 }
