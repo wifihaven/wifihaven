@@ -177,7 +177,7 @@ object UsageRoutes {
             groupByApp = req.url.queryParam("groupBy").exists(_.split(',').contains("app"))
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
-              else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+              else ZIO.succeed(UsageSeries.AppAxis.empty)
             settings  <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             resp      <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
@@ -240,7 +240,7 @@ object UsageRoutes {
             groupByApp = req.url.queryParam("groupBy").exists(_.split(',').contains("app"))
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
-              else ZIO.succeed((_: HostId) => Option.empty[UsageSeries.AppInfo])
+              else ZIO.succeed(UsageSeries.AppAxis.empty)
             settings  <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
             resp      <- buildBatch(
               pids,
@@ -278,7 +278,7 @@ object UsageRoutes {
       userProfileRepo: UserProfileRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
       groupByApp: Boolean,
-      appLookup: HostId => Option[UsageSeries.AppInfo],
+      appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
   ): IO[Response, UsageSeriesBatchResponse] =
     for {
@@ -464,28 +464,39 @@ object UsageRoutes {
       )
     }
 
-  // #1079 — build the host → owning-app lookup used by the unified-axis
-  // builder. Mirrors the deterministic "lowest appId wins" tiebreak from
-  // #1061 and the apex-aware match from #1085 so subdomain traffic attributes
-  // to the apex-form app entry.
+  // #1079 — build the by-app axis used by the unified-axis builder. `appOf` mirrors the
+  // deterministic "lowest appId wins" tiebreak from #1061 and the apex-aware match from #1085 so
+  // subdomain traffic attributes to the apex-form app entry. #1517: also carry each app's full
+  // host-set (`patternsBySlug`) so the per-app series spans are gap-bridged over the SAME host-set
+  // the per-app cap aggregate and the #1510 rollup use (via Presence.appSpansForProfile), keyed by
+  // slug. Both are built from one `app_hosts` snapshot so the attribution and the span host-set
+  // can't drift.
   private def loadAppLookup(
       appRepo: AppRepo,
-  ): IO[Response, HostId => Option[UsageSeries.AppInfo]] =
+  ): IO[Response, UsageSeries.AppAxis] =
     for {
       apps     <- appRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
       mappings <- appRepo.listAllHostMappings.mapError(ErrorMapper.dbErrorToResponse)
     } yield {
-      val appById = apps.iterator.map(a => a.id -> a).toMap
-      val byApex  = mappings
+      val appById        = apps.iterator.map(a => a.id -> a).toMap
+      val byApex         = mappings
         .groupBy(_.host.value)
         .view
         .mapValues(ms => ms.iterator.map(_.appId).minBy(_.value))
         .toMap
-      (h: HostId) =>
+      val appOf          = (h: HostId) =>
         h.asFqdn
           .flatMap(fqdn => HostMatch.lookupApex(fqdn.value, byApex))
           .flatMap(appById.get)
           .map(a => UsageSeries.AppInfo(a.id, a.slug, a.name, a.icon))
+      val patternsBySlug = mappings
+        .groupBy(_.appId)
+        .iterator
+        .flatMap { case (aid, ms) =>
+          appById.get(aid).map(a => a.slug -> ms.map(_.host.value).distinct)
+        }
+        .toMap
+      UsageSeries.AppAxis(appOf, patternsBySlug)
     }
 
   private def buildForDevice(
@@ -498,7 +509,7 @@ object UsageRoutes {
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
       groupByApp: Boolean,
-      appLookup: HostId => Option[UsageSeries.AppInfo],
+      appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
   ): IO[Response, UsageSeriesResponse] =
     for {
@@ -556,7 +567,7 @@ object UsageRoutes {
       userProfileRepo: UserProfileRepo,
       siteTimeLimitRepo: SiteTimeLimitRepo,
       groupByApp: Boolean,
-      appLookup: HostId => Option[UsageSeries.AppInfo],
+      appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
   ): IO[Response, UsageSeriesResponse] =
     for {

@@ -20,12 +20,16 @@ import java.time.{LocalDate, ZoneId}
  *     combined across devices by the profile's `crossDeviceOverlapMode`, clipped to local hours.
  *     `presenceTotalMins` carries the day-level number floored once, so it equals the headline
  *     exactly (summing per-hour floors would lose fractions).
- *   - **Per-host / per-app / per-device** stacks come from the corresponding session spans
- *     (`Presence.hostSessionSpans` / `deviceSessionSpans`), clipped to hours. A day-total of an
- *     entity equals its `proportionalHostSeconds` presence, so per-app contributions reconcile with
- *     the per-app surface and explain the total (modulo within-device overlap — the total is the
- *     device union, not the sum of per-app spans, by design §4.3, so stacks may exceed the bar;
- *     `otherMins` clamps the rendered residual non-negative).
+ *   - **Per-host / per-device** stacks come from the corresponding session spans
+ *     (`Presence.hostSessionSpans` / `deviceSessionSpans`), clipped to hours.
+ *   - **Per-app** stacks (the `groupBy=app` axis, #1079/#1517) come from the single per-app
+ *     primitive `Presence.appSpansForProfile` (#1514/#1532) — the app's host-set gap-bridged +
+ *     overlap-deduped as one stream — so an app's series total equals the per-app cap aggregate and
+ *     the #1510 per-app rollup, not the per-host span sum. See `buildEntries`.
+ *
+ * In all cases the per-hour `totalMins` is the device session union (the daily-cap building block),
+ * so stacks may exceed the bar (the total is the union, not the sum of per-app/-host spans, by
+ * design §4.3); `otherMins` clamps the rendered residual non-negative.
  */
 object UsageSeries {
 
@@ -210,13 +214,37 @@ object UsageSeries {
     (topHosts, bucketsByHost.toList, topDevices, bucketsByDevice.toList, totalMins)
   }
 
-  // ── #1079 / #1492 unified by-app axis ───────────────────────────────────────
+  // ── #1079 / #1492 / #1517 unified by-app axis ────────────────────────────────
   //
-  // Each host's session spans are attributed to its owning app (if any — `appOfHost`) or surface
-  // as a first-class host entry. Per-app minutes are the sum of the app's member-host span seconds
-  // (matching the per-app presence surface, #1465); the per-hour total comes from the same session
-  // union the other axes use, so the app axis reconciles with the headline too.
+  // Each host's session spans are attributed to its owning app (if any — `axis.appOf`) or surface
+  // as a first-class host entry. An app entity's spans are the **gap-bridged union of its whole
+  // host-set** from the single per-app presence primitive ([[Presence.appSpansForProfile]],
+  // #1514/#1532) — NOT the concatenation of the app's per-host stitched spans, which neither
+  // bridges the idle gap between two different hosts of the same app (the apex going quiet while an
+  // off-domain asset / CDN host carries the next request, #1505) nor dedups their within-app
+  // overlap, and so disagreed with the per-app cap aggregate ([[Presence.appSecondsForProfile]]) and
+  // the #1510 per-app daily rollup. Reading the same primitive the cap and rollup read makes the
+  // app's series total reconcile with both by construction (#1517 — the #1492 "graphs reconcile
+  // with the headline total" invariant, extended to the app dimension). The per-hour total still
+  // comes from the device session union the other axes use, so the app axis reconciles with the
+  // headline too.
   case class AppInfo(id: AppId, slug: String, name: String, icon: Option[String])
+
+  /**
+   * The by-app axis input for [[buildEntries]]. `appOf` attributes a host to its owning app (apex-
+   * aware, lowest-appId tiebreak — #1061/#1085); `patternsBySlug` is each app's full host-set
+   * (apex-form patterns from `app_hosts`) so the per-app spans are computed over the SAME host-set
+   * the cap aggregate and rollup use ([[Presence.appSpansForProfile]] / `groupSiteLimits`), keyed
+   * by `apps.slug`. The two are built together from one `app_hosts` snapshot ([[loadAppLookup]]).
+   */
+  final case class AppAxis(
+      appOf: HostId => Option[AppInfo],
+      patternsBySlug: Map[String, List[String]],
+  )
+
+  object AppAxis {
+    val empty: AppAxis = AppAxis(_ => None, Map.empty)
+  }
 
   private def entityRefOf(key: Either[AppInfo, HostId]): UsageEntityRef =
     key match {
@@ -254,19 +282,46 @@ object UsageSeries {
       exemptPatterns: List[String],
       filter: HeartbeatFilter,
       continuationSeconds: Int,
-      appOfHost: HostId => Option[AppInfo],
+      axis: AppAxis,
   ): (List[UsageEntityTotal], List[UsageEntityBucket]) = {
     type Key = Either[AppInfo, HostId]
 
     val deviceSpans = Presence.deviceSessionSpans(rows, exemptPatterns, filter, continuationSeconds)
     val totalByHour = totalSecondsByHour(deviceSpans, overlap, date, zone)
 
-    // Per-host spans → grouped into entity keys (app rolls up its hosts; non-app host stands alone).
+    // Per-host spans classify which apps are present and which hosts surface standalone.
     val hostSpans = Presence.hostSessionSpans(rows, overlap, filter, continuationSeconds)
-    val entitySpans: Map[Key, List[Span]] = hostSpans.iterator
-      .map { case (h, spans) => appOfHost(h).map(Left(_)).getOrElse(Right(h)) -> spans }
-      .toList
-      .groupMapReduce(_._1)(_._2)(_ ++ _)
+    val appsPresent: Map[String, AppInfo] =
+      hostSpans.keysIterator.flatMap(axis.appOf).map(a => a.slug -> a).toMap
+
+    // #1517: an app's spans are the gap-bridged union of its WHOLE host-set via the single per-app
+    // primitive (#1514/#1532) — same groups/overlap/filter/continuation the per-app cap aggregate
+    // (`TimeStatusService.siteDayStates` / `appSecondsByApp`) and the #1510 rollup read, so the per-
+    // app series total equals the cap and the rollup by construction (not the per-host concat, which
+    // neither bridges cross-host idle gaps nor dedups within-app overlap).
+    val appSpans: Map[String, List[Span]] =
+      Presence.appSpansForProfile(
+        rows,
+        appsPresent.valuesIterator
+          .map(a => a.slug -> axis.patternsBySlug.getOrElse(a.slug, Nil))
+          .toList,
+        overlap,
+        filter,
+        continuationSeconds,
+      )
+
+    val entitySpans: Map[Key, List[Span]] = {
+      val appEntries: Iterator[(Key, List[Span])]  =
+        appsPresent.iterator.map { case (slug, info) =>
+          (Left(info): Key) -> appSpans.getOrElse(slug, Nil)
+        }
+      // Non-app hosts surface standalone with their own per-host spans.
+      val hostEntries: Iterator[(Key, List[Span])] =
+        hostSpans.iterator.collect {
+          case (h, spans) if axis.appOf(h).isEmpty => (Right(h): Key) -> spans
+        }
+      (appEntries ++ hostEntries).toMap
+    }
 
     val ordered    = entitySpans.toList
       .map { case (k, spans) => (k, (daySecs(spans) / 60).toInt) }
