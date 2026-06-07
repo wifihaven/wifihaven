@@ -1085,6 +1085,216 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(yt.remainingMins == 0) &&   // clamped to 0
           assertTrue(kids.usedMins == 0)         // site usage NOT counted in total
       },
+      // #1546: per-device `deviceSummaries` must share ONE exempt/overlap definition with the
+      // canonical headline `usedMinutes` (via TimeStatusService.usedSecondsByMac), so the summed
+      // per-device minutes reconcile with the headline instead of being independently recomputed.
+      test("#1546 Sum mode: summed deviceSummaries minutes equal the headline usedMinutes") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo) // default overlap = Sum
+          _           <- tlRepo.upsert(kidsId, 120)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Whole-minute amounts so per-mac floor-to-minute and headline floor agree exactly.
+          off1            <- seedTraffic(routerId, mac1, "minecraft.net", today, 20, 0)
+          _               <- seedTraffic(routerId, mac2, "youtube.com", today, 30, off1)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        } yield assertTrue(kids.usedMins == 50) &&
+          assertTrue(kids.devices.map(_.usedMins).sum == kids.usedMins)
+      },
+      // #1546 regression: the prod divergence. Under Dedup the headline `usedMinutes` is a
+      // cross-device UNION, but the route used to SUM each device's own engaged minutes for
+      // `deviceSummaries` — so two devices overlapping in the same window summed to 2× the headline
+      // (>100% display). usedSecondsByMac credits each device only its disjoint marginal, so the
+      // summaries reconcile with the union and no single device exceeds it.
+      test("#1546 Dedup mode: summed deviceSummaries never exceed the headline usedMinutes") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- profileRepo.findById(kidsId).flatMap { opt =>
+            ZIO.foreachDiscard(opt)(p =>
+              profileRepo.update(p.copy(crossDeviceOverlapMode = CrossDeviceOverlapMode.Dedup)),
+            )
+          }
+          _           <- tlRepo.upsert(kidsId, 120)
+          mac1 = "aa:bb:cc:dd:ee:01"
+          mac2 = "aa:bb:cc:dd:ee:02"
+          _        <- TestLayers.seedDevice(deviceRepo, mac1, "iPad", kidsId)
+          _        <- TestLayers.seedDevice(deviceRepo, mac2, "iPhone", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // Both devices active across the SAME 30 minutes → union headline is 30, but each
+          // device's own engaged time is 30. Pre-fix the summaries summed to 60.
+          _               <- seedTraffic(routerId, mac1, "cnn.com", today, 30, 0)
+          _               <- seedTraffic(routerId, mac2, "cnn.com", today, 30, 0)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+        } yield assertTrue(kids.usedMins == 30) &&                         // union headline
+          assertTrue(kids.devices.map(_.usedMins).sum == kids.usedMins) && // disjoint, sums to union
+          assertTrue(kids.devices.forall(_.usedMins <= kids.usedMins))     // never >100%
+      },
+      // #1546 / #1531 at per-device granularity: a device's `usedMins` must exclude exempt-from-daily
+      // app time the SAME way the headline does — both derive exempt patterns from `usedSecondsByMac`.
+      test("#1546 exempt-app: per-device usedMins excludes exempt time identically to the headline") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          tlRepo      <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          auth        <- makeAuth
+          token       <- auth.login("admin", "changeme").map(_.token.value)
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- tlRepo.upsert(kidsId, 120)
+          _           <- TestLayers.seedAppAssignment(
+            appRepo,
+            kidsId,
+            "khan.org",
+            AppMode.TimeLimited,
+            dailyMinutes = Some(60),
+            exemptFromDaily = true,
+          )
+          mac = "aa:bb:cc:dd:ee:01"
+          _        <- TestLayers.seedDevice(deviceRepo, mac, "iPad", kidsId)
+          routerId <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // 25 min exempt khan.org + 10 min counted cnn.com on the one device.
+          off1            <- seedTraffic(routerId, mac, "khan.org", today, 25, 0)
+          _               <- seedTraffic(routerId, mac, "cnn.com", today, 10, off1)
+          userProfileRepo <- ZIO.service[UserProfileRepo]
+          hsRepo          <- ZIO.service[HouseholdSettingsRepo]
+          clock           <- ZIO.service[Clock]
+          tss    = new wifihaven.api.policy.TimeStatusServiceLive(
+            profileRepo,
+            schedRepo,
+            tlRepo,
+            stlRepo,
+            deviceRepo,
+            trafficRepo,
+            extRepo,
+          )
+          routes = TimeRoutes.routes(
+            auth,
+            deviceRepo,
+            tlRepo,
+            stlRepo,
+            trafficRepo,
+            extRepo,
+            profileRepo,
+            userProfileRepo,
+            hsRepo,
+            tss,
+            clock,
+          )
+          resp <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/time/status").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          body <- resp.body.asString
+          list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
+          kids = list.find(_.profileId == kidsId).get
+          // The per-device endpoint headline excludes exempt time the same way.
+          devResp <- routes.runZIO(
+            Request
+              .get(URL.decode(s"/api/time/status/$mac").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          devBody <- devResp.body.asString
+          dev     <- ZIO.fromEither(devBody.fromJson[DeviceTimeStatus])
+        } yield assertTrue(kids.usedMins == 10) &&                  // exempt 25 min excluded
+          assertTrue(kids.devices.map(_.usedMins).sum == 10) &&     // per-device summary excludes it too
+          assertTrue(dev.usedMins == 10)                            // device endpoint headline agrees
+      },
       test("hostUsage: heartbeat filter strips keepalive pollers from per-host surfaces (#1465)") {
         // Reproduce the prod shape from #715: device sat at ~60 used minutes
         // but a per-FQDN bucket-presence breakdown lists 10 polling hosts at
