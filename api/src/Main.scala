@@ -251,6 +251,9 @@ object Main extends ZIOAppDefault {
       ZLayer.fromZIO(ZIO.serviceWith[AppConfig](_.jwt)) >+>
       Clock.live >+>
       AuthService.layer >+>
+      // #1515: per-app rollup read accessor, wired ahead of TimeStatusService so the snapshot's
+      // per-app cap reads `app_used_daily` + a live tail on the rollup path.
+      wifihaven.api.usage.AppUsedRollupService.layer >+>
       TimeStatusService.layer >+>
       PolicyService.layer >+>
       TimeStatusCache.live() >+>

@@ -370,11 +370,26 @@ class PolicyServiceLive(
                   now = now,
                 )
 
+                // #1515: the per-profile carve set the snapshot puts in `extraAllowed`, reproduced
+                // here so /decision agrees with what nftables enforces. It is the allowed/allowed_during
+                // app hosts PLUS the whole host-set of every exempt-from-daily app still under its own
+                // per-app cap (`exemptUnderCapHosts`) — the latter is the #1513 fix at the /decision
+                // layer: an exempt app under cap must beat a whole-MAC pause/schedule block, so it has
+                // to be checked BEFORE the pause/schedule short-circuits below. Under a HARD pause the
+                // snapshot empties the per-profile `extraAllowed` (only `global` survives), so we drop
+                // the carve here too — keeping the two readings identical (#1532).
+                val isHardPause    =
+                  p.pauseMode == PauseMode.Hard &&
+                    dayState.blockReason.contains(MacBlockReason.Paused)
+                val profileAllowed =
+                  if isHardPause then Nil
+                  else (appAllowed ++ PolicyService.exemptUnderCapHosts(dayState)).distinct
+
                 // #1413/#421: extraAllowed beats EVERY whole-MAC block — incl.
                 // Paused/Schedule — so check the allowed-app list first, before
                 // the pause/schedule short-circuits. This matches the snapshot/
                 // router `ip daddr != @ea_<m>_<a>` carve-out.
-                if matchesAny(h, appAllowed) then
+                if matchesAny(h, profileAllowed) then
                   ZIO.succeed(
                     RouterDecisionResponse(
                       ConnectionDecision.Allow,
@@ -477,20 +492,20 @@ class PolicyServiceLive(
         ),
       )
       .orElse {
-        val isExemptSite = state.perSite.exists { sd =>
-          sd.exemptFromDaily && sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp))
-        }
-        if isExemptSite then None
-        else
-          state.dailyLimitMinutes.flatMap { limit =>
-            Option.when(state.usedMinutes >= limit + state.extensionMinutes)(
-              RouterDecisionResponse(
-                ConnectionDecision.Block,
-                BlockReason.asWire(MacBlockReason.TimeLimit),
-                Some(resetAt),
-              ),
-            )
-          }
+        // #1515: no exempt-app guard is needed here anymore. An exempt-from-daily app still under
+        // its own cap is carved into `profileAllowed` and allowed upstream (before this runs), and
+        // one over its cap is caught by `siteLimitHit` above — so by the time we reach the daily cap
+        // the host is never daily-exempt. The daily-cap predicate is the shared
+        // [[dailyCapExhausted]] (the same one the snapshot's `state.blocked` / TimeLimit reason
+        // folds), so the per-host /decision and the snapshot can't fold the daily cap differently
+        // (#1532).
+        Option.when(PolicyService.dailyCapExhausted(state))(
+          RouterDecisionResponse(
+            ConnectionDecision.Block,
+            BlockReason.asWire(MacBlockReason.TimeLimit),
+            Some(resetAt),
+          ),
+        )
       }
   }
 
@@ -654,28 +669,22 @@ object PolicyService {
       appExtraAllowed: List[Hostname] = Nil,
       appExtraBlocked: List[Hostname] = Nil,
   ): BlockRules = {
-    // Per-site limits exhausted today → the app's hosts appear in extraBlocked too. Hosts are kept
-    // as raw strings wrapped via Hostname.unsafe (the router treats these as patterns, so a glob
-    // like *.youtube.com that isn't a strict hostname is still accepted).
-    // #1505: per-site exhaustion is now per-app — `state.perSite` carries one entry per app with
-    // its usage aggregated across the whole host-set. When an app's aggregate hits its limit, ALL
-    // of the app's hosts go to extraBlocked (and the carve-out below stops carving them).
-    val siteLimitExtraBlocked: List[Hostname] = state.perSite.collect {
-      case sd if sd.usedMinutes >= sd.dailyLimitMinutes => sd.hosts.map(Hostname.unsafe)
-    }.flatten
+    // #1505/#1515: per-app cap exhaustion blocks the app's WHOLE host-set together — `state.perSite`
+    // carries one entry per app with usage aggregated (gap-bridged) across the whole host-set, so
+    // when that aggregate hits the limit ALL of the app's hosts go to extraBlocked, not just the one
+    // whose traffic crossed. Shared with the /decision fallback via `siteCapExhaustedHosts` so the
+    // two cannot diverge (#1532).
+    val siteLimitExtraBlocked: List[Hostname] = siteCapExhaustedHosts(state)
 
-    // #1105: time_limited app hosts with exemptFromDaily=true carve around the
-    // MAC-level @blocked_macs drop while they still have per-host budget. The
-    // exempt flag's original role was just to exclude the host from the daily
-    // tally; without this carve-out, hitting the profile cap silently dropped
-    // the exempt app too, violating the "Khan doesn't count" contract.
-    // Naturally transitions allow → block as the per-host budget exhausts
-    // (siteLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
-    // at the router; see feedback_extraallowed_beats_blocked).
-    val appExemptAllowedHosts: List[Hostname] = state.perSite.collect {
-      case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
-        sd.hosts.map(Hostname.unsafe)
-    }.flatten
+    // #1105/#1515: time_limited app hosts with exemptFromDaily=true carve around the MAC-level
+    // @blocked_macs drop while the app's aggregate is still under its own cap — for the WHOLE
+    // host-set. The exempt flag's original role was just to exclude the app from the daily tally;
+    // without this carve-out, hitting the profile cap silently dropped the exempt app too, violating
+    // the "Khan doesn't count" contract (#1513). Naturally transitions allow → block as the app's
+    // aggregate exhausts (siteLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
+    // at the router; see feedback_extraallowed_beats_blocked). Shared with /decision via
+    // `exemptUnderCapHosts` (#1532).
+    val appExemptAllowedHosts: List[Hostname] = exemptUnderCapHosts(state)
 
     // #1418: hard pause is a true off-switch. When this profile is paused AND
     // its pause_mode is `hard`, drop even the app/exempt/infra carve-outs — only
@@ -751,6 +760,32 @@ object PolicyService {
    */
   def dailyCapExhausted(state: ProfileDayState): Boolean =
     state.dailyLimitMinutes.exists(lim => state.usedMinutes >= lim + state.extensionMinutes)
+
+  /**
+   * #1515: the whole host-set of every per-app cap that is exhausted today — `usedMinutes` (the
+   * gap-bridged aggregate across the app's whole host-set, from `appSecondsForProfile`) has reached
+   * the app's daily limit. These hosts go to `extraBlocked` together so the router drops the WHOLE
+   * app, not just the one host whose traffic crossed. The single per-app cap-block computation,
+   * shared by the snapshot ([[computeBlockRules]]) and the per-host /decision fallback so the two
+   * cannot diverge (#1532). Per-app caps take no extensions — those are profile-level and apply to
+   * the daily total ([[dailyCapExhausted]]), not the per-app budget.
+   */
+  private[policy] def siteCapExhaustedHosts(state: ProfileDayState): List[Hostname] =
+    state.perSite.collect {
+      case sd if sd.usedMinutes >= sd.dailyLimitMinutes => sd.hosts.map(Hostname.unsafe)
+    }.flatten
+
+  /**
+   * #1515: the whole host-set of every exempt-from-daily app still UNDER its own per-app cap — the
+   * complement of [[siteCapExhaustedHosts]] for exempt apps. Carved into `extraAllowed` so it beats
+   * every whole-MAC block (paused / schedule / daily-limit) at the router (#421). Shared by the
+   * snapshot and the /decision fallback so the exempt carve cannot diverge (#1532, #1513).
+   */
+  private[policy] def exemptUnderCapHosts(state: ProfileDayState): List[Hostname] =
+    state.perSite.collect {
+      case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
+        sd.hosts.map(Hostname.unsafe)
+    }.flatten
 
   /** True iff `w` (a #1069 named-schedule window) is active at `now`, via [[scheduleActiveAt]]. */
   def windowActiveAt(w: ScheduleWindow, now: Instant): Boolean =
