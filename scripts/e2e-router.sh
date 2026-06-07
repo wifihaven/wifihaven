@@ -791,7 +791,16 @@ check_day_927 "$DAY_AFTER"  "after927.example.com"  "before927.example.com"
 # bucket must total differently by mode — Sum adds per-device minutes (5+5=10),
 # Dedup unions the bucket once (5). Build one profile per mode with two devices
 # each, post identical overlapping usage, and read /api/time/status/summary
-# (cache-free, overlap-aware via dayStateAll). Assert sum=10, dedup=5, sum>dedup.
+# (cache-free, overlap-aware via dayStateAll).
+#
+# Assert the SEMANTICS via a tolerance band, not exact 10/5: presence over real
+# wall-clock timing has ±1 min/device boundary jitter (a 300s span can resolve
+# to 4 or 5 min at the seconds→minute / period-bucket boundary), so an exact
+# `sum==10 and dedup==5` check is inherently flaky (#1555: observed 9/4). The
+# band keeps the discrimination intact — Sum ≈ 2 devices, Dedup ≈ 1 device, and
+# the gap proves dedup actually unioned — while tolerating the jitter. Drift
+# beyond ±1/device (sum<=7 or dedup<=3) is a real presence regression to
+# investigate, NOT a tolerance to widen further.
 step "#928: cross-device overlap Sum (10) vs Dedup (5) on /api/time/status/summary"
 mk_profile_928() {  # $1=label  $2=mode → echoes id
   curl -fsS -X POST "$BASE/api/profiles" "${AUTH[@]}" \
@@ -847,14 +856,23 @@ import json
 xs = json.load(open('$TMP/s928.json'))
 by = {x['profileId']: x['usedMins'] for x in xs}
 s = by.get($P928_SUM); d = by.get($P928_DED)
-ok = (s == 10 and d == 5 and s > d)
+# ±1 min per device is expected presence boundary jitter (300s span can resolve
+# to 4 or 5 min at the seconds->minute / period-bucket boundary under real
+# wall-clock timing). Assert the SEMANTICS, not exact values. Drift beyond this
+# (sum<=7 or dedup<=3) means a real presence regression — investigate, do NOT
+# widen further.
+ok = (s is not None and d is not None
+      and 8 <= s <= 11        # ~2 devices summed (5+5, +/-1 each)
+      and 4 <= d <= 6         # ~1 device after dedup union (5, +/-1)
+      and s - d >= 3          # dedup actually deduplicated (expected saving 5; jitter floor 3)
+      and s > d)
 print('ok' if ok else 'sum=%s dedup=%s' % (s, d))
 ")
   [ "$SUMM_OK" = "ok" ] && break
   sleep 2
 done
-[ "$SUMM_OK" = "ok" ] || fail "#928: expected sum=10 dedup=5, got: $SUMM_OK"
-pass "#928: Sum=10, Dedup=5 (overlapping bucket counted once under Dedup)"
+[ "$SUMM_OK" = "ok" ] || fail "#928: expected sum~10 dedup~5 (±1), got: $SUMM_OK"
+pass "#928: Sum~10 (2 devices) > Dedup~5 (1 device, overlapping bucket counted once); within ±1/device presence jitter"
 
 # ── #929: new-device alert on an unseen MAC + dismiss ────────────────────────
 #
