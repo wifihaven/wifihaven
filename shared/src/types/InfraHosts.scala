@@ -28,6 +28,11 @@ package wifihaven.shared.types
  * the `googleapis.com` apex — the apex would absorb legitimate per-app API traffic that must
  * attribute and count.
  *
+ * #1506 enforces this boundary at runtime: even if an entry here also appears in an ACTIVE app's
+ * host-set, [[wifihaven.api.presence.Presence.isHeartbeat]] treats app attribution as winning over
+ * suppression, so that host counts toward the app instead of being dropped as infra. This list is
+ * therefore the *fallback* — it suppresses a host only when no active app claims it.
+ *
  * Entries are apex- or exact-host patterns (no `*.` prefix, lowercased). An apex such as `gvt2.com`
  * matches every subdomain via [[HostMatch.matchesPattern]] (and the router's trailing-suffix match
  * on the allow side). Matching is case-sensitive on the assumption of normalized input

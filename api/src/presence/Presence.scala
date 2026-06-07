@@ -170,10 +170,14 @@ object Presence {
       rows: List[PresenceRow],
       exemptPatterns: List[String],
       filter: HeartbeatFilter,
+      appHostPatterns: List[String] = Nil,
   ): List[PresenceRow] = {
     def isExempt(h: HostId) =
       h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
-    rows.filterNot(r => isHeartbeat(r, filter)).filterNot(r => isExempt(r.host))
+    // #1506: app attribution beats background/byte suppression; exempt-from-daily filtering is a
+    // separate concern and still applies afterward (an exempt app's host is still excluded from the
+    // daily total even though it is no longer suppressed as a heartbeat).
+    rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns)).filterNot(r => isExempt(r.host))
   }
 
   /** Per-`(device, app)` sessions for a counted row-set, where `app = host` (design §4.1). */
@@ -196,8 +200,9 @@ object Presence {
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): Map[MacAddress, Long] = {
-    val counted = countedRows(rows, exemptPatterns, filter)
+    val counted = countedRows(rows, exemptPatterns, filter, appHostPatterns)
     val gap     = effectiveGap(counted, continuationSeconds)
     counted
       .groupBy(_.mac)
@@ -216,8 +221,9 @@ object Presence {
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): Map[MacAddress, Int] =
-    totalSecondsByMac(rows, exemptPatterns, filter, continuationSeconds).view
+    totalSecondsByMac(rows, exemptPatterns, filter, continuationSeconds, appHostPatterns).view
       .mapValues(s => (s / 60).toInt)
       .filter(_._2 != 0)
       .toMap
@@ -233,8 +239,9 @@ object Presence {
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): Long = {
-    val counted = countedRows(rows, exemptPatterns, filter)
+    val counted = countedRows(rows, exemptPatterns, filter, appHostPatterns)
     val gap     = effectiveGap(counted, continuationSeconds)
     unionSeconds(sessionSpans(counted, gap))
   }
@@ -244,8 +251,15 @@ object Presence {
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): Int =
-    (dedupedTotalSeconds(rows, exemptPatterns, filter, continuationSeconds) / 60).toInt
+    (dedupedTotalSeconds(
+      rows,
+      exemptPatterns,
+      filter,
+      continuationSeconds,
+      appHostPatterns,
+    ) / 60).toInt
 
   /**
    * #1492: per-mac merged daily session spans — the per-device building block of the daily cap, in
@@ -260,8 +274,9 @@ object Presence {
       exemptPatterns: List[String],
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
+      appHostPatterns: List[String] = Nil,
   ): Map[MacAddress, List[Span]] = {
-    val counted = countedRows(rows, exemptPatterns, filter)
+    val counted = countedRows(rows, exemptPatterns, filter, appHostPatterns)
     val gap     = effectiveGap(counted, continuationSeconds)
     counted
       .groupBy(_.mac)
@@ -320,9 +335,39 @@ object Presence {
    * on low bytes / short activity) it cannot re-open the #1446 undercount: a genuine app's sparse,
    * low-byte requests are not on the list, so they still count. The `bytesThreshold` keepalive
    * floor is unchanged and still gated on `filter.enabled`.
+   *
+   * #1506: ATTRIBUTION BEATS SUPPRESSION. `appHostPatterns` is the union of the host-sets of the
+   * apps active for the profile/MAC being counted (from #1505
+   * [[TimeStatusService.groupSiteLimits]]). A row whose host matches any of those patterns is
+   * attributed to a real app, so it can NEVER be dropped as background infra OR as a
+   * sub-threshold-byte keepalive — it must count toward that app. This is the runtime guard for the
+   * boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must attribute
+   * and count) and closes the #1499 over-suppression seam: an asset/CDN host an app genuinely
+   * depends on that happens to match a background pattern is rescued by its app membership. Only
+   * hosts attributed to NO active app fall through to background/byte suppression, so device infra
+   * with nothing behind it stays suppressed exactly as before. Callers that have no app context
+   * pass `Nil` (the default), preserving prior behavior. This is the single app-aware predicate
+   * every counting surface routes through — do not re-derive suppression elsewhere (the #1532
+   * divergence lesson).
    */
-  def isHeartbeat(row: PresenceRow, filter: HeartbeatFilter): Boolean =
-    isBackgroundHost(row) || (filter.enabled && row.bytes < filter.bytesThreshold)
+  def isHeartbeat(
+      row: PresenceRow,
+      filter: HeartbeatFilter,
+      appHostPatterns: List[String] = Nil,
+  ): Boolean =
+    !isAppAttributed(row, appHostPatterns) &&
+      (isBackgroundHost(row) || (filter.enabled && row.bytes < filter.bytesThreshold))
+
+  /**
+   * #1506: whether the row's FQDN is attributed to one of the active apps' host-sets — the
+   * predicate that lets attribution win over suppression in [[isHeartbeat]]. Keyed on host identity
+   * via the shared [[matchesPattern]] (so apex patterns match subdomains, same as the app-presence
+   * surfaces); IP-literal hosts never match patterns. An empty `appHostPatterns` (no app context)
+   * is never attributed.
+   */
+  def isAppAttributed(row: PresenceRow, appHostPatterns: List[String]): Boolean =
+    appHostPatterns.nonEmpty &&
+      row.host.asFqdn.exists(fqdn => appHostPatterns.exists(p => matchesPattern(fqdn.value, p)))
 
   /**
    * #1503/#1525: whether the row's FQDN is device-level background infra
@@ -528,8 +573,12 @@ object Presence {
       filter: HeartbeatFilter = HeartbeatFilter.Off,
       continuationSeconds: Int = DefaultContinuationSeconds,
   ): Map[String, List[Span]] = {
-    val active = rows.filterNot(r => isHeartbeat(r, filter))
-    val gap    = effectiveGap(active, continuationSeconds)
+    // #1506: the active apps ARE these groups, so their union host-set is the app-attribution set —
+    // a host on an app's host-set that also matches a background pattern (an off-domain asset / CDN
+    // host, #1505) attributes to the app and counts here instead of being suppressed as infra.
+    val appHostPatterns = groups.flatMap(_._2)
+    val active          = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
+    val gap             = effectiveGap(active, continuationSeconds)
     def matchesGroup(r: PresenceRow, pats: List[String]): Boolean =
       r.host.asFqdn.exists(fqdn => pats.exists(p => matchesPattern(fqdn.value, p)))
     groups.iterator.flatMap { case (key, pats) =>
