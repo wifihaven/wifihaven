@@ -262,6 +262,10 @@ object ProfileRoutes {
             _      <- namedScheduleRepo
               .setProfileBlockSchedules(pid, sr.scheduleIds)
               .mapError(ErrorMapper.dbErrorToResponse)
+            // #1538: attaching/detaching a block schedule changes whether this profile is "paused
+            // for schedule", so bust its cached ProfileTimeStatus the same way /api/time/extend
+            // does — otherwise a detach keeps showing a stale block for up to the today-TTL.
+            _      <- cache.invalidateProfile(pid)
           } yield Response.ok
         },
       Method.POST / "api" / "profiles"                           ->
