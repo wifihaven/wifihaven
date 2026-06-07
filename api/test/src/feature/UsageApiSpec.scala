@@ -3,7 +3,9 @@ package wifihaven.api.feature
 import wifihaven.api.JwtConfig
 import wifihaven.api.auth.*
 import wifihaven.api.db.*
+import wifihaven.api.policy.TimeStatusServiceLive
 import wifihaven.api.routes.*
+import wifihaven.api.usage.{AppUsedRollupServiceLive, TimeUsedRollupJob}
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.shared.Clock.TestClock
@@ -14,7 +16,7 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
-import java.time.{LocalDate, ZoneOffset}
+import java.time.{LocalDate, LocalDateTime, ZoneOffset}
 
 object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -614,6 +616,112 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(ytEntry.dayMins == 15) &&
           // The two contributions explain the total (no within-device overlap in this fixture).
           assertTrue(out.topEntries.map(_.dayMins).sum == expectedMins)
+      },
+      // #1517 — the per-app graph series must derive from the SINGLE per-app presence primitive
+      // (`Presence.appSpansForProfile`, #1514/#1532): an app's host-set is gap-bridged + overlap-
+      // deduped across its whole host-set, NOT the concatenation of its per-host stitched spans.
+      // Fixture: app "social" owns social.com + cdn.social.net. social.com is active 08:50–08:55
+      // and cdn.social.net 09:00–09:05. The 300 s cross-host idle gap is < the effective gap
+      // (2×R = 600 s for 300 s buckets), so the two DIFFERENT hosts of the same app bridge into one
+      // [08:50, 09:05] engaged span = 15 min — NOT 5 + 5. The legacy per-host concat would plot the
+      // un-bridged 10 min and disagree with the per-app cap aggregate and the #1510 rollup.
+      //
+      // This asserts the #1492 "graphs reconcile with the headline total" invariant extended to the
+      // APP dimension — the chain profile total ⇄ per-app rollup (#1510) ⇄ per-app cap ⇄ per-app
+      // series all read 15 — and that hour-clipping the bridged span sums back to the per-app daily
+      // total (10 min in hour 8 + 5 min in hour 9).
+      test(
+        "#1517: multi-host app series is gap-bridged + hour-clipped, reconciling with rollup + cap (not per-host sum)",
+      ) {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          hsr         <- ZIO.service[HouseholdSettingsRepo]
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          timeLimRepo <- ZIO.service[TimeLimitRepo]
+          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          extRepo     <- ZIO.service[TimeExtensionRepo]
+          ruRepo      <- ZIO.service[TimeUsedRollupRepo]
+          aruRepo     <- ZIO.service[AppUsedRollupRepo]
+          // Pin the household reset tz to UTC so `now`'s local date is `today`.
+          cur     <- hsr.get
+          settings = cur.copy(dailyResetTz = ZoneOffset.UTC)
+          _       <- hsr.update(settings)
+          kidsId  <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _       <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId <- seedRouter
+          // App "social" with a two-host set, assigned a time-limited cap (so it lands in the cap
+          // aggregate and the #1510 per-app rollup).
+          socialId <- appRepo.create("Social", "social", None, Some("💬"))
+          _        <- appRepo.setHosts(
+            socialId,
+            List(Hostname.unsafe("social.com"), Hostname.unsafe("cdn.social.net")),
+          )
+          _        <- appRepo.upsertAssignment(socialId, kidsId, AppMode.TimeLimited, Some(60), false)
+          // social.com 08:50–08:55, cdn.social.net 09:00–09:05 — a 300 s cross-host gap that bridges,
+          // and a span that straddles the 09:00 hour boundary so hour-clipping is exercised.
+          _ <- insertRow(routerId, testMac, "social.com", today, 8, 50)
+          _ <- insertRow(routerId, testMac, "cdn.social.net", today, 9, 0)
+          now = LocalDateTime.of(today.getYear, today.getMonthValue, today.getDayOfMonth, 12, 0)
+            .toInstant(ZoneOffset.UTC)
+          // ── #1510 rollup read accessor (gap-bridged engaged minutes per app) ──
+          _      <- TimeUsedRollupJob
+            .oneTickForTest(ruRepo, aruRepo, profileRepo, deviceRepo, stlRepo, appRepo, trafficRepo, hsr, now)
+          reader  = new AppUsedRollupServiceLive(profileRepo, deviceRepo, stlRepo, appRepo, trafficRepo, aruRepo)
+          rollup <- reader.appEngagedMinutes(now, today, settings, kidsId)
+          // ── per-app cap aggregate (SiteDayState.usedMinutes) ──
+          tsvc    = new TimeStatusServiceLive(
+            profileRepo, schedRepo, timeLimRepo, stlRepo, deviceRepo, trafficRepo, extRepo, ruRepo,
+          )
+          state  <- tsvc.dayStateLive(now, today, settings, kidsId)
+          capMin  = state.flatMap(_.perSite.find(_.label == "app:social").map(_.usedMinutes))
+          // ── the legacy per-host proportional sum (what the un-bridged series plotted) ──
+          rows   <- trafficRepo.listPresenceRows(List(MacAddress.unsafe(testMac)), today)
+          perHostPropMins = {
+            val byHost = wifihaven.api.presence.Presence.proportionalHostSeconds(
+              rows,
+              CrossDeviceOverlapMode.Sum,
+              settings.heartbeatFilter,
+              settings.presenceContinuationSeconds,
+            )
+            (byHost.values.sum / 60L).toInt
+          }
+          // ── the per-app graph series via the endpoint ──
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(
+              URL
+                .decode(s"/api/usage/series?profileId=${kidsId.value}&date=$today&groupBy=app")
+                .toOption
+                .get,
+            )
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+          socialEntry = out.topEntries.find(_.entity.name == "Social")
+          // Per-hour minutes for the Social app across the 24 buckets.
+          appHourMins = out.bucketsByEntry.map(b =>
+            b.perEntity.find(_.entity.name == "Social").map(_.mins).getOrElse(0),
+          )
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // The app's series day total is the gap-bridged 15 min — NOT the per-host concat 10 min.
+          assertTrue(socialEntry.map(_.dayMins).contains(15)) &&
+          assertTrue(perHostPropMins == 10 && !socialEntry.map(_.dayMins).contains(perHostPropMins)) &&
+          // Reconciliation chain: per-app series ⇄ #1510 rollup ⇄ per-app cap aggregate.
+          assertTrue(rollup.get(socialId).contains(15)) &&
+          assertTrue(capMin.contains(15)) &&
+          // Profile headline total (single non-exempt app, no other traffic) ⇄ the per-app number.
+          assertTrue(out.presenceTotalMins == 15) &&
+          // Hour-clipping the bridged span sums back to the per-app daily total: 10 (h8) + 5 (h9).
+          assertTrue(appHourMins(8) == 10 && appHourMins(9) == 5) &&
+          assertTrue(appHourMins.sum == 15)
       },
     ) @@ TestAspect.sequential,
     // ── #846 Traffic Usage page ───────────────────────────────────────────
