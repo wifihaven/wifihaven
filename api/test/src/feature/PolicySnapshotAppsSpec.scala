@@ -223,10 +223,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         today = TestClock.schoolDayAfternoon.toLocalDate
         // ── at the limit: 30 m on the asset host alone → aggregate == cap → whole set blocked ──
         atApp <- ar.create("YouTube", "youtube", None, None)
-        _     <- ar.setHosts(atApp, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
-        _     <- ar.upsertAssignment(atApp, kids, AppMode.TimeLimited, Some(30), true)
-        _     <- seedTraffic(rid, "aa:bb:cc:dd:ee:91", "ytimg.com", today, 30)
-        atSnap   <- makePs.flatMap(_.snapshot)
+        _ <- ar.setHosts(atApp, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
+        _ <- ar.upsertAssignment(atApp, kids, AppMode.TimeLimited, Some(30), true)
+        _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:91", "ytimg.com", today, 30)
+        atSnap <- makePs.flatMap(_.snapshot)
         atEb = atSnap.profiles(kids).rules.extraBlocked.map(_.value).toSet
         // ── one under: same app, reseed with 25 m → aggregate < cap → whole set reachable ──
         _     <- cleanDb
@@ -234,10 +234,10 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         _     <- dr.upsert(MacAddress.unsafe("aa:bb:cc:dd:ee:91"), "iPad", Some(kids2), "10.0.0.91")
         rid2  <- seedRouterRow
         unApp <- ar.create("YouTube", "youtube", None, None)
-        _     <- ar.setHosts(unApp, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
-        _     <- ar.upsertAssignment(unApp, kids2, AppMode.TimeLimited, Some(30), true)
-        _     <- seedTraffic(rid2, "aa:bb:cc:dd:ee:91", "ytimg.com", today, 25)
-        unSnap   <- makePs.flatMap(_.snapshot)
+        _ <- ar.setHosts(unApp, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
+        _ <- ar.upsertAssignment(unApp, kids2, AppMode.TimeLimited, Some(30), true)
+        _ <- seedTraffic(rid2, "aa:bb:cc:dd:ee:91", "ytimg.com", today, 25)
+        unSnap <- makePs.flatMap(_.snapshot)
         unEb = unSnap.profiles(kids2).rules.extraBlocked.map(_.value).toSet
       } yield assertTrue(atEb.contains("youtube.com")) &&
         assertTrue(atEb.contains("ytimg.com")) &&

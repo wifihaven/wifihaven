@@ -577,22 +577,22 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
     ) {
       val mac = "aa:bb:cc:11:22:33"
       for
-        _   <- cleanDb
-        pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
-        dr  <- ZIO.service[DeviceRepo]
-        ar  <- ZIO.service[AppRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
-        _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
-        app <- ar.create("YouTube", "youtube", None, None)
-        _   <- ar.setHosts(app, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
-        _   <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(30), exemptFromDaily = true)
-        rid <- seedRouterRow
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        sr   <- ZIO.service[ScheduleRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        ar   <- ZIO.service[AppRepo]
+        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        app  <- ar.create("YouTube", "youtube", None, None)
+        _    <- ar.setHosts(app, List(Hostname.unsafe("youtube.com"), Hostname.unsafe("ytimg.com")))
+        _    <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(30), exemptFromDaily = true)
+        rid  <- seedRouterRow
         // 30 m on the off-domain asset host alone → aggregate hits the 30 m cap (apex idle).
-        _   <- seedTraffic(rid, mac, "ytimg.com", LocalDate.of(2025, 1, 6), 30)
-        ps    <- makePsDefault
-        snap  <- ps.snapshot
-        rules  = snap.profiles(kid).rules
+        _    <- seedTraffic(rid, mac, "ytimg.com", LocalDate.of(2025, 1, 6), 30)
+        ps   <- makePsDefault
+        snap <- ps.snapshot
+        rules = snap.profiles(kid).rules
         apex  <- ps.decide(mac, "youtube.com")
         asset <- ps.decide(mac, "ytimg.com")
       yield assertTrue(rules.extraBlocked.map(_.value).toSet == Set("youtube.com", "ytimg.com")) &&
@@ -612,27 +612,27 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       // before the exempt carve, or the block page contradicts what nftables actually does.
       val mac = "aa:bb:cc:11:22:33"
       for
-        _   <- cleanDb
-        pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
-        dr  <- ZIO.service[DeviceRepo]
-        ar  <- ZIO.service[AppRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
-        _   <- pr.setPaused(kid, true)
-        _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
-        app <- ar.create("Khan", "khan", None, None)
-        _   <- ar.setHosts(
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        sr   <- ZIO.service[ScheduleRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        ar   <- ZIO.service[AppRepo]
+        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        _    <- pr.setPaused(kid, true)
+        _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        app  <- ar.create("Khan", "khan", None, None)
+        _    <- ar.setHosts(
           app,
           List(Hostname.unsafe("khanacademy.org"), Hostname.unsafe("cdn.kastatic.org")),
         )
-        _   <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(60), exemptFromDaily = true)
-        rid <- seedRouterRow
+        _    <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(60), exemptFromDaily = true)
+        rid  <- seedRouterRow
         // 20 m on the apex alone → aggregate 20 < 60 cap → under-cap, the whole set is carved.
-        _   <- seedTraffic(rid, mac, "khanacademy.org", LocalDate.of(2025, 1, 6), 20)
-        ps    <- makePsDefault
-        snap  <- ps.snapshot
-        rules  = snap.profiles(kid).rules
-        ea     = rules.extraAllowed.map(_.value).toSet
+        _    <- seedTraffic(rid, mac, "khanacademy.org", LocalDate.of(2025, 1, 6), 20)
+        ps   <- makePsDefault
+        snap <- ps.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
         apex  <- ps.decide(mac, "khanacademy.org")
         asset <- ps.decide(mac, "cdn.kastatic.org")
       yield assertTrue(rules.blocked) &&
@@ -653,30 +653,37 @@ object RouterDecisionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       // traffic, yet the exempt app under its own cap must stay reachable across its whole host-set.
       val mac = "aa:bb:cc:11:22:33"
       for
-        _   <- cleanDb
-        pr  <- ZIO.service[ProfileRepo]
-        sr  <- ZIO.service[ScheduleRepo]
-        dr  <- ZIO.service[DeviceRepo]
-        tlr <- ZIO.service[TimeLimitRepo]
-        ar  <- ZIO.service[AppRepo]
-        kid <- TestLayers.seedKidsProfile(pr, sr)
-        _   <- tlr.upsert(kid, 30)
-        _   <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
-        app <- ar.create("Khan", "khan", None, None)
-        _   <- ar.setHosts(
+        _    <- cleanDb
+        pr   <- ZIO.service[ProfileRepo]
+        sr   <- ZIO.service[ScheduleRepo]
+        dr   <- ZIO.service[DeviceRepo]
+        tlr  <- ZIO.service[TimeLimitRepo]
+        ar   <- ZIO.service[AppRepo]
+        kid  <- TestLayers.seedKidsProfile(pr, sr)
+        _    <- tlr.upsert(kid, 30)
+        _    <- TestLayers.seedDevice(dr, mac, "kid-ipad", kid)
+        app  <- ar.create("Khan", "khan", None, None)
+        _    <- ar.setHosts(
           app,
           List(Hostname.unsafe("khanacademy.org"), Hostname.unsafe("cdn.kastatic.org")),
         )
-        _   <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(60), exemptFromDaily = true)
-        rid <- seedRouterRow
+        _    <- ar.upsertAssignment(app, kid, AppMode.TimeLimited, Some(60), exemptFromDaily = true)
+        rid  <- seedRouterRow
         // 35 m on a non-exempt host exhausts the 30 m profile daily cap; 20 m exempt Khan stays
         // under its own 60 m cap and does NOT count toward the daily total.
-        _   <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
-        _   <- seedTraffic(rid, mac, "khanacademy.org", LocalDate.of(2025, 1, 6), 20, bucketOffset = 12)
-        ps    <- makePsDefault
-        snap  <- ps.snapshot
-        rules  = snap.profiles(kid).rules
-        ea     = rules.extraAllowed.map(_.value).toSet
+        _    <- seedTraffic(rid, mac, "cnn.com", LocalDate.of(2025, 1, 6), 35)
+        _    <- seedTraffic(
+          rid,
+          mac,
+          "khanacademy.org",
+          LocalDate.of(2025, 1, 6),
+          20,
+          bucketOffset = 12,
+        )
+        ps   <- makePsDefault
+        snap <- ps.snapshot
+        rules = snap.profiles(kid).rules
+        ea    = rules.extraAllowed.map(_.value).toSet
         apex  <- ps.decide(mac, "khanacademy.org")
         asset <- ps.decide(mac, "cdn.kastatic.org")
       yield assertTrue(rules.blocked) &&
