@@ -542,6 +542,19 @@ object TimeStatusService {
       .toMap
   }
 
+  /**
+   * #1506: the union of EVERY active app's host-set for this profile — the app-attribution set fed
+   * to [[Presence.isHeartbeat]] so a host an active app genuinely depends on is never dropped as
+   * background infra (attribution beats suppression). Derived from the same per-app collapse
+   * (`groupSiteLimits`) the per-app bars and `exemptPatterns` use, so the daily total and the
+   * per-app surfaces agree on what counts as an "active app host". Includes exempt apps' hosts too:
+   * exclusion from the daily total is handled separately by [[exemptPatterns]] in
+   * [[Presence.countedRows]] (attribution only prevents suppression, not exemption), so an exempt
+   * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
+   */
+  private[policy] def appHostPatterns(siteLimits: List[SiteTimeLimit]): List[String] =
+    groupSiteLimits(siteLimits).flatMap(_._4)
+
   def usedSecondsForProfile(
       profile: Profile,
       devices: List[Device],
@@ -550,6 +563,7 @@ object TimeStatusService {
       settings: HouseholdSettings,
   ): Long = {
     val exemptPats = exemptPatterns(siteLimits)
+    val appPats    = appHostPatterns(siteLimits)
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
         val perMac = Presence.totalSecondsByMac(
@@ -557,6 +571,7 @@ object TimeStatusService {
           exemptPats,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
+          appPats,
         )
         devices.iterator.map(d => perMac.getOrElse(d.mac, 0L)).sum
       case CrossDeviceOverlapMode.Dedup =>
@@ -565,6 +580,7 @@ object TimeStatusService {
           exemptPats,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
+          appPats,
         )
     }
   }
@@ -600,6 +616,7 @@ object TimeStatusService {
       settings: HouseholdSettings,
   ): Map[MacAddress, Long] = {
     val exemptPats = exemptPatterns(siteLimits)
+    val appPats    = appHostPatterns(siteLimits)
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
         val perMac = Presence.totalSecondsByMac(
@@ -607,6 +624,7 @@ object TimeStatusService {
           exemptPats,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
+          appPats,
         )
         devices.iterator.map(d => d.mac -> perMac.getOrElse(d.mac, 0L)).toMap
       case CrossDeviceOverlapMode.Dedup =>
@@ -615,6 +633,7 @@ object TimeStatusService {
           exemptPats,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
+          appPats,
         )
         // Disjoint marginal attribution in `devices` order: each mac gets the seconds it adds to the
         // running union. Σ marginals == unionSeconds(all device spans) == dedupedTotalSeconds.
