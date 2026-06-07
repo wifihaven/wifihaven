@@ -210,3 +210,99 @@ VERDICT: APPROVE | REQUEST-CHANGES
 ```
 
 Never emit **VERDICT: APPROVE** while any BLOCKER is listed.
+
+---
+
+## Posting & re-runs
+
+The review does not just get *returned* — it is **posted to the PR** as a
+comment, and **re-run on every subsequent push**, statusing the prior findings
+and reviewing only the incremental delta. This keeps a single living review on
+the PR whose verdict tracks the latest commit.
+
+### The marker
+
+Every posted review comment **leads with a stable, machine-findable marker**
+that records the exact commit reviewed:
+
+```
+<!-- wifihaven-pr-review reviewed-sha=<HEAD-sha> -->
+```
+
+followed by the standard body (BLOCKERS / SHOULD-FIX / NITS / VERDICT +
+summary). The marker is what the next run greps for to find the prior review
+and learn which commit it last covered. `<HEAD-sha>` is the full 40-char SHA of
+the commit the review covers — the PR head at review time.
+
+### Post as a comment, never as a GitHub review
+
+Post with **`gh pr comment <n>`** — a plain, **non-approving** PR comment. Do
+**NOT** use `gh pr review --approve` / `--request-changes`: an automated GitHub
+*review* can satisfy or conflict with required-human-review rules and interfere
+with the merge queue. The APPROVE / REQUEST-CHANGES verdict lives in the comment
+body as text, not as a GitHub review state.
+
+Use `--body-file` (write the body to a temp file) rather than `--body` for the
+long, multi-line body, so markdown and special characters survive shell quoting:
+
+```bash
+gh pr comment <n> --repo wifihaven/wifihaven --body-file /tmp/pr-review-body.md
+```
+
+### First run (no prior marked comment)
+
+1. Resolve the PR head SHA: `gh pr view <n> --json headRefOid -q .headRefOid`
+   (or `git rev-parse HEAD` when reviewing the checked-out branch).
+2. Review the **full merge-base diff** `git diff origin/main...HEAD`
+   (three-dot — never two-dot) against the 8 dimensions above.
+3. Post the marked comment for that SHA.
+
+### Re-run (a prior marked comment exists)
+
+1. **Find the latest prior review comment** by the marker and extract its
+   `reviewed-sha` and its findings:
+
+   ```bash
+   # latest comment carrying the marker (null if none → this is a first run)
+   gh api "repos/wifihaven/wifihaven/issues/<n>/comments" --paginate \
+     --jq '[.[] | select(.body | contains("<!-- wifihaven-pr-review reviewed-sha="))] | last'
+   ```
+
+   Pull the prior SHA out of that comment's body:
+   `grep -oE 'reviewed-sha=[0-9a-f]+' | head -1`. (PR-conversation comments live
+   on the `issues/<n>/comments` endpoint — PR review comments are a different
+   endpoint we deliberately don't use.)
+
+2. **Status each prior finding** against the *current* code by re-checking the
+   `file:line` it cited:
+   - **ADDRESSED** — the cited problem is gone / fixed in current code.
+   - **NOT-ADDRESSED** — still present, unchanged.
+   - **PARTIAL** — partly fixed; state what remains.
+
+3. **Review the incremental delta** `git diff <reviewed-sha>...HEAD` (three-dot)
+   — the latest push(es) plus the context the fix newly touched — against the 8
+   dimensions, for **NEW** findings. This is what catches a fix that introduces
+   a fresh problem.
+
+4. **Post one updated marked comment** carrying the **new** HEAD `reviewed-sha`,
+   containing, in order:
+   - a **prior-findings status table** (each prior finding →
+     ADDRESSED / NOT-ADDRESSED / PARTIAL),
+   - the **new** findings from the delta (classified BLOCKER / SHOULD-FIX / NIT),
+   - an **updated VERDICT** + summary.
+
+### Merge gate across re-runs
+
+- A prior **BLOCKER clears only when it is ADDRESSED *and* the latest push
+  introduced no new BLOCKER.**
+- **Any open BLOCKER** — a prior one still NOT-ADDRESSED / PARTIAL, *or* a newly
+  introduced one — keeps the verdict at **REQUEST-CHANGES** and stays
+  merge-gating.
+
+### Idempotent, non-spammy
+
+Post **one** updated comment per run. Appending a fresh marked comment (with the
+new `reviewed-sha`) is fine and preserves the review history — the marker's SHA
+distinguishes runs, and the re-run logic always reads the **latest** marked
+comment, so old comments don't cause double-review. Do not post duplicate
+comments for the same SHA.
