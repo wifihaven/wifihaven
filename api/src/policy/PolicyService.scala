@@ -3,7 +3,6 @@ package wifihaven.api.policy
 import wifihaven.api.AppConfig
 import wifihaven.api.db.*
 import wifihaven.api.metrics.AppMetrics
-import wifihaven.api.presence.Presence
 import wifihaven.shared.{Schedule as DbSchedule, *}
 import wifihaven.shared.types.*
 import zio.{Clock as _, *}
@@ -87,12 +86,16 @@ class PolicyServiceLive(
     // when the legacy table is dropped (the future two-phase destructive PR).
     @scala.annotation.unused scheduleRepo: ScheduleRepo,
     householdSettingsRepo: HouseholdSettingsRepo,
-    timeLimitRepo: TimeLimitRepo,
-    siteTimeLimitRepo: SiteTimeLimitRepo,
+    // #1544: the per-host /decision aggregation now reads `TimeStatusService.todaysState` (the same
+    // ProfileDayState the snapshot consumes) instead of re-folding from these repos directly. They
+    // remain injected to feed the companion `apply` factory's TimeStatusServiceLive and to keep the
+    // constructor arity ~40 test constructions depend on; the class body no longer reads them.
+    @scala.annotation.unused timeLimitRepo: TimeLimitRepo,
+    @scala.annotation.unused siteTimeLimitRepo: SiteTimeLimitRepo,
     deviceRepo: DeviceRepo,
     blocklistRepo: BlocklistRepo,
-    trafficRepo: TrafficReportRepo,
-    extRepo: TimeExtensionRepo,
+    @scala.annotation.unused trafficRepo: TrafficReportRepo,
+    @scala.annotation.unused extRepo: TimeExtensionRepo,
     appRepo: AppRepo,
     timeStatusService: TimeStatusService,
     clock: Clock,
@@ -305,8 +308,14 @@ class PolicyServiceLive(
           for {
             pOpt            <- profileRepo.findById(pid)
             scheds          <- schedulesFor(pid)
-            tl              <- timeLimitRepo.findForProfile(pid)
-            stlims          <- siteTimeLimitRepo.listForProfile(pid)
+            // #1544: the per-profile aggregation (used/extension minutes, the daily-cap-exhausted
+            // gate, per-site usage, and the paused→schedule→time-limit precedence) is read from the
+            // SAME `ProfileDayState` the snapshot consumes — `TimeStatusService.todaysState` — rather
+            // than re-folded by hand here. This collapses the largest hand-maintained mirror in the
+            // policy code (the old `siteGroups`/`byApp`/`exemptPats`/`perMacTot`/`totalMins`/
+            // `capExhausted` re-derivation) so the block-page reason and the snapshot's nftables
+            // enforcement cannot drift. Only the genuinely per-HOST matching stays below.
+            state           <- timeStatusService.todaysState(now, settings, pid)
             // #764: post-migration, extraAllowed/extraBlocked are sourced
             // exclusively from app_policy_assignments. Mirror the snapshot
             // expansion (allowed/blocked modes) here so the per-host
@@ -318,60 +327,24 @@ class PolicyServiceLive(
             // #1379: per-app schedule windows for this profile's assignments, used to fold each
             // app's effective disposition + carve gate exactly as the snapshot does.
             appSchedWindows <- appRepo.appScheduleWindowsForProfile(pid)
-            // Reuse the same per-profile usage calc used by snapshot, scoped to this profile.
-            devs            <- deviceRepo.listAll.map(_.filter(_.profileId.contains(pid)))
-            macs = devs.map(_.mac).toSet
-            pres <- trafficRepo.listPresenceRows(devs.map(_.mac), today)
-            exts <- extRepo.snapshotAllByProfile(today).map(_.getOrElse(pid, 0))
-            res  <- pOpt match {
+            res             <- pOpt match {
               case None    =>
                 ZIO.succeed(RouterDecisionResponse(ConnectionDecision.Allow, "no_profile", None))
               case Some(p) =>
                 val h = hostname.toLowerCase.stripSuffix(".")
 
-                // Per-profile daily usage — computed up front because the #1379 carve gate keys off
-                // whether the daily cap is exhausted, independent of the precedence chain below.
-                val pPres        = pres.filter(r => macs.contains(r.mac))
-                // #1505 + #1504: per-site usage is aggregated per app across its full host-set
-                // (keyed by the synthesized `app:<slug>` label), counted with the #1464
-                // session-stitch primitive and combined across the profile's devices per its
-                // overlap mode — so an off-domain asset host ticks the same limit as the apex, on
-                // engaged wall-clock time. Mirrors `TimeStatusService.siteDayStates`, keeping
-                // decide() consistent with the snapshot's fold and off the legacy bucket-max floor.
-                val siteGroups   = TimeStatusService.groupSiteLimits(stlims)
-                val byApp        = Presence.patternGroupMinutesForProfile(
-                  pPres,
-                  siteGroups.map(g => g._1 -> g._4),
-                  p.crossDeviceOverlapMode,
-                  settings.heartbeatFilter,
-                  settings.presenceContinuationSeconds,
+                // #1544: the canonical day state for this profile (same source as the snapshot).
+                // `todaysState` returns `Some` for any existing profile; default defensively to an
+                // empty state so a race that deletes the profile mid-decision degrades to allow-all
+                // rather than failing.
+                val dayState = state.getOrElse(
+                  ProfileDayState(pid, today, None, 0, 0, None, blocked = false, None, Nil),
                 )
-                val exemptPats   =
-                  stlims.filter(_.exemptFromDaily).map(_.domainPattern)
-                val perMacTot    =
-                  Presence.totalMinutesByMac(
-                    pPres,
-                    exemptPats,
-                    settings.heartbeatFilter,
-                    settings.presenceContinuationSeconds,
-                  )
-                // #751: same branch as snapshot — keeps decide() consistent with the snapshot's
-                // cap evaluation.
-                val totalMins    = p.crossDeviceOverlapMode match {
-                  case CrossDeviceOverlapMode.Sum   =>
-                    devs.iterator.map(d => perMacTot.getOrElse(d.mac, 0)).sum
-                  case CrossDeviceOverlapMode.Dedup =>
-                    Presence.dedupedTotalMinutes(
-                      pPres,
-                      exemptPats,
-                      settings.heartbeatFilter,
-                      settings.presenceContinuationSeconds,
-                    )
-                }
+
                 // #1379: the daily-cap-exhausted condition the AllowedDuring carve gate keys off —
-                // the per-host mirror of `PolicyService.dailyCapExhausted(state)` in the snapshot.
-                val capExhausted =
-                  tl.map(_.dailyMinutes).exists(limit => totalMins >= limit + exts)
+                // read off the shared state (`dailyCapExhausted`) instead of re-folding the per-MAC
+                // totals, so it agrees with the snapshot's gate by construction.
+                val capExhausted = PolicyService.dailyCapExhausted(dayState)
 
                 // #1379: fold each app's effective disposition (schedule windows over base mode) +
                 // the carve gate, exactly as the snapshot does. A non-exempt allowed_during app
@@ -404,16 +377,7 @@ class PolicyServiceLive(
                           RouterDecisionResponse(ConnectionDecision.Block, "extra_blocked", None),
                         )
                       else
-                        timeLimitBlockFromDb(
-                          h,
-                          now,
-                          settings,
-                          tl.map(_.dailyMinutes),
-                          stlims,
-                          byApp,
-                          totalMins,
-                          exts,
-                        ) match {
+                        timeLimitBlockFromState(h, now, settings, dayState) match {
                           case Some(r) => ZIO.succeed(r)
                           case None    =>
                             categoryBlock(p.blockedCategories, h).map {
@@ -447,40 +411,45 @@ class PolicyServiceLive(
     }
   }
 
-  private def timeLimitBlockFromDb(
+  /**
+   * #1544: the per-host site-limit / daily-limit verdict, read off the shared [[ProfileDayState]]
+   * (`state.perSite` for per-app usage + limits, `state.usedMinutes`/`dailyLimitMinutes`/
+   * `extensionMinutes` for the daily cap) rather than re-aggregating from raw rows. The per-HOST
+   * part — matching `hostname` against an app's host-set — stays here; the AGGREGATION comes from
+   * `TimeStatusService`, so this path can no longer drift from the snapshot's
+   * `siteLimitExtraBlocked` / `assemble` cap evaluation. `state.perSite` carries one entry per app,
+   * with `usedMinutes` aggregated across the whole host-set and `dailyLimitMinutes` the app's site
+   * cap — exactly the `sd.usedMinutes >= sd.dailyLimitMinutes` test the snapshot uses to fill
+   * `extraBlocked`.
+   */
+  private def timeLimitBlockFromState(
       hostname: String,
       now: Instant,
       settings: HouseholdSettings,
-      dailyMinutes: Option[Int],
-      siteLimits: List[SiteTimeLimit],
-      // #1505: per-app aggregate minutes keyed by the synthesized `app:<slug>` label, so any of an
-      // app's hosts (apex or off-domain asset) ticks the same limit.
-      minutesByApp: Map[String, Int],
-      totalMinutesUsed: Int,
-      extensionsMinutes: Int,
+      state: ProfileDayState,
   ): Option[RouterDecisionResponse] = {
     // Time-limit blocks expire at the next household daily-reset Instant.
     val resetAt      = PolicyService.nextDailyResetAfter(settings, now).toString
-    val siteLimitHit = siteLimits.find { sl =>
-      HostMatch.matchesPattern(hostname, sl.domainPattern) &&
-      minutesByApp.getOrElse(sl.label, 0) >= sl.dailyMinutes
+    val siteLimitHit = state.perSite.find { sd =>
+      sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) &&
+      sd.usedMinutes >= sd.dailyLimitMinutes
     }
     siteLimitHit
-      .map(sl =>
+      .map(sd =>
         RouterDecisionResponse(
           ConnectionDecision.Block,
-          s"site_time_limit:${sl.label}",
+          s"site_time_limit:${sd.label}",
           Some(resetAt),
         ),
       )
       .orElse {
-        val isExemptSite = siteLimits.exists { sl =>
-          sl.exemptFromDaily && HostMatch.matchesPattern(hostname, sl.domainPattern)
+        val isExemptSite = state.perSite.exists { sd =>
+          sd.exemptFromDaily && sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp))
         }
         if isExemptSite then None
         else
-          dailyMinutes.flatMap { limit =>
-            Option.when(totalMinutesUsed >= limit + extensionsMinutes)(
+          state.dailyLimitMinutes.flatMap { limit =>
+            Option.when(state.usedMinutes >= limit + state.extensionMinutes)(
               RouterDecisionResponse(ConnectionDecision.Block, "time_limit", Some(resetAt)),
             )
           }
