@@ -108,6 +108,7 @@ object PresenceDefaultsPinSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       rollupRepo      <- ZIO.service[RollupRepo]
       hsRepo          <- ZIO.service[HouseholdSettingsRepo]
       atlRepo         <- ZIO.service[AppTimeLimitRepo]
+      aruRepo         <- ZIO.service[AppUsedRollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield UsageRoutes.routes(
@@ -120,6 +121,7 @@ object PresenceDefaultsPinSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       rollupRepo,
       hsRepo,
       atlRepo,
+      aruRepo,
       clock,
     )
 

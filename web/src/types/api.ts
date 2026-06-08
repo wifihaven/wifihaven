@@ -408,6 +408,26 @@ export interface OrphanHostUsage {
   presenceSeconds: number
 }
 
+// #1089 — per-app engaged-minutes summed over a 7-day trailing window. Mirrors
+// the API's `ProfileAppWeeklyUsageRow` / `ProfileAppWeeklyUsage`. The weekly
+// view aggregates FROM the daily rollup (`app_used_daily`), so the heartbeat
+// filter the daily view sees flows through unchanged.
+export interface ProfileAppWeeklyUsageRow {
+  appId: number
+  appName: string
+  appIcon?: string | null
+  appIconType?: IconType | null
+  engagedMinutes: number
+}
+
+export interface ProfileAppWeeklyUsage {
+  profileId: number
+  profileName: string
+  from: string
+  to: string
+  apps: ProfileAppWeeklyUsageRow[]
+}
+
 export interface ProfileUsageByApp {
   profileId: number
   profileName: string

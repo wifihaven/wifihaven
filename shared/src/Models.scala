@@ -1013,6 +1013,30 @@ case class OrphanHostUsage(
     presenceSeconds: Long,
 ) derives JsonCodec
 
+/**
+ * #1089 — per-app engaged minutes summed over a 7-day window, aggregated FROM the `app_used_daily`
+ * rollup. The weekly view is by construction consistent with the daily one (same primitive, summed)
+ * and the heartbeat filter applied at rollup-write time flows through unchanged. Apps with zero
+ * minutes in the window are absent. Distinct from [[ProfileUsageByApp]], which is a presence-rolled
+ * per-host breakdown over a [from,to] window — this row is the *engaged*-time counterpart for one
+ * app, the same quantity the per-app cap reads.
+ */
+case class ProfileAppWeeklyUsageRow(
+    appId: AppId,
+    appName: String,
+    appIcon: Option[String],
+    appIconType: Option[IconType],
+    engagedMinutes: Int,
+) derives JsonCodec
+
+case class ProfileAppWeeklyUsage(
+    profileId: ProfileId,
+    profileName: String,
+    from: String,
+    to: String,
+    apps: List[ProfileAppWeeklyUsageRow],
+) derives JsonCodec
+
 case class ProfileUsageByApp(
     profileId: ProfileId,
     profileName: String,

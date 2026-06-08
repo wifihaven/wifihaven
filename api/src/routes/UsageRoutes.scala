@@ -35,10 +35,11 @@ object UsageRoutes {
       rollupRepo: RollupRepo,
       hsRepo: HouseholdSettingsRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
+      appUsedRollupRepo: AppUsedRollupRepo,
       clock: Clock,
   ): Routes[Any, Response] =
     Routes(
-      Method.GET / "api" / "usage" / "traffic"                         ->
+      Method.GET / "api" / "usage" / "traffic"                                  ->
         handler { (req: Request) =>
           trafficHandler(
             req,
@@ -54,7 +55,7 @@ object UsageRoutes {
         },
       // #766: recently-visited FQDN apexes for one device, used by the
       // apps create/edit "Pick from recent activity" picker.
-      Method.GET / "api" / "devices" / string("mac") / "recent-apexes" ->
+      Method.GET / "api" / "devices" / string("mac") / "recent-apexes"          ->
         handler { (macRaw: String, req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
@@ -113,7 +114,7 @@ object UsageRoutes {
       // row per app. #1519: hosts NOT in any configured app surface individually
       // in `orphanHosts` (single-host pseudo-apps, per the App-Centric Model) —
       // there is no synthetic "Other" entry on this endpoint.
-      Method.GET / "api" / "profiles" / long("id") / "usage-by-app"    ->
+      Method.GET / "api" / "profiles" / long("id") / "usage-by-app"             ->
         handler { (id: Long, req: Request) =>
           val pid                                  = ProfileId(id)
           val handle: ZIO[Any, ApiError, Response] = for {
@@ -147,7 +148,66 @@ object UsageRoutes {
           } yield Response.json(resp.toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
-      Method.GET / "api" / "usage" / "series"                          ->
+      // #1089 — per-app engaged-minutes summed over a 7-day window. Aggregates FROM the
+      // `app_used_daily` rollup (no parallel pipeline), so by construction the weekly figure is the
+      // sum of the same daily numbers the per-app cap reads and the heartbeat filter applied at
+      // rollup-write time flows through unchanged. `to` defaults to household-local today; `from`
+      // is always `to - 6` (trailing 7-day window, matching the #777 `/time/status/summary/week`
+      // convention). Today's row may lag the per-app cap by one rollup tick — the live tail past
+      // the watermark is intentionally NOT folded in here; the screen-time weekly view tolerates
+      // sub-tick staleness.
+      Method.GET / "api" / "profiles" / long("id") / "usage" / "app" / "weekly" ->
+        handler { (id: Long, req: Request) =>
+          val pid                                  = ProfileId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims   <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            _        <- requireProfileReadAccess(claims, pid, userProfileRepo)
+              .mapError(ApiError.Wrapped(_))
+            settings <- hsRepo.get.mapError(ApiError.Db(_))
+            now      <- clock.instant
+            todayLocal = wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
+            toStr      = req.url.queryParam("to").getOrElse(todayLocal.toString)
+            to <- ZIO
+              .attempt(LocalDate.parse(toStr))
+              .orElseFail(ApiError.BadRequest(s"invalid to: $toStr"))
+            from = to.minusDays(6)
+            profile <- profileRepo
+              .findById(pid)
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
+            rows    <- appUsedRollupRepo
+              .getRangeForProfile(pid, from, to)
+              .mapError(ApiError.Db(_))
+            appList <- appRepo.listAll.mapError(ApiError.Db(_))
+          } yield {
+            val byId       = appList.iterator.map(a => a.id -> a).toMap
+            val sumByApp   = rows.groupMapReduce(_._2)(_._3)(_ + _)
+            val appRows    = sumByApp.iterator.flatMap { case (aid, secs) =>
+              byId.get(aid).map { a =>
+                ProfileAppWeeklyUsageRow(
+                  appId = aid,
+                  appName = a.name,
+                  appIcon = a.icon,
+                  appIconType = Some(a.iconType),
+                  engagedMinutes = (secs / 60L).toInt,
+                )
+              }
+            }.toList
+            val sortedRows = appRows
+              .filter(_.engagedMinutes > 0)
+              .sortBy(r => (-r.engagedMinutes, r.appName))
+            val resp       = ProfileAppWeeklyUsage(
+              profileId = pid,
+              profileName = profile.name,
+              from = from.toString,
+              to = to.toString,
+              apps = sortedRows,
+            )
+            Response.json(resp.toJson)
+          }
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+      Method.GET / "api" / "usage" / "series"                                   ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
@@ -231,7 +291,7 @@ object UsageRoutes {
       // #1099: batched per-profile series. The /profiles page resolves the
       // whole visible profile set in one partition-pruned scan instead of N
       // parallel single-profile requests.
-      Method.GET / "api" / "usage" / "series" / "batch"                ->
+      Method.GET / "api" / "usage" / "series" / "batch"                         ->
         handler { (req: Request) =>
           val handle: ZIO[Any, ApiError, Response] = for {
             claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))

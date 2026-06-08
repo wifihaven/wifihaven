@@ -10,6 +10,7 @@ import { api } from '@/api/client'
 import type {
   Alert, BlocklistSummary, DashboardNow, Device, GlobalPolicyView, HouseholdSettings, NamedSchedule, ProfileDetail,
   ProfileTimeStatus,
+  ProfileAppWeeklyUsage,
   ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   QueryLog, UsageSeriesResponse,
 } from '@/types/api'
@@ -65,6 +66,11 @@ export const qk = {
   // #1061 — per-app time-used breakdown for one profile over [from,to].
   profileUsageByApp: (profileId: number, from: string, to: string) =>
     ['profiles', profileId, 'usage-by-app', from, to] as const,
+  // #1089 — per-app engaged-minutes summed over the trailing 7-day window
+  // ending at `to`. Aggregates FROM `app_used_daily`, so by construction it
+  // tracks the daily rollup the per-app cap reads.
+  profileAppWeekly: (profileId: number, to?: string) =>
+    ['profiles', profileId, 'usage', 'app', 'weekly', to ?? 'current'] as const,
 }
 
 type QueryOpts<T> = Omit<UseQueryOptions<T, Error, T, readonly unknown[]>, 'queryKey' | 'queryFn'>
@@ -280,6 +286,20 @@ export function useProfileUsageByApp(
     queryKey: qk.profileUsageByApp(profileId, from, to),
     queryFn: () => api.profiles.usageByApp(profileId, from, to),
     staleTime: STALE.timeStatusToday,
+    ...opts,
+  })
+}
+
+// #1089 — weekly per-app engaged-minutes, aggregated from `app_used_daily`.
+export function useProfileAppWeekly(
+  profileId: number,
+  to?: string,
+  opts?: QueryOpts<ProfileAppWeeklyUsage>,
+) {
+  return useQuery({
+    queryKey: qk.profileAppWeekly(profileId, to),
+    queryFn: () => api.profiles.appWeekly(profileId, to),
+    staleTime: STALE.timeStatusWeek,
     ...opts,
   })
 }
