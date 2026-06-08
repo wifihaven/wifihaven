@@ -441,6 +441,48 @@ describe("usage.build_report", function()
     assert.not_nil(rec.bytesIn)
   end)
 
+  -- #730: each record carries the destination IP the bytes were attributed to,
+  -- so the API can (in a follow-up) re-attribute race-loser ipv4-typed rows to
+  -- the FQDN that conntrack resolved against the same dest_ip. The agent's
+  -- internal granularity is already (mac, dst_ip), so the field is just a
+  -- pass-through of c.dst_ip onto the emitted record.
+  describe("destIp field (#730)", function()
+    it("sets destIp to the dst_ip of the underlying counter (fqdn host)", function()
+      local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                   nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
+      local by_host = {}
+      for _, rec in ipairs(r.records) do by_host[rec.host.value] = rec end
+      assert.equal("1.2.3.4", by_host["youtube.com"].destIp)
+      assert.equal("8.8.8.8", by_host["google.com"].destIp)
+    end)
+
+    it("sets destIp on ipv4-fallback records (no DNS attribution)", function()
+      local unk = { { mac = "aa:bb:cc:11:22:33", dst_ip = "9.9.9.9",
+                      bytes = 100, packets = 3 } }
+      local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER,
+                                   nil, nil, full_tracker(unk), SAMPLE_S, BUCKET_S)
+      assert.equal("9.9.9.9", r.records[1].destIp)
+    end)
+
+    it("sets destIp on ipv6 records", function()
+      local unk = { { mac = "aa:bb:cc:11:22:33", dst_ip = "2001:db8::1",
+                      bytes = 100, packets = 3 } }
+      local r = usage.build_report(unk, NF_SETS, P_START, P_END, ROUTER,
+                                   nil, nil, full_tracker(unk), SAMPLE_S, BUCKET_S)
+      assert.equal("2001:db8::1", r.records[1].destIp)
+    end)
+
+    it("JSON-encodes destIp on each record", function()
+      local json = require("cjson")
+      local r    = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                      nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S)
+      local dec  = json.decode(json.encode(r))
+      for _, rec in ipairs(dec.records) do
+        assert.not_nil(rec.destIp)
+      end
+    end)
+  end)
+
   it("handles an empty counters list (zero records)", function()
     local r = usage.build_report({}, NF_SETS, P_START, P_END, ROUTER,
                                  nil, nil, usage.new_tracker(), SAMPLE_S, BUCKET_S)
