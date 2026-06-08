@@ -564,7 +564,7 @@ object UsageRoutes {
       bucketsByEntry = bucketsByEntry,
       presenceTotalMins = presenceTotalMins,
       suppressedHosts =
-        suppressedHostRows.map(r => SuppressedHostUsage(r.host, r.bytes, r.buckets, r.reason), ),
+        suppressedHostRows.map(r => SuppressedHostUsage(r.host, r.bytes, r.buckets, r.reason)),
     )
 
   private def buildForProfile(

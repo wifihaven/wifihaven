@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { api } from '@/api/client'
 import type {
-  DeviceTimeStatusWeek, UsageEntityBucket, UsageSeriesResponse,
+  DeviceTimeStatusWeek, SuppressedHostUsage, UsageEntityBucket, UsageSeriesResponse,
 } from '@/types/api'
 import { PageLoader } from './DashboardPage'
 import { HostCell } from '@/components/HostCell'
@@ -328,6 +328,10 @@ export function DeviceTimelinePage() {
         </div>
       )}
 
+      {window === 'today' && (dayData?.suppressedHosts ?? []).length > 0 && (
+        <SuppressedHostsPanel hosts={dayData?.suppressedHosts ?? []} />
+      )}
+
       {window === 'week' && weekHosts.length > 0 && (
         <div className="bg-white rounded-2xl border border-brand-border p-5">
           <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider mb-3">
@@ -373,6 +377,74 @@ export function DeviceTimelinePage() {
           topN={TOP_N}
           onClose={() => setOtherOpen(false)}
         />
+      )}
+    </div>
+  )
+}
+
+// #1507 — collapsed panel surfacing hosts the engaged-time calculation excluded
+// (device-level infra: Apple OCSP, Google connectivity probes, push, …; or sub-
+// keepalive-threshold bytes). The same `Presence.isHeartbeat` predicate the
+// rollup builder uses tags these rows, so the "excluded" view can't drift from
+// the "counted" view. Bytes still happened; they just don't drive engagement.
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function SuppressedHostsPanel({ hosts }: { hosts: SuppressedHostUsage[] }) {
+  const [open, setOpen] = useState(true)
+  const sorted = [...hosts].sort((a, b) => b.bytes - a.bytes)
+  const totalBytes = sorted.reduce((a, h) => a + h.bytes, 0)
+  return (
+    <div
+      data-testid="device-timeline-suppressed"
+      className="bg-white rounded-2xl border border-brand-border p-5"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex w-full items-center justify-between text-left"
+        aria-expanded={open}
+      >
+        <h2 className="text-sm font-semibold text-brand-text uppercase tracking-wider">
+          Background / infra (no engaged time)
+        </h2>
+        <span className="text-xs text-brand-text-muted font-mono">
+          {sorted.length} {sorted.length === 1 ? 'host' : 'hosts'} · {formatBytes(totalBytes)}
+          <span className="ml-2">{open ? '▾' : '▸'}</span>
+        </span>
+      </button>
+      {open && (
+        <>
+          <ul className="mt-3 space-y-1.5">
+            {sorted.map(h => (
+              <li
+                key={`${h.host.type}:${h.host.value}`}
+                data-testid={`device-timeline-suppressed-${h.host.value}`}
+                className="flex items-center justify-between text-xs text-brand-text bg-brand-alt/50 rounded-lg px-3 py-2"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="truncate font-mono">{h.host.value}</span>
+                  <span className="text-[10px] text-brand-text-muted uppercase shrink-0">
+                    {h.reason === 'infra' ? 'infra' : 'keepalive'}
+                  </span>
+                </span>
+                <span className="text-brand-text-muted font-mono shrink-0 ml-2 tabular-nums">
+                  {formatBytes(h.bytes)}
+                  <span className="text-brand-text-muted"> · {h.buckets} bkt</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-brand-text-muted mt-3">
+            Hosts shown as background are reached during app sessions but didn’t drive engagement
+            (CDN, telemetry, keepalives). They contribute 0 to engaged-minutes; their bytes are
+            still counted.
+          </p>
+        </>
       )}
     </div>
   )
