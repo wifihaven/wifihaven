@@ -19,6 +19,14 @@ import zio.json.*
  * /api/alerts/{id}/approve — writer-auth. For access_request, applies the per- kind grant via
  * existing primitives. For new_device, just records the decision. POST /api/alerts/{id}/deny —
  * writer-auth. Records the decision; no side-effect.
+ *
+ * #1570: handlers fail with a typed [[ApiError]] mapped centrally by
+ * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR)
+ * + meters each error. Each case reproduces the EXACT status + body the hand-rolled code produced —
+ * the pending-state `409` keeps its empty body via [[ApiError.Wrapped]], DB failures stay 503 via
+ * [[ApiError.Db]]. Success-channel responses (the `Some/None` post-decide `.map`, the debounce
+ * `Some(a)` hit) are unchanged; the boundary still observes their status. Auth helpers are bridged
+ * via [[ApiError.Wrapped]].
  */
 object AlertRoutes {
 
@@ -46,73 +54,75 @@ object AlertRoutes {
       // ── Public: kid posts an access-request from the block page ─────────
       Method.POST / "api" / "access-requests" ->
         handler { (req: Request) =>
-          for {
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
+          val handle: ZIO[Any, ApiError, Response] = for {
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr   <- ZIO
               .fromEither(body.fromJson[CreateAccessRequest])
-              .mapError(e => Response.badRequest(e))
+              .mapError(ApiError.DecodeFailure(_))
             now  <- clock.instant
             since = now.minusSeconds(AccessRequestDebounceSeconds)
             existing <- alertRepo
               .findRecentAccessRequest(cr.mac, cr.host, since)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             resp     <- existing match {
               case Some(a) => ZIO.succeed(Response.json(a.toJson))
               case None    =>
                 for {
                   device <- deviceRepo
                     .findByMac(cr.mac)
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
                   pid = device.flatMap(_.profileId)
                   id    <- alertRepo
                     .createAccessRequest(cr.mac, pid, cr.host, cr.kind, cr.note, now)
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
                   full  <- alertRepo
                     .findById(id)
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
                   alert <- ZIO
                     .fromOption(full)
-                    .orElseFail(Response.internalServerError("vanished"))
+                    .orElseFail(ApiError.Internal("vanished"))
                   _     <- notifier.alertCreated(alert).forkDaemon
                 } yield Response.json(alert.toJson).status(Status.Created)
             }
           } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
         },
 
       // ── Admin list ──────────────────────────────────────────────────────
       Method.GET / "api" / "alerts" ->
         handler { (req: Request) =>
-          for {
-            _ <- requireAuth(req, auth)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             includeAll = req.url
               .queryParam("all")
               .map(_.equalsIgnoreCase("true"))
               .getOrElse(false)
             xs <- alertRepo
               .list(includeAll)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
           } yield Response.json(xs.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
 
       // ── Admin approve ───────────────────────────────────────────────────
       Method.POST / "api" / "alerts" / long("id") / "approve" ->
         handler { (id: Long, req: Request) =>
-          val aid = AlertId(id)
-          for {
-            claims  <- requireWriter(req, auth)
+          val aid                                  = AlertId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims  <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
             body    <- req.body.asString.orElse(ZIO.succeed(""))
             apr     <-
               if (body.isEmpty) ZIO.succeed(ApproveAlertRequest())
               else
                 ZIO
                   .fromEither(body.fromJson[ApproveAlertRequest])
-                  .mapError(e => Response.badRequest(e))
+                  .mapError(ApiError.DecodeFailure(_))
             alert   <- alertRepo
               .findById(aid)
-              .mapError(ErrorMapper.dbErrorToResponse)
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Alert not found")))
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Alert not found")))
             _       <- ZIO
-              .fail(Response.status(Status.Conflict))
+              .fail(ApiError.Wrapped(Response.status(Status.Conflict)))
               .when(alert.status != AlertStatus.Pending)
             now     <- clock.instant
             // Side-effect lands before the status transition so we never
@@ -129,10 +139,10 @@ object AlertRoutes {
             )
             n       <- alertRepo
               .decide(aid, AlertStatus.Approved, now, claims.sub, granted)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             resp    <- alertRepo
               .findById(aid)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
               .map {
                 case None          => Response.notFound("Alert not found")
                 case Some(updated) =>
@@ -140,21 +150,22 @@ object AlertRoutes {
                   else Response.json(updated.toJson)
               }
           } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
         },
 
       // ── Admin deny ──────────────────────────────────────────────────────
       Method.POST / "api" / "alerts" / long("id") / "deny" ->
         handler { (id: Long, req: Request) =>
-          val aid = AlertId(id)
-          for {
-            claims <- requireWriter(req, auth)
+          val aid                                  = AlertId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireWriter(req, auth).mapError(ApiError.Wrapped(_))
             now    <- clock.instant
             n      <- alertRepo
               .decide(aid, AlertStatus.Denied, now, claims.sub, None)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             resp   <- alertRepo
               .findById(aid)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
               .map {
                 case None          => Response.notFound("Alert not found")
                 case Some(updated) =>
@@ -162,6 +173,7 @@ object AlertRoutes {
                   else Response.json(updated.toJson)
               }
           } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 
@@ -187,7 +199,7 @@ object AlertRoutes {
       appRepo: AppRepo,
       hsRepo: HouseholdSettingsRepo,
       clock: SharedClock,
-  ): ZIO[Any, Response, Option[Int]] =
+  ): ZIO[Any, ApiError, Option[Int]] =
     alert.kind match {
       case AlertKind.NewDevice =>
         ZIO.succeed(None)
@@ -195,19 +207,19 @@ object AlertRoutes {
       case AlertKind.AccessRequest =>
         (alert.requestKind, alert.host) match {
           case (None, _) | (_, None) =>
-            ZIO.fail(Response.internalServerError("access-request row missing requestKind/host"))
+            ZIO.fail(ApiError.Internal("access-request row missing requestKind/host"))
 
           case (Some(AccessRequestKind.Extension), _) =>
             alert.profileId match {
               case None      =>
                 ZIO.fail(
-                  Response.badRequest(
+                  ApiError.BadRequest(
                     "Cannot extend time: device is not assigned to a profile",
                   ),
                 )
               case Some(pid) =>
                 for {
-                  settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+                  settings <- hsRepo.get.mapError(ApiError.Db(_))
                   now      <- clock.instant
                   today =
                     wifihaven.api.policy.PolicyService.householdLocalDate(now, settings)
@@ -219,7 +231,7 @@ object AlertRoutes {
                       grantedBy,
                       alert.note.orElse(Some(s"approved alert #${alert.id.value}")),
                     )
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
                 } yield Some(requestedMinutes)
             }
 
@@ -232,7 +244,7 @@ object AlertRoutes {
             alert.profileId match {
               case None      =>
                 ZIO.fail(
-                  Response.badRequest(
+                  ApiError.BadRequest(
                     "Cannot grant exemption: device is not assigned to a profile",
                   ),
                 )
@@ -240,22 +252,22 @@ object AlertRoutes {
                 for {
                   existing <- appRepo
                     .findBySlug(host.value)
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
                   appId    <- existing match {
                     case Some(app) => ZIO.succeed(app.id)
                     case None      =>
                       for {
                         id <- appRepo
                           .create(host.value, host.value, None, None)
-                          .mapError(ErrorMapper.dbErrorToResponse)
+                          .mapError(ApiError.Db(_))
                         _  <- appRepo
                           .setHosts(id, List(host))
-                          .mapError(ErrorMapper.dbErrorToResponse)
+                          .mapError(ApiError.Db(_))
                       } yield id
                   }
                   _        <- appRepo
                     .upsertAssignment(appId, pid, AppMode.Allowed, None, true)
-                    .mapError(ErrorMapper.dbErrorToResponse)
+                    .mapError(ApiError.Db(_))
                 } yield None
             }
 
@@ -263,14 +275,14 @@ object AlertRoutes {
             alert.profileId match {
               case None      =>
                 ZIO.fail(
-                  Response.badRequest(
+                  ApiError.BadRequest(
                     "Cannot unpause: device is not assigned to a profile",
                   ),
                 )
               case Some(pid) =>
                 profileRepo
                   .setPaused(pid, false)
-                  .mapError(ErrorMapper.dbErrorToResponse)
+                  .mapError(ApiError.Db(_))
                   .as(None)
             }
         }

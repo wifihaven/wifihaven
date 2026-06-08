@@ -45,13 +45,16 @@ object RollupAdminRoutes {
     Routes(
       Method.GET / "api" / "admin" / "rollup-status" ->
         handler { (req: Request) =>
-          for {
-            _ <- requireAdmin(req, auth)
+          // #1570: fail with typed ApiError; ErrorMapper.errorToResponse maps it and the
+          // ErrorBoundary logs (4xx WARN / 5xx ERROR) + meters. Same final Response as before.
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
             // Cap at 200 to keep the response tiny — fibers tick every 5 min
             // so even 200 covers ~16h of history.
             limit = req.url.queryParam("limit").flatMap(_.toIntOption).getOrElse(50).max(1).min(200)
-            runs <- repo.recentRuns(limit).mapError(ErrorMapper.dbErrorToResponse)
+            runs <- repo.recentRuns(limit).mapError(ApiError.Db(_))
           } yield Response.json(RollupStatusResponse(runs.map(RollupRunDto.from)).toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 }

@@ -16,6 +16,15 @@ import java.util.{Base64, UUID}
  * Routes agent-facing router endpoints. All routes require the router bearer token except
  * `/register`, which uses a one-time enrollment token. `RouterAuth` lives in
  * [[wifihaven.api.routes.RouterAuth]].
+ *
+ * #1570: handlers fail with a typed [[ApiError]] mapped centrally by
+ * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR)
+ * + meters each error. Each case reproduces the EXACT status + body the hand-rolled code produced —
+ * the OpenWRT agent branches on status only (4xx = drop, 5xx = retry/back-off), so DB failures stay
+ * 503 via [[ApiError.Db]]; a malformed enrollment is 401; an unknown blocklist slug is 404.
+ * Success-channel responses (the 200 /304 policy/blocklist bodies with ETag headers) are unchanged;
+ * the boundary still observes their status. `RouterAuth` still returns `Response` and is bridged
+ * via [[ApiError.Wrapped]].
  */
 object RouterRoutes {
 
@@ -28,32 +37,33 @@ object RouterRoutes {
     Routes(
       Method.POST / "api" / "router" / "register"      ->
         handler { (req: Request) =>
-          for {
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
+          val handle: ZIO[Any, ApiError, Response] = for {
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             rr   <- ZIO
               .fromEither(body.fromJson[RegisterRouterRequest])
-              .mapError(e => Response.badRequest(e))
+              .mapError(ApiError.DecodeFailure(_))
             etHash = PolicyService.hashToken(rr.enrollmentToken.value)
             router <- routerRepo
               .findByEnrollmentTokenHash(etHash)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
               .flatMap(
                 ZIO
                   .fromOption(_)
-                  .orElseFail(Response.unauthorized("invalid enrollment token")),
+                  .orElseFail(ApiError.Unauthorized("invalid enrollment token")),
               )
             routerToken = RouterToken.unsafe(newToken("rt_"))
             tokenHash   = PolicyService.hashToken(routerToken.value)
             _ <- routerRepo
               .completeEnrollment(router.id, tokenHash)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
           } yield Response.json(RegisterRouterResponse(router.id, routerToken).toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "router" / "policy"         ->
         handler { (req: Request) =>
-          for {
-            router <- routerAuth.authenticate(req)
-            snap   <- policy.snapshot.mapError(ErrorMapper.dbErrorToResponse)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            router <- routerAuth.authenticate(req).mapError(ApiError.Wrapped(_))
+            snap   <- policy.snapshot.mapError(ApiError.Db(_))
             ifNoneMatch  = req
               .header(Header.IfNoneMatch)
               .map(_.renderedValue)
@@ -67,7 +77,7 @@ object RouterRoutes {
               .filter(_.nonEmpty)
             _ <- routerRepo
               .touch(router.id, Some(snap.etag), agentVersion)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             notMod = ifNoneMatch.exists(etagWeakEquals(_, snap.etag.value))
             // #481: 200s (etag changed) are diagnostic gold for snapshot-propagation
             // failures — log them at INFO so they survive the default log level.
@@ -86,22 +96,23 @@ object RouterRoutes {
                   .json(snap.toJson)
                   .addHeader(Header.ETag.Strong(stripQuotes(snap.etag.value)))
           } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "blocklists" / string("id") ->
         handler { (id: String, req: Request) =>
-          for {
-            _    <- routerAuth.authenticate(req)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _    <- routerAuth.authenticate(req).mapError(ApiError.Wrapped(_))
             // Treat malformed slugs (e.g. legacy ".rpz" suffix) the same as
             // "no such blocklist" — 404, not 400. They were a route on a prior
             // version of the API and external callers may still probe them.
             bid  <- ZIO
               .fromEither(BlocklistId.parse(id))
-              .orElseFail(Response.notFound(s"unknown blocklist: $id"))
-            out  <- policy.renderBlocklist(bid).mapError(ErrorMapper.dbErrorToResponse)
+              .orElseFail(ApiError.NotFound(s"unknown blocklist: $id"))
+            out  <- policy.renderBlocklist(bid).mapError(ApiError.Db(_))
             resp <- ZIO
               .fromOption(out)
               .mapBoth(
-                _ => Response.notFound(s"unknown blocklist: $id"),
+                _ => ApiError.NotFound(s"unknown blocklist: $id"),
                 { case (etag, body) =>
                   val ifNone = req.header(Header.IfNoneMatch).map(_.renderedValue)
                   if ifNone.exists(etagWeakEquals(_, etag.value)) then
@@ -120,18 +131,19 @@ object RouterRoutes {
                 },
               )
           } yield resp
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.POST / "api" / "router" / "decision"      ->
         handler { (req: Request) =>
-          for {
-            router <- routerAuth.authenticate(req)
-            body   <- req.body.asString.orElseFail(Response.badRequest(""))
+          val handle: ZIO[Any, ApiError, Response] = for {
+            router <- routerAuth.authenticate(req).mapError(ApiError.Wrapped(_))
+            body   <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             dreq   <- ZIO
               .fromEither(body.fromJson[RouterDecisionRequest])
-              .mapError(e => Response.badRequest(e))
+              .mapError(ApiError.DecodeFailure(_))
             result <- policy
               .decide(dreq.mac.value, dreq.hostname.value)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             _      <- ZIO
               .when(result.decision == ConnectionDecision.Block) {
                 blockEventRepo
@@ -146,9 +158,10 @@ object RouterRoutes {
                       ),
                     ),
                   )
-                  .mapError(ErrorMapper.dbErrorToResponse)
+                  .mapError(ApiError.Db(_))
               }
           } yield Response.json(result.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 
@@ -180,38 +193,41 @@ object AdminRouterRoutes {
     Routes(
       Method.POST / "api" / "admin" / "routers"                  ->
         handler { (req: Request) =>
-          for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr   <- ZIO
               .fromEither(body.fromJson[CreateRouterRequest])
-              .mapError(e => Response.badRequest(e))
+              .mapError(ApiError.DecodeFailure(_))
             _    <- ZIO
-              .fail(Response.badRequest("name required"))
+              .fail(ApiError.BadRequest("name required"))
               .when(cr.name.trim.isEmpty)
             enrollmentToken = EnrollmentToken.unsafe(newEnrollmentToken())
             etHash          = PolicyService.hashToken(enrollmentToken.value)
             id <- routerRepo
               .create(cr.name.trim, etHash)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
           } yield Response.json(CreateRouterResponse(id, cr.name.trim, enrollmentToken).toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "admin" / "routers"                   ->
         handler { (req: Request) =>
-          for {
-            _   <- requireAdmin(req, auth)
-            all <- routerRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _   <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            all <- routerRepo.listAll.mapError(ApiError.Db(_))
           } yield Response.json(all.map(toSummary).toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.DELETE / "api" / "admin" / "routers" / string("id") ->
         handler { (id: String, req: Request) =>
-          for {
-            _   <- requireAdmin(req, auth)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _   <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
             uid <- ZIO
               .attempt(RouterId(UUID.fromString(id)))
-              .orElseFail(Response.badRequest("bad uuid"))
-            _   <- routerRepo.delete(uid).mapError(ErrorMapper.dbErrorToResponse)
+              .orElseFail(ApiError.BadRequest("bad uuid"))
+            _   <- routerRepo.delete(uid).mapError(ApiError.Db(_))
           } yield Response.ok
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 

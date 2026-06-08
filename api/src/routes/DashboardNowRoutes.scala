@@ -42,13 +42,18 @@ object DashboardNowRoutes {
     Routes(
       Method.GET / "api" / "dashboard" / "now" ->
         handler { (req: Request) =>
-          for {
-            claims      <- requireAuth(req, auth)
+          // #1570: fail with typed ApiError; ErrorMapper.errorToResponse maps it and the
+          // ErrorBoundary logs (4xx WARN / 5xx ERROR) + meters. Same final Response as before.
+          // Auth/visibility helpers still return Response and are bridged via ApiError.Wrapped.
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims      <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             now         <- clock.instant
-            allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+            allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
             visibleDevs <- filterDevices(claims, allDevices, userProfileRepo)
-            allProfiles <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Wrapped(_))
+            allProfiles <- profileRepo.listAll.mapError(ApiError.Db(_))
             visibleProf <- visibleProfiles(claims, allProfiles, userProfileRepo)
+              .mapError(ApiError.Wrapped(_))
             visibleMacs = visibleDevs.map(_.mac)
             // Both inputs in parallel.
             since       = now.minus(TopHostsWindow)
@@ -64,8 +69,8 @@ object DashboardNowRoutes {
                 ),
               )
               .fork
-            lastSeen  <- lastSeenF.join.mapError(ErrorMapper.dbErrorToResponse)
-            rows      <- rowsF.join.mapError(ErrorMapper.dbErrorToResponse)
+            lastSeen  <- lastSeenF.join.mapError(ApiError.Db(_))
+            rows      <- rowsF.join.mapError(ApiError.Db(_))
             response = buildResponse(
               now = now,
               profiles = visibleProf,
@@ -74,6 +79,7 @@ object DashboardNowRoutes {
               rows = rows,
             )
           } yield Response.json(response.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 

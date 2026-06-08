@@ -14,6 +14,13 @@ import zio.json.*
  * is the time-window primitive that profiles (and, later, per-app rules #1378 / blocklists #1067)
  * reference by id. Pure HTTP/validation glue over [[NamedScheduleRepo]] — PolicyService folds the
  * active windows into the per-MAC BlockRules at snapshot time; the router never sees schedules.
+ *
+ * #1570: handlers fail with a typed [[ApiError]] mapped centrally by
+ * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR)
+ * + meters each error. Every case reproduces the EXACT status + body the hand-rolled code produced
+ * before (the `name_taken` 409 JSON is preserved verbatim via [[ApiError.Wrapped]]), so the SPA
+ * sees identical responses. Auth helpers still return `Response` and are bridged via
+ * [[ApiError.Wrapped]].
  */
 object ScheduleRoutes {
 
@@ -34,6 +41,16 @@ object ScheduleRoutes {
       }
     }.map(_.reverse)
 
+  // 409 + {"error":"name_taken","name":...} — preserved verbatim from the hand-rolled handler
+  // (the SPA distinguishes it from a generic 400). Wrapped so the boundary maps/logs/meters it
+  // without re-deriving the body.
+  private def nameTaken(name: String): ApiError =
+    ApiError.Wrapped(
+      Response
+        .json(s"""{"error":"name_taken","name":${name.toJson}}""")
+        .status(Status.Conflict),
+    )
+
   def routes(
       auth: AuthService,
       scheduleRepo: NamedScheduleRepo,
@@ -41,97 +58,91 @@ object ScheduleRoutes {
     Routes(
       Method.GET / "api" / "schedules"                 ->
         handler { (req: Request) =>
-          for {
-            _    <- requireAuth(req, auth)
-            list <- scheduleRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _    <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
+            list <- scheduleRepo.listAll.mapError(ApiError.Db(_))
           } yield Response.json(list.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "schedules" / long("id")    ->
         handler { (id: Long, req: Request) =>
-          for {
-            _ <- requireAuth(req, auth)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _ <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             s <- scheduleRepo
               .findById(NamedScheduleId(id))
-              .mapError(ErrorMapper.dbErrorToResponse)
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Schedule not found")))
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Schedule not found")))
           } yield Response.json(s.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.POST / "api" / "schedules"                ->
         handler { (req: Request) =>
-          for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             cr   <- ZIO
               .fromEither(body.fromJson[CreateNamedScheduleRequest])
-              .mapError(Response.badRequest(_))
+              .mapError(ApiError.DecodeFailure(_))
             name = cr.name.trim
-            _       <- ZIO.fail(Response.badRequest("name is required")).when(name.isEmpty)
-            windows <- ZIO.fromEither(validateWindows(cr.windows)).mapError(Response.badRequest(_))
-            taken   <- scheduleRepo.findByName(name).mapError(ErrorMapper.dbErrorToResponse)
-            _       <- ZIO
-              .fail(
-                Response
-                  .json(s"""{"error":"name_taken","name":${name.toJson}}""")
-                  .status(Status.Conflict),
-              )
-              .when(taken.isDefined)
+            _       <- ZIO.fail(ApiError.BadRequest("name is required")).when(name.isEmpty)
+            windows <- ZIO.fromEither(validateWindows(cr.windows)).mapError(ApiError.BadRequest(_))
+            taken   <- scheduleRepo.findByName(name).mapError(ApiError.Db(_))
+            _       <- ZIO.fail(nameTaken(name)).when(taken.isDefined)
             id      <- scheduleRepo
               .create(name, cr.description.map(_.trim).filter(_.nonEmpty), windows)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             s       <- scheduleRepo
               .findById(id)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
               .flatMap(
-                ZIO.fromOption(_).orElseFail(Response.internalServerError("Schedule vanished")),
+                ZIO.fromOption(_).orElseFail(ApiError.Internal("Schedule vanished")),
               )
             _       <- AppMetrics.scheduleMutation("create")
           } yield Response.json(s.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       // PATCH carries the full schedule shape (name/description/windows) and replaces — symmetric
       // with the GET read shape, so the SPA autosaves the whole edit form (#423 / autosave default).
       Method.PATCH / "api" / "schedules" / long("id")  ->
         handler { (id: Long, req: Request) =>
-          val sid = NamedScheduleId(id)
-          for {
-            _    <- requireAdmin(req, auth)
-            body <- req.body.asString.orElseFail(Response.badRequest(""))
+          val sid                                  = NamedScheduleId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+            body <- req.body.asString.orElseFail(ApiError.BadRequest(""))
             ur   <- ZIO
               .fromEither(body.fromJson[UpdateNamedScheduleRequest])
-              .mapError(Response.badRequest(_))
+              .mapError(ApiError.DecodeFailure(_))
             name = ur.name.trim
-            _       <- ZIO.fail(Response.badRequest("name is required")).when(name.isEmpty)
-            windows <- ZIO.fromEither(validateWindows(ur.windows)).mapError(Response.badRequest(_))
+            _       <- ZIO.fail(ApiError.BadRequest("name is required")).when(name.isEmpty)
+            windows <- ZIO.fromEither(validateWindows(ur.windows)).mapError(ApiError.BadRequest(_))
             _       <- scheduleRepo
               .findById(sid)
-              .mapError(ErrorMapper.dbErrorToResponse)
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Schedule not found")))
-            taken   <- scheduleRepo.findByName(name).mapError(ErrorMapper.dbErrorToResponse)
-            _       <- ZIO
-              .fail(
-                Response
-                  .json(s"""{"error":"name_taken","name":${name.toJson}}""")
-                  .status(Status.Conflict),
-              )
-              .when(taken.exists(_.id != sid))
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Schedule not found")))
+            taken   <- scheduleRepo.findByName(name).mapError(ApiError.Db(_))
+            _       <- ZIO.fail(nameTaken(name)).when(taken.exists(_.id != sid))
             _       <- scheduleRepo
               .update(sid, name, ur.description.map(_.trim).filter(_.nonEmpty), windows)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             s       <- scheduleRepo
               .findById(sid)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
               .flatMap(
-                ZIO.fromOption(_).orElseFail(Response.internalServerError("Schedule vanished")),
+                ZIO.fromOption(_).orElseFail(ApiError.Internal("Schedule vanished")),
               )
             _       <- AppMetrics.scheduleMutation("update")
           } yield Response.json(s.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.DELETE / "api" / "schedules" / long("id") ->
         handler { (id: Long, req: Request) =>
-          requireAdmin(req, auth) *>
-            scheduleRepo
-              .delete(NamedScheduleId(id))
-              .mapError(ErrorMapper.dbErrorToResponse) *>
-            AppMetrics.scheduleMutation("delete").as(Response.ok)
+          val handle: ZIO[Any, ApiError, Response] =
+            requireAdmin(req, auth).mapError(ApiError.Wrapped(_)) *>
+              scheduleRepo
+                .delete(NamedScheduleId(id))
+                .mapError(ApiError.Db(_)) *>
+              AppMetrics.scheduleMutation("delete").as(Response.ok)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 }

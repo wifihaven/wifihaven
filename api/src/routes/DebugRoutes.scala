@@ -19,6 +19,12 @@ import zio.json.*
  * Auth: none. Loopback check uses BOTH `req.remoteAddress` (when present) AND the `Host` header.
  * Either being non-loopback returns 403. Every hit logs at INFO so accidentally-leaking installs
  * are obvious in production.
+ *
+ * #1570: handlers fail with a typed [[ApiError]] mapped centrally by
+ * [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR)
+ * + meters each error. Each case reproduces the EXACT status + body the hand-rolled code produced —
+ * the loopback refusal keeps its empty-body 403 via [[ApiError.Wrapped]], DB failures stay 503 via
+ * [[ApiError.Db]].
  */
 object DebugRoutes {
 
@@ -41,10 +47,10 @@ object DebugRoutes {
           guardLoopback(req, "/api/debug/devices") {
             deviceRepo.listAll
               .mapBoth(
-                ErrorMapper.dbErrorToResponse,
+                ApiError.Db(_),
                 xs => Response.json(xs.toJson),
               )
-          }
+          }.mapError(ErrorMapper.errorToResponse)
         },
         Method.GET / "api" / "debug" / "events"                 -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/events") {
@@ -56,10 +62,10 @@ object DebugRoutes {
             connEventRepo
               .recent(limit)
               .mapBoth(
-                ErrorMapper.dbErrorToResponse,
+                ApiError.Db(_),
                 xs => Response.json(xs.toJson),
               )
-          }
+          }.mapError(ErrorMapper.errorToResponse)
         },
         Method.GET / "api" / "debug" / "cache-stats"            -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/cache-stats") {
@@ -74,12 +80,12 @@ object DebugRoutes {
                 ).toJson,
               )
             }
-          }
+          }.mapError(ErrorMapper.errorToResponse)
         },
         Method.POST / "api" / "debug" / "cache-stats" / "reset" -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/cache-stats/reset") {
             timeStatusCache.invalidateAll.as(Response.ok)
-          }
+          }.mapError(ErrorMapper.errorToResponse)
         },
         Method.GET / "api" / "debug" / "time_usage"             -> handler { (req: Request) =>
           guardLoopback(req, "/api/debug/time_usage") {
@@ -87,7 +93,7 @@ object DebugRoutes {
               today <- clock.today
               snap  <- timeUsageRepo
                 .snapshotAll(today)
-                .mapError(ErrorMapper.dbErrorToResponse)
+                .mapError(ApiError.Db(_))
               // Per-host minutes from `time_usage` over-count wall-clock time when a
               // single 5-min agent bucket touches multiple hosts (each host row holds
               // ~60s for that bucket, summing them inflates "online minutes"). Surface
@@ -97,7 +103,7 @@ object DebugRoutes {
               macs = snap.keys.map(_._1).toList.distinct
               presence <- trafficRepo
                 .listPresenceRows(macs, today)
-                .mapError(ErrorMapper.dbErrorToResponse)
+                .mapError(ApiError.Db(_))
               // Surface raw active-seconds (sum of max-per-bucket activeSeconds) as well as
               // the floor-divided minute count. The e2e D2 minute-granularity test (#516)
               // ceil-divides this to get tight bounds; bucket-counting via floor(/60) drifts
@@ -120,7 +126,7 @@ object DebugRoutes {
                 .toList
                 .toJson,
             )
-          }
+          }.mapError(ErrorMapper.errorToResponse)
         },
       )
 
@@ -152,10 +158,15 @@ object DebugRoutes {
    * surfaces one) and the `Host` request header. If either signal looks non-loopback, refuse. Logs
    * every hit (allowed or refused) at INFO so that an accidentally-enabled debug build is loud in
    * production logs.
+   *
+   * #1570: the refusal fails with [[ApiError.Wrapped]] carrying the EXACT empty-body 403 the
+   * hand-rolled `Response.status(Status.Forbidden)` produced — `ApiError.Forbidden` would attach a
+   * body, so Wrapped preserves the byte-identical response. The hit/refusal INFO/WARN logs here are
+   * the loopback-gate audit trail (not error mapping) and stay inline.
    */
-  private def guardLoopback[A](req: Request, path: String)(
-      inner: IO[Response, Response],
-  ): IO[Response, Response] = {
+  private def guardLoopback(req: Request, path: String)(
+      inner: IO[ApiError, Response],
+  ): IO[ApiError, Response] = {
     val remoteOk  = req.remoteAddress.forall(_.isLoopbackAddress)
     // Read the raw Host header value via `headerOrFail` — zio-http's typed
     // Header.Host parser is strict and rejects "::1" / "[::1]". For a
@@ -170,7 +181,7 @@ object DebugRoutes {
       ZIO.logWarning(
         s"debug endpoint refused (non-loopback): path=$path remote=$remoteStr host=$hostStr",
       ) *>
-        ZIO.fail(Response.status(Status.Forbidden))
+        ZIO.fail(ApiError.Wrapped(Response.status(Status.Forbidden)))
   }
 
   private def isLoopbackHost(raw: String): Boolean = {
