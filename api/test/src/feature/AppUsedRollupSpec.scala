@@ -226,6 +226,41 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         assertTrue(appSum == 1500L) &&
         assertTrue(appRows.size == 2)
     },
+    test(
+      "#1564: AppTimeLimit + AppDayState carry the FK appId, not just the `app:<slug>` label",
+    ) {
+      // The cap surface keys on `apps.id` end-to-end so consumers no longer have to parse
+      // `label.stripPrefix(\"app:\")` and re-resolve a slug. The repo carries `a.id` straight
+      // through from the join (it was already in scope), and the per-app DayState exposes it
+      // alongside the slug-derived label (the label stays for SPA back-compat).
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ar  <- ZIO.service[AppRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
+        trr <- ZIO.service[TrafficReportRepo]
+        s   <- setTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:64", "kid", kid)
+        app <- seedApp(ar, kid, "fkapp", List("fkapp.com"), 60)
+        rid <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        _    <- seedTraffic(rid, "aa:bb:cc:dd:ee:64", "fkapp.com", today, 10, 8 * 60)
+        atls <- stl.listForProfile(kid)
+        // Every emitted AppTimeLimit row carries the registered apps.id directly.
+        _   = atls
+        now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
+        tsvc  <- makeTimeService
+        state <- tsvc.dayStateLive(now, today, s, kid)
+        perApp = state.map(_.perApp).getOrElse(Nil)
+      } yield assertTrue(atls.nonEmpty) &&
+        assertTrue(atls.forall(_.appId == app)) &&
+        assertTrue(perApp.exists(_.appId == app)) &&
+        assertTrue(perApp.find(_.appId == app).map(_.usedMinutes).contains(10))
+    },
     test("re-running the aggregation tick is idempotent") {
       for {
         _   <- cleanDb
