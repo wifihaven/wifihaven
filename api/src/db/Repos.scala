@@ -479,6 +479,10 @@ case class TrafficReportInsert(
     activeSeconds: Int,
     bytesIn: Long,
     bytesOut: Long,
+    // #730: destination IP the bytes were attributed to. Optional because
+    // pre-#730 agents do not emit it; stored as NULL on traffic_reports.dest_ip
+    // for those records.
+    destIp: Option[IpAddress] = None,
 )
 
 case class BlockEventInsert(
@@ -1719,7 +1723,7 @@ class TrafficReportRepoLive(xa: Transactor[Task]) extends TrafficReportRepo {
   def insertBatch(reports: List[TrafficReportInsert]) =
     DbMetrics.timed("traffic.insertBatch")(
       Update[TrafficReportInsert](
-        "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
+        "INSERT INTO traffic_reports(router_id,mac,ip,host_type,host_value,date,period_start,period_end,active_seconds,bytes_in,bytes_out,dest_ip) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(router_id,period_start,mac,host_type,host_value) DO NOTHING",
       ).updateMany(reports).transact(xa),
     )
   // TODO(#730): remove this read-side join once usage records carry dest_ip.

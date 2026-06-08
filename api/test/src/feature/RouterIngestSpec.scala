@@ -9,6 +9,8 @@ import wifihaven.shared.types.*
 import wifihaven.testinfra.*
 import doobie.Transactor
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import wifihaven.api.db.TypeMeta.given
+import zio.interop.catz.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*

@@ -351,6 +351,11 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
         -- bytes_out = rx) and the swap happens only at the wire boundary.
         bytesIn       = c.bytes_out or 0,
         bytesOut      = c.bytes     or 0,
+        -- #730: destination IP these bytes were attributed to. Our accumulator
+        -- is already keyed (mac, dst_ip), so this is a direct pass-through.
+        -- The API persists it on traffic_reports.dest_ip and a follow-up uses
+        -- it for write-time FQDN backfill against connection_events.
+        destIp        = c.dst_ip,
       }
       if leases then
         rec.ip = leases[c.mac]  -- may be nil if MAC not in lease table
