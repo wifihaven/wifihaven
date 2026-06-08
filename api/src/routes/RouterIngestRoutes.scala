@@ -197,6 +197,12 @@ object RouterIngestRoutes {
         r.activeSeconds.toInt,
         r.bytesIn,
         r.bytesOut,
+        // #730: pass through the per-record destination IP. INSERT ... ON
+        // CONFLICT DO NOTHING means colliding records on the existing
+        // (router_id, period_start, mac, host_type, host_value) key keep the
+        // first row's dest_ip — same byte/seconds behaviour as today; #730 just
+        // adds the column the follow-up write-time FQDN backfill will consume.
+        r.destIp,
       ),
     )
     for {
