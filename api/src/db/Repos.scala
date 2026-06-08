@@ -907,17 +907,20 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
 
   def get: Task[HouseholdSettings] =
     DbMetrics.timed("householdSettings.get")(
+      // #1525: `heartbeat_host_patterns` is no longer read — host-identity suppression lives in
+      // the canonical `shared.types.InfraHosts` code constant. The column is dropped in a
+      // follow-up migration-only PR; until then the SELECT just omits it and `HeartbeatFilter`
+      // gets `Nil` for that field.
       sql"""SELECT daily_reset_time, daily_reset_tz,
                  heartbeat_filter_enabled, heartbeat_bytes_threshold,
-                 heartbeat_host_patterns,
                  unmanaged_mac_policy::text,
                  presence_continuation_seconds
             FROM household_settings WHERE id=1"""
-        .query[(LocalTime, ZoneId, Boolean, Int, List[String], String, Int)]
+        .query[(LocalTime, ZoneId, Boolean, Int, String, Int)]
         .unique
-        .map { case (t, z, hbEnabled, hbBytes, hbHosts, ummJson, presenceCont) =>
+        .map { case (t, z, hbEnabled, hbBytes, ummJson, presenceCont) =>
           val umm = ummJson.fromJson[UnmanagedMacPolicy].getOrElse(UnmanagedMacPolicy.Default)
-          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, hbHosts), umm, presenceCont)
+          HouseholdSettings(t, z, HeartbeatFilter(hbEnabled, hbBytes, Nil), umm, presenceCont)
         }
         .transact(xa),
     )
@@ -932,13 +935,16 @@ class HouseholdSettingsRepoLive(xa: Transactor[Task]) extends HouseholdSettingsR
     // from first principles. The DELETE is wholesale because all of these fields
     // gate the same aggregation — fine-grained invalidation would only add risk
     // of missing a code path that mutates one of them.
+    // #1525: `heartbeat_host_patterns` is no longer written — the column has a NOT NULL DEFAULT
+    // from V24 so existing rows keep their seed value until the follow-up migration drops it
+    // entirely; nothing in the API reads it anymore (see `Presence.isHeartbeat` →
+    // `InfraHosts.isBackground`).
     val upd           =
       sql"""UPDATE household_settings
               SET daily_reset_time=${s.dailyResetTime},
                   daily_reset_tz=${s.dailyResetTz},
                   heartbeat_filter_enabled=${s.heartbeatFilter.enabled},
                   heartbeat_bytes_threshold=${s.heartbeatFilter.bytesThreshold},
-                  heartbeat_host_patterns=${s.heartbeatFilter.heartbeatHostPatterns.toArray},
                   unmanaged_mac_policy=${ummJson}::jsonb,
                   presence_continuation_seconds=${s.presenceContinuationSeconds},
                   updated_at=NOW()

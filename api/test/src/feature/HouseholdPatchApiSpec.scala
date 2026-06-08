@@ -33,10 +33,12 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
   private val Seed = HouseholdSettings(
     dailyResetTime = LocalTime.of(0, 0),
     dailyResetTz = ZoneId.of("America/Los_Angeles"),
+    // #1525: heartbeatHostPatterns is retired — the DB column is no longer written or read, so the
+    // repo round-trip always returns Nil regardless of what the caller passes in.
     heartbeatFilter = HeartbeatFilter(
       enabled = false,
       bytesThreshold = 1024,
-      heartbeatHostPatterns = List("foo.com"),
+      heartbeatHostPatterns = Nil,
     ),
     unmanagedMacPolicy = UnmanagedMacPolicy.Default,
   )
@@ -76,7 +78,7 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         assertTrue(after.dailyResetTz == Seed.dailyResetTz) &&
         assertTrue(after.heartbeatFilter == Seed.heartbeatFilter)
     },
-    test("nested heartbeatFilter deep-merges (enabled toggle preserves threshold + patterns)") {
+    test("nested heartbeatFilter deep-merges (enabled toggle preserves threshold)") {
       for {
         _            <- setupHousehold
         (routes, tk) <- routesAndToken
@@ -86,7 +88,48 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(after.heartbeatFilter.enabled) &&
         assertTrue(after.heartbeatFilter.bytesThreshold == 1024) &&
-        assertTrue(after.heartbeatFilter.heartbeatHostPatterns == List("foo.com"))
+        // #1525: heartbeatHostPatterns is retired — DB no longer persists it; reads return Nil.
+        assertTrue(after.heartbeatFilter.heartbeatHostPatterns == Nil)
+    },
+    test(
+      "#1525 PATCH that includes heartbeatHostPatterns is accepted but the field is ignored",
+    ) {
+      // Older SPA builds still send heartbeatHostPatterns on PATCH. We must tolerate the field on
+      // input (no 400, no error) and ignore it: enforcement now comes from the canonical
+      // InfraHosts code constant, not from a per-install hand-curated list.
+      for {
+        _            <- setupHousehold
+        (routes, tk) <- routesAndToken
+        resp         <- patch(
+          routes,
+          tk,
+          """{"heartbeatFilter":{"heartbeatHostPatterns":["legacy.example.com"]}}""",
+        )
+        repo         <- ZIO.service[HouseholdSettingsRepo]
+        after        <- repo.get
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(after.heartbeatFilter.heartbeatHostPatterns == Nil)
+    },
+    test(
+      "#1525 PATCH that omits heartbeatHostPatterns produces the same persisted state as one that sends it",
+    ) {
+      // Enforcement no longer derives from `heartbeatHostPatterns` — InfraHosts is the source. So
+      // a PATCH that omits the field and a PATCH that sends it must yield identical persisted
+      // HouseholdSettings, proving the field has no effect on behavior.
+      for {
+        _             <- setupHousehold
+        (routes, tk)  <- routesAndToken
+        _             <- patch(routes, tk, """{"heartbeatFilter":{"bytesThreshold":2048}}""")
+        repo          <- ZIO.service[HouseholdSettingsRepo]
+        afterOmitted  <- repo.get
+        _             <- setupHousehold
+        _             <- patch(
+          routes,
+          tk,
+          """{"heartbeatFilter":{"bytesThreshold":2048,"heartbeatHostPatterns":["x.example.com"]}}""",
+        )
+        afterIncluded <- repo.get
+      } yield assertTrue(afterOmitted == afterIncluded)
     },
     test("absent fields preserve existing values") {
       for {
@@ -110,7 +153,8 @@ object HouseholdPatchApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         assertTrue(after.dailyResetTz == ZoneId.of("America/New_York")) &&
         assertTrue(after.heartbeatFilter.enabled == false) && // preserved
         assertTrue(after.heartbeatFilter.bytesThreshold == 4096) &&
-        assertTrue(after.heartbeatFilter.heartbeatHostPatterns == List("bar.com"))
+        // #1525: heartbeatHostPatterns is ignored on input and never persisted.
+        assertTrue(after.heartbeatFilter.heartbeatHostPatterns == Nil)
     },
     test("null on non-nullable field returns 400") {
       for {
