@@ -30,27 +30,44 @@ jobs:
       - name: Verify base ref
         env:
           ALLOWED_BASES: "main"
+          EVENT_NAME: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # merge_group payload carries the target branch as base_ref
+          # (a fully-qualified refs/heads/<name>). We strip the prefix
+          # below. This re-runs the check at merge-queue time, closing
+          # the race where GitHub's async auto-retarget hasn't fired yet
+          # when a stacked PR enters the queue (see #1590).
+          MG_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "merge_group" ]; then
-            echo "merge_group event — the queue only runs after a PR was merged into main; skipping."
-            exit 0
-          fi
-          if [ -z "${PR_BASE}" ]; then
-            echo "::error::No base ref on pull_request payload"
+          case "${EVENT_NAME}" in
+            pull_request)
+              base="${PR_BASE}"
+              ctx="PR #${PR_NUMBER}"
+              ;;
+            merge_group)
+              base="${MG_BASE_REF#refs/heads/}"
+              ctx="merge_group"
+              ;;
+            *)
+              echo "Unsupported event '${EVENT_NAME}'."
+              exit 1
+              ;;
+          esac
+          if [ -z "${base}" ]; then
+            echo "::error::No base ref resolved from ${EVENT_NAME} payload"
             exit 1
           fi
           ok=0
           for allowed in ${ALLOWED_BASES}; do
-            if [ "${PR_BASE}" = "${allowed}" ]; then
+            if [ "${base}" = "${allowed}" ]; then
               ok=1
               break
             fi
           done
           if [ "${ok}" != "1" ]; then
-            echo "::error title=PR base is not main::PR #${PR_NUMBER} targets '${PR_BASE}' — only ${ALLOWED_BASES} allowed. Retarget to main (Edit → base). See https://github.com/wifihaven/wifihaven/issues/1590."
+            echo "::error title=Base is not main::${ctx} targets '${base}' — only ${ALLOWED_BASES} allowed. Retarget to main (Edit → base). See https://github.com/wifihaven/wifihaven/issues/1590."
             exit 1
           fi
-          echo "OK: PR base '${PR_BASE}' is in allowlist '${ALLOWED_BASES}'."
+          echo "OK: ${ctx} base '${base}' is in allowlist '${ALLOWED_BASES}'."
