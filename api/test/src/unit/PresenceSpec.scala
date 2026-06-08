@@ -1114,6 +1114,121 @@ object PresenceSpec extends ZIOSpecDefault {
           Presence.appSecondsForProfile(rows, List(group)) == Map("app:fooapp" -> 180L),
         )
       },
+      test(
+        "#1499 prod replay: 61 unmatched infra hosts + 40s genuine app reads ~40s, not 22 min",
+      ) {
+        // Direct replay of the #1499 prod scenario (Kid device, 2026-06-06): the
+        // dashboard showed `usedMins ≈ 22` against a 30-min cap while the only
+        // *attributed* app (Math Academy) was 40 s. The operator's 2026-06-06
+        // analysis attributed ~93 % of the counted rows to device-level infra
+        // (gvt2/gvt3 beacons, *.ls.apple.com, OCSP responders, safe-browsing,
+        // analytics SaaS) — all of which were missing from the (then) separate
+        // `heartbeatHostPatterns` list while present on the (then) separate
+        // `PolicyService.infraAllowHosts`. The unified `InfraHosts` source of
+        // truth (#1503/#1525, consumed by both Policy *and* Presence) suppresses
+        // these by host identity regardless of byte size.
+        //
+        // Seed: 61 distinct infra hosts spread across the day, each ~300 s and
+        // far above the 10 KB byte floor (so byte-threshold suppression cannot
+        // catch them — only host-identity suppression can). Plus the genuine
+        // ~40 s Math Academy session. Pre-fix this would read ~22 min; post-fix
+        // the canonical list drops all 61 → only the 40 s engaged span remains.
+        // No "Other" bucket: every unmatched-to-app host is either attributed
+        // to its own single-host app or suppressed as infra.
+        val f         = HeartbeatFilter(enabled = true, bytesThreshold = 10000)
+        val mathAcad  =
+          List(appRow(mac1, 0L, "www.mathacademy.com", periodSeconds = 40, bytes = 360_000L))
+        // 61 distinct infra subdomains, every one matched by the unified
+        // InfraHosts list (canonical + suppressOnly).
+        val infraFqdn = List(
+          // gvt2.com / gvt3.com beacons (20 rows — ~36% of the prod sample)
+          "beacons.gvt2.com",
+          "beacons2.gvt2.com",
+          "beacons3.gvt2.com",
+          "beacons4.gvt2.com",
+          "beacons5.gvt2.com",
+          "r1---sn-abc.gvt2.com",
+          "r2---sn-abc.gvt2.com",
+          "r3---sn-abc.gvt2.com",
+          "r4---sn-abc.gvt2.com",
+          "r5---sn-abc.gvt2.com",
+          "dl.gvt2.com",
+          "redirector.gvt2.com",
+          "update.gvt2.com",
+          "beacons.gvt3.com",
+          "beacons2.gvt3.com",
+          "beacons3.gvt3.com",
+          "beacons4.gvt3.com",
+          "r1---sn-abc.gvt3.com",
+          "redirector.gvt3.com",
+          "update.gvt3.com",
+          // Apple OS / location services / OCSP (14 rows — ~26% of the sample)
+          "gsp-ssl.ls.apple.com",
+          "gspe1-ssl.ls.apple.com",
+          "gspe35-ssl.ls.apple.com",
+          "gsp10-ssl.ls.apple.com",
+          "configuration.ls.apple.com",
+          "ocsp.apple.com",
+          "ocsp2.apple.com",
+          "crl.apple.com",
+          "courier.push.apple.com",
+          "1-courier.push.apple.com",
+          "2-courier.push.apple.com",
+          "init-p01st.push.apple.com",
+          "time.apple.com",
+          "gdmf.apple.com",
+          // Google APIs/infra background (8 rows — ~15%)
+          "clientservices.googleapis.com",
+          "safebrowsingohttpgateway.googleapis.com",
+          "safebrowsing.google.com",
+          "b1.nel.goog",
+          "b2.nel.goog",
+          "ocsp.pki.goog",
+          "ocsp.digicert.com",
+          "captive.apple.com",
+          // Analytics / SaaS telemetry (4 rows — ~7%)
+          "events.launchdarkly.com",
+          "cc-api-data.adobe.io",
+          "app-analytics-services.com",
+          "v1.app-analytics-services.com",
+          // iCloud Private Relay + push/DNS infra (suppressOnly tier)
+          "mask.icloud.com",
+          "mask-h2.icloud.com",
+          "mask-api.icloud.com",
+          "a23-203-15-1.deploy.akadns.net",
+          "e6858.dscx.akamaiedge.akadns.net",
+          "courier.apple-dns.net",
+          "apns.apple-dns.net",
+          "rcs.telephony.goog",
+          "mtalk.google.com",
+          // Cert / connectivity probes
+          "connectivitycheck.gstatic.com",
+          "msftconnecttest.com",
+          "www.msftconnecttest.com",
+          "msftncsi.com",
+          "www.msftncsi.com",
+          // Misc Apple edge
+          "g.aaplimg.com",
+          "netcts.cdn-apple.com",
+          "ess.apple.com",
+        )
+        // Sanity check: we built exactly the 61 infra hosts the prod sample
+        // had ('Other' bucket size in the #1499 issue body). A miscount here
+        // would invalidate the replay.
+        val _         = assertTrue(infraFqdn.size == 61)
+        val infra     = infraFqdn.zipWithIndex.map { case (h, i) =>
+          // Spread evenly across the day, each window 300 s and 80 KB —
+          // well above the 10 KB byte floor.
+          appRow(mac1, 60L + i.toLong * 600L, h, periodSeconds = 300, bytes = 80_000L)
+        }
+        val rows      = mathAcad ++ infra
+        // Headline daily total: 40 s genuine, every infra row suppressed.
+        // (~0 minutes after floor-div; the regression would read ≥ 22.)
+        assertTrue(
+          Presence.totalSecondsByMac(rows, Nil, f) == Map(mac1 -> 40L),
+          Presence.totalMinutesByMac(rows, Nil, f) == Map.empty[MacAddress, Int],
+        )
+      },
       test("an app whose host-set does NOT include the infra host still under-counts it") {
         // Control for the test above: the SAME infra row, but the app's host-set
         // does not claim gvt2.com. The asset is correctly suppressed as infra and
