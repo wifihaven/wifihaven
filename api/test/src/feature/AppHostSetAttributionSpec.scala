@@ -190,7 +190,11 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       )
       ZIO.succeed(
         assertTrue(agg.exists(r => r.soleApp.isEmpty && r.appName.contains("Math Academy"))) &&
-          assertTrue(!agg.exists(_.groups.get("app").contains(AppMembership.Other.slug))),
+          // #1526: no "__other__" sentinel — assert both hosts attribute to the
+          // registered app, not a synthetic bucket. (Unmatched hosts would each
+          // get their own host-keyed single-host app, but here both hosts ARE
+          // matched, so they roll up into "Math Academy" only.)
+          assertTrue(agg.flatMap(_.groups.get("app")).toSet == Set(appSlug)),
       )
     },
   )

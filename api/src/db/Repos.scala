@@ -2461,7 +2461,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // traffic-usage aggregator (#1085) and PolicyService. We deliberately do
     // NOT match in SQL: app_hosts stores apex-form hosts ("youtube.com"), but
     // connection_events carry FQDNs ("www.youtube.com"), so an exact SQL join
-    // would drop subdomains into __other__. Instead we fetch the apex→app
+    // would drop subdomains into single-host apps. Instead we fetch the apex→app
     // inventory + the distinct in-window hosts, run lookupApex per host, and
     // feed the resolved concrete (fqdn → app) pairs back into the aggregation
     // as a VALUES join. A host in N apps yields N pairs (fan-out preserved).
@@ -2494,15 +2494,17 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         val hasAppMap = wantsApp && appPairs.nonEmpty
 
         // App expressions. With resolved pairs we COALESCE off the VALUES alias
-        // `am`; when grouping by app but nothing matched, everything collapses to
-        // __other__; otherwise NULL (un-drilled path keeps its constant shape).
+        // `am`; #1526: when no app row matches, the host IS its own single-host
+        // app — fall back to the domain itself for both slug and display name
+        // (NOT a shared "__other__" bucket). Un-drilled path keeps NULLs so the
+        // constant shape is preserved.
         val appSlugExpr =
-          if (hasAppMap) fr"COALESCE(am.slug, '__other__')"
-          else if (wantsApp) fr"'__other__'::TEXT"
+          if (hasAppMap) fr"COALESCE(am.slug, " ++ domainExpr ++ fr")"
+          else if (wantsApp) domainExpr
           else fr"NULL::TEXT"
         val appNameExpr =
-          if (hasAppMap) fr"COALESCE(am.name, 'Other')"
-          else if (wantsApp) fr"'Other'::TEXT"
+          if (hasAppMap) fr"COALESCE(am.name, " ++ domainExpr ++ fr")"
+          else if (wantsApp) domainExpr
           else fr"NULL::TEXT"
         val appIconExpr = if (hasAppMap) fr"am.icon" else fr"NULL::TEXT"
         val appIdExpr   = if (hasAppMap) fr"am.app_id" else fr"NULL::BIGINT"
@@ -2680,9 +2682,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                 soleProfile = if (wantsProfile) None else spr,
                 soleDomain = if (wantsDomain) None else sdo,
                 soleApp = if (wantsApp) None else sap,
-                // appId is the BIGINT primary key for the apps table; the
-                // synthetic "__other__" bucket has no row in apps so app_id is
-                // NULL on the wire.
+                // appId is the BIGINT primary key for the apps table; #1526:
+                // host-keyed single-host apps (unmatched hosts) have no row in
+                // apps so app_id is NULL on the wire.
                 appId = if (wantsApp) gid.map(AppId(_)) else None,
                 appName = if (wantsApp) gan else None,
                 appIcon = if (wantsApp) gai else None,
@@ -2894,9 +2896,9 @@ trait AppRepo {
 
   /**
    * #769: full (host, app_id) inventory across all apps. Used by the group-by-app aggregation paths
-   * for Connection Events + Traffic Usage to bucket rows into their owning app, with `__other__`
-   * for hosts not in any app. One row per (host, app) pair — a host that's in two apps yields two
-   * entries.
+   * for Connection Events + Traffic Usage to bucket rows into their owning app. #1526: a host that
+   * matches no app is its own single-host app (keyed by the host itself); there is no semantic
+   * "Other" bucket. One row per (host, app) pair — a host that's in two apps yields two entries.
    */
   def listAllHostMappings: Task[List[AppHost]]
 
