@@ -16,6 +16,14 @@ import java.time.{Duration, Instant, LocalDate, ZoneId}
 //
 // Per-device timeline (#721) and per-profile timeline (#722) share one endpoint.
 // Exactly one of `mac=` or `profileId=` must be set.
+//
+// #1570: handlers (and their helper builders) fail with a typed [[ApiError]] mapped centrally by
+// [[ErrorMapper.errorToResponse]]; the [[wifihaven.api.ErrorBoundary]] logs (4xx WARN / 5xx ERROR) +
+// meters each error. Every case reproduces the EXACT status + body the hand-rolled code produced —
+// the structured `unknown_bucket` / `unknown_groupBy` / `groupBy_not_implemented` 400 JSON bodies
+// map through [[ApiError.BadRequest]] to the identical `Response.badRequest(...)`, DB failures stay
+// 503 via [[ApiError.Db]]. Auth/profile-access helpers still return `Response` and are bridged via
+// [[ApiError.Wrapped]].
 object UsageRoutes {
   def routes(
       auth: AuthService,
@@ -42,20 +50,21 @@ object UsageRoutes {
             userProfileRepo,
             appRepo,
             clock,
-          )
+          ).mapError(ErrorMapper.errorToResponse)
         },
       // #766: recently-visited FQDN apexes for one device, used by the
       // apps create/edit "Pick from recent activity" picker.
       Method.GET / "api" / "devices" / string("mac") / "recent-apexes" ->
         handler { (macRaw: String, req: Request) =>
-          for {
-            claims <- requireAuth(req, auth)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             mac = MacAddress.unsafe(normalizeMac(macRaw))
             device <- deviceRepo
               .findByMac(mac)
-              .mapError(ErrorMapper.dbErrorToResponse)
-              .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
+              .mapError(ApiError.Db(_))
+              .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
             _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+              .mapError(ApiError.Wrapped(_))
             windowDays = req.url
               .queryParam("windowDays")
               .flatMap(_.toIntOption)
@@ -72,7 +81,7 @@ object UsageRoutes {
             from = now.minus(Duration.ofDays(windowDays.toLong))
             rows <- trafficRepo
               .listFqdnHostAggregatesForDevice(mac, from, now)
-              .mapError(ErrorMapper.dbErrorToResponse)
+              .mapError(ApiError.Db(_))
             grouped = rows
               .groupBy { case (h, _, _) => Apex.orSelf(h) }
               .iterator
@@ -96,6 +105,7 @@ object UsageRoutes {
               items = grouped,
             )
           } yield Response.json(resp.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       // #1061 — per-app time-used breakdown for one profile over [from,to].
       // Read-only companion to #767's rules editor; powers the per-app subsection
@@ -104,23 +114,24 @@ object UsageRoutes {
       // bucket. Sorted by proportional seconds desc.
       Method.GET / "api" / "profiles" / long("id") / "usage-by-app"    ->
         handler { (id: Long, req: Request) =>
-          val pid = ProfileId(id)
-          for {
-            claims <- requireAuth(req, auth)
+          val pid                                  = ProfileId(id)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             _      <- requireProfileReadAccess(claims, pid, userProfileRepo)
+              .mapError(ApiError.Wrapped(_))
             today  <- clock.today
             fromS = req.url.queryParam("from").getOrElse(today.toString)
             toS   = req.url.queryParam("to").getOrElse(fromS)
             from     <- ZIO
               .attempt(LocalDate.parse(fromS))
-              .orElseFail(Response.badRequest(s"invalid from: $fromS"))
+              .orElseFail(ApiError.BadRequest(s"invalid from: $fromS"))
             to       <- ZIO
               .attempt(LocalDate.parse(toS))
-              .orElseFail(Response.badRequest(s"invalid to: $toS"))
+              .orElseFail(ApiError.BadRequest(s"invalid to: $toS"))
             _        <- ZIO
-              .fail(Response.badRequest("from must be <= to"))
+              .fail(ApiError.BadRequest("from must be <= to"))
               .when(from.isAfter(to))
-            settings <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            settings <- hsRepo.get.mapError(ApiError.Db(_))
             resp     <- buildUsageByApp(
               pid,
               from,
@@ -133,11 +144,12 @@ object UsageRoutes {
               settings.presenceContinuationSeconds,
             )
           } yield Response.json(resp.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       Method.GET / "api" / "usage" / "series"                          ->
         handler { (req: Request) =>
-          for {
-            claims <- requireAuth(req, auth)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             today  <- clock.today
             macOpt = req.url.queryParam("mac").map(s => MacAddress.unsafe(normalizeMac(s)))
             profileIdOpt <- ZIO
@@ -150,18 +162,18 @@ object UsageRoutes {
                       .toRight(s"invalid profileId: $s")
                 },
               )
-              .mapError(Response.badRequest)
+              .mapError(ApiError.BadRequest(_))
             _            <- ZIO
-              .fail(Response.badRequest("exactly one of mac or profileId is required"))
+              .fail(ApiError.BadRequest("exactly one of mac or profileId is required"))
               .when(macOpt.isDefined == profileIdOpt.isDefined)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date <- ZIO
               .attempt(LocalDate.parse(dateStr))
-              .orElseFail(Response.badRequest(s"invalid date: $dateStr"))
+              .orElseFail(ApiError.BadRequest(s"invalid date: $dateStr"))
             tzStr = req.url.queryParam("tz").getOrElse("UTC")
             zone <- ZIO
               .attempt(ZoneId.of(tzStr))
-              .orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
+              .orElseFail(ApiError.BadRequest(s"invalid tz: $tzStr"))
             topN       = req.url
               .queryParam("topN")
               .flatMap(_.toIntOption)
@@ -178,7 +190,7 @@ object UsageRoutes {
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
               else ZIO.succeed(UsageSeries.AppAxis.empty)
-            settings  <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            settings  <- hsRepo.get.mapError(ApiError.Db(_))
             resp      <- (macOpt, profileIdOpt) match {
               case (Some(mac), _) =>
                 buildForDevice(
@@ -210,27 +222,28 @@ object UsageRoutes {
                   appLookup,
                   settings,
                 )
-              case _              => ZIO.fail(Response.badRequest("unreachable"))
+              case _              => ZIO.fail(ApiError.BadRequest("unreachable"))
             }
           } yield Response.json(resp.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
       // #1099: batched per-profile series. The /profiles page resolves the
       // whole visible profile set in one partition-pruned scan instead of N
       // parallel single-profile requests.
       Method.GET / "api" / "usage" / "series" / "batch"                ->
         handler { (req: Request) =>
-          for {
-            claims <- requireAuth(req, auth)
+          val handle: ZIO[Any, ApiError, Response] = for {
+            claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
             today  <- clock.today
-            pids   <- parseMultiProfileIdParam(req).map(_.distinct)
+            pids   <- parseMultiProfileIdParam(req).mapError(ApiError.Wrapped(_)).map(_.distinct)
             dateStr = req.url.queryParam("date").getOrElse(today.toString)
             date <- ZIO
               .attempt(LocalDate.parse(dateStr))
-              .orElseFail(Response.badRequest(s"invalid date: $dateStr"))
+              .orElseFail(ApiError.BadRequest(s"invalid date: $dateStr"))
             tzStr = req.url.queryParam("tz").getOrElse("UTC")
             zone <- ZIO
               .attempt(ZoneId.of(tzStr))
-              .orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
+              .orElseFail(ApiError.BadRequest(s"invalid tz: $tzStr"))
             topN       = req.url
               .queryParam("topN")
               .flatMap(_.toIntOption)
@@ -241,7 +254,7 @@ object UsageRoutes {
             appLookup <-
               if (groupByApp) loadAppLookup(appRepo)
               else ZIO.succeed(UsageSeries.AppAxis.empty)
-            settings  <- hsRepo.get.mapError(ErrorMapper.dbErrorToResponse)
+            settings  <- hsRepo.get.mapError(ApiError.Db(_))
             resp      <- buildBatch(
               pids,
               date,
@@ -258,6 +271,7 @@ object UsageRoutes {
               settings,
             )
           } yield Response.json(resp.toJson)
+          handle.mapError(ErrorMapper.errorToResponse)
         },
     )
 
@@ -280,16 +294,18 @@ object UsageRoutes {
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
-  ): IO[Response, UsageSeriesBatchResponse] =
+  ): IO[ApiError, UsageSeriesBatchResponse] =
     for {
-      _ <- ZIO.foreachDiscard(pids)(pid => requireProfileReadAccess(claims, pid, userProfileRepo))
+      _           <- ZIO.foreachDiscard(pids)(pid =>
+        requireProfileReadAccess(claims, pid, userProfileRepo).mapError(ApiError.Wrapped(_)),
+      )
       profiles    <- ZIO.foreach(pids) { pid =>
         profileRepo
           .findById(pid)
-          .mapError(ErrorMapper.dbErrorToResponse)
-          .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
+          .mapError(ApiError.Db(_))
+          .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
       }
-      allDevices  <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      allDevices  <- deviceRepo.listAll.mapError(ApiError.Db(_))
       // #1492: exempt-from-daily site patterns must match the headline daily total exactly, so
       // load them per profile (same input `usedSecondsForProfile` uses) and carve them out.
       exemptByPid <- ZIO
@@ -299,7 +315,7 @@ object UsageRoutes {
             .map(sl => pid -> sl.filter(_.exemptFromDaily).map(_.domainPattern))
         }
         .map(_.toMap)
-        .mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
       devicesByPid = pids.iterator
         .map(pid => pid -> allDevices.filter(_.profileId.contains(pid)))
         .toMap
@@ -373,19 +389,19 @@ object UsageRoutes {
       appRepo: AppRepo,
       filter: HeartbeatFilter,
       continuationSeconds: Int,
-  ): IO[Response, ProfileUsageByApp] =
+  ): IO[ApiError, ProfileUsageByApp] =
     for {
       profile <- profileRepo
         .findById(pid)
-        .mapError(ErrorMapper.dbErrorToResponse)
-        .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-      allDevs <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
+        .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
+      allDevs <- deviceRepo.listAll.mapError(ApiError.Db(_))
       macs = allDevs.collect { case d if d.profileId.contains(pid) => d.mac }
       presence <- (if (macs.isEmpty) ZIO.succeed(Nil)
                    else trafficRepo.listPresenceRows(macs, from, to))
-        .mapError(ErrorMapper.dbErrorToResponse)
-      appList  <- appRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      mappings <- appRepo.listAllHostMappings.mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
+      appList  <- appRepo.listAll.mapError(ApiError.Db(_))
+      mappings <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
     } yield {
       val appById                            = appList.iterator.map(a => a.id -> a).toMap
       // Deterministic host → owning-app: lowest appId wins when a host is in
@@ -473,10 +489,10 @@ object UsageRoutes {
   // can't drift.
   private def loadAppLookup(
       appRepo: AppRepo,
-  ): IO[Response, UsageSeries.AppAxis] =
+  ): IO[ApiError, UsageSeries.AppAxis] =
     for {
-      apps     <- appRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      mappings <- appRepo.listAllHostMappings.mapError(ErrorMapper.dbErrorToResponse)
+      apps     <- appRepo.listAll.mapError(ApiError.Db(_))
+      mappings <- appRepo.listAllHostMappings.mapError(ApiError.Db(_))
     } yield {
       val appById        = apps.iterator.map(a => a.id -> a).toMap
       val byApex         = mappings
@@ -511,13 +527,14 @@ object UsageRoutes {
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
-  ): IO[Response, UsageSeriesResponse] =
+  ): IO[ApiError, UsageSeriesResponse] =
     for {
       device <- deviceRepo
         .findByMac(mac)
-        .mapError(ErrorMapper.dbErrorToResponse)
-        .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Device not found")))
+        .mapError(ApiError.Db(_))
+        .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Device not found")))
       _      <- requireProfileReadAccess(claims, device.profileId, userProfileRepo)
+        .mapError(ApiError.Wrapped(_))
       rows   <- fetchPresenceDayWindow(trafficRepo, List(mac), date, zone)
       (topHosts, buckets, presenceTotalMins) =
         UsageSeries.build(
@@ -569,15 +586,16 @@ object UsageRoutes {
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
-  ): IO[Response, UsageSeriesResponse] =
+  ): IO[ApiError, UsageSeriesResponse] =
     for {
       _          <- requireProfileReadAccess(claims, pid, userProfileRepo)
+        .mapError(ApiError.Wrapped(_))
       profile    <- profileRepo
         .findById(pid)
-        .mapError(ErrorMapper.dbErrorToResponse)
-        .flatMap(ZIO.fromOption(_).orElseFail(Response.notFound("Profile not found")))
-      all        <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
-      siteLimits <- siteTimeLimitRepo.listForProfile(pid).mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
+        .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
+      all        <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      siteLimits <- siteTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
       exempt    = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
       devices   = all.filter(_.profileId.contains(pid))
       macs      = devices.map(_.mac)
@@ -636,14 +654,14 @@ object UsageRoutes {
       macs: List[MacAddress],
       date: LocalDate,
       zone: ZoneId,
-  ): IO[Response, List[wifihaven.api.presence.PresenceRow]] =
+  ): IO[ApiError, List[wifihaven.api.presence.PresenceRow]] =
     if (macs.isEmpty) ZIO.succeed(Nil)
     else {
       val from = date.atStartOfDay(zone).toInstant
       val to   = date.plusDays(1).atStartOfDay(zone).toInstant
       trafficRepo
         .listPresenceRowsInWindow(macs, from, to)
-        .mapError(ErrorMapper.dbErrorToResponse)
+        .mapError(ApiError.Db(_))
     }
 
   // ── #846 Traffic Usage page ───────────────────────────────────────────────
@@ -727,14 +745,14 @@ object UsageRoutes {
       userProfileRepo: UserProfileRepo,
       appRepo: AppRepo,
       clock: Clock,
-  ): ZIO[Any, Response, Response] =
+  ): ZIO[Any, ApiError, Response] =
     for {
-      claims <- requireAuth(req, auth)
+      claims <- requireAuth(req, auth).mapError(ApiError.Wrapped(_))
       bucketS = req.url.queryParam("bucket").getOrElse("raw")
       bucket     <- ZIO
         .fromOption(UsageTraffic.Bucket.parse(bucketS))
         .orElseFail(
-          Response.badRequest(s"""{"error":"unknown_bucket","bucket":"$bucketS"}"""),
+          ApiError.BadRequest(s"""{"error":"unknown_bucket","bucket":"$bucketS"}"""),
         )
       // #917: groupBy accepts repeated params (?groupBy=host&groupBy=device).
       // For backwards-compat each value is also comma-split, so the older
@@ -753,21 +771,21 @@ object UsageRoutes {
             ZIO
               .fromOption(UsageTraffic.GroupBy.parse(s))
               .orElseFail(
-                Response.badRequest(s"""{"error":"unknown_groupBy","groupBy":"$s"}"""),
+                ApiError.BadRequest(s"""{"error":"unknown_groupBy","groupBy":"$s"}"""),
               )
           }
           .map(_.toSet)
       }
       _          <- ZIO
         .fail(
-          Response.badRequest(
+          ApiError.BadRequest(
             """{"error":"groupBy_not_implemented","groupBy":"apex","reason":"PSL not available — see #856"}""",
           ),
         )
         .when(groupBySet.contains(UsageTraffic.GroupBy.Apex))
       // #769: groupBy=app is now implemented (joins through app_hosts).
       tzStr = req.url.queryParam("tz").getOrElse("UTC")
-      zone <- ZIO.attempt(ZoneId.of(tzStr)).orElseFail(Response.badRequest(s"invalid tz: $tzStr"))
+      zone <- ZIO.attempt(ZoneId.of(tzStr)).orElseFail(ApiError.BadRequest(s"invalid tz: $tzStr"))
       now  <- clock.now
       // Default range: last 24h if not supplied.
       defaultFrom = now.minus(Duration.ofHours(24))
@@ -775,12 +793,12 @@ object UsageRoutes {
       toS         = req.url.queryParam("to").getOrElse(now.toString)
       fromI <- ZIO
         .attempt(Instant.parse(fromS))
-        .orElseFail(Response.badRequest(s"invalid from: $fromS"))
+        .orElseFail(ApiError.BadRequest(s"invalid from: $fromS"))
       toI   <- ZIO
         .attempt(Instant.parse(toS))
-        .orElseFail(Response.badRequest(s"invalid to: $toS"))
+        .orElseFail(ApiError.BadRequest(s"invalid to: $toS"))
       _     <- ZIO
-        .fail(Response.badRequest("from must be < to"))
+        .fail(ApiError.BadRequest("from must be < to"))
         .when(!fromI.isBefore(toI))
       // #862/#809: the prior 31-day window cap is gone. The aggregated path
       // routes coarse buckets to traffic_hourly / traffic_daily (see
@@ -792,7 +810,7 @@ object UsageRoutes {
       // single value still works ("mac=aa:bb:cc:dd:ee:01"). Empty/absent =
       // no filter on that column.
       macsRaw = parseMultiValueParam(req, "mac").map(s => MacAddress.unsafe(normalizeMac(s)))
-      profileIds <- parseMultiProfileIdParam(req)
+      profileIds <- parseMultiProfileIdParam(req).mapError(ApiError.Wrapped(_))
       // Retention gating per #814 is not yet wired (rollup tables + horizons endpoint
       // are dependencies). We still expose the 409 contract by emitting it when the
       // window straddles a horizon we DO know about — but until #814, the only
@@ -802,17 +820,18 @@ object UsageRoutes {
       // Resolve mac filter from macs / profileIds / "all visible to admin".
       // When both lists are non-empty, intersect: devices that match any
       // selected mac AND belong to any selected profile.
-      allDevices <- deviceRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      allDevices <- deviceRepo.listAll.mapError(ApiError.Db(_))
       macs       <- (macsRaw, profileIds) match {
         case (ms, _) if ms.nonEmpty     =>
           for {
             devs <- ZIO.foreach(ms) { mac =>
               ZIO
                 .fromOption(allDevices.find(_.mac == mac))
-                .orElseFail(Response.notFound(s"Device not found: ${mac.value}"))
+                .orElseFail(ApiError.NotFound(s"Device not found: ${mac.value}"))
             }
             _    <- ZIO.foreach(devs.flatMap(_.profileId).distinct) { pid =>
               requireProfileReadAccess(claims, Some(pid), userProfileRepo)
+                .mapError(ApiError.Wrapped(_))
             }
           } yield
             if (profileIds.isEmpty) devs.map(_.mac)
@@ -820,7 +839,8 @@ object UsageRoutes {
         case (_, pids) if pids.nonEmpty =>
           for {
             _ <- ZIO.foreach(pids)(pid =>
-              requireProfileReadAccess(claims, Some(pid), userProfileRepo),
+              requireProfileReadAccess(claims, Some(pid), userProfileRepo)
+                .mapError(ApiError.Wrapped(_)),
             )
           } yield allDevices.filter(d => d.profileId.exists(pids.contains)).map(_.mac)
         case _                          =>
@@ -829,7 +849,7 @@ object UsageRoutes {
             ZIO.succeed(allDevices.map(_.mac))
           else
             ZIO.fail(
-              Response.forbidden("mac or profileId required for non-admin"),
+              ApiError.Forbidden("mac or profileId required for non-admin"),
             )
       }
       // #858: zero-bytes-zero-seconds rows are filtered at SQL level in
@@ -837,7 +857,7 @@ object UsageRoutes {
       // at ingest into traffic_reports_filtered_zero_bytes_total (see
       // RouterIngestRoutes.handleUsage), so a return of the #858 regression is
       // now a metric rather than a per-request log.
-      profiles   <- profileRepo.listAll.mapError(ErrorMapper.dbErrorToResponse)
+      profiles   <- profileRepo.listAll.mapError(ApiError.Db(_))
       profNames = profiles.iterator.map(p => p.id -> p.name).toMap
       devByMac  = allDevices.iterator.map(d => d.mac -> d).toMap
       // #769: load (host → app memberships) for app grouping. Only fetched
@@ -856,7 +876,7 @@ object UsageRoutes {
                 .get(m.appId)
                 .map(a => m.host.value -> AppMembership(a.slug, a.name, a.icon, Some(a.id)))
             }
-            .groupMap(_._1)(_._2)).mapError(ErrorMapper.dbErrorToResponse)
+            .groupMap(_._1)(_._2)).mapError(ApiError.Db(_))
         else ZIO.succeed(Map.empty[String, List[AppMembership]])
       // #862: cursor + nextCursor replace the old "single fixed window with
       // rawRowsTruncated flag" UX. `limit` is the per-page cap (200 default,
@@ -881,7 +901,7 @@ object UsageRoutes {
                     wifihaven.api.db.Cursor.decode[wifihaven.api.db.Cursor.RawTrafficCursor](s),
                   )
                   .mapBoth(
-                    Response.badRequest,
+                    ApiError.BadRequest(_),
                     c => Some(RawTrafficCursorKey(c.ts, c.mac, c.host)),
                   )
             }
@@ -891,7 +911,7 @@ object UsageRoutes {
               else
                 trafficRepo
                   .listRawInRange(macs, fromI, toI, rawCursor, Some(rawLimit))
-                  .mapError(ErrorMapper.dbErrorToResponse)
+                  .mapError(ApiError.Db(_))
             built   = UsageTraffic.buildRaw(pagedRows, devByMac, profNames)
             nextCur =
               if (pagedRows.size < rawLimit) None
@@ -932,17 +952,17 @@ object UsageRoutes {
                   case SourceTier.Raw    =>
                     trafficRepo
                       .listRawInRange(macs, fromI, toI)
-                      .mapError(ErrorMapper.dbErrorToResponse)
+                      .mapError(ApiError.Db(_))
                   case SourceTier.Hourly =>
                     rollupRepo
                       .listHourlyInRange(macs, fromI, toI)
                       .map(asDbRows)
-                      .mapError(ErrorMapper.dbErrorToResponse)
+                      .mapError(ApiError.Db(_))
                   case SourceTier.Daily  =>
                     rollupRepo
                       .listDailyInRange(macs, fromI, toI)
                       .map(asDbRows)
-                      .mapError(ErrorMapper.dbErrorToResponse)
+                      .mapError(ApiError.Db(_))
                 }
             cursorOpt <- req.url.queryParam("cursor") match {
               case None    => ZIO.succeed(Option.empty[wifihaven.api.db.Cursor.AggCursor])
@@ -951,7 +971,7 @@ object UsageRoutes {
                   .fromEither(
                     wifihaven.api.db.Cursor.decode[wifihaven.api.db.Cursor.AggCursor](s),
                   )
-                  .mapBoth(Response.badRequest, Some(_))
+                  .mapBoth(ApiError.BadRequest(_), Some(_))
             }
             allAgg = UsageTraffic
               .buildAggregate(
