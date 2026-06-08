@@ -7,7 +7,10 @@ import wifihaven.api.routes.*
 import wifihaven.shared.*
 import wifihaven.shared.types.*
 import wifihaven.testinfra.*
+import doobie.Transactor
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
+import wifihaven.api.db.TypeMeta.given
+import zio.interop.catz.*
 import zio.{Clock as _, *}
 import zio.http.*
 import zio.json.*
@@ -31,7 +34,8 @@ private object SeenParser {
   }
 }
 
-object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
+object RouterIngestSpec
+    extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock & Transactor[Task]] {
 
   // Pin Clock to 2026-05-07 14:00 so PolicyService.snapshot's `today` matches
   // the period_end date used by the ingest fixtures below.
@@ -457,6 +461,107 @@ object RouterIngestSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         d <- dRepo.findByMac(MacAddress.unsafe(knownMac))
       } yield assertTrue(d.exists(_.lastSeenIp.contains(IpAddress.unsafe("192.168.1.42")))) &&
         assertTrue(d.flatMap(_.lastSeenAt).map(SeenParser.toInstant).contains(periodEnd))
+    },
+    test("usage: persists destIp from UsageRecord onto traffic_reports row (#730)") {
+      import doobie.implicits.*
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.42")),
+          HostId.Fqdn(Hostname.unsafe("youtube.com")),
+          60L,
+          100L,
+          50L,
+          Some(IpAddress.unsafe("142.250.72.142")),
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        resp   <- post(routes, "/api/router/usage", body, Some(tk))
+        stored <- sql"""SELECT dest_ip FROM traffic_reports
+                         WHERE router_id = $id
+                           AND mac = ${MacAddress.unsafe(knownMac)}
+                           AND host_value = 'youtube.com'"""
+          .query[Option[String]]
+          .unique
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(stored.contains("142.250.72.142"))
+    },
+    test("usage: accepts records with destIp omitted (back-compat, #730)") {
+      import doobie.implicits.*
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        // No destIp argument — pre-#730 agents do not emit the field.
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.42")),
+          HostId.Fqdn(Hostname.unsafe("google.com")),
+          60L,
+          100L,
+          50L,
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        resp   <- post(routes, "/api/router/usage", body, Some(tk))
+        stored <- sql"""SELECT dest_ip FROM traffic_reports
+                         WHERE router_id = $id
+                           AND mac = ${MacAddress.unsafe(knownMac)}
+                           AND host_value = 'google.com'"""
+          .query[Option[String]]
+          .unique
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(stored.isEmpty)
+    },
+    test("usage: decodes the wire JSON with a destIp field present (#730)") {
+      import doobie.implicits.*
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        // Hand-crafted JSON matching the on-the-wire shape an updated Lua agent posts.
+        body = s"""{
+          "routerId": "${id}",
+          "periodStart": "${periodStart.toString}",
+          "periodEnd": "${periodEnd.toString}",
+          "records": [
+            { "mac": "$knownMac",
+              "ip": "192.168.1.42",
+              "host": { "type": "ipv4", "value": "203.0.113.7" },
+              "activeSeconds": 60,
+              "bytesIn": 10,
+              "bytesOut": 20,
+              "destIp": "203.0.113.7" }
+          ]
+        }"""
+        resp   <- post(routes, "/api/router/usage", body, Some(tk))
+        stored <- sql"""SELECT dest_ip FROM traffic_reports
+                         WHERE router_id = $id
+                           AND mac = ${MacAddress.unsafe(knownMac)}
+                           AND host_value = '203.0.113.7'"""
+          .query[Option[String]]
+          .unique
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(stored.contains("203.0.113.7"))
     },
     test("usage: unknown mac in records does NOT create a device row (events does that)") {
       for {

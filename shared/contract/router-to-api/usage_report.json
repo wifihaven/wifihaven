@@ -12,7 +12,8 @@
       },
       "activeSeconds" : 240,
       "bytesIn" : 8388608,
-      "bytesOut" : 1048576
+      "bytesOut" : 1048576,
+      "destIp" : "151.101.65.69"
     },
     {
       "mac" : "76:2d:95:47:d1:8e",
@@ -22,7 +23,8 @@
       },
       "activeSeconds" : 60,
       "bytesIn" : 16384,
-      "bytesOut" : 4096
+      "bytesOut" : 4096,
+      "destIp" : "192.168.10.99"
     }
   ]
 }
