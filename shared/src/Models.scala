@@ -998,12 +998,33 @@ case class ProfileAppUsage(
     hosts: List[HostUsage],
 ) derives JsonCodec
 
+/**
+ * #1519 — a non-app host: a host that doesn't belong to any configured app's host-set. Per the
+ * App-Centric Model (CLAUDE.md "App"), such a host **is its own single-host app** — there is no
+ * semantic "Other" app. "Other" only ever appears as a display rollup (top-N + "+N more sites") at
+ * the SPA layer, never as a wire entity.
+ *
+ * Units match the parallel app row ([[ProfileAppUsage]]) so the SPA can render orphans and apps
+ * side-by-side with one formatter.
+ */
+case class OrphanHostUsage(
+    host: HostId,
+    proportionalSeconds: Long,
+    presenceSeconds: Long,
+) derives JsonCodec
+
 case class ProfileUsageByApp(
     profileId: ProfileId,
     profileName: String,
     from: String,
     to: String,
+    // #1519: only "real" apps (rows whose host is mapped through `app_hosts`). The synthetic
+    // `appId=null` "Other" row that earlier shipped here is gone; non-app hosts surface
+    // individually in `orphanHosts` below.
     apps: List[ProfileAppUsage],
+    // #1519/#726: per non-app host, one entry. Additive (defaults to Nil) so older clients keep
+    // working; new clients render these as single-host pseudo-app rows.
+    orphanHosts: List[OrphanHostUsage] = Nil,
 ) derives JsonCodec
 
 // #716 / #721 — per-device hourly usage timeline. The endpoint returns 24
