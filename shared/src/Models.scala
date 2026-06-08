@@ -1338,6 +1338,12 @@ case class UsageRecord(
     activeSeconds: Long,
     bytesIn: Long,
     bytesOut: Long,
+    // #730: the destination IP these bytes/seconds were attributed to. The
+    // OpenWRT agent's accumulator is already keyed (mac, dst_ip), so this is a
+    // pass-through of that dst_ip onto the wire record. Optional for
+    // backward-compat with pre-#730 agents that do not emit the field; the
+    // API stores NULL on traffic_reports.dest_ip when absent.
+    destIp: Option[IpAddress] = None,
 ) derives JsonCodec
 
 case class UsageReport(
