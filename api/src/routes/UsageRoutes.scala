@@ -99,9 +99,10 @@ object UsageRoutes {
         },
       // #1061 — per-app time-used breakdown for one profile over [from,to].
       // Read-only companion to #767's rules editor; powers the per-app subsection
-      // on the expanded /profiles card. Joins through `app_hosts` and folds rows
-      // whose host isn't in any app into a synthetic `appId=null` ("Other")
-      // bucket. Sorted by proportional seconds desc.
+      // on the expanded /profiles card. Joins through `app_hosts` and returns one
+      // row per app. #1519: hosts NOT in any configured app surface individually
+      // in `orphanHosts` (single-host pseudo-apps, per the App-Centric Model) —
+      // there is no synthetic "Other" entry on this endpoint.
       Method.GET / "api" / "profiles" / long("id") / "usage-by-app"    ->
         handler { (id: Long, req: Request) =>
           val pid = ProfileId(id)
@@ -362,7 +363,13 @@ object UsageRoutes {
   //   - presenceSeconds: each (mac, period_start) bucket contributes once per
   //     distinct app touched in that bucket. Not additive across apps (this is
   //     intentional — surfaces "was this app touched at all" volume).
-  // Hosts not in any app land in the synthetic `appId=null` "Other" bucket.
+  //
+  // #1519 — hosts NOT in any configured app are NOT lumped into a synthetic
+  // "Other" app. Per the App-Centric Model, a non-app host is its own
+  // single-host app. They surface individually in `orphanHosts`, each with the
+  // same proportionalSeconds/presenceSeconds units as an app row, so the SPA
+  // can render them side-by-side with real apps. "Other" only ever appears as
+  // a top-N display rollup at the SPA layer.
   private def buildUsageByApp(
       pid: ProfileId,
       from: LocalDate,
@@ -437,11 +444,14 @@ object UsageRoutes {
           appPresence.updateWith(a)(prev => Some(prev.getOrElse(0L) + secs))
       }
 
-      val allKeys = (appProp.keySet ++ appPresence.keySet).toList
-      val rows    = allKeys.map { key =>
-        val name  = key.flatMap(appById.get).map(_.name).getOrElse("Other")
-        val icon  = key.flatMap(appById.get).flatMap(_.icon)
-        val it    = key.flatMap(appById.get).map(_.iconType)
+      // #1519: real-app rows ONLY. Drop the `None` key — those hosts surface as
+      // individual orphanHosts entries below.
+      val appKeys = (appProp.keySet ++ appPresence.keySet).iterator.flatten.toList.distinct
+      val rows    = appKeys.map { aid =>
+        val key   = Some(aid)
+        val name  = appById.get(aid).map(_.name).getOrElse(aid.value.toString)
+        val icon  = appById.get(aid).flatMap(_.icon)
+        val it    = appById.get(aid).map(_.iconType)
         val hosts = hostsByApp
           .getOrElse(key, Nil)
           .sortBy(hu => (-hu.proportionalMins, -hu.usedMins, hu.host.value))
@@ -455,12 +465,36 @@ object UsageRoutes {
           hosts = hosts,
         )
       }
+
+      // #1519: orphan rows = non-app hosts, each rendered as its own single-host
+      // pseudo-app. proportional = the per-host attention sum already gathered;
+      // presence = dedupe (mac, periodStart) buckets PER HOST (each host's
+      // presence is its own bucket-deduped wall-clock seconds — same shape as
+      // the per-app presence, but one row per host).
+      val orphanHostSet  = propByHost.keysIterator.filter(h => appOfHost(h).isEmpty).toSet
+      val orphanPresence = scala.collection.mutable.Map.empty[HostId, Long]
+      for ((_, bucket) <- activeRows.groupBy(r => (r.mac, r.periodStart))) {
+        val secs      = bucket.iterator.map(_.activeSeconds.toLong).maxOption.getOrElse(0L)
+        val hostsHere = bucket.iterator.map(_.host).filter(orphanHostSet.contains).toSet
+        for (h <- hostsHere)
+          orphanPresence.updateWith(h)(prev => Some(prev.getOrElse(0L) + secs))
+      }
+      val orphanRows = orphanHostSet.toList.map { h =>
+        OrphanHostUsage(
+          host = h,
+          proportionalSeconds = propByHost.getOrElse(h, 0L),
+          presenceSeconds = orphanPresence.getOrElse(h, 0L),
+        )
+      }
+
       ProfileUsageByApp(
         profileId = pid,
         profileName = profile.name,
         from = from.toString,
         to = to.toString,
         apps = rows.sortBy(r => (-r.proportionalSeconds, -r.presenceSeconds, r.appName)),
+        orphanHosts = orphanRows
+          .sortBy(o => (-o.proportionalSeconds, -o.presenceSeconds, o.host.value)),
       )
     }
 
