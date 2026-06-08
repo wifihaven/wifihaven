@@ -1,0 +1,26 @@
+-- V54__traffic_reports_dest_ip.sql
+-- #730: add `dest_ip TEXT NULL` to traffic_reports so router→api UsageRecords
+-- can carry the destination IP that the bytes were attributed to. This is the
+-- foundational schema bump; the follow-up code PR adds the wire field, the
+-- agent emission, and the API persist path.
+--
+-- Why nullable: pre-existing rows have no dest_ip and post-PR1 image-(N-1)
+-- inserts do not supply one. The column stays NULL for those; only new agents
+-- (after the follow-up code PR ships) populate it.
+--
+-- Why we do NOT touch the unique constraint here: the existing
+-- UNIQUE(router_id, period_start, mac, host_type, host_value) provides batch
+-- idempotency for image-(N-1) inserts that do not reference dest_ip. Changing
+-- the conflict target now would break image-(N-1)'s `ON CONFLICT(router_id,
+-- period_start,mac,host_type,host_value)` clause. The follow-up code PR keeps
+-- the same uniqueness shape and persists `dest_ip` as informational metadata
+-- on the row already chosen by the existing key.
+--
+-- Migration cost at prod scale (traffic_reports is an unbounded-growth,
+-- weekly-partitioned table — see V41 / docs/design/db-partitioning.md):
+-- ADD COLUMN ... TEXT NULL on a partitioned parent table propagates to every
+-- partition as a metadata-only change (Postgres stores a NULL default, no
+-- table rewrite, no row-by-row work). Safe on the startup critical path even
+-- against the full prod history.
+
+ALTER TABLE traffic_reports ADD COLUMN dest_ip TEXT;
