@@ -1,0 +1,56 @@
+name: PR Base Guard
+
+# Fail any PR whose base branch is not in the allowlist.
+#
+# Motivation — https://github.com/wifihaven/wifihaven/issues/1590:
+# When a chip opens a "wire" PR stacked on a not-yet-merged "schema" PR, it
+# correctly sets the base to the schema branch. If the schema PR merges
+# first, GitHub usually auto-retargets the stacked PR's base to `main` — but
+# the retarget can lag, or the stacked PR can be merged before retarget
+# happens. Result: a PR merged into a branch that is itself already merged,
+# leaving the code on a soon-to-be-deleted dead branch (#1586, #1271, #1168).
+#
+# This check fails fast on any PR whose base is not `main` so a mistargeted
+# PR can never reach the merge queue. Extend ALLOWED_BASES if a real release
+# branch is ever introduced — declarative config in-repo per AGENTS.md.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  check-base:
+    name: PR base must be main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify base ref
+        env:
+          ALLOWED_BASES: "main"
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "merge_group event — the queue only runs after a PR was merged into main; skipping."
+            exit 0
+          fi
+          if [ -z "${PR_BASE}" ]; then
+            echo "::error::No base ref on pull_request payload"
+            exit 1
+          fi
+          ok=0
+          for allowed in ${ALLOWED_BASES}; do
+            if [ "${PR_BASE}" = "${allowed}" ]; then
+              ok=1
+              break
+            fi
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "::error title=PR base is not main::PR #${PR_NUMBER} targets '${PR_BASE}' — only ${ALLOWED_BASES} allowed. Retarget to main (Edit → base). See https://github.com/wifihaven/wifihaven/issues/1590."
+            exit 1
+          fi
+          echo "OK: PR base '${PR_BASE}' is in allowlist '${ALLOWED_BASES}'."
