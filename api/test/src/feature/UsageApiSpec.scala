@@ -1787,7 +1787,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
     ) @@ TestAspect.sequential,
     // #1061 — per-app time-used breakdown for one profile.
     suite("GET /api/profiles/:id/usage-by-app")(
-      test("two apps with 5 minutes each → 2 rows, hosts not in any app → Other") {
+      test("#1519: two apps + one non-app host → 2 app rows, 1 orphan row, NO 'Other' app row") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
         for {
           _           <- cleanDb
@@ -1862,21 +1862,24 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           resp <- routes.runZIO(req)
           body <- resp.body.asString
           out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
-          yt = out.apps.find(_.appName == "YouTube").get
-          mu = out.apps.find(_.appName == "Music").get
-          ot = out.apps.find(_.appId.isEmpty).get
+          yt     = out.apps.find(_.appName == "YouTube").get
+          mu     = out.apps.find(_.appName == "Music").get
+          orphan = out.orphanHosts.find(_.host.value == "google.com").get
         } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(out.apps.length == 3) &&
+          // Only the two real apps: no synthetic "Other" row anywhere in `apps`.
+          assertTrue(out.apps.length == 2) &&
+          assertTrue(!out.apps.exists(_.appName == "Other")) &&
+          assertTrue(!out.apps.exists(_.appId.isEmpty)) &&
           // Each app saw one 5-min bucket → 300 presence seconds, ~300 proportional seconds.
           assertTrue(yt.presenceSeconds == 300L) &&
           assertTrue(mu.presenceSeconds == 300L) &&
-          assertTrue(ot.presenceSeconds == 300L) &&
           assertTrue(yt.proportionalSeconds == 300L) &&
           assertTrue(mu.proportionalSeconds == 300L) &&
-          assertTrue(ot.proportionalSeconds == 300L) &&
           assertTrue(yt.appIcon.contains("📺")) &&
-          assertTrue(ot.appName == "Other") &&
-          assertTrue(ot.hosts.map(_.host.value).contains("google.com"))
+          // The non-app host surfaces as a per-host orphan row, not as an "Other" bucket.
+          assertTrue(out.orphanHosts.length == 1) &&
+          assertTrue(orphan.proportionalSeconds == 300L) &&
+          assertTrue(orphan.presenceSeconds == 300L)
       },
       test("#1433: an app with usage but no time limit still returns its time-used") {
         // The profile/app page surfaces today's time-used for every app, not
@@ -1991,7 +1994,9 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(ka.get.proportionalSeconds == 300L) &&
           assertTrue(ka.get.presenceSeconds == 300L) &&
           assertTrue(ka.get.hosts.map(_.host.value).contains("m.khanacademy.org")) &&
-          assertTrue(!out.apps.exists(_.appId.isEmpty))
+          assertTrue(!out.apps.exists(_.appId.isEmpty)) &&
+          // #1519: an apex-matched host MUST attribute to its app, not surface as an orphan row.
+          assertTrue(out.orphanHosts.isEmpty)
       },
       test("sorted by proportionalSeconds desc") {
         val today = TestClock.schoolDayAfternoon.toLocalDate
@@ -2067,6 +2072,120 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(out.apps.map(_.appName) == List("YouTube", "Music")) &&
           assertTrue(out.apps.head.proportionalSeconds == 600L) &&
           assertTrue(out.apps(1).proportionalSeconds == 300L)
+      },
+      test(
+        "#1519/#726: one app with 3 hosts + 2 orphan hosts → 1 app row (summed) + 2 orphan rows",
+      ) {
+        val today = TestClock.schoolDayAfternoon.toLocalDate
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          trafficRepo <- ZIO.service[TrafficReportRepo]
+          appRepo     <- ZIO.service[AppRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
+          _           <- appRepo.setHosts(
+            ytId,
+            List(
+              Hostname.unsafe("youtube.com"),
+              Hostname.unsafe("ytimg.com"),
+              Hostname.unsafe("googlevideo.com"),
+            ),
+          )
+          start = today.atStartOfDay(ZoneOffset.UTC).toInstant.plusSeconds(14 * 3600L)
+          // 3 buckets for the app (across its three hosts) + 2 buckets for two orphan hosts.
+          _  <- trafficRepo.insertBatch(
+            List(
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("youtube.com")),
+                today,
+                start,
+                start.plusSeconds(300),
+                300,
+                500_000L,
+                500_000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("ytimg.com")),
+                today,
+                start.plusSeconds(300),
+                start.plusSeconds(600),
+                300,
+                500_000L,
+                500_000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("googlevideo.com")),
+                today,
+                start.plusSeconds(600),
+                start.plusSeconds(900),
+                300,
+                500_000L,
+                500_000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("wikipedia.org")),
+                today,
+                start.plusSeconds(900),
+                start.plusSeconds(1200),
+                300,
+                500_000L,
+                500_000L,
+              ),
+              TrafficReportInsert(
+                routerId,
+                MacAddress.unsafe(testMac),
+                None,
+                HostId.Fqdn(Hostname.unsafe("example.com")),
+                today,
+                start.plusSeconds(1200),
+                start.plusSeconds(1500),
+                300,
+                500_000L,
+                500_000L,
+              ),
+            ),
+          )
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode(s"/api/profiles/${kidsId.value}/usage-by-app").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[ProfileUsageByApp])
+          yt          = out.apps.find(_.appName == "YouTube").get
+          orphanHosts = out.orphanHosts.map(_.host.value).toSet
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Exactly 1 app row (the configured YouTube app-set, aggregated across 3 hosts).
+          assertTrue(out.apps.length == 1) &&
+          assertTrue(yt.proportionalSeconds == 900L) &&
+          assertTrue(
+            yt.hosts.map(_.host.value).toSet ==
+              Set("youtube.com", "ytimg.com", "googlevideo.com"),
+          ) &&
+          // 2 per-orphan rows, NO "Other" bucket.
+          assertTrue(out.orphanHosts.length == 2) &&
+          assertTrue(orphanHosts == Set("wikipedia.org", "example.com")) &&
+          assertTrue(out.orphanHosts.forall(_.proportionalSeconds == 300L)) &&
+          assertTrue(!out.apps.exists(_.appName == "Other"))
       },
       test("404 on unknown profile id") {
         for {

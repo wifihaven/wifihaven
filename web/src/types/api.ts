@@ -383,11 +383,11 @@ export interface ProfileTimeStatus {
 }
 
 // #1061 — per-app time-used breakdown for one profile over a date window.
-// `appId = null` is the synthetic "Other" bucket: hosts not in any app_hosts
-// membership. `proportionalSeconds` is the wall-clock-attention number (#715),
+// `proportionalSeconds` is the wall-clock-attention number (#715),
 // `presenceSeconds` is bucket-deduped at the app level. The drill-down `hosts`
 // list reuses HostUsage so the SPA renders rows with the same Attention/Seen
-// formatter.
+// formatter. #1519: `apps` carries only real (mapped) apps; non-app hosts
+// surface in `orphanHosts`, never in a synthetic "Other" entry here.
 export interface ProfileAppUsage {
   appId: number | null
   appName: string
@@ -398,12 +398,24 @@ export interface ProfileAppUsage {
   hosts: HostUsage[]
 }
 
+// #1519 — a host not in any configured app's host-set. Per the App-Centric
+// Model it IS its own single-host app (there is no semantic "Other"). The SPA
+// renders these side-by-side with real app rows; "Other" only ever exists as a
+// presentation-level top-N + "+N more sites" affordance.
+export interface OrphanHostUsage {
+  host: HostId
+  proportionalSeconds: number
+  presenceSeconds: number
+}
+
 export interface ProfileUsageByApp {
   profileId: number
   profileName: string
   from: string
   to: string
   apps: ProfileAppUsage[]
+  // #1519: additive — older API responses omit it; SPA treats undefined as [].
+  orphanHosts?: OrphanHostUsage[]
 }
 
 // #716 / #721 — per-device hourly usage timeline. `totalMins` is the device's

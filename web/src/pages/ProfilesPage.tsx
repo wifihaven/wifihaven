@@ -15,6 +15,7 @@ import type {
 } from '@/types/api'
 import { AppIcon } from '@/components/AppIcon'
 import { ProfileTimelineChart } from '@/components/usage/ProfileTimelineChart'
+import { ProfileUsageBreakdown } from '@/components/usage/ProfileUsageBreakdown'
 import { EmptyState } from '@/components/EmptyState'
 import { PageLoader } from './DashboardPage'
 import { formatMins } from '@/lib/timeFormat'
@@ -836,6 +837,13 @@ function ProfileShellRow({
               group-by + Other drill-in that the deleted /time page used to
               own. Read-only; lives above the edit subsections. */}
           <ProfileTimelineChart profileId={pd.profile.id} />
+
+          {/* #1519/#726 — per-app usage breakdown: one row per configured app
+              (drillable to its host-set, the per-FQDN view from #726), then
+              one row per non-app host as its own single-host pseudo-app (per
+              the App-Centric Model — no semantic "Other" bucket). Top-N + a
+              "+N more sites" expander is a presentation rollup only. */}
+          <ProfileUsageBreakdown profileId={pd.profile.id} enabled={expanded} />
 
           {/* #1320 — per-profile default-deny baseline. Block-all; only the
               profile's allowed apps/hosts + the household global allowlist are
