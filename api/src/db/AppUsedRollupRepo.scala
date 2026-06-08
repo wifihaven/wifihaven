@@ -47,6 +47,19 @@ trait AppUsedRollupRepo {
   def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Map[AppId, RolledAppDay]]
 
   /**
+   * #1089 — every rolled `(date, app_id, engaged_seconds)` row for `profileId` whose `date` falls
+   * in `[from, to]` (inclusive). Backs the per-app screen-time weekly view, which is a pure
+   * aggregation of the same rollup the per-app daily cap reads (no parallel pipeline, so the
+   * heartbeat filter applied at write time flows through unchanged). Ordered by date for
+   * predictable test assertions; callers do their own `groupBy`/sum.
+   */
+  def getRangeForProfile(
+      profileId: ProfileId,
+      from: LocalDate,
+      to: LocalDate,
+  ): Task[List[(LocalDate, AppId, Long)]]
+
+  /**
    * Drop every cached row. Called from `HouseholdSettingsRepoLive.update` alongside the
    * `time_used_daily` invalidation so any change to the heartbeat filter, the daily-reset boundary,
    * or the presence session-stitch knob forces the next rollup tick to refill from first
@@ -72,6 +85,12 @@ object NoopAppUsedRollupRepo extends AppUsedRollupRepo {
     ZIO.succeed(0)
   def getDayForProfile(profileId: ProfileId, date: LocalDate): Task[Map[AppId, RolledAppDay]] =
     ZIO.succeed(Map.empty)
+  def getRangeForProfile(
+      profileId: ProfileId,
+      from: LocalDate,
+      to: LocalDate,
+  ): Task[List[(LocalDate, AppId, Long)]] =
+    ZIO.succeed(Nil)
   def deleteAll: Task[Unit]                                                                   =
     ZIO.unit
 }
@@ -115,6 +134,19 @@ class AppUsedRollupRepoLive(xa: Transactor[Task]) extends AppUsedRollupRepo {
       .to[List]
       .transact(xa)
       .map(_.toMap)
+
+  def getRangeForProfile(
+      profileId: ProfileId,
+      from: LocalDate,
+      to: LocalDate,
+  ): Task[List[(LocalDate, AppId, Long)]] =
+    sql"""SELECT date, app_id, engaged_seconds
+          FROM app_used_daily
+          WHERE profile_id=$profileId AND date BETWEEN $from AND $to
+          ORDER BY date, app_id"""
+      .query[(LocalDate, AppId, Long)]
+      .to[List]
+      .transact(xa)
 
   def deleteAll: Task[Unit] =
     sql"DELETE FROM app_used_daily".update.run.transact(xa).unit

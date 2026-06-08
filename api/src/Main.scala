@@ -293,6 +293,7 @@ object Main extends ZIOAppDefault {
       blockEvRepo    <- ZIO.service[BlockEventRepo]
       alertRepo      <- ZIO.service[AlertRepo]
       appRepo        <- ZIO.service[AppRepo]
+      appRollupRepo  <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
       notifier       <- ZIO.service[Notifier]
       policy         <- ZIO.service[PolicyService]
       timeStatus     <- ZIO.service[wifihaven.api.policy.TimeStatusService]
@@ -374,6 +375,7 @@ object Main extends ZIOAppDefault {
             rollupRepo2,
             hsRepo,
             stlRepo,
+            appRollupRepo,
             clock,
           ) ++
           DashboardNowRoutes.routes(

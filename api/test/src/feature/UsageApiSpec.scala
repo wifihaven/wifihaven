@@ -92,6 +92,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
       stlRepo         <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+      aruRepo         <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
     } yield (
@@ -105,6 +106,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         rollupRepo,
         hsRepo,
         stlRepo,
+        aruRepo,
         clock,
       ),
       auth,

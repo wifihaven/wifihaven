@@ -3,7 +3,7 @@ import type {
   Alert, AppDetail, ApproveAlertRequest, BlockedInfoResponse, BlocklistHosts, BlocklistSummary, CreateAppRequest, CreateRouterRequest, CreateRouterResponse, CreateUserRequest,
   DashboardNow, DashboardStats, Device,
   GlobalPolicyView, AddGlobalHostRequest, SetGlobalBlocklistsRequest, SetGlobalFlagsRequest,
-  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
+  CreateAccessRequest, DeviceTimeStatus, DeviceTimeStatusWeek, HouseholdSettings, LoginResponse, MeResponse, ProfileAppWeeklyUsage, ProfileDetail, ProfileTimeStatus, ProfileTimeStatusWeek, ProfileTimeSummary, ProfileTimeSummaryWeek, ProfileUsageByApp,
   ConnectionEventSeriesPage, QueryLogPage,
   PatchUserRequest, PatchAppRequest,
   NamedSchedule, NamedScheduleRequest,
@@ -173,6 +173,15 @@ export const api = {
       return req<ProfileUsageByApp>(
         'GET',
         `/profiles/${id}/usage-by-app${tail ? `?${tail}` : ''}`,
+      )
+    },
+    // #1089 — per-app engaged-minutes summed over the trailing 7-day window
+    // ending at `to`. `to` defaults to household-local today on the server.
+    appWeekly: (id: number, to?: string) => {
+      const tail = to ? `?to=${to}` : ''
+      return req<ProfileAppWeeklyUsage>(
+        'GET',
+        `/profiles/${id}/usage/app/weekly${tail}`,
       )
     },
   },
