@@ -179,7 +179,7 @@ object TestDatabase {
    */
   type AllRepos =
     TestDb & UserRepo & UserProfileRepo & ProfileRepo & ScheduleRepo & NamedScheduleRepo &
-      HouseholdSettingsRepo & GlobalPolicyRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
+      HouseholdSettingsRepo & GlobalPolicyRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo &
       BlocklistRepo & TimeUsageRepo & TimeExtensionRepo & RouterRepo & TrafficReportRepo &
       BlockEventRepo & ConnectionEventRepo & AlertRepo & AppRepo & RollupRepo & TimeUsedRollupRepo &
       AppUsedRollupRepo

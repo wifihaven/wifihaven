@@ -623,7 +623,7 @@ describe('ProfilesPage — create (inline name-only, #978)', () => {
 //                      subsection lands; the column default
 //                      (`last-known-good`) is pinned by the create body
 //                      assertion above.
-// Post-#764 the legacy extraBlocked/extraAllowed/siteTimeLimits fields are
+// Post-#764 the legacy extraBlocked/extraAllowed/appTimeLimits fields are
 // gone — per-host policy lives in apps, exercised by the apps subsection.
 
 describe('ProfilesPage — inline time-limit subsection (#975)', () => {

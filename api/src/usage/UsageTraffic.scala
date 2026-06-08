@@ -11,8 +11,8 @@ import java.time.temporal.{ChronoUnit, TemporalAdjusters}
  * uses this to bucket rows by app slug. #1526: a host that belongs to no registered app is its own
  * **single-host app** — synthesized via [[AppMembership.forUnmatchedHost]], keyed by the host
  * itself. There is no semantic "Other" app; "Other" only ever appears as a presentation top-N
- * rollup applied AFTER attribution. Mapping is built once per request and held in memory — apps
- * are household-scoped and typically number in the tens, so the full join table fits comfortably.
+ * rollup applied AFTER attribution. Mapping is built once per request and held in memory — apps are
+ * household-scoped and typically number in the tens, so the full join table fits comfortably.
  */
 case class AppMembership(
     slug: String,

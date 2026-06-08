@@ -46,7 +46,7 @@ object ReasonTextBackfill {
            WHEN 'manual'        THEN 'manual'
            WHEN 'unmanaged'     THEN 'unmanaged_mac'
            WHEN 'category'      THEN 'category:'        || (reason->>'slug')
-           WHEN 'siteTimeLimit' THEN 'site_time_limit:' || (reason->>'label')
+           WHEN 'siteTimeLimit' THEN 'site_time_limit:' || (reason->>'label') -- FROZEN wire token (#376): keep literal until wire versioning
            WHEN 'appBlocked'    THEN 'app:'             || (reason->>'appId')
            WHEN 'unknown'       THEN reason->>'raw'
          END"""

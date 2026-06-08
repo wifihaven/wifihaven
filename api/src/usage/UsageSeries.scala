@@ -296,7 +296,7 @@ object UsageSeries {
 
     // #1517: an app's spans are the gap-bridged union of its WHOLE host-set via the single per-app
     // primitive (#1514/#1532) — same groups/overlap/filter/continuation the per-app cap aggregate
-    // (`TimeStatusService.siteDayStates` / `appSecondsByApp`) and the #1510 rollup read, so the per-
+    // (`TimeStatusService.appDayStates` / `appSecondsByApp`) and the #1510 rollup read, so the per-
     // app series total equals the cap and the rollup by construction (not the per-host concat, which
     // neither bridges cross-host idle gaps nor dedups within-app overlap).
     val appSpans: Map[String, List[Span]] =

@@ -95,7 +95,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+        atlRepo     <- ZIO.service[AppTimeLimitRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -126,7 +126,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
+          atlRepo,
           deviceRepo,
           trafficRepo,
           extRepo,
@@ -135,7 +135,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           auth,
           deviceRepo,
           tlRepo,
-          stlRepo,
+          atlRepo,
           trafficRepo,
           extRepo,
           profileRepo,
@@ -151,7 +151,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         body   <- resp.body.asString
         status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
       } yield {
-        val mathBars = status.siteUsage.filter(_.label == s"app:$appSlug")
+        val mathBars = status.appUsage.filter(_.label == s"app:$appSlug")
         // The whole app is ONE limit: a single bar, both hosts aggregated to 20 of 30 minutes.
         assertTrue(mathBars.size == 1) &&
         assertTrue(mathBars.head.usedMins == 20) &&

@@ -95,13 +95,13 @@ object UsageTrafficSpec extends ZIOSpecDefault {
       // both rows would collapse into one synthetic `__other__` row; under the
       // app-focused model each unmatched host is its own single-host app, so
       // grouping by app must produce two distinct rows keyed by host.
-      val hostA = HostId.Fqdn(Hostname.unsafe("example-a.com"))
-      val hostB = HostId.Fqdn(Hostname.unsafe("example-b.com"))
-      val rows  = List(
+      val hostA    = HostId.Fqdn(Hostname.unsafe("example-a.com"))
+      val hostB    = HostId.Fqdn(Hostname.unsafe("example-b.com"))
+      val rows     = List(
         TrafficUsageDbRow(mac1, hostA, base, base.plusSeconds(300), 60, 1000L, 200L),
         TrafficUsageDbRow(mac1, hostB, base, base.plusSeconds(300), 60, 1000L, 200L),
       )
-      val out   = UsageTraffic.buildAggregate(
+      val out      = UsageTraffic.buildAggregate(
         rows = rows,
         bucket = UsageTraffic.Bucket.TenMin,
         zone = UTC,

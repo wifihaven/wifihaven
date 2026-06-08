@@ -518,9 +518,9 @@ interface AggProps extends FilterHeaderProps {
 }
 
 // #769: app-column cell. When grouped, renders the app's icon + display
-// name (or "Other" for the synthetic `__other__` bucket). When not grouped,
-// falls back to the same sole / distinct-count behaviour as the other
-// columns.
+// name (or the host itself for a #1526 single-host app — unmatched hosts
+// have appId=null). When not grouped, falls back to the same sole /
+// distinct-count behaviour as the other columns.
 function AppCell({
   active,
   appName,

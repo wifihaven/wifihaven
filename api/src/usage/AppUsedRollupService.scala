@@ -27,7 +27,7 @@ import java.time.{Instant, LocalDate}
  * so for a profile + date:
  *
  *   - '''rollup ⇄ cap''' (EXACT): this accessor's per-app minutes equal the per-app cap aggregate
- *     ([[wifihaven.api.policy.TimeStatusService.siteDayStates]] /
+ *     ([[wifihaven.api.policy.TimeStatusService.appDayStates]] /
  *     `Presence.patternGroupMinutesForProfile`) — same primitive, same floor-of-sum.
  *   - '''rolled+tail ⇄ live''' (EXACT): rolled + tail equals the all-live computation in seconds,
  *     because presence buckets are 5-min granular and disjoint on either side of the watermark
@@ -58,9 +58,9 @@ trait AppUsedRollupService {
   /**
    * #1515: the same per-app engaged minutes as [[appEngagedMinutes]], re-keyed by the cap group
    * label `app:<slug>` (the key [[wifihaven.api.policy.TimeStatusService.groupSiteLimits]] emits).
-   * This is what the snapshot's / `/decision`'s per-app cap reads through `perSite` on the rollup
+   * This is what the snapshot's / `/decision`'s per-app cap reads through `perApp` on the rollup
    * read path: [[wifihaven.api.policy.TimeStatusServiceLive]] joins it to the profile's per-app cap
-   * groups to fill `SiteDayState.usedMinutes`, so a profile that has rolled (the prod steady state)
+   * groups to fill `AppDayState.usedMinutes`, so a profile that has rolled (the prod steady state)
    * still caps on the real per-app aggregate instead of zero. Same rolled + live-tail figure, so
    * the rollup read and the all-live read agree by construction (#1532).
    */
@@ -96,7 +96,7 @@ object NoopAppUsedRollupService extends AppUsedRollupService {
 class AppUsedRollupServiceLive(
     profileRepo: ProfileRepo,
     deviceRepo: DeviceRepo,
-    siteTimeLimitRepo: SiteTimeLimitRepo,
+    appTimeLimitRepo: AppTimeLimitRepo,
     appRepo: AppRepo,
     trafficRepo: TrafficReportRepo,
     rollupRepo: AppUsedRollupRepo,
@@ -144,7 +144,7 @@ class AppUsedRollupServiceLive(
         case None    => ZIO.succeed((Map.empty[AppId, Int], Map.empty[String, Int]))
         case Some(p) =>
           for {
-            stls    <- siteTimeLimitRepo.listForProfile(profileId)
+            atls    <- appTimeLimitRepo.listForProfile(profileId)
             devices <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
             apps    <- appRepo.listAll
             macs = devices.map(_.mac)
@@ -156,7 +156,7 @@ class AppUsedRollupServiceLive(
             val liveSecs                  =
               TimeStatusService.appSecondsByApp(
                 p,
-                stls,
+                atls,
                 TimeStatusService.slugToAppId(apps),
                 presence,
                 settings,
@@ -184,7 +184,7 @@ class AppUsedRollupServiceLive(
 
 object AppUsedRollupService {
   val layer: ZLayer[
-    ProfileRepo & DeviceRepo & SiteTimeLimitRepo & AppRepo & TrafficReportRepo & AppUsedRollupRepo,
+    ProfileRepo & DeviceRepo & AppTimeLimitRepo & AppRepo & TrafficReportRepo & AppUsedRollupRepo,
     Nothing,
     AppUsedRollupService,
   ] = ZLayer.fromFunction(AppUsedRollupServiceLive(_, _, _, _, _, _))

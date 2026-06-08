@@ -413,8 +413,9 @@ function NonGroupedCell({
 }
 
 // #769: app-column cell. When grouped, renders the app's icon + display name
-// (or "Other" for the synthetic `__other__` bucket). When not grouped, falls
-// back to the same sole / distinct-count behaviour as the other columns.
+// (or the host itself for a #1526 single-host app — unmatched hosts have
+// appId=null). When not grouped, falls back to the same sole / distinct-count
+// behaviour as the other columns.
 function AppCell({
   active,
   appName,
@@ -508,9 +509,10 @@ function AggregatedEventsView({
 
   if (error) return <ErrorBanner message={error} />
 
-  // #769: drilled into "App" but the household has no apps yet — the rows
-  // would all collapse to a single `__other__` bucket. Point the operator
-  // at the apps screen instead.
+  // #769: drilled into "App" but the household has no apps yet. #1526:
+  // without registered apps the per-host single-host-app grouping is
+  // identical to grouping by Domain — point the operator at the apps screen
+  // to set up real app aggregations.
   const showAppEmpty = groupBy.includes('app') && appCount === 0
   if (showAppEmpty) {
     return (

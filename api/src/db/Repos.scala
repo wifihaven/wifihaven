@@ -196,13 +196,13 @@ trait TimeLimitRepo {
 
 /**
  * Post-#764 the `site_time_limits` table is dropped. This repo now synthesizes the legacy
- * `SiteTimeLimit` shape from `app_policy_assignments` rows with mode='time_limited', emitting one
+ * `AppTimeLimit` shape from `app_policy_assignments` rows with mode='time_limited', emitting one
  * row per (assignment × host) — mirroring the snapshot expansion in `PolicyService`. Synthetic ids
  * are 0L; callers that need stable ids should switch to AppRepo directly.
  */
-trait SiteTimeLimitRepo {
-  def listForProfile(pid: ProfileId): Task[List[SiteTimeLimit]]
-  def listAll: Task[List[SiteTimeLimit]]
+trait AppTimeLimitRepo {
+  def listForProfile(pid: ProfileId): Task[List[AppTimeLimit]]
+  def listAll: Task[List[AppTimeLimit]]
 }
 
 trait DeviceRepo {
@@ -1088,14 +1088,14 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
     .transact(xa)
 }
 
-class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
+class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // (profileId, host, dailyMinutes, slug, exemptFromDaily)
   private type R = (ProfileId, String, Int, String, Boolean)
   private def toS(r: R) =
-    SiteTimeLimit(SiteTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
+    AppTimeLimit(AppTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
 
   def listForProfile(pid: ProfileId) =
-    DbMetrics.timed("siteTimeLimit.listForProfile")(
+    DbMetrics.timed("appTimeLimit.listForProfile")(
       sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
@@ -3253,7 +3253,7 @@ object Repos {
   val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
   val globalPolicyRepo      = ZLayer.fromFunction(GlobalPolicyRepoLive(_))
   val timeLimitRepo         = ZLayer.fromFunction(TimeLimitRepoLive(_))
-  val siteTimeLimitRepo     = ZLayer.fromFunction(SiteTimeLimitRepoLive(_))
+  val appTimeLimitRepo      = ZLayer.fromFunction(AppTimeLimitRepoLive(_))
   val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_))
   val blocklistRepo         = ZLayer.fromFunction(BlocklistRepoLive(_))
   val timeUsageRepo         = ZLayer.fromFunction(TimeUsageRepoLive(_))
@@ -3268,5 +3268,5 @@ object Repos {
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
 }

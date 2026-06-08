@@ -23,8 +23,8 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def makeService: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo,
+    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+      TimeExtensionRepo,
     Nothing,
     TimeStatusService,
   ] =
@@ -32,11 +32,11 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
       pr   <- ZIO.service[ProfileRepo]
       sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
+      atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er)
+    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er)
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-tss", Sha256Hex.unsafe("t" * 64)))
@@ -281,7 +281,7 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         stOpt <- svc.todaysState(now, s, kid)
       } yield assertTrue(stOpt.exists(_.usedMinutes == 10)) &&
         assertTrue(
-          stOpt.exists(_.perSite.exists(p => p.domainPattern == "khan.org" && p.exemptFromDaily)),
+          stOpt.exists(_.perApp.exists(p => p.domainPattern == "khan.org" && p.exemptFromDaily)),
         )
     },
     test("#1504: per-site usage counts engaged minutes, blocking at the true cap not bucket-max") {
@@ -320,12 +320,12 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         stOpt <- svc.todaysState(now, s, kid)
       } yield assertTrue(
         stOpt.exists(
-          _.perSite.exists(p => p.domainPattern == "mathacademy.com" && p.usedMinutes == 30),
+          _.perApp.exists(p => p.domainPattern == "mathacademy.com" && p.usedMinutes == 30),
         ),
       ) &&
         assertTrue(
           stOpt.exists(
-            _.perSite.exists(p =>
+            _.perApp.exists(p =>
               p.domainPattern == "mathacademy.com" && p.usedMinutes >= p.dailyLimitMinutes,
             ),
           ),

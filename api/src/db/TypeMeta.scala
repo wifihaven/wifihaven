@@ -33,7 +33,7 @@ object TypeMeta {
   given Meta[DeviceId]              = Meta[Long].imap(DeviceId(_))(_.value)
   given Meta[ScheduleId]            = Meta[Long].imap(ScheduleId(_))(_.value)
   given Meta[TimeLimitId]           = Meta[Long].imap(TimeLimitId(_))(_.value)
-  given Meta[SiteTimeLimitId]       = Meta[Long].imap(SiteTimeLimitId(_))(_.value)
+  given Meta[AppTimeLimitId]        = Meta[Long].imap(AppTimeLimitId(_))(_.value)
   given Meta[TimeExtensionId]       = Meta[Long].imap(TimeExtensionId(_))(_.value)
   given Meta[UserId]                = Meta[Long].imap(UserId(_))(_.value)
   given Meta[BlockEventId]          = Meta[Long].imap(BlockEventId(_))(_.value)

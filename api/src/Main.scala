@@ -189,7 +189,7 @@ object Main extends ZIOAppDefault {
         appRollupRepoForJ <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
         profileRepoForJ   <- ZIO.service[wifihaven.api.db.ProfileRepo]
         deviceRepoForJ    <- ZIO.service[wifihaven.api.db.DeviceRepo]
-        stlRepoForJ       <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+        stlRepoForJ       <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
         appRepoForJ       <- ZIO.service[AppRepo]
         trafficRepoForJ   <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
         _                 <- TimeUsedRollupJob
@@ -279,7 +279,7 @@ object Main extends ZIOAppDefault {
       hsRepo         <- ZIO.service[HouseholdSettingsRepo]
       globalRepo     <- ZIO.service[GlobalPolicyRepo]
       tlRepo         <- ZIO.service[TimeLimitRepo]
-      stlRepo        <- ZIO.service[SiteTimeLimitRepo]
+      atlRepo        <- ZIO.service[AppTimeLimitRepo]
       deviceRepo     <- ZIO.service[DeviceRepo]
       blRepo         <- ZIO.service[BlocklistRepo]
       blCache        <- ZIO.service[BlocklistCache]
@@ -353,7 +353,7 @@ object Main extends ZIOAppDefault {
           auth,
           deviceRepo,
           tlRepo,
-          stlRepo,
+          atlRepo,
           trafficRepo,
           extRepo,
           profileRepo,
@@ -373,7 +373,7 @@ object Main extends ZIOAppDefault {
             appRepo,
             rollupRepo2,
             hsRepo,
-            stlRepo,
+            atlRepo,
             clock,
           ) ++
           DashboardNowRoutes.routes(

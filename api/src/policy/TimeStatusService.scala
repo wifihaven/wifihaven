@@ -26,7 +26,7 @@ final case class ProfileDayState(
     remainingMinutes: Option[Int],
     blocked: Boolean,
     blockReason: Option[MacBlockReason],
-    perSite: List[SiteDayState],
+    perApp: List[AppDayState],
 )
 
 /**
@@ -35,7 +35,7 @@ final case class ProfileDayState(
  * devices, computed the same way regardless of whether the consumer is the snapshot (deciding which
  * sites land in extraBlocked) or a route (rendering the per-site bars in the UI).
  */
-final case class SiteDayState(
+final case class AppDayState(
     label: String,
     domainPattern: String,
     dailyLimitMinutes: Int,
@@ -119,7 +119,7 @@ class TimeStatusServiceLive(
     // wholesale when the legacy table is dropped (the future two-phase destructive PR).
     @scala.annotation.unused scheduleRepo: ScheduleRepo,
     timeLimitRepo: TimeLimitRepo,
-    siteTimeLimitRepo: SiteTimeLimitRepo,
+    appTimeLimitRepo: AppTimeLimitRepo,
     deviceRepo: DeviceRepo,
     trafficRepo: TrafficReportRepo,
     extRepo: TimeExtensionRepo,
@@ -131,7 +131,7 @@ class TimeStatusServiceLive(
     // Defaults to the noop so existing direct constructions keep their arity.
     namedScheduleRepo: NamedScheduleRepo = NoopNamedScheduleRepo,
     // #1515: the #1510 per-app rollup read accessor, used ONLY on the today-rollup read path to fill
-    // each profile's per-app `perSite.usedMinutes` from `app_used_daily` + a live tail — so the
+    // each profile's per-app `perApp.usedMinutes` from `app_used_daily` + a live tail — so the
     // per-app cap enforces once a profile has rolled (the prod steady state), not just on the
     // all-live path. Defaults to the noop: the all-live path (cache miss / past date) never consults
     // it, and the many test constructions over `NoopTimeUsedRollupRepo` stay all-live.
@@ -184,7 +184,7 @@ class TimeStatusServiceLive(
         for {
           schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
-          stls      <- siteTimeLimitRepo.listForProfile(profileId)
+          atls      <- appTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
           presence  <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
           extMins   <- extRepo.getProfileTotalExtension(profileId, date)
@@ -194,7 +194,7 @@ class TimeStatusServiceLive(
             schedules = schedules,
             devices = devices,
             dailyLimit = tl.map(_.dailyMinutes),
-            siteLimits = stls,
+            appLimits = atls,
             presence = presence,
             extensionMinutes = extMins,
             date = date,
@@ -224,14 +224,14 @@ class TimeStatusServiceLive(
       devices  <- deviceRepo.listAll
       namedP   <- namedScheduleRepo.windowsForAllProfiles
       tlsP     <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
-      stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
       presence <- trafficRepo.listPresenceRows(devices.map(_.mac), date)
       exts     <- extRepo.snapshotAllByProfile(date)
     } yield {
       val schedMap =
         profiles.map(p => p.id -> syntheticWindows(p.id, namedP.getOrElse(p.id, Nil))).toMap
       val tlMap    = tlsP.toMap
-      val stlMap   = stlsP.toMap
+      val atlMap   = atlsP.toMap
       val devsByP  =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
       profiles.iterator.map { p =>
@@ -244,7 +244,7 @@ class TimeStatusServiceLive(
           schedules = schedMap.getOrElse(p.id, Nil),
           devices = devs,
           dailyLimit = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
-          siteLimits = stlMap.getOrElse(p.id, Nil),
+          appLimits = atlMap.getOrElse(p.id, Nil),
           presence = pPres,
           extensionMinutes = extMins,
           date = date,
@@ -270,7 +270,7 @@ class TimeStatusServiceLive(
         for {
           schedules <- schedulesFor(profileId)
           tl        <- timeLimitRepo.findForProfile(profileId)
-          stls      <- siteTimeLimitRepo.listForProfile(profileId)
+          atls      <- appTimeLimitRepo.listForProfile(profileId)
           devices   <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
           tail <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, rolled.rolledThrough)
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
@@ -279,19 +279,19 @@ class TimeStatusServiceLive(
           perAppMins <- appUsedRollupService.appCapMinutesByLabel(now, date, settings, profileId)
         } yield {
           val tailSeconds =
-            TimeStatusService.usedSecondsForProfile(p, devices, stls, tail, settings)
+            TimeStatusService.usedSecondsForProfile(p, devices, atls, tail, settings)
           val totalUsed   = ((rolled.usedSeconds + tailSeconds) / 60L).toInt
           Some(
             TimeStatusService.assemble(
               profile = p,
               schedules = schedules,
               dailyLimit = tl.map(_.dailyMinutes),
-              siteLimits = stls,
+              appLimits = atls,
               usedMinutes = totalUsed,
               extensionMinutes = extMins,
               date = date,
               now = now,
-              perSiteOverride = Some(TimeStatusService.siteDayStatesFromMinutes(stls, perAppMins)),
+              perAppOverride = Some(TimeStatusService.appDayStatesFromMinutes(atls, perAppMins)),
             ),
           )
         }
@@ -325,12 +325,12 @@ class TimeStatusServiceLive(
     // per-profile filtering handle any per-row over-fetch.
     val watermark = rolled.values.iterator.map(_.rolledThrough).min
     for {
-      devices <- deviceRepo.listAll
-      namedP  <- namedScheduleRepo.windowsForAllProfiles
-      tlsP    <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
-      stlsP   <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
-      tail    <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
-      exts    <- extRepo.snapshotAllByProfile(date)
+      devices    <- deviceRepo.listAll
+      namedP     <- namedScheduleRepo.windowsForAllProfiles
+      tlsP       <- ZIO.foreach(profiles)(p => timeLimitRepo.findForProfile(p.id).map(p.id -> _))
+      atlsP      <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+      tail       <- trafficRepo.listPresenceRowsSince(devices.map(_.mac), date, watermark)
+      exts       <- extRepo.snapshotAllByProfile(date)
       // #1515: per-app cap usage per profile from the #1510 per-app rollup + live tail. Keyed by the
       // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
       perAppMins <- ZIO
@@ -342,7 +342,7 @@ class TimeStatusServiceLive(
       val schedMap =
         profiles.map(p => p.id -> syntheticWindows(p.id, namedP.getOrElse(p.id, Nil))).toMap
       val tlMap    = tlsP.toMap
-      val stlMap   = stlsP.toMap
+      val atlMap   = atlsP.toMap
       val devsByP  =
         devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
       profiles.iterator.map { p =>
@@ -358,7 +358,7 @@ class TimeStatusServiceLive(
           TimeStatusService.usedSecondsForProfile(
             p,
             devs,
-            stlMap.getOrElse(p.id, Nil),
+            atlMap.getOrElse(p.id, Nil),
             pTail,
             settings,
           )
@@ -367,14 +367,14 @@ class TimeStatusServiceLive(
           profile = p,
           schedules = schedMap.getOrElse(p.id, Nil),
           dailyLimit = tlMap.getOrElse(p.id, None).map(_.dailyMinutes),
-          siteLimits = stlMap.getOrElse(p.id, Nil),
+          appLimits = atlMap.getOrElse(p.id, Nil),
           usedMinutes = totalUsed,
           extensionMinutes = exts.getOrElse(p.id, 0),
           date = date,
           now = now,
-          perSiteOverride = Some(
-            TimeStatusService.siteDayStatesFromMinutes(
-              stlMap.getOrElse(p.id, Nil),
+          perAppOverride = Some(
+            TimeStatusService.appDayStatesFromMinutes(
+              atlMap.getOrElse(p.id, Nil),
               perAppMins.getOrElse(p.id, Map.empty),
             ),
           ),
@@ -387,9 +387,8 @@ class TimeStatusServiceLive(
 object TimeStatusService {
 
   val layer: ZLayer[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo &
-      AppUsedRollupService,
+    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+      TimeExtensionRepo & TimeUsedRollupRepo & NamedScheduleRepo & AppUsedRollupService,
     Nothing,
     TimeStatusService,
   ] = ZLayer.fromFunction {
@@ -397,28 +396,28 @@ object TimeStatusService {
         pr: ProfileRepo,
         sr: ScheduleRepo,
         tlr: TimeLimitRepo,
-        stlr: SiteTimeLimitRepo,
+        atlr: AppTimeLimitRepo,
         dr: DeviceRepo,
         trr: TrafficReportRepo,
         er: TimeExtensionRepo,
         ru: TimeUsedRollupRepo,
         nsr: NamedScheduleRepo,
         aur: AppUsedRollupService,
-    ) => new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, nsr, aur)
+    ) => new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru, nsr, aur)
   }
 
   /**
-   * #1505: collapse the per-(assignment × host) [[SiteTimeLimit]] rows into one group per app
-   * (keyed by `label`, which is `app:<slug>`), carrying the app's full host-set. `dailyMinutes` and
+   * #1505: collapse the per-(assignment × host) [[AppTimeLimit]] rows into one group per app (keyed
+   * by `label`, which is `app:<slug>`), carrying the app's full host-set. `dailyMinutes` and
    * `exemptFromDaily` are uniform across an app's synthesized rows, so we take them off any row.
    * The representative `domainPattern` is the apex (shortest host) — used only for the wire/UI; the
    * `hosts` list drives every per-app computation. Stable order (by label) for deterministic
    * output.
    */
   private[policy] def groupSiteLimits(
-      siteLimits: List[SiteTimeLimit],
+      appLimits: List[AppTimeLimit],
   ): List[(String, Int, Boolean, List[String], String)] =
-    siteLimits
+    appLimits
       .groupBy(_.label)
       .toList
       .sortBy(_._1)
@@ -429,44 +428,44 @@ object TimeStatusService {
       }
 
   /**
-   * #1505 + #1504: per-app [[SiteDayState]] list — one entry per app, with `usedMinutes` aggregated
+   * #1505 + #1504: per-app [[AppDayState]] list — one entry per app, with `usedMinutes` aggregated
    * across the app's whole host-set and counted via the #1464 session-stitch primitive
    * ([[Presence.patternGroupMinutesForProfile]]), combined across the profile's devices per
    * `overlap`. `presence` must already be scoped to the profile's devices.
    */
-  private[policy] def siteDayStates(
-      siteLimits: List[SiteTimeLimit],
+  private[policy] def appDayStates(
+      appLimits: List[AppTimeLimit],
       presence: List[PresenceRow],
       overlap: CrossDeviceOverlapMode,
       filter: HeartbeatFilter,
       continuationSeconds: Int,
-  ): List[SiteDayState] = {
+  ): List[AppDayState] = {
     val perGroup = Presence.patternGroupMinutesForProfile(
       presence,
-      groupSiteLimits(siteLimits).map(g => g._1 -> g._4),
+      groupSiteLimits(appLimits).map(g => g._1 -> g._4),
       overlap,
       filter,
       continuationSeconds,
     )
-    siteDayStatesFromMinutes(siteLimits, perGroup)
+    appDayStatesFromMinutes(appLimits, perGroup)
   }
 
   /**
-   * #1515: build the per-app [[SiteDayState]] list from a `label -> usedMinutes` map, where each
-   * key is the `app:<slug>` cap-group label [[groupSiteLimits]] emits. The single place the per-app
-   * cap groups (label / host-set / limit / exempt) are zipped with their used-minutes, regardless
-   * of where the minutes come from: the live presence aggregation ([[siteDayStates]]), the rollup +
+   * #1515: build the per-app [[AppDayState]] list from a `label -> usedMinutes` map, where each key
+   * is the `app:<slug>` cap-group label [[groupSiteLimits]] emits. The single place the per-app cap
+   * groups (label / host-set / limit / exempt) are zipped with their used-minutes, regardless of
+   * where the minutes come from: the live presence aggregation ([[appDayStates]]), the rollup +
    * live-tail read path ([[TimeStatusServiceLive]], via
    * [[wifihaven.api.usage.AppUsedRollupService.appCapMinutesByLabel]]), or the zero-usage default
    * in [[assemble]]. Keeping one zip means the cap groups can't be shaped differently across those
    * paths (#1532). A label absent from the map contributes zero minutes.
    */
-  private[policy] def siteDayStatesFromMinutes(
-      siteLimits: List[SiteTimeLimit],
+  private[policy] def appDayStatesFromMinutes(
+      appLimits: List[AppTimeLimit],
       minutesByLabel: Map[String, Int],
-  ): List[SiteDayState] =
-    groupSiteLimits(siteLimits).map { case (label, daily, exempt, hosts, rep) =>
-      SiteDayState(
+  ): List[AppDayState] =
+    groupSiteLimits(appLimits).map { case (label, daily, exempt, hosts, rep) =>
+      AppDayState(
         label = label,
         domainPattern = rep,
         dailyLimitMinutes = daily,
@@ -489,22 +488,22 @@ object TimeStatusService {
       schedules: List[DbSchedule],
       devices: List[Device],
       dailyLimit: Option[Int],
-      siteLimits: List[SiteTimeLimit],
+      appLimits: List[AppTimeLimit],
       presence: List[PresenceRow],
       extensionMinutes: Int,
       date: LocalDate,
       now: Instant,
       settings: HouseholdSettings,
   ): ProfileDayState = {
-    val totalSecondsUsed = usedSecondsForProfile(profile, devices, siteLimits, presence, settings)
+    val totalSecondsUsed = usedSecondsForProfile(profile, devices, appLimits, presence, settings)
     val totalMinutesUsed = (totalSecondsUsed / 60L).toInt
 
     // #1505 + #1504: one limit per app (label), aggregated across the app's full host-set, counted
     // with the #1464 session-stitch primitive (not bucket-max) and combined across the profile's
-    // devices per its overlap mode. `siteDayStates` groups the per-(assignment × host) rows into
+    // devices per its overlap mode. `appDayStates` groups the per-(assignment × host) rows into
     // one (label, host-set) per app and counts engaged wall-clock time once across the whole set.
-    val perSite = siteDayStates(
-      siteLimits,
+    val perApp = appDayStates(
+      appLimits,
       presence,
       profile.crossDeviceOverlapMode,
       settings.heartbeatFilter,
@@ -515,12 +514,12 @@ object TimeStatusService {
       profile = profile,
       schedules = schedules,
       dailyLimit = dailyLimit,
-      siteLimits = siteLimits,
+      appLimits = appLimits,
       usedMinutes = totalMinutesUsed,
       extensionMinutes = extensionMinutes,
       date = date,
       now = now,
-      perSiteOverride = Some(perSite),
+      perAppOverride = Some(perApp),
     )
   }
 
@@ -536,21 +535,21 @@ object TimeStatusService {
    * total. Derived from the same per-app collapse (`groupSiteLimits`) the per-app bars and
    * `computeBlockRules` use, so the displayed `usedMinutes`, the snapshot's `blocked`, and the
    * per-device summaries (#1546) all read ONE explicit host-set. The previous
-   * `siteLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
+   * `appLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
    * emits one row per host; reusing the collapse makes the whole-host-set exemption explicit rather
    * than an implicit dependency on that row shape, which would silently regress to apex-only the
    * moment those rows were ever de-duped upstream. Shared by [[usedSecondsForProfile]] and
    * [[usedSecondsByMac]] so the two can never derive exempt patterns differently.
    */
-  private[policy] def exemptPatterns(siteLimits: List[SiteTimeLimit]): List[String] =
-    groupSiteLimits(siteLimits).collect {
+  private[policy] def exemptPatterns(appLimits: List[AppTimeLimit]): List[String] =
+    groupSiteLimits(appLimits).collect {
       case (_, _, exempt, hosts, _) if exempt => hosts
     }.flatten
 
   /**
    * #1516: per-app engaged seconds for a profile, keyed by `app_id`, derived from the SINGLE
    * per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
-   * gap-bridged, cross-host union the per-app cap ([[siteDayStates]] /
+   * gap-bridged, cross-host union the per-app cap ([[appDayStates]] /
    * [[Presence.patternGroupMinutesForProfile]]) ticks on. This is the value the `app_used_daily`
    * rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series identities hold by
    * construction (there is exactly one per-app time computation). `slugToAppId` resolves each
@@ -572,12 +571,12 @@ object TimeStatusService {
 
   def appSecondsByApp(
       profile: Profile,
-      siteLimits: List[SiteTimeLimit],
+      appLimits: List[AppTimeLimit],
       slugToAppId: Map[String, AppId],
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Map[AppId, Long] = {
-    val groups = groupSiteLimits(siteLimits).map(g => g._1 -> g._4)
+    val groups = groupSiteLimits(appLimits).map(g => g._1 -> g._4)
     Presence
       .appSecondsForProfile(
         presence,
@@ -603,18 +602,18 @@ object TimeStatusService {
    * [[Presence.countedRows]] (attribution only prevents suppression, not exemption), so an exempt
    * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
    */
-  private[policy] def appHostPatterns(siteLimits: List[SiteTimeLimit]): List[String] =
-    groupSiteLimits(siteLimits).flatMap(_._4)
+  private[policy] def appHostPatterns(appLimits: List[AppTimeLimit]): List[String] =
+    groupSiteLimits(appLimits).flatMap(_._4)
 
   def usedSecondsForProfile(
       profile: Profile,
       devices: List[Device],
-      siteLimits: List[SiteTimeLimit],
+      appLimits: List[AppTimeLimit],
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Long = {
-    val exemptPats = exemptPatterns(siteLimits)
-    val appPats    = appHostPatterns(siteLimits)
+    val exemptPats = exemptPatterns(appLimits)
+    val appPats    = appHostPatterns(appLimits)
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
         val perMac = Presence.totalSecondsByMac(
@@ -662,12 +661,12 @@ object TimeStatusService {
   def usedSecondsByMac(
       profile: Profile,
       devices: List[Device],
-      siteLimits: List[SiteTimeLimit],
+      appLimits: List[AppTimeLimit],
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Map[MacAddress, Long] = {
-    val exemptPats = exemptPatterns(siteLimits)
-    val appPats    = appHostPatterns(siteLimits)
+    val exemptPats = exemptPatterns(appLimits)
+    val appPats    = appHostPatterns(appLimits)
     profile.crossDeviceOverlapMode match {
       case CrossDeviceOverlapMode.Sum   =>
         val perMac = Presence.totalSecondsByMac(
@@ -706,19 +705,19 @@ object TimeStatusService {
    * cached-read path produces the same precedence Paused > Schedule > TimeLimit as the live path —
    * the source-of-truth invariant is enforced here by construction.
    *
-   * `perSiteOverride = None` means the caller did not load per-site presence; per-site usage is
+   * `perAppOverride = None` means the caller did not load per-site presence; per-site usage is
    * emitted as zero against the configured site limits (the v1 rollup is profile-total only).
    */
   def assemble(
       profile: Profile,
       schedules: List[DbSchedule],
       dailyLimit: Option[Int],
-      siteLimits: List[SiteTimeLimit],
+      appLimits: List[AppTimeLimit],
       usedMinutes: Int,
       extensionMinutes: Int,
       date: LocalDate,
       now: Instant,
-      perSiteOverride: Option[List[SiteDayState]] = None,
+      perAppOverride: Option[List[AppDayState]] = None,
   ): ProfileDayState = {
     val (blocked, reason) =
       if profile.paused then (true, Some(MacBlockReason.Paused: MacBlockReason))
@@ -734,13 +733,13 @@ object TimeStatusService {
 
     val remaining = dailyLimit.map(l => (l + extensionMinutes - usedMinutes).max(0))
 
-    val perSite = perSiteOverride.getOrElse(
+    val perApp = perAppOverride.getOrElse(
       // #1505/#1515: same per-app grouping as the live path, but with zero usage. Reached only when
-      // a caller does NOT supply per-app usage; the rollup read paths now pass `perSiteOverride`
+      // a caller does NOT supply per-app usage; the rollup read paths now pass `perAppOverride`
       // built from the #1510 per-app rollup (so the per-app cap enforces on the rollup path too),
       // and the live `fold` passes the presence-derived one. A bare `assemble` with no override
       // degrades to "no per-app usage yet".
-      siteDayStatesFromMinutes(siteLimits, Map.empty),
+      appDayStatesFromMinutes(appLimits, Map.empty),
     )
 
     ProfileDayState(
@@ -752,7 +751,7 @@ object TimeStatusService {
       remainingMinutes = remaining,
       blocked = blocked,
       blockReason = reason,
-      perSite = perSite,
+      perApp = perApp,
     )
   }
 }

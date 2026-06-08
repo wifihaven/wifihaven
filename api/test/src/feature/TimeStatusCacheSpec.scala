@@ -86,7 +86,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       auth        <- makeAuth
       deviceRepo  <- ZIO.service[DeviceRepo]
       tlRepo      <- ZIO.service[TimeLimitRepo]
-      stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+      atlRepo     <- ZIO.service[AppTimeLimitRepo]
       trafficRepo <- ZIO.service[TrafficReportRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       profileRepo <- ZIO.service[ProfileRepo]
@@ -98,7 +98,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         profileRepo,
         schedRepo,
         tlRepo,
-        stlRepo,
+        atlRepo,
         deviceRepo,
         trafficRepo,
         extRepo,
@@ -107,7 +107,7 @@ object TimeStatusCacheSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       auth,
       deviceRepo,
       tlRepo,
-      stlRepo,
+      atlRepo,
       trafficRepo,
       extRepo,
       profileRepo,

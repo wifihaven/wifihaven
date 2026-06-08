@@ -27,8 +27,8 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def makeService: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo & HouseholdSettingsRepo,
+    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+      TimeExtensionRepo & TimeUsedRollupRepo & HouseholdSettingsRepo,
     Nothing,
     TimeStatusService,
   ] =
@@ -36,12 +36,12 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
       pr   <- ZIO.service[ProfileRepo]
       sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
+      atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
       ru   <- ZIO.service[TimeUsedRollupRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru)
+    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru)
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-tur", Sha256Hex.unsafe("t" * 64)))
@@ -128,10 +128,10 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
             devices <- ZIO
               .serviceWithZIO[DeviceRepo](_.listAll)
               .map(_.filter(_.profileId.contains(kid)))
-            stls    <- ZIO.serviceWithZIO[SiteTimeLimitRepo](_.listForProfile(kid))
+            atls    <- ZIO.serviceWithZIO[AppTimeLimitRepo](_.listForProfile(kid))
             allPres <- trr.listPresenceRows(devices.map(_.mac), today)
             prefixP = allPres.filter(_.periodStart.isBefore(prefix))
-            secs    = TimeStatusService.usedSecondsForProfile(profile, devices, stls, prefixP, s)
+            secs    = TimeStatusService.usedSecondsForProfile(profile, devices, atls, prefixP, s)
           } yield secs
         }
         _        <- ru.upsertDay(kid, today, RolledDay(rolledA, watermark))
@@ -151,7 +151,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         aru <- ZIO.service[AppUsedRollupRepo]
         ar  <- ZIO.service[AppRepo]
         trr <- ZIO.service[TrafficReportRepo]
-        stl <- ZIO.service[SiteTimeLimitRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
         s   <- setTz(hsr, "UTC")
         kid <- TestLayers.seedKidsProfile(pr, sr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:20", "kid-a", kid)
@@ -239,7 +239,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         aru <- ZIO.service[AppUsedRollupRepo]
         ar  <- ZIO.service[AppRepo]
         trr <- ZIO.service[TrafficReportRepo]
-        stl <- ZIO.service[SiteTimeLimitRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
         _   <- setTz(hsr, "UTC")
         kid <- TestLayers.seedKidsProfile(pr, sr)
         _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:50", "kid", kid)

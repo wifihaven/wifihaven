@@ -21,8 +21,8 @@ import zio.test.Assertion.*
  * These exercise the full stack: HTTP handler → service → real Postgres. No mocks except Clock and
  * upstream DNS socket.
  *
- * Post-#764: profile-side `extraBlocked`/`extraAllowed`/`siteTimeLimits` were migrated into the
- * apps schema and dropped from the wire — those concerns are exercised via app endpoints/specs.
+ * Post-#764: profile-side `extraBlocked`/`extraAllowed`/`appTimeLimits` were migrated into the apps
+ * schema and dropped from the wire — those concerns are exercised via app endpoints/specs.
  */
 object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 

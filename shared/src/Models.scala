@@ -255,8 +255,8 @@ case class TimeLimit(
     dailyMinutes: Int,
 ) derives JsonCodec
 
-case class SiteTimeLimit(
-    id: SiteTimeLimitId,
+case class AppTimeLimit(
+    id: AppTimeLimitId,
     profileId: ProfileId,
     domainPattern: String,
     dailyMinutes: Int,
@@ -825,7 +825,7 @@ case class ConnectionEventAggRow(
     appIcon: Option[String] = None,
 ) derives JsonCodec
 
-case class SiteUsage(
+case class AppUsage(
     label: String,
     domainPattern: String,
     limitMins: Int,
@@ -843,7 +843,7 @@ case class DeviceTimeStatus(
     usedMins: Int,
     extensionMins: Int,
     remainingMins: Option[Int],
-    siteUsage: List[SiteUsage],
+    appUsage: List[AppUsage],
 ) derives JsonCodec
 
 case class DeviceUsageSummary(
@@ -903,7 +903,7 @@ case class ProfileTimeStatus(
     usedMins: Int,
     extensionMins: Int,
     remainingMins: Option[Int],
-    siteUsage: List[SiteUsage],
+    appUsage: List[AppUsage],
     devices: List[DeviceUsageSummary],
     hostUsage: List[HostUsage],
 ) derives JsonCodec
@@ -1645,15 +1645,15 @@ object MacBlockReason {
 // the event-table form without re-encoding (their wire form is unchanged in
 // the snapshot JSON — only the event-DB encoding becomes kind-tagged).
 object BlockReason {
-  case object Allow                       extends BlockReason
-  case object Blocked                     extends BlockReason
-  case object ExtraAllowed                extends BlockReason
-  case object ExtraBlocked                extends BlockReason
-  case object NoProfile                   extends BlockReason
-  case class Category(slug: BlocklistId)  extends BlockReason
-  case class SiteTimeLimit(label: String) extends BlockReason
-  case class AppBlocked(appId: String)    extends BlockReason
-  case class Unknown(raw: String)         extends BlockReason
+  case object Allow                      extends BlockReason
+  case object Blocked                    extends BlockReason
+  case object ExtraAllowed               extends BlockReason
+  case object ExtraBlocked               extends BlockReason
+  case object NoProfile                  extends BlockReason
+  case class Category(slug: BlocklistId) extends BlockReason
+  case class AppTimeLimit(label: String) extends BlockReason
+  case class AppBlocked(appId: String)   extends BlockReason
+  case class Unknown(raw: String)        extends BlockReason
 
   /**
    * Parse a router / PolicyService wire-format reason string. Unknown values fall through to
@@ -1677,8 +1677,11 @@ object BlockReason {
         .parse(s.stripPrefix("category:"))
         .map(Category(_))
         .getOrElse(Unknown(s))
-    case s if s.startsWith("site_time_limit:")                 =>
-      SiteTimeLimit(s.stripPrefix("site_time_limit:"))
+    case s
+        if s.startsWith(
+          "site_time_limit:",
+        ) => // FROZEN wire token (#376): keep literal until wire versioning
+      AppTimeLimit(s.stripPrefix("site_time_limit:"))
     case s if s.startsWith("app:")                             =>
       AppBlocked(s.stripPrefix("app:"))
     case other                                                 => Unknown(other)
@@ -1710,7 +1713,8 @@ object BlockReason {
     case MacBlockReason.Unmanaged   => "unmanaged_mac"
     case MacBlockReason.DefaultDeny => "default_deny"
     case Category(slug)             => s"category:${slug.value}"
-    case SiteTimeLimit(label)       => s"site_time_limit:$label"
+    case AppTimeLimit(label)        =>
+      s"site_time_limit:$label" // FROZEN wire token (#376): keep literal until wire versioning
     case AppBlocked(appId)          => s"app:$appId"
     case Unknown(raw)               => raw
   }
@@ -1732,8 +1736,11 @@ object BlockReason {
     case MacBlockReason.DefaultDeny => Json.Obj("kind" -> Json.Str("defaultDeny"))
     case Category(slug)             =>
       Json.Obj("kind" -> Json.Str("category"), "slug" -> Json.Str(slug.value))
-    case SiteTimeLimit(label)       =>
-      Json.Obj("kind" -> Json.Str("siteTimeLimit"), "label" -> Json.Str(label))
+    case AppTimeLimit(label)        =>
+      Json.Obj(
+        "kind"  -> Json.Str("siteTimeLimit"),
+        "label" -> Json.Str(label),
+      ) // FROZEN wire token (#376): keep literal until wire versioning
     case AppBlocked(appId)          =>
       Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
     case Unknown(raw)               =>
@@ -1764,7 +1771,10 @@ object BlockReason {
           field("slug").flatMap(s =>
             BlocklistId.parse(s).map(Category(_)).left.map(_ => s"invalid category slug: $s"),
           )
-        case "siteTimeLimit" => field("label").map(SiteTimeLimit(_))
+        case "siteTimeLimit" =>
+          field("label").map(
+            AppTimeLimit(_),
+          ) // FROZEN wire token (#376): keep literal until wire versioning
         case "appBlocked"    => field("appId").map(AppBlocked(_))
         case "unknown"       => field("raw").map(Unknown(_))
         case other           => Left(s"BlockReason: unknown kind '$other'")
