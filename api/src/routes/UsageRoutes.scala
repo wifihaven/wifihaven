@@ -579,6 +579,16 @@ object UsageRoutes {
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
         )
+      // #1507: surface what the engaged-time calculation excluded so the drill-in can show a
+      // collapsed "background / infra" group. App-aware via [[appLookup]] — a host attributed to
+      // any app's host-set is NOT reported here, matching the post-#1506 attribution-beats-
+      // suppression semantics. #1560 will centralize this with the per-host-span call site.
+      suppressedHostRows                     =
+        wifihaven.api.presence.Presence.suppressedHostUsage(
+          rows,
+          settings.heartbeatFilter,
+          appLookup.patternsBySlug.valuesIterator.flatten.toList.distinct,
+        )
       // Single-device view → per-device union is the total; no cross-device overlap mode applies.
       (topEntries, bucketsByEntry)           =
         if (groupByApp)
@@ -604,6 +614,8 @@ object UsageRoutes {
       topEntries = topEntries,
       bucketsByEntry = bucketsByEntry,
       presenceTotalMins = presenceTotalMins,
+      suppressedHosts =
+        suppressedHostRows.map(r => SuppressedHostUsage(r.host, r.bytes, r.buckets, r.reason)),
     )
 
   private def buildForProfile(

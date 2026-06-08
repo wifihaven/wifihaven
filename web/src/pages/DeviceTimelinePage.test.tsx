@@ -205,6 +205,61 @@ describe('DeviceTimelinePage', () => {
       expect(screen.queryByTestId('device-timeline-other-entry-host-top0.com')).toBeNull()
     })
 
+  })
+
+  describe('background/infra suppression panel (#1507)', () => {
+    function withSuppressedResponse(date: string): UsageSeriesResponse {
+      return {
+        deviceMac: MAC,
+        deviceName: "Kid's iPad",
+        date,
+        tz: 'UTC',
+        topHosts: [],
+        buckets: Array.from({ length: 24 }, (_, hour) => ({ hour, totalMins: 0, perHost: [], otherMins: 0 })),
+        topEntries: [
+          {
+            entity: { kind: 'host' as const, id: 'engaged.com', name: 'engaged.com',
+              host: { type: 'fqdn' as const, value: 'engaged.com' } },
+            dayMins: 5,
+          },
+        ],
+        bucketsByEntry: Array.from({ length: 24 }, (_, hour) => ({ hour, totalMins: 0, perEntity: [], otherMins: 0 })),
+        suppressedHosts: [
+          { host: { type: 'fqdn', value: 'ocsp.apple.com' }, bytes: 100_000, buckets: 2, reason: 'infra' },
+          { host: { type: 'fqdn', value: 'push.apple.com' }, bytes: 50_000, buckets: 1, reason: 'infra' },
+        ],
+      }
+    }
+
+    it('lists each suppressed host with formatted bytes; engaged surface unchanged', async () => {
+      (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+        withSuppressedResponse('2026-05-20'),
+      )
+      renderPage([`/devices/${MAC}/timeline?date=2026-05-20`])
+      await waitFor(() =>
+        expect(screen.getByTestId('device-timeline-suppressed')).toBeInTheDocument(),
+      )
+      expect(screen.getByTestId('device-timeline-suppressed-ocsp.apple.com')).toBeInTheDocument()
+      expect(screen.getByTestId('device-timeline-suppressed-push.apple.com')).toBeInTheDocument()
+      // Bytes are surfaced — not asserting on the exact format string so the formatter can change,
+      // just that the byte count is reachable somewhere in the row.
+      expect(screen.getByTestId('device-timeline-suppressed-ocsp.apple.com').textContent ?? '')
+        .toMatch(/100|KB|kB/)
+      // Engaged group is still rendered separately from the suppressed group.
+      expect(screen.getByTestId('device-timeline-entry-host-engaged.com')).toBeInTheDocument()
+    })
+
+    it('hides the panel when no suppressed hosts are reported', async () => {
+      (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+        emptyDayResponse('2026-05-20'),
+      )
+      renderPage([`/devices/${MAC}/timeline?date=2026-05-20`])
+      await waitFor(() =>
+        expect(screen.getByTestId('device-timeline-empty')).toBeInTheDocument(),
+      )
+      expect(screen.queryByTestId('device-timeline-suppressed')).toBeNull()
+    })
+
     it('hides the affordance when there is no Other bucket on any hour', async () => {
       (api.usage.series as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
         emptyDayResponse('2026-05-20'),

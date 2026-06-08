@@ -379,6 +379,50 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           // is what enables the per-device 'other' drill-in to see the full tail.
           assertTrue(out.topHosts.length == 30)
       },
+      // #1507 — surface background/infra suppression on the per-device drill-in. The same predicate
+      // the rollup builder uses (`Presence.isHeartbeat`/`InfraHosts.isBackground`) tags rows whose
+      // host is device-level infra; those rows contribute 0 engaged minutes but the bytes still
+      // happened. The drill-in must show the operator what was excluded and why.
+      test("surfaces background/infra hosts in suppressedHosts with bytes summed") {
+        for {
+          _           <- cleanDb
+          profileRepo <- ZIO.service[ProfileRepo]
+          schedRepo   <- ZIO.service[ScheduleRepo]
+          deviceRepo  <- ZIO.service[DeviceRepo]
+          kidsId      <- TestLayers.seedKidsProfile(profileRepo, schedRepo)
+          _           <- TestLayers.seedDevice(deviceRepo, testMac, "iPad", kidsId)
+          routerId    <- seedRouter
+          today = TestClock.schoolDayAfternoon.toLocalDate
+          // One engaged host (youtube.com) and two device-level infra hosts (canonical +
+          // suppress-only) — both must be reported in `suppressedHosts` and must NOT contribute to
+          // engaged minutes (totalMins reflects only youtube.com).
+          _  <- insertRow(routerId, testMac, "youtube.com", today, 14, 0)
+          _  <- insertRow(routerId, testMac, "ocsp.apple.com", today, 14, 5)
+          _  <- insertRow(routerId, testMac, "ocsp.apple.com", today, 14, 10)
+          _  <- insertRow(routerId, testMac, "push.apple.com", today, 14, 15)
+          rb <- buildRoutes
+          (routes, auth) = rb
+          token <- auth.login("admin", "changeme").map(_.token.value)
+          req = Request
+            .get(URL.decode(s"/api/usage/series?mac=$testMac&date=$today").toOption.get)
+            .addHeader(Header.Authorization.Bearer(token))
+          resp <- routes.runZIO(req)
+          body <- resp.body.asString
+          out  <- ZIO.fromEither(body.fromJson[UsageSeriesResponse])
+          ocsp = out.suppressedHosts.find(_.host.value == "ocsp.apple.com")
+          push = out.suppressedHosts.find(_.host.value == "push.apple.com")
+        } yield assertTrue(resp.status == Status.Ok) &&
+          // Engaged surface: only youtube.com is a real host; infra never shows up here.
+          assertTrue(out.topHosts.exists(_.host.value == "youtube.com")) &&
+          assertTrue(!out.topHosts.exists(_.host.value == "ocsp.apple.com")) &&
+          assertTrue(!out.topHosts.exists(_.host.value == "push.apple.com")) &&
+          // suppressedHosts surface: both infra hosts present, bytes summed across the two ocsp rows
+          // (50 KB/row × 2 rows = 100 KB), one row for push.apple.com (50 KB).
+          assertTrue(ocsp.exists(_.bytes == 100_000L)) &&
+          assertTrue(ocsp.exists(_.reason == "infra")) &&
+          assertTrue(push.exists(_.bytes == 50_000L)) &&
+          assertTrue(push.exists(_.reason == "infra"))
+      },
       test("tz parameter buckets by local-hour") {
         for {
           _           <- cleanDb
