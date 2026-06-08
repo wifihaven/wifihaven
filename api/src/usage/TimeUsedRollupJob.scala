@@ -1,7 +1,6 @@
 package wifihaven.api.usage
 
 import wifihaven.api.db.{
-  AppRepo,
   AppTimeLimitRepo,
   AppUsedRollupRepo,
   DeviceRepo,
@@ -63,7 +62,6 @@ object TimeUsedRollupJob {
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
-      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       clock: Clock,
@@ -78,7 +76,6 @@ object TimeUsedRollupJob {
           profileRepo,
           deviceRepo,
           appTimeLimitRepo,
-          appRepo,
           trafficRepo,
           hs,
           now,
@@ -98,7 +95,6 @@ object TimeUsedRollupJob {
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
-      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
@@ -109,7 +105,6 @@ object TimeUsedRollupJob {
       profileRepo,
       deviceRepo,
       appTimeLimitRepo,
-      appRepo,
       trafficRepo,
       hs,
       now,
@@ -164,7 +159,6 @@ object TimeUsedRollupJob {
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
       appTimeLimitRepo: AppTimeLimitRepo,
-      appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
       now: Instant,
@@ -173,10 +167,9 @@ object TimeUsedRollupJob {
     today = PolicyService.householdLocalDate(now, settings)
     profiles <- profileRepo.listAll
     devices  <- deviceRepo.listAll
-    apps     <- appRepo.listAll
     atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    rolls = computeRolls(profiles, devices, apps, atlsP.toMap, presence, settings, now)
+    rolls = computeRolls(profiles, devices, atlsP.toMap, presence, settings, now)
     n <- rollup.upsertBatch(today, rolls._1)
     _ <- appRollup.upsertBatch(today, rolls._2)
   } yield n
@@ -184,21 +177,20 @@ object TimeUsedRollupJob {
   // Pure: collapse one presence batch into both the per-profile total roll (`time_used_daily`) and
   // the per-(profile, app) engaged roll (`app_used_daily`), stamped with the same `now` watermark so
   // the two compose identically (rolled + tail). The per-app figure derives from the SINGLE per-app
-  // primitive (`TimeStatusService.appSecondsByApp` → `Presence.appSecondsForProfile`), so the rollup
-  // reconciles exactly with the per-app cap and the per-app series. Only apps with engaged activity
-  // get a row (zero-activity apps are absent).
+  // primitive (`TimeStatusService.appSecondsByApp` → `Presence.appSecondsForProfile`), keyed on the
+  // typed `apps.id` FK [[wifihaven.shared.AppTimeLimit.appId]] carried straight from the repo join
+  // (#1564) — no slugToAppId lookup. Only apps with engaged activity get a row (zero-activity apps
+  // are absent).
   private def computeRolls(
       profiles: List[wifihaven.shared.Profile],
       devices: List[wifihaven.shared.Device],
-      apps: List[wifihaven.shared.App],
       atlMap: Map[ProfileId, List[wifihaven.shared.AppTimeLimit]],
       presence: List[wifihaven.api.presence.PresenceRow],
       settings: wifihaven.shared.HouseholdSettings,
       now: Instant,
   ): (Map[ProfileId, RolledDay], Map[(ProfileId, AppId), RolledAppDay]) = {
-    val devsByP     =
+    val devsByP                                                           =
       devices.groupBy(_.profileId).collect { case (Some(pid), devs) => pid -> devs }
-    val slugToAppId = TimeStatusService.slugToAppId(apps)
     def presFor(pid: ProfileId): List[wifihaven.api.presence.PresenceRow] = {
       val mac = devsByP.getOrElse(pid, Nil).map(_.mac).toSet
       presence.filter(r => mac.contains(r.mac))
@@ -215,7 +207,7 @@ object TimeUsedRollupJob {
     }.toMap
     val perApp     = profiles.iterator.flatMap { p =>
       TimeStatusService
-        .appSecondsByApp(p, atlMap.getOrElse(p.id, Nil), slugToAppId, presFor(p.id), settings)
+        .appSecondsByApp(p, atlMap.getOrElse(p.id, Nil), presFor(p.id), settings)
         .iterator
         .map { case (appId, secs) => (p.id, appId) -> RolledAppDay(secs, now) }
     }.toMap

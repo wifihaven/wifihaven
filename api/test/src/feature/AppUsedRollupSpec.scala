@@ -44,7 +44,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
       ar  <- ZIO.service[AppRepo]
       trr <- ZIO.service[TrafficReportRepo]
       aru <- ZIO.service[AppUsedRollupRepo]
-    } yield new AppUsedRollupServiceLive(pr, dr, stl, ar, trr, aru)
+    } yield new AppUsedRollupServiceLive(pr, dr, stl, trr, aru)
 
   private def makeTimeService: ZIO[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
@@ -152,7 +152,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:60", "social.com", today, 5, 8 * 60)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:60", "cdn.social.net", today, 5, 8 * 60 + 10)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         reader <- makeReader
         perApp <- reader.appEngagedMinutes(now, today, s, kid)
         // The per-app cap aggregate (AppDayState.usedMinutes) for the same app.
@@ -218,7 +218,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:62", "a.com", today, 10, 8 * 60)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:62", "b.com", today, 15, 9 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _       <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _       <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         timeRow <- ru.getDayForProfile(kid, today)
         appRows <- aru.getDayForProfile(kid, today)
         appSum = appRows.values.map(_.engagedSeconds).sum
@@ -281,9 +281,9 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         today = LocalDate.of(2025, 1, 6)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:63", "youtube.com", today, 20, 8 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         first  <- aru.getDayForProfile(kid, today)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         second <- aru.getDayForProfile(kid, today)
       } yield assertTrue(first.nonEmpty) && assertTrue(first == second)
     },

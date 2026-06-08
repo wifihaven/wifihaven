@@ -56,20 +56,21 @@ trait AppUsedRollupService {
   ): Task[Map[AppId, Int]]
 
   /**
-   * #1515: the same per-app engaged minutes as [[appEngagedMinutes]], re-keyed by the cap group
-   * label `app:<slug>` (the key [[wifihaven.api.policy.TimeStatusService.groupSiteLimits]] emits).
-   * This is what the snapshot's / `/decision`'s per-app cap reads through `perApp` on the rollup
-   * read path: [[wifihaven.api.policy.TimeStatusServiceLive]] joins it to the profile's per-app cap
-   * groups to fill `AppDayState.usedMinutes`, so a profile that has rolled (the prod steady state)
-   * still caps on the real per-app aggregate instead of zero. Same rolled + live-tail figure, so
-   * the rollup read and the all-live read agree by construction (#1532).
+   * #1515 + #1564: the same per-app engaged minutes as [[appEngagedMinutes]], surfaced for the cap
+   * read path. Keyed by the typed `apps.id` FK — the same key `app_used_daily` stores, the same key
+   * the cap-group ([[wifihaven.api.policy.TimeStatusService.groupSiteLimits]]) emits, and the same
+   * key [[wifihaven.api.policy.TimeStatusService.appDayStatesFromMinutes]] joins on. The snapshot's
+   * / `/decision`'s per-app cap reads through `perApp` on the rollup read path so a profile that
+   * has rolled (the prod steady state) still caps on the real per-app aggregate instead of zero.
+   * Same rolled + live-tail figure, so the rollup read and the all-live read agree by construction
+   * (#1532).
    */
-  def appCapMinutesByLabel(
+  def appCapMinutesByAppId(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
-  ): Task[Map[String, Int]]
+  ): Task[Map[AppId, Int]]
 }
 
 /**
@@ -85,19 +86,18 @@ object NoopAppUsedRollupService extends AppUsedRollupService {
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] = ZIO.succeed(Map.empty)
-  def appCapMinutesByLabel(
+  def appCapMinutesByAppId(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
-  ): Task[Map[String, Int]] = ZIO.succeed(Map.empty)
+  ): Task[Map[AppId, Int]] = ZIO.succeed(Map.empty)
 }
 
 class AppUsedRollupServiceLive(
     profileRepo: ProfileRepo,
     deviceRepo: DeviceRepo,
     appTimeLimitRepo: AppTimeLimitRepo,
-    appRepo: AppRepo,
     trafficRepo: TrafficReportRepo,
     rollupRepo: AppUsedRollupRepo,
 ) extends AppUsedRollupService {
@@ -108,74 +108,54 @@ class AppUsedRollupServiceLive(
       settings: HouseholdSettings,
       profileId: ProfileId,
   ): Task[Map[AppId, Int]] =
-    aggregate(now, date, settings, profileId).map(_._1)
+    aggregate(now, date, settings, profileId)
 
-  def appCapMinutesByLabel(
+  def appCapMinutesByAppId(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
-  ): Task[Map[String, Int]] =
-    aggregate(now, date, settings, profileId).map(_._2)
+  ): Task[Map[AppId, Int]] =
+    aggregate(now, date, settings, profileId)
 
-  // Single read path for both keyings. When the per-app rollup is non-empty, add its engaged seconds
-  // to a live aggregation of the TAIL past the shared watermark (period_start >= rolled_through).
-  // When it is empty (cache miss / past date), the watermark is absent so the whole day is aggregated
-  // live and the rolled contribution is zero — i.e. the all-live path. Either way the floor-of-sum to
-  // minutes happens once at the end, so the result is byte-identical to a full live aggregation (the
-  // watermark lands in an idle gap, so no engaged span straddles it — same exactness argument as
-  // `time_used_daily`). Returns the minutes keyed both by `apps.id` (the per-app series) and by the
-  // `app:<slug>` cap-group label (the per-app cap), computed once.
+  // Single read path keyed on apps.id end-to-end (#1564). When the per-app rollup is non-empty,
+  // add its engaged seconds to a live aggregation of the TAIL past the shared watermark
+  // (period_start >= rolled_through). When it is empty (cache miss / past date), the watermark is
+  // absent so the whole day is aggregated live and the rolled contribution is zero — i.e. the
+  // all-live path. Either way the floor-of-sum to minutes happens once at the end, so the result is
+  // byte-identical to a full live aggregation (the watermark lands in an idle gap, so no engaged
+  // span straddles it — same exactness argument as `time_used_daily`). The cap and series consumers
+  // both read this AppId-keyed map directly; no slug round-trip.
   private def aggregate(
       now: Instant,
       date: LocalDate,
       settings: HouseholdSettings,
       profileId: ProfileId,
-  ): Task[(Map[AppId, Int], Map[String, Int])] = {
+  ): Task[Map[AppId, Int]] = {
     val today   = PolicyService.householdLocalDate(now, settings)
-    // Only today reads the rollup; past dates ignore it (rollup is today-only, like
-    // `time_used_daily`). An empty rolled map — cache miss, or a past date — collapses to a full-day
-    // all-live computation.
     val rolledZ =
       if (date == today) rollupRepo.getDayForProfile(profileId, date)
       else ZIO.succeed(Map.empty[AppId, RolledAppDay])
     rolledZ.flatMap { rolled =>
       profileRepo.findById(profileId).flatMap {
-        case None    => ZIO.succeed((Map.empty[AppId, Int], Map.empty[String, Int]))
+        case None    => ZIO.succeed(Map.empty[AppId, Int])
         case Some(p) =>
           for {
             atls    <- appTimeLimitRepo.listForProfile(profileId)
             devices <- deviceRepo.listAll.map(_.filter(_.profileId.contains(profileId)))
-            apps    <- appRepo.listAll
             macs = devices.map(_.mac)
             presence <- rolled.values.iterator.map(_.rolledThrough).minOption match {
               case Some(watermark) => trafficRepo.listPresenceRowsSince(macs, date, watermark)
               case None            => trafficRepo.listPresenceRows(macs, date)
             }
           } yield {
-            val liveSecs                  =
-              TimeStatusService.appSecondsByApp(
-                p,
-                atls,
-                TimeStatusService.slugToAppId(apps),
-                presence,
-                settings,
-              )
-            val byApp: Map[AppId, Int]    =
-              (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
-                val secs =
-                  rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
-                val mins = (secs / 60L).toInt
-                if mins != 0 then Some(id -> mins) else None
-              }.toMap
-            // Re-key to the `app:<slug>` cap-group label via the inverse of `slugToAppId` — the same
-            // labelling `groupSiteLimits` uses — so the per-app cap can join by label.
-            val idToSlug                  = TimeStatusService.slugToAppId(apps).map(_.swap)
-            val byLabel: Map[String, Int] =
-              byApp.iterator.flatMap { case (id, mins) =>
-                idToSlug.get(id).map(slug => s"app:$slug" -> mins)
-              }.toMap
-            (byApp, byLabel)
+            val liveSecs = TimeStatusService.appSecondsByApp(p, atls, presence, settings)
+            (rolled.keySet ++ liveSecs.keySet).iterator.flatMap { id =>
+              val secs =
+                rolled.get(id).map(_.engagedSeconds).getOrElse(0L) + liveSecs.getOrElse(id, 0L)
+              val mins = (secs / 60L).toInt
+              if mins != 0 then Some(id -> mins) else None
+            }.toMap
           }
       }
     }
@@ -184,8 +164,8 @@ class AppUsedRollupServiceLive(
 
 object AppUsedRollupService {
   val layer: ZLayer[
-    ProfileRepo & DeviceRepo & AppTimeLimitRepo & AppRepo & TrafficReportRepo & AppUsedRollupRepo,
+    ProfileRepo & DeviceRepo & AppTimeLimitRepo & TrafficReportRepo & AppUsedRollupRepo,
     Nothing,
     AppUsedRollupService,
-  ] = ZLayer.fromFunction(AppUsedRollupServiceLive(_, _, _, _, _, _))
+  ] = ZLayer.fromFunction(AppUsedRollupServiceLive(_, _, _, _, _))
 }

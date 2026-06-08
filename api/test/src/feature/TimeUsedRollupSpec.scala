@@ -161,7 +161,7 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
         svc    <- makeService
         live   <- svc.dayStateAllLive(now, today, s)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         cached <- svc.dayStateAll(now, today, s)
       } yield assertTrue(cached(kid).usedMinutes == live(kid).usedMinutes) &&
         assertTrue(live(kid).usedMinutes == 40)
@@ -253,12 +253,12 @@ object TimeUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgr
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:50", "mathacademy.com", today, 5, 0)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:50", "mathacademy.com", today, 5, 20)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _           <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _           <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         before      <- ru.getDayForProfile(kid, today)
         cur         <- hsr.get
         _           <- hsr.update(cur.copy(presenceContinuationSeconds = 900))
         invalidated <- ru.getDayForProfile(kid, today)
-        _           <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _           <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         after       <- ru.getDayForProfile(kid, today)
       } yield assertTrue(before.exists(_.usedSeconds == 600L)) &&
         assertTrue(invalidated.isEmpty) &&

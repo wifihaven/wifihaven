@@ -1089,14 +1089,16 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
 }
 
 class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
-  // (profileId, host, dailyMinutes, slug, exemptFromDaily)
-  private type R = (ProfileId, String, Int, String, Boolean)
+  // #1564: (profileId, host, dailyMinutes, slug, exemptFromDaily, appId) — the join already has
+  // `apps.id` in scope, so we carry it through as the canonical FK reference instead of throwing
+  // it away and re-resolving the slug downstream.
+  private type R = (ProfileId, String, Int, String, Boolean, AppId)
   private def toS(r: R) =
-    AppTimeLimit(AppTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
+    AppTimeLimit(AppTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5, r._6)
 
   def listForProfile(pid: ProfileId) =
     DbMetrics.timed("appTimeLimit.listForProfile")(
-      sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
+      sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily, a.id
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
@@ -1109,7 +1111,7 @@ class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
     )
 
   def listAll =
-    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
+    sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily, a.id
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
             JOIN app_hosts ah ON ah.app_id = apa.app_id
