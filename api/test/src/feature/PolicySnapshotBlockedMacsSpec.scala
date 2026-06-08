@@ -45,7 +45,7 @@ object PolicySnapshotBlockedMacsSpec
       sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
-      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      atlr   <- ZIO.service[AppTimeLimitRepo]
       dr     <- ZIO.service[DeviceRepo]
       blr    <- ZIO.service[BlocklistRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
@@ -59,7 +59,7 @@ object PolicySnapshotBlockedMacsSpec
       sr,
       hsr,
       tlr,
-      stlr,
+      atlr,
       dr,
       blr,
       trRepo,

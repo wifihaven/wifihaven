@@ -30,7 +30,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
-      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      atlr   <- ZIO.service[AppTimeLimitRepo]
       dr     <- ZIO.service[DeviceRepo]
       blr    <- ZIO.service[BlocklistRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
@@ -42,7 +42,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       sr,
       hsr,
       tlr,
-      stlr,
+      atlr,
       dr,
       blr,
       trRepo,
@@ -57,7 +57,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       sr     <- ZIO.service[ScheduleRepo]
       hsr    <- ZIO.service[HouseholdSettingsRepo]
       tlr    <- ZIO.service[TimeLimitRepo]
-      stlr   <- ZIO.service[SiteTimeLimitRepo]
+      atlr   <- ZIO.service[AppTimeLimitRepo]
       dr     <- ZIO.service[DeviceRepo]
       blr    <- ZIO.service[BlocklistRepo]
       trRepo <- ZIO.service[TrafficReportRepo]
@@ -71,7 +71,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       sr,
       hsr,
       tlr,
-      stlr,
+      atlr,
       dr,
       blr,
       trRepo,
@@ -91,7 +91,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       sr   <- ZIO.service[ScheduleRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
+      atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       blr  <- ZIO.service[BlocklistRepo]
       trr  <- ZIO.service[TrafficReportRepo]
@@ -101,14 +101,14 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       ru   <- ZIO.service[TimeUsedRollupRepo]
       aru  <- ZIO.service[AppUsedRollupRepo]
       clk  <- ZIO.service[Clock]
-      aus = new AppUsedRollupServiceLive(pr, dr, stlr, ar, trr, aru)
-      tss = new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru, nsr, aus)
+      aus = new AppUsedRollupServiceLive(pr, dr, atlr, ar, trr, aru)
+      tss = new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru, nsr, aus)
     } yield new PolicyServiceLive(
       pr,
       sr,
       hsr,
       tlr,
-      stlr,
+      atlr,
       dr,
       blr,
       trr,
@@ -286,7 +286,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       "#1515 rollup path: per-app cap enforces from app_used_daily + tail, not just the all-live path",
     ) {
       // Regression guard for the gap that the snapshot's per-app cap only fired on the all-live path:
-      // once a profile has rolled (the prod steady state) the snapshot read `perSite.usedMinutes` as
+      // once a profile has rolled (the prod steady state) the snapshot read `perApp.usedMinutes` as
       // ZERO and the cap never bit. Roll the day up so the snapshot takes the rollup + live-tail
       // path, and assert the whole host-set is still blocked from `app_used_daily`.
       for {
@@ -308,14 +308,14 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         // Roll the day up: writes app_used_daily (30 m YouTube) + time_used_daily for every profile,
         // so the snapshot below reads the ROLLUP path rather than re-aggregating live.
         pr     <- ZIO.service[ProfileRepo]
-        stlr   <- ZIO.service[SiteTimeLimitRepo]
+        atlr   <- ZIO.service[AppTimeLimitRepo]
         trr    <- ZIO.service[TrafficReportRepo]
         hsr    <- ZIO.service[HouseholdSettingsRepo]
         ru     <- ZIO.service[TimeUsedRollupRepo]
         aru    <- ZIO.service[AppUsedRollupRepo]
         clk    <- ZIO.service[Clock]
         now    <- clk.instant
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stlr, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atlr, ar, trr, hsr, now)
         // Proves the rollup branch is exercised: the per-app rollup row exists for this profile.
         rolled <- aru.getDayForProfile(kids, today)
         svc    <- makePsRollup
@@ -666,7 +666,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         sr    <- ZIO.service[ScheduleRepo]
         hsr   <- ZIO.service[HouseholdSettingsRepo]
         tlr   <- ZIO.service[TimeLimitRepo]
-        stlr  <- ZIO.service[SiteTimeLimitRepo]
+        atlr  <- ZIO.service[AppTimeLimitRepo]
         dr    <- ZIO.service[DeviceRepo]
         blr   <- ZIO.service[BlocklistRepo]
         trr   <- ZIO.service[TrafficReportRepo]
@@ -685,7 +685,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
             sr,
             hsr,
             tlr,
-            stlr,
+            atlr,
             dr,
             blr,
             trr,

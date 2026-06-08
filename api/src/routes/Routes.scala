@@ -568,7 +568,7 @@ object TimeRoutes {
       auth: AuthService,
       deviceRepo: DeviceRepo,
       timeLimitRepo: TimeLimitRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       trafficRepo: TrafficReportRepo,
       extRepo: TimeExtensionRepo,
       profileRepo: ProfileRepo,
@@ -728,7 +728,7 @@ object TimeRoutes {
                         settings,
                         timeStatusService,
                         trafficRepo,
-                        siteTimeLimitRepo,
+                        appTimeLimitRepo,
                       )
                     }
                 }
@@ -850,7 +850,7 @@ object TimeRoutes {
               profileRepo,
               timeStatusService,
               trafficRepo,
-              siteTimeLimitRepo,
+              appTimeLimitRepo,
             )
               .mapError(ApiError.Db(_))
           } yield Response.json(status.toJson)
@@ -985,7 +985,7 @@ object TimeRoutes {
       settings: HouseholdSettings,
       timeStatusService: wifihaven.api.policy.TimeStatusService,
       trafficRepo: TrafficReportRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
   ): Task[ProfileTimeStatus] = {
     val macs = devices.map(_.mac)
     for {
@@ -993,17 +993,17 @@ object TimeRoutes {
       state = stateOpt.getOrElse(
         wifihaven.api.policy.ProfileDayState(profile.id, date, None, 0, 0, None, false, None, Nil),
       )
-      presence   <- trafficRepo.listPresenceRows(macs, date)
-      siteLimits <- siteTimeLimitRepo.listForProfile(profile.id)
+      presence  <- trafficRepo.listPresenceRows(macs, date)
+      appLimits <- appTimeLimitRepo.listForProfile(profile.id)
       // #1546: per-device minutes come from the canonical per-mac decomposition of the headline
       // total, so they share one exempt-pattern + overlap definition with `state.usedMinutes` and
       // cannot drift from it (no open-coded `totalMinutesByMac` recompute). Under Dedup this is a
       // disjoint attribution of the union, so the summaries reconcile with the headline instead of
       // summing to >100%.
       perMacSeconds   = wifihaven.api.policy.TimeStatusService
-        .usedSecondsByMac(profile, devices, siteLimits, presence, settings)
-      siteUsage       = state.perSite.map { s =>
-        SiteUsage(
+        .usedSecondsByMac(profile, devices, appLimits, presence, settings)
+      appUsage        = state.perApp.map { s =>
+        AppUsage(
           s.label,
           s.domainPattern,
           s.dailyLimitMinutes,
@@ -1044,7 +1044,7 @@ object TimeRoutes {
       state.usedMinutes,
       state.extensionMinutes,
       state.remainingMinutes,
-      siteUsage,
+      appUsage,
       deviceSummaries,
       hostUsage,
     )
@@ -1247,7 +1247,7 @@ object TimeRoutes {
       profileRepo: ProfileRepo,
       timeStatusService: wifihaven.api.policy.TimeStatusService,
       trafficRepo: TrafficReportRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
   ): Task[DeviceTimeStatus] = {
     val pid = device.profileId
     for {
@@ -1256,8 +1256,8 @@ object TimeRoutes {
       )
       presence   <- trafficRepo.listPresenceRows(List(device.mac), date)
       profileOpt <- pid.fold(ZIO.succeed(Option.empty[Profile]))(profileRepo.findById)
-      siteLimits <- pid.fold(ZIO.succeed(List.empty[SiteTimeLimit]))(
-        siteTimeLimitRepo.listForProfile,
+      appLimits  <- pid.fold(ZIO.succeed(List.empty[AppTimeLimit]))(
+        appTimeLimitRepo.listForProfile,
       )
       profile   = profileOpt.map(_.name).getOrElse(if (pid.isEmpty) "No profile" else "Unknown")
       // #1546: the per-device headline reads the same per-mac decomposition the profile view's
@@ -1266,7 +1266,7 @@ object TimeRoutes {
       // and Dedup coincide — the device is credited its own engaged time.
       totalUsed = profileOpt.fold(0)(p =>
         (wifihaven.api.policy.TimeStatusService
-          .usedSecondsByMac(p, List(device), siteLimits, presence, settings)
+          .usedSecondsByMac(p, List(device), appLimits, presence, settings)
           .getOrElse(device.mac, 0L) / 60L).toInt,
       )
       // #1505 + #1504: per-device per-app usage via the #1464 session-stitch primitive, aggregated
@@ -1275,14 +1275,14 @@ object TimeRoutes {
       perApp    = wifihaven.api.presence.Presence
         .patternGroupMinutesForProfile(
           presence,
-          stateOpt.toList.flatMap(_.perSite).map(s => s.label -> s.hosts),
+          stateOpt.toList.flatMap(_.perApp).map(s => s.label -> s.hosts),
           wifihaven.shared.CrossDeviceOverlapMode.Sum,
           settings.heartbeatFilter,
           settings.presenceContinuationSeconds,
         )
-      siteUsage = stateOpt.toList.flatMap(_.perSite).map { s =>
+      appUsage  = stateOpt.toList.flatMap(_.perApp).map { s =>
         val used = perApp.getOrElse(s.label, 0)
-        SiteUsage(
+        AppUsage(
           s.label,
           s.domainPattern,
           s.dailyLimitMinutes,
@@ -1300,7 +1300,7 @@ object TimeRoutes {
       totalUsed,
       stateOpt.map(_.extensionMinutes).getOrElse(0),
       stateOpt.flatMap(_.remainingMinutes),
-      siteUsage,
+      appUsage,
     )
   }
 

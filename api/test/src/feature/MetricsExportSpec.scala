@@ -83,7 +83,7 @@ object MetricsExportSpec
         rollupRepo     <- ZIO.service[RollupRepo]
         profileRepo    <- ZIO.service[ProfileRepo]
         deviceRepo     <- ZIO.service[DeviceRepo]
-        stlRepo        <- ZIO.service[SiteTimeLimitRepo]
+        atlRepo        <- ZIO.service[AppTimeLimitRepo]
         appRepo        <- ZIO.service[AppRepo]
         trafficRepo    <- ZIO.service[TrafficReportRepo]
         hsRepo         <- ZIO.service[HouseholdSettingsRepo]
@@ -97,7 +97,7 @@ object MetricsExportSpec
             rollupRepo,
             profileRepo,
             deviceRepo,
-            stlRepo,
+            atlRepo,
             appRepo,
             trafficRepo,
             hsRepo,

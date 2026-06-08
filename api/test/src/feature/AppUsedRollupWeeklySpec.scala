@@ -120,7 +120,7 @@ object AppUsedRollupWeeklySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
         appRepoSvc      <- ZIO.service[AppRepo]
         rollupRepo      <- ZIO.service[RollupRepo]
         hsRepo          <- ZIO.service[HouseholdSettingsRepo]
-        stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+        atlRepo         <- ZIO.service[AppTimeLimitRepo]
         clock           <- ZIO.service[Clock]
         auth            <- makeAuth
         routes = UsageRoutes.routes(
@@ -132,7 +132,7 @@ object AppUsedRollupWeeklySpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
           appRepoSvc,
           rollupRepo,
           hsRepo,
-          stlRepo,
+          atlRepo,
           aru,
           clock,
         )

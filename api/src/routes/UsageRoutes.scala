@@ -34,7 +34,7 @@ object UsageRoutes {
       appRepo: AppRepo,
       rollupRepo: RollupRepo,
       hsRepo: HouseholdSettingsRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       appUsedRollupRepo: AppUsedRollupRepo,
       clock: Clock,
   ): Routes[Any, Response] =
@@ -278,7 +278,7 @@ object UsageRoutes {
                   deviceRepo,
                   trafficRepo,
                   userProfileRepo,
-                  siteTimeLimitRepo,
+                  appTimeLimitRepo,
                   groupByApp,
                   appLookup,
                   settings,
@@ -326,7 +326,7 @@ object UsageRoutes {
               deviceRepo,
               trafficRepo,
               userProfileRepo,
-              siteTimeLimitRepo,
+              appTimeLimitRepo,
               groupByApp,
               appLookup,
               settings,
@@ -351,7 +351,7 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
@@ -371,7 +371,7 @@ object UsageRoutes {
       // load them per profile (same input `usedSecondsForProfile` uses) and carve them out.
       exemptByPid <- ZIO
         .foreach(pids) { pid =>
-          siteTimeLimitRepo
+          appTimeLimitRepo
             .listForProfile(pid)
             .map(sl => pid -> sl.filter(_.exemptFromDaily).map(_.domainPattern))
         }
@@ -688,21 +688,21 @@ object UsageRoutes {
       deviceRepo: DeviceRepo,
       trafficRepo: TrafficReportRepo,
       userProfileRepo: UserProfileRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       groupByApp: Boolean,
       appLookup: UsageSeries.AppAxis,
       settings: HouseholdSettings,
   ): IO[ApiError, UsageSeriesResponse] =
     for {
-      _          <- requireProfileReadAccess(claims, pid, userProfileRepo)
+      _         <- requireProfileReadAccess(claims, pid, userProfileRepo)
         .mapError(ApiError.Wrapped(_))
-      profile    <- profileRepo
+      profile   <- profileRepo
         .findById(pid)
         .mapError(ApiError.Db(_))
         .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-      all        <- deviceRepo.listAll.mapError(ApiError.Db(_))
-      siteLimits <- siteTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
-      exempt    = siteLimits.filter(_.exemptFromDaily).map(_.domainPattern)
+      all       <- deviceRepo.listAll.mapError(ApiError.Db(_))
+      appLimits <- appTimeLimitRepo.listForProfile(pid).mapError(ApiError.Db(_))
+      exempt    = appLimits.filter(_.exemptFromDaily).map(_.domainPattern)
       devices   = all.filter(_.profileId.contains(pid))
       macs      = devices.map(_.mac)
       nameByMac = devices.iterator.map(d => d.mac -> d.name).toMap

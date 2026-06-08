@@ -107,7 +107,7 @@ object PresenceDefaultsPinSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[RollupRepo]
       hsRepo          <- ZIO.service[HouseholdSettingsRepo]
-      stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+      atlRepo         <- ZIO.service[AppTimeLimitRepo]
       aruRepo         <- ZIO.service[AppUsedRollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
@@ -120,7 +120,7 @@ object PresenceDefaultsPinSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
       appRepo,
       rollupRepo,
       hsRepo,
-      stlRepo,
+      atlRepo,
       aruRepo,
       clock,
     )

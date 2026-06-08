@@ -91,7 +91,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
-      stlRepo         <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+      atlRepo         <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
       aruRepo         <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
@@ -105,7 +105,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         appRepo,
         rollupRepo,
         hsRepo,
-        stlRepo,
+        atlRepo,
         aruRepo,
         clock,
       ),
@@ -114,7 +114,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
 
   // #1517 — the numbers along the per-app reconciliation chain for a single time-limited app, read
   // the way an operator would: the #1510 rollup accessor, the per-app cap aggregate
-  // (`SiteDayState.usedMinutes`), the per-app graph series (`/usage/series?groupBy=app`), the profile
+  // (`AppDayState.usedMinutes`), the per-app graph series (`/usage/series?groupBy=app`), the profile
   // headline total, the legacy per-host proportional sum (what the un-bridged series plotted), and
   // the app's per-hour series minutes.
   private case class AppReco(
@@ -146,7 +146,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       trafficRepo <- ZIO.service[TrafficReportRepo]
       appRepo     <- ZIO.service[AppRepo]
       timeLimRepo <- ZIO.service[TimeLimitRepo]
-      stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+      atlRepo     <- ZIO.service[AppTimeLimitRepo]
       extRepo     <- ZIO.service[TimeExtensionRepo]
       ruRepo      <- ZIO.service[TimeUsedRollupRepo]
       aruRepo     <- ZIO.service[AppUsedRollupRepo]
@@ -172,7 +172,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         aruRepo,
         profileRepo,
         deviceRepo,
-        stlRepo,
+        atlRepo,
         appRepo,
         trafficRepo,
         hsr,
@@ -181,25 +181,25 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
       reader = new AppUsedRollupServiceLive(
         profileRepo,
         deviceRepo,
-        stlRepo,
+        atlRepo,
         appRepo,
         trafficRepo,
         aruRepo,
       )
       rollup <- reader.appEngagedMinutes(now, today, settings, kidsId)
-      // Per-app cap aggregate (SiteDayState.usedMinutes).
+      // Per-app cap aggregate (AppDayState.usedMinutes).
       tsvc = new TimeStatusServiceLive(
         profileRepo,
         schedRepo,
         timeLimRepo,
-        stlRepo,
+        atlRepo,
         deviceRepo,
         trafficRepo,
         extRepo,
         ruRepo,
       )
       state <- tsvc.dayStateLive(now, today, settings, kidsId)
-      capMin = state.flatMap(_.perSite.find(_.label == s"app:$appSlug").map(_.usedMinutes))
+      capMin = state.flatMap(_.perApp.find(_.label == s"app:$appSlug").map(_.usedMinutes))
       // The legacy per-host proportional sum (what the un-bridged series plotted).
       rows <- trafficRepo.listPresenceRows(List(MacAddress.unsafe(testMac)), today)
       perHostPropMins = (wifihaven.api.presence.Presence
@@ -1483,11 +1483,12 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           body <- resp.body.asString
           out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
           yt = out.aggregateRows.find(_.groups.getOrElse("app", "") == "youtube").get
-          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "__other__").get
+          // #1526: google.com → its own single-host app keyed by the host.
+          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "google.com").get
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(out.groupBy == List("app")) &&
           assertTrue(out.aggregateRows.length == 2) &&
-          // Bytes invariant: app + __other__ together cover everything that was inserted.
+          // Bytes invariant: app + single-host-app row together cover everything that was inserted.
           assertTrue(
             out.aggregateRows.map(_.totalBytesIn).sum == 1600L,
           ) &&
@@ -1500,7 +1501,7 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           assertTrue(yt.appIcon.contains("📺")) &&
           assertTrue(yt.appId.isDefined) &&
           assertTrue(ot.totalBytesIn == 100L) &&
-          assertTrue(ot.appName.contains("Other")) &&
+          assertTrue(ot.appName.contains("google.com")) &&
           assertTrue(ot.appId.isEmpty)
       },
       test("#769: groupBy=app fans a multi-app host into one row per app") {
@@ -1574,7 +1575,8 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           routerId    <- seedRouter
           // App "YouTube" owns apex youtube.com + ytimg.com; traffic arrives
           // on FQDN subdomains (www.youtube.com, i.ytimg.com) — must still
-          // attribute to YouTube, not __other__.
+          // attribute to YouTube. #1526: api.mcsrvstat.us has no apex match, so
+          // it becomes its own single-host app keyed by the host.
           ytId        <- appRepo.create("YouTube", "youtube", None, Some("📺"))
           _           <- appRepo.setHosts(
             ytId,
@@ -1640,16 +1642,18 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
           body <- resp.body.asString
           out  <- ZIO.fromEither(body.fromJson[TrafficUsageResponse])
           yt = out.aggregateRows.find(_.groups.getOrElse("app", "") == "youtube").get
-          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "__other__").get
+          // #1526: api.mcsrvstat.us → its own single-host app keyed by the host.
+          ot = out.aggregateRows.find(_.groups.getOrElse("app", "") == "api.mcsrvstat.us").get
         } yield assertTrue(resp.status == Status.Ok) &&
           assertTrue(out.aggregateRows.length == 2) &&
           // www.youtube.com + i.ytimg.com both roll up to YouTube.
           assertTrue(yt.totalBytesIn == 1500L) &&
           assertTrue(yt.totalBytesOut == 3500L) &&
           assertTrue(yt.appName.contains("YouTube")) &&
-          // Only api.mcsrvstat.us (no apex match) lands in Other.
+          // api.mcsrvstat.us (no apex match) is its own single-host app row.
           assertTrue(ot.totalBytesIn == 100L) &&
           assertTrue(ot.totalBytesOut == 100L) &&
+          assertTrue(ot.appName.contains("api.mcsrvstat.us")) &&
           assertTrue(ot.appId.isEmpty)
       },
       // #769: groupBy=app is now implemented; the apex case still rejects.

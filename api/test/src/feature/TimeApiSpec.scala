@@ -93,7 +93,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
@@ -110,7 +110,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -119,7 +119,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -145,7 +145,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -166,7 +166,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -175,7 +175,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -198,7 +198,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -229,7 +229,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -238,7 +238,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -256,7 +256,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         } yield assertTrue(status.usedMins == 60) && // YouTube NOT counted in total
           assertTrue(status.remainingMins.contains(60)) &&
           assertTrue(
-            status.siteUsage.exists(su =>
+            status.appUsage.exists(su =>
               su.label == "app:*.youtube.com" && su.usedMins == 20 && su.remainingMins == 10,
             ),
           )
@@ -266,7 +266,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -296,7 +296,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -305,7 +305,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -323,7 +323,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
         yield assertTrue(status.usedMins == 60) &&         // YouTube IS counted in total
           assertTrue(status.remainingMins.contains(60)) && // 120 - 60 = 60
           assertTrue(
-            status.siteUsage.exists(su =>
+            status.appUsage.exists(su =>
               su.label == "app:*.youtube.com" && su.usedMins == 60 && su.remainingMins == 0,
             ),
           )
@@ -335,7 +335,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -355,7 +355,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -364,7 +364,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -394,7 +394,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
@@ -411,7 +411,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -420,7 +420,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -446,7 +446,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
@@ -465,7 +465,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -474,7 +474,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -495,7 +495,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _               <- cleanDb
           profileRepo     <- ZIO.service[ProfileRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
@@ -512,7 +512,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -521,7 +521,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -558,7 +558,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -576,7 +576,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -585,7 +585,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -625,7 +625,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -648,7 +648,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -657,7 +657,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -694,7 +694,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -728,7 +728,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -737,7 +737,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -769,7 +769,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -794,7 +794,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -803,7 +803,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -835,7 +835,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -860,7 +860,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -869,7 +869,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -893,7 +893,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -924,7 +924,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -933,7 +933,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -957,7 +957,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -987,7 +987,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -996,7 +996,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1020,7 +1020,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1054,7 +1054,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1063,7 +1063,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1079,7 +1079,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           body <- resp.body.asString
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
-          yt   = kids.siteUsage.find(_.label == "app:youtube.com").get
+          yt   = kids.appUsage.find(_.label == "app:youtube.com").get
         } yield assertTrue(yt.usedMins == 40) && // both devices summed
           assertTrue(yt.limitMins == 30) &&
           assertTrue(yt.remainingMins == 0) &&   // clamped to 0
@@ -1093,7 +1093,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1118,7 +1118,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1127,7 +1127,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1157,7 +1157,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1188,7 +1188,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1197,7 +1197,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1229,7 +1229,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1261,7 +1261,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1270,7 +1270,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1313,7 +1313,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1369,7 +1369,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1378,7 +1378,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1415,7 +1415,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1442,7 +1442,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1451,7 +1451,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1483,7 +1483,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1508,7 +1508,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1517,7 +1517,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1546,7 +1546,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1573,7 +1573,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             schedRepo,
             hsRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             blocklistRepo,
             trafficRepo,
@@ -1596,7 +1596,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1655,7 +1655,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1664,7 +1664,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1698,7 +1698,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1743,7 +1743,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1752,7 +1752,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1788,7 +1788,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1810,7 +1810,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1819,7 +1819,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1851,7 +1851,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1875,7 +1875,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1884,7 +1884,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1925,7 +1925,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -1958,7 +1958,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -1967,7 +1967,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -1996,7 +1996,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -2024,7 +2024,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2033,7 +2033,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2064,7 +2064,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -2084,7 +2084,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2093,7 +2093,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2138,7 +2138,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -2159,7 +2159,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2168,7 +2168,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2213,7 +2213,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo     <- ZIO.service[ProfileRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
@@ -2226,7 +2226,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2235,7 +2235,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2260,7 +2260,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -2287,7 +2287,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2296,7 +2296,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2334,7 +2334,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           profileRepo     <- ZIO.service[ProfileRepo]
           schedRepo       <- ZIO.service[ScheduleRepo]
           tlRepo          <- ZIO.service[TimeLimitRepo]
-          stlRepo         <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo         <- ZIO.service[AppTimeLimitRepo]
           deviceRepo      <- ZIO.service[DeviceRepo]
           trafficRepo     <- ZIO.service[TrafficReportRepo]
           extRepo         <- ZIO.service[TimeExtensionRepo]
@@ -2347,7 +2347,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2356,7 +2356,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2386,7 +2386,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -2422,7 +2422,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2431,7 +2431,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,
@@ -2462,7 +2462,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
           tlRepo      <- ZIO.service[TimeLimitRepo]
-          stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+          atlRepo     <- ZIO.service[AppTimeLimitRepo]
           schedRepo   <- ZIO.service[ScheduleRepo]
           deviceRepo  <- ZIO.service[DeviceRepo]
           trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -2494,7 +2494,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             profileRepo,
             schedRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             deviceRepo,
             trafficRepo,
             extRepo,
@@ -2503,7 +2503,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
             auth,
             deviceRepo,
             tlRepo,
-            stlRepo,
+            atlRepo,
             trafficRepo,
             extRepo,
             profileRepo,

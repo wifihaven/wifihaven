@@ -246,7 +246,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
           blocked = true,
           blockReason =
             Some(MacBlockReason.Schedule), // higher-precedence reason; gate must ignore it
-          perSite = Nil,
+          perApp = Nil,
         )
         assertTrue(PolicyService.dailyCapExhausted(st))
       },
@@ -260,7 +260,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
           remainingMinutes = Some(5),
           blocked = false,
           blockReason = None,
-          perSite = Nil,
+          perApp = Nil,
         )
         assertTrue(!PolicyService.dailyCapExhausted(st))
       },
@@ -274,7 +274,7 @@ object PerAppScheduleSpec extends ZIOSpecDefault {
           remainingMinutes = None,
           blocked = false,
           blockReason = None,
-          perSite = Nil,
+          perApp = Nil,
         )
         assertTrue(!PolicyService.dailyCapExhausted(st))
       },

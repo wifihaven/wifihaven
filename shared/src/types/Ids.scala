@@ -14,7 +14,7 @@ opaque type ProfileId             = Long
 opaque type DeviceId              = Long
 opaque type ScheduleId            = Long
 opaque type TimeLimitId           = Long
-opaque type SiteTimeLimitId       = Long
+opaque type AppTimeLimitId        = Long
 opaque type TimeExtensionId       = Long
 opaque type UserId                = Long
 opaque type BlockEventId          = Long
@@ -59,10 +59,10 @@ object TimeLimitId {
   given JsonCodec[TimeLimitId]               = JsonCodec.long
 }
 
-object SiteTimeLimitId {
-  def apply(l: Long): SiteTimeLimitId            = l
-  extension (s: SiteTimeLimitId) def value: Long = s
-  given JsonCodec[SiteTimeLimitId]               = JsonCodec.long
+object AppTimeLimitId {
+  def apply(l: Long): AppTimeLimitId            = l
+  extension (s: AppTimeLimitId) def value: Long = s
+  given JsonCodec[AppTimeLimitId]               = JsonCodec.long
 }
 
 object TimeExtensionId {

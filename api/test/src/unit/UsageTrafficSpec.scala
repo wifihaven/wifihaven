@@ -90,6 +90,33 @@ object UsageTrafficSpec extends ZIOSpecDefault {
       assertTrue(out.head.windowStart == base.toString) &&
       assertTrue(out.head.windowEnd == base.plusSeconds(600L).toString)
     },
+    test("#1526: unmatched hosts each become their own single-host app (no 'Other' bucket)") {
+      // Two distinct hosts, neither in any registered app. Under the old model
+      // both rows would collapse into one synthetic `__other__` row; under the
+      // app-focused model each unmatched host is its own single-host app, so
+      // grouping by app must produce two distinct rows keyed by host.
+      val hostA    = HostId.Fqdn(Hostname.unsafe("example-a.com"))
+      val hostB    = HostId.Fqdn(Hostname.unsafe("example-b.com"))
+      val rows     = List(
+        TrafficUsageDbRow(mac1, hostA, base, base.plusSeconds(300), 60, 1000L, 200L),
+        TrafficUsageDbRow(mac1, hostB, base, base.plusSeconds(300), 60, 1000L, 200L),
+      )
+      val out      = UsageTraffic.buildAggregate(
+        rows = rows,
+        bucket = UsageTraffic.Bucket.TenMin,
+        zone = UTC,
+        groupBy = Set(UsageTraffic.GroupBy.App),
+        deviceByMac = Map.empty,
+        profileNameById = Map.empty,
+        appsByHost = Map.empty, // no apps registered
+      )
+      val appSlugs = out.flatMap(_.groups.get("app")).toSet
+      // Two unmatched hosts → two single-host apps, NOT one shared bucket.
+      assertTrue(out.length == 2) &&
+      assertTrue(appSlugs.size == 2) &&
+      assertTrue(!appSlugs.contains("__other__")) &&
+      assertTrue(appSlugs == Set(hostA.value, hostB.value))
+    },
     test("floorTo and stepOf agree for each sub-day bucket (no 2× stride anywhere)") {
       // For every sub-day bucket: flooring an instant inside the bucket should
       // never produce a window wider than `stepOf(bucket)` — i.e. `start +

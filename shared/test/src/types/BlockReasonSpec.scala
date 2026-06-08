@@ -62,8 +62,8 @@ object BlockReasonSpec extends ZIOSpecDefault {
         assertTrue(r.toJson == "{\"kind\":\"category\",\"slug\":\"ads\"}") &&
         assertTrue(r.toJson.fromJson[BlockReason].contains(r))
       },
-      test("SiteTimeLimit carries label") {
-        val r: BlockReason = BlockReason.SiteTimeLimit("youtube")
+      test("AppTimeLimit carries label") {
+        val r: BlockReason = BlockReason.AppTimeLimit("youtube")
         assertTrue(r.toJson.fromJson[BlockReason].contains(r))
       },
       test("Unknown preserves raw text") {
@@ -114,7 +114,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
       },
       test("site_time_limit:<label>") {
         assertTrue(
-          BlockReason.fromWire("site_time_limit:youtube") == BlockReason.SiteTimeLimit("youtube"),
+          BlockReason.fromWire("site_time_limit:youtube") == BlockReason.AppTimeLimit("youtube"),
         )
       },
       test("unknown form falls back to Unknown(raw)") {
@@ -138,7 +138,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
           BlockReason.ExtraBlocked,
           MacBlockReason.TimeLimit,
           BlockReason.Category(ads),
-          BlockReason.SiteTimeLimit("youtube"),
+          BlockReason.AppTimeLimit("youtube"),
         )
         emitted.foldLeft(assertTrue(true)) { (acc, r) =>
           acc && assertTrue(BlockReason.fromWire(BlockReason.asWire(r)) == r)

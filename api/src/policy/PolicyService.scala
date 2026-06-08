@@ -29,7 +29,7 @@ object PolicyServiceLive {
       scheduleRepo: ScheduleRepo,
       householdSettingsRepo: HouseholdSettingsRepo,
       timeLimitRepo: TimeLimitRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       deviceRepo: DeviceRepo,
       blocklistRepo: BlocklistRepo,
       trafficRepo: TrafficReportRepo,
@@ -48,7 +48,7 @@ object PolicyServiceLive {
       profileRepo,
       scheduleRepo,
       timeLimitRepo,
-      siteTimeLimitRepo,
+      appTimeLimitRepo,
       deviceRepo,
       trafficRepo,
       extRepo,
@@ -62,7 +62,7 @@ object PolicyServiceLive {
       scheduleRepo,
       householdSettingsRepo,
       timeLimitRepo,
-      siteTimeLimitRepo,
+      appTimeLimitRepo,
       deviceRepo,
       blocklistRepo,
       trafficRepo,
@@ -91,7 +91,7 @@ class PolicyServiceLive(
     // remain injected to feed the companion `apply` factory's TimeStatusServiceLive and to keep the
     // constructor arity ~40 test constructions depend on; the class body no longer reads them.
     @scala.annotation.unused timeLimitRepo: TimeLimitRepo,
-    @scala.annotation.unused siteTimeLimitRepo: SiteTimeLimitRepo,
+    @scala.annotation.unused appTimeLimitRepo: AppTimeLimitRepo,
     deviceRepo: DeviceRepo,
     blocklistRepo: BlocklistRepo,
     @scala.annotation.unused trafficRepo: TrafficReportRepo,
@@ -174,7 +174,7 @@ class PolicyServiceLive(
         // Each assignment's effective disposition at `now` folds its per-app schedule windows
         // over its base mode (an active window overrides the base), then the AllowedDuring carve
         // is gated by the daily cap unless the app is exemptFromDaily (design §4.1, §5). Post-#764,
-        // time_limited apps are surfaced via SiteTimeLimitRepo, so they contribute nothing here.
+        // time_limited apps are surfaced via AppTimeLimitRepo, so they contribute nothing here.
         val pAssigns                           = appAssignsMap.getOrElse(p.id, Nil)
         val (appAllowedHosts, appBlockedHosts) =
           PolicyService.expandAppDispositions(
@@ -462,11 +462,11 @@ class PolicyServiceLive(
 
   /**
    * #1544: the per-host site-limit / daily-limit verdict, read off the shared [[ProfileDayState]]
-   * (`state.perSite` for per-app usage + limits, `state.usedMinutes`/`dailyLimitMinutes`/
+   * (`state.perApp` for per-app usage + limits, `state.usedMinutes`/`dailyLimitMinutes`/
    * `extensionMinutes` for the daily cap) rather than re-aggregating from raw rows. The per-HOST
    * part — matching `hostname` against an app's host-set — stays here; the AGGREGATION comes from
    * `TimeStatusService`, so this path can no longer drift from the snapshot's
-   * `siteLimitExtraBlocked` / `assemble` cap evaluation. `state.perSite` carries one entry per app,
+   * `appLimitExtraBlocked` / `assemble` cap evaluation. `state.perApp` carries one entry per app,
    * with `usedMinutes` aggregated across the whole host-set and `dailyLimitMinutes` the app's site
    * cap — exactly the `sd.usedMinutes >= sd.dailyLimitMinutes` test the snapshot uses to fill
    * `extraBlocked`.
@@ -478,23 +478,23 @@ class PolicyServiceLive(
       state: ProfileDayState,
   ): Option[RouterDecisionResponse] = {
     // Time-limit blocks expire at the next household daily-reset Instant.
-    val resetAt      = PolicyService.nextDailyResetAfter(settings, now).toString
-    val siteLimitHit = state.perSite.find { sd =>
+    val resetAt     = PolicyService.nextDailyResetAfter(settings, now).toString
+    val appLimitHit = state.perApp.find { sd =>
       sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) &&
       sd.usedMinutes >= sd.dailyLimitMinutes
     }
-    siteLimitHit
+    appLimitHit
       .map(sd =>
         RouterDecisionResponse(
           ConnectionDecision.Block,
-          BlockReason.asWire(BlockReason.SiteTimeLimit(sd.label)),
+          BlockReason.asWire(BlockReason.AppTimeLimit(sd.label)),
           Some(resetAt),
         ),
       )
       .orElse {
         // #1515: no exempt-app guard is needed here anymore. An exempt-from-daily app still under
         // its own cap is carved into `profileAllowed` and allowed upstream (before this runs), and
-        // one over its cap is caught by `siteLimitHit` above — so by the time we reach the daily cap
+        // one over its cap is caught by `appLimitHit` above — so by the time we reach the daily cap
         // the host is never daily-exempt. The daily-cap predicate is the shared
         // [[dailyCapExhausted]] (the same one the snapshot's `state.blocked` / TimeLimit reason
         // folds), so the per-host /decision and the snapshot can't fold the daily cap differently
@@ -543,7 +543,7 @@ private case class SnapshotCore(
 object PolicyService {
   val layer: ZLayer[
     AppConfig & ProfileRepo & ScheduleRepo & NamedScheduleRepo & HouseholdSettingsRepo &
-      TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo &
+      TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & BlocklistRepo & TrafficReportRepo &
       TimeExtensionRepo & AppRepo & GlobalPolicyRepo & TimeStatusService & Clock,
     Nothing,
     PolicyService,
@@ -555,7 +555,7 @@ object PolicyService {
         nsr: NamedScheduleRepo,
         hsr: HouseholdSettingsRepo,
         tlr: TimeLimitRepo,
-        stlr: SiteTimeLimitRepo,
+        atlr: AppTimeLimitRepo,
         dr: DeviceRepo,
         blr: BlocklistRepo,
         trr: TrafficReportRepo,
@@ -570,7 +570,7 @@ object PolicyService {
         sr,
         hsr,
         tlr,
-        stlr,
+        atlr,
         dr,
         blr,
         trr,
@@ -669,19 +669,19 @@ object PolicyService {
       appExtraAllowed: List[Hostname] = Nil,
       appExtraBlocked: List[Hostname] = Nil,
   ): BlockRules = {
-    // #1505/#1515: per-app cap exhaustion blocks the app's WHOLE host-set together — `state.perSite`
+    // #1505/#1515: per-app cap exhaustion blocks the app's WHOLE host-set together — `state.perApp`
     // carries one entry per app with usage aggregated (gap-bridged) across the whole host-set, so
     // when that aggregate hits the limit ALL of the app's hosts go to extraBlocked, not just the one
     // whose traffic crossed. Shared with the /decision fallback via `siteCapExhaustedHosts` so the
     // two cannot diverge (#1532).
-    val siteLimitExtraBlocked: List[Hostname] = siteCapExhaustedHosts(state)
+    val appLimitExtraBlocked: List[Hostname] = siteCapExhaustedHosts(state)
 
     // #1105/#1515: time_limited app hosts with exemptFromDaily=true carve around the MAC-level
     // @blocked_macs drop while the app's aggregate is still under its own cap — for the WHOLE
     // host-set. The exempt flag's original role was just to exclude the app from the daily tally;
     // without this carve-out, hitting the profile cap silently dropped the exempt app too, violating
     // the "Khan doesn't count" contract (#1513). Naturally transitions allow → block as the app's
-    // aggregate exhausts (siteLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
+    // aggregate exhausts (appLimitExtraBlocked above takes over and extraAllowed-beats-extraBlocked
     // at the router; see feedback_extraallowed_beats_blocked). Shared with /decision via
     // `exemptUnderCapHosts` (#1532).
     val appExemptAllowedHosts: List[Hostname] = exemptUnderCapHosts(state)
@@ -742,7 +742,7 @@ object PolicyService {
       BlockRules(
         blocked = state.blocked,
         blockReason = state.blockReason,
-        extraBlocked = (appExtraBlocked ++ siteLimitExtraBlocked).distinct,
+        extraBlocked = (appExtraBlocked ++ appLimitExtraBlocked).distinct,
         extraAllowed = profileExtraAllowed,
         blocklistIds = profile.blockedCategories,
         blockIpOnly = profile.blockIpOnly,
@@ -771,7 +771,7 @@ object PolicyService {
    * the daily total ([[dailyCapExhausted]]), not the per-app budget.
    */
   private[policy] def siteCapExhaustedHosts(state: ProfileDayState): List[Hostname] =
-    state.perSite.collect {
+    state.perApp.collect {
       case sd if sd.usedMinutes >= sd.dailyLimitMinutes => sd.hosts.map(Hostname.unsafe)
     }.flatten
 
@@ -782,7 +782,7 @@ object PolicyService {
    * snapshot and the /decision fallback so the exempt carve cannot diverge (#1532, #1513).
    */
   private[policy] def exemptUnderCapHosts(state: ProfileDayState): List[Hostname] =
-    state.perSite.collect {
+    state.perApp.collect {
       case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten

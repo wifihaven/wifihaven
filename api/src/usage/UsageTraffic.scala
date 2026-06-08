@@ -8,8 +8,10 @@ import java.time.temporal.{ChronoUnit, TemporalAdjusters}
 
 /**
  * #769: per-host attribution to an app, sourced from `app_hosts` joined with `apps`. The aggregator
- * uses this to bucket rows by app slug; hosts not in any app fall into the synthetic `__other__`
- * bucket with `name="Other"`. Mapping is built once per request and held in memory — apps are
+ * uses this to bucket rows by app slug. #1526: a host that belongs to no registered app is its own
+ * **single-host app** — synthesized via [[AppMembership.forUnmatchedHost]], keyed by the host
+ * itself. There is no semantic "Other" app; "Other" only ever appears as a presentation top-N
+ * rollup applied AFTER attribution. Mapping is built once per request and held in memory — apps are
  * household-scoped and typically number in the tens, so the full join table fits comfortably.
  */
 case class AppMembership(
@@ -20,7 +22,11 @@ case class AppMembership(
 )
 
 object AppMembership {
-  val Other: AppMembership = AppMembership("__other__", "Other", None, None)
+  // #1526: hosts not in any registered app become their own single-host app,
+  // keyed by the host itself so two unmatched hosts produce two distinct
+  // memberships (NOT one shared `__other__` bucket).
+  def forUnmatchedHost(host: HostId): AppMembership =
+    AppMembership(slug = host.value, name = host.value, icon = None, appId = None)
 }
 
 /**
@@ -201,7 +207,8 @@ object UsageTraffic {
       // canonicalizes at create/edit). #1085 added suffix-aware lookup so
       // traffic rows on `www.youtube.com` attribute to the `youtube.com` apex
       // entry. A host in two apps appears under both when grouping by app.
-      // Hosts that match no apex bucket to __other__.
+      // #1526: hosts that match no apex become their own single-host app
+      // (synthesized in `membershipsFor`), not a shared `__other__` bucket.
       appsByHost: Map[String, List[AppMembership]] = Map.empty,
   ): List[TrafficUsageAggregateRow] = {
     val step = stepOf(bucket)
@@ -218,10 +225,10 @@ object UsageTraffic {
     // rows carry FQDNs (`www.youtube.com`). Delegate to HostMatch.lookupApex,
     // which is the single host→apex matcher shared with PolicyService and
     // Presence — keeps usage attribution semantically aligned with the
-    // policy enforcement path.
+    // policy enforcement path. #1526: unmatched → single-host synthetic app.
     def membershipsFor(host: HostId): List[AppMembership] = {
       val matched = host.asFqdn.flatMap(fqdn => HostMatch.lookupApex(fqdn.value, appsByHost))
-      matched.getOrElse(List(AppMembership.Other))
+      matched.getOrElse(List(AppMembership.forUnmatchedHost(host)))
     }
 
     val wantsApp = groupBy.contains(GroupBy.App)

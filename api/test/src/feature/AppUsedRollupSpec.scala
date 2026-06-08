@@ -19,7 +19,7 @@ import java.time.{LocalDate, LocalDateTime, ZoneOffset}
  *
  *   - rollup ⇄ cap (EXACT): a multi-host app's engaged minutes via the reader equal the single
  *     per-app primitive (`Presence.appSecondsForProfile`, surfaced as the per-app cap aggregate
- *     `SiteDayState.usedMinutes`), including cross-host idle-gap bridging.
+ *     `AppDayState.usedMinutes`), including cross-host idle-gap bridging.
  *   - rolled+tail ⇄ live (EXACT): a planted rollup row + the live tail past the watermark sum to
  *     the all-live computation, with the watermark landing in an idle gap.
  *   - per-app sum ⇄ profile total (restricted equality): for non-exempt, non-overlapping apps with
@@ -33,22 +33,22 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
   private val cleanDb = TestDatabase.cleanAndMigrate
 
   private def makeReader: ZIO[
-    ProfileRepo & DeviceRepo & SiteTimeLimitRepo & AppRepo & TrafficReportRepo & AppUsedRollupRepo,
+    ProfileRepo & DeviceRepo & AppTimeLimitRepo & AppRepo & TrafficReportRepo & AppUsedRollupRepo,
     Nothing,
     AppUsedRollupServiceLive,
   ] =
     for {
       pr  <- ZIO.service[ProfileRepo]
       dr  <- ZIO.service[DeviceRepo]
-      stl <- ZIO.service[SiteTimeLimitRepo]
+      stl <- ZIO.service[AppTimeLimitRepo]
       ar  <- ZIO.service[AppRepo]
       trr <- ZIO.service[TrafficReportRepo]
       aru <- ZIO.service[AppUsedRollupRepo]
     } yield new AppUsedRollupServiceLive(pr, dr, stl, ar, trr, aru)
 
   private def makeTimeService: ZIO[
-    ProfileRepo & ScheduleRepo & TimeLimitRepo & SiteTimeLimitRepo & DeviceRepo &
-      TrafficReportRepo & TimeExtensionRepo & TimeUsedRollupRepo,
+    ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
+      TimeExtensionRepo & TimeUsedRollupRepo,
     Nothing,
     TimeStatusService,
   ] =
@@ -56,12 +56,12 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
       pr   <- ZIO.service[ProfileRepo]
       sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
+      atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
       ru   <- ZIO.service[TimeUsedRollupRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er, ru)
+    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru)
 
   private def seedRouterRow: ZIO[RouterRepo, Throwable, RouterId] =
     ZIO.serviceWithZIO[RouterRepo](_.create("gw-app", Sha256Hex.unsafe("a" * 64)))
@@ -141,7 +141,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         ar  <- ZIO.service[AppRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         aru <- ZIO.service[AppUsedRollupRepo]
-        stl <- ZIO.service[SiteTimeLimitRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         s   <- setTz(hsr, "UTC")
         kid <- TestLayers.seedKidsProfile(pr, sr)
@@ -155,10 +155,10 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
         reader <- makeReader
         perApp <- reader.appEngagedMinutes(now, today, s, kid)
-        // The per-app cap aggregate (SiteDayState.usedMinutes) for the same app.
+        // The per-app cap aggregate (AppDayState.usedMinutes) for the same app.
         tsvc   <- makeTimeService
         state  <- tsvc.dayStateLive(now, today, s, kid)
-        capMin = state.flatMap(_.perSite.find(_.label == "app:social").map(_.usedMinutes))
+        capMin = state.flatMap(_.perApp.find(_.label == "app:social").map(_.usedMinutes))
       } yield assertTrue(perApp.get(app).contains(15)) &&
         assertTrue(capMin.contains(15))
     },
@@ -206,7 +206,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         ar  <- ZIO.service[AppRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         aru <- ZIO.service[AppUsedRollupRepo]
-        stl <- ZIO.service[SiteTimeLimitRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         _   <- setTz(hsr, "UTC")
         kid <- TestLayers.seedKidsProfile(pr, sr)
@@ -236,7 +236,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         ar  <- ZIO.service[AppRepo]
         ru  <- ZIO.service[TimeUsedRollupRepo]
         aru <- ZIO.service[AppUsedRollupRepo]
-        stl <- ZIO.service[SiteTimeLimitRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
         trr <- ZIO.service[TrafficReportRepo]
         _   <- setTz(hsr, "UTC")
         kid <- TestLayers.seedKidsProfile(pr, sr)

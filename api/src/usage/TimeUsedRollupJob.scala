@@ -2,6 +2,7 @@ package wifihaven.api.usage
 
 import wifihaven.api.db.{
   AppRepo,
+  AppTimeLimitRepo,
   AppUsedRollupRepo,
   DeviceRepo,
   HouseholdSettingsRepo,
@@ -9,7 +10,6 @@ import wifihaven.api.db.{
   RolledAppDay,
   RolledDay,
   RollupRepo,
-  SiteTimeLimitRepo,
   TimeUsedRollupRepo,
   TrafficReportRepo,
 }
@@ -62,7 +62,7 @@ object TimeUsedRollupJob {
       runs: RollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
@@ -77,7 +77,7 @@ object TimeUsedRollupJob {
           appRollup,
           profileRepo,
           deviceRepo,
-          siteTimeLimitRepo,
+          appTimeLimitRepo,
           appRepo,
           trafficRepo,
           hs,
@@ -97,7 +97,7 @@ object TimeUsedRollupJob {
       appRollup: AppUsedRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
@@ -108,7 +108,7 @@ object TimeUsedRollupJob {
       appRollup,
       profileRepo,
       deviceRepo,
-      siteTimeLimitRepo,
+      appTimeLimitRepo,
       appRepo,
       trafficRepo,
       hs,
@@ -163,7 +163,7 @@ object TimeUsedRollupJob {
       appRollup: AppUsedRollupRepo,
       profileRepo: ProfileRepo,
       deviceRepo: DeviceRepo,
-      siteTimeLimitRepo: SiteTimeLimitRepo,
+      appTimeLimitRepo: AppTimeLimitRepo,
       appRepo: AppRepo,
       trafficRepo: TrafficReportRepo,
       hs: HouseholdSettingsRepo,
@@ -174,9 +174,9 @@ object TimeUsedRollupJob {
     profiles <- profileRepo.listAll
     devices  <- deviceRepo.listAll
     apps     <- appRepo.listAll
-    stlsP    <- ZIO.foreach(profiles)(p => siteTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
+    atlsP    <- ZIO.foreach(profiles)(p => appTimeLimitRepo.listForProfile(p.id).map(p.id -> _))
     presence <- trafficRepo.listPresenceRows(devices.map(_.mac), today)
-    rolls = computeRolls(profiles, devices, apps, stlsP.toMap, presence, settings, now)
+    rolls = computeRolls(profiles, devices, apps, atlsP.toMap, presence, settings, now)
     n <- rollup.upsertBatch(today, rolls._1)
     _ <- appRollup.upsertBatch(today, rolls._2)
   } yield n
@@ -191,7 +191,7 @@ object TimeUsedRollupJob {
       profiles: List[wifihaven.shared.Profile],
       devices: List[wifihaven.shared.Device],
       apps: List[wifihaven.shared.App],
-      stlMap: Map[ProfileId, List[wifihaven.shared.SiteTimeLimit]],
+      atlMap: Map[ProfileId, List[wifihaven.shared.AppTimeLimit]],
       presence: List[wifihaven.api.presence.PresenceRow],
       settings: wifihaven.shared.HouseholdSettings,
       now: Instant,
@@ -207,7 +207,7 @@ object TimeUsedRollupJob {
       val secs = TimeStatusService.usedSecondsForProfile(
         p,
         devsByP.getOrElse(p.id, Nil),
-        stlMap.getOrElse(p.id, Nil),
+        atlMap.getOrElse(p.id, Nil),
         presFor(p.id),
         settings,
       )
@@ -215,7 +215,7 @@ object TimeUsedRollupJob {
     }.toMap
     val perApp     = profiles.iterator.flatMap { p =>
       TimeStatusService
-        .appSecondsByApp(p, stlMap.getOrElse(p.id, Nil), slugToAppId, presFor(p.id), settings)
+        .appSecondsByApp(p, atlMap.getOrElse(p.id, Nil), slugToAppId, presFor(p.id), settings)
         .iterator
         .map { case (appId, secs) => (p.id, appId) -> RolledAppDay(secs, now) }
     }.toMap

@@ -1082,7 +1082,8 @@ object LogApiSpec
         auth     <- makeAuth
         token    <- auth.login("admin", "changeme").map(_.token.value)
         // One app ("YouTube") owning two hosts; a third host belongs to no
-        // app and should bucket under __other__.
+        // app and should attribute as its own single-host app keyed by the
+        // host itself (#1526 — no shared "Other" bucket).
         ytId     <- appRepo.create("YouTube", "youtube", None, Some("📺"))
         _        <- appRepo.setHosts(
           ytId,
@@ -1134,7 +1135,8 @@ object LogApiSpec
         page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("app", "") == "youtube").get
-        ot   = rows.find(_.groups.getOrElse("app", "") == "__other__").get
+        // #1526: facebook.com isn't in any app → single-host app keyed by the host.
+        ot   = rows.find(_.groups.getOrElse("app", "") == "facebook.com").get
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.length == 2) &&
         assertTrue(yt.countSucceeded == 2) &&
@@ -1144,7 +1146,7 @@ object LogApiSpec
         assertTrue(yt.appId.isDefined) &&
         assertTrue(ot.countSucceeded == 1) &&
         assertTrue(ot.countBlocked == 0) &&
-        assertTrue(ot.appName.contains("Other")) &&
+        assertTrue(ot.appName.contains("facebook.com")) &&
         assertTrue(ot.appId.isEmpty)
     },
     test("#769: GET /api/connection-events/series with host in 2 apps fans out") {
@@ -1188,7 +1190,7 @@ object LogApiSpec
     // — the same matcher the traffic-usage path uses (#1085). app_hosts stores
     // the apex form ("youtube.com"); a subdomain event ("www.youtube.com")
     // must attribute to the youtube app, while a lookalike ("notyoutube.com")
-    // must NOT match and falls into __other__.
+    // must NOT match — #1526: it becomes its own single-host app keyed by the host.
     test("#857: GET /api/connection-events/series attributes subdomains to the apex app") {
       for {
         _        <- cleanDb
@@ -1237,7 +1239,8 @@ object LogApiSpec
         page <- ZIO.fromEither(body.fromJson[ConnectionEventSeriesPage])
         rows = page.rows
         yt   = rows.find(_.groups.getOrElse("app", "") == "youtube")
-        ot   = rows.find(_.groups.getOrElse("app", "") == "__other__")
+        // #1526: notyoutube.com → its own single-host app keyed by the host.
+        ot   = rows.find(_.groups.getOrElse("app", "") == "notyoutube.com")
       } yield assertTrue(resp.status == Status.Ok) &&
         assertTrue(rows.length == 2) &&
         assertTrue(yt.exists(_.countSucceeded == 1)) &&

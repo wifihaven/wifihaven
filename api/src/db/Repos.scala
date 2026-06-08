@@ -196,13 +196,13 @@ trait TimeLimitRepo {
 
 /**
  * Post-#764 the `site_time_limits` table is dropped. This repo now synthesizes the legacy
- * `SiteTimeLimit` shape from `app_policy_assignments` rows with mode='time_limited', emitting one
+ * `AppTimeLimit` shape from `app_policy_assignments` rows with mode='time_limited', emitting one
  * row per (assignment × host) — mirroring the snapshot expansion in `PolicyService`. Synthetic ids
  * are 0L; callers that need stable ids should switch to AppRepo directly.
  */
-trait SiteTimeLimitRepo {
-  def listForProfile(pid: ProfileId): Task[List[SiteTimeLimit]]
-  def listAll: Task[List[SiteTimeLimit]]
+trait AppTimeLimitRepo {
+  def listForProfile(pid: ProfileId): Task[List[AppTimeLimit]]
+  def listAll: Task[List[AppTimeLimit]]
 }
 
 trait DeviceRepo {
@@ -1088,14 +1088,14 @@ class TimeLimitRepoLive(xa: Transactor[Task]) extends TimeLimitRepo {
     .transact(xa)
 }
 
-class SiteTimeLimitRepoLive(xa: Transactor[Task]) extends SiteTimeLimitRepo {
+class AppTimeLimitRepoLive(xa: Transactor[Task]) extends AppTimeLimitRepo {
   // (profileId, host, dailyMinutes, slug, exemptFromDaily)
   private type R = (ProfileId, String, Int, String, Boolean)
   private def toS(r: R) =
-    SiteTimeLimit(SiteTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
+    AppTimeLimit(AppTimeLimitId(0L), r._1, r._2, r._3, s"app:${r._4}", r._5)
 
   def listForProfile(pid: ProfileId) =
-    DbMetrics.timed("siteTimeLimit.listForProfile")(
+    DbMetrics.timed("appTimeLimit.listForProfile")(
       sql"""SELECT apa.profile_id, ah.host, COALESCE(apa.daily_minutes, 0), a.slug, apa.exempt_from_daily
             FROM app_policy_assignments apa
             JOIN apps a       ON a.id = apa.app_id
@@ -2461,7 +2461,7 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
     // traffic-usage aggregator (#1085) and PolicyService. We deliberately do
     // NOT match in SQL: app_hosts stores apex-form hosts ("youtube.com"), but
     // connection_events carry FQDNs ("www.youtube.com"), so an exact SQL join
-    // would drop subdomains into __other__. Instead we fetch the apex→app
+    // would drop subdomains into single-host apps. Instead we fetch the apex→app
     // inventory + the distinct in-window hosts, run lookupApex per host, and
     // feed the resolved concrete (fqdn → app) pairs back into the aggregation
     // as a VALUES join. A host in N apps yields N pairs (fan-out preserved).
@@ -2494,15 +2494,17 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         val hasAppMap = wantsApp && appPairs.nonEmpty
 
         // App expressions. With resolved pairs we COALESCE off the VALUES alias
-        // `am`; when grouping by app but nothing matched, everything collapses to
-        // __other__; otherwise NULL (un-drilled path keeps its constant shape).
+        // `am`; #1526: when no app row matches, the host IS its own single-host
+        // app — fall back to the domain itself for both slug and display name
+        // (NOT a shared "__other__" bucket). Un-drilled path keeps NULLs so the
+        // constant shape is preserved.
         val appSlugExpr =
-          if (hasAppMap) fr"COALESCE(am.slug, '__other__')"
-          else if (wantsApp) fr"'__other__'::TEXT"
+          if (hasAppMap) fr"COALESCE(am.slug, " ++ domainExpr ++ fr")"
+          else if (wantsApp) domainExpr
           else fr"NULL::TEXT"
         val appNameExpr =
-          if (hasAppMap) fr"COALESCE(am.name, 'Other')"
-          else if (wantsApp) fr"'Other'::TEXT"
+          if (hasAppMap) fr"COALESCE(am.name, " ++ domainExpr ++ fr")"
+          else if (wantsApp) domainExpr
           else fr"NULL::TEXT"
         val appIconExpr = if (hasAppMap) fr"am.icon" else fr"NULL::TEXT"
         val appIdExpr   = if (hasAppMap) fr"am.app_id" else fr"NULL::BIGINT"
@@ -2680,9 +2682,9 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
                 soleProfile = if (wantsProfile) None else spr,
                 soleDomain = if (wantsDomain) None else sdo,
                 soleApp = if (wantsApp) None else sap,
-                // appId is the BIGINT primary key for the apps table; the
-                // synthetic "__other__" bucket has no row in apps so app_id is
-                // NULL on the wire.
+                // appId is the BIGINT primary key for the apps table; #1526:
+                // host-keyed single-host apps (unmatched hosts) have no row in
+                // apps so app_id is NULL on the wire.
                 appId = if (wantsApp) gid.map(AppId(_)) else None,
                 appName = if (wantsApp) gan else None,
                 appIcon = if (wantsApp) gai else None,
@@ -2894,9 +2896,9 @@ trait AppRepo {
 
   /**
    * #769: full (host, app_id) inventory across all apps. Used by the group-by-app aggregation paths
-   * for Connection Events + Traffic Usage to bucket rows into their owning app, with `__other__`
-   * for hosts not in any app. One row per (host, app) pair — a host that's in two apps yields two
-   * entries.
+   * for Connection Events + Traffic Usage to bucket rows into their owning app. #1526: a host that
+   * matches no app is its own single-host app (keyed by the host itself); there is no semantic
+   * "Other" bucket. One row per (host, app) pair — a host that's in two apps yields two entries.
    */
   def listAllHostMappings: Task[List[AppHost]]
 
@@ -3251,7 +3253,7 @@ object Repos {
   val householdSettingsRepo = ZLayer.fromFunction(HouseholdSettingsRepoLive(_))
   val globalPolicyRepo      = ZLayer.fromFunction(GlobalPolicyRepoLive(_))
   val timeLimitRepo         = ZLayer.fromFunction(TimeLimitRepoLive(_))
-  val siteTimeLimitRepo     = ZLayer.fromFunction(SiteTimeLimitRepoLive(_))
+  val appTimeLimitRepo      = ZLayer.fromFunction(AppTimeLimitRepoLive(_))
   val deviceRepo            = ZLayer.fromFunction(DeviceRepoLive(_))
   val blocklistRepo         = ZLayer.fromFunction(BlocklistRepoLive(_))
   val timeUsageRepo         = ZLayer.fromFunction(TimeUsageRepoLive(_))
@@ -3266,5 +3268,5 @@ object Repos {
   val timeUsedRollupRepo    = ZLayer.fromFunction(TimeUsedRollupRepoLive(_))
   val appUsedRollupRepo     = ZLayer.fromFunction(AppUsedRollupRepoLive(_))
   val all                   =
-    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ siteTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
+    userRepo ++ userProfileRepo ++ profileRepo ++ scheduleRepo ++ namedScheduleRepo ++ householdSettingsRepo ++ globalPolicyRepo ++ timeLimitRepo ++ appTimeLimitRepo ++ deviceRepo ++ blocklistRepo ++ timeUsageRepo ++ timeExtRepo ++ routerRepo ++ trafficReportRepo ++ blockEventRepo ++ connEventRepo ++ alertRepo ++ appRepo ++ rollupRepo ++ timeUsedRollupRepo ++ appUsedRollupRepo
 }

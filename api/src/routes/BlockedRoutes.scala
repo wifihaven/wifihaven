@@ -106,12 +106,15 @@ object BlockedRoutes {
       reason: String,
       blocklistRepo: BlocklistRepo,
   ): Task[(String, Option[String])] = BlockReason.fromWire(reason) match {
-    case MacBlockReason.Paused        => ZIO.succeed(("paused", None))
-    case MacBlockReason.Schedule      => ZIO.succeed(("schedule", None))
-    case MacBlockReason.TimeLimit     => ZIO.succeed(("time_limit", None))
-    case BlockReason.ExtraBlocked     => ZIO.succeed(("extra_blocked", None))
-    case BlockReason.SiteTimeLimit(_) => ZIO.succeed(("site_time_limit", None))
-    case BlockReason.Category(id)     =>
+    case MacBlockReason.Paused       => ZIO.succeed(("paused", None))
+    case MacBlockReason.Schedule     => ZIO.succeed(("schedule", None))
+    case MacBlockReason.TimeLimit    => ZIO.succeed(("time_limit", None))
+    case BlockReason.ExtraBlocked    => ZIO.succeed(("extra_blocked", None))
+    case BlockReason.AppTimeLimit(_) =>
+      ZIO.succeed(
+        ("site_time_limit", None),
+      ) // FROZEN wire token (#376): keep literal until wire versioning
+    case BlockReason.Category(id)    =>
       blocklistRepo
         .findMeta(id)
         .map(meta => ("category", meta.map(_.name)))

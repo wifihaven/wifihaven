@@ -104,7 +104,7 @@ export interface TimeLimit {
   dailyMinutes: number
 }
 
-export interface SiteTimeLimit {
+export interface AppTimeLimit {
   id: number
   profileId: number
   domainPattern: string
@@ -206,7 +206,7 @@ export type BlockReason =
   | { kind: 'timeLimit' }
   | { kind: 'manual' }
   | { kind: 'category'; slug: string }
-  | { kind: 'siteTimeLimit'; label: string }
+  | { kind: 'siteTimeLimit'; label: string } // FROZEN wire token (#376): keep literal until wire versioning
   | { kind: 'appBlocked'; appId: string }
   | { kind: 'unknown'; raw: string }
 
@@ -303,7 +303,7 @@ export interface DeviceStats {
   blocked: number
 }
 
-export interface SiteUsage {
+export interface AppUsage {
   label: string
   domainPattern: string
   limitMins: number
@@ -321,7 +321,7 @@ export interface DeviceTimeStatus {
   usedMins: number
   extensionMins: number
   remainingMins?: number | null
-  siteUsage: SiteUsage[]
+  appUsage: AppUsage[]
 }
 
 export interface DeviceUsageSummary {
@@ -377,7 +377,7 @@ export interface ProfileTimeStatus {
   usedMins: number
   extensionMins: number
   remainingMins?: number | null
-  siteUsage: SiteUsage[]
+  appUsage: AppUsage[]
   devices: DeviceUsageSummary[]
   hostUsage: HostUsage[]
 }
@@ -562,7 +562,8 @@ export interface UsageSeriesBatchResponse {
 export type TrafficUsageBucket = 'raw' | '1m' | '10m' | '1h' | '12h' | '1d' | '1w'
 // #846: groupBy is composable. Apex is deferred to #856 (needs PSL). #769
 // turned `app` on — it now resolves to a server-side join through
-// `app_hosts`. The empty/synthetic bucket is keyed `__other__`.
+// `app_hosts`. #1526: a host with no registered app is its own single-host
+// app, keyed by the host itself (no shared "Other" bucket).
 export type TrafficUsageGroupBy = 'domain' | 'device' | 'profile' | 'apex' | 'app'
 
 export interface TrafficUsageRawRow {
@@ -599,7 +600,8 @@ export interface TrafficUsageAggregateRow {
   soleDomain?: string | null
   soleApp?: string | null
   // #769: present when `app` is in groupBy. The slug lives in `groups.app`;
-  // these carry the display metadata. `__other__` rows emit appName="Other".
+  // these carry the display metadata. #1526: host-keyed single-host apps
+  // (unmatched hosts) emit appName=<host> and appId=null.
   appId?: number | null
   appName?: string | null
   appIcon?: string | null

@@ -80,7 +80,7 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
       sr   <- ZIO.service[ScheduleRepo]
       hsr  <- ZIO.service[HouseholdSettingsRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
+      atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       blr  <- ZIO.service[BlocklistRepo]
       trr  <- ZIO.service[TrafficReportRepo]
@@ -88,21 +88,21 @@ object PolicySnapshotConsolidationSpec extends ZIOSpec[TestDatabase.AllRepos & E
       ar   <- ZIO.service[AppRepo]
       ref  <- Ref.make(now)
       clk = new Clock.TestClock(ref)
-    } yield PolicyServiceLive(pr, sr, hsr, tlr, stlr, dr, blr, trr, er, ar, clk)
+    } yield PolicyServiceLive(pr, sr, hsr, tlr, atlr, dr, blr, trr, er, ar, clk)
 
   private def buildTss: ZIO[AllReposLite, Nothing, TimeStatusService] =
     for {
       pr   <- ZIO.service[ProfileRepo]
       sr   <- ZIO.service[ScheduleRepo]
       tlr  <- ZIO.service[TimeLimitRepo]
-      stlr <- ZIO.service[SiteTimeLimitRepo]
+      atlr <- ZIO.service[AppTimeLimitRepo]
       dr   <- ZIO.service[DeviceRepo]
       trr  <- ZIO.service[TrafficReportRepo]
       er   <- ZIO.service[TimeExtensionRepo]
-    } yield new TimeStatusServiceLive(pr, sr, tlr, stlr, dr, trr, er)
+    } yield new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er)
 
   private type AllReposLite =
-    ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & SiteTimeLimitRepo &
+    ProfileRepo & ScheduleRepo & HouseholdSettingsRepo & TimeLimitRepo & AppTimeLimitRepo &
       DeviceRepo & BlocklistRepo & TrafficReportRepo & TimeExtensionRepo & AppRepo
 
   /** One fixture row → the spec runs the equalities against every row. */

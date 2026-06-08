@@ -124,7 +124,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[wifihaven.api.db.RollupRepo]
       hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
-      stlRepo         <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+      atlRepo         <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
       aruRepo         <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- makeAuth
@@ -138,7 +138,7 @@ object RecentApexesApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostg
         appRepo,
         rollupRepo,
         hsRepo,
-        stlRepo,
+        atlRepo,
         aruRepo,
         clock,
       ),

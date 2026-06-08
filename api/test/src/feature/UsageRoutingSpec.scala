@@ -56,7 +56,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
       appRepo         <- ZIO.service[AppRepo]
       rollupRepo      <- ZIO.service[RollupRepo]
       hsRepo          <- ZIO.service[wifihaven.api.db.HouseholdSettingsRepo]
-      stlRepo         <- ZIO.service[wifihaven.api.db.SiteTimeLimitRepo]
+      atlRepo         <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
       aruRepo         <- ZIO.service[wifihaven.api.db.AppUsedRollupRepo]
       clock           <- ZIO.service[Clock]
       auth            <- buildAuth
@@ -70,7 +70,7 @@ object UsageRoutingSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres
         appRepo,
         rollupRepo,
         hsRepo,
-        stlRepo,
+        atlRepo,
         aruRepo,
         clock,
       ),

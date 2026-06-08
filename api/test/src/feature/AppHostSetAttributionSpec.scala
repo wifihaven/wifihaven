@@ -95,7 +95,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         _           <- cleanDb
         profileRepo <- ZIO.service[ProfileRepo]
         tlRepo      <- ZIO.service[TimeLimitRepo]
-        stlRepo     <- ZIO.service[SiteTimeLimitRepo]
+        atlRepo     <- ZIO.service[AppTimeLimitRepo]
         schedRepo   <- ZIO.service[ScheduleRepo]
         deviceRepo  <- ZIO.service[DeviceRepo]
         trafficRepo <- ZIO.service[TrafficReportRepo]
@@ -126,7 +126,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           profileRepo,
           schedRepo,
           tlRepo,
-          stlRepo,
+          atlRepo,
           deviceRepo,
           trafficRepo,
           extRepo,
@@ -135,7 +135,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
           auth,
           deviceRepo,
           tlRepo,
-          stlRepo,
+          atlRepo,
           trafficRepo,
           extRepo,
           profileRepo,
@@ -151,7 +151,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         body   <- resp.body.asString
         status <- ZIO.fromEither(body.fromJson[DeviceTimeStatus])
       } yield {
-        val mathBars = status.siteUsage.filter(_.label == s"app:$appSlug")
+        val mathBars = status.appUsage.filter(_.label == s"app:$appSlug")
         // The whole app is ONE limit: a single bar, both hosts aggregated to 20 of 30 minutes.
         assertTrue(mathBars.size == 1) &&
         assertTrue(mathBars.head.usedMins == 20) &&
@@ -190,7 +190,11 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
       )
       ZIO.succeed(
         assertTrue(agg.exists(r => r.soleApp.isEmpty && r.appName.contains("Math Academy"))) &&
-          assertTrue(!agg.exists(_.groups.get("app").contains(AppMembership.Other.slug))),
+          // #1526: no "__other__" sentinel — assert both hosts attribute to the
+          // registered app, not a synthetic bucket. (Unmatched hosts would each
+          // get their own host-keyed single-host app, but here both hosts ARE
+          // matched, so they roll up into "Math Academy" only.)
+          assertTrue(agg.flatMap(_.groups.get("app")).toSet == Set(appSlug)),
       )
     },
   )
