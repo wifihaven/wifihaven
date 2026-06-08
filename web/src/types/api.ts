@@ -498,6 +498,22 @@ export interface UsageSeriesResponse {
   // headline rather than summing the per-hour bars, which lose sub-minute
   // fractions and read a few minutes low. Optional: older API responses omit it.
   presenceTotalMins?: number
+  // #1507 — hosts that traffic was seen for but that contributed 0 engaged-
+  // minutes because they were classified as device-level background/infra (Apple
+  // OCSP, Google connectivity probes, …) or fell under the keepalive byte-floor.
+  // Surfaced on the per-device drill-in so the operator can see what the engaged-
+  // time calculation excluded and why. Optional: older API responses omit it.
+  suppressedHosts?: SuppressedHostUsage[]
+}
+
+// #1507 — one device-level-infra / keepalive host with the bytes observed.
+// `reason`: 'infra' = matched the InfraHosts background list; 'bytes-below-
+// threshold' = filter-enabled keepalive floor.
+export interface SuppressedHostUsage {
+  host: HostId
+  bytes: number
+  buckets: number
+  reason: 'infra' | 'bytes-below-threshold' | string
 }
 
 // #1099 — batched per-profile series: one round-trip resolves the whole

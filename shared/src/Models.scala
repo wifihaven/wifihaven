@@ -1074,6 +1074,28 @@ case class UsageSeriesResponse(
     // `totalMins` would drop sub-minute fractions and read a few minutes low; clients should show
     // this as the "total". Additive; older clients ignore it. Defaults to 0 for the empty case.
     presenceTotalMins: Int = 0,
+    // #1507: hosts whose traffic was reached during the window but contributed 0 engaged-minutes
+    // because they were classified as device-level background/infra (Apple OCSP, Google
+    // connectivity probes, …) or fell under the keepalive byte-floor. Surfaced so the operator can
+    // see what the engaged-time calculation excluded and why — the bytes did happen, they just
+    // don't drive engagement. Additive; older clients ignore it. Derived from the same
+    // [[wifihaven.api.presence.Presence.isHeartbeat]] predicate the rollup builder uses, so the
+    // "excluded" view can't drift from the "counted" view (single-source-of-truth, AGENTS.md
+    // §1532). #1560 will collapse the per-device span and suppression-list call sites to one entry
+    // point so this stays canonical.
+    suppressedHosts: List[SuppressedHostUsage] = Nil,
+) derives JsonCodec
+
+// #1507: one device-level-infra / keepalive host that traffic was seen for, with the bytes the
+// router observed and the reason the heartbeat predicate fired. `reason` is a small enum the SPA
+// reads to group rows ("infra" = matched the InfraHosts background list; "bytes-below-threshold"
+// = filter-enabled keepalive floor). `buckets` is the number of 5-min traffic-report rows the
+// host appeared in over the window, useful for "how chatty was this thing."
+case class SuppressedHostUsage(
+    host: HostId,
+    bytes: Long,
+    buckets: Int,
+    reason: String,
 ) derives JsonCodec
 
 // #1099: batched per-profile series for the /profiles page. One request

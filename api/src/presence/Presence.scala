@@ -388,6 +388,38 @@ object Presence {
       reasons: List[String],
   )
 
+  /**
+   * #1507: aggregate per-host bytes / bucket-count for rows the canonical [[isHeartbeat]] predicate
+   * suppresses — the same rows excluded from session-stitch counting. Lets the dashboard surface
+   * "background / infra (no engaged time)" without re-implementing the predicate (the
+   * single-source-of-truth lesson; see AGENTS.md §1532). `appHostPatterns` flows straight into
+   * [[isHeartbeat]] so app-attributed hosts (after #1506) are NOT reported as suppressed — they're
+   * counted as engagement. IP-literal hosts never appear because the suppression list keys on
+   * FQDNs.
+   *
+   * #1560 will collapse the per-device span and suppression-list call sites into one entry point;
+   * until then, callers should pass the same `appHostPatterns` they pass to [[deviceSessionSpans]]
+   * / [[hostSessionSpans]] so the two views can't disagree.
+   */
+  case class SuppressedHostRow(host: HostId, bytes: Long, buckets: Int, reason: String)
+
+  def suppressedHostUsage(
+      rows: List[PresenceRow],
+      filter: HeartbeatFilter,
+      appHostPatterns: List[String] = Nil,
+  ): List[SuppressedHostRow] =
+    rows
+      .filter(r => isHeartbeat(r, filter, appHostPatterns))
+      .groupBy(_.host)
+      .iterator
+      .map { case (h, rs) =>
+        val isInfra = h.asFqdn.exists(fqdn => InfraHosts.isBackground(fqdn.value))
+        val reason  = if (isInfra) "infra" else "bytes-below-threshold"
+        SuppressedHostRow(h, rs.iterator.map(_.bytes).sum, rs.size, reason)
+      }
+      .toList
+      .sortBy(r => (-r.bytes, r.host.value))
+
   def classifyRows(rows: List[PresenceRow], filter: HeartbeatFilter): List[Classified] =
     rows.map { r =>
       val rsns = scala.collection.mutable.ListBuffer.empty[String]
