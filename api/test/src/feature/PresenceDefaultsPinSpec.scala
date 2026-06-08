@@ -69,25 +69,12 @@ object PresenceDefaultsPinSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedP
   private val PinnedHeartbeatEnabled            = true  // V23 SET DEFAULT TRUE
   private val PinnedHeartbeatBytesThreshold     = 10240 // V23 SET DEFAULT 10240 (10 KB)
 
-  // V24__heartbeat_host_patterns.sql — the FQDN keepalive allowlist, in file order.
-  private val PinnedHeartbeatHostPatterns = List(
-    "*.push.apple.com",
-    "*.apple-dns.net",
-    "*.akadns.net",
-    "*.ess.apple.com",
-    "time.apple.com",
-    "gdmf.apple.com",
-    "pancake.apple.com",
-    "mask.icloud.com",
-    "mask-h2.icloud.com",
-    "mask-api.icloud.com",
-    "*.rcs.telephony.goog",
-    "mtalk.google.com",
-    "connectivitycheck.gstatic.com",
-    "captive.apple.com",
-    "*.ntp.org",
-    "time.cloudflare.com",
-  )
+  // #1525: V24__heartbeat_host_patterns.sql is retired — the column is no longer read or written
+  // by the API. Host-identity suppression now lives in the server-side canonical
+  // `shared.types.InfraHosts` code constant (allow+suppress canonical ∪ suppress-only). The wire
+  // field is retained on `HeartbeatFilter` for back-compat input tolerance, but the repo round-trip
+  // always returns the empty list. The DB column gets dropped in a follow-up migration-only PR.
+  private val PinnedHeartbeatHostPatterns: List[String] = Nil
 
   private def householdRoutesAndToken =
     for {

@@ -1725,6 +1725,10 @@ object HouseholdSettingsRoutes {
         },
     )
 
+  // #1525: `heartbeatHostPatterns` is retired — host-identity suppression now lives in the
+  // canonical `shared.types.InfraHosts` code constant. The field stays on the wire for back-compat
+  // input tolerance (older SPA builds still send it); we accept any value (including `null`) and
+  // discard it without erroring.
   private def mergeHeartbeatFilter(
       existing: HeartbeatFilter,
       obj: Json.Obj,
@@ -1736,22 +1740,17 @@ object HouseholdSettingsRoutes {
       bytesP   <- ZIO
         .fromEither(FieldPatch.from[Int](obj, "bytesThreshold"))
         .mapError(ApiError.BadRequest(_))
-      hostsP   <- ZIO
-        .fromEither(FieldPatch.from[List[String]](obj, "heartbeatHostPatterns"))
-        .mapError(ApiError.BadRequest(_))
-      _        <- (enabledP, bytesP, hostsP) match {
-        case (FieldPatch.Cleared, _, _) =>
+      _        <- (enabledP, bytesP) match {
+        case (FieldPatch.Cleared, _) =>
           ZIO.fail(ApiError.BadRequest("heartbeatFilter.enabled cannot be cleared"))
-        case (_, FieldPatch.Cleared, _) =>
+        case (_, FieldPatch.Cleared) =>
           ZIO.fail(ApiError.BadRequest("heartbeatFilter.bytesThreshold cannot be cleared"))
-        case (_, _, FieldPatch.Cleared) =>
-          ZIO.fail(ApiError.BadRequest("heartbeatFilter.heartbeatHostPatterns cannot be cleared"))
-        case _                          => ZIO.unit
+        case _                       => ZIO.unit
       }
     } yield HeartbeatFilter(
       enabled = enabledP.applyTo(existing.enabled),
       bytesThreshold = bytesP.applyTo(existing.bytesThreshold),
-      heartbeatHostPatterns = hostsP.applyTo(existing.heartbeatHostPatterns),
+      heartbeatHostPatterns = Nil,
     )
 
   private def mergeUnmanagedMacPolicy(
