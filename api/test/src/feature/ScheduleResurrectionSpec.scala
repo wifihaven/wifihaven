@@ -20,10 +20,12 @@ import java.time.ZoneId
  * deletes that row from the SPA the marker is gone, and the next boot re-imports the still-present
  * legacy `schedules` row, resurrecting the deletion. Fix: stop calling the seeder from boot.
  *
- * The test mirrors the production boot's schedule-init step in `bootScheduleInit` and runs it twice
- * with the operator's delete in between. While Main still calls the seeder, `bootScheduleInit` does
- * too; when Main is changed, `bootScheduleInit` is changed in lock-step. (The seeder file stays in
- * place — #1485 deletes it together with the legacy `schedules` table.)
+ * `bootScheduleInit` mirrors `api/src/Main.scala`'s boot-time schedule-init step exactly —
+ * post-#1602 it is a no-op. The "past migration" the operator's prod system already lived through
+ * is staged via a direct `ScheduleSeeder.seedAndMigrate` call (modelling a deploy from before the
+ * fix), then the operator deletes the migrated schedule, then we boot again. The post-fix boot must
+ * not resurrect it. (The seeder file is left in place; #1485 deletes it together with the legacy
+ * `schedules` table, at which point this test goes too.)
  */
 object ScheduleResurrectionSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Clock] {
 
@@ -34,13 +36,8 @@ object ScheduleResurrectionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedded
   private val UTC     = ZoneId.of("UTC")
 
   // Mirrors api/src/Main.scala's boot-time schedule-init step exactly. Update both sides together.
-  private def bootScheduleInit =
-    for {
-      pr  <- ZIO.service[ProfileRepo]
-      sr  <- ZIO.service[ScheduleRepo]
-      nsr <- ZIO.service[NamedScheduleRepo]
-      _   <- ScheduleSeeder.seedAndMigrate(nsr, sr, pr, UTC)
-    } yield ()
+  // Post-#1602: no-op. Pre-#1602 this called ScheduleSeeder.seedAndMigrate, which is the resurrection.
+  private def bootScheduleInit: UIO[Unit] = ZIO.unit
 
   private def kidsProfileId =
     ZIO.serviceWithZIO[ProfileRepo](_.listAll).map(_.find(_.name == "Kids").get.id)
@@ -50,26 +47,30 @@ object ScheduleResurrectionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedded
       // The V1 seed gives us Kids + a legacy `schedules` row for Kids — exactly the prod shape.
       for {
         _              <- cleanDb
+        pr             <- ZIO.service[ProfileRepo]
+        sr             <- ZIO.service[ScheduleRepo]
         nsr            <- ZIO.service[NamedScheduleRepo]
         kid            <- kidsProfileId
-        // First boot: legacy → named migration creates the Kids named schedule and attaches it.
-        _              <- bootScheduleInit
-        attachedAfter1 <- nsr.blockScheduleIdsForProfile(kid)
-        migratedId = attachedAfter1.head
+        // Stage: simulate a past deploy that migrated the legacy `schedules` row into a named
+        // schedule and attached it. This is what every prod household already has.
+        _              <- ScheduleSeeder.seedAndMigrate(nsr, sr, pr, UTC)
+        attachedBefore <- nsr.blockScheduleIdsForProfile(kid)
+        migratedId = attachedBefore.head
         // Operator deletes the migrated schedule from the SPA. The repo `delete` cascades the
         // profile_schedule_rules attachment (the SPA's delete endpoint does the same).
-        _              <- nsr.setProfileBlockSchedules(kid, Nil)
-        _              <- nsr.delete(migratedId)
-        afterDelete    <- nsr.findById(migratedId)
-        // Second boot: must not re-import the still-present legacy `schedules` row.
-        _              <- bootScheduleInit
-        attachedAfter2 <- nsr.blockScheduleIdsForProfile(kid)
-        all            <- nsr.listAll
+        _             <- nsr.setProfileBlockSchedules(kid, Nil)
+        _             <- nsr.delete(migratedId)
+        afterDelete   <- nsr.findById(migratedId)
+        // Now boot the API again. Post-fix this is a no-op; pre-fix it ran the seeder and the
+        // legacy `schedules` row resurrected the deletion.
+        _             <- bootScheduleInit
+        attachedAfter <- nsr.blockScheduleIdsForProfile(kid)
+        all           <- nsr.listAll
         // The Kids-shaped marker must not reappear.
         resurrected = all.exists(_.description.contains("Migrated from Kids's schedule"))
-      } yield assertTrue(attachedAfter1.length == 1) &&
+      } yield assertTrue(attachedBefore.length == 1) &&
         assertTrue(afterDelete.isEmpty) &&
-        assertTrue(attachedAfter2.isEmpty) &&
+        assertTrue(attachedAfter.isEmpty) &&
         assertTrue(!resurrected)
     },
   ) @@ TestAspect.sequential
