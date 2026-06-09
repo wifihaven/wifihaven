@@ -1688,6 +1688,11 @@ object BlockReason {
   case class AppTimeLimit(label: String) extends BlockReason
   case class AppBlocked(appId: String)   extends BlockReason
   case class Unknown(raw: String)        extends BlockReason
+  // #1605 RED: temporary probe case to demonstrate the drift gap — encoders
+  // (asWire / JsonEncoder) are exhaustive so the compiler forces them to
+  // handle Probe, but fromWire / JsonDecoder are string-match paths that
+  // silently miss it. Removed in the structural-fix commit that follows.
+  case object Probe                      extends BlockReason
 
   /**
    * Parse a router / PolicyService wire-format reason string. Unknown values fall through to
@@ -1755,6 +1760,7 @@ object BlockReason {
       s"app_time_limit:$label" // #1518 rename; routers echo back what they receive, no legacy parse needed
     case AppBlocked(appId)          => s"app:$appId"
     case Unknown(raw)               => raw
+    case Probe                      => "probe" // #1605 RED: temporary
   }
 
   // Kind-tagged JSON. Encoder/Decoder are written by hand to keep the wire
@@ -1784,6 +1790,7 @@ object BlockReason {
       Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
     case Unknown(raw)               =>
       Json.Obj("kind" -> Json.Str("unknown"), "raw" -> Json.Str(raw))
+    case Probe                      => Json.Obj("kind" -> Json.Str("probe")) // #1605 RED: temporary
   }
 
   given JsonDecoder[BlockReason] = JsonDecoder[Json].mapOrFail {

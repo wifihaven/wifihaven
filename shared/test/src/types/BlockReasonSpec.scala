@@ -158,6 +158,68 @@ object BlockReasonSpec extends ZIOSpecDefault {
         }
       },
     ),
+    // #1605: every BlockReason case must survive every round-trip, so a new
+    // case added to the sealed trait cannot silently drift between the four
+    // exhaustive-match encoders and the string-match decoders.
+    //
+    // `allCases` is the list of every BlockReason. To force it stay in sync
+    // with the sealed trait, `shapeCheck` is a private exhaustive match —
+    // adding a new case to BlockReason without updating `shapeCheck` is a
+    // compile error, which is the operator's signal to also extend `allCases`.
+    suite("BlockReason exhaustiveness (#1605)")({
+      def shapeCheck(r: BlockReason): Unit = r match {
+        case BlockReason.Allow           => ()
+        case BlockReason.Blocked         => ()
+        case BlockReason.ExtraAllowed    => ()
+        case BlockReason.ExtraBlocked    => ()
+        case BlockReason.NoProfile       => ()
+        case BlockReason.Probe           => ()
+        case MacBlockReason.Paused       => ()
+        case MacBlockReason.Schedule     => ()
+        case MacBlockReason.TimeLimit    => ()
+        case MacBlockReason.Manual       => ()
+        case MacBlockReason.Unmanaged    => ()
+        case MacBlockReason.DefaultDeny  => ()
+        case _: BlockReason.Category     => ()
+        case _: BlockReason.AppTimeLimit => ()
+        case _: BlockReason.AppBlocked   => ()
+        case _: BlockReason.Unknown      => ()
+      }
+      val allCases: List[BlockReason]      = List(
+        BlockReason.Allow,
+        BlockReason.Blocked,
+        BlockReason.ExtraAllowed,
+        BlockReason.ExtraBlocked,
+        BlockReason.NoProfile,
+        BlockReason.Probe,
+        MacBlockReason.Paused,
+        MacBlockReason.Schedule,
+        MacBlockReason.TimeLimit,
+        MacBlockReason.Manual,
+        MacBlockReason.Unmanaged,
+        MacBlockReason.DefaultDeny,
+        BlockReason.Category(ads),
+        BlockReason.AppTimeLimit("youtube"),
+        BlockReason.AppBlocked("netflix"),
+        BlockReason.Unknown("some-raw"),
+      )
+      // The shape-check is satisfied by `allCases` covering every variant;
+      // reference shapeCheck so unused-warning rules don't strip it.
+      allCases.foreach(shapeCheck)
+
+      List(
+        test("every case round-trips through asWire / fromWire") {
+          allCases.foldLeft(assertTrue(true)) { (acc, r) =>
+            acc && assertTrue(BlockReason.fromWire(BlockReason.asWire(r)) == r)
+          }
+        },
+        test("every case round-trips through JSON encoder / decoder") {
+          allCases.foldLeft(assertTrue(true)) { (acc, r) =>
+            acc && assertTrue(r.toJson.fromJson[BlockReason] == Right(r))
+          }
+        },
+      )
+    }*),
     suite("Type-system subtype constraint")(
       test("MacBlockReason is assignable to BlockReason") {
         assertTrue(typeChecks("""
