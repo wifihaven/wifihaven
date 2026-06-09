@@ -92,6 +92,7 @@ object RouterIngestRoutes {
               trafficRepo,
               timeUsageRepo,
               deviceRepo,
+              connEventRepo,
             )
             _        <- routerRepo.touch(router.id, None, None).mapError(ApiError.Db(_))
           } yield Response.ok
@@ -175,6 +176,7 @@ object RouterIngestRoutes {
       trafficRepo: TrafficReportRepo,
       timeUsageRepo: TimeUsageRepo,
       deviceRepo: DeviceRepo,
+      connEventRepo: ConnectionEventRepo,
   ): IO[ApiError, Unit] = {
     // #1010: bucket usage by the household's logical "today" (TZ + non-midnight
     // reset_time), matching the read-side date used by PolicyService.snapshot.
@@ -185,36 +187,105 @@ object RouterIngestRoutes {
     // regression shows up as a rising rate rather than a per-request warn-log.
     val zeroByteRows =
       records.count(r => r.activeSeconds == 0L && r.bytesIn == 0L && r.bytesOut == 0L)
-    val inserts      = records.map(r =>
-      TrafficReportInsert(
-        routerId,
-        r.mac,
-        r.ip,
-        r.host,
-        date,
-        periodStart,
-        periodEnd,
-        r.activeSeconds.toInt,
-        r.bytesIn,
-        r.bytesOut,
-        // #730: pass through the per-record destination IP. INSERT ... ON
-        // CONFLICT DO NOTHING means colliding records on the existing
-        // (router_id, period_start, mac, host_type, host_value) key keep the
-        // first row's dest_ip — same byte/seconds behaviour as today; #730 just
-        // adds the column the follow-up write-time FQDN backfill will consume.
-        r.destIp,
-      ),
-    )
     for {
-      _        <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
+      _         <- AppMetrics.recordZeroByteFiltered(zeroByteRows)
+      // #1585: write-time FQDN backfill. The router's per-(mac, dst_ip)
+      // accumulator emits records whose host is the resolved fqdn when DNS
+      // attribution won the race, but ipv4/ipv6 when it lost (DoH, hard-coded
+      // IP, or just an ordering race). For each such race-loser we consult
+      // recent fqdn connection_events for the same (router_id, dest_ip) and
+      // rewrite the record to its resolved fqdn BEFORE inserting — so the
+      // traffic_reports row lands under the human-readable host and the
+      // read-side LATERAL join (#730 follow-up cleanup) can eventually go away.
+      rewritten <- ZIO.foreach(records)(r =>
+        backfillRecord(routerId, r, periodStart, connEventRepo),
+      )
+      // After rewrite, two distinct (mac, dst_ip) records can collapse to the
+      // same (mac, host) at the same period — the existing primary key
+      // (router_id, period_start, mac, host_type, host_value) makes the second
+      // INSERT a silent no-op under ON CONFLICT DO NOTHING and the row's bytes
+      // would be dropped. Aggregate (sum bytes; max activeSeconds — same merge
+      // applyDelta uses below) before INSERT.
+      aggregated = aggregateForInsert(rewritten)
+      inserts    = aggregated.map(r =>
+        TrafficReportInsert(
+          routerId,
+          r.mac,
+          r.ip,
+          r.host,
+          date,
+          periodStart,
+          periodEnd,
+          r.activeSeconds.toInt,
+          r.bytesIn,
+          r.bytesOut,
+          r.destIp,
+        ),
+      )
       // Idempotency: ON CONFLICT DO NOTHING returns the count of NEW rows.
       // Only those rows should drive time_usage / device updates; replays return 0.
       newCount <- trafficRepo.insertBatch(inserts).mapError(ApiError.Db(_))
+      // applyDelta groups by (mac, host); pass the rewritten records so the
+      // time_usage credit lands under the resolved fqdn too. Unaggregated is
+      // fine — applyDelta already collapses duplicates with the same merge.
       _        <- ZIO.when(newCount > 0)(
-        applyDelta(routerId, periodEnd, records, settings, timeUsageRepo, deviceRepo),
+        applyDelta(routerId, periodEnd, rewritten, settings, timeUsageRepo, deviceRepo),
       )
     } yield ()
   }
+
+  /**
+   * #1585: rewrite a race-loser ipv4/ipv6 UsageRecord to its resolved FQDN by consulting recent
+   * fqdn-typed connection_events for the same (router_id, dest_ip). Reuses [[fqdnBackfillWindow]]
+   * for symmetry with the events-side backfill (#720); five minutes covers conntrack/dns-tail
+   * jitter without inviting attribution across reused-IP cloud endpoints. Emits
+   * `traffic_reports_backfill_total{outcome}` per record: `skip` (not a candidate — already fqdn,
+   * or no dest_ip), `filled` (rewritten), or `miss` (candidate, no fqdn found).
+   */
+  private def backfillRecord(
+      routerId: RouterId,
+      record: UsageRecord,
+      periodStart: Instant,
+      connEventRepo: ConnectionEventRepo,
+  ): IO[ApiError, UsageRecord] =
+    (record.host, record.destIp) match {
+      case (HostId.IPv4(_) | HostId.IPv6(_), Some(destIp)) =>
+        connEventRepo
+          .findRecentFqdnFor(routerId, destIp, periodStart.minus(fqdnBackfillWindow))
+          .mapError(ApiError.Db(_))
+          .flatMap {
+            case Some(name) =>
+              AppMetrics.recordTrafficBackfill("filled").as(record.copy(host = HostId.Fqdn(name)))
+            case None       =>
+              AppMetrics.recordTrafficBackfill("miss").as(record)
+          }
+      case _                                               =>
+        AppMetrics.recordTrafficBackfill("skip").as(record)
+    }
+
+  /**
+   * #1585: collapse (mac, host) duplicates before INSERT so the traffic_reports primary key's `ON
+   * CONFLICT DO NOTHING` doesn't silently drop bytes from race-losers that the backfill just
+   * rewrote into a sibling record's bucket. Bytes sum; activeSeconds takes the max (the agent emits
+   * the bucket duration on every record, so summing would double-count the wall-clock); destIp / ip
+   * take the first non-null. Single-host batches (the common case) pass through unchanged.
+   */
+  private def aggregateForInsert(records: List[UsageRecord]): List[UsageRecord] =
+    records
+      .groupBy(r => (r.mac, r.host))
+      .view
+      .map { case (_, rs) =>
+        rs.reduce { (a, b) =>
+          a.copy(
+            ip = a.ip.orElse(b.ip),
+            activeSeconds = math.max(a.activeSeconds, b.activeSeconds),
+            bytesIn = a.bytesIn + b.bytesIn,
+            bytesOut = a.bytesOut + b.bytesOut,
+            destIp = a.destIp.orElse(b.destIp),
+          )
+        }
+      }
+      .toList
 
   /**
    * Apply seconds/byte deltas + device last_seen for a freshly-accepted batch. We only enter here
