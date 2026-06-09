@@ -1892,4 +1892,53 @@ describe('ProfilesPage — schedule chip reads named schedules, not legacy (#153
     const chip = await screen.findByTestId('profile-pause-chip-1')
     expect(chip).toHaveAttribute('data-chip', 'active')
   })
+
+  // #1547 — broader guard: NO SPA surface may render any value derived from
+  // the dead legacy `ProfileDetail.schedules` field. The chip test above pins
+  // one specific surface (#1539); this one is the cross-cutting trap that
+  // catches a *new* surface that reads `pd.schedules` before its author
+  // notices. The legacy field stays on the wire only until #1485 drops it;
+  // until then this guard is what keeps a SPA regression from re-introducing
+  // the #1539 divergent-chip class of bug.
+  it('no SPA surface renders any value from `pd.schedules` (#1547)', async () => {
+    // Sentinels chosen so they cannot collide with any real label, day, time,
+    // tz, or id rendered elsewhere on the page.
+    const LEGACY_NAME  = 'ZZZ-legacy-schedule-name-1547'
+    const LEGACY_DAY   = 'qqq'        // not a valid weekday token
+    const LEGACY_START = '03:17'      // distinct minute, unlikely in fixtures
+    const LEGACY_END   = '04:23'
+    const LEGACY_TZ    = 'Etc/GMT-13' // not used anywhere else in the fixtures
+    const LEGACY_ID    = 919191
+    const trap: ProfileDetail = {
+      ...kidsProfile,
+      profile: { ...kidsProfile.profile, id: 1, name: 'Kids', paused: false },
+      schedules: [{
+        id: LEGACY_ID,
+        profileId: 1,
+        name: LEGACY_NAME,
+        days: [LEGACY_DAY],
+        startLocal: LEGACY_START,
+        endLocal: LEGACY_END,
+        tz: LEGACY_TZ,
+      }],
+      scheduleIds: [],
+      timeLimit: null,
+    }
+    ;(api.profiles.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([trap])
+    ;(api.schedules.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.time.summaryAll as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    renderPage()
+    // Wait for the card, then expand it so every body surface is mounted
+    // (categories, schedules subsection, time-limit subsection, devices,
+    // linked users, apps, timeline) — anything that *could* read schedules
+    // is now in the DOM.
+    await screen.findByTestId('profile-card-1')
+    await expand(1)
+
+    const html = document.body.innerHTML
+    for (const sentinel of [LEGACY_NAME, LEGACY_DAY, LEGACY_START, LEGACY_END, LEGACY_TZ, String(LEGACY_ID)]) {
+      expect(html).not.toContain(sentinel)
+    }
+  })
 })
