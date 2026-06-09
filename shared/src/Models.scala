@@ -1711,11 +1711,15 @@ object BlockReason {
         .parse(s.stripPrefix("category:"))
         .map(Category(_))
         .getOrElse(Unknown(s))
-    case s
-        if s.startsWith(
-          "site_time_limit:",
-        ) => // FROZEN wire token (#376): keep literal until wire versioning
-      AppTimeLimit(s.stripPrefix("site_time_limit:"))
+    case s if s.startsWith("app_time_limit:")                  =>
+      // #1518: routers treat decision-response reasons as opaque pass-through
+      // (echo verbatim on /api/router/events), and the dual-written `reason_text`
+      // column is consumed by older-image rollback only — never re-parsed in
+      // this codebase — so dropping the legacy `site_time_limit:` parse arm
+      // doesn't strand any live caller. The JSONB `siteTimeLimit` decoder arm
+      // (BlockReason.JsonDecoder) is the one that still needs the legacy alias
+      // because V40-migrated DB rows persist that kind.
+      AppTimeLimit(s.stripPrefix("app_time_limit:"))
     case s if s.startsWith("app:")                             =>
       AppBlocked(s.stripPrefix("app:"))
     case other                                                 => Unknown(other)
@@ -1748,7 +1752,7 @@ object BlockReason {
     case MacBlockReason.DefaultDeny => "default_deny"
     case Category(slug)             => s"category:${slug.value}"
     case AppTimeLimit(label)        =>
-      s"site_time_limit:$label" // FROZEN wire token (#376): keep literal until wire versioning
+      s"app_time_limit:$label" // #1518 rename; routers echo back what they receive, no legacy parse needed
     case AppBlocked(appId)          => s"app:$appId"
     case Unknown(raw)               => raw
   }
@@ -1772,9 +1776,10 @@ object BlockReason {
       Json.Obj("kind" -> Json.Str("category"), "slug" -> Json.Str(slug.value))
     case AppTimeLimit(label)        =>
       Json.Obj(
-        "kind"  -> Json.Str("siteTimeLimit"),
+        "kind"  -> Json.Str("appTimeLimit"),
         "label" -> Json.Str(label),
-      ) // FROZEN wire token (#376): keep literal until wire versioning
+      ) // #1518 rename; decoder still accepts the legacy `siteTimeLimit` kind
+    // for V40-migrated DB rows and any older SPA build that pattern-matches on it.
     case AppBlocked(appId)          =>
       Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
     case Unknown(raw)               =>
@@ -1790,28 +1795,29 @@ object BlockReason {
           case None              => Left(s"BlockReason missing field '$k'")
         }
       field("kind").flatMap {
-        case "allow"         => Right(Allow)
-        case "blocked"       => Right(Blocked)
-        case "extraAllowed"  => Right(ExtraAllowed)
-        case "extraBlocked"  => Right(ExtraBlocked)
-        case "noProfile"     => Right(NoProfile)
-        case "paused"        => Right(MacBlockReason.Paused)
-        case "schedule"      => Right(MacBlockReason.Schedule)
-        case "timeLimit"     => Right(MacBlockReason.TimeLimit)
-        case "manual"        => Right(MacBlockReason.Manual)
-        case "unmanaged"     => Right(MacBlockReason.Unmanaged)
-        case "defaultDeny"   => Right(MacBlockReason.DefaultDeny)
-        case "category"      =>
+        case "allow"                          => Right(Allow)
+        case "blocked"                        => Right(Blocked)
+        case "extraAllowed"                   => Right(ExtraAllowed)
+        case "extraBlocked"                   => Right(ExtraBlocked)
+        case "noProfile"                      => Right(NoProfile)
+        case "paused"                         => Right(MacBlockReason.Paused)
+        case "schedule"                       => Right(MacBlockReason.Schedule)
+        case "timeLimit"                      => Right(MacBlockReason.TimeLimit)
+        case "manual"                         => Right(MacBlockReason.Manual)
+        case "unmanaged"                      => Right(MacBlockReason.Unmanaged)
+        case "defaultDeny"                    => Right(MacBlockReason.DefaultDeny)
+        case "category"                       =>
           field("slug").flatMap(s =>
             BlocklistId.parse(s).map(Category(_)).left.map(_ => s"invalid category slug: $s"),
           )
-        case "siteTimeLimit" =>
-          field("label").map(
-            AppTimeLimit(_),
-          ) // FROZEN wire token (#376): keep literal until wire versioning
-        case "appBlocked"    => field("appId").map(AppBlocked(_))
-        case "unknown"       => field("raw").map(Unknown(_))
-        case other           => Left(s"BlockReason: unknown kind '$other'")
+        case "appTimeLimit" | "siteTimeLimit" =>
+          // #1518: encoder emits `appTimeLimit`; the legacy `siteTimeLimit` kind
+          // is accepted so V40-migrated `block_events.reason`/`connection_events.reason`
+          // JSONB rows (written before this PR) still decode.
+          field("label").map(AppTimeLimit(_))
+        case "appBlocked"                     => field("appId").map(AppBlocked(_))
+        case "unknown"                        => field("raw").map(Unknown(_))
+        case other                            => Left(s"BlockReason: unknown kind '$other'")
       }
     case _             => Left("BlockReason: expected JSON object")
   }

@@ -174,7 +174,7 @@ object RouterDecisionConsolidationSpec
         reasonToMac(d.reason) == rules.blockReason,
       )
     },
-    test("site limit reached: decide=block:site_time_limit matches snapshot extraBlocked host") {
+    test("app limit reached: decide=block:app_time_limit matches snapshot extraBlocked host") {
       for {
         _    <- cleanDb
         pr   <- ZIO.service[ProfileRepo]
@@ -200,7 +200,7 @@ object RouterDecisionConsolidationSpec
         rules = snap.profiles(kid).rules
       } yield assertTrue(
         d.decision == ConnectionDecision.Block,
-        d.reason.startsWith("site_time_limit:"),
+        d.reason.startsWith("app_time_limit:"),
         // The whole-MAC block is NOT set for a per-site cap; enforcement is via extraBlocked.
         !rules.blocked,
         rules.extraBlocked.contains(Hostname.unsafe("youtube.com")),

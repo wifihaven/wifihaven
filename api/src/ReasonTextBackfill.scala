@@ -46,7 +46,11 @@ object ReasonTextBackfill {
            WHEN 'manual'        THEN 'manual'
            WHEN 'unmanaged'     THEN 'unmanaged_mac'
            WHEN 'category'      THEN 'category:'        || (reason->>'slug')
-           WHEN 'siteTimeLimit' THEN 'site_time_limit:' || (reason->>'label') -- FROZEN wire token (#376): keep literal until wire versioning
+           -- #1518: encoder now emits `appTimeLimit`; the legacy `siteTimeLimit`
+           -- kind is still in DB rows written before this PR (V40 migrated text
+           -- → JSONB with the old kind). Both back-fill to the same new wire text.
+           WHEN 'appTimeLimit'  THEN 'app_time_limit:'  || (reason->>'label')
+           WHEN 'siteTimeLimit' THEN 'app_time_limit:'  || (reason->>'label')
            WHEN 'appBlocked'    THEN 'app:'             || (reason->>'appId')
            WHEN 'unknown'       THEN reason->>'raw'
          END"""

@@ -672,9 +672,9 @@ object PolicyService {
     // #1505/#1515: per-app cap exhaustion blocks the app's WHOLE host-set together — `state.perApp`
     // carries one entry per app with usage aggregated (gap-bridged) across the whole host-set, so
     // when that aggregate hits the limit ALL of the app's hosts go to extraBlocked, not just the one
-    // whose traffic crossed. Shared with the /decision fallback via `siteCapExhaustedHosts` so the
+    // whose traffic crossed. Shared with the /decision fallback via `appCapExhaustedHosts` so the
     // two cannot diverge (#1532).
-    val appLimitExtraBlocked: List[Hostname] = siteCapExhaustedHosts(state)
+    val appLimitExtraBlocked: List[Hostname] = appCapExhaustedHosts(state)
 
     // #1105/#1515: time_limited app hosts with exemptFromDaily=true carve around the MAC-level
     // @blocked_macs drop while the app's aggregate is still under its own cap — for the WHOLE
@@ -770,14 +770,14 @@ object PolicyService {
    * cannot diverge (#1532). Per-app caps take no extensions — those are profile-level and apply to
    * the daily total ([[dailyCapExhausted]]), not the per-app budget.
    */
-  private[policy] def siteCapExhaustedHosts(state: ProfileDayState): List[Hostname] =
+  private[policy] def appCapExhaustedHosts(state: ProfileDayState): List[Hostname] =
     state.perApp.collect {
       case sd if sd.usedMinutes >= sd.dailyLimitMinutes => sd.hosts.map(Hostname.unsafe)
     }.flatten
 
   /**
    * #1515: the whole host-set of every exempt-from-daily app still UNDER its own per-app cap — the
-   * complement of [[siteCapExhaustedHosts]] for exempt apps. Carved into `extraAllowed` so it beats
+   * complement of [[appCapExhaustedHosts]] for exempt apps. Carved into `extraAllowed` so it beats
    * every whole-MAC block (paused / schedule / daily-limit) at the router (#421). Shared by the
    * snapshot and the /decision fallback so the exempt carve cannot diverge (#1532, #1513).
    */
