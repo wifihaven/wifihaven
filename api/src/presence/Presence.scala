@@ -338,7 +338,7 @@ object Presence {
    *
    * #1506: ATTRIBUTION BEATS SUPPRESSION. `appHostPatterns` is the union of the host-sets of the
    * apps active for the profile/MAC being counted (from #1505
-   * [[TimeStatusService.groupSiteLimits]]). A row whose host matches any of those patterns is
+   * [[TimeStatusService.groupAppLimits]]). A row whose host matches any of those patterns is
    * attributed to a real app, so it can NEVER be dropped as background infra OR as a
    * sub-threshold-byte keepalive — it must count toward that app. This is the runtime guard for the
    * boundary [[InfraHosts]] documents (device-level infra only; per-app asset hosts must attribute
@@ -573,7 +573,7 @@ object Presence {
   /**
    * #1514: per-app session spans, **gap-bridged across the app's whole host-set**, combined across
    * the profile's devices per `overlap`. A *group* is `(key, patterns)` — an app's `app:<slug>`
-   * label and its full host-set ([[TimeStatusService.groupSiteLimits]]).
+   * label and its full host-set ([[TimeStatusService.groupAppLimits]]).
    *
    * This is the span/union analogue of [[patternSecondsForProfile]] lifted from one pattern to an
    * app's whole host-set, and the canonical per-app presence primitive every per-app consumer reads

@@ -419,7 +419,7 @@ object TimeStatusService {
    * apex (shortest host) — used only for the wire/UI; the `hosts` list drives every per-app
    * computation. Stable order (by label) for deterministic output.
    */
-  private[policy] def groupSiteLimits(
+  private[policy] def groupAppLimits(
       appLimits: List[AppTimeLimit],
   ): List[(AppId, String, Int, Boolean, List[String], String)] =
     appLimits
@@ -447,9 +447,9 @@ object TimeStatusService {
       continuationSeconds: Int,
   ): List[AppDayState] = {
     // #1564: feed Presence the cap-group label as its String key so the underlying span/union math
-    // is unchanged, then re-key the result by appId via the (label -> appId) map groupSiteLimits
+    // is unchanged, then re-key the result by appId via the (label -> appId) map groupAppLimits
     // emits directly. One canonical conversion, no slug parsing.
-    val groups       = groupSiteLimits(appLimits)
+    val groups       = groupAppLimits(appLimits)
     val labelToAppId = groups.map(g => g._2 -> g._1).toMap
     val perLabel     = Presence.patternGroupMinutesForProfile(
       presence,
@@ -466,7 +466,7 @@ object TimeStatusService {
 
   /**
    * #1515: build the per-app [[AppDayState]] list from a `label -> usedMinutes` map, where each key
-   * is the `app:<slug>` cap-group label [[groupSiteLimits]] emits. The single place the per-app cap
+   * is the `app:<slug>` cap-group label [[groupAppLimits]] emits. The single place the per-app cap
    * groups (label / host-set / limit / exempt) are zipped with their used-minutes, regardless of
    * where the minutes come from: the live presence aggregation ([[appDayStates]]), the rollup +
    * live-tail read path ([[TimeStatusServiceLive]], via
@@ -478,7 +478,7 @@ object TimeStatusService {
       appLimits: List[AppTimeLimit],
       minutesByAppId: Map[AppId, Int],
   ): List[AppDayState] =
-    groupSiteLimits(appLimits).map { case (appId, label, daily, exempt, hosts, rep) =>
+    groupAppLimits(appLimits).map { case (appId, label, daily, exempt, hosts, rep) =>
       AppDayState(
         label = label,
         domainPattern = rep,
@@ -547,7 +547,7 @@ object TimeStatusService {
    */
   /**
    * #1531: the WHOLE host-set of every exempt-from-daily app — the patterns excluded from the daily
-   * total. Derived from the same per-app collapse (`groupSiteLimits`) the per-app bars and
+   * total. Derived from the same per-app collapse (`groupAppLimits`) the per-app bars and
    * `computeBlockRules` use, so the displayed `usedMinutes`, the snapshot's `blocked`, and the
    * per-device summaries (#1546) all read ONE explicit host-set. The previous
    * `appLimits.map(_.domainPattern)` happened to span the whole set only because `listForProfile`
@@ -557,7 +557,7 @@ object TimeStatusService {
    * [[usedSecondsByMac]] so the two can never derive exempt patterns differently.
    */
   private[policy] def exemptPatterns(appLimits: List[AppTimeLimit]): List[String] =
-    groupSiteLimits(appLimits).collect {
+    groupAppLimits(appLimits).collect {
       case (_, _, _, exempt, hosts, _) if exempt => hosts
     }.flatten
 
@@ -565,7 +565,7 @@ object TimeStatusService {
    * #1516 + #1564: per-app engaged seconds for a profile, keyed by `apps.id`, derived from the
    * SINGLE per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
    * gap-bridged, cross-host union the per-app cap ([[appDayStates]] /
-   * [[Presence.patternGroupMinutesForProfile]]) ticks on. The cap-group label ([[groupSiteLimits]])
+   * [[Presence.patternGroupMinutesForProfile]]) ticks on. The cap-group label ([[groupAppLimits]])
    * is used as Presence's group key; the (label -> appId) map emitted by the same call re-keys the
    * result back to the typed FK — no slug parsing, no slugToAppId lookup table. This is the value
    * the `app_used_daily` rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series
@@ -580,7 +580,7 @@ object TimeStatusService {
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Map[AppId, Long] = {
-    val groups       = groupSiteLimits(appLimits)
+    val groups       = groupAppLimits(appLimits)
     val labelToAppId = groups.map(g => g._2 -> g._1).toMap
     Presence
       .appSecondsForProfile(
@@ -599,14 +599,14 @@ object TimeStatusService {
    * #1506: the union of EVERY active app's host-set for this profile — the app-attribution set fed
    * to [[Presence.isHeartbeat]] so a host an active app genuinely depends on is never dropped as
    * background infra (attribution beats suppression). Derived from the same per-app collapse
-   * (`groupSiteLimits`) the per-app bars and `exemptPatterns` use, so the daily total and the
+   * (`groupAppLimits`) the per-app bars and `exemptPatterns` use, so the daily total and the
    * per-app surfaces agree on what counts as an "active app host". Includes exempt apps' hosts too:
    * exclusion from the daily total is handled separately by [[exemptPatterns]] in
    * [[Presence.countedRows]] (attribution only prevents suppression, not exemption), so an exempt
    * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
    */
   private[policy] def appHostPatterns(appLimits: List[AppTimeLimit]): List[String] =
-    groupSiteLimits(appLimits).flatMap(_._5)
+    groupAppLimits(appLimits).flatMap(_._5)
 
   def usedSecondsForProfile(
       profile: Profile,

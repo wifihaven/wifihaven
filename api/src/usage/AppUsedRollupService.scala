@@ -58,7 +58,7 @@ trait AppUsedRollupService {
   /**
    * #1515 + #1564: the same per-app engaged minutes as [[appEngagedMinutes]], surfaced for the cap
    * read path. Keyed by the typed `apps.id` FK — the same key `app_used_daily` stores, the same key
-   * the cap-group ([[wifihaven.api.policy.TimeStatusService.groupSiteLimits]]) emits, and the same
+   * the cap-group ([[wifihaven.api.policy.TimeStatusService.groupAppLimits]]) emits, and the same
    * key [[wifihaven.api.policy.TimeStatusService.appDayStatesFromMinutes]] joins on. The snapshot's
    * / `/decision`'s per-app cap reads through `perApp` on the rollup read path so a profile that
    * has rolled (the prod steady state) still caps on the real per-app aggregate instead of zero.

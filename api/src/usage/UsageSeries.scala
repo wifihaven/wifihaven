@@ -234,8 +234,8 @@ object UsageSeries {
    * The by-app axis input for [[buildEntries]]. `appOf` attributes a host to its owning app (apex-
    * aware, lowest-appId tiebreak — #1061/#1085); `patternsBySlug` is each app's full host-set
    * (apex-form patterns from `app_hosts`) so the per-app spans are computed over the SAME host-set
-   * the cap aggregate and rollup use ([[Presence.appSpansForProfile]] / `groupSiteLimits`), keyed
-   * by `apps.slug`. The two are built together from one `app_hosts` snapshot ([[loadAppLookup]]).
+   * the cap aggregate and rollup use ([[Presence.appSpansForProfile]] / `groupAppLimits`), keyed by
+   * `apps.slug`. The two are built together from one `app_hosts` snapshot ([[loadAppLookup]]).
    */
   final case class AppAxis(
       appOf: HostId => Option[AppInfo],
