@@ -1382,12 +1382,12 @@ object LogRoutes {
 
   // #862: must mirror the SQL's group_key concatenation order exactly
   // (domain, device, profile — only requested columns, US-separator).
-  private def aggGroupKey(r: ConnectionEventAggRow): String = {
-    val sep = ""
+  // Separator byte is sourced from `LogAggGroupKey` so the SQL `chr(N) ||`
+  // concat in `ConnectionEventRepo` and this builder cannot drift (#1532).
+  private def aggGroupKey(r: ConnectionEventAggRow): String =
     List("domain", "device", "profile").iterator
       .flatMap(k => r.groups.get(k))
-      .mkString(sep)
-  }
+      .mkString(LogAggGroupKey.Separator)
 
   def routes(
       auth: AuthService,

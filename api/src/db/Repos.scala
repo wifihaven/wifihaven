@@ -2560,7 +2560,12 @@ class ConnectionEventRepoLive(xa: Transactor[Task]) extends ConnectionEventRepo 
         ).flatten
         val groupKeyExpr  = groupKeyParts match {
           case Nil   => fr"''"
-          case parts => parts.reduce((a, b) => a ++ fr"|| chr(31) ||" ++ b)
+          case parts =>
+            // #1532: separator byte sourced from `LogAggGroupKey` so the SQL
+            // `chr(N) ||` concat and the Scala-side `Routes.aggGroupKey` cannot
+            // drift; both join with the same ASCII unit-separator.
+            val sepFrag = Fragment.const(s"|| chr(${LogAggGroupKey.SeparatorCode}) ||")
+            parts.reduce((a, b) => a ++ sepFrag ++ b)
         }
 
         // #857: resolved (fqdn → app) pairs as a VALUES table. Explicit casts on
