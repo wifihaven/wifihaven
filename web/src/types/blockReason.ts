@@ -22,7 +22,6 @@ export function blockReasonText(r: BlockReason): string {
     case 'manual':        return 'blocked by parent'
     case 'category':      return `category: ${r.slug}`
     case 'appTimeLimit':  return `app limit: ${r.label}`
-    case 'siteTimeLimit': return `app limit: ${r.label}` // #1518 legacy alias from pre-rename DB rows
     case 'appBlocked':    return `app blocked: ${r.appId}`
     case 'unknown':       return r.raw || 'unknown'
   }

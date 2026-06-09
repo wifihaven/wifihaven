@@ -1713,13 +1713,14 @@ object BlockReason {
         .map(Category(_))
         .getOrElse(Unknown(s))
     case s if s.startsWith("app_time_limit:")                  =>
+      // #1518: routers treat decision-response reasons as opaque pass-through
+      // (echo verbatim on /api/router/events), and the dual-written `reason_text`
+      // column is consumed by older-image rollback only — never re-parsed in
+      // this codebase — so dropping the legacy `site_time_limit:` parse arm
+      // doesn't strand any live caller. The JSONB `siteTimeLimit` decoder arm
+      // (BlockReason.JsonDecoder) is the one that still needs the legacy alias
+      // because V40-migrated DB rows persist that kind.
       AppTimeLimit(s.stripPrefix("app_time_limit:"))
-    // Legacy alias: accepted so already-deployed routers (which echo back the
-    // pre-#1518 reason string in /api/router/events) and the V40-migrated
-    // text rows in connection_events / block_events still parse. asWire emits
-    // the new `app_time_limit:` form; this clause is read-only.
-    case s if s.startsWith("site_time_limit:")                 =>
-      AppTimeLimit(s.stripPrefix("site_time_limit:"))
     case s if s.startsWith("app:")                             =>
       AppBlocked(s.stripPrefix("app:"))
     case other                                                 => Unknown(other)
@@ -1752,8 +1753,7 @@ object BlockReason {
     case MacBlockReason.DefaultDeny => "default_deny"
     case Category(slug)             => s"category:${slug.value}"
     case AppTimeLimit(label)        =>
-      s"app_time_limit:$label" // #1518 rename; fromWire still accepts the legacy
-    // `site_time_limit:` alias for already-deployed routers and V40-migrated text rows.
+      s"app_time_limit:$label" // #1518 rename; routers echo back what they receive, no legacy parse needed
     case AppBlocked(appId)          => s"app:$appId"
     case Unknown(raw)               => raw
   }

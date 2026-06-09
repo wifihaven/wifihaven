@@ -112,7 +112,7 @@ object BlockReasonSpec extends ZIOSpecDefault {
       test("category:<slug>") {
         assertTrue(BlockReason.fromWire("category:ads") == BlockReason.Category(ads))
       },
-      test("app_time_limit:<label> (new canonical, #1518)") {
+      test("app_time_limit:<label> round-trips through asWire/fromWire (#1518)") {
         assertTrue(
           BlockReason.fromWire("app_time_limit:youtube") == BlockReason.AppTimeLimit("youtube"),
         ) &&
@@ -120,9 +120,14 @@ object BlockReasonSpec extends ZIOSpecDefault {
           BlockReason.asWire(BlockReason.AppTimeLimit("youtube")) == "app_time_limit:youtube",
         )
       },
-      test("site_time_limit:<label> still parses as legacy alias (#1518 back-compat)") {
+      test("legacy site_time_limit: text falls back to Unknown(raw) (#1518)") {
+        // #1518: routers echo back what they receive, so once the API rolls out
+        // emitting `app_time_limit:` no live caller still posts the old prefix;
+        // an old text string that does reach fromWire (e.g. a stale ad-hoc tool)
+        // is preserved as Unknown(raw) rather than silently re-classified.
         assertTrue(
-          BlockReason.fromWire("site_time_limit:youtube") == BlockReason.AppTimeLimit("youtube"),
+          BlockReason.fromWire("site_time_limit:youtube") ==
+            BlockReason.Unknown("site_time_limit:youtube"),
         )
       },
       test("unknown form falls back to Unknown(raw)") {

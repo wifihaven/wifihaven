@@ -206,10 +206,9 @@ export type BlockReason =
   | { kind: 'timeLimit' }
   | { kind: 'manual' }
   | { kind: 'category'; slug: string }
-  | { kind: 'appTimeLimit'; label: string } // #1518 rename from `siteTimeLimit`
-  // Legacy alias accepted by the decoder for V40-migrated DB rows still tagged
-  // with the pre-#1518 kind. SPA renders both the same.
-  | { kind: 'siteTimeLimit'; label: string }
+  | { kind: 'appTimeLimit'; label: string } // #1518 rename from `siteTimeLimit`. The API
+  // JsonEncoder canonicalizes legacy V40-migrated DB rows to this kind on read,
+  // so the SPA never sees the old `siteTimeLimit` over the wire.
   | { kind: 'appBlocked'; appId: string }
   | { kind: 'unknown'; raw: string }
 
