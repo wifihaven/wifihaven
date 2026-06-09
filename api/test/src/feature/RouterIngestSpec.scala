@@ -584,6 +584,180 @@ object RouterIngestSpec
       } yield assertTrue(resp.status == Status.Ok) && assertTrue(d.isEmpty)
     },
 
+    // ── #1585: write-time FQDN backfill for traffic_reports ──────────────────
+    test(
+      "usage: ipv4-typed UsageRecord with destIp matching a recent fqdn connection_event " +
+        "is persisted under the resolved FQDN",
+    ) {
+      import doobie.implicits.*
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        // Seed a fqdn-typed connection_event for (router, destIp) inside the
+        // backfill window so the ingest path can attribute the ipv4 row to the
+        // FQDN. We pin the event 1 minute before periodStart so the recency
+        // filter (since = periodStart - 5min) selects it.
+        _        <- cRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId = id,
+              mac = Some(MacAddress.unsafe(knownMac)),
+              host = HostId.Fqdn(Hostname.unsafe("neverssl.com")),
+              destIp = Some(IpAddress.unsafe("34.223.124.45")),
+              allowed = true,
+              reason = BlockReason.Allow,
+              ts = periodStart.minusSeconds(60),
+              eventId = Some(UUID.randomUUID()),
+            ),
+          ),
+        )
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.42")),
+          HostId.IPv4(IpAddress.unsafe("34.223.124.45")),
+          60L,
+          100L,
+          50L,
+          Some(IpAddress.unsafe("34.223.124.45")),
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        rows <- sql"""SELECT host_type, host_value, dest_ip, bytes_in, bytes_out
+                       FROM traffic_reports
+                       WHERE router_id = $id
+                         AND mac = ${MacAddress.unsafe(knownMac)}"""
+          .query[(String, String, Option[String], Long, Long)]
+          .to[List]
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.size == 1) &&
+        assertTrue(rows.head._1 == "fqdn") &&
+        assertTrue(rows.head._2 == "neverssl.com") &&
+        assertTrue(rows.head._3.contains("34.223.124.45")) &&
+        assertTrue(rows.head._4 == 100L) &&
+        assertTrue(rows.head._5 == 50L)
+    },
+    test(
+      "usage: ipv4-typed UsageRecord with destIp but NO matching connection_event " +
+        "is persisted under the ipv4 literal (miss)",
+    ) {
+      import doobie.implicits.*
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        rec  = UsageRecord(
+          MacAddress.unsafe(knownMac),
+          Some(IpAddress.unsafe("192.168.1.42")),
+          HostId.IPv4(IpAddress.unsafe("203.0.113.7")),
+          60L,
+          100L,
+          50L,
+          Some(IpAddress.unsafe("203.0.113.7")),
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, List(rec)).toJson
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        rows <- sql"""SELECT host_type, host_value
+                       FROM traffic_reports
+                       WHERE router_id = $id
+                         AND mac = ${MacAddress.unsafe(knownMac)}"""
+          .query[(String, String)]
+          .to[List]
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.size == 1) &&
+        assertTrue(rows.head._1 == "ipv4") &&
+        assertTrue(rows.head._2 == "203.0.113.7")
+    },
+    test(
+      "usage: two ipv4 UsageRecords whose destIps resolve to the same FQDN " +
+        "collapse to one traffic_reports row with summed bytes",
+    ) {
+      import doobie.implicits.*
+      for {
+        _        <- cleanDb
+        rRepo    <- ZIO.service[RouterRepo]
+        pRepo    <- ZIO.service[ProfileRepo]
+        dRepo    <- ZIO.service[DeviceRepo]
+        cRepo    <- ZIO.service[ConnectionEventRepo]
+        xa       <- ZIO.service[Transactor[Task]]
+        routes   <- buildRoutes
+        _        <- seedKnownDevice(dRepo, pRepo)
+        (id, tk) <- seedRouter(rRepo)
+        // Seed two fqdn events, one per destIp, both mapping to cdn.example.com.
+        _        <- cRepo.insertBatch(
+          List(
+            ConnectionEventInsert(
+              routerId = id,
+              mac = Some(MacAddress.unsafe(knownMac)),
+              host = HostId.Fqdn(Hostname.unsafe("cdn.example.com")),
+              destIp = Some(IpAddress.unsafe("198.51.100.10")),
+              allowed = true,
+              reason = BlockReason.Allow,
+              ts = periodStart.minusSeconds(60),
+              eventId = Some(UUID.randomUUID()),
+            ),
+            ConnectionEventInsert(
+              routerId = id,
+              mac = Some(MacAddress.unsafe(knownMac)),
+              host = HostId.Fqdn(Hostname.unsafe("cdn.example.com")),
+              destIp = Some(IpAddress.unsafe("198.51.100.11")),
+              allowed = true,
+              reason = BlockReason.Allow,
+              ts = periodStart.minusSeconds(60),
+              eventId = Some(UUID.randomUUID()),
+            ),
+          ),
+        )
+        recs = List(
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.IPv4(IpAddress.unsafe("198.51.100.10")),
+            60L,
+            100L,
+            50L,
+            Some(IpAddress.unsafe("198.51.100.10")),
+          ),
+          UsageRecord(
+            MacAddress.unsafe(knownMac),
+            None,
+            HostId.IPv4(IpAddress.unsafe("198.51.100.11")),
+            60L,
+            200L,
+            10L,
+            Some(IpAddress.unsafe("198.51.100.11")),
+          ),
+        )
+        body = UsageReport(id, periodStart.toString, periodEnd.toString, recs).toJson
+        resp <- post(routes, "/api/router/usage", body, Some(tk))
+        rows <- sql"""SELECT host_type, host_value, bytes_in, bytes_out
+                       FROM traffic_reports
+                       WHERE router_id = $id
+                         AND mac = ${MacAddress.unsafe(knownMac)}"""
+          .query[(String, String, Long, Long)]
+          .to[List]
+          .transact(xa)
+      } yield assertTrue(resp.status == Status.Ok) &&
+        assertTrue(rows.size == 1) &&
+        assertTrue(rows.head._1 == "fqdn") &&
+        assertTrue(rows.head._2 == "cdn.example.com") &&
+        assertTrue(rows.head._3 == 300L) &&
+        assertTrue(rows.head._4 == 60L)
+    },
+
     // ── events ───────────────────────────────────────────────────────────────
     test("events: connection_attempt batch is recorded with allowed/reason") {
       for {
