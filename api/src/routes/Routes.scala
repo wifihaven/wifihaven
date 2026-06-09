@@ -229,10 +229,9 @@ object ProfileRoutes {
             details     <- ZIO
               .foreach(visible) { p =>
                 for {
-                  scheds  <- scheduleRepo.listForProfile(p.id)
                   tl      <- timeLimitRepo.findForProfile(p.id)
                   schedId <- namedScheduleRepo.blockScheduleIdsForProfile(p.id)
-                } yield ProfileDetail(p, scheds, tl, schedId)
+                } yield ProfileDetail(p, tl, schedId)
               }
               .mapError(ApiError.Db(_))
           } yield Response.json(details.toJson)
@@ -249,12 +248,11 @@ object ProfileRoutes {
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-            scheds  <- scheduleRepo.listForProfile(pid).mapError(ApiError.Db(_))
             tl      <- timeLimitRepo.findForProfile(pid).mapError(ApiError.Db(_))
             schedId <- namedScheduleRepo
               .blockScheduleIdsForProfile(pid)
               .mapError(ApiError.Db(_))
-          } yield Response.json(ProfileDetail(p, scheds, tl, schedId).toJson)
+          } yield Response.json(ProfileDetail(p, tl, schedId).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #1069: replace the set of named schedules attached to this profile as BLOCK schedules
