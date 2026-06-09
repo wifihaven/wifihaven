@@ -94,10 +94,15 @@ object UsageTraffic {
     def parse(s: String): Option[GroupBy] = values.find(_.code == s)
   }
 
-  // #862: stable group key for keyset cursor on the aggregated path. Must
-  // mirror the order used by buildAggregate's row builder so the cursor
-  // compare is deterministic. Same separator as the SQL chr(31) || concat in
-  // ConnectionEventRepo.querySeries.
+  // #862: stable group key for keyset cursor on the aggregated path. The
+  // traffic-aggregation cursor is constructed and compared entirely in Scala
+  // (the SQL just returns raw `traffic_reports` rows; aggregation happens in
+  // `buildAggregate`), so the separator below is NOT coupled to the `chr(31)`
+  // used by `ConnectionEventRepo.querySeries` — both sides of the cursor
+  // compare run through this same function. Keeping the legacy empty
+  // separator preserves cursor compatibility for already-emitted cursors
+  // (#1532 audit confirmed the prior "same separator as the SQL" comment was
+  // misleading: that separator is `LogAggGroupKey.Separator`; this one isn't).
   def aggGroupKey(
       r: wifihaven.shared.TrafficUsageAggregateRow,
       effectiveGroupBy: Set[GroupBy],
