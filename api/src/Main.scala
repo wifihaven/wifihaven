@@ -91,13 +91,10 @@ object Main extends ZIOAppDefault {
         // Service handles are pure layer reads (no DB I/O); resolve them up front
         // so the retried DB-init block below is purely the idempotent DB work.
         hsRepo <- ZIO.service[HouseholdSettingsRepo]
-        appRepoForSeed        <- ZIO.service[AppRepo]
-        blRepoForSeed         <- ZIO.service[BlocklistRepo]
-        blCacheForSeed        <- ZIO.service[BlocklistCache]
-        profileRepoForSeed    <- ZIO.service[ProfileRepo]
-        schedRepoForSeed      <- ZIO.service[ScheduleRepo]
-        namedSchedRepoForSeed <- ZIO.service[NamedScheduleRepo]
-        blFetcher             <- ZIO.service[BlocklistFetcher]
+        appRepoForSeed <- ZIO.service[AppRepo]
+        blRepoForSeed  <- ZIO.service[BlocklistRepo]
+        blCacheForSeed <- ZIO.service[BlocklistCache]
+        blFetcher      <- ZIO.service[BlocklistFetcher]
         tz = java.time.ZoneId.systemDefault()
         // #1255: a transient DB outage (a few seconds during a resize/failover/
         // restart) used to throw a Hikari/PSQL connection error straight to
@@ -137,18 +134,12 @@ object Main extends ZIOAppDefault {
             // REPLACE semantics; remote-fetch failures leave existing rows alone.
             _           <- BundledBlocklists.seed(blRepoForSeed, blCacheForSeed, blFetcher, bundled)
             _           <- ZIO.logInfo(s"bundled blocklists seeded (${bundled.size} lists)")
-            // #1069: migrate any legacy per-profile schedules into the named-schedule model and
-            // seed the default starter set on a fresh household. Idempotent — see ScheduleSeeder.
-            schedSummary <- ScheduleSeeder.seedAndMigrate(
-              namedSchedRepoForSeed,
-              schedRepoForSeed,
-              profileRepoForSeed,
-              tz,
-            )
-            _            <- ZIO.logInfo(
-              s"named schedules: migrated=${schedSummary.migrated} profiles, " +
-                s"seededDefaults=${schedSummary.seededDefaults}",
-            )
+            // #1602: the boot-time ScheduleSeeder.seedAndMigrate call lived here. The
+            // legacy → named_schedules migration is complete on every household, and
+            // re-running it resurrected schedules the operator deleted from the SPA
+            // (the #1538 marker guard inverts on legitimate delete). The seeder file
+            // itself is left in place; #1485 deletes it together with the legacy
+            // `schedules` table.
           } yield ()
         }
         // #1248: migrations + ensureDefault + seeds are done — flip readiness so
