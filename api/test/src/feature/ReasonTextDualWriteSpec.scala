@@ -64,7 +64,7 @@ object ReasonTextDualWriteSpec
     MacBlockReason.Manual                                    -> "manual",
     MacBlockReason.Unmanaged                                 -> "unmanaged_mac",
     BlockReason.Category(BlocklistId.unsafe("social-media")) -> "category:social-media",
-    BlockReason.AppTimeLimit("youtube")                      -> "site_time_limit:youtube",
+    BlockReason.AppTimeLimit("youtube")                      -> "app_time_limit:youtube",
     BlockReason.AppBlocked("netflix")                        -> "app:netflix",
     BlockReason.Unknown("weird")                             -> "weird",
   )

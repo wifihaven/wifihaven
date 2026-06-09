@@ -15,7 +15,7 @@ import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 //   - paused     → "Your profile is paused"
 //   - schedule   → "Outside allowed time"     (no end time leak)
 //   - time_limit → "Out of time today"        (no minute counts)
-//   - site_time_limit → "Out of time on this site"
+//   - app_time_limit → "Out of time on this app"
 //   - extra_blocked → "Blocked by your parent"
 //
 // Fallback: if `reason` is supplied as a query param (older router serving the
@@ -35,8 +35,9 @@ function copyFor(info: BlockedInfoResponse): string {
       return 'Outside allowed time.'
     case 'time_limit':
       return 'Out of time today.'
-    case 'site_time_limit':
-      return 'Out of time on this site today.'
+    case 'app_time_limit':
+    case 'site_time_limit': // #1518 legacy alias; older API builds may still emit this
+      return 'Out of time on this app today.'
     case 'extra_blocked':
       return 'Blocked by your parent.'
     default:
@@ -54,7 +55,8 @@ function legacyCopy(reason: string, until?: string | null): string {
   // request originates from a MAC not enrolled in any profile and the
   // household policy is `block`.
   if (reason === 'device_not_enrolled') return 'This device is not enrolled. Ask the household admin to add it.'
-  if (reason.startsWith('site_time_limit')) return 'Out of time on this site today.'
+  if (reason.startsWith('app_time_limit') || reason.startsWith('site_time_limit'))
+    return 'Out of time on this app today.'
   if (reason.startsWith('category:')) return `Blocked category: ${reason.slice('category:'.length)}.`
   if (reason === 'extra_blocked') return 'Blocked by your parent.'
   return 'Access blocked.'
@@ -125,7 +127,7 @@ function offeredKindsFor(info: BlockedInfoResponse | null, legacy: string): Acce
   if (cls === 'paused')          return ['unpause', 'extension']
   if (cls === 'schedule')        return ['unpause', 'extension']
   if (cls === 'time_limit')      return ['extension']
-  if (cls === 'site_time_limit') return ['extension', 'exemption']
+  if (cls === 'app_time_limit' || cls === 'site_time_limit') return ['extension', 'exemption']
   if (cls === 'category')        return ['exemption']
   if (cls === 'extra_blocked')   return ['exemption']
   // Fall back to the legacy reason string for stale router agents.
@@ -136,7 +138,8 @@ function offeredKindsFor(info: BlockedInfoResponse | null, legacy: string): Acce
   if (legacy === 'Manual')                 return ['exemption']
   if (legacy === 'extra_blocked')          return ['exemption']
   if (legacy.startsWith('category:'))      return ['exemption']
-  if (legacy.startsWith('site_time_limit'))return ['extension', 'exemption']
+  if (legacy.startsWith('app_time_limit'))   return ['extension', 'exemption']
+  if (legacy.startsWith('site_time_limit'))  return ['extension', 'exemption']
   // Unknown reason — offer everything so the kid still has a way through.
   return ['extension', 'exemption', 'unpause']
 }

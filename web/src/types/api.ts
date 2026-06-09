@@ -206,7 +206,10 @@ export type BlockReason =
   | { kind: 'timeLimit' }
   | { kind: 'manual' }
   | { kind: 'category'; slug: string }
-  | { kind: 'siteTimeLimit'; label: string } // FROZEN wire token (#376): keep literal until wire versioning
+  | { kind: 'appTimeLimit'; label: string } // #1518 rename from `siteTimeLimit`
+  // Legacy alias accepted by the decoder for V40-migrated DB rows still tagged
+  // with the pre-#1518 kind. SPA renders both the same.
+  | { kind: 'siteTimeLimit'; label: string }
   | { kind: 'appBlocked'; appId: string }
   | { kind: 'unknown'; raw: string }
 
@@ -959,7 +962,7 @@ export interface BlocklistHosts {
 
 // #959: kid-side block-page payload from GET /api/blocked?mac=&host=.
 // `reasonClass` is one of: "paused" | "schedule" | "time_limit" |
-// "site_time_limit" | "category" | "extra_blocked". `blocked: false`
+// "app_time_limit" | "category" | "extra_blocked". `blocked: false`
 // means the device is not blocked for this host (or is unenrolled).
 export interface BlockedInfoResponse {
   blocked: boolean

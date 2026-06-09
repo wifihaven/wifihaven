@@ -49,18 +49,22 @@ object ReasonTextBackfillSpec
    * pre-V40 wire string the backfill should produce in `reason_text`.
    */
   private val cases: List[(String, String)] = List(
-    """{"kind":"allow"}"""                          -> "allow",
-    """{"kind":"blocked"}"""                        -> "blocked",
-    """{"kind":"extraAllowed"}"""                   -> "extra_allowed",
-    """{"kind":"extraBlocked"}"""                   -> "extra_blocked",
-    """{"kind":"noProfile"}"""                      -> "no_profile",
-    """{"kind":"paused"}"""                         -> "paused",
-    """{"kind":"schedule"}"""                       -> "schedule",
-    """{"kind":"timeLimit"}"""                      -> "time_limit",
-    """{"kind":"manual"}"""                         -> "manual",
-    """{"kind":"unmanaged"}"""                      -> "unmanaged_mac",
-    """{"kind":"category","slug":"social-media"}""" -> "category:social-media",
-    """{"kind":"siteTimeLimit","label":"youtube"}""" -> "site_time_limit:youtube", // FROZEN wire token (#376): keep literal until wire versioning
+    """{"kind":"allow"}"""                             -> "allow",
+    """{"kind":"blocked"}"""                           -> "blocked",
+    """{"kind":"extraAllowed"}"""                      -> "extra_allowed",
+    """{"kind":"extraBlocked"}"""                      -> "extra_blocked",
+    """{"kind":"noProfile"}"""                         -> "no_profile",
+    """{"kind":"paused"}"""                            -> "paused",
+    """{"kind":"schedule"}"""                          -> "schedule",
+    """{"kind":"timeLimit"}"""                         -> "time_limit",
+    """{"kind":"manual"}"""                            -> "manual",
+    """{"kind":"unmanaged"}"""                         -> "unmanaged_mac",
+    """{"kind":"category","slug":"social-media"}"""    -> "category:social-media",
+    // #1518: new canonical JSON kind backfills to the new text form.
+    """{"kind":"appTimeLimit","label":"youtube"}"""    -> "app_time_limit:youtube",
+    // Legacy kind from V40-migrated rows still backfills to the new text form,
+    // so the rolled-out fleet converges on a single canonical wire string.
+    """{"kind":"siteTimeLimit","label":"netflix"}"""   -> "app_time_limit:netflix",
     """{"kind":"appBlocked","appId":"netflix"}"""      -> "app:netflix",
     """{"kind":"unknown","raw":"some-legacy-value"}""" -> "some-legacy-value",
   )

@@ -21,7 +21,8 @@ export function blockReasonText(r: BlockReason): string {
     case 'timeLimit':     return 'daily limit reached'
     case 'manual':        return 'blocked by parent'
     case 'category':      return `category: ${r.slug}`
-    case 'siteTimeLimit': return `site limit: ${r.label}` // FROZEN wire token (#376): keep literal until wire versioning
+    case 'appTimeLimit':  return `app limit: ${r.label}`
+    case 'siteTimeLimit': return `app limit: ${r.label}` // #1518 legacy alias from pre-rename DB rows
     case 'appBlocked':    return `app blocked: ${r.appId}`
     case 'unknown':       return r.raw || 'unknown'
   }

@@ -15,7 +15,7 @@ import zio.json.*
  *
  * Resolution reuses [[PolicyService.decide]] so the reason matches what the router enforced. The
  * response is intentionally narrow per the #952 design doc Q4 decision:
- *   - `reasonClass`: one of "paused" | "schedule" | "time_limit" | "site_time_limit" | "category"
+ *   - `reasonClass`: one of "paused" | "schedule" | "time_limit" | "app_time_limit" | "category"
  * \| "extra_blocked".
  *   - `categoryName`: only populated for the "category" class (so kids see what kind of site is
  *     blocked).
@@ -111,9 +111,9 @@ object BlockedRoutes {
     case MacBlockReason.TimeLimit    => ZIO.succeed(("time_limit", None))
     case BlockReason.ExtraBlocked    => ZIO.succeed(("extra_blocked", None))
     case BlockReason.AppTimeLimit(_) =>
-      ZIO.succeed(
-        ("site_time_limit", None),
-      ) // FROZEN wire token (#376): keep literal until wire versioning
+      // #1518: rename `site_time_limit` → `app_time_limit`. SPA-API surface,
+      // updated atomically with the SPA in the same PR.
+      ZIO.succeed(("app_time_limit", None))
     case BlockReason.Category(id)    =>
       blocklistRepo
         .findMeta(id)
