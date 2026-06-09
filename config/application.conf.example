@@ -38,7 +38,12 @@ wifihaven {
 
   jwt {
     secret      = "change-this-to-a-random-32-char-secret!!"
-    expiryHours = 24
+    # #1607: 30 days. The operator hits re-login ~daily on a 24h default,
+    # and this is a self-hosted home tool used from trusted devices.
+    # Per-deploy override: set WIFIHAVEN_JWT_HOURS (entrypoint.sh).
+    # Security trade-off: longer-lived JWTs widen blast radius on token
+    # leak; bcrypt + JWT secret rotation unchanged, role claims unchanged.
+    expiryHours = 720
   }
 
   cors {
