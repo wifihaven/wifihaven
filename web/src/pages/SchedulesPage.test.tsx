@@ -33,11 +33,11 @@ const school: NamedSchedule = {
 // Kids references Bedtime (id 1); Adults references nothing.
 const kids = {
   profile: { id: 10, name: 'Kids', blockedCategories: [], paused: false },
-  schedules: [], timeLimit: null, scheduleIds: [1],
+  timeLimit: null, scheduleIds: [1],
 } as unknown as ProfileDetail
 const adults = {
   profile: { id: 11, name: 'Adults', blockedCategories: [], paused: false },
-  schedules: [], timeLimit: null, scheduleIds: [],
+  timeLimit: null, scheduleIds: [],
 } as unknown as ProfileDetail
 
 const fn = (f: unknown) => f as unknown as ReturnType<typeof vi.fn>

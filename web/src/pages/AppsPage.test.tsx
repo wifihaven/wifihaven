@@ -36,7 +36,6 @@ function makeProfile(id: number, name: string): ProfileDetail {
       pauseMode: 'soft',
       defaultDeny: false,
     },
-    schedules: [],
     timeLimit: null,
   }
 }

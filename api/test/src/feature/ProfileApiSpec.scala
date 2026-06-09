@@ -78,14 +78,13 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           resp <- routes.runZIO(req)
         } yield assertTrue(resp.status == Status.Unauthorized)
       },
-      // #1547 — PR2 of the deprecation sequence: the legacy `schedules` field
-      // is dead weight on the wire. Enforcement now reads named_schedules /
-      // profile_schedule_rules (#1482/#1490) and the upsert no longer writes
-      // the V1 table (#1494). Stop populating the field server-side so a
-      // stale legacy row (left over from before #1494) cannot ride out on the
-      // wire and lure a future SPA surface into reading it. The field stays
-      // on the wire model until the #1485 deprecation window allows removal.
-      test("GET /api/profiles emits empty `schedules` even when legacy rows exist (#1547)") {
+      // #1547 — the legacy `schedules` field is removed from ProfileDetail.
+      // Enforcement reads named_schedules / profile_schedule_rules
+      // (#1482/#1490), the upsert no longer writes the V1 table (#1494), and
+      // no client surface reads `pd.schedules`. Assert the JSON body omits
+      // the key entirely even when a stale legacy row exists — a regression
+      // that re-adds the field will fail this raw-string check.
+      test("GET /api/profiles JSON omits the legacy `schedules` key (#1547)") {
         for {
           _           <- cleanDb
           profileRepo <- ZIO.service[ProfileRepo]
@@ -106,24 +105,24 @@ object ProfileApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres &
           )
           (auth, routes) <- mkRoutes
           token          <- auth.login("admin", "changeme").map(_.token.value)
-          req = Request
-            .get(URL.decode("/api/profiles").toOption.get)
-            .addHeader(Header.Authorization.Bearer(token))
-          resp    <- routes.runZIO(req)
-          body    <- resp.body.asString
-          details <- ZIO.fromEither(body.fromJson[List[ProfileDetail]])
-          kidsDetail = details.find(_.profile.name == "Kids").get
-          single       <- routes.runZIO(
+          listResp       <- routes.runZIO(
+            Request
+              .get(URL.decode("/api/profiles").toOption.get)
+              .addHeader(Header.Authorization.Bearer(token)),
+          )
+          listBody       <- listResp.body.asString
+          singleResp     <- routes.runZIO(
             Request
               .get(URL.decode(s"/api/profiles/${kids.id.value}").toOption.get)
               .addHeader(Header.Authorization.Bearer(token)),
           )
-          singleBody   <- single.body.asString
-          singleDetail <- ZIO.fromEither(singleBody.fromJson[ProfileDetail])
-        } yield assertTrue(resp.status == Status.Ok) &&
-          assertTrue(kidsDetail.schedules.isEmpty) &&
-          assertTrue(single.status == Status.Ok) &&
-          assertTrue(singleDetail.schedules.isEmpty)
+          singleBody     <- singleResp.body.asString
+        } yield assertTrue(listResp.status == Status.Ok) &&
+          assertTrue(!listBody.contains("\"schedules\"")) &&
+          assertTrue(!listBody.contains("stale-legacy")) &&
+          assertTrue(singleResp.status == Status.Ok) &&
+          assertTrue(!singleBody.contains("\"schedules\"")) &&
+          assertTrue(!singleBody.contains("stale-legacy"))
       },
     ),
     suite("POST /api/profiles")(

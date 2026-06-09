@@ -229,14 +229,9 @@ object ProfileRoutes {
             details     <- ZIO
               .foreach(visible) { p =>
                 for {
-                  // #1547 PR2 — stop populating the dead legacy `schedules`
-                  // field. Enforcement reads named_schedules/profile_schedule_rules
-                  // (#1482/#1490); the upsert no longer writes the V1 table
-                  // (#1494). Emit `Nil` so a stale legacy row can't ride the
-                  // wire. Field stays on the model until #1485 drops it.
                   tl      <- timeLimitRepo.findForProfile(p.id)
                   schedId <- namedScheduleRepo.blockScheduleIdsForProfile(p.id)
-                } yield ProfileDetail(p, Nil, tl, schedId)
+                } yield ProfileDetail(p, tl, schedId)
               }
               .mapError(ApiError.Db(_))
           } yield Response.json(details.toJson)
@@ -253,13 +248,11 @@ object ProfileRoutes {
               .findById(pid)
               .mapError(ApiError.Db(_))
               .flatMap(ZIO.fromOption(_).orElseFail(ApiError.NotFound("Profile not found")))
-            // #1547 PR2 — see GET /api/profiles above; legacy `schedules`
-            // field is emitted as Nil pending #1485 removal.
             tl      <- timeLimitRepo.findForProfile(pid).mapError(ApiError.Db(_))
             schedId <- namedScheduleRepo
               .blockScheduleIdsForProfile(pid)
               .mapError(ApiError.Db(_))
-          } yield Response.json(ProfileDetail(p, Nil, tl, schedId).toJson)
+          } yield Response.json(ProfileDetail(p, tl, schedId).toJson)
           handle.mapError(ErrorMapper.errorToResponse)
         },
       // #1069: replace the set of named schedules attached to this profile as BLOCK schedules

@@ -115,7 +115,6 @@ export interface AppTimeLimit {
 
 export interface ProfileDetail {
   profile: Profile
-  schedules: Schedule[]
   timeLimit: TimeLimit | null
   // #1069 — ids of the household named schedules attached to this profile as
   // block schedules (downtime while active). Empty until the operator attaches

@@ -968,7 +968,6 @@ case class DeviceTimeStatusWeek(
 
 case class ProfileDetail(
     profile: Profile,
-    schedules: List[Schedule],
     timeLimit: Option[TimeLimit],
     // #1069: ids of the named schedules attached to this profile as block
     // schedules (downtime while active). Empty until the operator attaches one.
