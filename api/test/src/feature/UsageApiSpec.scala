@@ -173,7 +173,6 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         profileRepo,
         deviceRepo,
         atlRepo,
-        appRepo,
         trafficRepo,
         hsr,
         now,
@@ -182,7 +181,6 @@ object UsageApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & C
         profileRepo,
         deviceRepo,
         atlRepo,
-        appRepo,
         trafficRepo,
         aruRepo,
       )

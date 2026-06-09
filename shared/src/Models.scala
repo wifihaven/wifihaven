@@ -262,6 +262,11 @@ case class AppTimeLimit(
     dailyMinutes: Int,
     label: String,
     exemptFromDaily: Boolean = true,
+    // #1564: typed FK to apps(id), carried straight from the listForProfile join. This is the
+    // canonical app identity the cap/rollup surface keys on; `label` ("app:<slug>") stays as
+    // SPA-facing display text only. Defaults to AppId(0L) so seed/test constructions that don't
+    // care about the FK still compile during the rollout.
+    appId: AppId = AppId(0L),
 ) derives JsonCodec
 
 // #761: app concept. An App is a household-scoped named bundle of host

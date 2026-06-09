@@ -46,6 +46,10 @@ final case class AppDayState(
     // every host so off-domain asset/CDN traffic ticks the *same* app limit and is exempted from the
     // daily total just like the apex. For a single-host app this is `List(domainPattern)`.
     hosts: List[String] = Nil,
+    // #1564: the typed FK to apps(id) the cap/rollup surface keys on internally. `label` and
+    // `domainPattern` stay as display text; `appId` is the canonical identity that joins to
+    // `app_used_daily.app_id` directly — no slug round-trip.
+    appId: AppId = AppId(0L),
 )
 
 trait TimeStatusService {
@@ -276,7 +280,7 @@ class TimeStatusServiceLive(
           extMins    <- extRepo.getProfileTotalExtension(profileId, date)
           // #1515: per-app cap usage from the #1510 per-app rollup + live tail, so the per-app cap
           // enforces on the rollup path identically to the all-live path.
-          perAppMins <- appUsedRollupService.appCapMinutesByLabel(now, date, settings, profileId)
+          perAppMins <- appUsedRollupService.appCapMinutesByAppId(now, date, settings, profileId)
         } yield {
           val tailSeconds =
             TimeStatusService.usedSecondsForProfile(p, devices, atls, tail, settings)
@@ -335,7 +339,7 @@ class TimeStatusServiceLive(
       // `app:<slug>` cap-group label so it joins to each profile's per-app cap groups below.
       perAppMins <- ZIO
         .foreach(profiles)(p =>
-          appUsedRollupService.appCapMinutesByLabel(now, date, settings, p.id).map(p.id -> _),
+          appUsedRollupService.appCapMinutesByAppId(now, date, settings, p.id).map(p.id -> _),
         )
         .map(_.toMap)
     } yield {
@@ -407,25 +411,27 @@ object TimeStatusService {
   }
 
   /**
-   * #1505: collapse the per-(assignment × host) [[AppTimeLimit]] rows into one group per app (keyed
-   * by `label`, which is `app:<slug>`), carrying the app's full host-set. `dailyMinutes` and
-   * `exemptFromDaily` are uniform across an app's synthesized rows, so we take them off any row.
-   * The representative `domainPattern` is the apex (shortest host) — used only for the wire/UI; the
-   * `hosts` list drives every per-app computation. Stable order (by label) for deterministic
-   * output.
+   * #1505 + #1564: collapse the per-(assignment × host) [[AppTimeLimit]] rows into one group per
+   * app, keyed by the typed `apps.id` FK (the canonical identity carried straight from the repo
+   * join). `label` ("app:<slug>") stays alongside as display text for the SPA wire, but the cap /
+   * rollup surfaces compose on `appId`. `dailyMinutes` and `exemptFromDaily` are uniform across an
+   * app's synthesized rows, so we take them off any row. The representative `domainPattern` is the
+   * apex (shortest host) — used only for the wire/UI; the `hosts` list drives every per-app
+   * computation. Stable order (by label) for deterministic output.
    */
   private[policy] def groupSiteLimits(
       appLimits: List[AppTimeLimit],
-  ): List[(String, Int, Boolean, List[String], String)] =
+  ): List[(AppId, String, Int, Boolean, List[String], String)] =
     appLimits
-      .groupBy(_.label)
+      .groupBy(_.appId)
       .toList
-      .sortBy(_._1)
-      .map { case (label, lims) =>
+      .map { case (appId, lims) =>
+        val label = lims.head.label
         val hosts = lims.map(_.domainPattern).distinct
         val rep   = hosts.minByOption(_.length).getOrElse(label)
-        (label, lims.map(_.dailyMinutes).max, lims.exists(_.exemptFromDaily), hosts, rep)
+        (appId, label, lims.map(_.dailyMinutes).max, lims.exists(_.exemptFromDaily), hosts, rep)
       }
+      .sortBy(_._2)
 
   /**
    * #1505 + #1504: per-app [[AppDayState]] list — one entry per app, with `usedMinutes` aggregated
@@ -440,14 +446,22 @@ object TimeStatusService {
       filter: HeartbeatFilter,
       continuationSeconds: Int,
   ): List[AppDayState] = {
-    val perGroup = Presence.patternGroupMinutesForProfile(
+    // #1564: feed Presence the cap-group label as its String key so the underlying span/union math
+    // is unchanged, then re-key the result by appId via the (label -> appId) map groupSiteLimits
+    // emits directly. One canonical conversion, no slug parsing.
+    val groups       = groupSiteLimits(appLimits)
+    val labelToAppId = groups.map(g => g._2 -> g._1).toMap
+    val perLabel     = Presence.patternGroupMinutesForProfile(
       presence,
-      groupSiteLimits(appLimits).map(g => g._1 -> g._4),
+      groups.map(g => g._2 -> g._5),
       overlap,
       filter,
       continuationSeconds,
     )
-    appDayStatesFromMinutes(appLimits, perGroup)
+    val perAppId     = perLabel.iterator.flatMap { case (label, m) =>
+      labelToAppId.get(label).map(_ -> m)
+    }.toMap
+    appDayStatesFromMinutes(appLimits, perAppId)
   }
 
   /**
@@ -456,22 +470,23 @@ object TimeStatusService {
    * groups (label / host-set / limit / exempt) are zipped with their used-minutes, regardless of
    * where the minutes come from: the live presence aggregation ([[appDayStates]]), the rollup +
    * live-tail read path ([[TimeStatusServiceLive]], via
-   * [[wifihaven.api.usage.AppUsedRollupService.appCapMinutesByLabel]]), or the zero-usage default
+   * [[wifihaven.api.usage.AppUsedRollupService.appCapMinutesByAppId]]), or the zero-usage default
    * in [[assemble]]. Keeping one zip means the cap groups can't be shaped differently across those
    * paths (#1532). A label absent from the map contributes zero minutes.
    */
   private[policy] def appDayStatesFromMinutes(
       appLimits: List[AppTimeLimit],
-      minutesByLabel: Map[String, Int],
+      minutesByAppId: Map[AppId, Int],
   ): List[AppDayState] =
-    groupSiteLimits(appLimits).map { case (label, daily, exempt, hosts, rep) =>
+    groupSiteLimits(appLimits).map { case (appId, label, daily, exempt, hosts, rep) =>
       AppDayState(
         label = label,
         domainPattern = rep,
         dailyLimitMinutes = daily,
-        usedMinutes = minutesByLabel.getOrElse(label, 0),
+        usedMinutes = minutesByAppId.getOrElse(appId, 0),
         exemptFromDaily = exempt,
         hosts = hosts,
+        appId = appId,
       )
     }
 
@@ -543,52 +558,40 @@ object TimeStatusService {
    */
   private[policy] def exemptPatterns(appLimits: List[AppTimeLimit]): List[String] =
     groupSiteLimits(appLimits).collect {
-      case (_, _, exempt, hosts, _) if exempt => hosts
+      case (_, _, _, exempt, hosts, _) if exempt => hosts
     }.flatten
 
   /**
-   * #1516: per-app engaged seconds for a profile, keyed by `app_id`, derived from the SINGLE
-   * per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
+   * #1516 + #1564: per-app engaged seconds for a profile, keyed by `apps.id`, derived from the
+   * SINGLE per-app presence primitive [[Presence.appSecondsForProfile]] (#1514/#1532) — the same
    * gap-bridged, cross-host union the per-app cap ([[appDayStates]] /
-   * [[Presence.patternGroupMinutesForProfile]]) ticks on. This is the value the `app_used_daily`
-   * rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series identities hold by
-   * construction (there is exactly one per-app time computation). `slugToAppId` resolves each
-   * `app:<slug>` group key (from [[groupSiteLimits]]) to its registered `apps.id`; an app whose
-   * slug is absent is dropped (defensive — post-V35 every cap entry is a real registered app, so
-   * this never fires in practice). `presence` must already be scoped to the profile's devices.
-   * Seconds (not minutes) so the rolled + tail decomposition stays exact across the watermark
-   * boundary; floor-to-minutes happens once at read time.
+   * [[Presence.patternGroupMinutesForProfile]]) ticks on. The cap-group label ([[groupSiteLimits]])
+   * is used as Presence's group key; the (label -> appId) map emitted by the same call re-keys the
+   * result back to the typed FK — no slug parsing, no slugToAppId lookup table. This is the value
+   * the `app_used_daily` rollup persists and the per-app series reads, so the rollup ⇄ cap ⇄ series
+   * identities hold by construction (there is exactly one per-app time computation). `presence`
+   * must already be scoped to the profile's devices. Seconds (not minutes) so the rolled + tail
+   * decomposition stays exact across the watermark boundary; floor-to-minutes happens once at read
+   * time.
    */
-  /**
-   * The `apps.slug` ⇄ `apps.id` resolution shared by the per-app rollup writer
-   * ([[wifihaven.api.usage.TimeUsedRollupJob]]) and reader
-   * ([[wifihaven.api.usage.AppUsedRollupService]]), so both resolve an `app:<slug>` cap group key
-   * to the same registered app identity. Centralized here next to [[appSecondsByApp]] (its
-   * consumer) so the keying convention can't drift between the two sides.
-   */
-  def slugToAppId(apps: List[App]): Map[String, AppId] =
-    apps.iterator.map(a => a.slug -> a.id).toMap
-
   def appSecondsByApp(
       profile: Profile,
       appLimits: List[AppTimeLimit],
-      slugToAppId: Map[String, AppId],
       presence: List[PresenceRow],
       settings: HouseholdSettings,
   ): Map[AppId, Long] = {
-    val groups = groupSiteLimits(appLimits).map(g => g._1 -> g._4)
+    val groups       = groupSiteLimits(appLimits)
+    val labelToAppId = groups.map(g => g._2 -> g._1).toMap
     Presence
       .appSecondsForProfile(
         presence,
-        groups,
+        groups.map(g => g._2 -> g._5),
         profile.crossDeviceOverlapMode,
         settings.heartbeatFilter,
         settings.presenceContinuationSeconds,
       )
       .iterator
-      .flatMap { case (label, secs) =>
-        slugToAppId.get(label.stripPrefix("app:")).map(_ -> secs)
-      }
+      .flatMap { case (label, secs) => labelToAppId.get(label).map(_ -> secs) }
       .toMap
   }
 
@@ -603,7 +606,7 @@ object TimeStatusService {
    * app's host is still excluded — it is simply no longer mis-classified as a heartbeat first.
    */
   private[policy] def appHostPatterns(appLimits: List[AppTimeLimit]): List[String] =
-    groupSiteLimits(appLimits).flatMap(_._4)
+    groupSiteLimits(appLimits).flatMap(_._5)
 
   def usedSecondsForProfile(
       profile: Profile,

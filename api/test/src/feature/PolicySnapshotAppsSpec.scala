@@ -101,7 +101,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
       ru   <- ZIO.service[TimeUsedRollupRepo]
       aru  <- ZIO.service[AppUsedRollupRepo]
       clk  <- ZIO.service[Clock]
-      aus = new AppUsedRollupServiceLive(pr, dr, atlr, ar, trr, aru)
+      aus = new AppUsedRollupServiceLive(pr, dr, atlr, trr, aru)
       tss = new TimeStatusServiceLive(pr, sr, tlr, atlr, dr, trr, er, ru, nsr, aus)
     } yield new PolicyServiceLive(
       pr,
@@ -315,7 +315,7 @@ object PolicySnapshotAppsSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPo
         aru    <- ZIO.service[AppUsedRollupRepo]
         clk    <- ZIO.service[Clock]
         now    <- clk.instant
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atlr, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, atlr, trr, hsr, now)
         // Proves the rollup branch is exercised: the per-app rollup row exists for this profile.
         rolled <- aru.getDayForProfile(kids, today)
         svc    <- makePsRollup

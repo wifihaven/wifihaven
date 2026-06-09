@@ -44,7 +44,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
       ar  <- ZIO.service[AppRepo]
       trr <- ZIO.service[TrafficReportRepo]
       aru <- ZIO.service[AppUsedRollupRepo]
-    } yield new AppUsedRollupServiceLive(pr, dr, stl, ar, trr, aru)
+    } yield new AppUsedRollupServiceLive(pr, dr, stl, trr, aru)
 
   private def makeTimeService: ZIO[
     ProfileRepo & ScheduleRepo & TimeLimitRepo & AppTimeLimitRepo & DeviceRepo & TrafficReportRepo &
@@ -152,7 +152,7 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:60", "social.com", today, 5, 8 * 60)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:60", "cdn.social.net", today, 5, 8 * 60 + 10)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         reader <- makeReader
         perApp <- reader.appEngagedMinutes(now, today, s, kid)
         // The per-app cap aggregate (AppDayState.usedMinutes) for the same app.
@@ -218,13 +218,48 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:62", "a.com", today, 10, 8 * 60)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:62", "b.com", today, 15, 9 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _       <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _       <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         timeRow <- ru.getDayForProfile(kid, today)
         appRows <- aru.getDayForProfile(kid, today)
         appSum = appRows.values.map(_.engagedSeconds).sum
       } yield assertTrue(timeRow.exists(_.usedSeconds == 1500L)) &&
         assertTrue(appSum == 1500L) &&
         assertTrue(appRows.size == 2)
+    },
+    test(
+      "#1564: AppTimeLimit + AppDayState carry the FK appId, not just the `app:<slug>` label",
+    ) {
+      // The cap surface keys on `apps.id` end-to-end so consumers no longer have to parse
+      // `label.stripPrefix(\"app:\")` and re-resolve a slug. The repo carries `a.id` straight
+      // through from the join (it was already in scope), and the per-app DayState exposes it
+      // alongside the slug-derived label (the label stays for SPA back-compat).
+      for {
+        _   <- cleanDb
+        hsr <- ZIO.service[HouseholdSettingsRepo]
+        pr  <- ZIO.service[ProfileRepo]
+        sr  <- ZIO.service[ScheduleRepo]
+        dr  <- ZIO.service[DeviceRepo]
+        ar  <- ZIO.service[AppRepo]
+        stl <- ZIO.service[AppTimeLimitRepo]
+        trr <- ZIO.service[TrafficReportRepo]
+        s   <- setTz(hsr, "UTC")
+        kid <- TestLayers.seedKidsProfile(pr, sr)
+        _   <- TestLayers.seedDevice(dr, "aa:bb:cc:dd:ee:64", "kid", kid)
+        app <- seedApp(ar, kid, "fkapp", List("fkapp.com"), 60)
+        rid <- seedRouterRow
+        today = LocalDate.of(2025, 1, 6)
+        _    <- seedTraffic(rid, "aa:bb:cc:dd:ee:64", "fkapp.com", today, 10, 8 * 60)
+        atls <- stl.listForProfile(kid)
+        // Every emitted AppTimeLimit row carries the registered apps.id directly.
+        _   = atls
+        now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
+        tsvc  <- makeTimeService
+        state <- tsvc.dayStateLive(now, today, s, kid)
+        perApp = state.map(_.perApp).getOrElse(Nil)
+      } yield assertTrue(atls.nonEmpty) &&
+        assertTrue(atls.forall(_.appId == app)) &&
+        assertTrue(perApp.exists(_.appId == app)) &&
+        assertTrue(perApp.find(_.appId == app).map(_.usedMinutes).contains(10))
     },
     test("re-running the aggregation tick is idempotent") {
       for {
@@ -246,9 +281,9 @@ object AppUsedRollupSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgre
         today = LocalDate.of(2025, 1, 6)
         _ <- seedTraffic(rid, "aa:bb:cc:dd:ee:63", "youtube.com", today, 20, 8 * 60)
         now = LocalDateTime.of(2025, 1, 6, 12, 0).toInstant(ZoneOffset.UTC)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         first  <- aru.getDayForProfile(kid, today)
-        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, ar, trr, hsr, now)
+        _      <- TimeUsedRollupJob.oneTickForTest(ru, aru, pr, dr, stl, trr, hsr, now)
         second <- aru.getDayForProfile(kid, today)
       } yield assertTrue(first.nonEmpty) && assertTrue(first == second)
     },

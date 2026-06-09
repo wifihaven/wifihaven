@@ -190,7 +190,6 @@ object Main extends ZIOAppDefault {
         profileRepoForJ   <- ZIO.service[wifihaven.api.db.ProfileRepo]
         deviceRepoForJ    <- ZIO.service[wifihaven.api.db.DeviceRepo]
         stlRepoForJ       <- ZIO.service[wifihaven.api.db.AppTimeLimitRepo]
-        appRepoForJ       <- ZIO.service[AppRepo]
         trafficRepoForJ   <- ZIO.service[wifihaven.api.db.TrafficReportRepo]
         _                 <- TimeUsedRollupJob
           .loop(
@@ -200,7 +199,6 @@ object Main extends ZIOAppDefault {
             profileRepoForJ,
             deviceRepoForJ,
             stlRepoForJ,
-            appRepoForJ,
             trafficRepoForJ,
             hsRepo,
             clockForJobs,

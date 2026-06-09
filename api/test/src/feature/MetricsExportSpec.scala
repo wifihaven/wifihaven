@@ -98,7 +98,6 @@ object MetricsExportSpec
             profileRepo,
             deviceRepo,
             atlRepo,
-            appRepo,
             trafficRepo,
             hsRepo,
             clock,
