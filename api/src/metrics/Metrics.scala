@@ -86,6 +86,14 @@ object MetricGuard {
     // underscores, see #1572) is skipped + metered here instead of 400-ing the
     // whole batch. `reason` is a small fixed enum (currently just `decode_error`).
     "usage_records_rejected_total"              -> Set("reason"),
+    // #1585 — write-time FQDN backfill for traffic_reports. Counts each
+    // UsageRecord at ingest by what the backfill decided: `filled` (race-loser
+    // ipv4/ipv6 rewritten to a fqdn from a recent connection_event),
+    // `miss` (candidate had no matching fqdn in the window), or `skip` (record
+    // was already fqdn, or carried no dest_ip — not a candidate). `result` is
+    // a small fixed enum; bounded. Reuses the existing `result` label key
+    // rather than introducing `outcome` (#1210 keeps the vocabulary small).
+    "traffic_reports_backfill_total"            -> Set("result"),
     // #1318 — global-policy-layer visibility. `global_allow_hosts` is the size of the
     // security-sensitive fleet-wide always-reachable set (a host here bypasses every block);
     // `default_deny_profiles` counts profiles running the block-all baseline. Both are unlabelled
@@ -266,6 +274,16 @@ object AppMetrics {
   // ingest instead of failing the whole batch. A rising rate flags an agent/DNS
   // source emitting host values the API rejects (the #1572 CNAME-target case).
   // `reason` is a small fixed enum — only `decode_error` today.
+
+  // ── #1585: traffic_reports write-time FQDN backfill outcomes ───────────────
+  // Per-UsageRecord ingest decision: `filled` (race-loser ipv4/ipv6 rewritten
+  // to a fqdn from a recent connection_event), `miss` (candidate but no fqdn
+  // in the window — operator can rate-alert on a rising miss share to spot
+  // unattributable destinations), or `skip` (already fqdn, or no dest_ip).
+  // `result` is the small fixed enum.
+
+  def recordTrafficBackfill(result: String): UIO[Unit] =
+    MetricGuard.counter("traffic_reports_backfill_total", Map("result" -> result))
 
   def recordUsageRecordsRejected(count: Int, reason: String = "decode_error"): UIO[Unit] =
     ZIO

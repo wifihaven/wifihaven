@@ -371,6 +371,77 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Traffic_reports write-time FQDN backfill (#1585)",
+      "description": "sum by (result) (rate(traffic_reports_backfill_total[5m])) — per-UsageRecord ingest decision from RouterIngestRoutes.backfillRecord. `filled` = ipv4/ipv6 race-loser rewritten to a fqdn from a recent connection_event (the desired outcome); `miss` = candidate but no fqdn in the 5-min window (host stays ipv4/ipv6 — a sustained high miss share means destinations the router can't attribute, e.g. DoH or hard-coded IPs); `skip` = already a fqdn or no dest_ip (the bulk of healthy traffic). `result` is a fixed enum. From AppMetrics.recordTrafficBackfill.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 40 },
+      "id": 11,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (result) (rate(traffic_reports_backfill_total{env=\"$env\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "title": "Backfill miss share (#1585)",
+      "description": "miss / (filled + miss) over 1h — share of attributable-candidate UsageRecords (ipv4/ipv6 + dest_ip) for which no fqdn could be found in the backfill window. A rising share means more destinations are landing in traffic_reports under their IP literal instead of a hostname; investigate DNS attribution (DoH on devices, agent dnsmasq health, conntrack/dns-tail race). `skip` is excluded from the denominator — it counts records that were never backfill candidates.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "red", "value": 0.5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(traffic_reports_backfill_total{env=\"$env\",result=\"miss\"}[1h])) / clamp_min(sum(rate(traffic_reports_backfill_total{env=\"$env\",result=~\"filled|miss\"}[1h])), 1e-9)",
+          "legendFormat": "miss share (1h)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
