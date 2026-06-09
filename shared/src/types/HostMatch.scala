@@ -53,6 +53,21 @@ object HostMatch {
     loop(host, maxHops)
   }
 
+  /**
+   * #1560: `host` matches at least one pattern in `patterns` under [[matchesPattern]] semantics.
+   * The single host-keyed entry point every "does this host belong to any of these patterns"
+   * predicate routes through (`Presence.isExempt`, `isAppAttributed`, per-site / per-app pattern
+   * filters, the dashboard's app-aware branch in #1559) — so a pattern-match cannot drift between
+   * surfaces (the #1532 single-source-of-truth lesson).
+   *
+   * IP-literal hosts never match: patterns are FQDN-shaped (apex / `*.apex`) and `HostId.asFqdn`
+   * returns `None` for IPv4/IPv6 hosts. An empty `patterns` returns `false`.
+   */
+  def matchesAny(host: HostId, patterns: List[String]): Boolean =
+    patterns.nonEmpty && host.asFqdn.exists(fqdn =>
+      patterns.exists(p => matchesPattern(fqdn.value, p)),
+    )
+
   /** Boolean variant of [[lookupApex]] over a set of apexes. */
   def hasApexMatch(host: String, apexes: Set[String], maxHops: Int = 5): Boolean = {
     @annotation.tailrec
