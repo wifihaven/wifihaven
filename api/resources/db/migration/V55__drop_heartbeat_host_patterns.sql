@@ -1,0 +1,25 @@
+-- V55__drop_heartbeat_host_patterns.sql
+--
+-- #1525: drop the retired `household_settings.heartbeat_host_patterns` column.
+--
+-- Host-identity heartbeat suppression has lived in the canonical
+-- `shared.types.InfraHosts` code constant since #1503/#1525 — the V24 seed was
+-- folded in as the suppress-only tier. The companion code-only PR (#1595)
+-- already stopped reading and writing this column, so the deployed image no
+-- longer touches it. This migration is the schema-only follow-up that finishes
+-- the retirement.
+--
+-- Prerequisites (must be true before this migration runs in prod):
+--   1. #1595 has merged AND been deployed for at least one full deploy cycle.
+--      The previously-deployed (N-1) image after THAT roll-forward must not
+--      SELECT or UPDATE this column — which is what #1595 guarantees.
+--   2. `household_settings` is a singleton row (id=1), so this DROP is fast at
+--      prod scale (AGENTS.md §migrations-prod-data-volume — schema metadata
+--      change on a tiny table).
+--
+-- The wire field `HeartbeatFilter.heartbeatHostPatterns` stays on the Scala
+-- model for back-compat input tolerance and continues to serialize as `[]`
+-- on output; removal of the wire field is gated separately on the wire-
+-- versioning work (#376) per AGENTS.md §Backwards compatibility.
+ALTER TABLE household_settings
+  DROP COLUMN heartbeat_host_patterns;
