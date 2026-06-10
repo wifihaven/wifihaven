@@ -131,4 +131,13 @@ object InfraHosts {
    * Whether `fqdn` is device-level background infra — the presence/dashboard suppression predicate.
    */
   def isBackground(fqdn: String): Boolean = matchedBackgroundPattern(fqdn).isDefined
+
+  /**
+   * #1560: host-keyed background-infra predicate. The SOLE entry point every presence/dashboard
+   * suppression call site routes through — `Presence.isBackgroundHost`,
+   * `Presence.suppressedHostUsage`, and `DashboardNowRoutes.dropBackground` all delegate here so
+   * the rule cannot diverge between surfaces (the #1532 single-source-of-truth lesson). IP-literal
+   * hosts never match (the suppression list keys on FQDN identity).
+   */
+  def isBackground(host: HostId): Boolean = host.asFqdn.exists(fqdn => isBackground(fqdn.value))
 }

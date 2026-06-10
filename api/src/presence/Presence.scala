@@ -172,8 +172,7 @@ object Presence {
       filter: HeartbeatFilter,
       appHostPatterns: List[String] = Nil,
   ): List[PresenceRow] = {
-    def isExempt(h: HostId) =
-      h.asFqdn.exists(fqdn => exemptPatterns.exists(p => matchesPattern(fqdn.value, p)))
+    def isExempt(h: HostId) = HostMatch.matchesAny(h, exemptPatterns)
     // #1506: app attribution beats background/byte suppression; exempt-from-daily filtering is a
     // separate concern and still applies afterward (an exempt app's host is still excluded from the
     // daily total even though it is no longer suppressed as a heartbeat).
@@ -366,16 +365,17 @@ object Presence {
    * is never attributed.
    */
   def isAppAttributed(row: PresenceRow, appHostPatterns: List[String]): Boolean =
-    appHostPatterns.nonEmpty &&
-      row.host.asFqdn.exists(fqdn => appHostPatterns.exists(p => matchesPattern(fqdn.value, p)))
+    HostMatch.matchesAny(row.host, appHostPatterns)
 
   /**
    * #1503/#1525: whether the row's FQDN is device-level background infra
    * ([[InfraHosts.isBackground]] \= allow+suppress canonical ∪ suppress-only). Keyed on host
-   * identity only — IP-literal hosts never match.
+   * identity only — IP-literal hosts never match. #1560: thin alias for the canonical host-keyed
+   * predicate on [[InfraHosts]] — every presence/dashboard suppression call site routes through
+   * that one entry point so the rule cannot diverge between surfaces (#1532).
    */
   private def isBackgroundHost(row: PresenceRow): Boolean =
-    row.host.asFqdn.exists(fqdn => InfraHosts.isBackground(fqdn.value))
+    InfraHosts.isBackground(row.host)
 
   /**
    * #714: per-row heartbeat classification for the explain debug surface. Wraps each row with the
@@ -413,7 +413,7 @@ object Presence {
       .groupBy(_.host)
       .iterator
       .map { case (h, rs) =>
-        val isInfra = h.asFqdn.exists(fqdn => InfraHosts.isBackground(fqdn.value))
+        val isInfra = InfraHosts.isBackground(h)
         val reason  = if (isInfra) "infra" else "bytes-below-threshold"
         SuppressedHostRow(h, rs.iterator.map(_.bytes).sum, rs.size, reason)
       }
@@ -459,7 +459,7 @@ object Presence {
     val accum  = scala.collection.mutable.Map.empty[(MacAddress, String), Long]
     for {
       pat <- patterns
-      matching = active.filter(r => r.host.asFqdn.exists(fqdn => matchesPattern(fqdn.value, pat)))
+      matching = active.filter(r => HostMatch.matchesAny(r.host, List(pat)))
       (mac, macRows) <- matching.groupBy(_.mac)
       secs = unionSeconds(sessionSpans(macRows, gap))
       if secs > 0L
@@ -505,7 +505,7 @@ object Presence {
         val gap    = effectiveGap(active, continuationSeconds)
         patterns.iterator.flatMap { pat =>
           val matching =
-            active.filter(r => r.host.asFqdn.exists(fqdn => matchesPattern(fqdn.value, pat)))
+            active.filter(r => HostMatch.matchesAny(r.host, List(pat)))
           val secs     = unionSeconds(sessionSpans(matching, gap))
           if secs > 0L then Some(pat -> secs) else None
         }.toMap
@@ -612,7 +612,7 @@ object Presence {
     val active          = rows.filterNot(r => isHeartbeat(r, filter, appHostPatterns))
     val gap             = effectiveGap(active, continuationSeconds)
     def matchesGroup(r: PresenceRow, pats: List[String]): Boolean =
-      r.host.asFqdn.exists(fqdn => pats.exists(p => matchesPattern(fqdn.value, p)))
+      HostMatch.matchesAny(r.host, pats)
     groups.iterator.flatMap { case (key, pats) =>
       val matching  = active.filter(r => matchesGroup(r, pats))
       // Per device, stitch the union of the app's hosts as ONE stream so a gap < N

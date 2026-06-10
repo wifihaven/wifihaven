@@ -198,5 +198,5 @@ object DashboardNowRoutes {
    * the byte level, so only identity is safe here.
    */
   private def dropBackground(rows: List[TrafficRollupRow]): List[TrafficRollupRow] =
-    rows.filterNot(r => r.host.asFqdn.exists(fqdn => InfraHosts.isBackground(fqdn.value)))
+    rows.filterNot(r => InfraHosts.isBackground(r.host))
 }
