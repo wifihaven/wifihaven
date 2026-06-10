@@ -281,26 +281,50 @@ function M.new_tracker()
   return { last = {}, active_samples = {} }
 end
 
--- Compare each counter to its previous byte total; an increase counts as one
--- active sample.  A counter that went DOWN is treated as a fresh start
--- (element expired and reappeared, or counters reset out-of-band); we still
--- count it as an active sample if the new value is > 0.
+-- Per sample tick, only the foreground (mac, dst_ip) — the one with the
+-- largest byte delta since the previous tick — earns an active sample for
+-- each MAC (#842 / #715 Path 1). Background flows that get a small slice of
+-- every sample no longer inflate per-host time-on-site; bytes accounting
+-- (build_report.bytesIn/bytesOut) is unchanged.
+--
+-- A counter that went DOWN is treated as a fresh start (element expired and
+-- reappeared, or counters reset out-of-band); its effective delta for the
+-- foreground contest is the new total.
+--
+-- Ties break on lexically smallest dst_ip so the choice is deterministic.
 function M.tracker_sample(tracker, counters)
+  local winner_key   = {}  -- mac → tracker_key of largest-delta flow
+  local winner_delta = {}  -- mac → delta of current winner
+  local winner_dst   = {}  -- mac → dst_ip of current winner (for tie-break)
+
   for _, c in ipairs(counters or {}) do
     local key   = tracker_key(c.mac, c.dst_ip)
     local prev  = tracker.last[key] or 0
     -- Counter total spans both directions (#717) — growth in either bytes
     -- (device→remote) or bytes_out (remote→device) marks an active sample.
     local total = (c.bytes or 0) + (c.bytes_out or 0)
+    local delta = nil
     if total > prev then
-      tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
+      delta = total - prev
       tracker.last[key] = total
     elseif total < prev then
-      if total > 0 then
-        tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
-      end
+      if total > 0 then delta = total end
       tracker.last[key] = total
     end
+    if delta then
+      local best = winner_delta[c.mac]
+      if best == nil
+         or delta > best
+         or (delta == best and c.dst_ip < winner_dst[c.mac]) then
+        winner_key[c.mac]   = key
+        winner_delta[c.mac] = delta
+        winner_dst[c.mac]   = c.dst_ip
+      end
+    end
+  end
+
+  for _, key in pairs(winner_key) do
+    tracker.active_samples[key] = (tracker.active_samples[key] or 0) + 1
   end
 end
 
