@@ -361,12 +361,12 @@ end
 
 os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifihaven")
 
--- ── Block-page runtime config (#437) ─────────────────────────────────────────
+-- ── Block-page runtime config ────────────────────────────────────────────────
 -- The block-page uhttpd handler (/www/wifihaven/handler.lua, served via
 -- uhttpd-mod-lua) reads /var/run/wifihaven/api_url to know where to redirect
--- blocked clients, and /var/run/wifihaven/blocked_reasons (written below by
--- render.write_blocked_reasons after every snapshot apply) to look up the
--- per-MAC reason for the current device.
+-- blocked clients. Post-#1615/#1617/#1618 it does NOT read any per-MAC reason
+-- or per-(MAC, host) classifier file — the SPA derives the canonical reason
+-- from GET /api/blocked, so the agent no longer writes those files.
 --
 -- #1174: the value written here is the resolved block-page base
 -- (block_page_url), which is api_url for self-hosted installs but the public
@@ -374,28 +374,10 @@ os.execute("mkdir -p /tmp/dnsmasq.d /tmp/nftables.d /etc/wifihaven /var/run/wifi
 -- api_url for back-compat with an already-installed handler.lua.
 
 local BLOCK_PAGE_API_URL_PATH  = paths.block_page_api_url
-local BLOCK_PAGE_REASONS_PATH  = paths.block_page_reasons
-local BLOCK_PAGE_HOSTS_PATH    = paths.block_page_hosts  -- #594
 
 do
   local f = io.open(BLOCK_PAGE_API_URL_PATH, "w")
   if f then f:write(block_page_url); f:close() end
-end
-
--- Persist the per-MAC block reasons for the block-page handler. Called after
--- every render.update_shared so the file mirrors the live in-memory map.
-local function persist_blocked_reasons()
-  local ok, err = render.write_blocked_reasons(blocked_reason, BLOCK_PAGE_REASONS_PATH)
-  if not ok then
-    log.debug("could not write %s: %s", BLOCK_PAGE_REASONS_PATH, tostring(err))
-  end
-  -- #594: also persist the per-(MAC, host) classification so the block-page
-  -- handler can distinguish extraBlocked from category-blocklist hits.
-  local ok2, err2 = render.write_blocked_hosts(
-    eb_hosts_by_mac, bl_hosts_by_mac, BLOCK_PAGE_HOSTS_PATH)
-  if not ok2 then
-    log.debug("could not write %s: %s", BLOCK_PAGE_HOSTS_PATH, tostring(err2))
-  end
 end
 
 -- ── Timer state ───────────────────────────────────────────────────────────────
@@ -435,7 +417,6 @@ do
                     clock.monotonic_seconds() - t0)
     if applied then
       render.update_shared(cached, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
-      persist_blocked_reasons()
       last_snapshot = cached
       log.info("startup: applied cached policy from /etc/wifihaven/policy.json")
     else
@@ -474,7 +455,6 @@ do
                     clock.monotonic_seconds() - at0)
     if applied then
       render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
-      persist_blocked_reasons()
       current_etag = etag
       last_snapshot = snap
       policy.mark_poll_success(os.time())
@@ -660,7 +640,6 @@ conntrack.watch({
                         clock.monotonic_seconds() - at0)
         if applied then
           render.update_shared(snap, nft_sets, blocked_macs, blocked_reason, eb_hosts_by_mac, ea_hosts_by_mac, bl_hosts_by_mac)
-          persist_blocked_reasons()
           current_etag = etag
           last_snapshot = snap
           policy.mark_poll_success(wall)
