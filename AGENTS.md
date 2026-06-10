@@ -607,6 +607,18 @@ For such a migration:
   operator for the live row count of the affected table before deciding
   the migration is safe to run on the startup path.
 
+### One-shot migration/backfill/seeder code is deleted after it deploys {#delete-deployed-one-shots}
+
+Every application-level (Scala) one-shot migration, backfill, or seeder that
+gates on a "did this already?" check lands with a follow-up issue under the
+[#1608](https://github.com/wifihaven/wifihaven/issues/1608) umbrella to delete
+it. Once the deploy has propagated AND any legacy data the migration consumes
+is gone, the Scala code is removed (along with its tests and call site) — the
+Flyway SQL migration stays as history, but the application-level migration
+code does not. Leaving it in place risks live bugs from re-runs (see #1602,
+where a still-invoked seeder resurrected a deleted schedule on every boot)
+and bloats startup and test surface.
+
 ## Validate query performance before merge {#query-explain-before-merge}
 
 **Any PR that introduces or materially changes a SQL query must prove the
