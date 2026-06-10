@@ -1486,11 +1486,23 @@ case class RouterDecisionResponse(
 // `blocked` is false when the (mac, host) pair resolves to Allow or the
 // device is unenrolled; the SPA renders a generic "not blocked" page in
 // that case rather than leaking household state.
+// #335: usage fields are populated for any enrolled MAC (blocked or not) so a
+// restricted kid can see *why* their time is gone, not just that it is. None on
+// an unknown MAC (no enrollment leak) and on an enrolled MAC with no profile
+// assigned. `usedMinutes` is the active screen-minutes today; `dailyLimitMinutes`
+// is the configured cap before extensions; `extensionMinutes` is today's granted
+// extension; `remainingMinutes` is `cap + extensions - used`, clamped at 0.
+// Sourced from the canonical TimeStatusService.todaysState so the block page
+// cannot drift from the snapshot's "blocked because TimeLimit" decision.
 case class BlockedInfoResponse(
     blocked: Boolean,
     reasonClass: Option[String],
     categoryName: Option[String],
     profileName: Option[String],
+    usedMinutes: Option[Int] = None,
+    dailyLimitMinutes: Option[Int] = None,
+    extensionMinutes: Option[Int] = None,
+    remainingMinutes: Option[Int] = None,
 ) derives JsonCodec
 
 // ── Policy snapshot (target shape per docs/architecture.md §0.2, #354) ────

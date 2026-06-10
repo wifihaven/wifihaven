@@ -163,4 +163,32 @@ describe('BlockedPage — API-driven reason (#959)', () => {
     await waitFor(() => expect(screen.getByText(/outside allowed time/i)).toBeInTheDocument())
     expect(screen.queryByText(/07:00/)).not.toBeInTheDocument()
   })
+
+  // #335: a restricted kid sees today's used / cap / remaining on the block
+  // page so they understand *why* their time is gone. Hidden when no cap is
+  // configured so unenrolled / adult-profile cases stay clean.
+  it("shows today's usage when the API includes used/cap minutes", async () => {
+    mockBlockedInfo({
+      blocked: true,
+      reasonClass: 'time_limit',
+      profileName: 'Kids',
+      usedMinutes: 90,
+      dailyLimitMinutes: 120,
+      extensionMinutes: 0,
+      remainingMinutes: 30,
+    })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'youtube.com' })
+    await waitFor(() => expect(screen.getByTestId('block-usage')).toBeInTheDocument())
+    expect(screen.getByTestId('block-usage-used')).toHaveTextContent('Used: 90 / 120 min')
+    expect(screen.getByTestId('block-usage-remaining')).toHaveTextContent('30 min left')
+  })
+
+  it('hides the usage panel when the API has no cap (unenrolled / no daily limit)', async () => {
+    mockBlockedInfo({ blocked: false })
+    renderBlocked({ mac: 'aa:bb:cc:11:22:33', host: 'example.com' })
+    await waitFor(() =>
+      expect(screen.getByText(/not blocked for this device/i)).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('block-usage')).not.toBeInTheDocument()
+  })
 })

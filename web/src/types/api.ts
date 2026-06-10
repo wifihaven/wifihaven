@@ -967,4 +967,11 @@ export interface BlockedInfoResponse {
   reasonClass?: string | null
   categoryName?: string | null
   profileName?: string | null
+  // #335: today's usage for the device's profile so a restricted kid can see
+  // why their time is gone. Populated for any enrolled MAC; null/undefined when
+  // the MAC has no profile or there's no daily limit configured.
+  usedMinutes?: number | null
+  dailyLimitMinutes?: number | null
+  extensionMinutes?: number | null
+  remainingMinutes?: number | null
 }
