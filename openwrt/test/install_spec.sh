@@ -124,6 +124,61 @@ grep -q "/www/wifihaven/handler.lua" "$UHTTPD_HELPER" \
   || check "helper configures lua_handler pointing at handler.lua" \
            "missing lua_handler wiring"
 
+# #383: TLS sibling listener on 127.0.0.1:8443 / [::1]:8443 so HTTPS DNAT
+# lands somewhere instead of failing with a connection reset. Same lua
+# handler — uhttpd terminates TLS before the handler runs.
+grep -q "listen_https=127.0.0.1:8443" "$UHTTPD_HELPER" \
+  && check "#383 helper configures TLS listener on 127.0.0.1:8443" ok \
+  || check "#383 helper configures TLS listener on 127.0.0.1:8443" \
+           "missing listen_https=127.0.0.1:8443 wiring"
+
+grep -q "listen_https=\[::1\]:8443" "$UHTTPD_HELPER" \
+  && check "#383 helper configures TLS listener on [::1]:8443" ok \
+  || check "#383 helper configures TLS listener on [::1]:8443" \
+           "missing listen_https=[::1]:8443 wiring"
+
+grep -q "/etc/wifihaven/block_page.crt" "$UHTTPD_HELPER" \
+  && check "#383 helper wires cert=/etc/wifihaven/block_page.crt" ok \
+  || check "#383 helper wires cert=/etc/wifihaven/block_page.crt" \
+           "missing cert path wiring"
+
+grep -q "/etc/wifihaven/block_page.key" "$UHTTPD_HELPER" \
+  && check "#383 helper wires key=/etc/wifihaven/block_page.key" ok \
+  || check "#383 helper wires key=/etc/wifihaven/block_page.key" \
+           "missing key path wiring"
+
+# #383: helper must generate the self-signed cert before reloading uhttpd,
+# otherwise the TLS listener fails to bind on first install.
+grep -q "generate-block-page-cert.sh" "$UHTTPD_HELPER" \
+  && check "#383 helper invokes generate-block-page-cert.sh" ok \
+  || check "#383 helper invokes generate-block-page-cert.sh" \
+           "missing cert generation step"
+
+# #383: ship the cert generator + Makefile must install it under /usr/lib/wifihaven.
+CERT_GEN="$ROOT/files/usr/lib/wifihaven/generate-block-page-cert.sh"
+[ -f "$CERT_GEN" ] \
+  && check "#383 generate-block-page-cert.sh shipped in package" ok \
+  || check "#383 generate-block-page-cert.sh shipped in package" \
+           "missing files/usr/lib/wifihaven/generate-block-page-cert.sh"
+
+grep -q "generate-block-page-cert.sh" "$ROOT/Makefile" \
+  && check "#383 Makefile installs generate-block-page-cert.sh" ok \
+  || check "#383 Makefile installs generate-block-page-cert.sh" \
+           "Package/wifihaven/install doesn't ship the cert generator"
+
+# #383: package depends must pull in TLS support for uhttpd. libustream-mbedtls
+# is the default OpenWRT TLS backend and what uhttpd's listen_https expects.
+# openssl-util provides /usr/bin/openssl for the cert generator.
+grep -Eq "libustream-(mbedtls|openssl|wolfssl)" "$ROOT/Makefile" \
+  && check "#383 Makefile DEPENDS includes libustream-* for uhttpd TLS" ok \
+  || check "#383 Makefile DEPENDS includes libustream-* for uhttpd TLS" \
+           "missing libustream-mbedtls dep"
+
+grep -q "openssl-util" "$ROOT/Makefile" \
+  && check "#383 Makefile DEPENDS includes openssl-util for cert generation" ok \
+  || check "#383 Makefile DEPENDS includes openssl-util for cert generation" \
+           "missing openssl-util dep"
+
 # #542: the uci-defaults stub runs the helper at first boot. uci-defaults
 # is the right idiom for postinst-style work that needs the live system
 # (procd, running uhttpd, mounted /etc/config) — postinst itself fires at

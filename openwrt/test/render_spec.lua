@@ -616,16 +616,34 @@ describe("render.nft nat chain", function()
       1, true))
   end)
 
-  -- HTTPS (port 443) is explicitly NOT redirected in either family — DNATing
-  -- TLS to a local listener would produce certificate errors, not a block
-  -- page. The filter chain drops it; the user sees a fast connection error,
-  -- same UX as v4.
-  it("does NOT emit a DNAT rule for HTTPS/443 in either family (#411)", function()
+  -- #383: HTTPS/443 is now redirected to a local TLS listener (uhttpd
+  -- listen_https on 127.0.0.1:8443 / [::1]:8443) presenting a self-signed
+  -- cert. The browser shows a cert warning; the user clicks through and
+  -- lands on the same block page as the HTTP path. The cert warning IS the
+  -- design — same behavior model as commercial parental-control filters
+  -- without a per-device CA install. Each TCP/80 DNAT rule must have a
+  -- parallel TCP/443 sibling with the same predicate.
+  it("emits a parallel HTTPS/443 DNAT for @blocked_macs (v4 + v6) (#383)", function()
     local s = snap_one()
     s.profiles["3"].rules.blocked = true
     s.profiles["3"].rules.blockReason = "Paused"
     local nft = render.nft(s)
-    assert.is_nil(nft:find("dport 443", 1, true))
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs tcp dport 443 dnat ip to 127.0.0.1:8443",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 443 dnat ip6 to ::1:8443",
+      1, true))
+  end)
+
+  it("emits a parallel HTTPS/443 DNAT for per-MAC extraBlocked (#383)", function()
+    local nft = render.nft(snap_one())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr @eb_tiktok_com tcp dport 443 dnat ip to 127.0.0.1:8443",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr @eb6_tiktok_com tcp dport 443 dnat ip6 to ::1:8443",
+      1, true))
   end)
 
 end)
