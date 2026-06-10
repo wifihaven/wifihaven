@@ -38,14 +38,33 @@ where `BlockRules` is:
   any other "block right now" reason — **all evaluated server-side and
   collapsed into this flag**. The router does not look at schedules, daily
   minutes, or time-used-today.
-- `blockReason: Option[MacBlockReason]` — for block-page text only. Not
-  used for enforcement. `MacBlockReason` is a `sealed trait extends
-  BlockReason` whose cases are `Paused`, `Schedule`, `TimeLimit`, `Manual`
-  — the only reasons a whole-MAC block can come from `PolicyService`. Per-
-  flow drop reasons (host-block, category-block, ip-only-block) are emitted
-  by the router at drop time and never appear in the snapshot; they live
-  on `BlockReason` but not `MacBlockReason`, so the type system prevents
-  them from being assigned here.
+- `blockReason: Option[MacBlockReason]` — carries the per-MAC reason from
+  `PolicyService` to the router so `conntrack.lua` can label per-MAC drops
+  on `POST /api/router/events` with `Paused` / `Schedule` / `TimeLimit` /
+  `Manual`. **Not used for enforcement**: the router decides whether to
+  drop based on `blocked`, never on `blockReason`. **Not used for block-page
+  text** either — the block page derives the canonical reason from
+  `GET /api/blocked` (which re-runs `PolicyService.decide(mac, host)`); the
+  router's HTTP/80 redirect carries only `?mac=&host=` (see
+  [#679](https://github.com/wifihaven/wifihaven/issues/679) /
+  [#1615](https://github.com/wifihaven/wifihaven/issues/1615) /
+  [#1617](https://github.com/wifihaven/wifihaven/issues/1617) /
+  [#1618](https://github.com/wifihaven/wifihaven/issues/1618)).
+  `MacBlockReason` is a `sealed trait extends BlockReason` whose cases are
+  `Paused`, `Schedule`, `TimeLimit`, `Manual` — the only reasons a
+  whole-MAC block can come from `PolicyService`. Per-flow drop reasons
+  (host-block, category-block, ip-only-block) are emitted by the router at
+  drop time and never appear in the snapshot; they live on `BlockReason`
+  but not `MacBlockReason`, so the type system prevents them from being
+  assigned here. **The router cannot derive this locally**, and re-deriving
+  it API-side at ingest is wrong: the schedule / time-used / paused-flag /
+  manual-block state behind these four cases lives in `PolicyService` and
+  is deliberately NOT shipped on the snapshot per the minimal-functional-
+  shape rule below — so the router only sees `blocked=true` and can't tell
+  the cases apart; and `PolicyService.decide` run at ingest time evaluates
+  *current* policy, which can change between drop and ingest (e.g. a profile
+  unpaused in the interim would mislabel the historical event). The drop-
+  time reason has to ride the snapshot.
 - `extraBlocked: List[Hostname]` — hosts blocked for this MAC. Enforced
   via nftables drop on `(mac, dst ip ∈ ipset(host))`, where the ipset is
   populated by dnsmasq's `--ipset=` callback at resolution time.
@@ -109,10 +128,14 @@ enforce — it is not a mirror of the server's policy model.
   infra allowlist now ships by copying its hosts into every profile's
   `extraAllowed`, not via a new field.)
 - **No policy *reasons* on the wire except where functionally required.**
-  `blockReason` is the one intentional exception, and it exists only to pick
-  block-page copy — it is never read for enforcement. Do not add "why"
-  metadata for allow/deny decisions; the server resolves policy into functional
-  data and the router applies it blind.
+  `blockReason` is the one intentional exception, and it exists only to
+  label per-MAC drop events the router emits to `POST /api/router/events`
+  (the router can't distinguish `Paused` / `Schedule` / `TimeLimit` /
+  `Manual` locally, and re-deriving at ingest time would mislabel events
+  when policy changed between drop and ingest) — it is never read for
+  enforcement, and it is not what the block page renders. Do not add "why"
+  metadata for allow/deny decisions; the server resolves policy into
+  functional data and the router applies it blind.
 - **Redundancy and wire-shape are separate concerns.** Copying a shared set
   (like the infra allowlist) into every profile's `extraAllowed` is the correct
   wire shape even though it duplicates data. The duplication is a separate
@@ -136,7 +159,11 @@ shape, wire JSON examples, and the enforcement model.
 > `blockReason`, `extraBlocked`, `extraAllowed`, `blocklistIds`,
 > `blockIpOnly` — plus per-profile `failureMode`; schedules, daily minutes,
 > time-used, and site limits are all evaluated server-side and never reach
-> the wire. (The category-enforcement path was a silent no-op on prod until
+> the wire. Post-[#679](https://github.com/wifihaven/wifihaven/issues/679)
+> `blockReason` exists for the `POST /api/router/events` connection_event
+> labeling path only (`render.update_shared` → `blocked_reason[mac]` →
+> `conntrack.lua`); the block-page handler does not read it. (The
+> category-enforcement path was a silent no-op on prod until
 > [#1334](https://github.com/wifihaven/wifihaven/issues/1334) fixed the
 > agent's blocklist-fetch call.)
 
