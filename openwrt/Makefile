@@ -19,7 +19,11 @@ define Package/wifihaven
   # table without them — silently dropping all enforcement, including the
   # block-page DNAT (#1144). kmod-nfnetlink-log is the NFLOG backend;
   # kmod-nf-log{,6} provide the netfilter log framework for each family.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6
+  # #383: libustream-mbedtls supplies the TLS backend uhttpd uses for the
+  # listen_https block-page sibling on :8443; openssl-util provides
+  # /usr/bin/openssl for the self-signed cert generator that ships at
+  # /usr/lib/wifihaven/generate-block-page-cert.sh.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +libustream-mbedtls +openssl-util
   PKGARCH:=all
 endef
 
@@ -64,6 +68,9 @@ define Package/wifihaven/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/wifihaven
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/lib/wifihaven/setup-uhttpd-block-page.sh $(1)/usr/lib/wifihaven/
+	# #383: cert generator for the TLS block-page listener (CN=block.wifihaven.local,
+	# self-signed, RSA-2048). Idempotent; invoked from setup-uhttpd-block-page.sh.
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/lib/wifihaven/generate-block-page-cert.sh $(1)/usr/lib/wifihaven/
 	# #771: bake PKG_VERSION into a file the lua agent reads at startup so it
 	# can report itself to the API on every checkin (X-WifiHaven-Agent-Version).
 	echo $(PKG_VERSION) > $(1)/usr/lib/wifihaven/VERSION

@@ -16,6 +16,17 @@ set -eu
 
 log() { printf '[setup-uhttpd-block-page] %s\n' "$1" >&2; }
 
+# #383: generate the TLS cert before reloading uhttpd, otherwise the
+# listen_https socket fails to bind on a clean install and the HTTPS DNAT
+# from render.lua's wifihaven_block_nat chain has nowhere to land. Helper
+# is idempotent so re-runs on an already-provisioned router are no-ops.
+CERT_GEN="/usr/lib/wifihaven/generate-block-page-cert.sh"
+if [ -x "$CERT_GEN" ] || [ -f "$CERT_GEN" ]; then
+  sh "$CERT_GEN" || log "WARN: cert generator failed; TLS listener will not bind"
+fi
+BLOCK_PAGE_CRT="/etc/wifihaven/block_page.crt"
+BLOCK_PAGE_KEY="/etc/wifihaven/block_page.key"
+
 uhttpd_section=$(uci show uhttpd 2>/dev/null \
   | awk -F'[.=]' "/^uhttpd\\.[^.]+\\.listen_http=.*'127\\.0\\.0\\.1:8081'/{print \$2; exit}")
 uhttpd_changed=0
@@ -40,6 +51,34 @@ if ! uci -q get "uhttpd.${uhttpd_section}.listen_http" \
     | tr ' ' '\n' | grep -qx '\[::1\]:8081'; then
   log "adding v6 block-page uhttpd listener on [::1]:8081"
   uci add_list "uhttpd.${uhttpd_section}.listen_http=[::1]:8081"
+  uhttpd_changed=1
+fi
+
+# #383: TLS sibling listeners on 127.0.0.1:8443 + [::1]:8443. render.lua's
+# wifihaven_block_nat chain DNATs blocked TCP/443 here, the self-signed cert
+# at /etc/wifihaven/block_page.* terminates TLS, and the same lua_handler
+# below serves the block page (uhttpd-mod-lua sees the request after TLS
+# termination — handler.lua doesn't care which listener fired).
+if ! uci -q get "uhttpd.${uhttpd_section}.listen_https" \
+    | tr ' ' '\n' | grep -qx '127.0.0.1:8443'; then
+  log "adding v4 TLS block-page uhttpd listener on 127.0.0.1:8443"
+  uci add_list "uhttpd.${uhttpd_section}.listen_https=127.0.0.1:8443"
+  uhttpd_changed=1
+fi
+if ! uci -q get "uhttpd.${uhttpd_section}.listen_https" \
+    | tr ' ' '\n' | grep -qx '\[::1\]:8443'; then
+  log "adding v6 TLS block-page uhttpd listener on [::1]:8443"
+  uci add_list "uhttpd.${uhttpd_section}.listen_https=[::1]:8443"
+  uhttpd_changed=1
+fi
+current_cert=$(uci -q get "uhttpd.${uhttpd_section}.cert" || echo "")
+current_key=$(uci -q get "uhttpd.${uhttpd_section}.key"  || echo "")
+if [ "$current_cert" != "$BLOCK_PAGE_CRT" ]; then
+  uci set "uhttpd.${uhttpd_section}.cert=$BLOCK_PAGE_CRT"
+  uhttpd_changed=1
+fi
+if [ "$current_key" != "$BLOCK_PAGE_KEY" ]; then
+  uci set "uhttpd.${uhttpd_section}.key=$BLOCK_PAGE_KEY"
   uhttpd_changed=1
 fi
 
