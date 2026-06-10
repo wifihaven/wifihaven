@@ -820,10 +820,15 @@ conntrack.watch({
         -- last activity_sample_int tick still get an active sample counted.
         usage.tracker_sample(activity_tracker, counters)
         last_activity_sample = mono
+        -- #1628: skip records for MACs currently blocked (TimeLimit / Schedule
+        -- / Paused / Manual) so a blocked device produces zero traffic_reports
+        -- row growth — even when ea_ carve-out traffic legitimately reaches
+        -- the priority-1 accounting chain. blocked_macs is the shared ref
+        -- render.update_shared rebuilds from each device's effective rules.
         local report = usage.build_report(
           counters, nft_sets, period_start, period_end, router_id,
           nil, lookup_hostname, activity_tracker,
-          activity_sample_int, usage_int)
+          activity_sample_int, usage_int, blocked_macs)
         log.debug("usage timer: %d counter(s), %d record(s) prepared",
                   #counters, report.records and #report.records or 0)
         -- Retry queue's next_attempt_at math runs on the monotonic clock so

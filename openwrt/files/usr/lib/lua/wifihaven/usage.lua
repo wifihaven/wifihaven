@@ -54,7 +54,7 @@
 --
 --   usage.build_report(counters, nft_sets, period_start, period_end, router_id,
 --                      leases, lookup_hostname, tracker,
---                      sample_seconds, bucket_seconds)
+--                      sample_seconds, bucket_seconds, blocked_macs)
 --     → report table ready for JSON encoding and POST /api/router/usage
 --     nft_sets:        { hostname → { ip → true } }  (maintained by render.update_shared + dnsmasq)
 --     leases:          { mac → ip }  (optional; populates the ip field on each record)
@@ -318,12 +318,22 @@ end
 -- bucket_seconds.  A counter present in `counters` but missing from the
 -- tracker (e.g. set element first appeared after the last sample) falls back
 -- to one active sample when bytes > 0.
+-- #1628: blocked_macs (optional) is the shared `{ mac -> true }` table
+-- maintained by render.update_shared. When supplied, any counter whose mac is
+-- in the set is dropped before record emission so a blocked device produces
+-- zero traffic_reports rows — even for ea_ carve-out traffic (Khan / Math
+-- Academy / 1Password) that the kernel legitimately allows past the per-MAC
+-- forward-drop. The architectural contract is "blocked = no usage growth";
+-- the carve-out exists for functional access, not to credit minutes against
+-- the daily cap. With agent-side rows suppressed during the block window,
+-- Presence has nothing to stitch across the block boundary either.
 function M.build_report(counters, nft_sets, period_start, period_end, router_id,
                         leases, lookup_hostname, tracker,
-                        sample_seconds, bucket_seconds)
+                        sample_seconds, bucket_seconds, blocked_macs)
   local records = {}
 
   for _, c in ipairs(counters or {}) do
+    if not (blocked_macs and c.mac and blocked_macs[c.mac]) then
     local host    = host_for_ip(c.dst_ip, nft_sets, lookup_hostname)
     local samples = tracker.active_samples[tracker_key(c.mac, c.dst_ip)] or 0
     local active_seconds
@@ -362,6 +372,7 @@ function M.build_report(counters, nft_sets, period_start, period_end, router_id,
       end
       records[#records + 1] = rec
     end
+    end -- #1628 blocked_macs filter
   end
 
   return {
