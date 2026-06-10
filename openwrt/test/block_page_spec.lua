@@ -34,75 +34,15 @@ describe("block_page.parse_arp", function()
   end)
 end)
 
-describe("block_page.parse_reasons", function()
-  local content = table.concat({
-    "aa:bb:cc:11:22:33\tPaused",
-    "de:ad:be:ef:00:01\tTimeLimit",
-  }, "\n") .. "\n"
-
-  it("returns the reason for a known MAC", function()
-    assert.equals("Paused",    bp.parse_reasons(content, "aa:bb:cc:11:22:33"))
-    assert.equals("TimeLimit", bp.parse_reasons(content, "de:ad:be:ef:00:01"))
-  end)
-
-  it("is case-insensitive on the MAC lookup", function()
-    assert.equals("Paused", bp.parse_reasons(content, "AA:BB:CC:11:22:33"))
-  end)
-
-  it("returns nil for an unknown MAC", function()
-    assert.is_nil(bp.parse_reasons(content, "ff:ff:ff:ff:ff:ff"))
-  end)
-
-  it("returns nil on nil content (reasons file missing)", function()
-    assert.is_nil(bp.parse_reasons(nil, "aa:bb:cc:11:22:33"))
-  end)
-end)
-
-describe("block_page.parse_blocked_hosts (#594)", function()
-  local content = table.concat({
-    "aa:bb:cc:11:22:33\ttiktok.com\textra_blocked",
-    "aa:bb:cc:11:22:33\tad.doubleclick.net\tcategory:ads",
-    "de:ad:be:ef:00:01\tpornhub.com\tcategory:adult",
-  }, "\n") .. "\n"
-
-  it("returns 'extra_blocked' for a per-MAC extraBlocked entry", function()
-    assert.equals("extra_blocked",
-      bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", "tiktok.com"))
-  end)
-
-  it("returns 'category:<id>' for a per-MAC blocklist entry", function()
-    assert.equals("category:ads",
-      bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", "ad.doubleclick.net"))
-    assert.equals("category:adult",
-      bp.parse_blocked_hosts(content, "de:ad:be:ef:00:01", "pornhub.com"))
-  end)
-
-  it("matches subdomains via dnsmasq nftset suffix semantics", function()
-    -- entry: tiktok.com → matches m.tiktok.com
-    assert.equals("extra_blocked",
-      bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", "m.tiktok.com"))
-  end)
-
-  it("does NOT cross-match between MACs", function()
-    assert.is_nil(bp.parse_blocked_hosts(content, "de:ad:be:ef:00:01", "tiktok.com"))
-  end)
-
-  it("does NOT match unrelated hosts (no false-positive suffix match)", function()
-    -- "notexample.com" must not match an entry for "example.com"
-    local c = "aa:bb:cc:11:22:33\texample.com\textra_blocked\n"
-    assert.is_nil(bp.parse_blocked_hosts(c, "aa:bb:cc:11:22:33", "notexample.com"))
-  end)
-
-  it("returns nil on nil/empty inputs", function()
-    assert.is_nil(bp.parse_blocked_hosts(nil, "aa:bb:cc:11:22:33", "tiktok.com"))
-    assert.is_nil(bp.parse_blocked_hosts(content, nil, "tiktok.com"))
-    assert.is_nil(bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", nil))
-    assert.is_nil(bp.parse_blocked_hosts(content, "aa:bb:cc:11:22:33", ""))
-  end)
-
-  it("is case-insensitive on MAC and host", function()
-    assert.equals("extra_blocked",
-      bp.parse_blocked_hosts(content, "AA:BB:CC:11:22:33", "TikTok.com"))
+describe("block_page module surface (#1618)", function()
+  -- After #1615/#1617 the handler stopped reading the agent's on-disk reason /
+  -- blocked-host files; the SPA derives the canonical reason from
+  -- GET /api/blocked. The now-unused parse_reasons / parse_blocked_hosts /
+  -- inline_copy_for helpers are gone.
+  it("no longer exposes parse_reasons / parse_blocked_hosts / inline_copy_for", function()
+    assert.is_nil(bp.parse_reasons)
+    assert.is_nil(bp.parse_blocked_hosts)
+    assert.is_nil(bp.inline_copy_for)
   end)
 end)
 
@@ -205,24 +145,6 @@ describe("block_page.render_html (#679/#1617: no reason= param)", function()
     local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(html:find("This site is blocked.", 1, true))
     assert.is_nil(html:find("window.location.replace", 1, true))
-  end)
-
-  -- inline_copy_for + parse_reasons + parse_blocked_hosts are no longer called
-  -- by the handler (#1617). They remain in the module for now and get deleted
-  -- in PR3 (#1618) along with the agent-side reason-file writes.
-  it("inline copy still resolves MacBlockReason / ExtraBlocked / fallback (kept for PR3)", function()
-    assert.equals("This profile is paused.",                  bp.inline_copy_for("Paused"))
-    assert.equals("This is scheduled quiet time.",            bp.inline_copy_for("Schedule"))
-    assert.equals("Daily screen time limit reached.",         bp.inline_copy_for("TimeLimit"))
-    assert.equals("This device has been blocked by a parent.",bp.inline_copy_for("Manual"))
-    assert.equals("This site is blocked by the household.",   bp.inline_copy_for("ExtraBlocked"))
-    assert.equals("This site is blocked.",                    bp.inline_copy_for("Bogus"))
-    assert.equals("This site is blocked.",                    bp.inline_copy_for(nil))
-  end)
-
-  it("inline copy names the blocklist for a category:<id> reason (#594, kept for PR3)", function()
-    assert.equals("Blocked category: ads.",   bp.inline_copy_for("category:ads"))
-    assert.equals("Blocked category: adult.", bp.inline_copy_for("category:adult"))
   end)
 
   it("escapes the host in the inline page so it can't break out of HTML", function()
