@@ -376,7 +376,21 @@ object Main extends ZIOAppDefault {
             upRepo,
             clock,
           ) ++
-          BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists)
+          BlocklistRoutes.routes(auth, blRepo, blCache, blFetcher2, bundledBlocklists) ++
+          // #335: kid-side block page support. Unauthenticated — the router DNATs blocked
+          // traffic to the SPA's /blocked, which calls GET /api/blocked?mac=&host= to render
+          // the reason + today's usage. Accidentally removed from registration in #1060;
+          // re-wired here so the kid-friendly path stops falling back to the legacy
+          // router-supplied `reason` query string.
+          BlockedRoutes.routes(
+            policy,
+            deviceRepo,
+            profileRepo,
+            blRepo,
+            timeStatus,
+            hsRepo,
+            clock,
+          )
 
       val routerAndAdminRoutes: Routes[Any, Response] =
         RouterRoutes.routes(routerRepo, policy, routerAuth, blockEvRepo) ++

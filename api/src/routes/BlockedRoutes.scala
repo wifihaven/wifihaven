@@ -33,6 +33,9 @@ object BlockedRoutes {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       blocklistRepo: BlocklistRepo,
+      timeStatusService: TimeStatusService,
+      householdSettingsRepo: HouseholdSettingsRepo,
+      clock: Clock,
   ): Routes[Any, Response] = {
     val notBlocked = BlockedInfoResponse(blocked = false, None, None, None)
 
@@ -50,7 +53,17 @@ object BlockedRoutes {
             case Left(_)            =>
               ZIO.succeed(Response.json(notBlocked.toJson))
             case Right((mac, host)) =>
-              resolve(policy, deviceRepo, profileRepo, blocklistRepo, mac, host)
+              resolve(
+                policy,
+                deviceRepo,
+                profileRepo,
+                blocklistRepo,
+                timeStatusService,
+                householdSettingsRepo,
+                clock,
+                mac,
+                host,
+              )
                 .map(r => Response.json(r.toJson))
                 .catchAll(_ => ZIO.succeed(Response.json(notBlocked.toJson)))
           }
@@ -63,30 +76,44 @@ object BlockedRoutes {
       deviceRepo: DeviceRepo,
       profileRepo: ProfileRepo,
       blocklistRepo: BlocklistRepo,
+      timeStatusService: TimeStatusService,
+      householdSettingsRepo: HouseholdSettingsRepo,
+      clock: Clock,
       mac: MacAddress,
       host: Hostname,
-  ): Task[BlockedInfoResponse] = {
-    val notBlocked = BlockedInfoResponse(blocked = false, None, None, None)
+  ): Task[BlockedInfoResponse] =
     for {
-      decision   <- policy.decide(mac.value, host.value)
-      device     <- deviceRepo.findByMac(mac)
-      profileOpt <- device.flatMap(_.profileId) match {
+      decision    <- policy.decide(mac.value, host.value)
+      device      <- deviceRepo.findByMac(mac)
+      profileOpt  <- device.flatMap(_.profileId) match {
         case Some(pid) => profileRepo.findById(pid)
         case None      => ZIO.succeed(None)
       }
-      result     <-
-        if decision.decision != ConnectionDecision.Block then ZIO.succeed(notBlocked)
-        else
-          mapReason(decision.reason, blocklistRepo).map { case (rc, catName) =>
-            BlockedInfoResponse(
-              blocked = true,
-              reasonClass = Some(rc),
-              categoryName = catName,
-              profileName = profileOpt.map(_.name),
-            )
-          }
-    } yield result
-  }
+      // #335: today's usage for the device's profile, sourced from the canonical
+      // TimeStatusService — same primitive that drives the snapshot's TimeLimit
+      // decision and the admin /api/time/status UI. None when there's no profile.
+      dayStateOpt <- profileOpt match {
+        case None    => ZIO.succeed(None)
+        case Some(p) =>
+          for {
+            now      <- clock.instant
+            settings <- householdSettingsRepo.get
+            ds       <- timeStatusService.todaysState(now, settings, p.id)
+          } yield ds
+      }
+      reasonPair  <-
+        if decision.decision != ConnectionDecision.Block then ZIO.succeed(None)
+        else mapReason(decision.reason, blocklistRepo).map(Some(_))
+    } yield BlockedInfoResponse(
+      blocked = reasonPair.isDefined,
+      reasonClass = reasonPair.map(_._1),
+      categoryName = reasonPair.flatMap(_._2),
+      profileName = profileOpt.map(_.name),
+      usedMinutes = dayStateOpt.map(_.usedMinutes),
+      dailyLimitMinutes = dayStateOpt.flatMap(_.dailyLimitMinutes),
+      extensionMinutes = dayStateOpt.map(_.extensionMinutes),
+      remainingMinutes = dayStateOpt.flatMap(_.remainingMinutes),
+    )
 
   /**
    * Map the router decision wire-reason to a (reasonClass, categoryName?) pair.
