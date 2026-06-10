@@ -81,11 +81,43 @@ export function BlockedPage() {
           <p className="text-brand-text text-sm">{body}</p>
           {profileLine && <p className="text-brand-text-muted text-xs">{profileLine}</p>}
         </div>
+        {info && <UsageToday info={info} />}
         {mac && host
           ? <AskParent mac={mac} host={host} info={info} />
           : <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
         }
       </div>
+    </div>
+  )
+}
+
+/**
+ * #335: today's screen-time summary for the device's profile. The block page is
+ * the kid's only authenticated-free window into their own state, so we surface
+ * used / cap / extension / remaining here. Values come from the API
+ * (BlockedInfoResponse), which sources them from the canonical
+ * TimeStatusService.todaysState — same primitive that drives the snapshot's
+ * TimeLimit decision. We render nothing if no daily cap is configured for the
+ * profile (or the MAC is unenrolled).
+ */
+function UsageToday({ info }: { info: BlockedInfoResponse }) {
+  const used = info.usedMinutes ?? null
+  const cap = info.dailyLimitMinutes ?? null
+  const ext = info.extensionMinutes ?? 0
+  const remaining = info.remainingMinutes ?? null
+  if (cap == null || used == null) return null
+  return (
+    <div
+      data-testid="block-usage"
+      className="bg-white border border-brand-border rounded-2xl px-4 py-3 text-sm text-brand-text text-left space-y-1"
+    >
+      <div className="font-medium text-brand-ink">Time today</div>
+      <div data-testid="block-usage-used">Used: {used} / {cap} min{ext > 0 ? ` (+${ext} extension)` : ''}</div>
+      {remaining != null && (
+        <div data-testid="block-usage-remaining">
+          {remaining > 0 ? `${remaining} min left` : 'No time left today'}
+        </div>
+      )}
     </div>
   )
 }
