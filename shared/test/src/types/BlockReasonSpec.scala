@@ -173,7 +173,6 @@ object BlockReasonSpec extends ZIOSpecDefault {
         case BlockReason.ExtraAllowed    => ()
         case BlockReason.ExtraBlocked    => ()
         case BlockReason.NoProfile       => ()
-        case BlockReason.Probe           => ()
         case MacBlockReason.Paused       => ()
         case MacBlockReason.Schedule     => ()
         case MacBlockReason.TimeLimit    => ()
@@ -191,7 +190,6 @@ object BlockReasonSpec extends ZIOSpecDefault {
         BlockReason.ExtraAllowed,
         BlockReason.ExtraBlocked,
         BlockReason.NoProfile,
-        BlockReason.Probe,
         MacBlockReason.Paused,
         MacBlockReason.Schedule,
         MacBlockReason.TimeLimit,

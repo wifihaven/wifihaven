@@ -13,6 +13,7 @@ import wifihaven.testinfra.*
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres
 import zio.*
 import zio.interop.catz.*
+import zio.json.*
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -47,27 +48,26 @@ object ReasonTextBackfillSpec
   /**
    * Each BlockReason variant: its JSONB shape (as `reason` stores it post-V40) and the expected
    * pre-V40 wire string the backfill should produce in `reason_text`.
+   *
+   * #1605: derived from `BlockReason.allCases` so the SQL CASE in `ReasonTextBackfill.asWireSql` is
+   * pinned to whatever the Scala-side `asWire` / JSON encoder emits. A new BlockReason case forces
+   * the exhaustive-match encoders to compile, prompts adding it to `BlockReason.allCases`, and then
+   * THIS test fails until `asWireSql` grows the matching SQL arm.
    */
-  private val cases: List[(String, String)] = List(
-    """{"kind":"allow"}"""                             -> "allow",
-    """{"kind":"blocked"}"""                           -> "blocked",
-    """{"kind":"extraAllowed"}"""                      -> "extra_allowed",
-    """{"kind":"extraBlocked"}"""                      -> "extra_blocked",
-    """{"kind":"noProfile"}"""                         -> "no_profile",
-    """{"kind":"paused"}"""                            -> "paused",
-    """{"kind":"schedule"}"""                          -> "schedule",
-    """{"kind":"timeLimit"}"""                         -> "time_limit",
-    """{"kind":"manual"}"""                            -> "manual",
-    """{"kind":"unmanaged"}"""                         -> "unmanaged_mac",
-    """{"kind":"category","slug":"social-media"}"""    -> "category:social-media",
-    // #1518: new canonical JSON kind backfills to the new text form.
-    """{"kind":"appTimeLimit","label":"youtube"}"""    -> "app_time_limit:youtube",
-    // Legacy kind from V40-migrated rows still backfills to the new text form,
-    // so the rolled-out fleet converges on a single canonical wire string.
-    """{"kind":"siteTimeLimit","label":"netflix"}"""   -> "app_time_limit:netflix",
-    """{"kind":"appBlocked","appId":"netflix"}"""      -> "app:netflix",
-    """{"kind":"unknown","raw":"some-legacy-value"}""" -> "some-legacy-value",
+  private val derivedCases: List[(String, String)] =
+    BlockReason.allCases.map(r => (r.toJson, BlockReason.asWire(r)))
+
+  /**
+   * Legacy `siteTimeLimit` kind from V40-migrated rows still backfills to the new canonical wire
+   * text (#1518). The SPA-facing decoder accepts it as an alias, but it is not part of `allCases`
+   * (it never round-trips out of any encoder), so it is tested explicitly here to pin the SQL alias
+   * arm.
+   */
+  private val legacyCases: List[(String, String)] = List(
+    """{"kind":"siteTimeLimit","label":"netflix"}""" -> "app_time_limit:netflix",
   )
+
+  private val cases: List[(String, String)] = derivedCases ++ legacyCases
 
   override def spec = suite("ReasonTextBackfill")(
     test("backfills connection_events.reason_text from reason JSONB") {

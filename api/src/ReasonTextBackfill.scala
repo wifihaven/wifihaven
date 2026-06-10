@@ -29,9 +29,11 @@ object ReasonTextBackfill {
   private val MaxBatchesPerTable = 10_000
 
   /**
-   * SQL fragment that converts a `reason` JSONB into its pre-V40 wire-format TEXT. Must agree with
-   * `BlockReason.asWire` for every kind. `unknown` rows emit their `raw` field verbatim so a second
-   * `fromWire` reparse yields the same `Unknown(raw)`.
+   * SQL fragment that converts a `reason` JSONB into its pre-V40 wire-format TEXT. Mirrors
+   * `BlockReason.asWire` for every kind — pinned by `ReasonTextBackfillSpec`, which derives its
+   * expected (JSON shape → wire text) cases from `BlockReason.allCases` so a new BlockReason case
+   * forces this CASE to grow a matching arm or the test fails. `unknown` rows emit their `raw`
+   * field verbatim so a second `fromWire` reparse yields the same `Unknown(raw)`.
    */
   private val asWireSql: Fragment =
     fr"""CASE reason->>'kind'
@@ -45,6 +47,7 @@ object ReasonTextBackfill {
            WHEN 'timeLimit'     THEN 'time_limit'
            WHEN 'manual'        THEN 'manual'
            WHEN 'unmanaged'     THEN 'unmanaged_mac'
+           WHEN 'defaultDeny'   THEN 'default_deny'
            WHEN 'category'      THEN 'category:'        || (reason->>'slug')
            -- #1518: encoder now emits `appTimeLimit`; the legacy `siteTimeLimit`
            -- kind is still in DB rows written before this PR (V40 migrated text
