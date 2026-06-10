@@ -34,19 +34,6 @@ object HostId {
   def ip(addr: IpAddress): HostId =
     if addr.value.contains(':') then IPv6(addr) else IPv4(addr)
 
-  /**
-   * Best-effort parse of a raw string into a `HostId`. Used **only** for the one-shot DB migration
-   * of legacy `hostname` columns whose contents predate the tagged-union wire contract. Errs on
-   * FQDN when ambiguous (per #391).
-   */
-  def parseLegacy(raw: String): Either[String, HostId] =
-    IpAddress.parse(raw) match {
-      case Right(ip) =>
-        Right(if ip.value.contains(':') then IPv6(ip) else IPv4(ip))
-      case Left(_)   =>
-        Hostname.parse(raw).map(Fqdn(_))
-    }
-
   // ── Wire form: {"type":"fqdn"|"ipv4"|"ipv6","value":"..."} ─────────────
 
   private case class Wire(`type`: String, value: String) derives JsonCodec

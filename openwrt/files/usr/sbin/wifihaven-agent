@@ -26,6 +26,7 @@ local log        = require("wifihaven.log")
 local clock      = require("wifihaven.clock")
 local paths      = require("wifihaven.paths")
 local block_page = require("wifihaven.block_page")
+local lan_warn   = require("wifihaven.lan_warn")
 local selfheal   = require("wifihaven.selfheal")
 local version    = require("wifihaven.version")
 
@@ -44,7 +45,16 @@ local api_url       = uci_get("api_url",              "http://192.168.1.1:8080")
 -- self-hosted installs (SPA bundled into the API image, same host) and any
 -- router that never sets it keep today's behavior exactly. This is router-side
 -- deployment config (UCI), not policy, so it is not on the API↔router wire.
-local block_page_url = block_page.resolve_base(uci_get("block_page_url", ""), api_url)
+local raw_block_page_url = uci_get("block_page_url", "")
+local block_page_url = block_page.resolve_base(raw_block_page_url, api_url)
+-- #1174: noisy-but-informational startup check. If the router is enrolled
+-- against a LAN api_url AND block_page_url is unset, the kid's block-page
+-- redirect will fall back to api_url and point at a LAN host the kid's
+-- browser can't reach in a cloud deploy. Self-hosted installs legitimately
+-- pair a LAN api_url with the bundled-SPA shape, so this is NOT a hard
+-- refusal — just a logread-spottable warning the operator can grep for.
+local lan_warn_msg = lan_warn.check(api_url, raw_block_page_url)
+if lan_warn_msg then log.warn(lan_warn_msg) end
 local router_token  = uci_get("router_token",         "")
 local router_id     = uci_get("router_id",            "")
 local lan_prefix    = uci_get("lan_prefix",           "192.168.1.")

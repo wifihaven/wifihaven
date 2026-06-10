@@ -2563,3 +2563,64 @@ describe("render.nft global composition — precedence compositions (#1322)", fu
       1, true))
   end)
 end)
+
+-- ── #1174 schedule-block + ui-host allow pin ──────────────────────────────
+--
+-- The original prod incident: a kid under a scheduled downtime window couldn't
+-- reach the block page (served from wifihaven.net), because the @blocked_macs
+-- drop had no carve-out for the SPA hosts. After #1318/#1319/#1321 the SPA
+-- hosts ride in @global_allow, so the per-MAC schedule drop must carry
+-- `ip daddr != @global_allow` (and the v6 sibling) for every configured ui host.
+describe("render.nft #1174 schedule-block + ui-host allow", function()
+  -- snap_global with the kid MAC blocked-by-Schedule and the canonical SPA
+  -- ui-host set parked in global.extraAllowed (mirrors the prod render.yaml
+  -- WIFIHAVEN_UI_ALLOWED_HOSTS value).
+  local function snap_174()
+    local s = snap_global()
+    s.global.extraAllowed = { "api.wifihaven.net", "wifihaven.net", "www.wifihaven.net" }
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    return s
+  end
+
+  it("schedule-blocked MAC's per-MAC drop carries `!= @global_allow` (v4 + v6)", function()
+    local nft = render.nft(snap_174())
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip daddr != @global_allow log prefix \"wh_drop:aa:bb:cc:11:22:33:Schedule \" counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Schedule\"",
+      1, true))
+    assert.truthy(nft:find(
+      "ether saddr aa:bb:cc:11:22:33 ip6 daddr != @global_allow6 log prefix \"wh_drop:aa:bb:cc:11:22:33:Schedule \" counter drop comment \"wh_drop:aa:bb:cc:11:22:33:Schedule\"",
+      1, true))
+  end)
+
+  it("dnsmasq emits one merged nftset= per SPA host pointing at @global_allow / @global_allow6", function()
+    local conf = render.dnsmasq(snap_174())
+    for _, host in ipairs({ "wifihaven.net", "www.wifihaven.net", "api.wifihaven.net" }) do
+      assert.truthy(
+        conf:find("nftset=/" .. host .. "/4#inet#wifihaven#global_allow,6#inet#wifihaven#global_allow6",
+                  1, true),
+        "missing global_allow nftset directive for " .. host)
+    end
+  end)
+
+  it("no per-(MAC, ui-host) ea_ rule appears — ui hosts ride global only (#1321/#1489)", function()
+    -- The schedule-block drop must not be carved by ea_aa_bb_cc_..._wifihaven_net;
+    -- @global_allow is the sole carve-out path for ui hosts post-#1321, so any ea_
+    -- spec for them would be the pre-#1318 redundancy we explicitly retired.
+    local nft = render.nft(snap_174())
+    assert.is_nil(nft:find("ea_aa_bb_cc_11_22_33_wifihaven_net",     1, true))
+    assert.is_nil(nft:find("ea_aa_bb_cc_11_22_33_www_wifihaven_net", 1, true))
+    assert.is_nil(nft:find("ea_aa_bb_cc_11_22_33_api_wifihaven_net", 1, true))
+  end)
+
+  it("empty ui-host allow → no @global_allow carve in the schedule drop (no-op control)", function()
+    -- The control: with no ui hosts configured the schedule drop is family-
+    -- agnostic again (no `ip daddr` predicate), so the regression test above
+    -- only fires when global.extraAllowed is actually populated.
+    local s = snap_global()
+    s.profiles["3"].rules.blocked     = true
+    s.profiles["3"].rules.blockReason = "Schedule"
+    local nft = render.nft(s)
+    assert.is_nil(nft:find("!= @global_allow", 1, true))
+  end)
+end)

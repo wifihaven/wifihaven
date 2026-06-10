@@ -1762,20 +1762,6 @@ object BlockReason {
   private val byJsonKind: Map[String, BlockReason] =
     NullaryCases.map(r => r.jsonKind -> r).toMap
 
-  // #1605: enumerate every BlockReason for tests to drive their case lists
-  // from. The exhaustive-match `asWire` / `JsonEncoder` are what force this
-  // list to stay in sync with the sealed trait — a new case fails compile
-  // there first, prompting the operator to add it here too. Tests that
-  // string-test all wire forms (e.g. ReasonTextBackfillSpec) can iterate
-  // this list, so the SQL CASE in `ReasonTextBackfill.asWireSql` is pinned
-  // to whatever the Scala-side encoders emit.
-  val allCases: List[BlockReason] = NullaryCases ++ List(
-    Category(BlocklistId.parse("ads").toOption.get),
-    AppTimeLimit("youtube"),
-    AppBlocked("netflix"),
-    Unknown("some-raw"),
-  )
-
   // Back-compat legacy wire aliases preserved verbatim from pre-#1605. These
   // accept-only paths support snapshot-form (PascalCase) reasons, the legacy
   // "host" / "allowed" / "device_not_enrolled" strings, and any other

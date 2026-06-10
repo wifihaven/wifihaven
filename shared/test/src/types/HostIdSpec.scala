@@ -6,42 +6,6 @@ import zio.test.*
 object HostIdSpec extends ZIOSpecDefault {
 
   def spec = suite("HostId")(
-    suite("legacy parse heuristic")(
-      test("IPv4 literal becomes IPv4 variant") {
-        val r = HostId.parseLegacy("192.0.2.1")
-        assertTrue(r.exists {
-          case HostId.IPv4(a) => a.value == "192.0.2.1"
-          case _              => false
-        })
-      },
-      test("IPv6 literal becomes IPv6 variant") {
-        val r = HostId.parseLegacy("2001:db8::1")
-        assertTrue(r.exists {
-          case HostId.IPv6(a) => a.value == "2001:db8::1"
-          case _              => false
-        })
-      },
-      test("FQDN becomes Fqdn variant") {
-        val r = HostId.parseLegacy("youtube.com")
-        assertTrue(r.exists {
-          case HostId.Fqdn(h) => h.value == "youtube.com"
-          case _              => false
-        })
-      },
-      test("ambiguous numeric single-label errs on FQDN (no false IP)") {
-        // "10" is not a valid IPv4 (needs 4 octets) but IS a valid
-        // single-label hostname. The heuristic must err on FQDN here, not
-        // misclassify it as some kind of IP fragment.
-        val r = HostId.parseLegacy("10")
-        assertTrue(r.exists {
-          case HostId.Fqdn(h) => h.value == "10"
-          case _              => false
-        })
-      },
-      test("empty string is rejected") {
-        assertTrue(HostId.parseLegacy("").isLeft)
-      },
-    ),
     suite("wire JSON form")(
       test("encodes FQDN as {type:fqdn,value:...}") {
         val h    = HostId.Fqdn(Hostname.parse("youtube.com").toOption.get)
