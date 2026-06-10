@@ -603,18 +603,50 @@ describe("usage.tracker", function()
     assert.equal(2, t.active_samples["de:ad:be:ef:00:01|8.8.8.8"])
   end)
 
-  it("tracks each dst_ip independently for the same mac", function()
+  -- #842 (foreground-host heuristic): within a single sample tick, only the
+  -- (mac, dst_ip) with the largest delta — per MAC — gets credited as the
+  -- active sample. Background flows that get a slice of every sample no
+  -- longer inflate time-on-site.
+  it("credits only the largest-delta dst_ip per MAC per sample (#842)", function()
+    local t = usage.new_tracker()
+    -- Sample 1: A is the larger flow (200 > 100 from baseline 0).
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),  -- delta 100 (B)
+      s("aa:bb:cc:11:22:33", "5.6.7.8", 200),  -- delta 200 (A) — winner
+    })
+    -- Sample 2: A wins again (delta 600 vs 0).
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),  -- no growth
+      s("aa:bb:cc:11:22:33", "5.6.7.8", 800),  -- delta 600 — winner
+    })
+    assert.equal(0, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"] or 0)
+    assert.equal(2, t.active_samples["aa:bb:cc:11:22:33|5.6.7.8"])
+  end)
+
+  -- Foreground heuristic is per-MAC: two devices each get their own winner
+  -- in the same sample tick.
+  it("picks the foreground dst_ip independently per MAC (#842)", function()
     local t = usage.new_tracker()
     usage.tracker_sample(t, {
-      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
-      s("aa:bb:cc:11:22:33", "5.6.7.8", 200),
-    })
-    usage.tracker_sample(t, {
-      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),
-      s("aa:bb:cc:11:22:33", "5.6.7.8", 800),
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 100),   -- mac1 only flow → winner
+      s("de:ad:be:ef:00:01", "8.8.8.8",  50),   -- mac2 small flow
+      s("de:ad:be:ef:00:01", "9.9.9.9", 900),   -- mac2 winner
     })
     assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
-    assert.equal(2, t.active_samples["aa:bb:cc:11:22:33|5.6.7.8"])
+    assert.equal(0, t.active_samples["de:ad:be:ef:00:01|8.8.8.8"] or 0)
+    assert.equal(1, t.active_samples["de:ad:be:ef:00:01|9.9.9.9"])
+  end)
+
+  -- Tie-break: lexically smallest dst_ip wins. Deterministic so the choice
+  -- is reproducible in the wire output.
+  it("breaks ties on equal delta by lexically smallest dst_ip (#842)", function()
+    local t = usage.new_tracker()
+    usage.tracker_sample(t, {
+      s("aa:bb:cc:11:22:33", "5.6.7.8", 500),
+      s("aa:bb:cc:11:22:33", "1.2.3.4", 500),
+    })
+    assert.equal(1, t.active_samples["aa:bb:cc:11:22:33|1.2.3.4"])
+    assert.equal(0, t.active_samples["aa:bb:cc:11:22:33|5.6.7.8"] or 0)
   end)
 
   -- #717: counter total is bytes + bytes_out, so a download-only flow still
