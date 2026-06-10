@@ -155,7 +155,7 @@ object AppHostSetAttributionSpec extends ZIOSpec[TestDatabase.AllRepos & Embedde
         // The whole app is ONE limit: a single bar, both hosts aggregated to 20 of 30 minutes.
         assertTrue(mathBars.size == 1) &&
         assertTrue(mathBars.head.usedMins == 20) &&
-        assertTrue(mathBars.head.remainingMins == 10) &&
+        assertTrue(mathBars.head.remainingMins.contains(10)) &&
         // Both app hosts are exempt from the daily cap, so only the 60 m of general browsing counts.
         assertTrue(status.usedMins == 60)
       }

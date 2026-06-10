@@ -1006,7 +1006,7 @@ object TimeRoutes {
           s.domainPattern,
           s.dailyLimitMinutes,
           s.usedMinutes,
-          (s.dailyLimitMinutes - s.usedMinutes).max(0),
+          s.dailyLimitMinutes.map(lim => (lim - s.usedMinutes).max(0)),
         )
       }
       deviceSummaries = devices.map { d =>
@@ -1285,7 +1285,7 @@ object TimeRoutes {
           s.domainPattern,
           s.dailyLimitMinutes,
           used,
-          (s.dailyLimitMinutes - used).max(0),
+          s.dailyLimitMinutes.map(lim => (lim - used).max(0)),
         )
       }
     } yield DeviceTimeStatus(

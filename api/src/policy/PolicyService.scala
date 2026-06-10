@@ -481,7 +481,8 @@ class PolicyServiceLive(
     val resetAt     = PolicyService.nextDailyResetAfter(settings, now).toString
     val appLimitHit = state.perApp.find { sd =>
       sd.hosts.exists(hp => HostMatch.matchesPattern(hostname, hp)) &&
-      sd.usedMinutes >= sd.dailyLimitMinutes
+      // #1627: same Option-aware exhaustion check as `appCapExhaustedHosts`.
+      sd.dailyLimitMinutes.exists(lim => sd.usedMinutes >= lim)
     }
     appLimitHit
       .map(sd =>
@@ -772,7 +773,11 @@ object PolicyService {
    */
   private[policy] def appCapExhaustedHosts(state: ProfileDayState): List[Hostname] =
     state.perApp.collect {
-      case sd if sd.usedMinutes >= sd.dailyLimitMinutes => sd.hosts.map(Hostname.unsafe)
+      // #1627: `dailyLimitMinutes = None` means "no per-app cap configured" —
+      // never exhausted. Only an app with `Some(lim)` and `usedMinutes >= lim`
+      // contributes hosts to extraBlocked here.
+      case sd if sd.dailyLimitMinutes.exists(lim => sd.usedMinutes >= lim) =>
+        sd.hosts.map(Hostname.unsafe)
     }.flatten
 
   /**
@@ -783,7 +788,14 @@ object PolicyService {
    */
   private[policy] def exemptUnderCapHosts(state: ProfileDayState): List[Hostname] =
     state.perApp.collect {
-      case sd if sd.exemptFromDaily && sd.usedMinutes < sd.dailyLimitMinutes =>
+      // #1627: `dailyLimitMinutes = None` means "no per-app cap configured" —
+      // an exempt-from-daily app with no cap is treated as always-under, so it
+      // always carves around whole-MAC blocks (Paused / Schedule / TimeLimit).
+      // `forall` returns true for None, so the gate is "exempt AND (no cap OR
+      // still under cap)" — same family as `appCapExhaustedHosts` above so the
+      // two cannot disagree on what "exhausted" means (AGENTS.md §single-
+      // source-of-truth).
+      case sd if sd.exemptFromDaily && sd.dailyLimitMinutes.forall(sd.usedMinutes < _) =>
         sd.hosts.map(Hostname.unsafe)
     }.flatten
 

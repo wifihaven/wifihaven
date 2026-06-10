@@ -38,7 +38,12 @@ final case class ProfileDayState(
 final case class AppDayState(
     label: String,
     domainPattern: String,
-    dailyLimitMinutes: Int,
+    // #1627: `None` means "no per-app limit configured" — distinct from a
+    // 0-minute cap. The per-app cap-exhaustion test (`appCapExhaustedHosts`)
+    // and the exempt carve-out gate (`exemptUnderCapHosts`) both read this
+    // field as Option-aware: no limit ⇒ never exhausted, exempt-with-no-limit
+    // ⇒ always carve.
+    dailyLimitMinutes: Option[Int],
     usedMinutes: Int,
     exemptFromDaily: Boolean,
     // #1505: the app's full host-set for this limit. `domainPattern` stays as a single
@@ -421,7 +426,7 @@ object TimeStatusService {
    */
   private[policy] def groupAppLimits(
       appLimits: List[AppTimeLimit],
-  ): List[(AppId, String, Int, Boolean, List[String], String)] =
+  ): List[(AppId, String, Option[Int], Boolean, List[String], String)] =
     appLimits
       .groupBy(_.appId)
       .toList
@@ -429,7 +434,12 @@ object TimeStatusService {
         val label = lims.head.label
         val hosts = lims.map(_.domainPattern).distinct
         val rep   = hosts.minByOption(_.length).getOrElse(label)
-        (appId, label, lims.map(_.dailyMinutes).max, lims.exists(_.exemptFromDaily), hosts, rep)
+        // #1627: per-app daily_minutes is uniform across an app's synthesized
+        // rows (one assignment, many hosts). Either every row carries the
+        // same Some(n) or every row carries None. `flatten.maxOption` picks
+        // the limit when set and yields None when no row has one.
+        val daily = lims.flatMap(_.dailyMinutes).maxOption
+        (appId, label, daily, lims.exists(_.exemptFromDaily), hosts, rep)
       }
       .sortBy(_._2)
 

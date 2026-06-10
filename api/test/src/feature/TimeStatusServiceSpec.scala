@@ -326,7 +326,9 @@ object TimeStatusServiceSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPos
         assertTrue(
           stOpt.exists(
             _.perApp.exists(p =>
-              p.domainPattern == "mathacademy.com" && p.usedMinutes >= p.dailyLimitMinutes,
+              p.domainPattern == "mathacademy.com" && p.dailyLimitMinutes.exists(
+                p.usedMinutes >= _,
+              ),
             ),
           ),
         )

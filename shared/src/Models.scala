@@ -259,7 +259,13 @@ case class AppTimeLimit(
     id: AppTimeLimitId,
     profileId: ProfileId,
     domainPattern: String,
-    dailyMinutes: Int,
+    // #1627: `None` means "no per-app limit configured" — distinct from a
+    // 0-minute cap. The carve-out gate in `PolicyService.exemptUnderCapHosts`
+    // treats `None` as "never exhausted" so an exempt-from-daily app with no
+    // own cap always carves around whole-MAC blocks. Previously the repo
+    // projected the nullable column through COALESCE(..., 0), collapsing the
+    // two cases and making the carve unreachable for the no-limit shape.
+    dailyMinutes: Option[Int],
     label: String,
     exemptFromDaily: Boolean = true,
     // #1564: typed FK to apps(id), carried straight from the listForProfile join. This is the
@@ -833,9 +839,12 @@ case class ConnectionEventAggRow(
 case class AppUsage(
     label: String,
     domainPattern: String,
-    limitMins: Int,
+    // #1627: `None` means "no per-app limit configured" — distinct from a
+    // 0-minute cap and from "limit set but not yet hit". When the limit is
+    // None there is no "remaining" quantity, so `remainingMins` follows.
+    limitMins: Option[Int],
     usedMins: Int,
-    remainingMins: Int,
+    remainingMins: Option[Int],
 ) derives JsonCodec
 
 case class DeviceTimeStatus(

@@ -257,7 +257,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(status.remainingMins.contains(60)) &&
           assertTrue(
             status.appUsage.exists(su =>
-              su.label == "app:*.youtube.com" && su.usedMins == 20 && su.remainingMins == 10,
+              su.label == "app:*.youtube.com" && su.usedMins == 20 && su.remainingMins.contains(10),
             ),
           )
       },
@@ -324,7 +324,7 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           assertTrue(status.remainingMins.contains(60)) && // 120 - 60 = 60
           assertTrue(
             status.appUsage.exists(su =>
-              su.label == "app:*.youtube.com" && su.usedMins == 60 && su.remainingMins == 0,
+              su.label == "app:*.youtube.com" && su.usedMins == 60 && su.remainingMins.contains(0),
             ),
           )
       },
@@ -1080,10 +1080,10 @@ object TimeApiSpec extends ZIOSpec[TestDatabase.AllRepos & EmbeddedPostgres & Cl
           list <- ZIO.fromEither(body.fromJson[List[ProfileTimeStatus]])
           kids = list.find(_.profileId == kidsId).get
           yt   = kids.appUsage.find(_.label == "app:youtube.com").get
-        } yield assertTrue(yt.usedMins == 40) && // both devices summed
-          assertTrue(yt.limitMins == 30) &&
-          assertTrue(yt.remainingMins == 0) &&   // clamped to 0
-          assertTrue(kids.usedMins == 0)         // site usage NOT counted in total
+        } yield assertTrue(yt.usedMins == 40) &&      // both devices summed
+          assertTrue(yt.limitMins.contains(30)) &&
+          assertTrue(yt.remainingMins.contains(0)) && // clamped to 0
+          assertTrue(kids.usedMins == 0)              // site usage NOT counted in total
       },
       // #1546: per-device `deviceSummaries` must share ONE exempt/overlap definition with the
       // canonical headline `usedMinutes` (via TimeStatusService.usedSecondsByMac), so the summed
