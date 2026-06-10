@@ -6,6 +6,8 @@ import zio.config.magnolia.*
 import zio.config.typesafe.*
 import zio.test.*
 
+import java.nio.file.{Files, Paths}
+
 /**
  * #1221: `db.poolSize` must be configurable per deployment. In prod the value arrives as the
  * `WIFIHAVEN_DB_POOL_SIZE` env var, which `docker/entrypoint.sh` substitutes into the rendered
@@ -49,6 +51,27 @@ object ConfigSpec extends ZIOSpecDefault {
     test("local-dev default (5) parses when no override is supplied") {
       for cfg <- load("5")
       yield assertTrue(cfg.db.poolSize == 5)
+    },
+    // #1607: pin the user-token JWT expiry default. The operator was hitting
+    // the re-login flow ~daily; this asserts the in-repo default minted into
+    // a fresh self-hosted install is 30 days, not 24 hours. Per-deploy
+    // override flows through WIFIHAVEN_JWT_HOURS via docker/entrypoint.sh.
+    test("config/application.conf.example default for jwt.expiryHours is 720 (30 days)") {
+      // Walk up from cwd to find the repo root containing config/application.conf.example.
+      // Mill's cwd at test time is not the repo root.
+      def findExample(p: java.nio.file.Path): java.nio.file.Path =
+        if (Files.exists(p.resolve("config/application.conf.example")))
+          p.resolve("config/application.conf.example")
+        else if (p.getParent != null) findExample(p.getParent)
+        else throw new RuntimeException("could not find config/application.conf.example")
+      val text = new String(Files.readAllBytes(findExample(Paths.get(".").toAbsolutePath)))
+      for cfg <-
+          read(
+            deriveConfig[AppConfig]
+              .nested("wifihaven")
+              .from(TypesafeConfigProvider.fromHoconString(text)),
+          )
+      yield assertTrue(cfg.jwt.expiryHours == 720)
     },
   )
 }

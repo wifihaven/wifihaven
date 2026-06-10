@@ -14,7 +14,7 @@ set -euo pipefail
 : "${WIFIHAVEN_STATIC_DIR:=/app/web}"
 : "${WIFIHAVEN_SERVE_SPA:=true}"
 : "${WIFIHAVEN_JWT_SECRET:=staging-jwt-secret-do-not-use-in-prod-32ch}"
-: "${WIFIHAVEN_JWT_HOURS:=24}"
+: "${WIFIHAVEN_JWT_HOURS:=720}"  # #1607: 30d default; see application.conf.example
 : "${WIFIHAVEN_LOG_LEVEL:=INFO}"
 : "${WIFIHAVEN_DEBUG:=}"
 : "${WIFIHAVEN_ALLOWED_ORIGINS:=}"
