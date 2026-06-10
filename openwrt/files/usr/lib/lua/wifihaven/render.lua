@@ -1126,73 +1126,78 @@ function M.nft(snapshot, opts)
       or has_global_block or g_blocked then
     ind("chain wifihaven_block_nat {")
     ind2("type nat hook prerouting priority dstnat; policy accept;")
+    -- #383: every block-page DNAT predicate emits a pair of rules — TCP/80 →
+    -- the HTTP uhttpd listener AND TCP/443 → the parallel TLS uhttpd listener
+    -- (self-signed cert, CN block.wifihaven.local). HTTPS used to time out
+    -- silently; now the user sees a cert warning and, after clicking through,
+    -- the same block page. The cert warning IS the design — we do NOT install
+    -- a CA on managed devices. The pair is emitted via the dnat4 / dnat6
+    -- helpers below so the predicate construction is single-source-of-truth.
+    local function dnat4(predicate)
+      ind2(predicate .. " tcp dport 80 dnat ip to 127.0.0.1:8081")
+      ind2(predicate .. " tcp dport 443 dnat ip to 127.0.0.1:8443")
+    end
+    local function dnat6(predicate)
+      ind2(predicate .. " tcp dport 80 dnat ip6 to ::1:8081")
+      ind2(predicate .. " tcp dport 443 dnat ip6 to ::1:8443")
+    end
     if #blocked_macs_list > 0 then
-      ind2("ether saddr @blocked_macs tcp dport 80 dnat ip to 127.0.0.1:8081")
+      dnat4("ether saddr @blocked_macs")
     end
     -- #421: blocked + extraAllowed → per-MAC v4 DNAT with ea exception.
     -- #1319: ga_suffix adds the @global_allow carve-out so an allowed host is
     -- never redirected to the block page.
     for _, mac in ipairs(blocked_ea_macs) do
-      ind2(string.format(
-        "ether saddr %s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+      dnat4(string.format("ether saddr %s%s%s",
         mac, ea_suffix(mac, "ip"), ga_suffix("ip")))
     end
     for _, p in ipairs(eb_pairs) do
-      ind2(string.format(
-        "ether saddr %s ip daddr @%s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+      dnat4(string.format("ether saddr %s ip daddr @%s%s%s",
         p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
     end
     for _, p in ipairs(bl_pairs) do
-      ind2(string.format(
-        "ether saddr %s ip daddr @%s%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+      dnat4(string.format("ether saddr %s ip daddr @%s%s%s",
         p.mac, bl_set_name(p.id), ea_suffix(p.mac, "ip"), ga_suffix("ip")))
     end
     -- #1319: global block / lockdown v4 DNAT → block page. Carved out only by
     -- @global_allow (per-MAC ea does not save a global block).
     if has_global_block then
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format(
-          "ether saddr %s ip daddr @%s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+        dnat4(string.format("ether saddr %s ip daddr @%s%s",
           mac, GLOBAL_BLOCK4, ga_suffix("ip")))
       end
     end
     if g_blocked then
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format(
-          "ether saddr %s%s tcp dport 80 dnat ip to 127.0.0.1:8081",
-          mac, ga_suffix("ip")))
+        dnat4(string.format("ether saddr %s%s", mac, ga_suffix("ip")))
       end
     end
     -- #353: blockIpOnly v4 DNAT. Same predicate as the forward-chain drop;
     -- the DNAT fires *before* the drop (prerouting < forward), so the
     -- device sees the block page instead of a silent timeout.
     for _, mac in ipairs(bio_macs) do
-      ind2(string.format(
-        "ether saddr %s ip daddr != @%s tcp dport 80 dnat ip to 127.0.0.1:8081",
+      dnat4(string.format("ether saddr %s ip daddr != @%s",
         mac, resolved_set_name(mac)))
     end
-    -- #411: v6 siblings. uhttpd also binds [::1]:8081 (see install.sh).
+    -- #411: v6 siblings. uhttpd also binds [::1]:8081 + [::1]:8443.
     -- `ip6 daddr != ::1` guards against self-DNAT recursion if the block
     -- page itself ever issues an outbound v6 request.
     if #blocked_macs_list > 0 then
-      ind2("ether saddr @blocked_macs ip6 daddr != ::1 tcp dport 80 dnat ip6 to ::1:8081")
+      dnat6("ether saddr @blocked_macs ip6 daddr != ::1")
     end
     -- #421: blocked + extraAllowed → per-MAC v6 DNAT with ea6 exception.
     -- `ip6 daddr != ::1` guards against self-DNAT (same as the @blocked_macs
     -- v6 line above).
     for _, mac in ipairs(blocked_ea_macs) do
-      ind2(string.format(
-        "ether saddr %s ip6 daddr != ::1%s%s tcp dport 80 dnat ip6 to ::1:8081",
+      dnat6(string.format("ether saddr %s ip6 daddr != ::1%s%s",
         mac, ea_suffix(mac, "ip6"), ga_suffix("ip6")))
     end
     for _, p in ipairs(eb_pairs) do
-      ind2(string.format(
-        "ether saddr %s ip6 daddr @%s%s%s tcp dport 80 dnat ip6 to ::1:8081",
+      dnat6(string.format("ether saddr %s ip6 daddr @%s%s%s",
         p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
     end
     for _, p in ipairs(bl_pairs) do
-      ind2(string.format(
-        "ether saddr %s ip6 daddr @%s%s%s tcp dport 80 dnat ip6 to ::1:8081",
+      dnat6(string.format("ether saddr %s ip6 daddr @%s%s%s",
         p.mac, bl6_set_name(p.id), ea_suffix(p.mac, "ip6"), ga_suffix("ip6")))
     end
     -- #1319: global block / lockdown v6 DNAT → block page. The @global_block6
@@ -1201,15 +1206,13 @@ function M.nft(snapshot, opts)
     -- unconditional, so it carries `ip6 daddr != ::1`.
     if has_global_block then
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format(
-          "ether saddr %s ip6 daddr @%s%s tcp dport 80 dnat ip6 to ::1:8081",
+        dnat6(string.format("ether saddr %s ip6 daddr @%s%s",
           mac, GLOBAL_BLOCK6, ga_suffix("ip6")))
       end
     end
     if g_blocked then
       for _, mac in ipairs(managed_macs) do
-        ind2(string.format(
-          "ether saddr %s ip6 daddr != ::1%s tcp dport 80 dnat ip6 to ::1:8081",
+        dnat6(string.format("ether saddr %s ip6 daddr != ::1%s",
           mac, ga_suffix("ip6")))
       end
     end
@@ -1217,8 +1220,7 @@ function M.nft(snapshot, opts)
     -- self-redirect (the uhttpd listener at ::1 is "not in resolved set"
     -- by definition and we must not DNAT its own responses).
     for _, mac in ipairs(bio_macs) do
-      ind2(string.format(
-        "ether saddr %s ip6 daddr != ::1 ip6 daddr != @%s tcp dport 80 dnat ip6 to ::1:8081",
+      dnat6(string.format("ether saddr %s ip6 daddr != ::1 ip6 daddr != @%s",
         mac, resolved6_set_name(mac)))
     end
     ind("}")

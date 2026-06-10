@@ -903,10 +903,55 @@ overshoot is one usage-report interval (~60 s) plus one policy-poll interval
 
 ### 7.6 Block-page redirect
 
-nftables `dnat` on TCP/80 to `127.0.0.1:8081` (uhttpd). A tiny CGI script
-reads the original destination from conntrack and 302s to
-`http://<api>/blocked?mac=…&host=…&reason=…`. Blocked HTTPS times out (no
-MITM without a CA install — same behavior as commercial parental-control boxes).
+nftables `dnat` on TCP/80 to `127.0.0.1:8081` (uhttpd) AND on TCP/443 to
+`127.0.0.1:8443` (uhttpd with a self-signed cert). The lua handler at
+`/www/wifihaven/handler.lua` reads the requested host from the
+`HTTP_HOST` env, the client MAC from the kernel ARP table keyed by
+`REMOTE_ADDR`, and the per-MAC reason from the agent-written IPC files
+under `/var/run/wifihaven/`. It renders the block page directly — no
+external 302 — so it works when the API is unreachable.
+
+#### HTTPS variant (#383)
+
+Up through Gate 2, blocked HTTPS sites timed out silently — the kid hit
+"this site can't be reached" and had no clue WiFi was filtering. As the
+web HTTPSifies, that gap degrades the UX by year and teaches the wrong
+lesson ("the wifi is broken; find a workaround") instead of the right
+one ("this is blocked; ask a parent").
+
+We now DNAT TCP/443 too, to a sibling uhttpd listener on
+`127.0.0.1:8443` (and `[::1]:8443`) that terminates TLS with a
+self-signed cert. Trade we accept:
+
+- The browser shows a cert warning. The user clicks through (in modern
+  Chrome / Safari / Firefox: "Advanced" → "Proceed anyway") and lands
+  on the same block page as the HTTP path.
+- The cert warning **is** the design. It is honest: the block page IS
+  a non-standard interception of the requested host.
+
+What we explicitly do NOT do:
+
+- **No CA installed on managed devices.** That would be invasive (per-
+  device setup), would escalate the trust model (we'd be sitting in
+  every TLS handshake the device makes), and is not necessary for the
+  block-page UX.
+
+Cert generation lives in
+`/usr/lib/wifihaven/generate-block-page-cert.sh` and is invoked by
+`setup-uhttpd-block-page.sh` before the TLS listener binds. CN is
+`block.wifihaven.local` (a hint — not a real DNS name); RSA-2048; valid
+for 10 years; **idempotent**: subsequent agent restarts reuse the
+existing cert and never rotate it. Keys live at
+`/etc/wifihaven/block_page.crt` and `/etc/wifihaven/block_page.key`.
+
+The DNAT pairing is emitted by a single `dnat4`/`dnat6` helper in
+`render.lua` — every block predicate (whole-MAC, per-(MAC, host),
+per-(MAC, blocklistId), `blockIpOnly`, global block, global lockdown,
+v4 + v6) lands BOTH a TCP/80 → 8081 rule and a TCP/443 → 8443 rule. No
+predicate can drift between the two ports.
+
+Still traffic-layer enforcement — DNS resolves normally; the redirect
+happens at nftables prerouting, exactly the same as HTTP/80.
 
 ## 8. OpnSense agent design  *(pending #94)*
 
