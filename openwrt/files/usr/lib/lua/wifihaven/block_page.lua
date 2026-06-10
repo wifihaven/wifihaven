@@ -93,17 +93,17 @@ function M.resolve_base(block_page_url, api_url)
   return api_url
 end
 
--- Build the destination URL on the block-page host. Reason and mac are passed
--- through as-is; the SPA's React BlockedPage matches against the wire-format
--- MacBlockReason strings ("Paused", "Schedule", "TimeLimit", "Manual").
--- `base_url` is the resolved block-page host (see resolve_base), not
--- necessarily the API URL. (#1174)
-function M.build_dest_url(base_url, host, mac, reason)
+-- Build the destination URL on the block-page host. Only host and mac are
+-- carried — the SPA's React BlockedPage derives the canonical reason
+-- server-side from GET /api/blocked (PolicyService.decide), so the router no
+-- longer needs to pass it through the URL (#679 / #1617). `base_url` is the
+-- resolved block-page host (see resolve_base), not necessarily the API URL.
+-- (#1174)
+function M.build_dest_url(base_url, host, mac)
   if not base_url or base_url == "" then return nil end
   return base_url .. "/blocked"
-      .. "?host="   .. url_encode(host)
-      .. "&reason=" .. url_encode(reason or "")
-      .. "&mac="    .. url_encode(mac or "")
+      .. "?host=" .. url_encode(host)
+      .. "&mac="  .. url_encode(mac or "")
 end
 
 -- Inline copy used when API_URL is not (yet) configured. Mirrors the
@@ -130,11 +130,13 @@ end
 
 -- Render the HTML body for the block page. If base_url is set, returns a tiny
 -- redirect document (meta refresh + JS for compatibility). Otherwise returns a
--- self-contained page with inline copy keyed on `reason`. `base_url` is the
--- resolved block-page host (see resolve_base), not necessarily the API URL.
-function M.render_html(base_url, host, mac, reason)
-  local dest = M.build_dest_url(base_url, host, mac, reason)
-  local copy = M.inline_copy_for(reason)
+-- self-contained page with neutral block copy. The reason-specific copy moved
+-- API-side: the SPA reads GET /api/blocked and renders the canonical message
+-- there (#679 / #1617). `base_url` is the resolved block-page host (see
+-- resolve_base), not necessarily the API URL.
+function M.render_html(base_url, host, mac)
+  local dest = M.build_dest_url(base_url, host, mac)
+  local copy = "This site is blocked."
   local site_line = (host and host ~= "")
     and ("Site: " .. html_escape(host)) or ""
   -- Shared inline style used by both paths so the page is always visible.

@@ -130,58 +130,64 @@ describe("block_page.resolve_base (#1174)", function()
   end)
 end)
 
-describe("block_page.build_dest_url", function()
-  it("emits a fully-formed /blocked URL with host, reason, and mac", function()
+describe("block_page.build_dest_url (#679/#1617: no reason= param)", function()
+  it("emits a fully-formed /blocked URL with host and mac only", function()
     local u = bp.build_dest_url(
-      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(u:find("http://api.example.com/blocked", 1, true))
     assert.truthy(u:find("host=youtube.com", 1, true))
-    assert.truthy(u:find("reason=Paused", 1, true))
     assert.truthy(u:find("mac=aa%3Abb%3Acc%3A11%3A22%3A33", 1, true))
+    -- Reason is derived API-side from GET /api/blocked (PR1 / #1615); the
+    -- router no longer sends it on the redirect URL.
+    assert.is_nil(u:find("reason=", 1, true))
   end)
 
   -- #1174: when the block-page base is the public SPA host (not api_url), the
   -- redirect targets the SPA, not the API host.
   it("targets the SPA host when given the block-page base (#1174)", function()
     local base = bp.resolve_base("https://wifihaven.net", "https://api.wifihaven.net")
-    local u = bp.build_dest_url(base, "youtube.com", "aa:bb:cc:11:22:33", "Schedule")
+    local u = bp.build_dest_url(base, "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(u:find("https://wifihaven.net/blocked", 1, true))
     assert.is_nil(u:find("api.wifihaven.net", 1, true))
+    assert.is_nil(u:find("reason=", 1, true))
   end)
 
   it("returns nil when api_url is not configured", function()
-    assert.is_nil(bp.build_dest_url(nil, "x.com", "aa:bb:cc:11:22:33", "Paused"))
-    assert.is_nil(bp.build_dest_url("", "x.com", "aa:bb:cc:11:22:33", "Paused"))
+    assert.is_nil(bp.build_dest_url(nil, "x.com", "aa:bb:cc:11:22:33"))
+    assert.is_nil(bp.build_dest_url("", "x.com", "aa:bb:cc:11:22:33"))
   end)
 
-  it("tolerates a missing mac/reason (still emits a valid URL for fallback display)", function()
-    local u = bp.build_dest_url("http://api.example.com", "x.com", nil, nil)
+  it("tolerates a missing mac (still emits a valid URL for fallback display)", function()
+    local u = bp.build_dest_url("http://api.example.com", "x.com", nil)
     assert.truthy(u:find("mac=", 1, true))
-    assert.truthy(u:find("reason=", 1, true))
+    assert.is_nil(u:find("reason=", 1, true))
   end)
 end)
 
-describe("block_page.render_html", function()
+describe("block_page.render_html (#679/#1617: no reason= param)", function()
   it("emits a redirect document containing the dest URL when api_url is set", function()
     local html = bp.render_html(
-      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(html:find("window.location.replace", 1, true))
-    assert.truthy(html:find("reason=Paused", 1, true))
     assert.truthy(html:find("http://api.example.com/blocked", 1, true))
+    -- Redirect URL must NOT carry a reason= param — SPA derives the reason
+    -- from GET /api/blocked (PR1 / #1615).
+    assert.is_nil(html:find("reason=", 1, true))
   end)
 
-  -- #580: redirect page must carry a viewport meta and show inline copy so
-  -- iOS Safari users see content even if the cross-origin redirect is blocked.
-  it("redirect page includes viewport meta and visible block reason (#580)", function()
+  -- #580: redirect page must carry a viewport meta and show neutral inline
+  -- copy so iOS Safari users see content even if the cross-origin redirect is
+  -- blocked. Post-#1617 the inline copy is no longer reason-keyed.
+  it("redirect page includes viewport meta and neutral inline copy (#580)", function()
     local html = bp.render_html(
-      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33", "TimeLimit")
+      "http://api.example.com", "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(html:find('name="viewport"', 1, true))
-    assert.truthy(html:find("Daily screen time limit reached.", 1, true))
+    assert.truthy(html:find("This site is blocked.", 1, true))
   end)
 
   -- #580: inline fallback (no api_url) must also carry viewport meta.
   it("inline fallback includes viewport meta (#580)", function()
-    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
+    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(html:find('name="viewport"', 1, true))
   end)
 
@@ -189,18 +195,22 @@ describe("block_page.render_html", function()
   -- host as base, the redirect document points at the SPA, not the API host.
   it("redirect document points at the block-page base, not api_url (#1174)", function()
     local base = bp.resolve_base("https://wifihaven.net", "https://api.wifihaven.net")
-    local html = bp.render_html(base, "youtube.com", "aa:bb:cc:11:22:33", "Schedule")
+    local html = bp.render_html(base, "youtube.com", "aa:bb:cc:11:22:33")
     assert.truthy(html:find("https://wifihaven.net/blocked", 1, true))
     assert.is_nil(html:find("api.wifihaven.net", 1, true))
+    assert.is_nil(html:find("reason=", 1, true))
   end)
 
-  it("falls back to inline copy when api_url is missing", function()
-    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33", "Paused")
-    assert.truthy(html:find("This profile is paused.", 1, true))
+  it("falls back to neutral inline copy when api_url is missing", function()
+    local html = bp.render_html(nil, "youtube.com", "aa:bb:cc:11:22:33")
+    assert.truthy(html:find("This site is blocked.", 1, true))
     assert.is_nil(html:find("window.location.replace", 1, true))
   end)
 
-  it("inline copy covers every MacBlockReason, ExtraBlocked, and a fallback", function()
+  -- inline_copy_for + parse_reasons + parse_blocked_hosts are no longer called
+  -- by the handler (#1617). They remain in the module for now and get deleted
+  -- in PR3 (#1618) along with the agent-side reason-file writes.
+  it("inline copy still resolves MacBlockReason / ExtraBlocked / fallback (kept for PR3)", function()
     assert.equals("This profile is paused.",                  bp.inline_copy_for("Paused"))
     assert.equals("This is scheduled quiet time.",            bp.inline_copy_for("Schedule"))
     assert.equals("Daily screen time limit reached.",         bp.inline_copy_for("TimeLimit"))
@@ -210,13 +220,13 @@ describe("block_page.render_html", function()
     assert.equals("This site is blocked.",                    bp.inline_copy_for(nil))
   end)
 
-  it("inline copy names the blocklist for a category:<id> reason (#594)", function()
+  it("inline copy names the blocklist for a category:<id> reason (#594, kept for PR3)", function()
     assert.equals("Blocked category: ads.",   bp.inline_copy_for("category:ads"))
     assert.equals("Blocked category: adult.", bp.inline_copy_for("category:adult"))
   end)
 
   it("escapes the host in the inline page so it can't break out of HTML", function()
-    local html = bp.render_html(nil, "<script>alert(1)</script>", nil, "Paused")
+    local html = bp.render_html(nil, "<script>alert(1)</script>", nil)
     assert.is_nil(html:find("<script>alert(1)</script>", 1, true))
     assert.truthy(html:find("&lt;script&gt;", 1, true))
   end)
