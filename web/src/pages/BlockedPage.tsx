@@ -18,9 +18,9 @@ import type { AccessRequestKind, BlockedInfoResponse } from '@/types/api'
 //   - app_time_limit → "Out of time on this app"
 //   - extra_blocked → "Blocked by your parent"
 //
-// Fallback: if `reason` is supplied as a query param (older router serving the
-// MacBlockReason string directly, pre-API path), we still render the legacy
-// copy so a stale OpenWRT agent doesn't show a blank page during rollout.
+// #1615: the API is the only source of body copy and CTA kinds. The router
+// still appends `?reason=` to the redirect URL until PR2 (#1617), but the SPA
+// ignores it — it's kid-supplied input and the API is canonical.
 
 function copyFor(info: BlockedInfoResponse): string {
   if (!info.blocked) return 'This page is not blocked for this device.'
@@ -44,28 +44,10 @@ function copyFor(info: BlockedInfoResponse): string {
   }
 }
 
-function legacyCopy(reason: string, until?: string | null): string {
-  if (reason === 'Paused') return 'Your profile is paused.'
-  if (reason === 'Schedule') return until ? `This is scheduled quiet time until ${until}.` : 'Outside allowed time.'
-  if (reason === 'TimeLimit') return 'Out of time today.'
-  if (reason === 'Manual') return 'This device has been blocked by a parent.'
-  if (reason === 'ExtraBlocked') return 'This site is blocked by the household.'
-  // #961 — unmanaged-MAC fallthrough. Sent by the router when an HTTP/80
-  // request originates from a MAC not enrolled in any profile and the
-  // household policy is `block`.
-  if (reason === 'device_not_enrolled') return 'This device is not enrolled. Ask the household admin to add it.'
-  if (reason.startsWith('app_time_limit')) return 'Out of time on this app today.'
-  if (reason.startsWith('category:')) return `Blocked category: ${reason.slice('category:'.length)}.`
-  if (reason === 'extra_blocked') return 'Blocked by your parent.'
-  return 'Access blocked.'
-}
-
 export function BlockedPage() {
   const [params] = useSearchParams()
-  const host       = params.get('host') ?? ''
-  const mac        = params.get('mac') ?? ''
-  const legacyReason = params.get('reason') ?? ''
-  const legacyUntil  = params.get('until')
+  const host = params.get('host') ?? ''
+  const mac  = params.get('mac') ?? ''
 
   const [info, setInfo] = useState<BlockedInfoResponse | null>(null)
   const [error, setError] = useState<boolean>(false)
@@ -80,16 +62,11 @@ export function BlockedPage() {
     return () => { cancelled = true }
   }, [mac, host])
 
-  // Prefer the API result when it arrives. Until then (or on error), fall back
-  // to the legacy `reason` query param the router still sends so a stale
-  // router agent or a slow API doesn't show a blank page.
   const body =
-    info != null && info.blocked ? copyFor(info)
-    : legacyReason                ? legacyCopy(legacyReason, legacyUntil)
-    : info != null                ? copyFor(info) // info.blocked === false
-    : error                       ? 'Access blocked.'
-    : mac && host                 ? '…'
-    :                               'Access blocked.'
+    info != null   ? copyFor(info)
+    : error        ? 'Access blocked.'
+    : mac && host  ? '…'
+    :                'Access blocked.'
 
   const profileLine = info?.blocked && info.profileName
     ? `for ${info.profileName}`
@@ -106,7 +83,7 @@ export function BlockedPage() {
         </div>
         {info && <UsageToday info={info} />}
         {mac && host
-          ? <AskParent mac={mac} host={host} info={info} legacyReason={legacyReason} />
+          ? <AskParent mac={mac} host={host} info={info} />
           : <p className="text-brand-text-muted text-sm">Ask a parent to adjust your settings.</p>
         }
       </div>
@@ -146,30 +123,21 @@ function UsageToday({ info }: { info: BlockedInfoResponse }) {
 }
 
 /**
- * #960: kid-side CTA. Maps the block reason (API `reasonClass` first, legacy
- * `reason` query param as fallback) to the request kinds that make sense for
- * that reason — e.g. `time_limit` offers only "ask for more time", a category
- * block offers only "ask to unblock this site". POSTs to the public
- * `/api/access-requests` endpoint; no kid-side credentials.
+ * #960: kid-side CTA. Maps the API `reasonClass` to the request kinds that
+ * make sense for that reason — e.g. `time_limit` offers only "ask for more
+ * time", a category block offers only "ask to unblock this site". POSTs to
+ * the public `/api/access-requests` endpoint; no kid-side credentials.
  */
-function offeredKindsFor(info: BlockedInfoResponse | null, legacy: string): AccessRequestKind[] {
+function offeredKindsFor(info: BlockedInfoResponse | null): AccessRequestKind[] {
   const cls = info?.blocked ? info.reasonClass : null
   if (cls === 'paused')          return ['unpause', 'extension']
   if (cls === 'schedule')        return ['unpause', 'extension']
   if (cls === 'time_limit')      return ['extension']
-  if (cls === 'app_time_limit') return ['extension', 'exemption']
+  if (cls === 'app_time_limit')  return ['extension', 'exemption']
   if (cls === 'category')        return ['exemption']
   if (cls === 'extra_blocked')   return ['exemption']
-  // Fall back to the legacy reason string for stale router agents.
-  if (legacy === 'Paused')                 return ['unpause', 'extension']
-  if (legacy === 'Schedule')               return ['unpause', 'extension']
-  if (legacy === 'TimeLimit')              return ['extension']
-  if (legacy === 'ExtraBlocked')           return ['exemption']
-  if (legacy === 'Manual')                 return ['exemption']
-  if (legacy === 'extra_blocked')          return ['exemption']
-  if (legacy.startsWith('category:'))      return ['exemption']
-  if (legacy.startsWith('app_time_limit'))   return ['extension', 'exemption']
-  // Unknown reason — offer everything so the kid still has a way through.
+  // API in flight or unknown class — offer everything so the kid still has a
+  // way through.
   return ['extension', 'exemption', 'unpause']
 }
 
@@ -185,14 +153,12 @@ function AskParent({
   mac,
   host,
   info,
-  legacyReason,
 }: {
   mac: string
   host: string
   info: BlockedInfoResponse | null
-  legacyReason: string
 }) {
-  const kinds = offeredKindsFor(info, legacyReason)
+  const kinds = offeredKindsFor(info)
   const [note, setNote] = useState('')
   const [sending, setSending] = useState<AccessRequestKind | null>(null)
   const [sent, setSent] = useState(false)
