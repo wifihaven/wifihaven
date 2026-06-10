@@ -1641,24 +1641,50 @@ case class PolicySnapshot(
 // type-enforced: BlockRules.blockReason is typed Option[MacBlockReason], so a
 // router-only reason cannot leak into the snapshot field.
 
-sealed trait BlockReason
+// #1605: `jsonKind` and `wireKind` are the single source of truth for the
+// kind-tag strings each case carries on the wire. The exhaustive-match
+// encoders read these directly (`asWire`, `JsonEncoder`), and the
+// string-match decoders (`fromWire`, `JsonDecoder`) derive their nullary
+// lookup table from `NullaryCases`, so a new sealed-trait case wires through
+// every encode/decode path without separate hand edits.
+//
+// Parameterised cases (`Category`, `AppTimeLimit`, `AppBlocked`, `Unknown`)
+// still need per-case payload handling in the encoders and per-prefix
+// handling in the decoders — `wireKind` is the prefix-before-colon for
+// these and remains the canonical string.
+sealed trait BlockReason {
+  def jsonKind: String
+  def wireKind: String
+}
 
 sealed trait MacBlockReason extends BlockReason
 object MacBlockReason {
-  case object Paused      extends MacBlockReason
-  case object Schedule    extends MacBlockReason
-  case object TimeLimit   extends MacBlockReason
-  case object Manual      extends MacBlockReason
+  case object Paused      extends MacBlockReason {
+    val jsonKind = "paused"; val wireKind = "paused"
+  }
+  case object Schedule    extends MacBlockReason {
+    val jsonKind = "schedule"; val wireKind = "schedule"
+  }
+  case object TimeLimit   extends MacBlockReason {
+    val jsonKind = "timeLimit"; val wireKind = "time_limit"
+  }
+  case object Manual      extends MacBlockReason {
+    val jsonKind = "manual"; val wireKind = "manual"
+  }
   // #1122: default-block path for devices with no profile assignment when
   // settings.unmanagedMacPolicy.policy=="block". Distinct from Manual (which
   // is an admin block on a known device) so the Logs page and block-page can
   // surface a more specific reason.
-  case object Unmanaged   extends MacBlockReason
+  case object Unmanaged   extends MacBlockReason {
+    val jsonKind = "unmanaged"; val wireKind = "unmanaged_mac"
+  }
   // #1316 / #1308: a profile in default-deny mode collapses to `blocked = true`
   // with this reason (block-page text only). Lowest-precedence reason — it is
   // the steady-state baseline, so a concurrent Paused/Schedule/TimeLimit
   // reports the stronger reason instead (see docs/design/global-policy-layer.md §3.3).
-  case object DefaultDeny extends MacBlockReason
+  case object DefaultDeny extends MacBlockReason {
+    val jsonKind = "defaultDeny"; val wireKind = "default_deny"
+  }
 
   def asString(r: MacBlockReason): String      = r match {
     case Paused      => "Paused"
@@ -1691,51 +1717,111 @@ object MacBlockReason {
 // the event-table form without re-encoding (their wire form is unchanged in
 // the snapshot JSON — only the event-DB encoding becomes kind-tagged).
 object BlockReason {
-  case object Allow                      extends BlockReason
-  case object Blocked                    extends BlockReason
-  case object ExtraAllowed               extends BlockReason
-  case object ExtraBlocked               extends BlockReason
-  case object NoProfile                  extends BlockReason
-  case class Category(slug: BlocklistId) extends BlockReason
-  case class AppTimeLimit(label: String) extends BlockReason
-  case class AppBlocked(appId: String)   extends BlockReason
-  case class Unknown(raw: String)        extends BlockReason
+  case object Allow                      extends BlockReason {
+    val jsonKind = "allow"; val wireKind = "allow"
+  }
+  case object Blocked                    extends BlockReason {
+    val jsonKind = "blocked"; val wireKind = "blocked"
+  }
+  case object ExtraAllowed               extends BlockReason {
+    val jsonKind = "extraAllowed"; val wireKind = "extra_allowed"
+  }
+  case object ExtraBlocked               extends BlockReason {
+    val jsonKind = "extraBlocked"; val wireKind = "extra_blocked"
+  }
+  case object NoProfile                  extends BlockReason {
+    val jsonKind = "noProfile"; val wireKind = "no_profile"
+  }
+  case class Category(slug: BlocklistId) extends BlockReason {
+    val jsonKind = "category"; val wireKind = "category"
+  }
+  case class AppTimeLimit(label: String) extends BlockReason {
+    // #1518 rename; the legacy `siteTimeLimit` jsonKind is still ACCEPTED by
+    // the decoder below for V40-migrated DB rows, but never emitted.
+    val jsonKind = "appTimeLimit"; val wireKind = "app_time_limit"
+  }
+  case class AppBlocked(appId: String)   extends BlockReason {
+    val jsonKind = "appBlocked"; val wireKind = "app"
+  }
+  case class Unknown(raw: String)        extends BlockReason {
+    // `wireKind` here is informational only; `asWire(Unknown(raw))` emits
+    // `raw` verbatim, not via this field, so a non-categorizable wire string
+    // round-trips through `fromWire`.
+    val jsonKind = "unknown"; val wireKind = "unknown"
+  }
+
+  // #1605: single source of truth for the nullary cases that the
+  // string-match decoders look up. Adding a new nullary case to the sealed
+  // trait and to this list automatically wires both `fromWire` and the
+  // `JsonDecoder` to accept it, mirroring what the exhaustive-match
+  // encoders are already forced to handle.
+  private val NullaryCases: List[BlockReason] = List(
+    Allow,
+    Blocked,
+    ExtraAllowed,
+    ExtraBlocked,
+    NoProfile,
+    MacBlockReason.Paused,
+    MacBlockReason.Schedule,
+    MacBlockReason.TimeLimit,
+    MacBlockReason.Manual,
+    MacBlockReason.Unmanaged,
+    MacBlockReason.DefaultDeny,
+  )
+
+  private val byWireKind: Map[String, BlockReason] =
+    NullaryCases.map(r => r.wireKind -> r).toMap
+  private val byJsonKind: Map[String, BlockReason] =
+    NullaryCases.map(r => r.jsonKind -> r).toMap
+
+  // Back-compat legacy wire aliases preserved verbatim from pre-#1605. These
+  // accept-only paths support snapshot-form (PascalCase) reasons, the legacy
+  // "host" / "allowed" / "device_not_enrolled" strings, and any other
+  // alternate spelling a deployed router may still be posting. They never
+  // appear in any encoder.
+  private val LegacyWireAliases: Map[String, BlockReason] = Map(
+    "allowed"             -> Allow,
+    "host"                -> ExtraBlocked,
+    "ExtraBlocked"        -> ExtraBlocked,
+    "Paused"              -> MacBlockReason.Paused,
+    "Schedule"            -> MacBlockReason.Schedule,
+    "TimeLimit"           -> MacBlockReason.TimeLimit,
+    "Manual"              -> MacBlockReason.Manual,
+    "Unmanaged"           -> MacBlockReason.Unmanaged,
+    "device_not_enrolled" -> MacBlockReason.Unmanaged,
+    "DefaultDeny"         -> MacBlockReason.DefaultDeny,
+  )
 
   /**
    * Parse a router / PolicyService wire-format reason string. Unknown values fall through to
    * `Unknown(raw)` so we don't drop event rows on a wire-shape mismatch between API and router
    * versions.
    */
-  def fromWire(s: String): BlockReason = s match {
-    case "allow" | "allowed"                                   => Allow
-    case "blocked"                                             => Blocked
-    case "extra_allowed"                                       => ExtraAllowed
-    case "host" | "extra_blocked" | "ExtraBlocked"             => ExtraBlocked
-    case "no_profile"                                          => NoProfile
-    case "paused" | "Paused"                                   => MacBlockReason.Paused
-    case "schedule" | "Schedule"                               => MacBlockReason.Schedule
-    case "time_limit" | "TimeLimit"                            => MacBlockReason.TimeLimit
-    case "manual" | "Manual"                                   => MacBlockReason.Manual
-    case "unmanaged_mac" | "Unmanaged" | "device_not_enrolled" => MacBlockReason.Unmanaged
-    case "default_deny" | "DefaultDeny"                        => MacBlockReason.DefaultDeny
-    case s if s.startsWith("category:")                        =>
-      BlocklistId
-        .parse(s.stripPrefix("category:"))
-        .map(Category(_))
-        .getOrElse(Unknown(s))
-    case s if s.startsWith("app_time_limit:")                  =>
-      // #1518: routers treat decision-response reasons as opaque pass-through
-      // (echo verbatim on /api/router/events), and the dual-written `reason_text`
-      // column is consumed by older-image rollback only — never re-parsed in
-      // this codebase — so dropping the legacy `site_time_limit:` parse arm
-      // doesn't strand any live caller. The JSONB `siteTimeLimit` decoder arm
-      // (BlockReason.JsonDecoder) is the one that still needs the legacy alias
-      // because V40-migrated DB rows persist that kind.
-      AppTimeLimit(s.stripPrefix("app_time_limit:"))
-    case s if s.startsWith("app:")                             =>
-      AppBlocked(s.stripPrefix("app:"))
-    case other                                                 => Unknown(other)
-  }
+  def fromWire(s: String): BlockReason =
+    // Nullary cases derive from NullaryCases (#1605). Legacy spellings carry
+    // their own lookup table (PascalCase snapshot form, "host", "allowed",
+    // "device_not_enrolled"). Parameterised cases keep prefix matching.
+    LegacyWireAliases.get(s).orElse(byWireKind.get(s)).getOrElse {
+      if (s.startsWith("category:"))
+        BlocklistId
+          .parse(s.stripPrefix("category:"))
+          .map(Category(_))
+          .getOrElse(Unknown(s))
+      else if (s.startsWith("app_time_limit:"))
+        // #1518: routers treat decision-response reasons as opaque pass-through
+        // (echo verbatim on /api/router/events), and the dual-written
+        // `reason_text` column is consumed by older-image rollback only —
+        // never re-parsed in this codebase — so dropping the legacy
+        // `site_time_limit:` parse arm doesn't strand any live caller. The
+        // JSONB `siteTimeLimit` decoder arm (JsonDecoder below) is the one
+        // that still needs the legacy alias because V40-migrated DB rows
+        // persist that kind.
+        AppTimeLimit(s.stripPrefix("app_time_limit:"))
+      else if (s.startsWith("app:"))
+        AppBlocked(s.stripPrefix("app:"))
+      else
+        Unknown(s)
+    }
 
   /**
    * Inverse of [[fromWire]]. Returns the canonical pre-V40 TEXT-format wire string for a
@@ -1750,52 +1836,37 @@ object BlockReason {
    * emits `raw` verbatim — anything `fromWire` couldn't categorize is preserved unmodified, so a
    * second `fromWire` reparse still produces the same `Unknown(raw)`.
    */
+  // #1605: nullary cases delegate to `wireKind`; parameterised cases still
+  // need per-case payload assembly. The compiler still requires exhaustive
+  // coverage of every BlockReason variant.
   def asWire(r: BlockReason): String = r match {
-    case Allow                      => "allow"
-    case Blocked                    => "blocked"
-    case ExtraAllowed               => "extra_allowed"
-    case ExtraBlocked               => "extra_blocked"
-    case NoProfile                  => "no_profile"
-    case MacBlockReason.Paused      => "paused"
-    case MacBlockReason.Schedule    => "schedule"
-    case MacBlockReason.TimeLimit   => "time_limit"
-    case MacBlockReason.Manual      => "manual"
-    case MacBlockReason.Unmanaged   => "unmanaged_mac"
-    case MacBlockReason.DefaultDeny => "default_deny"
-    case Category(slug)             => s"category:${slug.value}"
-    case AppTimeLimit(label)        =>
+    case Category(slug)      => s"category:${slug.value}"
+    case AppTimeLimit(label) =>
       s"app_time_limit:$label" // #1518 rename; routers echo back what they receive, no legacy parse needed
-    case AppBlocked(appId)          => s"app:$appId"
-    case Unknown(raw)               => raw
+    case AppBlocked(appId)   => s"app:$appId"
+    case Unknown(raw)        => raw
+    case r                   => r.wireKind
   }
 
-  // Kind-tagged JSON. Encoder/Decoder are written by hand to keep the wire
-  // format stable independent of source-order rearrangement, and to give a
-  // single source of truth for the strings the SPA pattern-matches on.
+  // Kind-tagged JSON. The encoder is exhaustive — its nullary cases delegate
+  // to `jsonKind` (#1605), parameterised cases assemble per-case payloads.
+  // The decoder is string-match; its nullary lookup derives from
+  // `NullaryCases`, parameterised arms handle their payloads.
   given JsonEncoder[BlockReason] = JsonEncoder[Json].contramap {
-    case Allow                      => Json.Obj("kind" -> Json.Str("allow"))
-    case Blocked                    => Json.Obj("kind" -> Json.Str("blocked"))
-    case ExtraAllowed               => Json.Obj("kind" -> Json.Str("extraAllowed"))
-    case ExtraBlocked               => Json.Obj("kind" -> Json.Str("extraBlocked"))
-    case NoProfile                  => Json.Obj("kind" -> Json.Str("noProfile"))
-    case MacBlockReason.Paused      => Json.Obj("kind" -> Json.Str("paused"))
-    case MacBlockReason.Schedule    => Json.Obj("kind" -> Json.Str("schedule"))
-    case MacBlockReason.TimeLimit   => Json.Obj("kind" -> Json.Str("timeLimit"))
-    case MacBlockReason.Manual      => Json.Obj("kind" -> Json.Str("manual"))
-    case MacBlockReason.Unmanaged   => Json.Obj("kind" -> Json.Str("unmanaged"))
-    case MacBlockReason.DefaultDeny => Json.Obj("kind" -> Json.Str("defaultDeny"))
-    case Category(slug)             =>
+    case Category(slug)      =>
       Json.Obj("kind" -> Json.Str("category"), "slug" -> Json.Str(slug.value))
-    case AppTimeLimit(label)        =>
+    case AppTimeLimit(label) =>
       Json.Obj(
         "kind"  -> Json.Str("appTimeLimit"),
         "label" -> Json.Str(label),
       ) // #1518 rename; decoder still accepts the legacy `siteTimeLimit` kind
     // for V40-migrated DB rows and any older SPA build that pattern-matches on it.
-    case AppBlocked(appId)          =>
+    case AppBlocked(appId)   =>
       Json.Obj("kind" -> Json.Str("appBlocked"), "appId" -> Json.Str(appId))
-    case Unknown(raw)               =>
+    case Unknown(raw)        =>
       Json.Obj("kind" -> Json.Str("unknown"), "raw" -> Json.Str(raw))
+    case r                   =>
+      Json.Obj("kind" -> Json.Str(r.jsonKind))
   }
 
   given JsonDecoder[BlockReason] = JsonDecoder[Json].mapOrFail {
@@ -1806,30 +1877,32 @@ object BlockReason {
           case Some(_)           => Left(s"BlockReason field '$k' is not a string")
           case None              => Left(s"BlockReason missing field '$k'")
         }
-      field("kind").flatMap {
-        case "allow"                          => Right(Allow)
-        case "blocked"                        => Right(Blocked)
-        case "extraAllowed"                   => Right(ExtraAllowed)
-        case "extraBlocked"                   => Right(ExtraBlocked)
-        case "noProfile"                      => Right(NoProfile)
-        case "paused"                         => Right(MacBlockReason.Paused)
-        case "schedule"                       => Right(MacBlockReason.Schedule)
-        case "timeLimit"                      => Right(MacBlockReason.TimeLimit)
-        case "manual"                         => Right(MacBlockReason.Manual)
-        case "unmanaged"                      => Right(MacBlockReason.Unmanaged)
-        case "defaultDeny"                    => Right(MacBlockReason.DefaultDeny)
-        case "category"                       =>
-          field("slug").flatMap(s =>
-            BlocklistId.parse(s).map(Category(_)).left.map(_ => s"invalid category slug: $s"),
-          )
-        case "appTimeLimit" | "siteTimeLimit" =>
-          // #1518: encoder emits `appTimeLimit`; the legacy `siteTimeLimit` kind
-          // is accepted so V40-migrated `block_events.reason`/`connection_events.reason`
-          // JSONB rows (written before this PR) still decode.
-          field("label").map(AppTimeLimit(_))
-        case "appBlocked"                     => field("appId").map(AppBlocked(_))
-        case "unknown"                        => field("raw").map(Unknown(_))
-        case other                            => Left(s"BlockReason: unknown kind '$other'")
+      field("kind").flatMap { k =>
+        // Nullary cases derive from NullaryCases (#1605); parameterised cases
+        // and the legacy `siteTimeLimit` JSONB alias keep their own arms.
+        byJsonKind.get(k) match {
+          case Some(r) => Right(r)
+          case None    =>
+            k match {
+              case "category"                       =>
+                field("slug").flatMap(s =>
+                  BlocklistId
+                    .parse(s)
+                    .map(Category(_))
+                    .left
+                    .map(_ => s"invalid category slug: $s"),
+                )
+              case "appTimeLimit" | "siteTimeLimit" =>
+                // #1518: encoder emits `appTimeLimit`; the legacy
+                // `siteTimeLimit` kind is accepted so V40-migrated
+                // `block_events.reason`/`connection_events.reason` JSONB rows
+                // (written before that PR) still decode.
+                field("label").map(AppTimeLimit(_))
+              case "appBlocked"                     => field("appId").map(AppBlocked(_))
+              case "unknown"                        => field("raw").map(Unknown(_))
+              case other                            => Left(s"BlockReason: unknown kind '$other'")
+            }
+        }
       }
     case _             => Left("BlockReason: expected JSON object")
   }
