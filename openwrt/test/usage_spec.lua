@@ -510,6 +510,35 @@ describe("usage.build_report", function()
     assert.equal(BUCKET_S,            r.records[1].activeSeconds)
   end)
 
+  -- #1628: a blocked MAC must produce zero new traffic_reports rows even when
+  -- ea_ carve-out traffic (Khan/Math Academy/1Password) legitimately flows
+  -- through the priority-1 accounting chain. Filtering at agent report time
+  -- guarantees the architectural contract — "blocked = no usage growth" — and
+  -- collapses any downstream Presence-stitch concern, because there is nothing
+  -- to stitch across the block window.
+  it("drops records for MACs in blocked_macs (#1628)", function()
+    local counters = {
+      -- Blocked MAC's ea_ carve-out to Khan Academy: bytes flowed, but the MAC
+      -- is blocked so this must NOT be reported.
+      { mac = "04:72:ef:d6:e4:5a", dst_ip = "1.2.3.4", bytes = 50000, packets = 100 },
+      -- Unblocked MAC: must still be reported.
+      { mac = "de:ad:be:ef:00:01", dst_ip = "8.8.8.8", bytes = 1024, packets = 20 },
+    }
+    local blocked_macs = { ["04:72:ef:d6:e4:5a"] = true }
+    local r = usage.build_report(counters, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(counters), SAMPLE_S, BUCKET_S,
+                                 blocked_macs)
+    assert.equal(1, #r.records)
+    assert.equal("de:ad:be:ef:00:01", r.records[1].mac)
+  end)
+
+  it("treats nil blocked_macs as no filter (back-compat)", function()
+    local r = usage.build_report(COUNTERS, NF_SETS, P_START, P_END, ROUTER,
+                                 nil, nil, full_tracker(COUNTERS), SAMPLE_S, BUCKET_S,
+                                 nil)
+    assert.equal(2, #r.records)
+  end)
+
   -- #1032 regression guard: a flow that appeared *after* the last sample tick
   -- has no tracker samples but bytes > 0 — the post-tick branch credits one
   -- sample of activeSeconds and must still emit a record.
