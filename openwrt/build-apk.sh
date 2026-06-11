@@ -146,7 +146,7 @@ rm -f "$OUT_APK"
     --info "license:MIT" \
     --info "url:https://github.com/wifihaven/wifihaven" \
     --info "maintainer:WifiHaven <noreply@example.com>" \
-    --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl uhttpd-mod-lua kmod-nf-log kmod-nf-log6 libustream-mbedtls openssl-util" \
+    --info "depends:lua libuci-lua luci-lib-jsonc conntrack curl uhttpd-mod-lua kmod-nf-log kmod-nf-log6 libustream-mbedtls openssl-util tcpdump-mini" \
     --script "post-install:$WORK/post-install" \
     --script "trigger:$WORK/trigger" \
     --trigger "/etc/crontabs" \

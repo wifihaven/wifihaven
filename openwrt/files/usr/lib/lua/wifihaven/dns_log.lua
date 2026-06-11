@@ -401,6 +401,23 @@ function M.new(opts)
     return resolve_head(name)
   end
 
+  -- insert_sni(dst_ip, server_name, now) — record an (ip → hostname) mapping
+  -- learned from a TLS ClientHello SNI extension (#573). The wifihaven-sni-tail
+  -- sidecar feeds these in via the same line stream as dnsmasq replies; this
+  -- helper runs the server_name through the SAME CNAME-alias map (resolve_head)
+  -- DNS ingest uses, so an SNI to a CDN leaf target attributes back to the
+  -- branded chain head we already learned from the DNS path (#1344). A
+  -- subsequent cache.lookup(dst_ip) then matches the same eb_/ea_/bl_ suffix
+  -- walks the DNS-derived entries do — no router code is aware of the SNI
+  -- origin. nil-safe.
+  function self.insert_sni(dst_ip, server_name, now)
+    if type(dst_ip) ~= "string" or dst_ip == "" then return end
+    if type(server_name) ~= "string" or server_name == "" then return end
+    now = now or now_fn()
+    local head = resolve_head(server_name)
+    store(dst_ip, head, now)
+  end
+
   -- Serialise the live cache to a single newline-delimited string.
   -- Format: "<ip>\t<hostname>\t<ts>\n" per non-expired entry.
   function self.dump_text()

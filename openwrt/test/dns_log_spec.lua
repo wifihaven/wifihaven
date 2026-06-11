@@ -789,13 +789,15 @@ end)
 
 describe("cache:insert_sni (#573)", function()
   it("stores (ip → sni) so lookup returns the SNI hostname", function()
-    local c = dns_log.new()
-    c.insert_sni("1.2.3.4", "example.com", 1000)
+    local t = 1000
+    local c = dns_log.new({ now_fn = function() return t end })
+    c.insert_sni("1.2.3.4", "example.com", t)
     assert.equal("example.com", c.lookup("1.2.3.4"))
   end)
 
   it("runs the SNI through the CNAME-alias map (resolve_head)", function()
-    local c = dns_log.new()
+    local t = 1000
+    local c = dns_log.new({ now_fn = function() return t end })
     -- Seed alias edge via a normal DNS reply chain:
     --   query[A] cdn.kastatic.org
     --   reply    cdn.kastatic.org is <CNAME>
@@ -809,7 +811,7 @@ describe("cache:insert_sni (#573)", function()
     c.ingest_line(
       "1 192.168.1.42/54321 reply prod.khan.map.fastly.net is 1.2.3.4")
     -- An SNI to the leaf CDN target attributes back to the branded head.
-    c.insert_sni("5.6.7.8", "prod.khan.map.fastly.net", 2000)
+    c.insert_sni("5.6.7.8", "prod.khan.map.fastly.net", t)
     assert.equal("cdn.kastatic.org", c.lookup("5.6.7.8"))
   end)
 

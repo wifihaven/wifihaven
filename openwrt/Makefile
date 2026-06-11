@@ -23,7 +23,12 @@ define Package/wifihaven
   # listen_https block-page sibling on :8443; openssl-util provides
   # /usr/bin/openssl for the self-signed cert generator that ships at
   # /usr/lib/wifihaven/generate-block-page-cert.sh.
-  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +libustream-mbedtls +openssl-util
+  # #573: tcpdump-mini provides libpcap-userspace capture for the SNI sidecar
+  # (wifihaven-sni-tail). It parses the TLS ClientHello off the LAN bridge to
+  # recover hostname attribution when the client used DoH/DoT or a hardcoded
+  # IP — the same shared dns_cache feeds eb_/ea_/bl_ enforcement, so this is
+  # an additive, observability-style dependency.
+  DEPENDS:=+lua +libuci-lua +luci-lib-jsonc +conntrack +curl +uhttpd-mod-lua +kmod-nf-log +kmod-nf-log6 +libustream-mbedtls +openssl-util +tcpdump-mini
   PKGARCH:=all
 endef
 
@@ -44,6 +49,7 @@ define Package/wifihaven/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-agent $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-dns-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-nflog-tail $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-sni-tail $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-update $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/usr/sbin/wifihaven-rotate-dnsmasq-log $(1)/usr/sbin/
 

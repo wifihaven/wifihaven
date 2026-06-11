@@ -12,6 +12,7 @@ local dns_sets  = require("wifihaven.dns_tail_sets")
 local conntrack = require("wifihaven.conntrack")
 local log       = require("wifihaven.log")
 local paths     = require("wifihaven.paths")
+local sni       = require("wifihaven.sni")
 
 local cursor = uci.cursor()
 local function uci_get(opt, default)
@@ -52,10 +53,20 @@ local cache = dns_log.new({ ttl_seconds = 3600 })
 
 -- tail -F follows the log across rotations (dnsmasq SIGHUP, file replaced).
 -- -n 0 skips replay of the historical log so we don't burn CPU at boot.
+--
+-- #573: also tail the SNI capture spool the wifihaven-sni-tail sidecar writes,
+-- so SNI-derived hostname attributions land in the SAME shared dns_cache as
+-- DNS-derived attributions. Using `tail -F a b` produces "==> file <==" header
+-- lines on switches that we filter out below; the SNI lines are themselves
+-- "SNI\t..." prefixed so a routing match on the line content suffices. busybox
+-- tail -F handles multiple files. We `touch` the SNI spool first so tail does
+-- not warn when sni-tail hasn't created it yet.
+os.execute(string.format("touch %q 2>/dev/null", paths.sni_capture))
 local handle = io.popen(string.format(
-  "tail -n 0 -F %q 2>/dev/null", source_path), "r")
+  "tail -n 0 -F %q %q 2>/dev/null", source_path, paths.sni_capture), "r")
 if not handle then
-  log.err("dns-tail: cannot start tail on %s", source_path)
+  log.err("dns-tail: cannot start tail on %s, %s",
+          source_path, paths.sni_capture)
   os.exit(1)
 end
 
@@ -254,12 +265,46 @@ local lines_since_stat = 0
 -- without double-counting.
 local dns_results      = {}
 
+local sni_inserts = 0
+
+-- handle_sni_line(line) → true iff `line` was an SNI capture line from the
+-- wifihaven-sni-tail sidecar and was routed into cache.insert_sni. Returns
+-- false for dnsmasq log lines (those flow through the existing handlers
+-- below). Also returns true for `tail -F` switch banners ("==> file <=="),
+-- which are not dnsmasq lines and must not reach the dnsmasq parsers.
+local function handle_sni_or_skip(line)
+  if line:sub(1, 4) == "==> " then return true end
+  local sn = sni.parse_sni_line(line)
+  if not sn then return false end
+  cache.insert_sni(sn.dst_ip, sn.sni)
+  sni_inserts = sni_inserts + 1
+  return true
+end
+
 while true do
   local line = handle:read("*l")
   if not line then
     log.warn("dns-tail: tail pipe closed; exiting (procd will respawn)")
     break
   end
+
+  -- #573: SNI lines from the wifihaven-sni-tail sidecar land in the same
+  -- shared dns_cache as dnsmasq replies. Route them first, then short-circuit
+  -- past the dnsmasq-log parsers / populators below.
+  if handle_sni_or_skip(line) then
+    -- Update the shared flush bookkeeping so the next tick still writes the
+    -- cache file even on a long stretch of SNI-only traffic.
+    since_flush      = since_flush + 1
+    lines_since_stat = lines_since_stat + 1
+    local now = os.time()
+    if since_flush >= flush_every or (now - last_tick) >= 30 then
+      cache.tick(now)
+      atomic_write(cache_path, cache.dump_text())
+      atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
+      since_flush = 0
+      last_tick   = now
+    end
+  else
   cache.ingest_line(line)
   since_flush      = since_flush + 1
   lines_ingested   = lines_ingested + 1
@@ -328,12 +373,14 @@ while true do
   -- dropping the pipe, regex never matching) are diagnosable from logread
   -- alone without on-VM access (#480).
   if (now - last_stats_log) >= 60 then
-    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d bl_adds=%d",
+    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d bl_adds=%d sni_inserts=%d",
              lines_ingested, lines_since_stat, now - last_stats_log,
-             cache.size(), bio_adds_total, eb_adds_total, ea_adds_total, bl_adds_total)
+             cache.size(), bio_adds_total, eb_adds_total, ea_adds_total,
+             bl_adds_total, sni_inserts)
     last_stats_log   = now
     lines_since_stat = 0
   end
+  end -- else branch of handle_sni_or_skip
 end
 
 handle:close()

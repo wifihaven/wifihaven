@@ -1,0 +1,231 @@
+-- sni.lua — TLS ClientHello SNI parser + Ethernet/IPv4/TCP framing helper.
+--
+-- The wifihaven-sni-tail sidecar captures the first packet of every outbound
+-- TCP/443 flow off the LAN bridge and parses the TLS ClientHello to extract
+-- the SNI server_name (#573). This recovers the hostname an app actually
+-- contacted even when the client used DoH/DoT to resolve the name (so dnsmasq
+-- never saw the query) or hard-coded the IP. The resulting (dst_ip, sni) pair
+-- is fed back into the same dns_log cache the agent already reads for flow
+-- attribution, so downstream eb_/ea_/bl_ matching, event labeling, and
+-- conntrack-event fqdn emission all flow through unchanged.
+--
+-- v1 scope (#573):
+--   - TLS 1.2 and TLS 1.3 ClientHello, single TCP segment (BPF snaplen=600).
+--   - Single Ethernet+IPv4+TCP packet (no IPv4 options, no VLAN tag, no IPv6).
+--   - server_name extension type 0x0000, name_type 0x00 (host_name).
+--
+-- Explicitly out of scope (followups, see #573 PR body):
+--   - Encrypted ClientHello (ECH) — parser returns nil.
+--   - QUIC / HTTP/3 Initial-packet SNI parsing.
+--   - TLS 1.2 fragmented ClientHello reassembly across TCP segments.
+--   - IPv6 outer header (followup; first-pass keeps the byte-walk simple).
+--
+-- Public API:
+--   sni.parse_client_hello(payload)   → server_name string | nil
+--   sni.parse_packet(eth_frame_bytes) → { dst_ip, src_mac, sni } | nil
+--   sni.format_sni_line(ip, mac, sni) → "SNI\t<ip>\t<mac>\t<sni>\n"
+--   sni.parse_sni_line(line)          → { dst_ip, src_mac, sni } | nil
+--
+-- Defensive style: every length field is checked against the remaining
+-- payload before being trusted. A malformed record returns nil; it never
+-- raises a Lua error (the sidecar must keep running through any payload).
+
+local M = {}
+
+-- ---------------------------------------------------------------------------
+-- Byte helpers — Lua 5.1-safe (no string.unpack).
+-- ---------------------------------------------------------------------------
+
+local function u8(buf, off)
+  if off < 1 or off > #buf then return nil end
+  return buf:byte(off)
+end
+
+local function u16(buf, off)
+  if off < 1 or off + 1 > #buf then return nil end
+  local a, b = buf:byte(off, off + 1)
+  return a * 256 + b
+end
+
+local function u24(buf, off)
+  if off < 1 or off + 2 > #buf then return nil end
+  local a, b, c = buf:byte(off, off + 2)
+  return a * 65536 + b * 256 + c
+end
+
+-- Bounds-checked substring: returns nil if [off, off+len-1] is out of range.
+local function slice(buf, off, len)
+  if off < 1 or len < 0 or (off + len - 1) > #buf then return nil end
+  return buf:sub(off, off + len - 1)
+end
+
+-- ---------------------------------------------------------------------------
+-- TLS ClientHello parser.
+-- ---------------------------------------------------------------------------
+
+-- parse_client_hello(payload) → server_name string | nil
+--
+-- payload is the raw bytes of the TCP segment starting at the TLS record.
+-- Returns the server_name from the SNI extension when present, or nil for
+-- any of: non-handshake content type, non-ClientHello handshake, no SNI
+-- extension, malformed/truncated record, name_type != host_name (0x00).
+function M.parse_client_hello(payload)
+  if type(payload) ~= "string" or #payload < 5 then return nil end
+
+  -- TLS record header
+  local content_type = u8(payload, 1)
+  if content_type ~= 0x16 then return nil end -- not handshake
+  local record_len = u16(payload, 4)
+  if not record_len then return nil end
+  if 5 + record_len > #payload + 1 then return nil end -- truncated record
+
+  -- Handshake header (inside the record)
+  local hs_type = u8(payload, 6)
+  if hs_type ~= 0x01 then return nil end -- not ClientHello
+  local hs_len = u24(payload, 7)
+  if not hs_len then return nil end
+  if 10 + hs_len > #payload + 1 then return nil end -- truncated handshake
+
+  -- ClientHello body starts at offset 10
+  local off = 10
+  local end_off = 10 + hs_len -- one past last byte of body
+
+  -- legacy_version (2) + random (32) = 34 bytes
+  off = off + 34
+  if off > end_off then return nil end
+
+  -- legacy_session_id: u8 length + bytes
+  local sid_len = u8(payload, off); if not sid_len then return nil end
+  off = off + 1 + sid_len
+  if off > end_off then return nil end
+
+  -- cipher_suites: u16 length + bytes
+  local cs_len = u16(payload, off); if not cs_len then return nil end
+  off = off + 2 + cs_len
+  if off > end_off then return nil end
+
+  -- compression_methods: u8 length + bytes
+  local cm_len = u8(payload, off); if not cm_len then return nil end
+  off = off + 1 + cm_len
+  if off > end_off then return nil end
+
+  -- extensions: u16 total length + extension records
+  local ext_total = u16(payload, off); if not ext_total then return nil end
+  off = off + 2
+  local ext_end = off + ext_total
+  if ext_end > end_off then return nil end
+
+  -- Walk extension records
+  while off + 4 <= ext_end do
+    local ext_type = u16(payload, off);     if not ext_type then return nil end
+    local ext_len  = u16(payload, off + 2); if not ext_len  then return nil end
+    local ext_body_off = off + 4
+    local ext_body_end = ext_body_off + ext_len
+    if ext_body_end > ext_end then return nil end
+
+    if ext_type == 0x0000 then -- server_name
+      -- ServerNameList: u16 list length + entries
+      if ext_body_off + 2 > ext_body_end then return nil end
+      local sn_list_len = u16(payload, ext_body_off)
+      if not sn_list_len then return nil end
+      local list_off = ext_body_off + 2
+      local list_end = list_off + sn_list_len
+      if list_end > ext_body_end then return nil end
+
+      -- First entry only — RFC 6066 §3 says list MAY contain multiple but
+      -- in practice it's always one host_name. We'll take the first
+      -- host_name entry we find.
+      while list_off + 3 <= list_end do
+        local name_type = u8(payload, list_off);     if not name_type then return nil end
+        local sn_len    = u16(payload, list_off + 1); if not sn_len    then return nil end
+        local sn_off    = list_off + 3
+        if sn_off + sn_len > list_end then return nil end
+        if name_type == 0x00 then -- host_name
+          local sn = slice(payload, sn_off, sn_len)
+          if sn and sn ~= "" then return sn end
+          return nil
+        end
+        list_off = sn_off + sn_len
+      end
+      return nil -- SNI extension present but no host_name entry
+    end
+
+    off = ext_body_end
+  end
+
+  return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Ethernet / IPv4 / TCP framing.
+--
+-- v1 handles untagged IPv4 over Ethernet, no VLAN, no IP options beyond the
+-- standard 20-byte header (we honor IHL though). IPv6 is a followup.
+-- ---------------------------------------------------------------------------
+
+local function format_mac(a, b, c, d, e, f)
+  return string.format("%02x:%02x:%02x:%02x:%02x:%02x", a, b, c, d, e, f)
+end
+
+-- parse_packet(eth_frame) → { dst_ip, src_mac, sni } | nil
+function M.parse_packet(eth_frame)
+  if type(eth_frame) ~= "string" or #eth_frame < 14 + 20 + 20 then return nil end
+
+  -- Ethernet header: dst (6), src (6), ethertype (2)
+  local ethertype = u16(eth_frame, 13)
+  if ethertype ~= 0x0800 then return nil end -- IPv4 only in v1
+  local sa, sb, sc, sd, se, sf = eth_frame:byte(7, 12)
+  local src_mac = format_mac(sa, sb, sc, sd, se, sf)
+
+  -- IPv4 header
+  local ip_off = 15 -- 1-based, after 14-byte Ethernet
+  local ver_ihl = u8(eth_frame, ip_off)
+  if not ver_ihl then return nil end
+  if math.floor(ver_ihl / 16) ~= 4 then return nil end
+  local ihl = (ver_ihl % 16) * 4
+  if ihl < 20 then return nil end
+  if ip_off + ihl - 1 > #eth_frame then return nil end
+  local proto = u8(eth_frame, ip_off + 9)
+  if proto ~= 6 then return nil end -- TCP only
+  local da, db, dc, dd = eth_frame:byte(ip_off + 16, ip_off + 19)
+  if not da then return nil end
+  local dst_ip = string.format("%d.%d.%d.%d", da, db, dc, dd)
+
+  -- TCP header
+  local tcp_off = ip_off + ihl
+  if tcp_off + 20 - 1 > #eth_frame then return nil end
+  local data_off_byte = u8(eth_frame, tcp_off + 12)
+  if not data_off_byte then return nil end
+  local data_off = math.floor(data_off_byte / 16) * 4
+  if data_off < 20 then return nil end
+  local payload_off = tcp_off + data_off
+  if payload_off > #eth_frame then return nil end
+  local payload = eth_frame:sub(payload_off)
+
+  local sni = M.parse_client_hello(payload)
+  if not sni then return nil end
+  return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }
+end
+
+-- ---------------------------------------------------------------------------
+-- IPC line format between wifihaven-sni-tail and wifihaven-dns-tail.
+--
+-- The two sidecars share the existing dns_cache writer (dns-tail), so SNI
+-- captures must reach dns-tail as a line stream. sni-tail appends one TSV row
+-- per ClientHello to /tmp/wifihaven-sni.log; dns-tail tails it alongside the
+-- dnsmasq log and routes rows by the "SNI\t" prefix.
+-- ---------------------------------------------------------------------------
+
+function M.format_sni_line(dst_ip, src_mac, server_name)
+  return string.format("SNI\t%s\t%s\t%s\n",
+                       dst_ip or "", src_mac or "", server_name or "")
+end
+
+function M.parse_sni_line(line)
+  if type(line) ~= "string" or line == "" then return nil end
+  local ip, mac, sn = line:match("^SNI\t(%S+)\t(%S+)\t(%S+)%s*$")
+  if not ip then return nil end
+  return { dst_ip = ip, src_mac = mac, sni = sn }
+end
+
+return M

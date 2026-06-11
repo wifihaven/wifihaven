@@ -27,6 +27,15 @@ M.dns_metrics = "/tmp/wifihaven-dns-metrics.txt"
 -- wifihaven-dns-tail bl_ populator reads it on its set-refresh cadence.
 M.bl_member_index = "/tmp/wifihaven-bl-members.txt"
 
+-- SNI capture spool (#573): wifihaven-sni-tail parses the first packet of every
+-- outbound TCP/443 flow off the LAN bridge, extracts the TLS ClientHello SNI,
+-- and appends one "SNI\t<dst_ip>\t<src_mac>\t<server_name>" line per capture to
+-- this tmpfs file. wifihaven-dns-tail tails it alongside the dnsmasq query log
+-- and routes SNI-prefixed lines through cache.insert_sni, so the shared
+-- ip→hostname cache (paths.dns_cache) stays single-writer (dns-tail) and the
+-- downstream eb_/ea_/bl_ populators see SNI-derived hostnames transparently.
+M.sni_capture = "/tmp/wifihaven-sni.log"
+
 -- nflog drop spool (#1126): wifihaven-nflog-tail tails `logread -f`, greps the
 -- nft `log prefix "wh_drop:…"` forward-drop records, and appends them here; the
 -- main agent drains new complete lines from this tmpfs spool on its cooperative

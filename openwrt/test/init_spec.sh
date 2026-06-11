@@ -51,6 +51,11 @@ grep -q 'wifihaven-nflog-tail' "$INIT" \
   && check "starts wifihaven-nflog-tail sidecar" ok \
   || check "starts wifihaven-nflog-tail sidecar" "not found"
 
+# 5d. sni-tail sidecar must also be started (#573 — SNI hostname attribution)
+grep -q 'wifihaven-sni-tail' "$INIT" \
+  && check "starts wifihaven-sni-tail sidecar" ok \
+  || check "starts wifihaven-sni-tail sidecar" "not found"
+
 # 6. Must configure procd_set_param respawn (auto-restart on crash)
 grep -q 'procd_set_param respawn' "$INIT" \
   && check "sets procd_set_param respawn" ok \
