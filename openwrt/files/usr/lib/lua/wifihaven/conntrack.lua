@@ -715,6 +715,14 @@ function M.handle_flow(flow, ctx, batcher)
         -- extraBlocked entry fired (otherwise an IP-anycast overlap on a
         -- shared CDN looks like an opaque "host" block). Symmetric with
         -- the `category:<id>` reason for the bl_ path below.
+        --
+        -- When `eb_hosts` for this MAC contains more than one host whose
+        -- ipset covers the same `dst_ip` (rare overlap, e.g. same anycast
+        -- IP resolved for two different extraBlocked apex domains), the
+        -- labeled `eb_hit_host` reflects whichever `pairs(eb_hosts)`
+        -- iteration order surfaced first — non-deterministic per Lua
+        -- semantics. The drop itself is unaffected (the kernel already
+        -- matched at least one eb_ set); only the debug label can vary.
         reason  = "host:" .. eb_hit_host
       end
     end

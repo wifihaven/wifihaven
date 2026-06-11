@@ -1756,6 +1756,14 @@ object BlockReason {
   // `host:<host>`; the legacy bare `host` alias below still parses as the
   // anonymous `ExtraBlocked` for pre-rollout routers.
   case class ExtraBlockedBy(host: Hostname) extends BlockReason {
+    // `wireKind` here is the prefix-form sentinel (trailing `:` implied) —
+    // same convention as `Category("category")`, `AppTimeLimit("app_time_limit")`,
+    // `AppBlocked("app")`. The actual wire string is assembled in `asWire`
+    // (`"host:" + h.value`) and parsed via the `startsWith("host:")` arm in
+    // `fromWire`. The bare `"host"` string still maps to anonymous
+    // `ExtraBlocked` via `LegacyWireAliases`; the overlap is harmless because
+    // `byWireKind` is built only from `NullaryCases`, which does NOT include
+    // this parameterised case.
     val jsonKind = "extraBlockedBy"; val wireKind = "host"
   }
   case class Unknown(raw: String)           extends BlockReason {
