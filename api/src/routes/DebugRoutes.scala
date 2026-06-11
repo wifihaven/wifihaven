@@ -1,7 +1,9 @@
 package wifihaven.api.routes
 
+import wifihaven.api.auth.*
 import wifihaven.api.cache.TimeStatusCache
 import wifihaven.api.db.*
+import wifihaven.api.policy.PolicyService
 import wifihaven.shared.Clock
 import zio.{Clock as _, *}
 import zio.http.*
@@ -200,4 +202,42 @@ object DebugRoutes {
         s
     stripped == "localhost" || stripped == "127.0.0.1" || stripped == "::1"
   }
+}
+
+/**
+ * Admin-auth-gated debug surface (#1641). Distinct from [[DebugRoutes]]: that family is loopback-
+ * only and requires `WIFIHAVEN_DEBUG=1`, suitable only for on-host triage; this one is reachable
+ * from anywhere with an admin JWT, suitable for remote incident response on the cloud deploys.
+ *
+ * Current routes:
+ *   - `GET /api/admin/snapshot` — returns the same [[wifihaven.shared.PolicySnapshot]] JSON the
+ *     router fetches at `/api/router/policy`, with a strong ETag header matching. Reuses
+ *     `PolicyService.snapshot` (single-source-of-truth — no parallel resolver). Read-only: does NOT
+ *     call `routerRepo.touch`, so polling here doesn't move `last_etag` / `last_seen_at`.
+ */
+object AdminDebugRoutes {
+
+  def routes(
+      auth: AuthService,
+      policy: PolicyService,
+  ): Routes[Any, Response] =
+    Routes(
+      Method.GET / "api" / "admin" / "snapshot" ->
+        handler { (req: Request) =>
+          val handle: ZIO[Any, ApiError, Response] =
+            for {
+              _    <- requireAdmin(req, auth).mapError(ApiError.Wrapped(_))
+              snap <- policy.snapshot.mapError(ApiError.Db(_))
+            } yield Response
+              .json(snap.toJson)
+              .addHeader(Header.ETag.Strong(stripQuotedEtag(snap.etag.value)))
+          handle.mapError(ErrorMapper.errorToResponse)
+        },
+    )
+
+  // Mirror of `RouterRoutes.stripQuotes` — `Header.ETag.Strong` wants the bare token without
+  // surrounding quotes (zio-http renders them back on the wire). The stored ETag value is the
+  // quoted form (sha256:..."), so trim the wrapping quotes before constructing the header.
+  private def stripQuotedEtag(s: String): String =
+    if s.startsWith("\"") && s.endsWith("\"") then s.drop(1).dropRight(1) else s
 }
