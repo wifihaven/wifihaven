@@ -50,21 +50,14 @@
 --
 -- Pure logic with injected resolver + nft executor (same DI shape as
 -- dns_tail_sets / policy / conntrack); the agent wires the real `dig` shell-out
--- and `os.execute`.
+-- and `os.execute`. Set-name construction is delegated to render.lua's
+-- `eb_set_name` / `eb6_set_name` / `bl_set_name` / `bl6_set_name` exports so
+-- the (host|id) → nft-set-name mapping has a single source of truth.
 
 local dns_tail_sets = require("dns_tail_sets")
+local render        = require("wifihaven.render")
 
 local M = {}
-
-local sanitize = dns_tail_sets.sanitize
-
--- bl_<id> sanitisation matches render.lua's bl_sanitize: id may contain dots,
--- colons, hyphens, and whitespace; nftables set names allow only [a-zA-Z0-9_].
--- Keep this in lock-step with render.lua — if either changes we'd be writing
--- to a set that doesn't exist (silent no-op, leak persists).
-local function bl_sanitize(id)
-  return (id:gsub("[%.%:%-%s]", "_"))
-end
 
 -- ---------------------------------------------------------------------------
 -- Inventory
@@ -215,12 +208,11 @@ function M.refresh(opts)
   end
 
   for _, host in ipairs(opts.eb_hosts or {}) do
-    local h = sanitize(host)
-    refresh_one(host, "eb_" .. h, "eb6_" .. h)
+    refresh_one(host, render.eb_set_name(host), render.eb6_set_name(host))
   end
   for _, pair in ipairs(opts.bl_pairs or {}) do
-    local id = bl_sanitize(tostring(pair.id))
-    refresh_one(pair.host, "bl_" .. id, "bl6_" .. id)
+    local id = tostring(pair.id)
+    refresh_one(pair.host, render.bl_set_name(id), render.bl6_set_name(id))
   end
   return stats
 end

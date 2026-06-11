@@ -783,8 +783,10 @@ conntrack.watch({
           log       = log,
         })
         local elapsed = clock.monotonic_seconds() - rt0
-        metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
-                            stats.resolves_ok)
+        if stats.resolves_ok > 0 then
+          metrics.inc_counter(mreg, "eb_refresh_total", { result = "ok" },
+                              stats.resolves_ok)
+        end
         if stats.resolves_err > 0 then
           metrics.inc_counter(mreg, "eb_refresh_total", { result = "resolve_failed" },
                               stats.resolves_err)
