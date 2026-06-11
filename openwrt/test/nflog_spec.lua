@@ -49,6 +49,18 @@ describe("nflog.parse_line", function()
     assert.equal("host", ev.reason)
   end)
 
+  -- #1645: post-rollout render.lua emits `wh_drop:<mac>:host:<host>` so the
+  -- nflog parser pulls the matched eb_<host> rule's host straight through
+  -- as reason=`host:<host>`. Same `(%S+)` capture as `category:<id>`; no
+  -- prefix translation step.
+  it("parses the per-host eb_ drop reason `host:<host>` (#1645)", function()
+    local line = "wh_drop:aa:bb:cc:11:22:33:host:youtubei.googleapis.com " ..
+                 "SRC=192.168.1.42 DST=1.2.3.4 PROTO=TCP DPT=443"
+    local ev = nflog.parse_line(line)
+    assert.is_not_nil(ev)
+    assert.equal("host:youtubei.googleapis.com", ev.reason)
+  end)
+
   it("parses the per-category (bl_) drop reason `category:<id>`", function()
     local line = "wh_drop:aa:bb:cc:11:22:33:category:ads " ..
                  "SRC=192.168.1.42 DST=1.2.3.4 PROTO=TCP DPT=443"

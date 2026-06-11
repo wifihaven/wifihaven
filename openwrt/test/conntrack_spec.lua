@@ -685,7 +685,7 @@ describe("handle_flow", function()
   -- so decisions are driven off hname matching eb_hosts_by_mac — NOT off
   -- nft_sets[host][dst_ip].
 
-  it("labels connection_attempt as blocked (reason=host) when hname exactly matches an eb_ host for the MAC", function()
+  it("labels connection_attempt as blocked (reason=host:<host>) when hname exactly matches an eb_ host for the MAC (#1645)", function()
     local b = collecting_batcher()
     local ctx = ctx_with({
       reported_macs   = { [MAC] = true },
@@ -699,7 +699,7 @@ describe("handle_flow", function()
     local ev = b.events[#b.events]
     assert.equal("connection_attempt", ev["type"])
     assert.equal(false,  ev.allowed)
-    assert.equal("host", ev.reason)
+    assert.equal("host:example.com", ev.reason)
   end)
 
   it("labels connection_attempt as blocked when hname is a subdomain of an eb_ host (suffix-match)", function()
@@ -716,7 +716,9 @@ describe("handle_flow", function()
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
     local ev = b.events[#b.events]
     assert.equal(false,  ev.allowed)
-    assert.equal("host", ev.reason)
+    -- #1645: reason carries the matched eb_ host even for the subdomain
+    -- suffix-match case; the matched rule's host name is what gets logged.
+    assert.equal("host:example.com", ev.reason)
   end)
 
   it("does NOT block when hname does not match any eb_ host for the MAC", function()
@@ -829,7 +831,7 @@ describe("handle_flow", function()
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
     local ev = b.events[#b.events]
     assert.equal(false,  ev.allowed)
-    assert.equal("host", ev.reason)
+    assert.equal("host:shared.example", ev.reason)
   end)
 
   it("does NOT block when eb_hosts_by_mac is absent from ctx", function()
@@ -872,7 +874,9 @@ describe("handle_flow", function()
     conntrack.handle_flow({ src_ip = SRC_IP, dst_ip = DST_IP }, ctx, b)
     local ev = b.events[#b.events]
     assert.equal(false,  ev.allowed, "extraBlocked IP with no DNS attribution must be logged as blocked")
-    assert.equal("host", ev.reason)
+    -- #1645: even in the no-hname fallback the reason names which eb_ rule
+    -- matched, so triage can see the specific eb_<host> that fired.
+    assert.equal("host:example.com", ev.reason)
     assert.is_true(#exec_calls >= 1, "exec_fn must have been called for the nft lookup")
   end)
 

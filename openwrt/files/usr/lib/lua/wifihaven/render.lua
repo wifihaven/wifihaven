@@ -1043,15 +1043,24 @@ function M.nft(snapshot, opts)
   -- so behaviour for those is unchanged.
   -- #1319: ga_suffix appended after the per-MAC ea exception, so an allowed
   -- host (per-MAC or global) suppresses the per-host / per-category drop.
+  -- #1645: `host:<host>` names the matched eb_<host> rule in the kernel
+  -- log line and the nft comment. Kernel `log prefix` is bounded by
+  -- NF_LOG_PREFIXLEN=128; with `wh_drop:<mac>:host:<host> ` the fixed
+  -- envelope is 31 chars, leaving 96 chars of headroom — comfortably above
+  -- any realistic hostname (RFC 1035 caps a single label at 63 chars and
+  -- typical extraBlocked apex hosts are < 30). If a pathologically long
+  -- CNAME ever surfaces, the kernel truncates silently and the nflog
+  -- parser sees a partial host; for now we accept that gracefully (the
+  -- drop still fires correctly — only the label is lossy).
   for _, p in ipairs(eb_pairs) do
     ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
                        p.mac, eb_set_name(p.host), ea_suffix(p.mac, "ip"),
-                       ga_suffix("ip"), drop_suffix(p.mac, "host")))
+                       ga_suffix("ip"), drop_suffix(p.mac, "host:" .. p.host)))
   end
   for _, p in ipairs(eb_pairs) do
     ind2(string.format("ether saddr %s ip6 daddr @%s%s%s%s",
                        p.mac, eb6_set_name(p.host), ea_suffix(p.mac, "ip6"),
-                       ga_suffix("ip6"), drop_suffix(p.mac, "host")))
+                       ga_suffix("ip6"), drop_suffix(p.mac, "host:" .. p.host)))
   end
   for _, p in ipairs(bl_pairs) do
     ind2(string.format("ether saddr %s ip daddr @%s%s%s%s",
