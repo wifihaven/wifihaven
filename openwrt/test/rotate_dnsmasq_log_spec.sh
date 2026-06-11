@@ -108,9 +108,11 @@ trap 'rm -rf "$TESTDIR"' EXIT
 FAKE_LOG="$TESTDIR/wifihaven-dnsmasq.log"
 FAKE_LOG_PREV="${FAKE_LOG}.1"
 
-# Rewrite the LOG variable in a copy of the script so it targets our tmpdir.
+# Rewrite the dnsmasq log path in a copy of the script so it targets our
+# tmpdir. Point the SNI path at a non-existent file so it is a no-op here.
 PATCHED="$TESTDIR/wifihaven-rotate-dnsmasq-log"
-sed "s|^LOG=/tmp/wifihaven-dnsmasq.log|LOG=$FAKE_LOG|" "$SCRIPT" > "$PATCHED"
+sed -e "s|/tmp/wifihaven-dnsmasq.log|$FAKE_LOG|g" \
+    -e "s|/tmp/wifihaven-sni.log|$TESTDIR/_absent-sni.log|g" "$SCRIPT" > "$PATCHED"
 chmod +x "$PATCHED"
 
 # Case A: file absent — script exits 0, no .1 created.

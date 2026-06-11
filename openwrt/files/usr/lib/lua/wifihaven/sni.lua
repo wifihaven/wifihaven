@@ -142,7 +142,10 @@ function M.parse_client_hello(payload)
         if sn_off + sn_len > list_end then return nil end
         if name_type == 0x00 then -- host_name
           local sn = slice(payload, sn_off, sn_len)
-          if sn and sn ~= "" then return sn end
+          -- A real SNI is a domain; the shortest plausible one is "a.b" (3
+          -- chars). Anything shorter is malformed — reject it (the value is
+          -- only ever used as a cache key, but we don't want junk keys).
+          if sn and #sn >= 3 then return sn end
           return nil
         end
         list_off = sn_off + sn_len
@@ -167,43 +170,59 @@ local function format_mac(a, b, c, d, e, f)
   return string.format("%02x:%02x:%02x:%02x:%02x:%02x", a, b, c, d, e, f)
 end
 
--- parse_packet(eth_frame) → { dst_ip, src_mac, sni } | nil
+-- parse_packet(eth_frame) → { dst_ip, src_mac, sni } | nil, reason
+--
+-- On failure returns (nil, reason) where reason is a bounded enum the sidecar
+-- folds into a result= counter (see SHOULD-FIX #4/#7 — split the lumped
+-- no_sni_total):
+--   "truncated"    — frame too short to hold Ethernet+IPv4+TCP, or the TLS
+--                    record/handshake length runs past the captured bytes
+--                    (the common snaplen-cut case).
+--   "ipv6_skipped" — non-IPv4 ethertype (v1 is IPv4-only; counts the dual-
+--                    stack traffic we're missing).
+--   "not_tcp"      — IPv4 but not TCP (shouldn't happen given the BPF, but
+--                    bounded and cheap to distinguish).
+--   "malformed"    — structurally invalid IPv4/TCP framing.
+--   "no_sni"       — well-formed packet but the ClientHello carried no usable
+--                    host_name (no SNI extension, ECH, or a name we rejected).
 function M.parse_packet(eth_frame)
-  if type(eth_frame) ~= "string" or #eth_frame < 14 + 20 + 20 then return nil end
+  if type(eth_frame) ~= "string" or #eth_frame < 14 + 20 + 20 then
+    return nil, "truncated"
+  end
 
   -- Ethernet header: dst (6), src (6), ethertype (2)
   local ethertype = u16(eth_frame, 13)
-  if ethertype ~= 0x0800 then return nil end -- IPv4 only in v1
+  if ethertype ~= 0x0800 then return nil, "ipv6_skipped" end -- IPv4 only in v1
   local sa, sb, sc, sd, se, sf = eth_frame:byte(7, 12)
   local src_mac = format_mac(sa, sb, sc, sd, se, sf)
 
   -- IPv4 header
   local ip_off = 15 -- 1-based, after 14-byte Ethernet
   local ver_ihl = u8(eth_frame, ip_off)
-  if not ver_ihl then return nil end
-  if math.floor(ver_ihl / 16) ~= 4 then return nil end
+  if not ver_ihl then return nil, "malformed" end
+  if math.floor(ver_ihl / 16) ~= 4 then return nil, "malformed" end
   local ihl = (ver_ihl % 16) * 4
-  if ihl < 20 then return nil end
-  if ip_off + ihl - 1 > #eth_frame then return nil end
+  if ihl < 20 then return nil, "malformed" end
+  if ip_off + ihl - 1 > #eth_frame then return nil, "truncated" end
   local proto = u8(eth_frame, ip_off + 9)
-  if proto ~= 6 then return nil end -- TCP only
+  if proto ~= 6 then return nil, "not_tcp" end -- TCP only
   local da, db, dc, dd = eth_frame:byte(ip_off + 16, ip_off + 19)
-  if not da then return nil end
+  if not da then return nil, "malformed" end
   local dst_ip = string.format("%d.%d.%d.%d", da, db, dc, dd)
 
   -- TCP header
   local tcp_off = ip_off + ihl
-  if tcp_off + 20 - 1 > #eth_frame then return nil end
+  if tcp_off + 20 - 1 > #eth_frame then return nil, "truncated" end
   local data_off_byte = u8(eth_frame, tcp_off + 12)
-  if not data_off_byte then return nil end
+  if not data_off_byte then return nil, "malformed" end
   local data_off = math.floor(data_off_byte / 16) * 4
-  if data_off < 20 then return nil end
+  if data_off < 20 then return nil, "malformed" end
   local payload_off = tcp_off + data_off
-  if payload_off > #eth_frame then return nil end
+  if payload_off > #eth_frame then return nil, "truncated" end
   local payload = eth_frame:sub(payload_off)
 
   local sni = M.parse_client_hello(payload)
-  if not sni then return nil end
+  if not sni then return nil, "no_sni" end
   return { dst_ip = dst_ip, src_mac = src_mac, sni = sni }
 end
 
@@ -226,6 +245,52 @@ function M.parse_sni_line(line)
   local ip, mac, sn = line:match("^SNI\t(%S+)\t(%S+)\t(%S+)%s*$")
   if not ip then return nil end
   return { dst_ip = ip, src_mac = mac, sni = sn }
+end
+
+-- route_line(line, deps) → handled (boolean)   (#573 SHOULD-FIX #1)
+--
+-- The wifihaven-dns-tail sidecar tails the dnsmasq query log AND the SNI
+-- capture spool together (`tail -F dnsmasq.log sni.log`). This is the single
+-- routing decision for each line, extracted from the sidecar's main loop so it
+-- can be unit-tested in isolation:
+--
+--   * `tail -F` emits a "==> <file> <==" banner whenever it switches between
+--     the two followed files — those are not dnsmasq lines and must never
+--     reach the dnsmasq parsers, so they are consumed (handled = true) without
+--     any side effect.
+--   * "SNI\t<ip>\t<mac>\t<host>" rows from sni-tail are routed to the injected
+--     insert_fn (cache.insert_sni), which is the SAME shared dns_cache writer
+--     primitive DNS replies use — so dns-tail stays the sole writer of
+--     paths.dns_cache (single-writer invariant preserved).
+--   * Everything else (dnsmasq reply/query lines) returns handled = false so
+--     the caller's existing dnsmasq handlers run.
+--
+-- deps.insert_fn(ip, host) is required; the routing is otherwise pure, so the
+-- function never touches the cache, the spool, or flush bookkeeping itself.
+function M.route_line(line, deps)
+  if type(line) ~= "string" or line == "" then return false end
+  if line:sub(1, 4) == "==> " then return true end -- tail -F switch banner
+  local sn = M.parse_sni_line(line)
+  if not sn then return false end                   -- dnsmasq line: fall through
+  deps.insert_fn(sn.dst_ip, sn.sni)
+  return true
+end
+
+-- lan_device(cursor) → string   (#573 SHOULD-FIX #3)
+--
+-- Probe the LAN bridge name from UCI (network.lan.device) so the sidecar
+-- captures off the actual bridge instead of a hardcoded br-lan — routers using
+-- a custom bridge name (br0, multi-WAN configs) otherwise produce no SNI rows
+-- silently. Falls back to "br-lan" when the option (or the cursor) is absent.
+-- The cursor is injected so this is unit-testable without a live UCI.
+function M.lan_device(cursor)
+  if cursor then
+    local ok, dev = pcall(function()
+      return cursor:get("network", "lan", "device")
+    end)
+    if ok and dev and dev ~= "" then return dev end
+  end
+  return "br-lan"
 end
 
 return M

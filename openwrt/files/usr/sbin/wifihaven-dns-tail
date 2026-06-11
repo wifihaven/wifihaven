@@ -267,18 +267,20 @@ local dns_results      = {}
 
 local sni_inserts = 0
 
--- handle_sni_line(line) → true iff `line` was an SNI capture line from the
--- wifihaven-sni-tail sidecar and was routed into cache.insert_sni. Returns
--- false for dnsmasq log lines (those flow through the existing handlers
--- below). Also returns true for `tail -F` switch banners ("==> file <=="),
--- which are not dnsmasq lines and must not reach the dnsmasq parsers.
-local function handle_sni_or_skip(line)
-  if line:sub(1, 4) == "==> " then return true end
-  local sn = sni.parse_sni_line(line)
-  if not sn then return false end
-  cache.insert_sni(sn.dst_ip, sn.sni)
-  sni_inserts = sni_inserts + 1
-  return true
+-- #573: SNI capture lines from the wifihaven-sni-tail sidecar are tailed in the
+-- same `tail -F` stream as the dnsmasq log. sni.route_line is the single
+-- routing decision (extracted + unit-tested in sni_spec.lua): it consumes
+-- "SNI\t..." lines into cache.insert_sni (the SAME shared dns_cache writer DNS
+-- replies use, so dns-tail stays the sole writer) and `tail -F` "==> file <=="
+-- switch banners, returning true; dnsmasq lines return false and fall through
+-- to the parsers/populators below.
+local function route_sni(line)
+  return sni.route_line(line, {
+    insert_fn = function(ip, host)
+      cache.insert_sni(ip, host)
+      sni_inserts = sni_inserts + 1
+    end,
+  })
 end
 
 while true do
@@ -288,10 +290,7 @@ while true do
     break
   end
 
-  -- #573: SNI lines from the wifihaven-sni-tail sidecar land in the same
-  -- shared dns_cache as dnsmasq replies. Route them first, then short-circuit
-  -- past the dnsmasq-log parsers / populators below.
-  if handle_sni_or_skip(line) then
+  if route_sni(line) then
     -- Update the shared flush bookkeeping so the next tick still writes the
     -- cache file even on a long stretch of SNI-only traffic.
     since_flush      = since_flush + 1
@@ -305,82 +304,82 @@ while true do
       last_tick   = now
     end
   else
-  cache.ingest_line(line)
-  since_flush      = since_flush + 1
-  lines_ingested   = lines_ingested + 1
-  lines_since_stat = lines_since_stat + 1
+    cache.ingest_line(line)
+    since_flush      = since_flush + 1
+    lines_ingested   = lines_ingested + 1
+    lines_since_stat = lines_since_stat + 1
 
-  -- #1302: classify this line's DNS outcome (resolved / nxdomain / servfail /
-  -- refused / nodata) and bump the cumulative tally. nil for query lines and
-  -- non-terminal CNAME hops.
-  local dns_result = dns_log.classify_query_result(line)
-  if dns_result then
-    dns_results[dns_result] = (dns_results[dns_result] or 0) + 1
-  end
+    -- #1302: classify this line's DNS outcome (resolved / nxdomain / servfail /
+    -- refused / nodata) and bump the cumulative tally. nil for query lines and
+    -- non-terminal CNAME hops.
+    local dns_result = dns_log.classify_query_result(line)
+    if dns_result then
+      dns_results[dns_result] = (dns_results[dns_result] or 0) + 1
+    end
 
-  local now = os.time()
+    local now = os.time()
 
-  -- #505: populate per-MAC blockIpOnly resolved sets in lockstep with the
-  -- hostname cache. This must be inline (not batched) for the same reason
-  -- as the hostname flush: conntrack -E NEW lands milliseconds after the
-  -- dnsmasq reply, and any delay here means the first packet of a newly
-  -- resolved flow hits an empty set and gets dropped (#472 / blockIpOnly
-  -- defeats user-visible connectivity).
-  maybe_populate_bio(line, now)
+    -- #505: populate per-MAC blockIpOnly resolved sets in lockstep with the
+    -- hostname cache. This must be inline (not batched) for the same reason
+    -- as the hostname flush: conntrack -E NEW lands milliseconds after the
+    -- dnsmasq reply, and any delay here means the first packet of a newly
+    -- resolved flow hits an empty set and gets dropped (#472 / blockIpOnly
+    -- defeats user-visible connectivity).
+    maybe_populate_bio(line, now)
 
-  -- #515: same lockstep argument as bio — the per-host extraBlocked drop
-  -- rule fires on the first packet of the flow, so any delay between the
-  -- dnsmasq reply and the eb_<sanhost> element add lets the first SYN
-  -- through.
-  maybe_populate_eb(line)
+    -- #515: same lockstep argument as bio — the per-host extraBlocked drop
+    -- rule fires on the first packet of the flow, so any delay between the
+    -- dnsmasq reply and the eb_<sanhost> element add lets the first SYN
+    -- through.
+    maybe_populate_eb(line)
 
-  -- #1346: per-(MAC, host) extraAllowed carve-out, same first-SYN-race
-  -- argument — if the resolved IP isn't in the ea_<mac>_<host> set before the
-  -- flow's first packet, a whole-MAC block drops an explicitly-allowed app.
-  maybe_populate_ea(line)
+    -- #1346: per-(MAC, host) extraAllowed carve-out, same first-SYN-race
+    -- argument — if the resolved IP isn't in the ea_<mac>_<host> set before the
+    -- flow's first packet, a whole-MAC block drops an explicitly-allowed app.
+    maybe_populate_ea(line)
 
-  -- #1348: same lockstep argument — close the category-blocklist bypass for
-  -- directly-queried CNAME targets by adding the resolved IP to the member's
-  -- bl_ set when the answered name attributes (via the alias map) to a member.
-  maybe_populate_bl(line)
+    -- #1348: same lockstep argument — close the category-blocklist bypass for
+    -- directly-queried CNAME targets by adding the resolved IP to the member's
+    -- bl_ set when the answered name attributes (via the alias map) to a member.
+    maybe_populate_bl(line)
 
-  if since_flush >= flush_every or (now - last_tick) >= 30 then
-    cache.tick(now)
-    atomic_write(cache_path, cache.dump_text())
-    -- #1302: publish the cumulative query-result tally alongside the cache so
-    -- the agent's next metrics tick can fold the deltas.
-    atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
-    log.debug("dns-tail: flushed cache size=%d", cache.size())
-    since_flush = 0
-    last_tick   = now
-  end
+    if since_flush >= flush_every or (now - last_tick) >= 30 then
+      cache.tick(now)
+      atomic_write(cache_path, cache.dump_text())
+      -- #1302: publish the cumulative query-result tally alongside the cache so
+      -- the agent's next metrics tick can fold the deltas.
+      atomic_write(dns_metrics_path, dns_log.format_query_results(dns_results))
+      log.debug("dns-tail: flushed cache size=%d", cache.size())
+      since_flush = 0
+      last_tick   = now
+    end
 
-  -- Refresh per-MAC blockIpOnly state (lease table + which sets exist).
-  -- We do this on the tail loop rather than a timer so we don't need
-  -- non-blocking IO; periodic policy changes from the agent + DHCP renewals
-  -- are slow relative to log line throughput.
-  if (now - last_lease_refresh) >= lease_refresh_seconds then
-    ip_to_mac = refresh_ip_to_mac()
-    last_lease_refresh = now
-  end
-  if (now - last_bio_refresh) >= bio_refresh_seconds then
-    nft_sets = refresh_nft_sets()
-    bl_member_index = refresh_bl_member_index()  -- #1348
-    last_bio_refresh = now
-  end
+    -- Refresh per-MAC blockIpOnly state (lease table + which sets exist).
+    -- We do this on the tail loop rather than a timer so we don't need
+    -- non-blocking IO; periodic policy changes from the agent + DHCP renewals
+    -- are slow relative to log line throughput.
+    if (now - last_lease_refresh) >= lease_refresh_seconds then
+      ip_to_mac = refresh_ip_to_mac()
+      last_lease_refresh = now
+    end
+    if (now - last_bio_refresh) >= bio_refresh_seconds then
+      nft_sets = refresh_nft_sets()
+      bl_member_index = refresh_bl_member_index()  -- #1348
+      last_bio_refresh = now
+    end
 
-  -- One-line info heartbeat so silent failures (dnsmasq not logging, tail
-  -- dropping the pipe, regex never matching) are diagnosable from logread
-  -- alone without on-VM access (#480).
-  if (now - last_stats_log) >= 60 then
-    log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d bl_adds=%d sni_inserts=%d",
-             lines_ingested, lines_since_stat, now - last_stats_log,
-             cache.size(), bio_adds_total, eb_adds_total, ea_adds_total,
-             bl_adds_total, sni_inserts)
-    last_stats_log   = now
-    lines_since_stat = 0
-  end
-  end -- else branch of handle_sni_or_skip
+    -- One-line info heartbeat so silent failures (dnsmasq not logging, tail
+    -- dropping the pipe, regex never matching) are diagnosable from logread
+    -- alone without on-VM access (#480).
+    if (now - last_stats_log) >= 60 then
+      log.info("dns-tail: ingested=%d (+%d in last %ds) cache_size=%d bio_adds=%d eb_adds=%d ea_adds=%d bl_adds=%d sni_inserts=%d",
+               lines_ingested, lines_since_stat, now - last_stats_log,
+               cache.size(), bio_adds_total, eb_adds_total, ea_adds_total,
+               bl_adds_total, sni_inserts)
+      last_stats_log   = now
+      lines_since_stat = 0
+    end
+  end -- else branch of route_sni
 end
 
 handle:close()

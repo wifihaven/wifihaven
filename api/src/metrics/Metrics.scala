@@ -110,6 +110,10 @@ object MetricGuard {
     "agent_uptime_seconds"                      -> Set("router_id", "installation_id"),
     "agent_version"                             -> Set("version", "router_id", "installation_id"),
     "dns_queries_total"                         -> Set("result", "router_id", "installation_id"),
+    // #573 — TLS ClientHello SNI capture outcomes from the wifihaven-sni-tail sidecar.
+    // `result` ∈ {parsed, truncated, no_sni, ipv6_skipped, not_tcp, malformed} — a small bounded
+    // enum that lets an operator see the fleet-wide SNI capture / truncation / ipv6-skip rate.
+    "sni_clienthellos_total"                    -> Set("result", "router_id", "installation_id"),
     "blocklist_fetch_failures_total"            -> Set("status", "router_id", "installation_id"),
     "enforcement_drops_total"                   -> Set("reason", "router_id", "installation_id"),
     // #1033 — usage-POST retry-queue health. Depth = buckets currently waiting for a backoff to

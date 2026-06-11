@@ -212,6 +212,10 @@ object RouterMetricsIngestSpec
             MetricCounter("blocklist_fetch_failures_total", Map("status" -> "5xx"), 4),
             MetricCounter("enforcement_drops_total", Map("reason" -> "whole_mac"), 1820),
             MetricCounter("enforcement_drops_total", Map("reason" -> "category_block"), 12990),
+            // #573 SNI sidecar result counters — must be allowlisted and
+            // re-exposed under router_id like the other agent-sourced series.
+            MetricCounter("sni_clienthellos_total", Map("result" -> "parsed"), 8421),
+            MetricCounter("sni_clienthellos_total", Map("result" -> "truncated"), 37),
           ),
         )
         resp <- post(routes, tok, body)
@@ -239,6 +243,14 @@ object RouterMetricsIngestSpec
             s"""router_id="$ridStr"""",
             "category_block",
           ).contains(12990.0),
+        ) &&
+        assertTrue(
+          seriesValue(scraped, "sni_clienthellos_total", s"""router_id="$ridStr"""", "parsed")
+            .contains(8421.0),
+        ) &&
+        assertTrue(
+          seriesValue(scraped, "sni_clienthellos_total", s"""router_id="$ridStr"""", "truncated")
+            .contains(37.0),
         )
       }
     },
