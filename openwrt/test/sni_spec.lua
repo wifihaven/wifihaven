@@ -469,30 +469,35 @@ local function u32be(n)
                      n % 256)
 end
 
--- Build a 24-byte pcap global header. swapped=false → native magic
--- 0xa1b2c3d4 written little-endian (byte 1 = 0xd4); swapped=true → the
--- other-endian magic 0xd4c3b2a1 written little-endian (byte 1 = 0xa1).
--- (We mirror tcpdump's on-the-wire convention: the magic is written in the
--- writer's native byte order, so the first byte tells the reader the order.)
+-- Build a 24-byte pcap global header for a given on-wire byte order.
+--
+-- The reader (sni.read_global_header) keys off the magic's first byte:
+--   byte1 = 0xa1  (magic bytes a1 b2 c3 d4)  → swapped=false → BIG-endian fields
+--   byte1 = 0xd4  (magic bytes d4 c3 b2 a1)  → swapped=true  → LITTLE-endian fields
+-- i.e. the magic 0xa1b2c3d4 laid down big-endian, or laid down little-endian.
+-- The header/record length fields must therefore use the matching encoder.
 local function pcap_global_header(swapped)
-  local magic
+  local enc, magic
   if swapped then
-    magic = string.char(0xd4, 0xc3, 0xb2, 0xa1) -- reader sees swapped byte order
+    magic = string.char(0xd4, 0xc3, 0xb2, 0xa1) -- little-endian on the wire
+    enc = u32le
   else
-    magic = string.char(0xa1, 0xb2, 0xc3, 0xd4) -- reader sees native byte order
+    magic = string.char(0xa1, 0xb2, 0xc3, 0xd4) -- big-endian on the wire
+    enc = u32be
   end
   -- version_major(2) version_minor(2) thiszone(4) sigfigs(4) snaplen(4) net(4)
-  local rest = string.char(2, 0) .. string.char(4, 0) ..
+  -- (the reader only inspects the magic; the rest just has to be 24 bytes.)
+  local rest = string.char(0, 2) .. string.char(0, 4) ..
                string.rep("\0", 4) .. string.rep("\0", 4) ..
-               (swapped and u32be(600) or u32le(600)) ..
-               (swapped and u32be(1)   or u32le(1))     -- LINKTYPE_ETHERNET
+               enc(600) ..
+               enc(1)                                   -- LINKTYPE_ETHERNET
   return magic .. rest
 end
 
 -- Build a 16-byte pcap record header framing a packet of incl_len bytes, in
--- the chosen byte order, followed by the packet bytes themselves.
+-- the matching byte order, followed by the packet bytes themselves.
 local function pcap_record(packet, swapped)
-  local enc = swapped and u32be or u32le
+  local enc = swapped and u32le or u32be
   local ts_sec, ts_usec = 0, 0
   local incl_len = #packet
   local orig_len = #packet
@@ -573,7 +578,8 @@ describe("read_record — per-record framing", function()
 
   it("returns nil when incl_len overruns the available bytes", function()
     -- 16-byte header claiming incl_len=100, but only 4 packet bytes follow.
-    local hdr = u32le(0) .. u32le(0) .. u32le(100) .. u32le(100)
+    -- swapped=false → big-endian fields (see pcap_global_header).
+    local hdr = u32be(0) .. u32be(0) .. u32be(100) .. u32be(100)
     assert.is_nil(sni.read_record(string_reader(hdr .. "abcd"), false))
   end)
 end)

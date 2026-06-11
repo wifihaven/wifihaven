@@ -64,9 +64,11 @@ log.info("sni-tail: starting iface=%s snaplen=%d spool=%s",
 
 -- ---------------------------------------------------------------------------
 -- pcap stream reader. tcpdump -w - emits a global pcap file header (24 bytes)
--- followed by record headers (16 bytes) + captured packet bytes. We read the
--- stream as a byte buffer, peel records off the front, and feed each captured
--- packet to sni.parse_packet.
+-- followed by record headers (16 bytes) + captured packet bytes. The framing
+-- logic lives in sni.lua (sni.read_global_header / sni.read_record /
+-- sni.iter_pcap) so it is exercised by the unit + integration suite; this
+-- sidecar is a thin driver that backs the reader's read_fn with the io.popen
+-- handle and feeds each captured packet to sni.parse_packet.
 -- ---------------------------------------------------------------------------
 
 local h = io.popen(CAPTURE_CMD, "r")
@@ -75,43 +77,16 @@ if not h then
   os.exit(1)
 end
 
-local function read_n(handle, n)
-  local out = {}
-  local got = 0
-  while got < n do
-    local chunk = handle:read(n - got)
-    if not chunk or #chunk == 0 then return nil end
-    out[#out + 1] = chunk
-    got = got + #chunk
-  end
-  return table.concat(out)
+-- read_fn(n) → up to n bytes from the tcpdump pipe, nil at EOF. The pcap reader
+-- reassembles short reads into exact-length record/header reads internally.
+local function read_fn(n)
+  return h:read(n)
 end
 
--- Global pcap header: magic (4), version_major (2), version_minor (2),
--- thiszone (4), sigfigs (4), snaplen (4), network (4) = 24 bytes.
-local function read_global_header(handle)
-  local hdr = read_n(handle, 24)
-  if not hdr or #hdr < 4 then return nil end
-  -- magic byte order: 0xa1b2c3d4 (us) / 0xd4c3b2a1 (other endian) — we trust
-  -- the local tcpdump's byte order, so byte 1 distinguishes them.
-  local b1 = hdr:byte(1)
-  local swapped = (b1 == 0xd4)
-  return { swapped = swapped }
-end
-
--- Per-record header: ts_sec (4), ts_usec (4), incl_len (4), orig_len (4)
-local function read_record_header(handle, swapped)
-  local rec = read_n(handle, 16)
-  if not rec then return nil end
-  local function u32(off)
-    local a, b, c, d = rec:byte(off, off + 3)
-    if swapped then a, b, c, d = d, c, b, a end
-    return ((a * 256 + b) * 256 + c) * 256 + d
-  end
-  return { incl_len = u32(9) }
-end
-
-local gh = read_global_header(h)
+-- Consume the global header first so we can emit a clear diagnostic when
+-- tcpdump produced no pcap stream at all (the per-record loop below then reads
+-- successive packets against the detected byte order).
+local gh = sni.read_global_header(read_fn)
 if not gh then
   log.err("sni-tail: tcpdump produced no pcap stream on iface=%s — is the " ..
           "interface up and is the BPF filter accepted? (a wrong LAN bridge " ..
@@ -155,16 +130,12 @@ local function flush_metrics()
 end
 
 while true do
-  local rh = read_record_header(h, gh.swapped)
-  if not rh then
-    log.warn("sni-tail: pcap pipe closed; exiting (procd will respawn)")
+  local rec = sni.read_record(read_fn, gh.swapped)
+  if not rec then
+    log.warn("sni-tail: pcap pipe closed or short read; exiting (procd will respawn)")
     break
   end
-  local pkt = read_n(h, rh.incl_len)
-  if not pkt then
-    log.warn("sni-tail: short packet read (incl_len=%d); exiting", rh.incl_len)
-    break
-  end
+  local pkt = rec.data
 
   local r, reason = sni.parse_packet(pkt)
   if r then

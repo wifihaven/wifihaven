@@ -25,6 +25,9 @@
 --   sni.parse_packet(eth_frame_bytes) → { dst_ip, src_mac, sni } | nil
 --   sni.format_sni_line(ip, mac, sni) → "SNI\t<ip>\t<mac>\t<sni>\n"
 --   sni.parse_sni_line(line)          → { dst_ip, src_mac, sni } | nil
+--   sni.read_global_header(read_fn)   → { swapped } | nil   (pcap stream)
+--   sni.read_record(read_fn, swapped) → { data } | nil      (pcap stream)
+--   sni.iter_pcap(read_fn)            → iterator of packet bytes
 --
 -- Defensive style: every length field is checked against the remaining
 -- payload before being trusted. A malformed record returns nil; it never
@@ -274,6 +277,87 @@ function M.route_line(line, deps)
   if not sn then return false end                   -- dnsmasq line: fall through
   deps.insert_fn(sn.dst_ip, sn.sni)
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- pcap stream reader (#573).
+--
+-- The wifihaven-sni-tail sidecar reads tcpdump's `-w -` output: a 24-byte
+-- global header (magic 0xa1b2c3d4 / 0xd4c3b2a1 for the two byte orders)
+-- followed by a sequence of 16-byte record headers each framing incl_len
+-- captured packet bytes. This reader used to live as inline local functions in
+-- the sidecar and was never executed by a test. It now lives here as pure,
+-- injectable functions: a `read_fn(n)` returns up to n bytes or nil at EOF, so
+-- the sidecar backs it with the io.popen handle and tests back it with an
+-- in-memory string cursor — single source of truth for the framing logic.
+-- ---------------------------------------------------------------------------
+
+-- read_exact(read_fn, n) → exactly n bytes, or nil if EOF/short read.
+-- read_fn(k) returns up to k bytes (or nil/"" at EOF); we loop until we have n.
+local function read_exact(read_fn, n)
+  if n <= 0 then return "" end
+  local out = {}
+  local got = 0
+  while got < n do
+    local chunk = read_fn(n - got)
+    if not chunk or #chunk == 0 then return nil end
+    out[#out + 1] = chunk
+    got = got + #chunk
+  end
+  return table.concat(out)
+end
+
+-- read_global_header(read_fn) → { swapped = bool } | nil
+--
+-- Consumes the 24-byte pcap global header. The magic's first byte distinguishes
+-- the two byte orders: native 0xa1b2c3d4 starts 0xa1; swapped 0xd4c3b2a1 starts
+-- 0xd4. Returns nil if the stream is too short to hold a header (e.g. tcpdump
+-- never produced a pcap stream — wrong interface / rejected BPF).
+function M.read_global_header(read_fn)
+  local hdr = read_exact(read_fn, 24)
+  if not hdr or #hdr < 4 then return nil end
+  local b1 = hdr:byte(1)
+  local swapped = (b1 == 0xd4)
+  return { swapped = swapped }
+end
+
+-- read_record(read_fn, swapped) → { data = <packet bytes> } | nil
+--
+-- Reads one 16-byte record header (ts_sec, ts_usec, incl_len, orig_len),
+-- honoring `swapped` for the little/big-endian incl_len, then reads incl_len
+-- captured bytes. Returns nil at clean EOF, on a truncated record header, or
+-- when incl_len overruns the available bytes (snaplen-cut tail / pipe close) —
+-- never raises.
+function M.read_record(read_fn, swapped)
+  local rec = read_exact(read_fn, 16)
+  if not rec then return nil end
+  local function u32(off)
+    local a, b, c, d = rec:byte(off, off + 3)
+    if swapped then a, b, c, d = d, c, b, a end
+    return ((a * 256 + b) * 256 + c) * 256 + d
+  end
+  local incl_len = u32(9)
+  local data = read_exact(read_fn, incl_len)
+  if not data then return nil end
+  return { data = data }
+end
+
+-- iter_pcap(read_fn) → function() → packet bytes | nil
+--
+-- Consumes the global header once, then returns an iterator that yields each
+-- record's captured packet bytes in turn and nil at EOF (or on a truncated
+-- trailing record, which terminates the iteration cleanly). If the global
+-- header is absent/short the iterator yields nothing — the sidecar treats a
+-- nil header as "tcpdump produced no pcap stream" and exits. Usable directly in
+-- a `for pkt in sni.iter_pcap(read_fn) do ... end` loop.
+function M.iter_pcap(read_fn)
+  local gh = M.read_global_header(read_fn)
+  return function()
+    if not gh then return nil end
+    local rec = M.read_record(read_fn, gh.swapped)
+    if not rec then return nil end
+    return rec.data
+  end
 end
 
 -- lan_device(cursor) → string   (#573 SHOULD-FIX #3)
