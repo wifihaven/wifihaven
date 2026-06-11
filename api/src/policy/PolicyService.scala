@@ -803,15 +803,6 @@ object PolicyService {
       now,
     )
 
-  // #1630: `expandAppDispositions` was deleted here. Its responsibility — collapsing each app
-  // assignment into the per-MAC `(extraAllowed, extraBlocked)` BlockRules buckets, with the
-  // AllowedDuring carve-gate and per-schedule overrides — moved into the single fold
-  // [[ProfileAppDispositions.enforcement]]. Production callers (`snapshot`, `decide`) build the
-  // fold off the unified `appTimeLimitRepo.listForProfile` read (now unfiltered: every mode
-  // round-trips with its `assignmentId`). The prior split — one fold here, another in
-  // `TimeStatusService.groupAppLimits` / `exemptPatterns` — was the structural seam that let
-  // `mode=Allowed, exemptFromDaily=true` apps reach `extraAllowed` but not `exemptPatterns`.
-
   // ── #334: timezone-aware time math ────────────────────────────────────────
   //
   // Schedules + daily-reset carry an IANA zone with the data. All evaluation

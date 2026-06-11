@@ -149,13 +149,12 @@ object ProfileAppDispositions {
           appId = first.appId,
           assignmentId = assignmentId,
           mode = first.mode,
-          // `exemptFromDaily` is uniform across an assignment's synthesized rows by construction,
-          // but `exists` is the defensive choice — any synthetic row marked exempt makes the
-          // assignment exempt.
-          exemptFromDaily = rows.exists(_.exemptFromDaily),
-          // `dailyMinutes` is uniform per assignment; max is defensive — agrees with the prior
-          // `groupAppLimits` reduction.
-          dailyMinutes = rows.map(_.dailyMinutes).max,
+          // `exemptFromDaily` and `dailyMinutes` are uniform across an assignment's synthesized
+          // rows by construction (one assignment row × N host rows from the `app_hosts` join), so
+          // any row's value is the assignment's value. Reading off `first` makes that invariant
+          // explicit at the call site.
+          exemptFromDaily = first.exemptFromDaily,
+          dailyMinutes = first.dailyMinutes,
           label = first.label,
           hosts = rows.map(_.domainPattern).distinct,
         )
