@@ -293,3 +293,133 @@ describe("format_sni_line / parse_sni_line", function()
     assert.is_nil(sni.parse_sni_line(nil))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- 5. route_line — the dns-tail SNI/dnsmasq routing seam (#573 SHOULD-FIX #1)
+-- ---------------------------------------------------------------------------
+--
+-- wifihaven-dns-tail tails the dnsmasq log AND the SNI capture spool together
+-- via `tail -F a b`. Each line is classified by sni.route_line, which:
+--   (a) routes "SNI\t..." lines to the injected insert_fn (cache.insert_sni)
+--   (b) skips "==> file <==" tail-banner lines emitted on file switch
+--   (c) returns false for dnsmasq reply lines so they fall through to the
+--       existing dnsmasq handlers (the single dns_cache writer stays dns-tail).
+describe("route_line — dns-tail SNI routing seam", function()
+  it("routes an SNI line to insert_fn and returns true", function()
+    local seen = {}
+    local handled = sni.route_line(
+      sni.format_sni_line("142.250.80.46", "76:2d:95:47:d1:8e", "example.com"),
+      { insert_fn = function(ip, host) seen = { ip = ip, host = host } end })
+    assert.is_true(handled)
+    assert.equal("142.250.80.46", seen.ip)
+    assert.equal("example.com",   seen.host)
+  end)
+
+  it("skips a `tail -F` switch-banner line without calling insert_fn", function()
+    local calls = 0
+    local handled = sni.route_line(
+      "==> /tmp/wifihaven-sni.log <==",
+      { insert_fn = function() calls = calls + 1 end })
+    assert.is_true(handled)        -- consumed (not a dnsmasq line)
+    assert.equal(0, calls)         -- but no cache insert
+  end)
+
+  it("returns false for a dnsmasq reply line (falls through to dns handlers)", function()
+    local calls = 0
+    local handled = sni.route_line(
+      "Nov 12 10:00:01 dnsmasq[1234]: reply youtube.com is 142.250.80.46",
+      { insert_fn = function() calls = calls + 1 end })
+    assert.is_false(handled)
+    assert.equal(0, calls)
+  end)
+
+  it("returns false for an empty / nil line", function()
+    assert.is_false(sni.route_line("", { insert_fn = function() end }))
+    assert.is_false(sni.route_line(nil, { insert_fn = function() end }))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 6. parse_packet failure-reason categorization (#573 SHOULD-FIX #4/#7)
+-- ---------------------------------------------------------------------------
+--
+-- On a nil result, parse_packet returns a bounded reason string as its second
+-- value so the sidecar can split the lumped no_sni_total counter into distinct
+-- failure modes (truncated / no_sni / malformed / ipv6_skipped). The reason
+-- enum is small and fixed; it feeds the result= IPC metrics file.
+describe("parse_packet — failure reason (second return value)", function()
+  it("returns reason=ipv6_skipped for a non-0x0800 ethertype frame", function()
+    -- Ethernet dst(6) src(6) ethertype=0x86dd (IPv6) + enough bytes for the
+    -- length guard. parse_packet must reject before IP parsing.
+    local frame = string.rep("\0", 6) ..
+                  string.char(0x76, 0x2d, 0x95, 0x47, 0xd1, 0x8e) ..
+                  string.char(0x86, 0xdd) .. string.rep("\0", 60)
+    local r, reason = sni.parse_packet(frame)
+    assert.is_nil(r)
+    assert.equal("ipv6_skipped", reason)
+  end)
+
+  it("returns reason=truncated for a too-short frame", function()
+    local r, reason = sni.parse_packet(string.rep("\0", 20))
+    assert.is_nil(r)
+    assert.equal("truncated", reason)
+  end)
+
+  it("returns reason=no_sni for a valid IPv4/TCP packet whose payload has no SNI", function()
+    local hello = build_client_hello({ sni = "x", omit_sni_ext = true,
+                                       extra_exts = build_key_share_ext(20) })
+    local pkt = build_eth_ipv4_tcp({ payload = hello })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_nil(r)
+    assert.equal("no_sni", reason)
+  end)
+
+  it("returns a parsed result with no reason for a good ClientHello", function()
+    local pkt = build_eth_ipv4_tcp({ payload = build_client_hello({ sni = "example.com" }) })
+    local r, reason = sni.parse_packet(pkt)
+    assert.is_not_nil(r)
+    assert.equal("example.com", r.sni)
+    assert.is_nil(reason)
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 7. lan_device — probe the LAN bridge from UCI (#573 SHOULD-FIX #3)
+-- ---------------------------------------------------------------------------
+--
+-- The sidecar must not hardcode br-lan. sni.lan_device reads network.lan.device
+-- from an injected UCI cursor and falls back to br-lan when unset, so a router
+-- whose LAN bridge is named br0 still gets captured.
+describe("lan_device — UCI LAN-bridge probe", function()
+  local function fake_cursor(dev)
+    return { get = function(_, pkg, sec, opt)
+      if pkg == "network" and sec == "lan" and opt == "device" then return dev end
+      return nil
+    end }
+  end
+
+  it("returns network.lan.device when set", function()
+    assert.equal("br0", sni.lan_device(fake_cursor("br0")))
+  end)
+
+  it("falls back to br-lan when network.lan.device is unset", function()
+    assert.equal("br-lan", sni.lan_device(fake_cursor(nil)))
+  end)
+
+  it("falls back to br-lan when no cursor is available", function()
+    assert.equal("br-lan", sni.lan_device(nil))
+  end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- 8. <3-char SNI rejected (#573 NIT #3)
+-- ---------------------------------------------------------------------------
+describe("parse_client_hello — minimum SNI length", function()
+  it("rejects a 1-char SNI (no real domain is shorter than a.b)", function()
+    assert.is_nil(sni.parse_client_hello(build_client_hello({ sni = "x" })))
+  end)
+
+  it("accepts a 3-char SNI (a.b)", function()
+    assert.equal("a.b", sni.parse_client_hello(build_client_hello({ sni = "a.b" })))
+  end)
+end)

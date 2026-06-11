@@ -33,6 +33,13 @@ grep -q '/tmp/wifihaven-dnsmasq.log' "$SCRIPT" \
   && check "rotation script targets /tmp/wifihaven-dnsmasq.log" ok \
   || check "rotation script targets /tmp/wifihaven-dnsmasq.log" "wrong log path"
 
+# #573: the SNI capture spool grows unbounded otherwise; it must be bounded by
+# the same rotation cron.
+grep -q '/tmp/wifihaven-sni.log' "$SCRIPT" \
+  && check "rotation script also targets /tmp/wifihaven-sni.log (#573)" ok \
+  || check "rotation script also targets /tmp/wifihaven-sni.log (#573)" \
+           "SNI spool not bounded by rotation"
+
 # Must use in-place truncation (: > "$LOG") so dnsmasq's open fd stays on the
 # same inode. A rename would send dnsmasq's writes to an invisible inode.
 grep -q ': > ' "$SCRIPT" \
@@ -186,6 +193,36 @@ print('B' if sample == b'BBBB' else 'other')
   && check "[second rotation] .1 overwritten with latest rotation" ok \
   || check "[second rotation] .1 overwritten with latest rotation" \
            "expected B content in .1, got: $old_prev"
+
+# ---------------------------------------------------------------------------
+# 4. Behavioural simulation for the SNI spool (#573)
+# ---------------------------------------------------------------------------
+# Patch BOTH log paths to the tmpdir and confirm the SNI spool is rotated by
+# the same script when it crosses the cap.
+FAKE_SNI="$TESTDIR/wifihaven-sni.log"
+FAKE_SNI_PREV="${FAKE_SNI}.1"
+PATCHED2="$TESTDIR/wifihaven-rotate-both"
+sed -e "s|/tmp/wifihaven-dnsmasq.log|$FAKE_LOG|g" \
+    -e "s|/tmp/wifihaven-sni.log|$FAKE_SNI|g" "$SCRIPT" > "$PATCHED2"
+chmod +x "$PATCHED2"
+
+python3 -c "
+import sys
+with open(sys.argv[1], 'wb') as f:
+    f.write(b'S' * (20 * 1024 * 1024 + 1))
+" "$FAKE_SNI"
+: > "$FAKE_LOG"   # keep dnsmasq log small so only SNI rotates
+"$PATCHED2"
+
+[ -f "$FAKE_SNI_PREV" ] \
+  && check "[sni spool] .1 backup created when SNI spool exceeds cap" ok \
+  || check "[sni spool] .1 backup created when SNI spool exceeds cap" ".1 not created"
+
+sni_size=$(wc -c < "$FAKE_SNI" 2>/dev/null)
+[ "$sni_size" -eq 0 ] \
+  && check "[sni spool] original truncated to zero after rotation" ok \
+  || check "[sni spool] original truncated to zero after rotation" \
+           "expected 0 bytes, got $sni_size"
 
 printf "\nResults: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
